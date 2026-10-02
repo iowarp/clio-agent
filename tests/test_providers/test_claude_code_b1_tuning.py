@@ -145,7 +145,7 @@ async def test_cancel_interrupts_the_client_and_it_stays_warm_for_the_next_turn(
                 payload="p1",
                 native_blocks=[],
                 session_id="sid-1",
-                timeout=5.0,
+                idle_timeout=5.0,
                 on_construct=lambda: None,
                 model="haiku",
             )
@@ -173,7 +173,7 @@ async def test_cancel_interrupts_the_client_and_it_stays_warm_for_the_next_turn(
         payload="p2",
         native_blocks=[],
         session_id="sid-2",
-        timeout=5.0,
+        idle_timeout=5.0,
         on_construct=lambda: None,
         model="haiku",
     )
@@ -200,7 +200,7 @@ async def test_cancel_before_the_query_starts_abandons_without_ever_connecting(
                 payload="p",
                 native_blocks=[],
                 session_id="sid",
-                timeout=None,
+                idle_timeout=None,
                 on_construct=lambda: None,
                 model="haiku",
             )
@@ -234,7 +234,7 @@ async def test_model_switch_uses_set_model_without_a_new_client(
         payload="p1",
         native_blocks=[],
         session_id="sid-1",
-        timeout=5.0,
+        idle_timeout=5.0,
         on_construct=lambda: None,
         model="haiku",
     )
@@ -243,7 +243,7 @@ async def test_model_switch_uses_set_model_without_a_new_client(
         payload="p2",
         native_blocks=[],
         session_id="sid-2",
-        timeout=5.0,
+        idle_timeout=5.0,
         on_construct=lambda: None,
         model="sonnet",
     )
@@ -270,7 +270,7 @@ async def test_cwd_change_never_forces_a_reconnect(monkeypatch: pytest.MonkeyPat
         payload="p1",
         native_blocks=[],
         session_id="sid-1",
-        timeout=5.0,
+        idle_timeout=5.0,
         on_construct=lambda: None,
         model="haiku",
         cwd="/workspace/a",
@@ -280,7 +280,7 @@ async def test_cwd_change_never_forces_a_reconnect(monkeypatch: pytest.MonkeyPat
         payload="p2",
         native_blocks=[],
         session_id="sid-2",
-        timeout=5.0,
+        idle_timeout=5.0,
         on_construct=lambda: None,
         model="haiku",
         cwd="/workspace/b",
@@ -335,7 +335,7 @@ async def test_a_clean_stream_end_never_burns_the_entry_when_the_owner_loop_lags
     entry = _StreamClientEntry()
     kwargs: dict[str, Any] = {
         "native_blocks": [],
-        "timeout": 5.0,
+        "idle_timeout": 5.0,
         "on_construct": lambda: None,
         "model": "haiku",
     }
@@ -381,7 +381,7 @@ async def test_a_failed_stream_is_reset_once_when_the_owner_loop_lags(
             payload="p1",
             native_blocks=[],
             session_id="sid-1",
-            timeout=5.0,
+            idle_timeout=5.0,
             on_construct=lambda: None,
             model="haiku",
         )

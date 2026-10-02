@@ -11,12 +11,13 @@ CLOSED on completion / error.
 
 The MCP client SDK exposes only the elicitation request's own id and the
 ``ClientSession`` to the handler (no ``related_request_id``), so the resolvable
-protocol identity is the ``ClientSession``. Because the executor serializes tool calls
-(one in flight per executor), a single open record correlates unambiguously; the
-``ClientSession`` is bound to the record on first fire so several elicitations within
-one call stay precisely keyed. When more than one record is open and none matches the
-session — concurrent cross-executor elicitations, which the SDK cannot disambiguate —
-the handler DECLINES with a typed reason rather than mis-correlate.
+protocol identity is the ``ClientSession``. With a single call in flight, its open
+record correlates unambiguously; the ``ClientSession`` is bound to the record on first
+fire so several elicitations within one call stay precisely keyed. Tool calls run
+concurrently (a step's calls, parent + children share an executor), so when more
+than one record is open and none matches the session -- an elicitation the SDK
+cannot attribute -- the handler DECLINES with a typed reason rather than
+mis-correlate.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ _OPEN: list[_InvocationRecord] = []
 # --------------------------------------------------------------------------- #
 # clio drives the MRTR loop, so clio -- not the server author -- tells the main
 # agent when a result was shaped by an agent-answered elicitation. Keyed by the
-# tool-call session (the executor serializes calls). The answer path RECORDS
+# tool-call session. The answer path RECORDS
 # before resolving; ``tools.tool_hooks.assemble_model_observation`` DRAINS and
 # stamps the result.
 _DISCLOSURES: dict[str, list[dict[str, Any]]] = {}
@@ -171,7 +172,7 @@ def _resolve_for_session(session_key: int) -> _InvocationRecord | None:
     """Resolve the in-flight record for the ClientSession the elicitation arrived on.
 
     Session-keyed when a prior fire bound this session; otherwise the single open
-    record (unambiguous under executor serialization), which is then bound to the
+    record (unambiguous with one call in flight), which is then bound to the
     session. Ambiguous (>1 open, none matching) -> ``None`` (typed decline).
     """
 

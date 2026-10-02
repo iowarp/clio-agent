@@ -53,6 +53,14 @@ class _FakeSession:
         self.adopted = result
 
 
+@pytest.fixture(autouse=True)
+def _no_server_progress(monkeypatch: pytest.MonkeyPatch) -> None:
+    """By default the server process tree does no work (deterministic budget tests)."""
+    from clio_agent.tools import mcp_server_progress
+
+    monkeypatch.setattr(mcp_server_progress, "server_work", lambda: 0.0)
+
+
 def _timeout() -> MCPError:
     return MCPError(code=REQUEST_TIMEOUT, message="Request 'server/discover' timed out")
 
@@ -182,3 +190,45 @@ async def test_hardened_negotiate_auto_uses_the_bound_servers_retry_budget(
         await hardened_negotiate_auto(session)
     assert exc_info.value.code == REQUEST_TIMEOUT
     assert session.discover_calls == [LATEST_MODERN_VERSION]  # exactly one attempt, zero retries
+
+
+@pytest.mark.asyncio
+async def test_a_server_still_starting_is_waited_for_beyond_the_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow machine is not a failure: while the server's process tree keeps working
+    (uv installing, Python importing), a probe timeout does not spend the budget."""
+    from clio_agent.tools import mcp_server_progress
+
+    work = {"w": 0.0}
+
+    def advancing() -> float:
+        work["w"] += 1.0
+        return work["w"]
+
+    monkeypatch.setattr(mcp_server_progress, "server_work", advancing)
+    session = _FakeSession([_timeout()] * 8 + [_good_discover()])  # 8 > the budget of 3
+
+    await hardened_negotiate_auto(session)
+
+    assert session.adopted is not None
+    assert session.initialize_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_even_a_working_server_stops_at_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.tools import mcp_server_progress
+
+    work = {"w": 0.0}
+
+    def advancing() -> float:
+        work["w"] += 1.0
+        return work["w"]
+
+    monkeypatch.setattr(mcp_server_progress, "server_work", advancing)
+    monkeypatch.setattr(mcp_server_progress, "mcp_max_wait_s", lambda: 0.0)
+    session = _FakeSession([_timeout()] * 10)
+
+    with pytest.raises(MCPError) as exc_info:
+        await hardened_negotiate_auto(session)
+    assert exc_info.value.code == REQUEST_TIMEOUT

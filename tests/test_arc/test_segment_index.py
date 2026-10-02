@@ -8,7 +8,7 @@ exactly the same segment set the scan holds, across the stress corpus, at the he
 and after a cold reload — plus that the O(log N) clock-window slice agrees with a
 scan-side filter.
 
-Everything runs against the REAL SegmentStore over a REAL LocalFSStore (no mocking
+Everything runs against the REAL SegmentStore over the REAL clio-core store (no mocking
 of src). The fuzz driver is deterministic: ``random.Random(seed)`` only.
 """
 
@@ -20,7 +20,33 @@ from typing import Any
 import pytest
 
 from clio_agent.arc.segments import SegmentIndex, SegmentStore
-from clio_agent.arc.storage import LocalFSStore
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 SID = "idx-sess"
 SCOPES = ["agentA/x", "agentB/y", "agentC/z"]
@@ -34,7 +60,7 @@ def _content_for(kind: str, tag: str) -> dict[str, Any]:
 
 
 def _fresh(tmp_path, sub: str = "arc") -> SegmentStore:
-    return SegmentStore(LocalFSStore(str(tmp_path / sub)))
+    return SegmentStore(_clio_core(str(tmp_path / sub)))
 
 
 def _run_fuzz(ss: SegmentStore, seed: int, n_ops: int) -> None:
@@ -96,7 +122,7 @@ def test_cold_reload_index_matches_scan(tmp_path):
     ss = _fresh(tmp_path, sub="cold")
     _run_fuzz(ss, seed=131, n_ops=120)
     # Brand-new store over the SAME backend dir: the index is rebuilt at cold-load.
-    cold = SegmentStore(LocalFSStore(str(tmp_path / "cold")))
+    cold = SegmentStore(_clio_core(str(tmp_path / "cold")))
     for scope in SCOPES:
         scan_ids = {s.id for s in cold.list_segments(SID, scope, include_tombstoned=True)}
         located = set(cold.locate_segment_ids(SID, scope))

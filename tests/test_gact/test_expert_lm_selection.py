@@ -385,7 +385,10 @@ def test_n_experts_n_providers_no_lm_cross_talk(monkeypatch: pytest.MonkeyPatch)
         def __call__(self, *_a: Any, **_k: Any) -> Any:
             return SimpleNamespace(answer="ok", expert_handoffs=[])
 
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: _FakePredict()(**kwargs),
+    )
 
     base_agent = SimpleNamespace(_provider_config=LMProviderConfig(provider="lm_studio"))
     modules = {

@@ -24,7 +24,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
     _PLAN_REMINDER_STATE_KEY,
     _plan_mode_reminder_block,
-    inject_plan_mode_reminder,
+    plan_mode_reminder,
     resolve_plan_exit_answer,
 )
 from clio_agent.gact.planning import (
@@ -128,18 +128,18 @@ def _plan_session(tmp_path: Path, *, variant: str = "", mode: str = "plan"):
 
 def test_plan_workflow_full_reminder_is_workflow_scaffold(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path, variant=PLAN_VARIANT_WORKFLOW)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     # Numbered, per-step-verified workflow structure + an explicit risks/dependencies section.
     assert "numbered" in out.lower()
     assert "Risks & Dependencies" in out
     # The generic default structure sentence is REPLACED by the workflow one.
     assert "Structure the plan to fit the task: Simple change" not in out
-    assert out.endswith(_USER_TEXT)
+    assert _USER_TEXT not in out  # the reminder is its own block, no user text glued on
 
 
 def test_plan_small_full_reminder_is_lightweight(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path, variant=PLAN_VARIANT_SMALL)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     assert "short and lightweight" in out
     # No workflow scaffold and no heavy default structure sentence.
     assert "Risks & Dependencies" not in out
@@ -181,7 +181,7 @@ def _seed_reminder_window(app: Any, sid: str, *, delta: int) -> None:
 
 
 def test_plan_small_cadence_is_sparser_through_inject(tmp_path: Path) -> None:
-    """Drive ``inject_plan_mode_reminder`` at a window position between the two intervals: a
+    """Drive ``plan_mode_reminder`` at a window position between the two intervals: a
     no-variant session (interval 10) re-injects the FULL block while a plan_small session
     (interval 20) still gets the SPARSE one-liner. This pins the sparser cadence at the CALL
     SITE — replacing ``guidance.full_interval`` in the composer with any fixed interval flips it
@@ -194,15 +194,19 @@ def test_plan_small_cadence_is_sparser_through_inject(tmp_path: Path) -> None:
 
     app_d, sess_d = _plan_session(tmp_path / "d")
     _seed_reminder_window(app_d, sess_d.id, delta=_BETWEEN_INTERVALS_DELTA)
-    out_default = inject_plan_mode_reminder(
-        app_d, sess_d.id, app_d.state.sessions.get(sess_d.id), _USER_TEXT
+    out_default = plan_mode_reminder(
+        app_d,
+        sess_d.id,
+        app_d.state.sessions.get(sess_d.id),
     )
     assert _FULL_ONLY in out_default  # default 10-turn cadence has elapsed → FULL
 
     app_s, sess_s = _plan_session(tmp_path / "s", variant=PLAN_VARIANT_SMALL)
     _seed_reminder_window(app_s, sess_s.id, delta=_BETWEEN_INTERVALS_DELTA)
-    out_small = inject_plan_mode_reminder(
-        app_s, sess_s.id, app_s.state.sessions.get(sess_s.id), _USER_TEXT
+    out_small = plan_mode_reminder(
+        app_s,
+        sess_s.id,
+        app_s.state.sessions.get(sess_s.id),
     )
     assert _SPARSE_ONLY in out_small  # small 20-turn cadence has NOT elapsed → SPARSE
     assert _FULL_ONLY not in out_small

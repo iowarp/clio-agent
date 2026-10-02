@@ -11,12 +11,11 @@ purely on real inactivity (:meth:`_StreamClientEntry.idle_for`), never a
 
 This module pins: an idle entry is reclaimed the next time ANY session wants
 a connection, a busy (in-flight) entry is never touched, and reaping always
-tells the claude_code stateful-delta registry (if an ENGAGED scope was riding
-the connection) so the next send on that scope is forced to a full resend
-rather than shipping a delta tail to a fresh subprocess with no memory of the
-dropped prefix (the correctness guarantee #COPPER12 exists to protect — now
-derived from the entry's own ``_last_scope`` bookkeeping instead of a
-separate scope<->pool-key registry).
+announces the dropped client (synchronously, once), so the Claude Code engine
+resets that session's kept conversations (``session_evicted``) and its next send
+is a full resend rather than a delta tail shipped to a fresh subprocess with no
+memory of the dropped prefix (the correctness guarantee #COPPER12 exists to
+protect).
 
 Each pin carries an inline SABOTAGE note.
 
@@ -31,9 +30,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from dspy.lm15 import Message, Request
 
+from clio_agent.providers import claude_code_engine
 from clio_agent.providers import claude_code_sessions as ccs
-from clio_agent.providers import claude_code_stateful as cst
 from clio_agent.providers import claude_code_stream_bounds as csb
 from clio_agent.providers.claude_code_sessions import ClaudeStreamClientPool
 
@@ -53,10 +53,10 @@ class _FakeClock:
 
 @pytest.fixture(autouse=True)
 def _clean_state() -> Any:
-    """Every test starts and ends with a clean claude_code stateful registry."""
-    cst.stateful_registry().reset_for_tests()
+    """Every test starts and ends with a clean Claude Code conversation registry."""
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
     yield
-    cst.stateful_registry().reset_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
 
 
 def _install_clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
@@ -203,48 +203,40 @@ def test_session_idle_ttl_s_reads_the_env_override(monkeypatch: pytest.MonkeyPat
 def test_reap_forces_the_next_stateful_send_to_a_full_resend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The idle-reap must tell the claude_code stateful registry, or the next
-    call on this scope would classify as a delta (append-only messages) and
-    ship only the tail to a brand-new subprocess that never saw the prefix --
-    a silent conversation-coherence bug, not merely a slower reconnect.
+    """The idle-reap must announce the dropped client, or the next call on this
+    conversation would plan a delta (append-only messages) and ship only the tail to
+    a brand-new subprocess that never saw the prefix -- a silent conversation-coherence
+    bug, not merely a slower reconnect.
 
-    SABOTAGE: drop the ``stateful_registry().note_provider_error(...)`` call in
-    ``reap_idle_session_entry`` -> the registry still thinks its last-seen
-    prefix is live, the next ``plan()`` call classifies as delta, and this
-    goes red.
+    SABOTAGE: drop ``entry.announce_dropped()`` from ``reap_idle_session_entry`` (the
+    async disconnect announces too late: after the next plan) -> this goes red.
     """
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: False)  # audit is a side channel here
     clock = _install_clock(monkeypatch)
     pool = ClaudeStreamClientPool(reap_on_timer=False)
 
-    scope = "loop-a"
-    session_key = (scope, "haiku", "/w", None)
-    registry = cst.stateful_registry()
-    # Prime a live session: call 1 (full/first_call).
-    registry.plan(
-        session_key=session_key, scope_token=scope, messages=[{"role": "user", "content": "a"}]
-    )
+    registry = claude_code_engine._CONVERSATIONS
+    key = ("gact-sess-1", "main#react", "haiku", "/w", "")
+    first = Request(model="claude_code/haiku", messages=(Message.user("a"),))
+    registry.opened(key, "sdk-session-1", first, "sys")
 
     entry = pool.entry_for(session_id="gact-sess-1")
-    # Simulate the entry having last carried this engaged scope's send, at the
-    # tracked (model, cwd, thinking) the registry keyed on.
-    entry._model, entry._cwd, entry._thinking_key, entry._last_scope = "haiku", "/w", None, scope
+    # The entry is connected for this GACT session (what a real connect records).
+    entry._bound_session = "gact-sess-1"
     entry._mark_idle()
     clock.advance(20.0)
 
     # A SECOND session's request is what actually triggers the sweep.
     pool.entry_for(session_id="gact-sess-2")
 
-    # An append-only extension that WOULD be a delta (call 2 normally is) is
-    # instead forced full=provider_error because the connection was reaped.
-    plan, _handle = registry.plan(
-        session_key=session_key,
-        scope_token=scope,
-        messages=[{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+    # An append-only extension that WOULD be a delta is instead a typed full resend.
+    extended = Request(
+        model="claude_code/haiku",
+        messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
     )
-    assert plan.mode == "full"
-    assert plan.reason == "provider_error"
+    send = registry.plan(key, extended, "sys")
+    assert (send.handle, send.reason) == (None, "session_evicted")
 
 
 def test_reap_emits_a_typed_audit_row(monkeypatch: pytest.MonkeyPatch) -> None:

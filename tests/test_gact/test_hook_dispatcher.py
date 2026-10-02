@@ -1017,7 +1017,8 @@ def test_post_tool_use_rewrite_changes_observation(tmp_path: Path) -> None:
     install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
     try:
         out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
-        assert out == "REWRITTEN"
+        # The agent is told a hook replaced the result, then sees the replacement.
+        assert out == "[clio: hook] A PostToolUse hook replaced this call's result.\n\nREWRITTEN"
     finally:
         install_global_dispatcher(None)
 
@@ -1030,7 +1031,7 @@ def test_post_tool_use_deny_feeds_reason(tmp_path: Path) -> None:
     try:
         out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
         assert "REAL:hi" in out
-        assert "secret found" in out
+        assert out.endswith("[clio: hook] A PostToolUse hook objected: secret found")
     finally:
         install_global_dispatcher(None)
 
@@ -1152,6 +1153,15 @@ def test_pre_compact_fires_once(tmp_path: Path) -> None:
         with TestClient(app) as c:
             sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
             complete_turn(c, sid, "hello")
+            # The fake agent bypasses the loop that records each turn on the ARC
+            # plane, and compaction summarizes that plane (the agent's own context),
+            # so record the turn's user message and answer as the loop would.
+            ledger = app.state.messages[sid]
+            turn_id = next(m.turn_id or m.id for m in ledger if m.role == "user")
+            app.state.arc.append_segment(sid, "main", "user", {"text": "hello"}, turn_id=turn_id)
+            app.state.arc.append_segment(
+                sid, "main", "thought", {"text": _Pred.answer}, turn_id=turn_id
+            )
             before = disp.count(PRE_COMPACT)
             resp = c.post(f"/v1/sessions/{sid}/compact", json={})
             assert resp.status_code == 200, resp.text

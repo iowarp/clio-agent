@@ -49,7 +49,7 @@ from clio_agent.gact.replanning import (
     STALL_STATE_KEY,
     STALL_THRESHOLD,
     dispatch_stall_monitor_at_finalize,
-    inject_replan_suggestion,
+    replan_suggestion,
 )
 from clio_agent.gact.semantic_events import SSE_TRACE_ONLY_EVENT_TYPES
 from clio_agent.gact.todos import _write_todos
@@ -171,16 +171,14 @@ def test_suggestion_is_injection_not_mode_flip(tmp_path: Path) -> None:
     assert app.state.sessions.get(sid).mode == "edit"  # mode UNCHANGED (no silent flip)
     assert _pending(app, sid) is not None
 
-    out = inject_replan_suggestion(app, sid, app.state.sessions.get(sid), "USER_TEXT")
+    out = replan_suggestion(app, sid, app.state.sessions.get(sid))
     assert REPLAN_SUGGESTION_MARKER in out
     assert "planning" in out  # points the model at re-entering plan mode (its decision)
-    assert out.endswith("USER_TEXT")
+    assert out.startswith(REPLAN_SUGGESTION_MARKER)  # the block alone, no user text glued on
     assert app.state.sessions.get(sid).mode == "edit"  # still edit after the injection
 
-    # Injected EXACTLY ONCE: the flag is cleared, so the next turn is a no-op passthrough.
-    assert (
-        inject_replan_suggestion(app, sid, app.state.sessions.get(sid), "USER_TEXT") == "USER_TEXT"
-    )
+    # Injected EXACTLY ONCE: the flag is cleared, so the next turn gets no suggestion.
+    assert replan_suggestion(app, sid, app.state.sessions.get(sid)) == ""
 
 
 def test_scoring_and_suggestion_emit_typed_events(tmp_path: Path, monkeypatch) -> None:
@@ -410,8 +408,8 @@ def test_plain_session_monitor_and_injection_are_noops(tmp_path: Path) -> None:
     assert after == before  # NO metadata churn (golden byte-identical)
     assert STALL_STATE_KEY not in after
 
-    # the injection is a strict passthrough too
-    assert inject_replan_suggestion(app, sess.id, app.state.sessions.get(sess.id), "X") == "X"
+    # the injection is a strict no-op too
+    assert replan_suggestion(app, sess.id, app.state.sessions.get(sess.id)) == ""
 
 
 def test_plan_mode_session_is_not_scored_and_resets(tmp_path: Path) -> None:
@@ -497,18 +495,21 @@ class _Agent:
 
 
 class _QuestionRecordingAgent:
-    """A host fake whose ``forward`` records the composed turn input (``question``) it is handed.
+    """A host fake whose ``forward`` records the turn input it is handed.
 
-    The turn engine passes ``state.enriched_text`` — the fully composed, post-enrichment turn
-    input — as ``question``. Recording it lets a test assert what actually reached the model input
-    after ``inject_replan_suggestion`` ran at the real enrichment call site.
+    The turn engine passes ``state.enriched_text`` (the user's text) as ``question`` and binds the
+    turn's CLIO additions (``state.injections``) as ``context.turn_injections()`` for the agent loop
+    to record as messages of their own. Recording both lets a test assert what actually reached the
+    model input after ``replan_suggestion`` ran at the real enrichment call site.
     """
 
     def __init__(self) -> None:
         self.questions: list[str] = []
+        self.injections: list[dict[str, str]] = []
 
     def forward(self, question: str, session_id: str, **kwargs: Any) -> _Pred:
         self.questions.append(question)
+        self.injections.append(dict(_ctx.turn_injections()))
         return _Pred()
 
 
@@ -553,10 +554,11 @@ def test_enrichment_injection_reaches_real_turn_input(tmp_path: Path) -> None:
     """WIRING LOCK (enrichment): a pending replan suggestion reaches the COMPOSED turn input of a
     real turn.
 
-    Pins ``turn.py``'s ``inject_replan_suggestion`` enrichment call site: with the pending flag
-    seeded, the marker must appear in the ``question`` the model input received. SABOTAGE: delete
+    Pins ``turn.py``'s ``replan_suggestion`` enrichment call site: with the pending flag
+    seeded, the marker must appear in the turn's ``replan`` injection the agent loop records as
+    its own message (not glued into the ``question``). SABOTAGE: delete
     that call site and the marker never reaches the turn input -> this test goes RED (the unit test
-    above calls ``inject_replan_suggestion`` directly and would stay green)."""
+    above calls ``replan_suggestion`` directly and would stay green)."""
 
     from fastapi.testclient import TestClient
 
@@ -573,10 +575,12 @@ def test_enrichment_injection_reaches_real_turn_input(tmp_path: Path) -> None:
         complete_turn(client, sid, "USER_TEXT")
 
         assert agent.questions, "the host agent forward never ran on the real turn"
-        assert any(REPLAN_SUGGESTION_MARKER in q for q in agent.questions), (
-            "the replan suggestion never reached the composed turn input"
+        assert any(REPLAN_SUGGESTION_MARKER in i.get("replan", "") for i in agent.injections), (
+            "the replan suggestion never reached the turn's CLIO additions"
         )
         assert any("USER_TEXT" in q for q in agent.questions)  # the user's text is still carried
+        # The suggestion is its own message: never glued into the user's text.
+        assert not any(REPLAN_SUGGESTION_MARKER in q for q in agent.questions)
         # Injected EXACTLY ONCE: the pending flag is consumed by the real enrichment pass.
         assert not _pending(client.app, sid)
 
@@ -602,8 +606,8 @@ def test_finalize_and_enrichment_compose_end_to_end(tmp_path: Path) -> None:
         assert _pending(client.app, sid) is not None
 
         # The FOLLOWING real turn's enrichment injects the fired suggestion into the model input.
-        before = len(agent.questions)
+        before = len(agent.injections)
         complete_turn(client, sid, "next")
-        assert any(REPLAN_SUGGESTION_MARKER in q for q in agent.questions[before:]), (
-            "the fired suggestion never reached a subsequent real turn's input"
-        )
+        assert any(
+            REPLAN_SUGGESTION_MARKER in i.get("replan", "") for i in agent.injections[before:]
+        ), "the fired suggestion never reached a subsequent real turn's input"

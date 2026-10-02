@@ -117,7 +117,7 @@ def _turn(pool: ClaudeStreamClientPool, session_id: str) -> None:
             payload="hi",
             native_blocks=[],
             session_id=session_id,
-            timeout=_WAIT_S,
+            idle_timeout=_WAIT_S,
             on_construct=pool.bump_construct,
             model="haiku",
         ):

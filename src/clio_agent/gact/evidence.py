@@ -9,9 +9,8 @@ of truth for:
   bounding individual tool results (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
   :func:`_bounded_tool_call_result`).
-* **Trajectory evidence projection** -- pulling bounded tool-call evidence out of
-  DSPy ReAct trajectories (:func:`_extract_tools_called_from_trajectory`) and
-  promoting ``fs_propose_edit`` tool results into file-diff proposals
+* **Edit proposals** -- promoting ``fs_propose_edit`` tool results into file-diff
+  proposals
   (:func:`_propose_edit_diffs_from_pred`).
 * **Runtime provenance** -- non-secret provenance for the dynamic agent used this
   turn (:func:`_dynamic_agent_runtime_provenance`).
@@ -36,12 +35,6 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.workflow_state.merge import (
-    _TRAJECTORY_TOOL_ARGS_KEYS,
-    _TRAJECTORY_TOOL_NAME_KEYS,
-    _TRAJECTORY_TOOL_RESULT_KEYS,
-    _trajectory_key_index,
-)
 from clio_agent.tools.mcp_result_projection import transcript_tool_result_chars
 
 if TYPE_CHECKING:
@@ -147,117 +140,6 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
 # ------------------------------------------------------------------------- #
 
 
-def _extract_tools_called_from_trajectory(
-    trajectory: Any,
-    *,
-    max_items: int = 32,
-    max_result_chars: int = 12000,
-) -> list[dict[str, Any]]:
-    """Recover bounded tool-call evidence from DSPy ReAct trajectories.
-
-    DSPy versions and adapters vary in trajectory shape. This intentionally
-    accepts the common indexed mapping form (`tool_name_0`, `tool_args_0`,
-    `observation_0`) and nested/list step forms while preserving enough result
-    evidence for post-run scientific audit.
-    """
-
-    rows: list[dict[str, Any]] = []
-
-    def bounded_result(value: Any) -> Any:
-        if _is_bounded_tool_result(value):
-            return value  # already bounded -> never re-wrap (idempotent)
-        preview = _tool_result_preview(value)
-        if len(preview) <= max_result_chars:
-            return value
-        return {
-            "preview": preview[:max_result_chars].rstrip(),
-            "truncated": True,
-            "original_chars": len(preview),
-        }
-
-    def append_row(row: Mapping[str, Any]) -> None:
-        if len(rows) >= max_items:
-            return
-        name = str(row.get("name") or row.get("tool") or "").strip()
-        result = row.get("result")
-        args = row.get("args")
-        if not name and result is None:
-            return
-        out: dict[str, Any] = {}
-        if name:
-            out["name"] = name
-        if args is not None:
-            out["args"] = args
-        if result is not None:
-            out["result"] = bounded_result(result)
-            out["ok"] = not _tool_result_is_error(result)
-        out.setdefault("telemetry_source", "agent_trajectory")
-        rows.append(out)
-
-    def visit(value: Any) -> None:
-        if len(rows) >= max_items:
-            return
-        if isinstance(value, Mapping):
-            # Direct step row: {"tool_name": ..., "tool_args": ..., "observation": ...}
-            direct: dict[str, Any] = {}
-            for key in _TRAJECTORY_TOOL_NAME_KEYS:
-                if key in value:
-                    direct["name"] = value[key]
-                    break
-            for key in _TRAJECTORY_TOOL_ARGS_KEYS:
-                if key in value:
-                    direct["args"] = value[key]
-                    break
-            for key in _TRAJECTORY_TOOL_RESULT_KEYS:
-                if key in value:
-                    direct["result"] = value[key]
-                    break
-            if direct:
-                append_row(direct)
-                for raw_key, child in value.items():
-                    normalized_key = str(raw_key).lower()
-                    if (
-                        _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_NAME_KEYS)
-                        is not None
-                        or _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_ARGS_KEYS)
-                        is not None
-                        or _trajectory_key_index(normalized_key, _TRAJECTORY_TOOL_RESULT_KEYS)
-                        is not None
-                    ):
-                        continue
-                    if isinstance(child, Mapping | list | tuple):
-                        visit(child)
-                return
-
-            # Indexed flat row: {"step_0_tool_name": ..., "step_0_observation": ...}
-            indexed: dict[str, dict[str, Any]] = {}
-            for raw_key, child in value.items():
-                key = str(raw_key)
-                name_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_NAME_KEYS)
-                if name_index is not None:
-                    indexed.setdefault(name_index, {})["name"] = child
-                    continue
-                args_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_ARGS_KEYS)
-                if args_index is not None:
-                    indexed.setdefault(args_index, {})["args"] = child
-                    continue
-                result_index = _trajectory_key_index(key, _TRAJECTORY_TOOL_RESULT_KEYS)
-                if result_index is not None:
-                    indexed.setdefault(result_index, {})["result"] = child
-                    continue
-                if isinstance(child, Mapping | list | tuple):
-                    visit(child)
-            for index in sorted(indexed, key=lambda item: int(item) if item.isdigit() else -1):
-                append_row(indexed[index])
-            return
-        if isinstance(value, list | tuple):
-            for child in value:
-                visit(child)
-
-    visit(trajectory)
-    return rows
-
-
 def _propose_edit_diffs_from_pred(
     pred: Any,
     observed_tools: list[dict[str, Any]] | None = None,
@@ -272,14 +154,12 @@ def _propose_edit_diffs_from_pred(
     from the turn's tool results so the standard materialization picks them up.
 
     Reads ``pred.tools_called`` (which already carries each call's structured
-    result), falling back to parsing ``pred.trajectory``. Only successful
+    result). Only successful
     (``ok``) calls whose result carries a ``path`` and a diff/new_content are
     promoted; duplicates by (path, diff-prefix) are collapsed.
     """
 
     rows: list[Any] = list(observed_tools or getattr(pred, "tools_called", None) or [])
-    if not rows:
-        rows = _extract_tools_called_from_trajectory(getattr(pred, "trajectory", None))
     diffs: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:

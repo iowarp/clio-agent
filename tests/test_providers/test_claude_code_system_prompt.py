@@ -1,93 +1,66 @@
-"""B4: the system message is split out for ``ClaudeAgentOptions.system_prompt``,
-never serialized into the query text."""
+"""B4: the system prompt rides ``ClaudeAgentOptions.system_prompt``, never the query text.
+
+Through the real engine and pooled transport with a fake SDK: the request's system
+prompt (plus the text tool rules when the request has tools) is the connected client's
+``system_prompt`` option, and the query carries only the rendered messages. A request
+with no system prompt leaves the option unset, so the CLI's own default applies.
+"""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from dspy.lm15 import FunctionTool, Message, Request
 
-from clio_agent.providers.claude_code_system_prompt import (
-    prepare_claude_request,
-    split_system_prompt,
-)
-
-
-class _Unsupported(Exception):
-    pass
+from clio_agent.providers import claude_code_engine
+from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+from tests import _fake_claude_sdk as fake
 
 
-def test_split_extracts_the_system_message_and_leaves_the_rest() -> None:
-    system, remaining = split_system_prompt(
-        [
-            {"role": "system", "content": "You are CLIO."},
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-        ],
-        unsupported_multimodal_exc=_Unsupported,
+@pytest.fixture(autouse=True)
+def _clean_pool() -> Any:
+    _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    yield
+    _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
+
+
+async def test_the_system_prompt_is_the_sdk_option_not_query_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sdk = fake.install(monkeypatch)
+    await fake.drive(fake.request(Message.user("what?"), system="You are clio."))
+
+    [client] = sdk.clients
+    assert client.options.system_prompt == "You are clio."
+    [(prompt, _session)] = client.queries
+    assert prompt == "[user]\nwhat?"
+
+
+async def test_tool_rules_ride_the_system_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk = fake.install(monkeypatch)
+    search = FunctionTool(
+        name="search",
+        description="Search.",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
     )
-    assert system == "You are CLIO."
-    assert remaining == [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
-
-
-def test_split_joins_multiple_system_messages_in_order() -> None:
-    system, remaining = split_system_prompt(
-        [
-            {"role": "system", "content": "first"},
-            {"role": "user", "content": "hi"},
-            {"role": "system", "content": "second"},
-        ],
-        unsupported_multimodal_exc=_Unsupported,
+    request = Request(
+        model="claude_code/haiku",
+        system="You are clio.",
+        messages=(Message.user("what?"),),
+        tools=(search,),
     )
-    assert system == "first\n\nsecond"
-    assert remaining == [{"role": "user", "content": "hi"}]
+    await fake.drive(request)
+
+    system = sdk.clients[0].options.system_prompt
+    assert system.startswith("You are clio.\n\n# How you act")
+    assert "- search: Search." in system
+    assert "# How you act" not in sdk.queries()[0][0]
 
 
-def test_split_returns_empty_string_when_no_system_message() -> None:
-    system, remaining = split_system_prompt(
-        [{"role": "user", "content": "hi"}], unsupported_multimodal_exc=_Unsupported
-    )
-    assert system == ""
-    assert remaining == [{"role": "user", "content": "hi"}]
-
-
-def test_split_is_case_insensitive_on_role() -> None:
-    system, remaining = split_system_prompt(
-        [{"role": "System", "content": "shout"}, {"role": "user", "content": "hi"}],
-        unsupported_multimodal_exc=_Unsupported,
-    )
-    assert system == "shout"
-    assert remaining == [{"role": "user", "content": "hi"}]
-
-
-def test_split_rejects_an_image_part_in_a_system_message() -> None:
-    """A system message is not exempt from the same multimodal refusal a user
-    turn gets -- an image can't ride the ``--system-prompt`` CLI flag either."""
-    with pytest.raises(_Unsupported):
-        split_system_prompt(
-            [
-                {
-                    "role": "system",
-                    "content": [{"type": "image_url", "image_url": {"url": "x"}}],
-                }
-            ],
-            unsupported_multimodal_exc=_Unsupported,
-        )
-
-
-def test_prepare_claude_request_wires_split_and_serialize_together() -> None:
-    def serialize_text(messages: list[dict[str, object]]) -> str:
-        return "|".join(str(m["content"]) for m in messages)
-
-    system, prompt, native_blocks = prepare_claude_request(
-        [
-            {"role": "system", "content": "You are CLIO."},
-            {"role": "user", "content": "hi"},
-        ],
-        serialize_text=serialize_text,
-        unsupported_multimodal_exc=_Unsupported,
-    )
-    assert system == "You are CLIO."
-    assert prompt == "hi"
-    assert native_blocks == []
+async def test_no_system_prompt_leaves_the_option_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk = fake.install(monkeypatch)
+    await fake.drive(fake.request(Message.user("what?")))
+    assert "system_prompt" not in sdk.clients[0].options.kwargs

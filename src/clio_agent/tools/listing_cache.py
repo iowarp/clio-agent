@@ -20,11 +20,12 @@ Validity is strict reality-gating, the #934 discipline: entries are keyed by
 mtime of ``command``) AND the args fingerprint (size:mtime of every LOCAL
 FILE argument — #1308: for a ``python <script>``/``node <script>``-shaped
 stdio launcher the SCRIPT argument, not the interpreter, defines the served
-tools) changing, and by TTL (``CLIO_MCP_LISTING_TTL_H``, default 24h —
-clio-kit servers resolve from remote registry state, so listings must expire
-for upstream tool changes to reach users; for shim launchers neither the
-binary nor a script argument typically moves, so the TTL is the ONLY
-invalidation in the common case). Every stale/invalid entry is dropped with
+tools) changing, and by TTL (``CLIO_MCP_LISTING_TTL_H``, default 24h -- for
+shim launchers neither the binary nor a script argument typically moves). A
+clio-kit server is exact instead: the entry carries the server's code identity
+(``clio-kit mcp-server-identity``, the hash of its embedded source and lock) and
+is valid while it matches, at any age; a clio-kit that cannot report one keeps
+the TTL. Every stale/invalid entry is dropped with
 a typed reason; a cache miss is not a degradation (the first boot always
 lists live). Staleness while an entry lives: a tool ADDED upstream is
 invisible (calls to it raise typed unknown-tool), a tool REMOVED upstream
@@ -37,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -134,6 +136,54 @@ def _args_fingerprint(args: tuple[str, ...]) -> str:
             continue
         parts.append(f"{arg}:{st.st_size}:{int(st.st_mtime)}")
     return "|".join(parts)
+
+
+# A clio-kit server's served tools are a function of its code: clio-kit names that
+# code (``clio-kit mcp-server-identity <server>``, the hash of the server's embedded
+# source and lock), so a listing stored with it is valid exactly while the identity
+# matches -- at any age -- instead of expiring on the TTL. Asked once per launcher
+# fingerprint and server per process.
+_IDENTITIES: dict[tuple[str, str], str | None] = {}
+_IDENTITY_TIMEOUT_S = 30.0
+
+
+def _ask_clio_kit_identity(command: str, name: str) -> str | None:
+    """``project_sha256:lock_sha256`` from the launcher, or ``None`` when it cannot say."""
+
+    try:
+        done = subprocess.run(  # noqa: S603 - the declared launcher, fixed arguments
+            [command, "mcp-server-identity", name],
+            capture_output=True,
+            text=True,
+            timeout=_IDENTITY_TIMEOUT_S,
+            check=False,
+        )
+        identity = json.loads(done.stdout) if done.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        trace.event("TOOLS", "mcp_server_identity_unavailable server=%s reason=%s", name, exc)
+        return None
+    if not isinstance(identity, dict) or not identity.get("project_sha256"):
+        trace.event(
+            "TOOLS",
+            "mcp_server_identity_unavailable server=%s reason=launcher_has_no_identity "
+            "(listing keeps its TTL)",
+            name,
+        )
+        return None
+    return f"{identity['project_sha256']}:{identity.get('lock_sha256', '')}"
+
+
+def server_identity(command: str, args: tuple[str, ...]) -> str | None:
+    """The code identity of a ``clio-kit mcp-server <name>`` spec, else ``None``."""
+
+    from clio_agent.tools.launcher_cache_lock import _launcher_name  # noqa: PLC0415
+
+    if _launcher_name(command) != "clio-kit" or len(args) < 2 or args[0] != "mcp-server":
+        return None
+    key = (_launcher_fingerprint(command) or command, args[1])
+    if key not in _IDENTITIES:
+        _IDENTITIES[key] = _ask_clio_kit_identity(command, args[1])
+    return _IDENTITIES[key]
 
 
 def entry_key(command: str, args: tuple[str, ...], env: Any = None) -> str:
@@ -269,12 +319,19 @@ def load_listing(
     if entry.get("args_fingerprint") != _args_fingerprint(args):
         _drop("args_changed")
         return None
-    listed_at = entry.get("listed_at")
-    if not isinstance(listed_at, (int, float)) or (
-        time.time() - listed_at > listing_ttl_h() * 3600
-    ):
-        _drop("expired")
-        return None
+    stored_identity = entry.get("server_identity")
+    if stored_identity is not None:
+        # Exact: valid while the server's code is the same, whatever its age.
+        if server_identity(command, args) != stored_identity:
+            _drop("server_changed")
+            return None
+    else:
+        listed_at = entry.get("listed_at")
+        if not isinstance(listed_at, (int, float)) or (
+            time.time() - listed_at > listing_ttl_h() * 3600
+        ):
+            _drop("expired")
+            return None
     raw_tools = entry.get("tools")
     if not isinstance(raw_tools, list) or not raw_tools:
         _drop("malformed")
@@ -345,19 +402,24 @@ def store_listing(
                     t.model_dump(mode="json", by_alias=True, exclude_none=True) for t in tools
                 ],
             }
+            identity = server_identity(command, args)
+            if identity is not None:
+                entry["server_identity"] = identity
             if task_capable is not None:
                 entry["task_capable"] = task_capable
                 entry["task_capability_source"] = source
                 entry["task_capability_era"] = era
             entries[entry_key(command, args, env)] = entry
             # Prune expired entries while we hold the file anyway — the cache
-            # must not grow monotonically (test runs key by unique tmp paths).
+            # must not grow monotonically (test runs key by unique tmp paths). An
+            # identity-keyed entry never expires: a newer one replaces it by key.
             ttl_s = listing_ttl_h() * 3600
             now = time.time()
             entries = {
                 k: v
                 for k, v in entries.items()
-                if isinstance(v.get("listed_at"), (int, float)) and now - v["listed_at"] <= ttl_s
+                if v.get("server_identity")
+                or (isinstance(v.get("listed_at"), (int, float)) and now - v["listed_at"] <= ttl_s)
             }
             _save(entries)
         trace.event("TOOLS", "mcp_listing_cached namespace=%s tools=%d", namespace, len(tools))

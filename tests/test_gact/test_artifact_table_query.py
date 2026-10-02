@@ -1490,45 +1490,133 @@ def test_disconnect_watcher_sets_the_cancel_event() -> None:
     _asyncio.run(_run())
 
 
-def test_wall_clock_timeout_is_504(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def _burn_cpu_for(seconds: float) -> None:
+    """Keep THIS thread on the CPU for ``seconds`` (a slow but working query stage)."""
+    deadline = time.monotonic() + seconds
+    total = 0
+    while time.monotonic() < deadline:
+        total += sum(range(2_000))
+    assert total > 0
+
+
+def test_a_slow_but_working_query_past_the_old_10s_budget_succeeds(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query that keeps its thread on the CPU is waited for, window after window, past
+    the 10 s fixed budget the progress-based wait replaced (#1577)."""
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
-    set_config("artifacts", {"table_query_timeout_s": 0.2})
+    set_config("artifacts", {"table_query_no_progress_s": 1.0})
+    real_compute = engine.compute_processed_table
 
-    def slow(*args: Any, **kwargs: Any) -> Any:
-        time.sleep(1.0)
-        raise AssertionError("should never return: the outer wait_for must win first")
+    def slow_but_working(*args: Any, **kwargs: Any) -> Any:
+        _burn_cpu_for(11.0)
+        return real_compute(*args, **kwargs)
 
-    monkeypatch.setattr(engine, "compute_processed_table", slow)
+    monkeypatch.setattr(engine, "compute_processed_table", slow_but_working)
 
-    error = _error(env.query(artifact_id, {"columns": ["t"]}), 504)
+    started = time.monotonic()
+    body = _ok(env.query(artifact_id, {"columns": ["t"]}))
 
-    assert error["error"] == "table_query_timeout"
-    assert error["details"]["timeout_s"] == 0.2
+    assert time.monotonic() - started >= 11.0
+    assert body["columns"]["t"]
+    assert body["cached"] is False
 
 
-def test_engine_deadline_stops_between_stages(tmp_path: Path) -> None:
+def test_a_stalled_query_fails_typed_at_the_no_progress_window(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A query blocked without CPU work is a typed 504 after one no-progress window, and
+    its thread is told to stop (the cancel signal is set) should it ever resume."""
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    set_config("artifacts", {"table_query_no_progress_s": 1.0})
+    release = threading.Event()
+    seen: list[Any] = []
+
+    def blocked(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["cancellation"])
+        release.wait()
+        kwargs["cancellation"].check()
+        raise AssertionError("a stalled query's thread must stop at its next check")
+
+    monkeypatch.setattr(engine, "compute_processed_table", blocked)
+    try:
+        started = time.monotonic()
+        error = _error(env.query(artifact_id, {"columns": ["t"]}), 504)
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert error["error"] == "table_query_stalled"
+    assert error["details"]["reason"] == "no_progress"
+    assert error["details"]["no_progress_s"] == 1.0
+    assert 1.0 <= waited < 10.0
+    assert seen and seen[0].cancel_event.is_set()
+
+
+def test_a_query_working_at_the_ceiling_fails_typed(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    set_config("artifacts", {"table_query_no_progress_s": 0.5, "table_query_max_wait_s": 1.0})
+    stop = threading.Event()
+
+    def busy(*args: Any, **kwargs: Any) -> Any:
+        while not stop.is_set():
+            _burn_cpu_for(0.05)
+        kwargs["cancellation"].check()
+        raise AssertionError("unreachable: the route set the cancel signal")
+
+    monkeypatch.setattr(engine, "compute_processed_table", busy)
+    try:
+        error = _error(env.query(artifact_id, {"columns": ["t"]}), 504)
+    finally:
+        stop.set()
+
+    assert error["error"] == "table_query_stalled"
+    assert error["details"]["reason"] == "ceiling"
+
+
+def test_the_query_runs_on_its_own_measured_thread(tmp_path: Path) -> None:
+    """The engine reads without pyarrow's thread pool, so the one query thread's CPU
+    time is the query's progress."""
+    import asyncio as _asyncio
+
+    from clio_agent.runtime import progress
+
     source = tmp_path / "s.csv"
     source.write_text(_SENSORS_CSV, encoding="utf-8")
     request = engine.TableQueryRequest.model_validate({"columns": ["t"]})
-    cancellation = engine.QueryCancellation(deadline=time.monotonic() - 1, timeout_s=1.0)
+    names: list[str] = []
 
-    with pytest.raises(engine.TableQueryTimeout):
-        engine.run_table_query(source, "csv", request, limit=10, cancellation=cancellation)
+    def run() -> Any:
+        names.append(threading.current_thread().name)
+        identity = progress.current_thread_identity()
+        _burn_cpu_for(0.3)
+        cpu = progress.thread_cpu_seconds(identity)
+        assert cpu is not None and cpu >= 0.1
+        return engine.run_table_query(
+            source, "csv", request, limit=10, cancellation=engine.QueryCancellation()
+        )
+
+    result = _asyncio.run(
+        progress.run_while_thread_works(
+            run, op="test", no_progress_s=5.0, ceiling_s=60.0, thread_name="clio-table-query"
+        )
+    )
+    assert len(names) == 1 and names[0].startswith("clio-table-query")
+    assert result["returnedRows"] > 0
 
 
 def test_engine_cancel_event_stops_the_query(tmp_path: Path) -> None:
     """The PRIMARY cancellation path: a set ``cancel_event`` (the route's own
-    client-disconnect signal) stops the query even with plenty of deadline
-    left, with the client-disconnected reason, not the timeout one."""
+    client-disconnect signal) stops the query with the client-disconnected reason."""
 
     source = tmp_path / "s.csv"
     source.write_text(_SENSORS_CSV, encoding="utf-8")
     request = engine.TableQueryRequest.model_validate({"columns": ["t"]})
     already_cancelled = threading.Event()
     already_cancelled.set()
-    cancellation = engine.QueryCancellation(
-        deadline=time.monotonic() + 60, timeout_s=60, cancel_event=already_cancelled
-    )
+    cancellation = engine.QueryCancellation(cancel_event=already_cancelled)
 
     with pytest.raises(engine.TableQueryCancelled) as excinfo:
         engine.run_table_query(source, "csv", request, limit=10, cancellation=cancellation)

@@ -87,8 +87,12 @@ CODEX_SOURCE_PATH = "path"
 REASON_CODEX_NOT_INSTALLED = "codex_not_installed"
 REASON_CODEX_VERSION_UNSUPPORTED = "codex_version_unsupported"
 REASON_CODEX_DETECTED = "codex_detected"
+#: Installed, but ``codex --version`` did not answer and stopped working: slow or
+#: unresponsive -- never reported as missing or unsupported (#1577).
+REASON_CODEX_VERSION_PROBE_UNRESPONSIVE = "codex_version_probe_unresponsive"
 
-#: How long to wait on the ``codex --version`` probe before giving up (an honest empty version).
+#: A ``codex --version`` probe answering within this costs nothing extra; past it the probe
+#: is waited for only while codex keeps working (``runtime.progress.run_probe``).
 _VERSION_PROBE_TIMEOUT_S = 5.0
 
 #: Extracts the trailing ``X.Y.Z`` out of a ``codex-cli X.Y.Z`` banner.
@@ -159,23 +163,24 @@ def _parse_codex_version_banner(text: str) -> str:
 
 
 def _read_codex_version(binary: str = "") -> str:
-    """Return the codex version via ``codex --version`` (short timeout) or ``""`` on failure.
+    """Return the codex version via ``codex --version``, or ``""`` on failure.
 
-    Best-effort + typed-empty: any spawn/parse failure returns ``""`` (an honest empty version,
-    logged), which :func:`is_codex_version_supported` treats as unsupported — never a guess.
+    Typed-empty: a spawn/parse failure returns ``""`` (an honest empty version, logged),
+    which :func:`is_codex_version_supported` treats as unsupported — never a guess. A codex
+    that launched but did not answer raises
+    :class:`~clio_agent.runtime.progress.ProbeUnresponsiveError` instead (slow is not
+    unsupported); :func:`detect_codex` reports it typed.
     """
     exe = binary or shutil.which(CODEX_BINARY_NAME)
     if not exe:
         return ""
     import subprocess  # noqa: PLC0415 - only needed on the detection path
 
+    from clio_agent.runtime.progress import run_probe  # noqa: PLC0415
+
     try:
-        out = subprocess.run(
-            [exe, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=_VERSION_PROBE_TIMEOUT_S,
-            check=False,
+        out = run_probe(
+            [exe, "--version"], op="codex --version", first_wait_s=_VERSION_PROBE_TIMEOUT_S
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("codex version probe failed reason=codex_version_unreadable error=%r", exc)
@@ -247,7 +252,19 @@ def detect_codex(
             source="",
             bundled_codex_absent=bundled_codex_absent,
         )
-    version = version_reader(binary) or ""
+    from clio_agent.runtime.progress import ProbeUnresponsiveError  # noqa: PLC0415
+
+    try:
+        version = version_reader(binary) or ""
+    except ProbeUnresponsiveError:
+        return CodexDetection(
+            installed=True,
+            binary_path=binary,
+            version="",
+            reason=REASON_CODEX_VERSION_PROBE_UNRESPONSIVE,
+            bundled_codex_absent=bundled_codex_absent,
+            source=source,
+        )
     reason = (
         REASON_CODEX_DETECTED
         if is_codex_version_supported(version)
@@ -639,6 +656,7 @@ __all__ = [
     "REASON_CODEX_ENFORCEMENT_VERIFIED",
     "REASON_CODEX_NOT_INSTALLED",
     "REASON_CODEX_PROFILE_REJECTED",
+    "REASON_CODEX_VERSION_PROBE_UNRESPONSIVE",
     "REASON_CODEX_VERSION_UNSUPPORTED",
     "REASON_CODEX_WINDOWS_PROVISIONED",
     "REASON_CODEX_WINDOWS_UNPROVISIONED",

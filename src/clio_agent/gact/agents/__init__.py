@@ -8,8 +8,8 @@ the ``clio_agent.gact.app`` monolith:
 * :mod:`clio_agent.gact.agents.composition` -- apply the prompt registry to a
   resolved row and render the CLIO-owned dynamic context (agent tree, tools,
   orchestrator briefing, active-workspace grounding) exposed to prompt templates.
-* :mod:`clio_agent.gact.agents.runtime` -- the trajectory-retaining ``dspy.ReAct``
-  subclass that drives the expert loop + ARC live-context plane.
+* :mod:`clio_agent.gact.agents.clio_react` -- ``ClioReAct``, clio's expert loop
+  (a ``dspy.Module``) that drives the ARC live-context plane.
 * :mod:`clio_agent.gact.agents.builders` -- the factories that compile a registered
   dynamic agent / Agent-Blueprint expert into the concrete DSPy module that runs
   it (prompt-only, tool-declaring, and every blueprint ``module.kind``), plus the

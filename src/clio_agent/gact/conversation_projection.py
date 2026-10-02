@@ -1,31 +1,25 @@
-"""The model-context projection: which ledger rows a compaction/summarizer prompt sees.
+"""The model-context projection: which ledger rows a summarizer prompt sees.
 
-#1339: compaction became an appended checkpoint (a ``compaction`` part on an ordinary
-ledger row) rather than a destructive ledger replace. History is retained in full for
-display, but the MODEL-facing context must still shrink at a checkpoint -- otherwise
-"compaction" never bounds anything. This module owns that one query.
+A compaction is recorded in the transcript as a summarization injection
+(:mod:`clio_agent.gact.summarization_record`) -- mid-turn inside that turn's assistant
+message, between turns as its own row. History is retained in full for display; a row
+holding a record is a checkpoint here, and the rows it stands in for (its
+``compacted_message_ids``) leave the summarizer-facing context.
 
-The rule is COVERAGE, not position. A naive ``rows[start:]`` slice at the latest
-checkpoint's index would drop the compacting turn's own assistant answer -- with
-turn-boundary placement (a checkpoint is never inserted ahead of an in-flight
-assistant message; see :mod:`clio_agent.gact.compaction`) that answer lands BEFORE
-the checkpoint it was summarised by, and the checkpoint's summary does not include
-it either (the answer had not been produced yet when the checkpoint's transcript was
-built). Coverage keeps exactly the rows the latest checkpoint's own
-``compacted_message_ids`` name, plus everything else, so nothing in the model context
-is silently dropped by position.
+The rule is COVERAGE, not position: a record mid-turn sits inside the row that also
+holds that turn's later steps and answer, so a ``rows[start:]`` slice would be wrong.
+Coverage keeps the latest checkpoint row plus every row it does not name.
 
-Coverage is TRANSITIVE across repeated compaction: a second checkpoint's
-``compacted_message_ids`` includes the first checkpoint's own row id (it was part of
-that checkpoint's model context at the time), so the first checkpoint's row is
-excluded by the transitive closure below even though its own contents were never
-directly named by the second checkpoint's id list -- and so is every row the first
-checkpoint had already excluded.
+Coverage is TRANSITIVE across repeated compaction: a second record's
+``compacted_message_ids`` includes the first record's row, so every row the first one
+covered is excluded too.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping
+
+from clio_agent.gact.summarization_record import row_summarization
 
 __all__ = ["model_context_messages"]
 
@@ -43,20 +37,9 @@ def _row_id(row: Any) -> str:
     return str(_get(row, "id", "") or "")
 
 
-def _checkpoint_part(row: Any) -> Optional[Any]:
-    """The row's ``compaction`` part, or ``None`` when the row is not a checkpoint."""
-
-    for part in _get(row, "parts", []) or []:
-        if _get(part, "type", "") == "compaction":
-            return part
-    return None
-
-
 def _covered_ids(row: Any) -> list[str]:
-    part = _checkpoint_part(row)
-    if part is None:
-        return []
-    return [str(i) for i in (_get(part, "compacted_message_ids", []) or [])]
+    record = row_summarization(row)
+    return list(record.compacted_message_ids) if record is not None else []
 
 
 def model_context_messages(messages: Any) -> list[Any]:
@@ -76,7 +59,7 @@ def model_context_messages(messages: Any) -> list[Any]:
     """
 
     rows = list(messages)
-    checkpoint_indices = [i for i, row in enumerate(rows) if _checkpoint_part(row) is not None]
+    checkpoint_indices = [i for i, row in enumerate(rows) if row_summarization(row) is not None]
     if not checkpoint_indices:
         return rows
 

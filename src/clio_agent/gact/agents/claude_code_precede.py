@@ -21,8 +21,8 @@ first call ever does real work here.
 
 ``system_prompt`` is a best-effort render of the adapter's own system message
 (:meth:`dspy.Adapter.format_system_message`, defined once on the shared base
-class and inherited unchanged by every CLIO adapter variant -- ChatAdapter,
-its lenient subclass, and the guided-JSON subclass all resolve identically).
+class and inherited unchanged by every CLIO adapter variant -- the ChatAdapter
+and the guided-JSON subclass resolve identically).
 A miss (the module rebuilt its signature, or a call ends up on a different
 adapter path) is safe by design: the pool's existing typed reconnect (B4/B13)
 reconciles it the moment the real first turn's config is known -- this

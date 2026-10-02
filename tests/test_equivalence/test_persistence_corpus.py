@@ -6,11 +6,9 @@ corpus. Today the projection IS the re-parse, so the baseline is empty by
 construction — which is exactly the point: this pins today's state so a LATER slice
 that changes the projection is caught by the SAME sweep (see the sabotage test).
 
-Runs on BOTH ARC backends (acceptance iv): the sweep holds one ``make_arc_store``
-client alive for its whole duration (the holder pattern) under LocalFS and, when the
-clio-core binding is present, under the clio-core daemon. The persistence surface is
-store-agnostic, so an identical EMPTY result under both proves the harness is robust
-to the backend the later context/trace slices will run against.
+Runs on clio-core, the only ARC store (acceptance iv): the sweep holds one
+``make_arc_store`` client alive for its whole duration (the holder pattern) on the
+worker's private clio-core daemon.
 """
 
 from __future__ import annotations
@@ -24,21 +22,13 @@ from tests.equivalence import corpus as C
 from tests.equivalence import normalizers as N
 
 
-@pytest.fixture(params=["local", "cte"])
-def held_arc_store(request, tmp_path) -> Iterator[object]:
-    """One ARC store, held open for the whole sweep (the §2.10 holder pattern).
-
-    ``local`` uses LocalFS; ``cte`` spawns the clio-core daemon via ``make_arc_store``
-    and skips when the binding is absent (binding-free CI keeps the local leg)."""
+@pytest.fixture
+def held_arc_store() -> Iterator[object]:
+    """One clio-core ARC store, held open for the whole sweep (the §2.10 holder pattern)."""
 
     from clio_agent.arc.storage import make_arc_store
 
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        store = make_arc_store(backend="cte")
-    else:
-        store = make_arc_store(backend="local", data_dir=str(tmp_path / "arc"))
+    store = make_arc_store(backend="cte")
     try:
         yield store
     finally:

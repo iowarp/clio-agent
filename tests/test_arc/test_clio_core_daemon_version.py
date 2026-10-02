@@ -32,9 +32,8 @@ from clio_agent.arc.clio_core_daemon_version import (
     running_daemon_config,
 )
 from clio_agent.arc.init_degradation import (
-    arc_init_degradation_snapshot,
+    ArcStoreUnavailableError,
     classify_init_failure,
-    reset_arc_init_degradation,
 )
 from clio_agent.runtime.clio_core_health import (
     probe_clio_core_config_adoption,
@@ -59,6 +58,7 @@ compose:
         bdev_type: "file"
         capacity_limit: "8GB"
         score: 1.0
+        persistence_level: "temporary"
 """
 
 
@@ -79,11 +79,9 @@ def _write_record(state: Path, *, version: str, config_path: str) -> None:
 @pytest.fixture(autouse=True)
 def _fresh_records():
     reset_config_adoption()
-    reset_arc_init_degradation()
     clio_core_attach.reset_attach_state()
     yield
     reset_config_adoption()
-    reset_arc_init_degradation()
     clio_core_attach.reset_attach_state()
 
 
@@ -183,7 +181,7 @@ def test_ensure_daemon_attaches_to_a_same_version_daemon(machine, tmp_path):
 
 
 def test_mismatch_surfaces_typed_in_health_rows(machine, tmp_path, monkeypatch):
-    """make_arc_store degrades LOUDLY: the typed reason reaches both clio-core rows."""
+    """A version refusal is a typed store error whose reason reaches the attach state."""
     import sys  # noqa: PLC0415
     import types  # noqa: PLC0415
 
@@ -196,11 +194,10 @@ def test_mismatch_surfaces_typed_in_health_rows(machine, tmp_path, monkeypatch):
     cfg = _cte_config(tmp_path / "cte.yaml")
     _write_record(machine, version="0.0.0-other", config_path=cfg)
 
-    store = storage.make_arc_store(backend="cte", data_dir=tmp_path / "fb", config_path=cfg)
+    with pytest.raises(ArcStoreUnavailableError) as caught:
+        storage.make_arc_store(backend="cte", data_dir=tmp_path / "fb", config_path=cfg)
 
-    assert isinstance(store, storage.LocalFSStore)
-    degraded = arc_init_degradation_snapshot()
-    assert degraded is not None and degraded.reason == CLIO_CORE_VERSION_MISMATCH
+    assert caught.value.reason == CLIO_CORE_VERSION_MISMATCH
     snap = attach_state_snapshot()
     assert (snap.phase, snap.reason) == (
         ClioCoreAttachPhase.UNAVAILABLE,

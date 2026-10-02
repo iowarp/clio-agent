@@ -6,6 +6,7 @@ import json
 import os
 import threading
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -209,6 +210,21 @@ class MessageStore:
         tmp = file_path.with_suffix(file_path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         os.replace(tmp, file_path)
+
+    def modified_at(self, session_id: str) -> Optional[str]:
+        """ISO-8601 UTC time the session's ledger file was last written, else ``None``.
+
+        ``None`` when the store has no path or the ledger file cannot be stat'ed (the
+        pre-switch recovery of a legacy row's interaction time treated both the same).
+        """
+
+        if self._path is None:
+            return None
+        try:
+            modified = self._session_file(session_id).stat().st_mtime
+        except OSError:
+            return None
+        return datetime.fromtimestamp(modified, tz=timezone.utc).isoformat()
 
     def _session_file(self, session_id: str) -> Path:
         assert self._path is not None

@@ -1,11 +1,13 @@
 """The ONLY user-updatable components of a CLIO runtime.
 
 Everything a CLIO runtime ships is installed from ``uv.lock`` and checked
-against it (``scripts/check_bundle_matches_lock.py``). The provider SDKs below
-are the one deliberate exception: the providers gate new models by client
+against it (``scripts/check_bundle_matches_lock.py``). The provider components
+below are the one deliberate exception: the providers gate new models by client
 version, so a runtime that cannot move these forward between releases loses
 models the user's own account already serves. They may therefore be updated in
-place, to a version NEWER than the lock, from the provider panel.
+place, to a version NEWER than the lock, from the provider panel. For Codex the
+component is the Codex runtime (``openai-codex-cli-bin``), whose version is the
+``client_version`` the direct transport's model list presents to the backend.
 
 ``scripts/check_bundle_matches_lock.py`` carries the same set as
 ``USER_UPDATABLE_COMPONENTS`` (it is standard-library-only and cannot import
@@ -20,38 +22,33 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ProviderComponents:
-    """The distributions one provider's SDK transport is made of.
+    """The user-updatable distributions of one provider.
 
     Attributes:
         provider_kind: The provider kind (``codex``, ``claude_code``).
-        distributions: The PyPI distributions, updated together. For a
-            lockstep group every distribution moves to the SAME version
-            (``openai-codex`` X requires ``openai-codex-cli-bin==X``).
+        distributions: The PyPI distributions, updated together; each moves to
+            its own newest installable release.
         modules: The top-level import names, in distribution order.
-        lockstep: Whether all distributions share one version number.
         release_notes_url: Where the provider publishes release notes.
     """
 
     provider_kind: str
     distributions: tuple[str, ...]
     modules: tuple[str, ...]
-    lockstep: bool
     release_notes_url: str
 
 
 PROVIDER_COMPONENTS: dict[str, ProviderComponents] = {
     "codex": ProviderComponents(
         provider_kind="codex",
-        distributions=("openai-codex", "openai-codex-cli-bin"),
-        modules=("openai_codex", "codex_cli_bin"),
-        lockstep=True,
+        distributions=("openai-codex-cli-bin",),
+        modules=("codex_cli_bin",),
         release_notes_url="https://github.com/openai/codex/releases",
     ),
     "claude_code": ProviderComponents(
         provider_kind="claude_code",
         distributions=("claude-agent-sdk",),
         modules=("claude_agent_sdk",),
-        lockstep=False,
         release_notes_url="https://github.com/anthropics/claude-agent-sdk-python/releases",
     ),
 }

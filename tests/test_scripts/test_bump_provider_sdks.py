@@ -63,37 +63,26 @@ def test_a_release_without_a_windows_wheel_is_never_shipped() -> None:
 
 
 def test_plan_bumps_both_groups_to_their_shippable_latest() -> None:
-    floors = {
-        "openai-codex": "0.147.0",
-        "openai-codex-cli-bin": "0.147.0",
-        "claude-agent-sdk": "0.2.156",
-    }
+    floors = {"openai-codex-cli-bin": "0.147.0", "claude-agent-sdk": "0.2.156"}
     assert bump.plan(_payloads(), floors) == {
-        "openai-codex": "0.157.1",
         "openai-codex-cli-bin": "0.157.1",
         "claude-agent-sdk": "0.2.159",
     }
 
 
 def test_plan_is_empty_when_current() -> None:
-    floors = {
-        "openai-codex": "0.157.1",
-        "openai-codex-cli-bin": "0.157.1",
-        "claude-agent-sdk": "0.2.159",
-    }
+    floors = {"openai-codex-cli-bin": "0.157.1", "claude-agent-sdk": "0.2.159"}
     assert bump.plan(_payloads(), floors) == {}
 
 
 def test_floors_are_read_and_rewritten_in_the_real_pyproject() -> None:
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     floors = bump.current_floors(pyproject)
-    assert set(floors) == {"openai-codex", "openai-codex-cli-bin", "claude-agent-sdk"}
-    rewritten = bump.rewrite_floors(
-        pyproject, {"openai-codex": "9.9.9", "openai-codex-cli-bin": "9.9.9"}
-    )
-    assert bump.current_floors(rewritten)["openai-codex"] == "9.9.9"
+    assert set(floors) == {"openai-codex-cli-bin", "claude-agent-sdk"}
+    rewritten = bump.rewrite_floors(pyproject, {"openai-codex-cli-bin": "9.9.9"})
+    assert bump.current_floors(rewritten)["openai-codex-cli-bin"] == "9.9.9"
     assert bump.current_floors(rewritten)["claude-agent-sdk"] == floors["claude-agent-sdk"]
-    assert rewritten.count('"openai-codex>=9.9.9"') == 1
+    assert rewritten.count('"openai-codex-cli-bin>=9.9.9"') == 1
 
 
 def test_describe_links_release_notes() -> None:

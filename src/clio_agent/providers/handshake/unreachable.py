@@ -12,7 +12,8 @@ where, with a typed code in front that the UI strips:
   Ollama, llama.cpp, vLLM, a saved server): "LM Studio isn't running at
   127.0.0.1:1234." For a hosted API it is a connection problem on this side:
   "Couldn't connect to OpenAI API at api.openai.com."
-- ``server_not_answering`` -- the connection or the reply timed out.
+- ``server_not_answering`` -- the connection or the reply timed out: the server is slow
+  or unresponsive (the handshake retries it with longer bounds before saying so).
 - ``server_unreachable`` -- any other transport failure, with its detail.
 """
 

@@ -120,15 +120,14 @@ def test_single_arc_event_reaches_the_arc_the_reader_queries(tmp_path):
 
 
 def test_gact_process_arc_is_stable_across_rebuild(tmp_path, monkeypatch):
-    """``_process_arc`` returns the SAME ARC on repeated calls once one exists, so the
+    """``process_arc`` returns the SAME ARC on repeated calls once one exists, so the
     deferred-construct build AND the first LM bind inject the identical instance. This
     is the wiring guarantee behind 'one ARC per clio-agent'."""
-    import clio_agent.gact.app as app_mod
+    from clio_agent.gact import server_boot
 
-    # _process_arc constructs the ARC at the cwd-relative default data_dir; chdir into
-    # tmp + pin the local store so the test is hermetic (no .clio/agent leak into cwd).
+    # process_arc constructs the ARC at the cwd-relative default data_dir; chdir into
+    # tmp so nothing leaks into cwd. The store is clio-core in this test's namespace.
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("CLIO_ARC_STORE", "local")
 
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
@@ -138,7 +137,7 @@ def test_gact_process_arc_is_stable_across_rebuild(tmp_path, monkeypatch):
             bus=EventBus(),
         )
     )
-    arc1 = app_mod._process_arc(app)  # first call constructs + publishes it
-    arc2 = app_mod._process_arc(app)  # subsequent calls reuse the SAME instance
+    arc1 = server_boot.process_arc(app)  # first call constructs + publishes it
+    arc2 = server_boot.process_arc(app)  # subsequent calls reuse the SAME instance
     assert arc1 is arc2
     assert app.state.arc is arc1

@@ -24,6 +24,17 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Invocation
 
 
+@pytest.fixture
+def no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This in-memory ARC has no clio-core daemon: only completed writes are progress."""
+    from clio_agent.arc import daemon_progress
+
+    def unresolved() -> float:
+        raise daemon_progress.DaemonPidUnresolved("in-memory store")
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", unresolved)
+
+
 class _GatedInvStore:
     """In-memory ARCStore whose ``put`` on the ``invocations`` kind blocks on a
     gate once armed, freezing a writer between its store write and its index
@@ -161,7 +172,7 @@ def test_release_drains_inflight_invocation_write(tmp_path) -> None:
     assert result.get("inflight_pending") == 0
 
 
-def test_drain_timeout_reports_pending_count(tmp_path) -> None:
+def test_drain_timeout_reports_pending_count(tmp_path, no_daemon) -> None:
     """When the drain cannot quiesce in time it must REPORT the residual count, not
     silently proceed (no silent fallback): ``_drain_inflight_invocations`` returns the
     still-pending count, which ``release_session`` surfaces as ``inflight_pending``."""
@@ -180,14 +191,50 @@ def test_drain_timeout_reports_pending_count(tmp_path) -> None:
         assert store.put_entered.wait(2.0), "writer never reached the gated store.put"
         # t1 is frozen mid-put -> in flight. A short-timeout drain cannot quiesce and
         # must report the residual (1), not return a clean 0.
-        pending = arc._drain_inflight_invocations(sess, timeout=0.1)
+        pending = arc._drain_inflight_invocations(sess, window_s=0.1)
         assert pending == 1, f"drain timeout must report the pending write, got {pending}"
     finally:
         store._gate.set()  # release the frozen writer so the thread can exit
         wt.join(5.0)
     assert not wt.is_alive(), "writer thread did not settle"
     # Once the write completes, a fresh drain quiesces cleanly.
-    assert arc._drain_inflight_invocations(sess, timeout=1.0) == 0
+    assert arc._drain_inflight_invocations(sess, window_s=1.0) == 0
+
+
+class _SlowInvStore(_GatedInvStore):
+    """Each ``invocations`` put takes ``delay`` seconds: slow, but progressing."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self._serial = threading.Lock()  # one daemon: the writes land one after another
+
+    def put(self, kind: str, name: str, data: bytes, **kwargs: object) -> None:
+        if kind == "invocations":
+            with self._serial:
+                time.sleep(self.delay)
+        super().put(kind, name, data)
+
+
+def test_a_drain_of_slow_but_progressing_writes_completes(tmp_path, no_daemon) -> None:
+    """No fixed 5 s: writes that keep completing are waited for past the window.
+
+    **Sabotage:** a fixed ``wait(timeout=window_s)`` -> the drain reports pending writes.
+    """
+    store = _SlowInvStore(delay=0.2)  # 4 writes: 0.8 s in all, 0.2 s apart
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=store)
+    sess = "s-slow"
+    writers = [
+        threading.Thread(target=arc.store_invocation, args=(_inv(f"t{n}", sess),)) for n in range(4)
+    ]
+    for writer in writers:
+        writer.start()
+    time.sleep(0.05)
+    started = time.monotonic()
+    assert arc._drain_inflight_invocations(sess, window_s=0.4) == 0
+    for writer in writers:
+        writer.join(5.0)
+    assert time.monotonic() - started < 10.0
 
 
 if __name__ == "__main__":  # pragma: no cover - manual invocation

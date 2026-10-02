@@ -138,9 +138,10 @@ def normalize_semantic_events(
         raw_payload = event.get("payload")
         actor: dict[str, Any] = raw_actor if isinstance(raw_actor, dict) else {}
         payload: dict[str, Any] = raw_payload if isinstance(raw_payload, dict) else {}
-        if event_type == "react.step.completed" and str(
-            payload.get("observation") or ""
-        ).lstrip().startswith("Execution error in "):
+        if event_type == "react.step.completed" and any(
+            isinstance(call, dict) and call.get("is_error")
+            for call in payload.get("tool_calls") or []
+        ):
             status = "failed"
         raw_subject = event.get("subject")
         subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
@@ -159,6 +160,12 @@ def normalize_semantic_events(
         }
         if not identity["tool_name"]:
             identity["tool_name"] = str(payload.get("tool") or "")
+        if not identity["tool_name"] and event_type == "react.step.completed":
+            identity["tool_name"] = ", ".join(
+                str(call.get("name") or "")
+                for call in payload.get("tool_calls") or []
+                if isinstance(call, dict)
+            )
         span_id = str(event.get("span_id") or event.get("event_id") or f"event-{position}")
         if span_id in seen_ids:
             span_id = f"{span_id}-{position}"
@@ -265,9 +272,11 @@ def normalize_semantic_events(
 def _tool_input_attributes(tool_name: str, payload: dict[str, Any]) -> dict[str, object]:
     """Keep bounded, non-secret tool coordinates useful for execution lineage."""
     allowed = _TOOL_INPUT_FIELDS.get(tool_name)
-    raw_args = payload.get("tool_args")
-    if not isinstance(raw_args, dict):
-        raw_args = payload.get("args")
+    raw_args = payload.get("args")
+    calls = payload.get("tool_calls")
+    if isinstance(calls, list) and len(calls) == 1 and isinstance(calls[0], dict):
+        # A one-call react step; a multi-call step leaves inputs to its tool.call spans.
+        raw_args = calls[0].get("args")
     if allowed is None or not isinstance(raw_args, dict):
         return {}
     visible: dict[str, object] = {}

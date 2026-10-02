@@ -2,7 +2,7 @@
 
 Every test here injects an UNGUESSABLE code (random per run) into the ARC live
 plane and asks a REAL model (ALCF/Argonne vLLM) to read it back. Because the code
-is random, the model can only emit it by READING the ARC-rendered trajectory — it
+is random, the model can only emit it by READING the ARC-folded context — it
 cannot guess. Recall appearing/vanishing as we mutate ARC is therefore a direct,
 adversarial proof that the prompt the model sees IS the live segment set.
 
@@ -38,10 +38,9 @@ import string
 import dspy
 import pytest
 
-import clio_agent.gact.app as app
-from clio_agent.arc.segments import segments_to_keys
+from clio_agent.arc.schema import segment_text
 
-from .conftest import live_plane_context, make_react_agent
+from .conftest import live_plane_context, probe_live_context
 
 pytestmark = [
     pytest.mark.live,
@@ -111,15 +110,10 @@ def _recalled(code: str, text: str) -> bool:
     return _norm(code) in _norm(text)
 
 
-def _probe(agent, lm, arc, question: str, *, scope: str = SCOPE) -> str:
-    """One real model call whose trajectory is rendered FROM ARC via the
-    ``_format_trajectory`` override (reads ``render_segments_keys`` of ``scope``)."""
-    with live_plane_context(arc, session=SID, scope=scope):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            r = agent._call_with_potential_trajectory_truncation(
-                agent.extract, {}, question=question
-            )
-    return str(getattr(r, "answer", "") or "").strip()
+def _probe(lm, arc, question: str, *, as_of: int | None = None) -> str:
+    """One real model call whose context is folded FROM ARC (the live view, or the
+    store's as-of-T render when ``as_of`` is given)."""
+    return probe_live_context(lm, arc, question, session=SID, scope=SCOPE, as_of=as_of)
 
 
 def _seed_haystack(arc, scope: str, *, n: int, label: str) -> None:
@@ -151,7 +145,6 @@ def test_needle_position_in_haystack(arc, seed, position):
     where it sits in the live ordered set."""
     code = _rand_code(seed)
     lm = _live_lm()
-    agent = make_react_agent()
     n = 8  # haystack depth around the needle
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
@@ -189,19 +182,18 @@ def test_needle_position_in_haystack(arc, seed, position):
 
     assert needle_seg is not None
     # Sanity: the needle is genuinely in the live render the model will see.
-    live_keys = arc.render_segments_keys(SID, SCOPE)
-    assert any(code in str(v) for v in live_keys.values()), (
+    assert code in arc.render_segment_text(SID, SCOPE), (
         f"needle not in ARC render at position={position} — test is mis-built"
     )
 
-    answer = _probe(agent, lm, arc, _VAULT_Q)
+    answer = _probe(lm, arc, _VAULT_Q)
     assert _recalled(code, answer), (
         f"model failed to recall a {position}-buried needle that ARC holds: {answer!r}"
     )
 
     # Delete it — the model must now be unable to produce it (ARC really is the prompt).
     arc.delete_segments(SID, SCOPE, [needle_seg.id])
-    after = _probe(agent, lm, arc, _VAULT_Q)
+    after = _probe(lm, arc, _VAULT_Q)
     assert not _recalled(code, after), (
         f"model recalled a DELETED {position}-needle (ARC is not the context): {after!r}"
     )
@@ -221,7 +213,6 @@ def test_partial_delete_surgical(arc, seed):
     drop = _rand_code(seed + 1000)
     assert keep != drop
     lm = _live_lm()
-    agent = make_react_agent()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
         arc.append_segment(
@@ -252,19 +243,19 @@ def test_partial_delete_surgical(arc, seed):
     )
 
     # Both present before the delete.
-    assert _recalled(keep, _probe(agent, lm, arc, q_keep)), "PRIMARY needle not recalled pre-delete"
-    assert _recalled(drop, _probe(agent, lm, arc, q_drop)), "BACKUP needle not recalled pre-delete"
+    assert _recalled(keep, _probe(lm, arc, q_keep)), "PRIMARY needle not recalled pre-delete"
+    assert _recalled(drop, _probe(lm, arc, q_drop)), "BACKUP needle not recalled pre-delete"
 
     # Surgically remove only the BACKUP needle.
     n = arc.delete_segments(SID, SCOPE, [drop_seg.id])
     assert n == 1, f"expected to tombstone exactly 1 segment, tombstoned {n}"
     assert keep_seg.id != drop_seg.id
 
-    drop_answer = _probe(agent, lm, arc, q_drop)
+    drop_answer = _probe(lm, arc, q_drop)
     assert not _recalled(drop, drop_answer), (
         f"model recalled the DELETED backup code (delete not surgical): {drop_answer!r}"
     )
-    keep_answer = _probe(agent, lm, arc, q_keep)
+    keep_answer = _probe(lm, arc, q_keep)
     assert _recalled(keep, keep_answer), (
         f"deleting BACKUP collaterally lost the PRIMARY needle: {keep_answer!r}"
     )
@@ -282,15 +273,11 @@ def test_as_of_t_time_travel(arc, seed):
     at the model boundary — the tombstone is honored for the live view but the
     as-of-T view still surfaces the segment (it survived, not erased).
 
-    The probe's ``_format_trajectory`` override always renders the *current* live
-    view, so we reconstruct the real as-of-T render into a fresh scope (using the
-    store's own ``render(as_of=...)`` — no mock) and let the model read THAT live.
-    The as-of keys we replay are byte-identical to what the live store produced at
-    that time, which we assert before probing.
+    The as-of probe folds the store's own ``render(as_of=...)`` (no mock) into the
+    model's context exactly as the loop folds the live view.
     """
     code = _rand_code(seed)
     lm = _live_lm()
-    agent = make_react_agent()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
         arc.append_segment(SID, SCOPE, "thought", {"text": "Opening the vault record."}, step=0)
@@ -313,8 +300,7 @@ def test_as_of_t_time_travel(arc, seed):
     # 'before the tombstone' instant), then snapshot the render at that time.
     t_before = needle_seg.logical_time
     as_of_render = arc.render_segments(SID, SCOPE, as_of=t_before)
-    as_of_keys = segments_to_keys(as_of_render)
-    assert any(code in str(v) for v in as_of_keys.values()), (
+    assert any(code in segment_text(s) for s in as_of_render), (
         "as-of-T render unexpectedly lacks the needle — fixture mis-built"
     )
 
@@ -322,30 +308,31 @@ def test_as_of_t_time_travel(arc, seed):
     arc.delete_segments(SID, SCOPE, [needle_seg.id])
 
     # Confirm the LIVE view no longer carries it (current-time render).
-    live_keys = arc.render_segments_keys(SID, SCOPE)
-    assert not any(code in str(v) for v in live_keys.values()), (
+    assert code not in arc.render_segment_text(SID, SCOPE), (
         "needle still in the live render after delete — delete is broken"
     )
-    live_answer = _probe(agent, lm, arc, _VAULT_Q)
+    live_answer = _probe(lm, arc, _VAULT_Q)
     assert not _recalled(code, live_answer), (
         f"model recalled a deleted needle from the LIVE view: {live_answer!r}"
     )
 
-    # Now replay the real as-of-T render into a fresh scope and probe it LIVE. The
-    # segments are the exact ones the store returned for ``render(as_of=t_before)``.
-    asof_scope = "agentA/asof"
-    with live_plane_context(arc, session=SID, scope=asof_scope):
-        for seg in as_of_render:
-            arc.append_segment(SID, asof_scope, seg.kind, dict(seg.content), step=seg.step)
-        replay_keys = arc.render_segments_keys(SID, asof_scope)
-    assert segments_to_keys(as_of_render) == replay_keys, (
-        "as-of-T replay is not byte-identical to the store's as-of render"
-    )
-
-    asof_answer = _probe(agent, lm, arc, _VAULT_Q, scope=asof_scope)
+    # Now probe the model with the pre-deletion (as-of-T) view folded as its context.
+    asof_answer = _probe(lm, arc, _VAULT_Q, as_of=t_before)
     assert _recalled(code, asof_answer), (
         f"model failed to recall the needle from the as-of-T (pre-deletion) view: {asof_answer!r}"
     )
+
+
+def _summarize(segments: list, lm: dspy.LM) -> str:
+    """A real provider summary of ``segments`` (the compaction text under test)."""
+    body = "\n".join(segment_text(s) for s in segments)
+    predict = dspy.Predict(
+        dspy.Signature(
+            "prior_context -> summary",
+            "Summarize the prior steps into a compact summary that loses no fact.",
+        )
+    )
+    return str(predict(prior_context=body, lm=lm).summary or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +349,6 @@ def test_needle_survives_real_compaction(arc, seed):
     """
     code = _rand_code(seed)
     lm = _live_lm()
-    agent = make_react_agent()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
         arc.append_segment(
@@ -398,7 +384,7 @@ def test_needle_survives_real_compaction(arc, seed):
 
     # Real provider summary over the whole scope (the genuine compaction text).
     with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-        summary = app._summarize_segments_llm(live)
+        summary = _summarize(live, lm)
     assert summary, "provider summary came back empty (LLM compaction failed)"
     assert _recalled(code, summary), (
         f"the REAL summary dropped the unguessable code — compaction lost the fact. "
@@ -419,7 +405,7 @@ def test_needle_survives_real_compaction(arc, seed):
     assert len(tombstoned) == len(live), "originals were not all tombstoned by summarize"
 
     # The model now sees ONLY the summary — and still recalls the code from it.
-    answer = _probe(agent, lm, arc, _VAULT_Q)
+    answer = _probe(lm, arc, _VAULT_Q)
     assert _recalled(code, answer), (
         f"model failed to recall the needle from the post-compaction summary "
         f"(the only live segment): {answer!r}"

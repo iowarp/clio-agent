@@ -24,26 +24,48 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 import dspy
+import pytest
 
 import clio_agent.gact.app as app
 import clio_agent.gact.runtime.context_tokens as context_tokens
 from clio_agent.gact import context as ctx
+from clio_agent.gact.compaction import maybe_autocompact
 from clio_agent.gact.types import Message, Part, Tokens
-
-from .conftest import make_react_agent
 
 SID, SCOPE = "s1", "agentA"
 
 
+def _view(arc, scope=SCOPE) -> list[tuple[str, Any]]:
+    """The scope's live render as ``(kind, text)`` pairs (``text`` is ``None`` for a
+    tool_call) -- precise enough to pin "collapsed to one summary" vs "untouched". A
+    summary's text is shown without its last line (the recall line naming its id)."""
+    return [
+        (
+            s.kind,
+            _without_recall_line(s.content.get("text"))
+            if s.kind == "summary"
+            else s.content.get("text"),
+        )
+        for s in arc.render_segments(SID, scope)
+    ]
+
+
+def _without_recall_line(text: str) -> str:
+    body, _, last = text.rpartition("\n\n")
+    assert last.startswith("[The steps this summary replaced are kept in full: recall_context(")
+    return body
+
+
 def _populate(arc, scope=SCOPE):
     arc.append_segment(SID, scope, "thought", {"text": "T0"}, step=0)
-    arc.append_segment(SID, scope, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(SID, scope, "observation", {"text": "O0"}, step=0)
+    arc.append_segment(SID, scope, "tool_call", {"id": "c0", "name": "a", "args": {}}, step=0)
+    obs = {"call_id": "c0", "text": "O0", "is_error": False}
+    arc.append_segment(SID, scope, "observation", obs, step=0)
 
 
 class _FakeSessions:
     """Minimal ``app.state.sessions`` stand-in: ``.get`` (compact_session_context's
-    404 check) + ``.update`` (``append_checkpoint``'s message_count bump)."""
+    404 check) + ``.update`` (the record row's message_count bump)."""
 
     def __init__(self, rows: dict[str, Any]) -> None:
         self._rows = rows
@@ -56,7 +78,7 @@ class _FakeSessions:
 
 
 class _FakeBus:
-    """``app.state.bus`` stand-in: ``append_checkpoint`` publishes two events."""
+    """``app.state.bus`` stand-in: the record row publishes ``message.created``."""
 
     def __init__(self) -> None:
         self.published: list[Any] = []
@@ -142,28 +164,25 @@ def _patch_prompt_tokens(monkeypatch, prompt_tokens: int) -> None:
 def test_fires_over_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)  # 900/1000 = 0.90 >= 0.85 default
     _populate(arc)
-    agent = make_react_agent()
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
-    # collapsed to a single summary observation
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+        maybe_autocompact()
+    # collapsed to a single summary segment
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_does_not_fire_under_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=500)  # 0.50 < 0.85
     _populate(arc)
-    agent = make_react_agent()
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == before  # untouched
+        maybe_autocompact()
+    assert _view(arc) == before  # untouched
 
 
 def test_session_can_disable_automatic_compaction(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    agent = make_react_agent()
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     metadata = {
         "context_preferences": {
             "automatic_compaction": False,
@@ -178,16 +197,15 @@ def test_session_can_disable_automatic_compaction(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        agent._maybe_autocompact()
+        maybe_autocompact()
 
-    assert arc.render_segments_keys(SID, SCOPE) == before
+    assert _view(arc) == before
 
 
 def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
     monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.95")
     _patch_prompt_tokens(monkeypatch, prompt_tokens=600)
     _populate(arc)
-    agent = make_react_agent()
     metadata = {
         "context_preferences": {
             "automatic_compaction": True,
@@ -202,44 +220,63 @@ def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        agent._maybe_autocompact()
+        maybe_autocompact()
 
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_threshold_is_env_configurable(arc, monkeypatch):
     monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.50")
     _patch_prompt_tokens(monkeypatch, prompt_tokens=600)  # 0.60 >= 0.50 (would NOT fire at 0.85)
     _populate(arc)
-    agent = make_react_agent()
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+        maybe_autocompact()
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_disabled_when_window_unknown(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=9999)  # huge, but window=0 => no denominator
     _populate(arc)
-    agent = make_react_agent()
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=0):
-        agent._maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == before  # auto-compaction off
+        maybe_autocompact()
+    assert _view(arc) == before  # auto-compaction off
 
 
-def test_skips_when_summary_llm_returns_empty(arc, monkeypatch):
-    """#1339: an empty LM summary no longer aborts the fold -- ``compact_session_context``
-    folds whatever text it got (empty or not); this pins that an empty ``summary``
-    still lands as the fold text (no more "empty means skip the whole compaction"
-    special case, since the checkpoint is the unit of work now, not the ARC fold
-    alone -- see the module docstring)."""
+def test_an_empty_summary_fails_typed_and_folds_nothing(arc, monkeypatch):
+    """An empty LM summary used to replace the agent's whole working set with an empty
+    summary (it lost its context). It is a typed failure now, applied before any fold,
+    and the auto trigger fails the turn with it instead of auditing it away."""
+    from clio_agent.gact.compaction import AutoCompactionFailedError
 
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    agent = make_react_agent()
-    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary=""):
-        agent._maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": ""}
+    before = _view(arc)
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary="  "):
+        with pytest.raises(AutoCompactionFailedError) as err:
+            maybe_autocompact()
+    assert err.value.details["compaction_error"] == "empty_summary"
+    assert _view(arc) == before
+
+
+def test_no_token_count_is_audited_never_silent(arc, monkeypatch):
+    """Without a real token count auto-compaction cannot decide: recorded, not skipped
+    silently (it used to never fire and say nothing)."""
+    from clio_agent.runtime import stream_audit as audit_mod
+
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.compaction.stream_audit",
+        lambda stage, **row: rows.append({"stage": stage, **row}),
+    )
+    assert audit_mod is not None
+    _patch_prompt_tokens(monkeypatch, prompt_tokens=0)
+    _populate(arc)
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
+        maybe_autocompact()
+    assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
+        "no_token_count"
+    ]
 
 
 def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
@@ -286,12 +323,37 @@ def test_per_expert_independent(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc, scope="agentA/hot")
     _populate(arc, scope="agentA/cold")
-    agent = make_react_agent()
     # hot: window 1000 -> 0.90 fires
     with _full_plane_context(arc, session=SID, scope="agentA/hot", window=1000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     # cold: window 100000 -> 0.009 does not fire
     with _full_plane_context(arc, session=SID, scope="agentA/cold", window=100000):
-        agent._maybe_autocompact()
-    assert arc.render_segments_keys(SID, "agentA/hot") == {"observation_0": "COMPACT_SUMMARY"}
-    assert "O0" in str(arc.render_segments_keys(SID, "agentA/cold"))  # untouched
+        maybe_autocompact()
+    assert _view(arc, "agentA/hot") == [("summary", "COMPACT_SUMMARY")]
+    assert _view(arc, "agentA/cold") == [  # untouched
+        ("thought", "T0"),
+        ("tool_call", None),
+        ("observation", "O0"),
+    ]
+
+
+def test_an_estimated_usage_is_not_taken_for_a_real_count(arc, monkeypatch):
+    """The durable usage a provider without counts leaves is an estimate from the user
+    prompt alone: it must not trigger (or suppress) compaction as if it were measured."""
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.compaction.stream_audit",
+        lambda stage, **row: rows.append({"stage": stage, **row}),
+    )
+    _patch_prompt_tokens(monkeypatch, prompt_tokens=0)
+    _populate(arc)
+    before = _view(arc)
+    estimated = {"context_usage_by_scope": {SCOPE: {"used_tokens": 950, "source": "estimated"}}}
+    with _full_plane_context(
+        arc, session=SID, scope=SCOPE, window=1000, session_metadata=estimated
+    ):
+        maybe_autocompact()
+    assert _view(arc) == before
+    assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
+        "no_token_count"
+    ]

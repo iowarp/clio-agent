@@ -22,6 +22,7 @@ from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
 from clio_agent.gact.agent_blueprint_requires import floor_declaration_errors
+from clio_agent.gact.blueprint_git import run_git
 from clio_agent.gact.blueprint_install_files import tree_checksum as _tree_checksum
 from clio_agent.gact.blueprint_install_files import (
     write_install_metadata as _write_install_metadata,
@@ -61,7 +62,6 @@ DEFAULT_REGISTRY_COMMIT = ""
 DEFAULT_AGENT_BLUEPRINT_ID = "base-agent"  # rationale: agent_blueprint_refresh
 DEFAULT_REGISTRY_SUBMODULE_PATH = "external/clio-agent-marketplace"
 _DEFAULT_BOOTSTRAP_ENV = "CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP"
-_DEFAULT_BOOTSTRAP_TIMEOUT_S = 20
 
 
 @dataclass
@@ -798,48 +798,16 @@ def install_agent_blueprint(
                 "GIT_TERMINAL_PROMPT": "0",
                 "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
             }
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
-                env=env,
-            )
+            run_git(cmd, env=env)  # waited for while git works; typed when it stalls
             resolved_source = clone_target
             commit = subprocess.check_output(
                 ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                 text=True,
             ).strip()
             if pinned_commit and commit != pinned_commit:
-                subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(clone_target),
-                        "fetch",
-                        "--depth",
-                        "1",
-                        "origin",
-                        pinned_commit,
-                    ],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
-                    env=env,
-                )
-                subprocess.run(
-                    ["git", "-C", str(clone_target), "checkout", "--detach", pinned_commit],
-                    check=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=_DEFAULT_BOOTSTRAP_TIMEOUT_S,
-                    env=env,
-                )
+                git_dir = ["git", "-C", str(clone_target)]
+                run_git([*git_dir, "fetch", "--depth", "1", "origin", pinned_commit], env=env)
+                run_git([*git_dir, "checkout", "--detach", pinned_commit], env=env)
                 commit = subprocess.check_output(
                     ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                     text=True,

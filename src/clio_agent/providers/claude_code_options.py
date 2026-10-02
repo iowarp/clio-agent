@@ -1,12 +1,9 @@
 """Claude Agent SDK ``ClaudeAgentOptions`` construction for the bare-model transport.
 
 Owner module for the SDK-options glue used by the ``claude_code`` session pool
-(:mod:`clio_agent.providers.claude_code_sessions` — the ONE client path, S2
-B1: both the streaming and blocking entry points ride it) and the streaming
-path in :mod:`clio_agent.providers.claude_code_litellm`. Kept out of those
-files (#775 no-accretion) so the #895 thinking wiring and the S2 tuning pass
-(B4 ``system_prompt``, B11 ``env``, B12 ``cli_path``, B15 ``max_buffer_size``)
-do not regrow them.
+(:mod:`clio_agent.providers.claude_code_sessions`, the one client path the engine
+rides): the #895 thinking wiring and the S2 tuning (B4 ``system_prompt``, B11
+``env``, B12 ``cli_path``, B15 ``max_buffer_size``).
 """
 
 from __future__ import annotations
@@ -32,8 +29,6 @@ def require_claude_agent_sdk() -> Any:
     except ImportError:
         from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
             CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        )
-        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
             ClaudeCodeCLIUnavailableError,
         )
         from clio_agent.providers.dependencies import (  # noqa: PLC0415

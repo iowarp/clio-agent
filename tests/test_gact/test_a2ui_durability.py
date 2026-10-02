@@ -66,6 +66,23 @@ def _stub_spawn(app: Any, monkeypatch: Any) -> list[Any]:
     return spawned
 
 
+def _record_stubbed_turn(app: Any, sid: str) -> None:
+    """Record the action turn's user message on the agent's ARC plane.
+
+    ``_stub_spawn`` closes the action's turn coroutine before the agent loop runs, so
+    nothing reaches the plane. Compaction summarizes the agent's own context (its
+    working set), not the UI ledger, so mirror the text rows the turn would have
+    recorded. ``a2ui``/``a2ui_action`` rows are UI state the agent never sees.
+    """
+
+    for m in app.state.messages.get(sid, []):
+        text = "\n".join(p.text for p in m.parts if p.type == "text" and p.text)
+        if not text:
+            continue
+        kind = "user" if m.role == "user" else "thought"
+        app.state.arc.append_segment(sid, "main", kind, {"text": text}, turn_id=m.turn_id or m.id)
+
+
 def _create_message(surface_id: str = "surface_1") -> dict[str, Any]:
     return {
         "version": "v0.9.1",
@@ -119,12 +136,15 @@ def test_surface_and_action_record_survive_a_real_compaction_pass(
         )
         assert action_response.status_code == 200, action_response.text
         action_id = action_response.json()["action_id"]
+        _record_stubbed_turn(app, sid)
 
         before_count = len(app.state.messages.get(sid, []))
 
         compact_response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert compact_response.status_code == 200, compact_response.text
         assert compact_response.json()["compacted"] is True
+        [prompt] = agent.prompts
+        assert "A2UI event: form.submit" in prompt
 
         after_count = len(app.state.messages.get(sid, []))
         assert after_count == before_count + 1, "compaction appends a checkpoint, drops nothing"

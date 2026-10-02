@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_VERSION = "0.9.4.24"
-EXPECTED_DSPY = "dspy==3.3.0b1"
+EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
 EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.0.0b5"
@@ -32,13 +32,13 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
     expected_commands = {
         "install/install.sh": (
             "uv sync --extra argonne",
-            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
+            '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
             "RunNative uv @('sync')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
-        "install/clio": ('"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
+        "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
     }
     # The bundled-runtime builders root nothing themselves: they install
     # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
@@ -195,7 +195,7 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "install/arc_smoke.py" in windows_builder
 
     arc_smoke = _text("install/arc_smoke.py")
-    assert "isinstance(store, ClioCoreStore)" in arc_smoke
+    assert "except ArcStoreUnavailableError" in arc_smoke  # typed: clio-core or exit 1
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
@@ -211,8 +211,8 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     assert "--with fastmcp==4.0.0b5" in workflow
     assert "--with fastmcp-slim==4.0.0b5" in workflow
     assert "--with fastmcp-tasks==4.0.0b5" in workflow
-    assert "assert dspy.__version__ == '3.3.0b1'" in workflow
-    assert "assert hasattr(dspy, 'ReActV2')" in workflow
+    assert "assert dspy.__version__ == '3.4.0'" in workflow
+    assert "assert hasattr(dspy, 'lm15')" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
@@ -232,7 +232,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        f"uv tool install --prerelease allow --with dspy==3.3.0b1 clio-agent=={EXPECTED_VERSION}"
+        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={EXPECTED_VERSION}"
     ) in _text("README.md")
 
 

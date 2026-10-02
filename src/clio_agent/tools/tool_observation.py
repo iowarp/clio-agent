@@ -23,28 +23,23 @@ def notify_tool_observer(
     error: str | None = None,
     result: Any | None = None,
 ) -> Any | None:
-    """Notify an observer without allowing telemetry failure to break execution."""
+    """Notify an observer of one tool-call phase.
+
+    The observer records the call in clio-core (the transcript and the UI read it from
+    there). A failure to record is NOT swallowed: clio-core would no longer hold what the
+    agent did, so it propagates typed to the caller.
+    """
 
     if observer is None:
         return None
+    if result is None:
+        return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
     try:
-        if result is None:
-            return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
-        try:
-            return observer(  # type: ignore[misc, call-arg, no-any-return]
-                name, dict(args), phase, error, result
-            )
-        except TypeError:
-            return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
-    except Exception as exc:  # noqa: BLE001 - observers must never break tool execution
-        logger.warning(
-            "tool observer raised; its view of this call is lost "
-            "reason=tool_observer_failed tool=%s phase=%s error=%s",
-            name,
-            phase,
-            exc,
+        return observer(  # type: ignore[misc, call-arg, no-any-return]
+            name, dict(args), phase, error, result
         )
-        return None
+    except TypeError:
+        return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
 
 
 def observer_progress_handler(

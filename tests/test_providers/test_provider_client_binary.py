@@ -1,4 +1,4 @@
-"""Installed vs bundled CLI selection for the Codex and Claude Code SDK transports.
+"""Installed vs bundled CLI selection for the Claude Code SDK transport (Codex runs none).
 
 Fake binaries live in a temp HOME/PATH. The selection logic, the npm-launcher
 resolution and the native-binary check run for real against those files; the
@@ -31,12 +31,6 @@ def _isolated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("PATH", str(tmp_path / "bin"))
     (tmp_path / "bin").mkdir()
     # Keep the POSIX well-known system locations out of the test machine's view.
-    real_candidates = cb._codex_candidates
-
-    def _candidates() -> list[Path]:
-        return [p for p in real_candidates() if str(p).startswith(str(tmp_path))]
-
-    monkeypatch.setattr(cb, "_codex_candidates", _candidates)
     real_claude = cb._claude_candidates
     monkeypatch.setattr(
         cb,
@@ -65,19 +59,6 @@ def _versions(monkeypatch: pytest.MonkeyPatch, table: dict[Path, str]) -> list[s
 
     monkeypatch.setattr(cb, "probe_version", _probe)
     return calls
-
-
-def _bundled_codex(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str | None
-) -> Path | None:
-    if version is None:
-        monkeypatch.setattr(cb, "_bundled_codex", lambda: None)
-        return None
-    path = _native(tmp_path / "site" / "codex_cli_bin" / "bin" / f"codex{EXE}")
-    monkeypatch.setattr(
-        cb, "_bundled_codex", lambda: cb.ClientBinary(str(path), version, "bundled")
-    )
-    return path
 
 
 # --- --version parsing / probing -----------------------------------------------------
@@ -125,103 +106,6 @@ def test_native_check_rejects_script_shims(tmp_path: Path) -> None:
     shim.write_text("@echo off\n" if os.name == "nt" else "#!/bin/sh\n", encoding="utf-8")
     assert not cb.is_native_executable(shim)
     assert cb.is_native_executable(_native(tmp_path / f"real{EXE}"))
-
-
-# --- Codex: installed when present ------------------------------------------------------
-
-
-def test_codex_prefers_the_installed_cli_even_when_the_bundled_one_exists(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """SABOTAGE: prefer the bundled binary -> source flips to 'bundled' -> red."""
-    installed = _native(tmp_path / "bin" / f"codex{EXE}")
-    bundled = _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    assert bundled is not None
-    _versions(monkeypatch, {installed: "0.157.1"})
-
-    selection = cb.codex_client()
-
-    assert selection.client == cb.ClientBinary(str(installed.resolve()), "0.157.1", "installed")
-    assert selection.reason == "codex_installed_cli"
-    assert selection.to_wire()["bundled_version"] == "0.147.0"
-    assert selection.to_wire()["source"] == "installed"
-
-
-def test_codex_uses_the_bundled_binary_only_when_none_is_installed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    bundled = _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    _versions(monkeypatch, {})
-    selection = cb.codex_client()
-    assert selection.client == cb.ClientBinary(str(bundled), "0.147.0", "bundled")
-    assert selection.reason == "codex_installed_not_found"
-
-
-def test_codex_resolves_the_native_binary_behind_an_npm_launcher(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """npm installs a ``codex.cmd`` (Windows) / ``codex.js`` symlink (POSIX) launcher;
-    the SDK must run the vendored native binary, never the node launcher."""
-    triple = cb._target_triple()
-    package = cb._CODEX_NPM_PLATFORM_PACKAGES[triple]
-    if os.name == "nt":
-        prefix = tmp_path / "appdata" / "npm"
-        (prefix).mkdir(parents=True)
-        (prefix / "codex.cmd").write_text("@echo off\r\nnode codex.js %*\r\n", encoding="utf-8")
-        root = prefix / "node_modules" / "@openai" / "codex"
-    else:
-        prefix = tmp_path / "npm-prefix"
-        root = prefix / "lib" / "node_modules" / "@openai" / "codex"
-        (root / "bin").mkdir(parents=True)
-        (root / "bin" / "codex.js").write_text("#!/usr/bin/env node\n", encoding="utf-8")
-        (root / "bin" / "codex.js").chmod(0o755)  # npm marks the launcher executable
-        (tmp_path / "bin" / "codex").symlink_to(root / "bin" / "codex.js")
-    vendored = _native(
-        root / "node_modules" / "@openai" / package / "vendor" / triple / "bin" / f"codex{EXE}"
-    )
-    _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    _versions(monkeypatch, {vendored: "0.157.1"})
-
-    selection = cb.codex_client()
-
-    assert selection.client is not None
-    assert Path(selection.client.path) == vendored.resolve()
-    assert selection.client.source == "installed"
-
-
-def test_codex_records_an_installed_cli_that_cannot_report_a_version(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """No silent fallback: the bundled binary runs, and the reason says why."""
-    _native(tmp_path / "bin" / f"codex{EXE}")
-    _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    _versions(monkeypatch, {})
-    selection = cb.codex_client()
-    assert selection.client is not None and selection.client.source == "bundled"
-    assert selection.reason == "codex_installed_version_unreadable"
-
-
-def test_codex_without_any_binary_is_typed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _bundled_codex(monkeypatch, tmp_path, None)
-    _versions(monkeypatch, {})
-    selection = cb.codex_client()
-    assert selection.client is None and selection.path is None
-    assert selection.reason == "codex_no_cli"
-    assert selection.to_wire()["source"] is None
-
-
-def test_selection_is_cached_until_reset(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """SABOTAGE: drop the cache -> every call re-probes -> the call count grows."""
-    installed = _native(tmp_path / "bin" / f"codex{EXE}")
-    _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    calls = _versions(monkeypatch, {installed: "0.157.1"})
-    cb.codex_client()
-    first = len(calls)
-    cb.codex_client()
-    assert len(calls) == first
-    cb.reset_client_cache()
-    cb.codex_client()
-    assert len(calls) == first * 2
 
 
 # --- Claude Code: installed only when newer ---------------------------------------------
@@ -318,32 +202,22 @@ def test_claude_code_runtime_pins_the_same_selection(
     assert (info["source"], info["cli_version"]) == ("installed", "2.1.281")
 
 
-def test_codex_sdk_discovery_launches_the_selected_binary(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The SDK half's probe hands the selected binary to ``CodexConfig.codex_bin``."""
-    pytest.importorskip("openai_codex")
-    from clio_agent.providers.codex import sdk_discovery
+def test_codex_runs_no_cli_so_it_has_no_client_fact() -> None:
+    """Codex's one transport is direct: no binary is selected or reported for it."""
+    assert cb.provider_client("codex") is None
+    assert cb.provider_client_fact("codex", refresh=True) is None
+    assert not hasattr(cb, "codex_client")
 
-    installed = _native(tmp_path / "bin" / f"codex{EXE}")
-    _bundled_codex(monkeypatch, tmp_path, "0.147.0")
-    _versions(monkeypatch, {installed: "0.157.1"})
-    seen: list[str | None] = []
 
-    class _FakeAsyncCodex:
-        def __init__(self, config: object) -> None:
-            seen.append(getattr(config, "codex_bin", None))
-
-        async def __aenter__(self) -> _FakeAsyncCodex:
-            return self
-
-        async def __aexit__(self, *_exc: object) -> None:
-            return None
-
-        async def account(self) -> object:
-            return type("Account", (), {"account": None})()
-
-    monkeypatch.setattr(sdk_discovery, "AsyncCodex", _FakeAsyncCodex)
-    result = sdk_discovery.discover_codex_sdk(timeout=5)
-    assert seen == [str(installed.resolve())]
-    assert (result.failed_reason or "").startswith("codex_sdk_signed_out")
+def test_selection_is_cached_until_reset(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """SABOTAGE: drop the cache -> every call re-probes -> the call count grows."""
+    installed, bundled = _claude_installed(tmp_path), _claude_bundled(monkeypatch, tmp_path)
+    assert bundled is not None
+    calls = _versions(monkeypatch, {installed: "2.1.281", bundled: "2.1.276"})
+    cb.claude_client()
+    first = len(calls)
+    cb.claude_client()
+    assert len(calls) == first
+    cb.reset_client_cache()
+    cb.claude_client()
+    assert len(calls) == first * 2

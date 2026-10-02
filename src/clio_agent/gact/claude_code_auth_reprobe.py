@@ -99,6 +99,7 @@ async def reprobe_claude_code_auth(app: Any, preset: Any, *, trigger: str) -> bo
         from clio_agent.gact.provider_catalog_snapshot import invalidate_provider  # noqa: PLC0415
         from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.model_discovery.claude_code import (  # noqa: PLC0415
+            AUTH_CHECK_UNRESPONSIVE,
             CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S,
             _auth_status,
             _resolve_claude_binary,
@@ -113,7 +114,10 @@ async def reprobe_claude_code_auth(app: Any, preset: Any, *, trigger: str) -> bo
             _auth_status, binary, timeout=CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S
         )
         if not signed_in:
-            _record("signed_out", trigger=trigger, detail=reason)
+            slow = reason.startswith(AUTH_CHECK_UNRESPONSIVE)  # slow is not signed out (#1577)
+            _record(
+                "auth_check_unresponsive" if slow else "signed_out", trigger=trigger, detail=reason
+            )
             return False
         await model_discovery.refresh_all(presets=[preset])
         invalidate_provider(app, preset.id)

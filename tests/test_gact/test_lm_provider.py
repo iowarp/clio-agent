@@ -78,9 +78,6 @@ class _RebindLMStub:
         self._main_lm = SimpleNamespace(
             model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
         )
-        self._planner_lm = SimpleNamespace(
-            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
-        )
         self._dspy_adapter = SimpleNamespace(provider=getattr(cfg, "provider", ""))
 
 
@@ -1006,12 +1003,14 @@ def test_put_lm_provider_omitted_model_claude_code_binds_account_default(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1063,12 +1062,14 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1111,11 +1112,11 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
 
     monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")  # selected (else: unconfigured)
     probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local", "CLIO_DATA_DIR": str(tmp_path)},
+        env={"CLIO_ARC_STORE": "cte", "CLIO_DATA_DIR": str(tmp_path)},
         http_get=_refused,
         gateway_lister=lambda: [{"name": "hdf5_x"}],
         module_checker=lambda name: True,
-        port_checker=lambda port: False,
+        port_checker=lambda port: True,  # clio-core up: the LM row is the only outage
         clio_runtime_dir=tmp_path / "clio-home",
     )
     _patch_doctor(monkeypatch, probe)
@@ -1123,6 +1124,7 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
     rows = {r["name"]: r for r in resp.json()["integrations"]}
     assert "lm" not in rows  # old hand-rolled row is gone
     assert rows["lm_provider"]["status"] == "unavailable"
+    assert rows["arc"]["status"] == "ready"  # the 503 is the LM row's alone
     assert resp.status_code == 503
 
 
@@ -1186,12 +1188,12 @@ def test_health_surfaces_argonne_token_missing_via_probe(tmp_path: Path, monkeyp
     probe = RuntimeProbe(
         env={
             "CLIO_LM_PROVIDER": "argonne",
-            "CLIO_ARC_STORE": "local",
+            "CLIO_ARC_STORE": "cte",
             "CLIO_DATA_DIR": str(tmp_path),
         },
         gateway_lister=lambda: [{"name": "hdf5_x"}],
-        module_checker=lambda name: True,  # globus_sdk importable
-        port_checker=lambda port: False,
+        module_checker=lambda name: True,  # globus_sdk (and iowarp_core) importable
+        port_checker=lambda port: True,  # clio-core up: the LM row is the only issue
         clio_runtime_dir=tmp_path / "clio-home",
     )
     _patch_doctor(monkeypatch, probe)
@@ -1218,12 +1220,14 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 1,
                         "misses": 0,
                         "hit_rate": 1.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1309,12 +1313,14 @@ def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1333,7 +1339,6 @@ def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkey
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1373,12 +1378,14 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1396,7 +1403,6 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1435,12 +1441,14 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1455,7 +1463,6 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "fresh-globus-token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1483,18 +1490,15 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
 
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "runtime-token")
     main_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
-    planner_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(provider="argonne", api_key="old-token"),
         _main_lm=main_lm,
-        _planner_lm=planner_lm,
     )
 
     _refresh_argonne_lm_token(agent)
 
     assert agent._provider_config.api_key == "runtime-token"
     assert main_lm.kwargs["api_key"] == "runtime-token"
-    assert planner_lm.kwargs["api_key"] == "runtime-token"
 
 
 def test_put_lm_provider_rejects_invalid_codex_transport(tmp_path: Path, monkeypatch) -> None:
@@ -1519,12 +1523,14 @@ def test_put_lm_provider_rejects_invalid_codex_transport(tmp_path: Path, monkeyp
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1579,12 +1585,14 @@ def test_put_lm_provider_accepts_explicit_codex_transport(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1651,12 +1659,14 @@ def test_put_lm_provider_rejects_removed_claude_code_transport(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1722,12 +1732,14 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1810,12 +1822,14 @@ def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1874,12 +1888,14 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1901,7 +1917,6 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1929,7 +1944,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
                 "flash_attention": True,
                 "echo_load_config": True,
             },
-            "timeout": 180,
+            "timeout": (10.0, None),  # connect-bounded; the read waits on liveness polls
         }
         assert app.state.lm_config["context_length"] == 32768
         owned = app.state.lm_studio_owned_instance
@@ -1972,12 +1987,14 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1993,7 +2010,6 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2098,7 +2114,6 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
 
     monkeypatch.setattr("clio_agent.config.create_lm", _fake_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", _fake_lm)
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", _fake_lm)
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _BoomAgent)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2165,7 +2180,7 @@ def _make_stub_agent_cls() -> type:
     """A minimal ClioAgent stub whose construction needs no live LM.
 
     Only the ``arc`` surface the bind path touches is provided; the bind rebinds
-    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` onto the
+    ``_provider_config`` / ``_main_lm`` / ``_dspy_adapter`` onto the
     instance via ``rebind_lms``.
     """
 
@@ -2175,12 +2190,14 @@ def _make_stub_agent_cls() -> type:
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -2198,7 +2215,6 @@ def _stub_lm_bind(monkeypatch) -> None:
         "clio_agent.config.create_lm", lambda cfg: type("LM", (), {"history": []})()
     )
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
 
     async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
         # No network from a unit test; the bind catches this and keeps the static
@@ -2353,7 +2369,11 @@ def test_put_lm_provider_accepts_thinking_level(tmp_path: Path, monkeypatch) -> 
             self.arc = type(
                 "ARC",
                 (),
-                {"get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0}},
+                {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
+                    "get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0},
+                },
             )()
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:

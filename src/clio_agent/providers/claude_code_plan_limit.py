@@ -70,10 +70,9 @@ _MODEL_SUFFIX_RE = re.compile(r" for (?P<model>.+?)\. Wait for the window to res
 class ClaudeCodePlanLimitError(RuntimeError):
     """The Claude subscription's plan/usage limit has been hit for this window.
 
-    Deliberately NOT one of the LM retry layer's transient markers
-    (``lm.io_logging._TRANSIENT_PROVIDER_MARKERS``): retrying immediately
-    cannot succeed while the window is exhausted, so this must surface as a
-    clear, terminal, user-facing message rather than being silently retried.
+    Deliberately NOT a ``dspy.lm15`` retryable error: retrying cannot succeed
+    while the window is exhausted, so it surfaces as a clear, terminal,
+    user-facing message (the agent loop re-raises it as itself).
     """
 
     def __init__(

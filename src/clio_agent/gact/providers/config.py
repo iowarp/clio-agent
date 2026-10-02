@@ -140,11 +140,6 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             cfg["transport"] = getattr(provider_config, "codex_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
-    if not cfg.get("codex_variant") and getattr(provider_config, "provider", "") == "codex":
-        # WHICH codex transport (sdk/direct) the live agent is actually bound
-        # to (S1b), for :func:`_active_lm_model_ref` to surface as
-        # ``ModelRef.variant`` -- distinct from ``transport`` above.
-        cfg["codex_variant"] = getattr(provider_config, "codex_variant", None)
     # Effective thinking level (#895): surface both the raw level and the resolved
     # per-provider effect so the knob is never invisible (doctor/status field-map).
     level = getattr(provider_config, "thinking_level", None)
@@ -299,17 +294,13 @@ def _model_ref_is_empty(value: Any) -> bool:
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict.
 
-    ``variant`` carries the bound codex transport (``"sdk"``/``"direct"``) for
-    the ``codex`` provider (S1b) so a per-message/session model ref naming a
-    transport can be compared against what is actually bound; every other
-    provider has no transport concept and reports ``""``.
+    ``variant`` is always ``""``: no provider has model variants.
     """
 
     cfg = _effective_lm_config(app)
     provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
-    variant = str(cfg.get("codex_variant") or "") if cfg.get("provider") == "codex" else ""
-    return {"provider_id": provider, "model_id": model, "variant": variant}
+    return {"provider_id": provider, "model_id": model, "variant": ""}
 
 
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
@@ -359,6 +350,48 @@ def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> Er
                 "source": source,
                 "model": ref,
                 "recovery_actions": ["put_global_lm_provider", "clear_session_model", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
+def removed_transport_message(value: Any) -> str:
+    """The plain-language refusal for a Codex model ref that names a variant, else ``""``.
+
+    Codex always connects directly; a ref with any ``variant`` (the removed SDK
+    path's ``"sdk"``, or an older client's echoed ``"direct"``) is refused rather
+    than silently run.
+    """
+
+    ref = _model_ref_dict(value)
+    if not ref["variant"].strip() or not ref["provider_id"]:
+        return ""
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(ref["provider_id"])
+    if preset is None or preset.provider_kind != "codex":
+        return ""
+    from clio_agent.providers.codex.errors import CODEX_VARIANT_REMOVED_MESSAGE  # noqa: PLC0415
+
+    return CODEX_VARIANT_REMOVED_MESSAGE
+
+
+def _removed_transport_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
+    """A typed 400 body for a Codex model ref that names a variant (see the message helper)."""
+
+    message = removed_transport_message(value)
+    if not message:
+        return None
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="model_transport_removed",
+            message=message,
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": _model_ref_dict(value),
+                "recovery_actions": ["clear_session_model", "retry"],
             },
             recoverable=True,
         )

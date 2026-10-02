@@ -2,9 +2,8 @@
 
 The acceptance contract is observed at the LM boundary: a ``PromptRecorder``
 captures the exact ``messages`` dspy sends, and the live plane is exercised
-through the REAL retaining react loop (``_RetainingReActV2`` — the only loop
-since v0.8.0; not a stub) driven by a scripted ``DummyLM`` so the loop is
-deterministic.
+through the REAL expert loop (``ClioReAct`` -- not a stub) driven by a scripted
+``DummyLM`` so the loop is deterministic.
 """
 
 from __future__ import annotations
@@ -15,36 +14,24 @@ from typing import Any, Iterator
 
 import dspy
 import pytest
+from dspy.lm15 import Message, Request, TextPart
 
-import clio_agent.gact.app as app
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
+from clio_agent.gact.agents.clio_react import ClioReAct, _call_lm
+from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 
 
-@pytest.fixture(params=["local", "cte"])
-def arc(request, tmp_path) -> Iterator[ARCMemory]:
-    """A fresh ARCMemory, exercised on BOTH backends.
+@pytest.fixture
+def arc() -> Iterator[ARCMemory]:
+    """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""
+    from clio_agent.arc.storage import make_arc_store
 
-    The acceptance contract must hold identically whether ARC persists through the
-    fast LocalFS store or the production clio-core runtime, so every test using
-    this fixture runs once per backend. ``local`` is isolated by ``tmp_path``; ``cte``
-    shares the process-global in-process runtime (the first param boots it, the rest
-    connect), so it is cleared at setup + teardown for per-test isolation. The ``cte``
-    leg skips when the binding is absent (binding-free CI keeps the ``local`` leg).
-    """
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        from clio_agent.arc.storage import make_arc_store
-
-        memory = ARCMemory(store=make_arc_store(backend="cte"))
-        memory.clear_all()  # fresh start on the shared runtime
-        try:
-            yield memory
-        finally:
-            memory.clear_all()
-        return
-    yield ARCMemory(data_dir=str(tmp_path / "arc"))
+    memory = ARCMemory(store=make_arc_store(backend="cte"))
+    try:
+        yield memory
+    finally:
+        memory.clear_all()
 
 
 @contextlib.contextmanager
@@ -60,7 +47,11 @@ def live_plane_context(
     and the context window that drives auto-compaction)."""
     fake_session = types.SimpleNamespace(metadata=session_metadata or {})
     fake_app = types.SimpleNamespace(
-        state=types.SimpleNamespace(arc=arc_memory, sessions={session: fake_session})
+        state=types.SimpleNamespace(
+            arc=arc_memory,
+            sessions={session: fake_session},
+            bus=types.SimpleNamespace(publish=lambda event: None),
+        )
     )
     # Layer the turn app, then scope/session/window on the single runtime var.
     # Reset in strict reverse-LIFO of the sets (window -> session -> scope -> app)
@@ -79,16 +70,40 @@ def live_plane_context(
 
 
 def make_react_agent(tools: list[Any] | None = None) -> Any:
-    """Build a real retaining-react (V2) instance over a trivial signature."""
+    """Build a real ``ClioReAct`` instance over a trivial signature."""
 
     def search(q: str) -> str:
         """A search tool."""
         return "SEARCH_RESULT"
 
-    react_cls = app._retaining_react_cls()
-    return react_cls("question -> answer", tools=tools or [dspy.Tool(search)])
+    return ClioReAct("question -> answer", tools=tools or [dspy.Tool(search)])
 
 
-# (v0.8.0) The classic byte-equality helpers ``stock_format_trajectory`` /
-# ``expected_trajectory_dict`` died with the classic loop; the V2 references live
-# in tests/test_arc/test_reactv2_wire_byte_equality.py (expected_history_messages).
+def response_text(response: Any) -> str:
+    """The joined text parts of a model response, stripped."""
+    return "".join(p.text for p in response.message.parts if isinstance(p, TextPart)).strip()
+
+
+def probe_live_context(
+    lm: Any,
+    arc_memory: ARCMemory,
+    question: str,
+    *,
+    session: str,
+    scope: str,
+    as_of: int | None = None,
+) -> str:
+    """One REAL model call whose context is the ARC plane, returning its text answer.
+
+    The context is exactly what the agent loop sends: the scope's live segments folded
+    by ``fold_steps`` (``read_steps`` for the current view; ``as_of`` folds the
+    store's as-of-T render instead), followed by the question as a user message.
+    """
+    with live_plane_context(arc_memory, session=session, scope=scope):
+        if as_of is None:
+            steps = read_steps(arc_memory, session, scope)
+        else:
+            steps = fold_steps(arc_memory.render_segments(session, scope, as_of=as_of))
+        messages = (*steps, Message.user(question))
+        response = _call_lm(lm, Request(model=lm.model, messages=messages))
+    return response_text(response)

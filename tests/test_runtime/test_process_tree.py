@@ -79,8 +79,7 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
 ) -> None:
     """Clean shutdown closes the pooled Claude client + the codex WS sessions, and logs."""
     from clio_agent.providers import claude_code_sessions
-    from clio_agent.providers.codex import sessions as codex_sessions
-    from clio_agent.providers.codex import transport_ws as codex_transport_ws
+    from clio_agent.providers.codex import direct_engine
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -88,17 +87,12 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
         "close_blocking",
         lambda: calls.append("stream"),
     )
-    fake_connections = ["conn-1", "conn-2"]
 
-    def _fake_pop_all_ws_connections() -> list[str]:
+    def _fake_close_all() -> int:
         calls.append("codex")
-        return fake_connections
+        return 2
 
-    async def _fake_close_connections(connections: list[str]) -> None:
-        assert connections == fake_connections
-
-    monkeypatch.setattr(codex_sessions, "pop_all_ws_connections", _fake_pop_all_ws_connections)
-    monkeypatch.setattr(codex_transport_ws, "close_connections", _fake_close_connections)
+    monkeypatch.setattr(direct_engine, "close_all", _fake_close_all)
 
     with caplog.at_level(logging.INFO, logger="clio_agent.runtime.process_tree"):
         outcome = pt.teardown_pooled_sdk_transports()

@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
+from clio_agent.gact import permission_timeout
 from clio_agent.gact.cancellation_check import (
     make_cancellation_checker as _make_cancellation_checker,  # noqa: F401 - compatibility export
 )
@@ -559,8 +560,6 @@ def _make_permission_gate(app: "FastAPI"):
     to deny — fail-safe.
     """
 
-    DEFAULT_TIMEOUT_S = 600.0
-
     def gate(
         name: str,
         args: Mapping[str, Any],
@@ -789,9 +788,9 @@ def _make_permission_gate(app: "FastAPI"):
             # reason and the call falls through to the human wait below (fail-safe).
         # Block the bridge thread until POST /v1/permissions/{pid}
         # sets the event (or we time out).
-        if not evt.wait(timeout=DEFAULT_TIMEOUT_S):
-            row["status"] = "timeout"
-            return "deny"
+        if not evt.wait(timeout=permission_timeout.PERMISSION_REQUEST_TIMEOUT_S):
+            if expired := permission_timeout.expire_permission(app, pid, row, tool_name=name):
+                return expired  # typed, published + logged; the model is told it timed out
         action = row.get("action", "deny")
         if action in {"allow", "allow_session", "allow_workspace"}:
             return "allow"

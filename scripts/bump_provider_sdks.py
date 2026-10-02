@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Move the user-updatable provider SDKs to their latest releases (pyproject floor + uv.lock).
+"""Move the user-updatable provider components to their latest releases (pyproject floor + uv.lock).
 
 Run weekly by ``.github/workflows/provider-sdk-bump.yml`` (and on demand), so a
-release always ships the newest Codex and Claude Code SDKs: the providers gate
-new models by client version, and a release that ships a lagging SDK hides
-models the user's account already serves.
+release always ships the newest Codex runtime and Claude Code SDK: the providers
+gate new models by client version, and a release that ships a lagging component
+hides models the user's account already serves.
 
 A release counts only when it is final (no pre-release), not yanked, and ships
 a wheel for EVERY bundle target (``BUNDLE_WHEEL_PLATFORMS``) -- claude-agent-sdk
 0.2.157 and 0.2.160 shipped no Windows wheel, and an sdist installs without the
-bundled ``claude`` CLI. ``openai-codex`` and ``openai-codex-cli-bin`` move in
-lockstep (the SDK pins the binary exactly), to the newest version both publish.
+bundled ``claude`` CLI.
 
 Usage::
 
@@ -39,7 +38,7 @@ INDEX = "https://pypi.org/pypi"
 #: ``clio_agent.providers.components.registry.PROVIDER_COMPONENTS`` (a test
 #: enforces the match; this script must run without CLIO installed).
 GROUPS: dict[str, tuple[tuple[str, ...], str]] = {
-    "codex": (("openai-codex", "openai-codex-cli-bin"), "https://github.com/openai/codex/releases"),
+    "codex": (("openai-codex-cli-bin",), "https://github.com/openai/codex/releases"),
     "claude_code": (
         ("claude-agent-sdk",),
         "https://github.com/anthropics/claude-agent-sdk-python/releases",
@@ -91,7 +90,7 @@ def shippable_versions(payload: dict[str, object]) -> set[str]:
 
 
 def group_target(distributions: tuple[str, ...], payloads: dict[str, dict[str, object]]) -> str:
-    """The newest version every distribution of the group ships (lockstep)."""
+    """The newest shippable version of the group (every distribution ships it)."""
     common: set[str] | None = None
     for name in distributions:
         versions = shippable_versions(payloads[name])

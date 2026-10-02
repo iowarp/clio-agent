@@ -75,7 +75,6 @@ def _seed_openrouter(model_id: str, supported: list[str]) -> None:
     [
         ("claude_code", "claude-code://sdk", "claude_code", "claude_code"),
         ("codex", "codex://direct", "codex", "codex_direct"),
-        ("codex", "codex://sdk", "codex", "codex_sdk"),
     ],
 )
 def test_sdk_transports_accept_no_response_settings(
@@ -91,28 +90,22 @@ def test_sdk_transports_accept_no_response_settings(
     [
         ("claude_code", "claude-code://sdk", "claude_code", "claude_code"),
         ("codex", "codex://direct", "codex", "codex_direct"),
-        ("codex", "codex://sdk", "codex", "codex_sdk"),
     ],
 )
-def test_sdk_transports_stay_empty_after_a_completion_and_a_reset(
+def test_engine_transports_offer_nothing_even_with_a_litellm_handler(
     provider_id: str, api_base: str, dialect: str, prefix: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CI-only failure of the test above (4 xdist workers), pinned end to end.
+    """Engine transports offer nothing even when LiteLLM has a handler for their key.
 
-    clio registers these transports as LiteLLM CUSTOM handlers. A completion makes
-    LiteLLM set the handler up (``custom_llm_setup``), after which
-    ``get_supported_openai_params`` answers its generic OpenAI list for the key, so a
-    worker that had run a codex/claude turn offered temperature, max_tokens, ... for
-    a transport that takes none of them. ``reset_for_tests`` drops the handler from
-    ``custom_provider_map`` but LiteLLM keeps the key in its own lists, so a check
-    keyed on LiteLLM's registration state still leaked after a reset. The decision
-    comes from clio's own transport list (providers/custom_transports.py).
+    These are clio's own DSPy 3.4 engines, not LiteLLM providers. Once any LiteLLM
+    custom handler is set up under the same key (``custom_llm_setup``),
+    ``get_supported_openai_params`` answers its generic OpenAI list for it -- which
+    says nothing about the transport. The decision comes from clio's own transport
+    list (providers/custom_transports.py), never LiteLLM's registration state.
     """
     import litellm  # noqa: PLC0415
     from litellm import CustomLLM  # noqa: PLC0415
     from litellm.types.utils import ModelResponse  # noqa: PLC0415
-
-    from clio_agent.providers._cli_provider import register_custom_provider  # noqa: PLC0415
 
     # LiteLLM's process-global lists, restored after the test.
     monkeypatch.setattr(litellm, "custom_provider_map", list(litellm.custom_provider_map))
@@ -123,11 +116,9 @@ def test_sdk_transports_stay_empty_after_a_completion_and_a_reset(
         def completion(self, *args: object, **kwargs: object) -> ModelResponse:
             return ModelResponse(choices=[{"message": {"role": "assistant", "content": "ok"}}])
 
-    ensure_registered, reset_for_tests = register_custom_provider(prefix, _Handler)
-    ensure_registered()
-    reply = litellm.completion(model=f"{prefix}/m", messages=[{"role": "user", "content": "hi"}])
+    litellm.custom_provider_map.append({"provider": prefix, "custom_handler": _Handler()})
+    reply = litellm.completion(model=f"{prefix}/m", messages=[{"role": "user", "content": "x"}])
     assert reply.choices[0].message.content == "ok"  # the handler really ran
-    reset_for_tests()
     # LiteLLM itself now reports the generic list for the key: the trap this pins.
     assert "temperature" in (
         litellm.get_supported_openai_params(model="m", custom_llm_provider=prefix) or []
@@ -136,14 +127,6 @@ def test_sdk_transports_stay_empty_after_a_completion_and_a_reset(
     rows = _rows(provider_id, api_base, "m", dialect=dialect, prefix=prefix)
     assert "temperature" not in rows
     assert rows == {}
-
-
-def test_only_listed_transports_can_register_as_custom_litellm_providers() -> None:
-    """A new clio transport must join CLIO_CUSTOM_LITELLM_PROVIDERS to register at all."""
-    from clio_agent.providers._cli_provider import register_custom_provider  # noqa: PLC0415
-
-    with pytest.raises(ValueError, match="CLIO_CUSTOM_LITELLM_PROVIDERS"):
-        register_custom_provider("not_a_clio_transport", object)
 
 
 def test_openrouter_offers_exactly_the_routes_supported_parameters() -> None:

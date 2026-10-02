@@ -47,11 +47,11 @@ which also feeds the catalog's ``accepted_parameters`` -- so the settings a
 person is offered are exactly the settings this module sends.
 
 **A saved setting the model does not accept is never sent**, and each such
-drop is logged with a typed reason (``response_setting_not_sent``). The CLI/SDK
-transports (codex, claude_code) accept none: their SDK options carry no
-sampling field at all (claude-agent-sdk ``ClaudeAgentOptions``; openai-codex
-``TurnStartParams``/the Responses body clio builds), so nothing is sent there
-rather than being handed to a transport that silently ignores it.
+drop is logged with a typed reason (``response_setting_not_sent``). The engine
+transports (codex, claude_code) accept none: their request carries no sampling
+field at all (claude-agent-sdk ``ClaudeAgentOptions``; the Codex Responses body
+clio builds), so nothing is sent there rather than being handed to a transport
+that silently ignores it.
 
 **Thinking is ONE mapping, covering every dialect** (item 5, dialect table).
 :func:`clio_agent.lm.dialect_wire.thinking_wire` builds the on/off/level
@@ -62,8 +62,8 @@ anthropic/openai, all driven by the model's own
 control :mod:`.combine` chose (Part 5.5). ``providers/thinking.py`` (the old
 provider-name-keyed ``resolve_thinking``/``ACCEPTED_LEVELS`` engine) and
 ``providers/reasoning_levels.py`` (its catalog-display counterpart) are
-deleted: codex's ``ThinkingSpec`` comes from its SDK's own reported
-``supportedReasoningEfforts`` (``providers.capabilities.dialects.codex``),
+deleted: codex's ``ThinkingSpec`` comes from the reasoning efforts the Codex
+backend's own model list reports (``providers.capabilities.dialects.codex``),
 claude_code's from the CLI's own ``supportedEffortLevels``
 (``providers.capabilities.dialects.claude_code``), and anthropic/openai's
 from LiteLLM's own introspection (``providers.capabilities.dialects.
@@ -78,7 +78,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from clio_agent.lm import dialect_wire
 from clio_agent.providers.capabilities import accepted_parameters
@@ -247,36 +247,22 @@ def _lm_studio_allowed_options(config: "LMProviderConfig") -> tuple[str, ...] | 
 
 
 def _stop_sequences() -> list[str]:
-    """The DSPy trajectory-regurgitation stop list, or ``lm.stop_sequences``' override.
+    """The operator's ``lm.stop_sequences`` override; none by default.
 
-    Unchanged literal list / override mechanism from the pre-P5 code; the
-    difference (Part 7 item 3) is purely in WHEN the caller sends this --
-    only when ``"stop"`` is in the effective accepted-parameter set, never on
-    a per-model reasoning-capability guess.
+    The loop reads typed replies (no field-format markers), so there is nothing to
+    stop on unless an operator sets a list -- sent only when the effective
+    accepted-parameter set includes ``stop``.
     """
 
     from clio_agent import conf  # noqa: PLC0415 - keep this module import-light
 
     raw_stop = conf.resolve("lm.stop_sequences", env="CLIO_LM_STOP_SEQUENCES", default=None)
     if isinstance(raw_stop, (list, tuple)):
-        override = [str(s) for s in raw_stop if str(s)]
-        if override:
-            return override
-    elif raw_stop:
-        override = [s for s in str(raw_stop).split("||") if s]
-        if override:
-            return override
-    return [
-        "[[ ## observation",
-        "[[ ## thought_",
-        "[[ ## tool_name_",
-        "[[ ## tool_args_",
-    ]
+        return [str(s) for s in raw_stop if str(s)]
+    return [s for s in str(raw_stop or "").split("||") if s]
 
 
-def build_request_kwargs(
-    config: "LMProviderConfig", *, role: Literal["main", "planner"] = "main"
-) -> dict[str, Any]:
+def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
     """Build the LiteLLM/``dspy.LM`` kwargs for one request (Part 7).
 
     Args:
@@ -284,18 +270,15 @@ def build_request_kwargs(
             top_p/top_k/min_p/presence_penalty/thinking_level/thinking_budget/
             provider_options) are the "user's settings" input this function
             takes; everything else comes from the effective capabilities.
-        role: ``"main"`` uses ``config.temperature`` (an explicit user value,
-            else the model's recommended sampling for the current thinking
-            mode). ``"planner"`` uses ``config.planner_temperature``
-            unconditionally (item 1: "planner and router determinism may set
-            temperature explicitly") -- still gated on the effective
-            parameter set either way.
+            Temperature is ``config.temperature`` when the user set it, else
+            the model's recommended sampling for the current thinking mode --
+            gated on the effective parameter set either way.
 
     Returns:
         The kwargs dict to splat into ``dspy.LM(...)`` alongside ``model``/
-        ``api_key``/``api_base``/``max_tokens``/``cache``. Always includes
-        ``drop_params=True`` (item 9's safety net) unless the caller's own
-        ``provider_options`` already set it.
+        ``api_key``/``api_base``/``max_tokens``/``cache``. Every optional field
+        is gated on the effective parameter set; DSPy's native (lm15) backend
+        records any adaptation it still makes instead of dropping it silently.
     """
 
     dialect, accepted, effective = _resolve(config)
@@ -306,17 +289,13 @@ def build_request_kwargs(
     recommended = _recommended_sampling(effective, thinking_on)
 
     # -- temperature (item 1) ------------------------------------------
-    temperature_candidate: float | None
-    if role == "planner":
-        temperature_candidate = config.planner_temperature
-    else:
-        temperature_candidate = (
-            config.temperature if config.temperature is not None else recommended.get("temperature")
-        )
+    temperature_candidate = (
+        config.temperature if config.temperature is not None else recommended.get("temperature")
+    )
     if temperature_candidate is not None and _accepts("temperature", accepted):
         extras["temperature"] = temperature_candidate
         sent_optional = True
-    elif role == "main" and config.temperature is not None:
+    elif config.temperature is not None:
         _log_not_sent(config, dialect, "temperature")
 
     # -- the rest of the request surface (items 1-3) ---------------------
@@ -328,7 +307,7 @@ def build_request_kwargs(
         if candidate is None:
             continue
         if not _accepts(field, accepted):
-            if user_value is not None and role == "main":
+            if user_value is not None:
                 _log_not_sent(config, dialect, field)
             continue
         dialect_wire.place_optional_param(extras, dialect, field, candidate)
@@ -384,8 +363,9 @@ def build_request_kwargs(
 
     # -- stop sequences (item 3) -------------------------------------------
     # An unknown accepted-set answer (codex/claude_code) stays "don't send it".
-    if "stop" not in extras and "stop" in accepted:
-        extras["stop"] = _stop_sequences()
+    stop = _stop_sequences() if "stop" not in extras and "stop" in accepted else []
+    if stop:
+        extras["stop"] = stop
         sent_optional = True
 
     # OpenRouter: refuse to silently route around an optional param this
@@ -398,13 +378,6 @@ def build_request_kwargs(
     elif config.provider == "claude_code":
         extras["claude_code_transport"] = config.claude_code_transport
 
-    # Safety net only (item 9): every optional field above is already gated
-    # on the effective parameter set. `drop_params` is the backstop for when
-    # that record is wrong, so a stale/incomplete capability record degrades
-    # to "field silently omitted" instead of a hard request failure; P2's
-    # `_warn_dropped_params` (factory.py, called from `_construct_lm`) turns
-    # every actual drop into a logged bug signal instead of a silent one.
-    extras.setdefault("drop_params", True)
     return extras
 
 

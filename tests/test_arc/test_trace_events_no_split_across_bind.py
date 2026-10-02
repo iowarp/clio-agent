@@ -53,6 +53,7 @@ import clio_agent.gact.app as app_mod
 import clio_agent.gact.runtime.globals as globals_mod  # #714: live owner of _PROCESS_ARC
 from clio_agent.arc.memory import EVENTS_SCOPE, ARCMemory
 from clio_agent.gact import context as gctx
+from clio_agent.gact import server_boot
 from clio_agent.gact.events import EventBus
 from clio_agent.gact.semantic_events import (
     SemanticEvent,
@@ -204,7 +205,7 @@ def test_mechanismA_bare_thread_drops_before_trace_copyctx_reaches_both(tmp_path
 #
 # Pre-fix, a freshly-built ClioAgent minted a NEW ARCMemory and _set_app_arc repointed
 # app.state.arc to it, stranding prior events on the orphaned ARC while the shared trace
-# kept them. Now the gact server constructs the ARC once (``_process_arc``) and injects
+# kept them. Now the gact server constructs the ARC once (``process_arc``) and injects
 # it into every build (``ClioAgent(arc=...)``), so the "bind" reuses the SAME instance.
 # ---------------------------------------------------------------------------
 def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
@@ -228,9 +229,9 @@ def test_one_arc_per_agent_no_split_across_bind(tmp_path, monkeypatch):
     ]
 
     # --- THE BIND (post-fix): a rebuilt agent REUSES the injected ARC. The gact bind
-    # path injects ``_process_arc(app)`` (== the existing app.state.arc) into the new
+    # path injects ``process_arc(app)`` (== the existing app.state.arc) into the new
     # ClioAgent, so agent.arc IS the same instance; _set_app_arc re-sets the SAME object.
-    rebuilt_agent = types.SimpleNamespace(arc=app_mod._process_arc(app))
+    rebuilt_agent = types.SimpleNamespace(arc=server_boot.process_arc(app))
     assert rebuilt_agent.arc is arc  # the rebuild reused the one ARC, did not mint one
     app.state.agent = rebuilt_agent
     app_mod._set_app_arc(app, rebuilt_agent.arc)

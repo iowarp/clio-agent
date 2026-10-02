@@ -47,10 +47,7 @@ REASONING = (
 ANSWER = "Region resolved: Los Angeles County, center 34.05,-118.24, radius 100 km."
 NEXT = "I call geo_geocode to look up Los Angeles."
 
-_AUDIT_SINK_TARGETS = (
-    "clio_agent.runtime.lm_activity.stream_audit",
-    "clio_agent.gact.streaming.stream_audit",
-)
+_AUDIT_SINK_TARGETS = ("clio_agent.runtime.lm_activity.stream_audit",)
 
 
 def _install_audit_capture(monkeypatch) -> list[dict]:
@@ -117,7 +114,7 @@ def _drive(
     real react scope + module.kind, through the real emit path + ledger.
 
     ``action`` (if given) is run in the emitter-bound executor context INSTEAD of
-    the deltas loop — used to drive a real ``_RetainingReAct.forward`` whose extract
+    the deltas loop — used to drive a real ``ClioReAct.forward`` whose extract
     fires the tap. ``kind=None`` sets NO react_kind (unresolved-diagnostic)."""
 
     records = _install_audit_capture(monkeypatch)
@@ -409,30 +406,3 @@ def test_react_kind_context_set_and_reverse_lifo_reset() -> None:
     assert ctx.active_react_scope() == "geospatial"  # scope still set (below kind)
     ctx.reset(scope_tok)
     assert ctx.active_react_scope() == ""
-
-
-def test_stream_listeners_answer_only() -> None:
-    """#878 seam guard: `_build_stream_listeners` binds ONLY `answer`-field
-    listeners, so the streamify `_emit_visible_chunk` seam never receives a react
-    EXTRACT `reasoning` field. If a future change binds a `reasoning` listener,
-    this fails — the signal to add a top-level kind gate at that seam."""
-
-    from clio_agent.gact.streaming import _build_stream_listeners
-
-    class _CaptureListener:
-        def __init__(self, *, signature_field_name: str, predict) -> None:
-            self.signature_field_name = signature_field_name
-            self.predict = predict
-
-    class _Predictor:
-        pass
-
-    class _FakeAgent:
-        def __init__(self) -> None:
-            self.program = _Predictor()
-            self.react_agent = _Predictor()
-            self.answer_synthesizer = _Predictor()
-
-    listeners = _build_stream_listeners(_FakeAgent(), _CaptureListener)
-    assert listeners, "expected at least one bound listener"
-    assert {ls.signature_field_name for ls in listeners} == {"answer"}

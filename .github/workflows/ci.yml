@@ -72,6 +72,10 @@ jobs:
       # burned down).
       - name: "check: silent-fallback ratchet (BLE001, S110, E722) (#772)"
         run: uv run python scripts/check_silent_fallbacks.py
+      # The same rules with noqa IGNORED, per file (clio-core fail-stop): a file may not
+      # gain a hidden broad except; the recorded baseline only ratchets down.
+      - name: "check: noqa-hidden swallow ratchet, per file"
+        run: uv run python scripts/check_noqa_swallows.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
 

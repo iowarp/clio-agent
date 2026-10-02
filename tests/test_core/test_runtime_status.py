@@ -59,8 +59,16 @@ GACT_CAPABILITIES = {
 }
 
 
-def test_runtime_report_ready_path(tmp_path):
+def test_runtime_report_ready_path(tmp_path, monkeypatch):
     """All required integrations report ready when probes succeed."""
+
+    # The clio-core health rows locate the shared daemon by port; a daemon left running
+    # on this machine (default port) made this report "degraded" (found 2026-10-01).
+    import socket
+
+    with socket.socket() as free:
+        free.bind(("127.0.0.1", 0))
+        monkeypatch.setenv("CLIO_CORE_PORT", str(free.getsockname()[1]))
 
     def fake_get(url: str, timeout: float):
         assert url.endswith("/models")
@@ -68,39 +76,37 @@ def test_runtime_report_ready_path(tmp_path):
         return FakeResponse({"data": [{"id": "granite"}]})
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=fake_get,
         gateway_lister=lambda: HDF5_CAPS + PARQUET_CAPS,
-        module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
-        port_checker=lambda port: False,
+        module_checker=lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
     report = probe.collect(api_state=IntegrationState.READY)
 
-    # The local ARC backend is DEGRADED by policy (underperforming fallback,
-    # owner ruling 2026-07-14) — a report on it can never be fully "ready".
-    assert report.overall_status == "degraded"
+    assert report.overall_status == "ready"
     assert report.by_name("lm_provider").state == IntegrationState.READY
-    assert report.by_name("arc").state == IntegrationState.DEGRADED
-    assert report.by_name("arc").details["storage_mode"] == "local"
+    assert report.by_name("arc").state == IntegrationState.READY
+    assert report.by_name("arc").details["storage_mode"] == "cte"
     assert report.by_name("file_policy").state == IntegrationState.READY
     assert report.by_name("gateway").state == IntegrationState.READY
     assert report.by_name("hdf5").state == IntegrationState.READY
     assert report.by_name("parquet").state == IntegrationState.READY
     assert report.by_name("api").state == IntegrationState.READY
-    assert report.by_name("clio_core").state == IntegrationState.SKIPPED
+    assert report.by_name("clio_core").state == IntegrationState.READY
     assert report.by_name("file_policy").details["max_file_size_bytes"] == 1 << 30
 
 
 def test_runtime_report_degraded_path(tmp_path):
     """Reachable but incomplete integrations are degraded, not crashes."""
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=lambda *args, **kwargs: FakeResponse({"data": []}),
         gateway_lister=lambda: HDF5_CAPS,
-        module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
-        port_checker=lambda port: False,
+        module_checker=lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
@@ -127,11 +133,11 @@ def test_runtime_report_unavailable_path(tmp_path):
         raise RuntimeError("gateway import failed")
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=unavailable_lm,
         gateway_lister=unavailable_gateway,
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
@@ -298,10 +304,9 @@ def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeyp
 def test_codex_doctor_uses_credential_store_not_path(tmp_path, monkeypatch):
     """Codex readiness follows its signed-in-credential contract, not a CLI on PATH.
 
-    Unlike the deleted Codex SDK provider (bundled binary + ``auth.json`` on
-    disk), the direct Codex provider has no CLI/SDK dependency at all -- the
-    sole local readiness signal is a signed-in credential
-    (``CodexCredentialStore.is_signed_in``).
+    The direct Codex provider has no CLI binary or SDK dependency -- the local
+    readiness signal is a usable sign-in (CLIO's own credential here,
+    ``CodexCredentialStore.is_signed_in``; else the CLI's ``$CODEX_HOME/auth.json``).
     """
     from clio_agent.providers.codex.credentials import CodexCredentialStore
 
@@ -391,6 +396,56 @@ def test_file_policy_probe_reports_invalid_policy_as_misconfigured():
 # ---------------------------------------------------------------------------
 
 
+def _crash_record(state_dir):
+    from clio_agent.arc.runtime_crash import crash_record_path
+
+    crash_record_path(state_dir).write_text('{"exit_code": 3221225477}', encoding="utf-8")
+
+
+def _attach_phase(monkeypatch, phase):
+    from clio_agent.arc import clio_core_attach
+    from clio_agent.runtime import clio_core_health
+
+    snap = clio_core_attach.ClioCoreAttachState(phase=phase, reason=f"clio_core_{phase.value}")
+    monkeypatch.setattr(clio_core_health, "attach_state_snapshot", lambda: snap)
+
+
+def test_a_daemon_not_started_yet_is_starting_not_down(tmp_path, monkeypatch):
+    """Found live: a fresh server answered /v1/health 503 before its first agent build
+    spawned clio-core. CLIO starts the daemon on first use: that is DEGRADED, never down."""
+    from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase
+
+    _attach_phase(monkeypatch, ClioCoreAttachPhase.IDLE)
+    probe = RuntimeProbe(
+        env={},
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+
+    rows = [probe.probe_arc(), probe.probe_clio_core()]
+
+    assert [(r.name, r.state) for r in rows] == [
+        ("arc", IntegrationState.DEGRADED),
+        ("clio_core", IntegrationState.DEGRADED),
+    ]
+    assert {r.details["reason"] for r in rows} == {"clio_core_starting"}
+
+
+def test_a_failed_attach_with_no_daemon_is_down(tmp_path, monkeypatch):
+    from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase
+
+    _attach_phase(monkeypatch, ClioCoreAttachPhase.UNAVAILABLE)
+    probe = RuntimeProbe(
+        env={},
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+
+    assert probe.probe_arc().state == IntegrationState.UNAVAILABLE
+
+
 def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     """Default backend is clio-core: iowarp_core installed but no daemon MUST go red."""
     clio_home = tmp_path / "clio-home"
@@ -398,6 +453,7 @@ def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     (clio_home / "clio-runtime.log").write_text(
         "boot: composing pools\nFATAL: could not bind RPC port\n", encoding="utf-8"
     )
+    _crash_record(clio_home)
 
     probe = RuntimeProbe(
         env={},
@@ -415,23 +471,6 @@ def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     assert isinstance(status.details["port"], int)
     assert any("FATAL" in line for line in status.details["log_tail"])
     assert "clio-runtime.log" in status.details["log_path"]
-
-
-def test_arc_clio_core_backend_red_when_iowarp_core_missing(tmp_path):
-    """clio-core selected but the pip runtime is absent: a broken install goes red."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "cte"},
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_arc()
-
-    assert status.state == IntegrationState.UNAVAILABLE
-    assert status.details["storage_mode"] == "cte"
-    assert status.details["reason"] == "iowarp_core_not_installed"
-    assert "iowarp" in status.summary.lower()
 
 
 def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
@@ -461,24 +500,6 @@ def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
     assert seen_ports and status.details["port"] == seen_ports[0]
 
 
-def test_arc_local_backend_keeps_writability_check(tmp_path):
-    """Explicit local backend keeps the writable-directory probe."""
-    probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_arc()
-
-    # Writable local dir → the probe still succeeds, but local is DEGRADED by
-    # policy (underperforming fallback), never READY.
-    assert status.state == IntegrationState.DEGRADED
-    assert "DEGRADED TO LOCAL BACKEND" in status.summary
-    assert status.details["storage_mode"] == "local"
-    assert (tmp_path / "arc").is_dir()
-
-
 def test_arc_unknown_backend_is_misconfigured(tmp_path):
     """An unknown CLIO_ARC_STORE value is a structured misconfiguration."""
     probe = RuntimeProbe(
@@ -505,6 +526,7 @@ def test_clio_core_red_when_clio_core_backend_and_daemon_down(tmp_path):
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text("FATAL: shm init failed\n", encoding="utf-8")
+    _crash_record(clio_home)
 
     probe = RuntimeProbe(
         env={},
@@ -538,37 +560,6 @@ def test_clio_core_ready_when_daemon_listening(tmp_path):
     assert status.state == IntegrationState.READY
     assert status.endpoint is not None
     assert str(status.details["port"]) in status.endpoint
-
-
-def test_clio_core_skipped_when_local_backend_and_not_installed(tmp_path):
-    """Local ARC backend without the pip runtime: clio-core is simply not used."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local"},
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_clio_core()
-
-    assert status.state == IntegrationState.SKIPPED
-    assert status.required is False
-
-
-def test_clio_core_optional_when_local_backend_and_daemon_down(tmp_path):
-    """Installed runtime with a dead daemon is reported, but not required on local."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local"},
-        module_checker=lambda name: name == "iowarp_core",
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_clio_core()
-
-    assert status.state == IntegrationState.UNAVAILABLE
-    assert status.required is False
-    assert status.details["reason"] == "clio_core_daemon_not_listening"
 
 
 # ---------------------------------------------------------------------------
@@ -617,7 +608,6 @@ def test_api_probe_red_when_gact_down():
     probe = RuntimeProbe(
         env={
             "CLIO_API_BASE": "http://127.0.0.1:17800",
-            "CLIO_ARC_STORE": "local",
             "CLIO_DATA_DIR": "unused",
         },
         http_get=refused,
