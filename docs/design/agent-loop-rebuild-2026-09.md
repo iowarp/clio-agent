@@ -1581,23 +1581,17 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - Replacing a transcript is atomic: a new generation under `_events/m/g/N`, then a pointer switch at `_events/m/gen`, then the old generation dropped. A failure before the switch leaves the old transcript intact, typed as `LaneReplaceError`.
   - With the flag off, nothing reads `messages/`.
   - The failed lane cleanup on delete is now typed (#1580).
-- **Progress signals and clio-core waits** (iowarp/clio-agent#1577, the parts that do not need clio-core). Branch `fix/progress-signals`:
-  - a per-server `descendants_work`;
-  - macOS-safe probes;
-  - typed `daemon_pid_unresolved`;
-  - `await_future` without its fixed 31 s, and a timeout never retried as a refusal;
-  - progress-based daemon start, stop and attach;
-  - MCP connect;
-  - finalize drains;
-  - 180 s ceilings.
-- **Done (#1579): Phase 9 edges.**
-  - A new turn supersedes the pending drafts pick: the question closes and a late answer gets a 409, so nothing is spliced into the past.
-  - `cancelled` and `expired` are typed end states, restart-safe.
-  - New `variant.closed` v3 frame.
-  - gact-tui renders closed runs (gact-tui #521): the badge and notice, no pick on a closed run, the same after reload, the pick deadline, and the composer never answering a drafts pick.
-- **Done (#1580): session delete and clear erase the clio-core data first.**
-  - A failure returns a typed 503 `transcript_erase_failed` (retryable); the session is kept and the retry finishes the job.
-  - `drop_lane` now removes chunks highest first, so a retry never orphans a chunk (found by the retry test).
+- **Done (#1581): progress signals and clio-core waits** (#1577, the parts not needing clio-core#1112).
+  - A per-wait `ProcessTreeWork` measures only the spawned MCP server.
+  - macOS-safe.
+  - Typed `clio_core_daemon_pid_unresolved`.
+  - `await_future` has no fixed bound, and `ClioCoreFutureTimeout` is a `TimeoutError` (never retried as a refusal).
+  - Daemon start is progress-based and adopted, never killed while starting.
+  - Stop no-progress window is 15 s, bounded by the desktop supervisor's 30 s shutdown window.
+  - Attach and preflight are progress-bounded.
+  - MCP connect, discovery, probe and reconnect use `wait_while_server_works`. New key `tools.mcp.no_progress_s`; the old timeout keys are removed and rejected typed.
+  - Finalize drains are progress-based.
+  - Left for #1112: the daemon's own watchdog in place of CPU+I/O.
 - **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
   - Claude Code inter-message idle bound;
   - no silent cut in `net_chokepoint`;
