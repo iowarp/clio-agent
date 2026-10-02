@@ -1624,6 +1624,9 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - The stale Codex SDK docstrings are fixed.
   - Only section 1 of #1577 remains, waiting on clio-core#1112.
 
+- **Done (#1589):** the env reference regenerated after combining (CI on 4343493f caught it).
+- **CI green on the clio-agent `rework_agent` tip `1a6e047d`** (run 36966592678, 2026-10-02), with every change, develop included.
+
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
 **Owner decisions:**
