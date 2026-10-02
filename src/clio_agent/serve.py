@@ -615,11 +615,12 @@ def _graceful_stop(
     import psutil  # noqa: PLC0415
 
     from clio_agent.arc import daemon_progress  # noqa: PLC0415
+    from clio_agent.runtime.progress import ProcessTreeWork  # noqa: PLC0415
 
     token = _shutdown_token(port, pid)
     if token is None:
         return "no_credential_record"
-    tree = daemon_progress.ProcessTreeWork(pid)
+    tree = ProcessTreeWork(pid)
     base_url = server_base_url(_loopback_host(host), port)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-stop")
     request = pool.submit(_post_shutdown, base_url, token)

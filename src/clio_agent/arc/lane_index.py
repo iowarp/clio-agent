@@ -2,10 +2,8 @@
 
 The content lane is partitioned by expert span (``_events/w/<span>``) and each
 partition is a chunk family (``lane_chunking`` grammar: chunk 1 is the bare partition,
-chunk N is ``<partition>/<N>``). Finding a scope's atoms used to mean scanning every
-``segments`` record of the session (downloading each blob to read its name) and
-folding all of them. The index replaces that scan on the read path: ONE record per
-session listing
+chunk N is ``<partition>/<N>``). The index spares the read path a scan of every
+``segments`` record of the session: ONE record per session listing
 
 * every chunk with its partition, chunk number, first ``logical_time`` and the logical
   scopes it holds atoms of;

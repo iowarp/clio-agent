@@ -47,7 +47,7 @@ class TableQueryStalled(TableQueryError):
     """The query's worker thread stopped working while its client still waited.
 
     A query is waited for while the one thread running it keeps consuming CPU
-    (:mod:`clio_agent.runtime.thread_progress`), so a large query on a slow
+    (:mod:`clio_agent.runtime.progress`), so a large query on a slow
     machine is never cut off by a fixed clock. ``reason`` is ``no_progress`` (a
     whole ``artifacts.table_query_no_progress_s`` window without an answer and
     without CPU work: the query is blocked) or ``ceiling`` (still working at

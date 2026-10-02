@@ -1,26 +1,10 @@
-"""Liveness-driven wait around the shared uvx/uv-run launcher cache (#1237 hotfix).
+"""Liveness-driven wait around the shared uvx/uv-run launcher cache.
 
-``mcp_config.py::transport_for`` isolates every clio-spawned ``uvx``/``uv run``
-stdio MCP launcher onto ONE dedicated cache dir
-(``mcp_config._mcp_uv_cache_dir``) so clio's spawns never race the
-developer's ambient uv cache. That isolation does not, by itself, stop
-clio's OWN concurrent cold-cache spawns from racing EACH OTHER on that
-shared dedicated dir — the exact failure ``transport_for``'s docstring
-already documents: concurrent cold-cache ``uvx`` spawns building the same
-ephemeral env archive can truncate ``pyvenv.cfg`` (astral-sh/uv#11694),
-dropping the proxy connection and failing every tool-declaring expert.
-
-Every stdio spawn onto the shared dedicated cache acquires a clio-owned file
-lock (``filelock.FileLock``) before starting. The ORIGINAL (#1232 pt 3)
-design raced that acquisition against a fixed ~15s deadline and failed FAST
-+ typed on expiry. Real-world usage (iowarp/clio-agent#1237, an NFS-backed
-home dir with concurrent cold spawns) proved that bound wrong: it raced a
-LEGITIMATE holder's genuine work (a cold uv env build on a slow filesystem)
-and dropped the server for the whole run with no retry, even though nothing
-was actually broken.
-
-Owner ruling (2026-08-20): **never race a deadline against a live holder.**
-This module now waits on REALITY signals instead of a clock:
+Every clio-spawned ``uvx``/``uv run`` stdio MCP launcher shares ONE dedicated cache dir
+(``mcp_config._mcp_uv_cache_dir``); concurrent cold-cache spawns building the same
+ephemeral env can truncate ``pyvenv.cfg`` (astral-sh/uv#11694). Every stdio spawn onto
+that cache therefore acquires a clio-owned file lock (``filelock.FileLock``) first, and
+the wait follows the holder, never a clock:
 
 * While the lock's recorded holder PID names a LIVE process, keep waiting —
   no matter how long, because that holder is doing the shared cold-spawn

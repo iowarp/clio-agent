@@ -33,7 +33,7 @@ from typing import Any, Literal
 
 from packaging.version import InvalidVersion, Version
 
-from clio_agent.runtime.process_progress import ProbeUnresponsiveError
+from clio_agent.runtime.progress import ProbeUnresponsiveError
 
 logger = logging.getLogger(__name__)
 
@@ -113,14 +113,14 @@ def probe_version(path: str) -> str:
     """Run ``<path> --version`` once and return the parsed version, ``""`` on failure.
 
     Past :data:`VERSION_PROBE_TIMEOUT_S` the probe is waited for while the CLI keeps
-    working (:func:`~clio_agent.runtime.process_progress.run_probe`).
+    working (:func:`~clio_agent.runtime.progress.run_probe`).
 
     Raises:
         ProbeUnresponsiveError: the CLI launched but did not answer and stopped working
             -- installed but slow or unresponsive, which callers report as such, never as
             "not installed" (#1577).
     """
-    from clio_agent.runtime.process_progress import run_probe  # noqa: PLC0415
+    from clio_agent.runtime.progress import run_probe  # noqa: PLC0415
 
     kwargs: dict[str, Any] = {}
     if os.name == "nt":

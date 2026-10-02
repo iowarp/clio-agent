@@ -279,10 +279,9 @@ _OLD_FIXED_SEED = "50GB"
 def ensure_seeded_capacity_fits(config_path: Path, capacity: str) -> None:
     """Resize CLIO's own seed from before the disk-based sizing, once, when it cannot run.
 
-    A config seeded with the old fixed 50 GB whose single file tier is not allocated yet
-    and does not fit its disk failed the first run (found live: 42 GB free). It is
-    rewritten in place to ``capacity`` (the seed rule, or an explicit
-    ``arc.cte.file_capacity``) and logged. An allocated tier, a config that fits, and any
+    A config seeded with the fixed 50 GB whose single file tier is not allocated yet and
+    does not fit its disk is rewritten in place to ``capacity`` (the seed rule, or an
+    explicit ``arc.cte.file_capacity``) and logged. An allocated tier, a config that fits, and any
     other capacity value (a user's choice) are left alone; the preflight still judges them.
     """
     text = config_path.read_text(encoding="utf-8")

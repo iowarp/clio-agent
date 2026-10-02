@@ -41,10 +41,10 @@ from clio_agent.providers.model_discovery.overlay import (
     ProviderDiscoveryResult,
     attach_context_limits,
 )
-from clio_agent.runtime.process_progress import ProbeUnresponsiveError, run_probe
+from clio_agent.runtime.progress import ProbeUnresponsiveError, run_probe
 
 #: Seconds the ``<binary> auth status`` sign-in check may run before it is waited
-#: for only while the CLI keeps working (``process_progress.run_probe``); a check that
+#: for only while the CLI keeps working (``runtime.progress.run_probe``); a check that
 #: stops working is reported slow/unresponsive, never signed out (#1577).
 #:
 #: Configuration, not a compiled-in constant: a slow host, or a Claude Code CLI

@@ -11,7 +11,7 @@ and every read is re-hashed against the immutable version hash.
 The query engine lives in :mod:`clio_agent.gact.artifacts.table_query`; this
 module owns limits, cancellation (the client disconnecting), the
 progress-based wait (the query runs on its own thread and is waited for while
-that thread keeps consuming CPU, :mod:`clio_agent.runtime.thread_progress`),
+that thread keeps consuming CPU, :mod:`clio_agent.runtime.progress`),
 a concurrency guard over those query threads, two small result caches (the exact final response, and the
 processed-but-unpaged result so paging through a large query does not
 re-read/re-process the source file per page), and the error envelope.
@@ -485,7 +485,7 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
             TableQueryCancelled,
             TableQueryStalled,
         )
-        from clio_agent.runtime.thread_progress import (  # noqa: PLC0415
+        from clio_agent.runtime.progress import (  # noqa: PLC0415
             ThreadStalled,
             ThreadWorkUnresolved,
             run_while_thread_works,

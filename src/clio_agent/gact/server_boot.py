@@ -43,9 +43,7 @@ def process_arc(app: "FastAPI") -> Any:
 
     ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
     N clio-agents per node, one clio-core per node). The gact server OWNS that single
-    ARC's lifecycle so that every agent build/bind reuses the SAME instance — the agent
-    no longer mints a fresh ARC per build (which stranded already-recorded events on an
-    orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
+    ARC's lifecycle so that every agent build/bind reuses the SAME instance.
 
     Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
     it; rebuilt only if the app has none yet (first build). ``None`` in History mode
@@ -60,7 +58,7 @@ def process_arc(app: "FastAPI") -> Any:
 
 
 def arc_for_first_event(app: Any, event_type: str, sid: str) -> Any:
-    """The process ARC for an event emitted before any exists (lost before: found live).
+    """The process ARC for an event emitted before any exists.
 
     Off the event loop it is obtained through the one construction door
     (``server_boot.process_arc``, single-flight with the boot attach). On the loop clio-core

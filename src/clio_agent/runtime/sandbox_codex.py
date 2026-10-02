@@ -92,7 +92,7 @@ REASON_CODEX_DETECTED = "codex_detected"
 REASON_CODEX_VERSION_PROBE_UNRESPONSIVE = "codex_version_probe_unresponsive"
 
 #: A ``codex --version`` probe answering within this costs nothing extra; past it the probe
-#: is waited for only while codex keeps working (``process_progress.run_probe``).
+#: is waited for only while codex keeps working (``runtime.progress.run_probe``).
 _VERSION_PROBE_TIMEOUT_S = 5.0
 
 #: Extracts the trailing ``X.Y.Z`` out of a ``codex-cli X.Y.Z`` banner.
@@ -168,7 +168,7 @@ def _read_codex_version(binary: str = "") -> str:
     Typed-empty: a spawn/parse failure returns ``""`` (an honest empty version, logged),
     which :func:`is_codex_version_supported` treats as unsupported — never a guess. A codex
     that launched but did not answer raises
-    :class:`~clio_agent.runtime.process_progress.ProbeUnresponsiveError` instead (slow is not
+    :class:`~clio_agent.runtime.progress.ProbeUnresponsiveError` instead (slow is not
     unsupported); :func:`detect_codex` reports it typed.
     """
     exe = binary or shutil.which(CODEX_BINARY_NAME)
@@ -176,7 +176,7 @@ def _read_codex_version(binary: str = "") -> str:
         return ""
     import subprocess  # noqa: PLC0415 - only needed on the detection path
 
-    from clio_agent.runtime.process_progress import run_probe  # noqa: PLC0415
+    from clio_agent.runtime.progress import run_probe  # noqa: PLC0415
 
     try:
         out = run_probe(
@@ -252,7 +252,7 @@ def detect_codex(
             source="",
             bundled_codex_absent=bundled_codex_absent,
         )
-    from clio_agent.runtime.process_progress import ProbeUnresponsiveError  # noqa: PLC0415
+    from clio_agent.runtime.progress import ProbeUnresponsiveError  # noqa: PLC0415
 
     try:
         version = version_reader(binary) or ""

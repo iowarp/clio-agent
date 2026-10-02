@@ -417,8 +417,8 @@ def record_blueprint_install_reason(
                 payload=row,
             )
 
-        # Discovery records reasons from the server loop (found live: the store write
-        # was refused there and the reason lost): written off the loop, inline otherwise.
+        # Discovery records reasons from the server loop, where the store write is
+        # refused: written off the loop, inline otherwise.
         schedule_off_loop(_emit, label=f"blueprint.install.reason:{reason}")
     return row
 

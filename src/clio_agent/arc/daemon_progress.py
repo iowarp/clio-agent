@@ -1,23 +1,10 @@
-"""Wait while the awaited work is visibly progressing; never a fixed deadline.
-
-A slow machine (or a busy daemon) answers late; a zombie never answers. From the
-caller's side both look the same, so a fixed wall-clock bound turns a slow-but-healthy
-peer into a failure -- on a first run, on a laptop, under a test suite. The signal that
-tells them apart is the awaited process's own work: one working through a backlog keeps
-consuming CPU or doing I/O, a hung one does neither.
+"""Wait on the clio-core daemon while it visibly works; never a fixed deadline.
 
 :func:`wait_while_progressing` waits in slices; after each slice without an answer it
-samples a work counter: advanced -> still working, keep waiting (logged); otherwise the
-wait ends with a typed :class:`WaitOutcome`. A long configurable ceiling
-(``arc.liveness.max_wait_s``, 180 s) bounds even a busy peer that never answers.
-
-The work counter measures the AWAITED process only:
-
-* :func:`daemon_work` -- the clio-core daemon this process attached to (pidfile, then
-  the listener on the configured port). A daemon that cannot be located is reported as
-  :data:`DAEMON_PID_UNRESOLVED`, never as a stall.
-* :class:`ProcessTreeWork` -- one process and its descendants (an MCP server and the
-  launcher work under it), cumulative, scoped to one wait (bounded memory).
+samples a work counter (default :func:`daemon_work`, the attached daemon's CPU + I/O):
+advanced -> keep waiting (logged), otherwise the wait ends with a typed
+:class:`WaitOutcome`. ``arc.liveness.max_wait_s`` (180 s) bounds even a busy daemon that
+never answers. Generic process/thread samplers live in :mod:`clio_agent.runtime.progress`.
 """
 
 from __future__ import annotations
@@ -30,11 +17,11 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any
 
+from clio_agent.runtime.progress import process_work, progressed
+
 logger = logging.getLogger(__name__)
 
-_MIN_WORK_PROGRESS = 0.01  # the work counter must advance by at least this per slice
 _DEFAULT_MAX_WAIT_S = 180.0
-_EXIT_WORK = 0.1  # work credited for a tree member that exited between two samples
 
 #: Typed wait outcomes (queryable in logs and error details).
 DONE = "done"
@@ -85,88 +72,6 @@ def no_progress_window_s() -> float:
     from clio_agent.arc.rpc_liveness import resolve_liveness_policy  # noqa: PLC0415 - cycle
 
     return resolve_liveness_policy().stall_after_s
-
-
-def process_work(pid: int) -> float | None:
-    """A process's work so far (CPU seconds + I/O MiB), ``None`` if it is gone.
-
-    I/O counters are absent on macOS (``psutil.Process`` has no ``io_counters``) and can
-    be denied for a foreign process; the CPU time alone is the work then.
-    """
-    import psutil  # noqa: PLC0415
-
-    try:
-        proc = psutil.Process(pid)
-        times = proc.cpu_times()
-    except psutil.Error:
-        return None
-    cpu = float(times.user + times.system)
-    read_io = getattr(proc, "io_counters", None)
-    if read_io is None:
-        return cpu
-    try:
-        io = read_io()
-    except psutil.NoSuchProcess:
-        return None
-    except psutil.AccessDenied:
-        return cpu
-    # Work = CPU seconds plus I/O (1 MiB counted as 1 "second"): a process flushing to a
-    # slow disk is busy while its CPU time stays flat.
-    return cpu + (io.read_bytes + io.write_bytes) / float(1 << 20)
-
-
-class ProcessTreeWork:
-    """Cumulative work of the process trees rooted at the pids added to it.
-
-    Scoped to ONE wait: it remembers only the processes of the trees it measures, so
-    its memory is bounded by that tree and released with the wait. A descendant that
-    exits keeps the work it was last seen doing (a ``uv`` installer finishing must not
-    read as "no progress" while the server it installed for is still starting).
-    """
-
-    def __init__(self, *roots: int) -> None:
-        self._roots: list[int] = list(roots)
-        self._seen: dict[tuple[int, float], float] = {}
-        self._live: set[tuple[int, float]] = set()
-
-    def add_root(self, pid: int) -> None:
-        """Measure ``pid``'s tree too (an MCP server spawned for the awaited connect)."""
-        if pid not in self._roots:
-            self._roots.append(pid)
-
-    @property
-    def roots(self) -> tuple[int, ...]:
-        """The root pids measured."""
-        return tuple(self._roots)
-
-    def sample(self) -> float | None:
-        """The trees' cumulative work, ``None`` while there is no root to measure."""
-        import psutil  # noqa: PLC0415
-
-        if not self._roots:
-            return None
-        live: set[tuple[int, float]] = set()
-        for root in self._roots:
-            try:
-                proc = psutil.Process(root)
-                members = [proc, *proc.children(recursive=True)]
-            except psutil.Error:
-                continue
-            for member in members:
-                try:
-                    key = (member.pid, member.create_time())
-                except psutil.Error:
-                    continue
-                work = process_work(member.pid)
-                if work is not None:
-                    live.add(key)
-                    self._seen[key] = max(work, self._seen.get(key, 0.0))
-        # A member that exited since the last sample finished its work: progress, even
-        # though the CPU it spent after the last sample can no longer be read.
-        for key in self._live - live:
-            self._seen[key] = self._seen.get(key, 0.0) + _EXIT_WORK
-        self._live = live
-        return sum(self._seen.values())
 
 
 def daemon_work() -> float | None:
@@ -258,7 +163,7 @@ def wait_while_progressing(
                 DAEMON_PID_UNRESOLVED,
             )
             return WaitOutcome(DAEMON_PID_UNRESOLVED, waited)
-        if current is None or (last is not None and current - last < _MIN_WORK_PROGRESS):
+        if not progressed(current, last):
             return WaitOutcome(NO_PROGRESS, waited)
         if waited >= ceiling:
             logger.warning(

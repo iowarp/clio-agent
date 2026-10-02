@@ -1581,7 +1581,7 @@ def test_the_query_runs_on_its_own_measured_thread(tmp_path: Path) -> None:
     time is the query's progress."""
     import asyncio as _asyncio
 
-    from clio_agent.runtime import thread_progress
+    from clio_agent.runtime import progress
 
     source = tmp_path / "s.csv"
     source.write_text(_SENSORS_CSV, encoding="utf-8")
@@ -1590,16 +1590,16 @@ def test_the_query_runs_on_its_own_measured_thread(tmp_path: Path) -> None:
 
     def run() -> Any:
         names.append(threading.current_thread().name)
-        identity = thread_progress.current_thread_identity()
+        identity = progress.current_thread_identity()
         _burn_cpu_for(0.3)
-        cpu = thread_progress.thread_cpu_seconds(identity)
+        cpu = progress.thread_cpu_seconds(identity)
         assert cpu is not None and cpu >= 0.1
         return engine.run_table_query(
             source, "csv", request, limit=10, cancellation=engine.QueryCancellation()
         )
 
     result = _asyncio.run(
-        thread_progress.run_while_thread_works(
+        progress.run_while_thread_works(
             run, op="test", no_progress_s=5.0, ceiling_s=60.0, thread_name="clio-table-query"
         )
     )

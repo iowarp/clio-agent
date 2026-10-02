@@ -1,9 +1,7 @@
 """A context op names live segments, or it fails typed (owner module).
 
-Delete, summarize and replace used to skip any id that was not live -- never written,
-already deleted or compacted away -- so a human's or an algorithm's edit could silently
-not happen. Every op now checks its ids against the scope's live set first and applies
-nothing when one is stale.
+Delete, summarize and replace check their ids against the scope's live set first and
+apply nothing when one is not live (never written, already deleted or compacted away).
 """
 
 from __future__ import annotations

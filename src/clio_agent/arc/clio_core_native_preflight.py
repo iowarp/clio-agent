@@ -96,10 +96,8 @@ def _run_child(
     without progress, or the ``arc.liveness.max_wait_s`` ceiling, ends it (killed, and
     reported by the caller as a typed attach failure -- never silently).
     """
-    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
-        ProcessTreeWork,
-        wait_while_progressing,
-    )
+    from clio_agent.arc.daemon_progress import wait_while_progressing  # noqa: PLC0415 - cycle
+    from clio_agent.runtime.progress import ProcessTreeWork  # noqa: PLC0415
 
     proc = subprocess.Popen(  # noqa: S603 - fixed interpreter + in-module source
         argv,

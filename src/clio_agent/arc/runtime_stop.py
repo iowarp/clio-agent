@@ -355,10 +355,8 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
             # hung without accepting) leaves its listener's accept backlog to fill with
             # the probes below, after which a probe times out exactly like a freed port.
             # Taking that for a clean stop left the daemon running with its pidfile gone.
-            from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
-                max_wait_s,
-                process_work,
-            )
+            from clio_agent.arc.daemon_progress import max_wait_s  # noqa: PLC0415 - cycle
+            from clio_agent.runtime.progress import process_work  # noqa: PLC0415
 
             ceiling = max_wait_s()
             no_progress_s = stop_no_progress_s()

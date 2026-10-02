@@ -254,7 +254,7 @@ def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
         def poll(self) -> int:
             return 0
 
-    from clio_agent.arc import daemon_progress
+    from clio_agent.runtime import progress
 
     alive = {"until": time.monotonic() + 0.4}  # frees after several stall slices
     work = {"w": 0.0}
@@ -275,7 +275,7 @@ def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0.05")
     monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
     monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
-    monkeypatch.setattr(daemon_progress, "process_work", advancing)
+    monkeypatch.setattr(progress, "process_work", advancing)
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill"))
     monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
 
@@ -324,7 +324,7 @@ def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
         def poll(self) -> int:
             return 1
 
-    from clio_agent.arc import daemon_progress
+    from clio_agent.runtime import progress
 
     work = {"w": 0.0}
 
@@ -337,7 +337,7 @@ def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
     monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
     monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
-    monkeypatch.setattr(daemon_progress, "process_work", idle_polling)
+    monkeypatch.setattr(progress, "process_work", idle_polling)
     killed: list[bool] = []
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
     monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
