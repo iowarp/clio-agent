@@ -10,6 +10,7 @@ from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
 from clio_agent.gact.protocol.v3.session import session_to_v3
+from clio_agent.gact.protocol.v3.variant import project_variant_event
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
 # per-attempt, so the Session record cannot carry them) and must ride the v3
@@ -369,14 +370,15 @@ _COMPACTION_EVENTS = frozenset({"compaction.started", "compaction.completed", "c
 
 
 def _semantic_event(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
-    """A compaction's highway event as ``compaction.started|completed|failed``.
+    """A highway event served as its own typed v3 event, else ``None``.
 
-    Every other semantic event keeps its generic ``semantic.event`` envelope.
+    A compaction's event becomes ``compaction.started|completed|failed``; a variant
+    run's tries and selection get their own frames (the try tabs). Every other semantic
+    event keeps its generic ``semantic.event`` envelope.
     """
-    del event, session
     event_type = str(payload.get("event_type") or "")
     if event_type not in _COMPACTION_EVENTS:
-        return None
+        return project_variant_event(event, payload, session)
     body = dict(_mapping(payload.get("payload")))
     return _Projection(event_type, body, str(body.get("compaction_id") or "") or None)
 

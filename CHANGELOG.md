@@ -21,6 +21,27 @@ TUI/HTTP surface aren't tracked here.
 - `POST /v1/sessions/{sid}/compact?scope=` compacts one agent scope; the response is
   `{session_id, compacted, compactions: [...]}`.
 - The `recall_context` agent tool returns compacted steps byte-exact.
+- BestOfN / Refine on demand. The main agent has a `draft_alternatives(n, rubric,
+  strategy, judge)` tool: `best_of_n` tries run in parallel, each a real agent run on
+  its own clio-core scope (`<agent>#run<k>`); `refine` improves one draft at a time.
+  `n` is capped by `variants.max_n` (`CLIO_VARIANTS_MAX_N`, default 4). An `injection`
+  part (`source: variant_drafting`) tells the user drafts are being made.
+- A human judge (`judge: user`, also as a spawn `strategy` or blueprint `module.judge`):
+  the turn yields a `choice` question whose options are the drafts (`value`: the try's
+  scope id, `description`: its final text) and whose `metadata.variants_id` names the
+  run. Answer with `selected_options: [<draft id>]` (exactly one, else 422) and an
+  optional `answer` (the comment; for `refine` it becomes the next draft's advice).
+- GACT 0.3 frames for a run: `variant.try.upserted`, `variant.try.delta`,
+  `variant.selected` (from the `variant.try` / `variant.try.delta` / `variant.selected`
+  semantic events, all carrying `variants_id`); a try's other semantic events and
+  injection blocks carry `variants_id` / `try_index`.
+
+### Changed
+
+- `variant.try` is now emitted when a try starts (`running`) and ends (`completed` with
+  `text`, `tokens` and, when judged, `score`; or `failed` with `error`); every variant
+  event and `variant_selection` carries the run's `variants_id`. A variant try's
+  streamed text goes to its `variant.try.delta` tab, no longer into the turn's answer.
 
 ### Removed
 

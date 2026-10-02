@@ -24,7 +24,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "workflows", "goal", "scheduler"),
+        ("agents", "agent_tasks", "workflows", "goal", "scheduler", "variants"),
         "Child-agent concurrency, declared-workflow step liveness, goal judging and the cron "
         "scheduler.",
     ),
@@ -111,6 +111,10 @@ KEY_NOTES: dict[str, str] = {
     "agents.react_extract.enabled": (
         "Runs DSPy's extract after a long ReAct loop to fill outputs the loop did not produce; "
         "never replaces the model's own answer. Set false for the strict one-call-per-step contract."
+    ),
+    "variants.max_n": (
+        "Most tries one BestOfN / Refine run may draft (draft_alternatives, a spawn strategy); "
+        "a larger request is capped to it. Each try is a full agent run, so it bounds the cost."
     ),
     "arc.cache_capacity": (
         "Max entries in ARC's in-process LRU cache; raise to cut store re-reads on a low-RAM host, "

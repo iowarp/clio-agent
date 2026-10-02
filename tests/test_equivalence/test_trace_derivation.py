@@ -155,7 +155,7 @@ def test_real_record_path_trace_equals_events_projection(tmp_path: Path) -> None
     """The production flow: ``record_semantic_event`` persists ``_events`` AND (via the
     sink) writes the trace JSONL. Each JSONL line equals the projection of its matching
     ``_events`` segment — the trace is a derivation of the log, proven end to end."""
-    from clio_agent.gact.semantic_events import FileSemanticTraceBackend
+    from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
     trace_dir = tmp_path / "traces"
     backend = FileSemanticTraceBackend(trace_dir)
@@ -299,7 +299,7 @@ def test_routing_arc_op_through_record_forms_the_loop(tmp_path: Path) -> None:
 def _record_with_file_trace(tmp_path: Path, monkeypatch: Any) -> tuple[ARCMemory, Path]:
     """Record the sample events with the FILE trace backend wired (so #762 erase is
     armed) and return (arc, trace_dir)."""
-    from clio_agent.gact.semantic_events import FileSemanticTraceBackend
+    from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     trace_dir = tmp_path / "traces"

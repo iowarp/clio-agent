@@ -55,15 +55,15 @@ from clio_agent.runtime import trace
 # kind, so the persisted log can never leak into a model prompt.
 
 # Event types NOT persisted as ``semantic_event`` segments.
-#   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
-#     that rides the highway only; persisting one segment apiece would bloat ARC for
+#   * ``lm.token.delta`` / ``variant.try.delta`` — the high-volume transient token streams
+#     that ride the highway only; persisting one segment apiece would bloat ARC for
 #     zero record value.
 # (``arc.op`` is NOT here: it is the DERIVED write-log of a segment mutation and no
 # longer enters ``record_semantic_event`` at all — the gact op-logger derives it
 # DIRECTLY to the durable trace + SSE bus. With no path back into ARC's record, the
 # old recursion (record -> op-logger -> arc.op -> record) cannot form, so neither the
 # skip entry nor the thread-local re-entrancy guard is needed.)
-_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "variant.try.delta"})
 
 logger = logging.getLogger(__name__)
 

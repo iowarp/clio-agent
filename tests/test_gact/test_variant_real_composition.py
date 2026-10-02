@@ -22,6 +22,7 @@ from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import module_variants
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.clio_react_record import read_steps
+from clio_agent.gact.agents.variant_records import preference_records
 from tests._scripted_engine import Reply, scripted_lm, wire
 
 SESSION, SCOPE = "sess-variant", "writer"
@@ -118,8 +119,24 @@ def test_each_try_and_the_selection_are_on_the_highway(tmp_path: Path) -> None:
             ctx.reset(token)
 
     variant = [e for e in events if e.event_type.startswith("variant.")]
-    assert [e.event_type for e in variant] == ["variant.try", "variant.try", "variant.selected"]
-    assert [e.payload["run_index"] for e in variant[:2]] == [0, 1]
+    # per try: started, ended (its text), scored; then the selection -- one run, one id
+    assert [(e.event_type, e.payload.get("run_index"), e.status) for e in variant] == [
+        ("variant.try", 0, "running"),
+        ("variant.try", 0, "completed"),
+        ("variant.try", 0, "completed"),
+        ("variant.try", 1, "running"),
+        ("variant.try", 1, "completed"),
+        ("variant.try", 1, "completed"),
+        ("variant.selected", None, "completed"),
+    ]
+    assert len({e.payload["variants_id"] for e in variant}) == 1
+    assert [e.payload.get("score") for e in variant[:6]] == [None, None, 0.0, None, None, 1.0]
+    assert variant[4].payload["text"] == "GOOD draft"
     selected = variant[-1].payload
     assert selected["winning_index"] == 1
+    assert selected["text"] == "GOOD draft"
     assert [s["score"] for s in selected["scores"]] == [0.0, 1.0]
+    [record] = preference_records(app, sid)
+    assert record.origin == "module_variant"
+    assert [c.text for c in record.candidates] == ["BAD draft", "GOOD draft"]
+    assert record.selected_index == 1

@@ -92,6 +92,9 @@ SegmentKind = Literal[
     # gact/workflow_state/state_merge.py). The recorded result is materialized onto the
     # transcript projection so workflow_state is never RE-FOLDED on read under a newer
     # pack schema (design §2.5, §2.8.d).
+    "variant_record",  # Phase 9: one snapshot of a BestOfN / Refine run (its tries, the
+    # judge's scores or the user's pick, comment, advice) on the ``_events/v`` lane --
+    # the run's state across a pause and its preference record (gact/agents/variant_records.py).
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 

@@ -347,7 +347,7 @@ def _build_semantic_event(
     # The payload rides verbatim — clio does NOT author UI captions. The event's
     # one-line ``summary`` already rides the envelope; the consumer (TUI) decides
     # how to fold the FULL content.
-    event_payload = dict(payload or {})
+    event_payload = _ctx.stamp_active_try(dict(payload or {}))
     return SemanticEvent(
         event_type=event_type,
         session_id=sid,

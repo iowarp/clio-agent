@@ -8,6 +8,7 @@ exact wire (system, messages, tools, config).
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -157,3 +158,115 @@ def summarize(messages: Sequence[Message]) -> list[tuple[str, list[Any]]]:
 
 def _result_text(part: Any) -> str:
     return "".join(getattr(p, "text", "") for p in part.content)
+
+
+class RoutedEngine(ScriptedEngine):
+    """Replies per conversation: each request is routed by the scope in its prompt-cache
+    key (``clio:<session>:<scope>``), so parallel variant tries each get their own script
+    whatever order their requests arrive in.
+
+    ``overlap``: the first request of every ``#run`` scope is held until that many are
+    in flight -- proof the tries run at once. Every LM call runs on clio's one persistent
+    LM loop, so the hold is an ``asyncio`` wait on that loop (a thread barrier would
+    block the loop itself); ``overlap_timeout`` only guards the test against a hang.
+    """
+
+    def __init__(
+        self,
+        routes: dict[str, Sequence[Reply]],
+        overlap: int = 0,
+        overlap_timeout: float = 60.0,
+    ) -> None:
+        super().__init__([])
+        self.routes = {scope: list(script) for scope, script in routes.items()}
+        self.by_scope: dict[str, list[Request]] = {scope: [] for scope in routes}
+        self.overlap = overlap
+        self.overlap_timeout = overlap_timeout
+        self.in_flight = 0
+        self._all_in: asyncio.Event | None = None
+
+    @staticmethod
+    def scope_of(request: Request) -> str:
+        """The scope a request belongs to (from its prompt-cache key; ``""``: none)."""
+        cache = getattr(request.config, "cache", None) if request.config else None
+        key = str(getattr(cache, "key", "") or "")
+        return key.rsplit(":", 1)[-1] if key else ""
+
+    def _take(self, request: Request) -> tuple[str, int]:
+        scope = self.scope_of(request)
+        with self._lock:
+            self.requests.append(request)
+            seen = self.by_scope.setdefault(scope, [])
+            seen.append(request)
+            return scope, len(seen) - 1
+
+    def _reply_for(self, scope: str, index: int, request: Request) -> Response:
+        script = self.routes.get(scope, [])
+        if index >= len(script):
+            raise AssertionError(f"scope {scope!r} called the model {index + 1} times")
+        return _reply(request, script[index], f"{scope.replace('#', '_')}_{index}")
+
+    def _next(self, request: Request) -> Response:
+        scope, index = self._take(request)
+        return self._reply_for(scope, index, request)
+
+    async def anext_reply(self, request: Request) -> Response:
+        """The async reply, holding a try's first request until ``overlap`` are in."""
+        scope, index = self._take(request)
+        if self.overlap and "#run" in scope and index == 0:
+            if self._all_in is None:
+                self._all_in = asyncio.Event()
+            self.in_flight += 1
+            if self.in_flight >= self.overlap:
+                self._all_in.set()
+            await asyncio.wait_for(self._all_in.wait(), self.overlap_timeout)
+        return self._reply_for(scope, index, request)
+
+
+class AsyncRoutedEngine(AsyncScriptedEngine):
+    """Async face of a :class:`RoutedEngine` (its overlap hold awaits on the LM loop)."""
+
+    sync: RoutedEngine
+
+    async def complete(self, request: Request) -> Response:
+        return await self.sync.anext_reply(request)
+
+    async def stream(self, request: Request) -> AsyncIterator[Any]:
+        for event in response_to_events(await self.sync.anext_reply(request)):
+            yield event
+
+
+def _reply(request: Request, reply: Reply, tag: str) -> Response:
+    if reply.raises is not None:
+        raise reply.raises
+    parts: list[Any] = []
+    if reply.thinking:
+        parts.append(ThinkingPart(text=reply.thinking))
+    if reply.text:
+        parts.append(TextPart(text=reply.text))
+    ids = list(reply.call_ids) or [f"call_{tag}_{i}" for i in range(len(reply.calls))]
+    parts.extend(
+        ToolCallPart(id=ids[i], name=name, input=dict(args))
+        for i, (name, args) in enumerate(reply.calls)
+    )
+    return Response(
+        id=f"resp_{tag}",
+        model=request.model,
+        message=Message.assistant(parts or [TextPart(text="")]),
+        finish_reason=reply.finish_reason or ("tool_call" if reply.calls else "stop"),
+        usage=Usage(input_tokens=10, output_tokens=5),
+    )
+
+
+def routed_lm(routes: dict[str, Sequence[Reply]], overlap: int = 0) -> tuple[dspy.LM, RoutedEngine]:
+    """A ``dspy.LM`` whose replies are routed per scope (it declares a prompt-cache key)."""
+    engine = RoutedEngine(routes, overlap)
+    lm = dspy.LM(
+        MODEL,
+        engine=engine,
+        async_engine=AsyncRoutedEngine(engine),
+        cache=False,
+        num_retries=0,
+    )
+    lm._clio_prompt_cache_key = True
+    return lm, engine
