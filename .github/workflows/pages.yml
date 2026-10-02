@@ -16,10 +16,14 @@ on:
     paths:
       - "site/**"
       - "pyproject.toml"
+      - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
+      - "external/clio-agent-marketplace"
       - ".github/workflows/pages.yml"
   pull_request:
     paths:
       - "site/**"
+      - "src/clio_agent/gact/builtin_skills/present-interactive-analysis/**"
+      - "external/clio-agent-marketplace"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -38,12 +42,14 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: true
       # Build the public gallery from the production widget renderer. Keep this
       # commit pinned so a docs deploy cannot silently change its UI behavior.
       - uses: actions/checkout@v4
         with:
           repository: iowarp/gact-tui
-          ref: 604ae82cf03ce2f273f597f40ace4faf34b20b9f
+          ref: 928dc02fd1940003abbdeda0819d02e36415e8b8
           path: gact-tui-checkout
       - uses: pnpm/action-setup@v4
         with:

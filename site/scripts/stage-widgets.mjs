@@ -20,4 +20,20 @@ await mkdir(target, { recursive: true });
 for (const entry of await readdir(source)) {
   await cp(resolve(source, entry), resolve(target, entry), { recursive: true });
 }
+// The published gallery shows the skill from this site checkout, not the
+// development snapshot bundled for the standalone gact-tui preview.
+const presentationSkill = resolve('..', 'src', 'clio_agent', 'gact', 'builtin_skills', 'present-interactive-analysis', 'SKILL.md');
+if (!(await stat(presentationSkill).catch(() => null))?.isFile()) {
+  throw new Error(`Presentation skill missing: ${presentationSkill}`);
+}
+await mkdir(resolve(target, 'gallery-skills'), { recursive: true });
+await cp(presentationSkill, resolve(target, 'gallery-skills', 'present-interactive-analysis.md'));
+const marketplaceAgent = resolve('..', 'external', 'clio-agent-marketplace', 'base-agent');
+if (!(await stat(resolve(marketplaceAgent, 'AGENT.md')).catch(() => null))?.isFile()) {
+  throw new Error(`Standard agent missing: ${marketplaceAgent}`);
+}
+const stagedAgent = resolve(target, 'gallery-skills', 'base-agent');
+await mkdir(resolve(stagedAgent, 'experts'), { recursive: true });
+await cp(resolve(marketplaceAgent, 'AGENT.md'), resolve(stagedAgent, 'AGENT.md'));
+await cp(resolve(marketplaceAgent, 'experts', 'base.md'), resolve(stagedAgent, 'experts', 'base.md'));
 console.log(`Staged the CLIO widget gallery in ${target}`);
