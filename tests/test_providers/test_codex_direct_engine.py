@@ -557,3 +557,65 @@ def test_a_set_effort_keeps_its_value_and_gains_the_summary(harness: Harness) ->
     _run(_engine(), request)
     [frame] = harness.sockets[0].frames
     assert frame["reasoning"] == {"effort": "low", "summary": "auto"}
+
+
+def _calling(rid: str, call_id: str) -> list[dict[str, Any]]:
+    """A reply that calls ``search`` (``call_id``), as the backend streams it."""
+    item = {
+        "type": "function_call",
+        "id": f"fc_{call_id}",
+        "call_id": call_id,
+        "name": "search",
+        "arguments": '{"q": "x"}',
+        "status": "completed",
+    }
+    return [
+        {"type": "response.created", "response": {"id": rid}},
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {**item, "arguments": ""},
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": item["id"],
+            "output_index": 0,
+            "delta": item["arguments"],
+        },
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {
+            "type": "response.completed",
+            "response": {"id": rid, "status": "completed", "output": [item], "usage": {}},
+        },
+    ]
+
+
+def test_a_reply_that_is_not_the_providers_own_is_a_full_send(
+    harness: Harness, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    """Found live (2026-10-02): after a drafts pick the next turn failed "No tool output
+    found for function call": the provider's reply was the ``draft_alternatives`` call,
+    the conversation continued from the picked draft's text, and the delta left that call
+    unanswered on the backend. Sabotage: drop the reply-calls check -> a delta -> red."""
+    harness.script[:] = [_calling("resp_1", "call_draft"), "two"]
+    engine = _engine()
+    _run(engine, _request(HEAD))
+    picked = Message.assistant([TextPart(text="Hi Dana, the shipment is late.")])
+    _run(engine, _request(HEAD, picked, Message.user("make it shorter")))
+
+    assert _stateful(audit) == [("full", "first_call"), ("full", "prefix_mismatch")]
+    assert "previous_response_id" not in harness.sockets[-1].frames[-1]
+
+
+def test_the_providers_own_calls_answered_continue_as_a_delta(
+    harness: Harness, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    harness.script[:] = [_calling("resp_1", "call_0"), "two"]
+    engine = _engine()
+    _run(engine, _request(HEAD))
+    _run(engine, _request(HEAD, *_step(0)))
+
+    assert _stateful(audit) == [("full", "first_call"), ("delta", None)]
+    [socket] = harness.sockets
+    assert socket.frames[1]["previous_response_id"] == "resp_1"
+    assert [item.get("type") for item in socket.frames[1]["input"]] == ["function_call_output"]
