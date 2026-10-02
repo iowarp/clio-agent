@@ -39,6 +39,16 @@ _BURN = (
     "print('done', flush=True)\n"
     "sys.stdin.readline()\n"
 )
+# Burns a fixed amount of CPU time (not wall time): on a loaded CI runner a wall-clock
+# burn got 0.09 CPU-s of its 0.5 s, so an assertion on the work done went red (CI).
+_BURN_CPU = (
+    "import sys, time\n"
+    "end = time.process_time() + float(sys.argv[1])\n"
+    "while time.process_time() < end:\n"
+    "    pass\n"
+    "print('done', flush=True)\n"
+    "sys.stdin.readline()\n"
+)
 _IDLE = "import sys; print('ready', flush=True); sys.stdin.readline()\n"
 
 
@@ -220,7 +230,7 @@ def test_tree_work_is_cumulative_when_a_working_child_exits(
             sys.executable,
             "-c",
             "import subprocess, sys\n"
-            f"p = subprocess.Popen([sys.executable, '-c', {_BURN!r}, '0.5'],"
+            f"p = subprocess.Popen([sys.executable, '-c', {_BURN_CPU!r}, '0.5'],"
             " stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)\n"
             "print(p.stdout.readline().strip(), flush=True)\n"
             "p.stdin.write('\\n'); p.stdin.flush(); p.wait()\n"
