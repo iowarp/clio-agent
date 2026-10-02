@@ -16,7 +16,6 @@ brought up; there is no other store.
 """
 
 import atexit
-import base64
 import contextlib
 import logging
 import os
@@ -36,6 +35,7 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
+from clio_agent.arc.blob_frame import frame, unframe
 from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
@@ -603,8 +603,9 @@ class ClioCoreStore:
     ) -> None:
         # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC,
         # on the async API (clio_core_async_ops) so a stalled daemon cannot hold the GIL.
-        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
-        payload = base64.b64encode(data)
+        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
+        # its length because a shorter put can leave the old tail (``blob_frame``).
+        payload = frame(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
@@ -630,7 +631,7 @@ class ClioCoreStore:
         blobs: list[tuple[str, bytes]] = []
         stale: list[str] = []
         for record in records:
-            payload = base64.b64encode(record.data)
+            payload = frame(record.data)
             if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
                 stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
             blobs.append((record.name, payload))
@@ -655,7 +656,7 @@ class ClioCoreStore:
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
-        return base64.b64decode(tag.GetBlob(name, size, 0))
+        return unframe(name, tag.GetBlob(name, size, 0))
 
     @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:
