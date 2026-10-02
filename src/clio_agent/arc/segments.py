@@ -50,6 +50,17 @@ from clio_agent.errors import ClioError
 logger = logging.getLogger(__name__)
 
 
+class SegmentReadError(ClioError):
+    """A persisted segment scope cannot be decoded into its expected record list."""
+
+    def __init__(self, session_id: str, scope: str) -> None:
+        super().__init__(
+            f"ARC segments for session {session_id!r}, scope {scope!r} cannot be decoded",
+            error_type="clio_core_segments_invalid",
+            details={"session_id": session_id, "scope": scope},
+        )
+
+
 def _encode_safe(value: Any) -> Any:
     """Recursively coerce ``value`` to a plain msgpack/JSON-native form so ARC can
     ALWAYS persist it, regardless of which emit site produced it.
@@ -239,7 +250,10 @@ class SegmentStore:
         key = (session_id, scope)
         if key not in self._loaded:
             raw = self._store.get("segments", self._record_name(session_id, scope))
-            segs = decode_segments(raw) if raw else []
+            try:
+                segs = decode_segments(raw) if raw else []
+            except msgspec.DecodeError as exc:
+                raise SegmentReadError(session_id, scope) from exc
             self._scopes[key] = segs
             self._loaded.add(key)
             self._index.bulk_load(session_id, scope, segs)  # parallel locator
