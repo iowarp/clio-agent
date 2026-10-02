@@ -1635,6 +1635,9 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - **PRs opened:** clio-agent #1593 and gact-tui #524 into develop.
     - gact-tui #524 failed CI: an A2UI map surface renders twice (a real regression), and the `tui/internal/ui` file freeze. Being fixed.
   - **Ready to merge into main:** clio-schemas #18 and marketplace #83 (CI green; listed for the owner).
+  - gact-tui #525: the double-mounted surface fixed (a latent bug also on develop: a surface awaiting a pending response showed in both the tray and the detached list); the Go file freeze back to 612; the Linux summarization baseline added.
+  - **MERGED INTO DEVELOP** after green PR CI: clio-agent #1593 (`1a2a4ccc`) and gact-tui #524 (`4177f167`).
+  - **Final verification running on develop.** Results go to `opal-work/reports/final-verification-2026-10-02.md`.
 
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
