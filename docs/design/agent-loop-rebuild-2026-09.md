@@ -1577,7 +1577,10 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - **run 36946126271 on `rework_agent` after #1576: green** (2026-10-02). Every later merge re-runs CI.
 
 ### In flight
-- **`transcript.file: false` made safe and real (owner):** an atomic `replace_session` (new lane generation, then pointer swap), and no read of `messages/` with the flag off. Branch `fix/transcript-file-off`.
+- **Done (#1578): `transcript.file: false` is safe and real.**
+  - Replacing a transcript is atomic: a new generation under `_events/m/g/N`, then a pointer switch at `_events/m/gen`, then the old generation dropped. A failure before the switch leaves the old transcript intact, typed as `LaneReplaceError`.
+  - With the flag off, nothing reads `messages/`.
+  - Open: a failed lane cleanup during session delete is still only a warning (pre-existing).
 - **Progress signals and clio-core waits** (iowarp/clio-agent#1577, the parts that do not need clio-core). Branch `fix/progress-signals`:
   - a per-server `descendants_work`;
   - macOS-safe probes;
