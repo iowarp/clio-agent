@@ -33,11 +33,14 @@ from typing import Any, Literal
 
 from packaging.version import InvalidVersion, Version
 
+from clio_agent.runtime.process_progress import ProbeUnresponsiveError
+
 logger = logging.getLogger(__name__)
 
 ClientSource = Literal["installed", "bundled"]
 
-#: Bound on one ``--version`` probe so a hung binary cannot stall a provider check.
+#: A ``--version`` probe answering within this costs nothing extra; past it the probe
+#: is waited for only while the CLI keeps working (a hung binary cannot stall a check).
 VERSION_PROBE_TIMEOUT_S = 5.0
 
 _VERSION_PATTERN = re.compile(r"(\d+\.\d+\.\d+(?:[-.+][0-9A-Za-z.]+)?)")
@@ -107,17 +110,26 @@ def version_key(version: str) -> Version | None:
 
 
 def probe_version(path: str) -> str:
-    """Run ``<path> --version`` once and return the parsed version, ``""`` on failure."""
+    """Run ``<path> --version`` once and return the parsed version, ``""`` on failure.
+
+    Past :data:`VERSION_PROBE_TIMEOUT_S` the probe is waited for while the CLI keeps
+    working (:func:`~clio_agent.runtime.process_progress.run_probe`).
+
+    Raises:
+        ProbeUnresponsiveError: the CLI launched but did not answer and stopped working
+            -- installed but slow or unresponsive, which callers report as such, never as
+            "not installed" (#1577).
+    """
+    from clio_agent.runtime.process_progress import run_probe  # noqa: PLC0415
+
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        result = subprocess.run(  # noqa: S603 - fixed argv; the path is a discovered CLI
+        result = run_probe(
             [path, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=VERSION_PROBE_TIMEOUT_S,
-            check=False,
+            op=f"{path} --version",
+            first_wait_s=VERSION_PROBE_TIMEOUT_S,
             **kwargs,
         )
     except (OSError, subprocess.SubprocessError) as exc:
@@ -196,19 +208,33 @@ def _claude_candidates() -> list[Path]:
 
 
 def _installed_claude() -> tuple[ClientBinary | None, str]:
-    unreadable = False
+    unreadable = unresponsive = False
     for candidate in _claude_candidates():
         if not candidate.is_file():
             continue
         if os.name == "nt" and not is_native_executable(candidate):
             continue  # npm's claude.cmd shim: the SDK refuses to spawn it
-        version = probe_version(str(candidate))
+        try:
+            version = probe_version(str(candidate))
+        except ProbeUnresponsiveError:
+            unresponsive = True  # installed but slow: typed, never "not found"
+            continue
         if version:
             return ClientBinary(path=str(candidate), version=version, source="installed"), ""
         unreadable = True
+    if unresponsive:
+        return None, "claude_installed_version_unresponsive"
     return None, (
         "claude_installed_version_unreadable" if unreadable else "claude_installed_not_found"
     )
+
+
+def _bundled_version(path: str) -> str:
+    """The bundled CLI's version; empty when it is unresponsive (run_probe logged why)."""
+    try:
+        return probe_version(path)
+    except ProbeUnresponsiveError:
+        return ""  # the selection then prefers a binary with a known version
 
 
 def bundled_claude_path() -> Path | None:
@@ -227,7 +253,7 @@ def _select_claude() -> ClientSelection:
     bundled_path = bundled_claude_path()
     bundled = (
         ClientBinary(
-            path=str(bundled_path), version=probe_version(str(bundled_path)), source="bundled"
+            path=str(bundled_path), version=_bundled_version(str(bundled_path)), source="bundled"
         )
         if bundled_path is not None
         else None

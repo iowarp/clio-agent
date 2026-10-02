@@ -153,8 +153,8 @@ def test_the_loop_surfaces_a_sign_out_as_itself(monkeypatch: pytest.MonkeyPatch)
     fake.install(monkeypatch, script=[_signed_out_turn()])
     lm = dspy.LM(
         "claude_code/claude-sonnet-5",
-        engine=ClaudeCodeEngine("claude-sonnet-5", cwd="/w", timeout=5.0),
-        async_engine=AsyncClaudeCodeEngine("claude-sonnet-5", cwd="/w", timeout=5.0),
+        engine=ClaudeCodeEngine("claude-sonnet-5", cwd="/w", idle_timeout_s=5.0),
+        async_engine=AsyncClaudeCodeEngine("claude-sonnet-5", cwd="/w", idle_timeout_s=5.0),
         cache=False,
         num_retries=0,
     )

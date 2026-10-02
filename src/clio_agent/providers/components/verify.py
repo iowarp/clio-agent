@@ -66,9 +66,21 @@ def verify_claude_code() -> dict[str, Any]:
     from clio_agent.providers.model_discovery.claude_code import (
         discover_claude_code,  # noqa: PLC0415
     )
+    from clio_agent.runtime.process_progress import (  # noqa: PLC0415
+        ProbeUnresponsiveError,
+    )
 
     bundled = bundled_claude_path()
-    if bundled is not None and not probe_version(str(bundled)):
+    try:
+        bundled_version = probe_version(str(bundled)) if bundled is not None else "-"
+    except ProbeUnresponsiveError as exc:
+        return {
+            "ok": False,
+            "code": "claude_bundled_cli_unresponsive",
+            "detail": str(exc),
+            "client": claude_client().to_wire(),
+        }
+    if not bundled_version:
         return {
             "ok": False,
             "code": "claude_bundled_cli_unrunnable",

@@ -10,6 +10,7 @@ overlay/credential-store check.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,8 @@ if TYPE_CHECKING:
     from clio_agent.config import LMProviderConfig
     from clio_agent.gact.lm_provider_types import LMProviderRequest
 
+
+logger = logging.getLogger(__name__)
 
 #: How long a bind waits for the startup model check still in flight.
 STARTUP_CHECK_WAIT_S = 60.0
@@ -34,7 +37,14 @@ async def await_startup_check(app: Any) -> None:
     """
     task = getattr(app.state, "provider_catalog_startup_task", None)
     if task is not None and not task.done():
-        await asyncio.wait({task}, timeout=STARTUP_CHECK_WAIT_S)
+        done, _pending = await asyncio.wait({task}, timeout=STARTUP_CHECK_WAIT_S)
+        if not done:
+            # Not silent (#1577): the bind goes on with what the check has recorded so far.
+            logger.warning(
+                "provider bind stopped waiting for the startup model check "
+                "reason=startup_check_still_running waited_s=%.0f",
+                STARTUP_CHECK_WAIT_S,
+            )
 
 
 async def apply_codex_readiness_gate(

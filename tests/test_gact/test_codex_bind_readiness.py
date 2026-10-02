@@ -10,6 +10,7 @@ has, as the Claude Code bind does.
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,14 +37,22 @@ async def test_a_bind_waits_for_the_startup_check_in_flight() -> None:
     assert check.done()
 
 
-async def test_the_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_the_wait_is_bounded_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The bounded wait falling through is a WARNING with a typed reason (#1577).
+
+    SABOTAGE: drop the warning when the wait falls through -> no record -> red.
+    """
     monkeypatch.setattr(codex_readiness, "STARTUP_CHECK_WAIT_S", 0.01)
     never = asyncio.get_running_loop().create_future()
-    await await_startup_check(
-        SimpleNamespace(state=SimpleNamespace(provider_catalog_startup_task=never))
-    )
+    with caplog.at_level(logging.WARNING, logger=codex_readiness.__name__):
+        await await_startup_check(
+            SimpleNamespace(state=SimpleNamespace(provider_catalog_startup_task=never))
+        )
     assert not never.done()
     never.cancel()
+    assert any("reason=startup_check_still_running" in r.getMessage() for r in caplog.records)
 
 
 async def test_no_startup_check_is_no_wait() -> None:

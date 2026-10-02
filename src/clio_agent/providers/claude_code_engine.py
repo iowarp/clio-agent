@@ -85,8 +85,6 @@ from clio_agent.providers.stateful_common import stateful_reset_payload
 
 __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
-DEFAULT_TIMEOUT_S = 180.0
-
 
 def _capacity() -> int:
     """Max kept Claude Code sessions (``providers.claude_code.stateful_capacity``)."""
@@ -123,12 +121,25 @@ class AsyncClaudeCodeEngine:
         *,
         thinking: dict[str, Any] | None = None,
         cwd: str | None = None,
-        timeout: float = DEFAULT_TIMEOUT_S,
+        idle_timeout_s: float | None = None,
     ) -> None:
         self.model = model
         self.thinking = thinking
         self.cwd = cwd or os.getcwd()
-        self.timeout = timeout
+        self.idle_timeout_s = idle_timeout_s
+
+    def idle_timeout(self) -> float:
+        """The longest gap between two streamed messages (#1577).
+
+        The explicit bound when one was given, else ``limits.lm_inter_token_idle_s`` --
+        the same window the turn watchdog trusts a streaming call for. The connect has
+        its own progress-based bound (:mod:`.claude_code_expiry`).
+        """
+        if self.idle_timeout_s is not None:
+            return self.idle_timeout_s
+        from clio_agent.runtime.lm_activity import inter_token_idle_seconds  # noqa: PLC0415
+
+        return inter_token_idle_seconds()
 
     async def complete(self, request: Request) -> Response:
         """Run one query and return the assembled response."""
@@ -172,7 +183,7 @@ class AsyncClaudeCodeEngine:
                 payload=body,
                 native_blocks=blocks,
                 session_id=session_id,
-                timeout=self.timeout,
+                idle_timeout=self.idle_timeout(),
                 on_construct=_STREAM_CLIENT_POOL.bump_construct,
                 model=self.model,
                 cwd=self.cwd,
@@ -181,11 +192,9 @@ class AsyncClaudeCodeEngine:
             ):
                 for out in turn.handle(message):
                     yield out
-        except TimeoutError as exc:
+        except TimeoutError as exc:  # typed by claude_code_expiry: connect vs stream idle
             _reset(send)
-            raise LMTimeoutError(
-                f"claude agent sdk timed out after {self.timeout}s (model={self.model})"
-            ) from exc
+            raise LMTimeoutError(f"{exc} (model={self.model})") from exc
         except transient_transport_error_types() as exc:
             _reset(send)
             raise ServerError(

@@ -202,7 +202,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 1028,
+    "src/clio_agent/gact/agent_blueprints.py": 996,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -393,7 +393,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
-    "src/clio_agent/gact/turn_spawn.py": 811,
+    "src/clio_agent/gact/turn_spawn.py": 810,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -663,7 +663,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
     # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
-    "src/clio_agent/gact/routes/providers.py": 1073,
+    "src/clio_agent/gact/routes/providers.py": 1030,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -1041,7 +1041,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 918,
+    "src/clio_agent/tools/mcp_executor.py": 917,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

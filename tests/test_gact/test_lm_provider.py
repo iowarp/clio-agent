@@ -1944,7 +1944,7 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
                 "flash_attention": True,
                 "echo_load_config": True,
             },
-            "timeout": 180,
+            "timeout": (10.0, None),  # connect-bounded; the read waits on liveness polls
         }
         assert app.state.lm_config["context_length"] == 32768
         owned = app.state.lm_studio_owned_instance

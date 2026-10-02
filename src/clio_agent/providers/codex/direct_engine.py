@@ -42,6 +42,7 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import queue
 import threading
 import time
@@ -87,6 +88,8 @@ __all__ = [
 
 _END = object()
 _TERMINAL = frozenset({"response.completed", "response.failed", "response.incomplete", "error"})
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -485,9 +488,7 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
     ws_headers["OpenAI-Beta"] = c.OPENAI_BETA_WEBSOCKETS
     ws_headers["session-id"] = session
     try:
-        return await websockets.connect(
-            c.CODEX_WS_URL, additional_headers=ws_headers, open_timeout=c.WS_CONNECT_TIMEOUT_S
-        )
+        return await _open_socket(ws_headers)
     except websockets.InvalidStatus as exc:
         status = exc.response.status_code
         body = bytes(exc.response.body or b"").decode("utf-8", "replace")
@@ -499,10 +500,36 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
     # Typed so DSPy retries them; a lasting failure reaches the user in plain words.
     except TimeoutError as exc:
         raise ProviderTimeoutError(
-            f"Codex did not answer the connection within {c.WS_CONNECT_TIMEOUT_S:.0f} s"
+            "Codex is slow or unresponsive: it did not answer the connection within "
+            f"{c.WS_CONNECT_TIMEOUT_S:g} s, nor within {c.WS_CONNECT_RETRY_TIMEOUT_S:g} s "
+            "on a retry"
         ) from exc
     except OSError as exc:
         raise TransportError(f"Could not connect to Codex: {exc}") from exc
+
+
+async def _open_socket(ws_headers: dict[str, str]) -> Any:
+    """Open the socket; a handshake that times out is retried once with a longer bound."""
+    try:
+        return await _open_socket_within(ws_headers, c.WS_CONNECT_TIMEOUT_S)
+    except TimeoutError:
+        logger.warning(
+            "codex websocket open slow reason=codex_ws_open_slow_retrying timeout_s=%g "
+            "retry_timeout_s=%g",
+            c.WS_CONNECT_TIMEOUT_S,
+            c.WS_CONNECT_RETRY_TIMEOUT_S,
+        )
+    return await _open_socket_within(ws_headers, c.WS_CONNECT_RETRY_TIMEOUT_S)
+
+
+async def _open_socket_within(ws_headers: dict[str, str], open_timeout: float) -> Any:
+    return await websockets.connect(
+        c.CODEX_WS_URL,
+        additional_headers=ws_headers,
+        open_timeout=open_timeout,
+        ping_interval=c.WS_PING_INTERVAL_S,
+        ping_timeout=c.WS_PING_TIMEOUT_S,
+    )
 
 
 async def _exchange(

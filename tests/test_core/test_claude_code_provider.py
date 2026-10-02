@@ -48,7 +48,7 @@ async def test_the_engine_translates_sdk_stream_events(monkeypatch: pytest.Monke
             fake.ResultMessage(usage={"input_tokens": 2, "output_tokens": 3}, result="Hello"),
         ],
     )
-    engine = AsyncClaudeCodeEngine("haiku", cwd="/w", timeout=5.0)
+    engine = AsyncClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0)
     events = [event async for event in engine.stream(fake.request())]
 
     deltas = [e.delta for e in events if e.type == "delta"]

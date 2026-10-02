@@ -390,7 +390,8 @@ def _max_lm_call_seconds() -> float:
     return value if value > 0 else _DEFAULT_MAX_LM_CALL_S
 
 
-def _inter_token_idle_seconds() -> float:
+def inter_token_idle_seconds() -> float:
+    """``limits.lm_inter_token_idle_s``: the longest trusted gap between streamed tokens."""
     try:
         value = conf.resolve(
             "limits.lm_inter_token_idle_s",
@@ -507,7 +508,7 @@ def note_lm_activity_for(session_id: str) -> None:
     connect has produced ZERO tokens, so touching ``last`` would silently flip
     :func:`_bucket_in_flight` from the generous prefill/non-streaming ceiling
     (:func:`_max_lm_call_seconds`, ~1800s) to the much tighter inter-token-idle
-    window (:func:`_inter_token_idle_seconds`, ~120s) -- misclassifying "still
+    window (:func:`inter_token_idle_seconds`, ~120s) -- misclassifying "still
     queued, zero tokens" as "actively streaming a token" and silently
     shrinking the very ceiling the queue-wait is trying to keep the call under.
     ``queued_last`` instead REFRESHES the prefill-style ceiling on its own
@@ -565,7 +566,7 @@ def _bucket_in_flight(st: dict[str, float]) -> bool:
 
     | regime      | trigger                          | ceiling                        | refreshed by            |
     |-------------|-----------------------------------|---------------------------------|--------------------------|
-    | STREAMING   | ``last`` > ``started``            | ``_inter_token_idle_seconds()`` | ``note_lm_activity()``   |
+    | STREAMING   | ``last`` > ``started``            | ``inter_token_idle_seconds()`` | ``note_lm_activity()``   |
     | QUEUED      | ``last`` == ``started`` AND       | ``_max_lm_call_seconds()``      | ``note_lm_activity_for()``|
     |             | ``queued_last`` > 0               | (prefill ceiling, REFRESHED)    |                          |
     | NON-STREAMING| ``last`` == ``started`` AND      | ``_max_lm_call_seconds()``      | nothing (measured off    |
@@ -595,7 +596,7 @@ def _bucket_in_flight(st: dict[str, float]) -> bool:
         return False
     now = time.monotonic()
     if st["last"] > st["started"]:
-        return (now - st["last"]) < _inter_token_idle_seconds()
+        return (now - st["last"]) < inter_token_idle_seconds()
     if st.get("queued_last", 0.0) > 0.0:
         return (now - st["queued_last"]) < _max_lm_call_seconds()
     return (now - st["started"]) < _max_lm_call_seconds()
