@@ -15,11 +15,8 @@ from typing import Any
 import pytest
 
 from clio_agent.gact.runtime.globals import _set_app_arc
-from clio_agent.gact.semantic_events import (
-    FileSemanticTraceBackend,
-    SemanticEvent,
-    TraceWriteError,
-)
+from clio_agent.gact.semantic_events import SemanticEvent
+from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend, TraceWriteError
 
 
 class _ArcRefusingWiring:
