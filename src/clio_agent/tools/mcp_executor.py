@@ -285,17 +285,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
         self._namespace_clients: dict[str, Any] = {}
         self._namespace_ctxs: dict[str, Any] = {}
-        # #1281 F5 (adversarial review): derive the direct-client factory
-        # registry straight off `server` (the gateway) at construction -- the
-        # ONE choke point EVERY executor build (create_async_tool_executor,
-        # SyncMCPToolExecutor's own inner build, any future direct
-        # construction) funnels through, so a construction site can never
-        # forget to stamp it (gact/relay_wiring.py's rebuild was exactly this
-        # miss). getattr-guarded: a non-gateway `server` (an in-process test
-        # double) simply carries no registry, matching today's proxy-only
-        # behavior. A merge caller joining a SECOND gateway's namespaces onto
-        # an EXISTING executor (fleet_blueprint_merge.merge_blueprint_namespaces)
-        # still mutates this dict in place afterward -- construction only seeds it.
+        # #1281 F5: derive the direct-client factory registry off `server` (the gateway)
+        # at construction -- the ONE choke point every executor build funnels through, so
+        # no construction site can forget to stamp it (gact/relay_wiring.py's rebuild once
+        # did). getattr-guarded: a non-gateway `server` (a test double) carries none. A
+        # merge caller (fleet_blueprint_merge.merge_blueprint_namespaces) joining a SECOND
+        # gateway's namespaces still mutates this dict in place; construction only seeds it.
         self._clio_namespace_direct_factories: dict[str, Any] = dict(
             getattr(server, "_clio_namespace_direct_factories", None) or {}
         )
@@ -695,13 +690,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         for namespace, ctx in list(self._namespace_ctxs.items()):
             try:
                 await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5.0)
-            except Exception as exc:  # noqa: BLE001 - teardown continues; reason logged
-                logger.debug("Error closing namespace client %r: %s", namespace, exc)
+            except Exception as exc:  # noqa: BLE001 - teardown continues; typed reason logged
+                _log_close_failure(f"namespace client {namespace!r}", exc)
         self._namespace_ctxs.clear()
         self._namespace_clients.clear()
-        # #1281 F13 (adversarial review): clear the route/heal bookkeeping
-        # alongside the clients/ctxs it describes -- a closed executor must
-        # never be re-entered with stale per-namespace route state.
+        # #1281 F13: clear the route/heal bookkeeping with the clients/ctxs it describes.
         self._namespace_direct_routes.clear()
         self._namespace_heal_attempted.clear()
 
@@ -712,12 +705,18 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                     self._client_ctx.__aexit__(None, None, None),
                     timeout=close_timeout,
                 )
-            except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
-                logger.debug("Error closing AsyncMCPToolExecutor client: %s", exc)
+            except Exception as exc:  # noqa: BLE001 - teardown continues; typed reason logged
+                _log_close_failure("executor client", exc)
 
         self._client = None
         self._client_ctx = None
         self._namespace_locks.clear()
+
+
+def _log_close_failure(what: str, exc: BaseException) -> None:
+    """A close that timed out or failed may leave its server running: WARN, typed (#1577)."""
+    reason = "mcp_close_timeout" if isinstance(exc, TimeoutError) else "mcp_close_failed"
+    logger.warning("MCP %s close failed reason=%s error=%r", what, reason, exc)
 
 
 #: Typed reason for the logged repr fallback when no real JSON mapping exists.
