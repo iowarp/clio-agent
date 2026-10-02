@@ -196,6 +196,10 @@ KEY_NOTES: dict[str, str] = {
         "Message-part atoms held per on-disk chunk of a session's transcript atom lane before "
         "rolling; raise to cut chunk count, lower to bound re-encode cost."
     ),
+    "arc.search_chunk_atoms": (
+        "Atoms per append-only search-companion chunk of an agent scope before a new chunk "
+        "opens; raise to cut record count, lower to bound the text re-put per append."
+    ),
     "arc.server_conf": (
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."
@@ -215,6 +219,10 @@ KEY_NOTES: dict[str, str] = {
     "arc.store_config": (
         'Path to the clio-core CTE config used when arc.store is "cte"; set to point ARC at a '
         "hand-authored multi-tier topology."
+    ),
+    "arc.ws_chunk_segments": (
+        "Working-set atoms held per on-disk chunk of an expert span's content lane before "
+        "rolling; an append re-puts only the active chunk, so lower bounds bytes per append."
     ),
     "artifacts.cas_budget_bytes": (
         "Byte budget for the content-addressed artifact store; over it, GC evicts unreachable "
@@ -461,6 +469,10 @@ KEY_NOTES: dict[str, str] = {
     "gact.loop_inbox.max_events": (
         "Per-session bound on buffered mid-turn wakes (child completions and user steers) before "
         "the oldest recoverable one is evicted; raise for very fan-out-heavy turns."
+    ),
+    "gact.media_cache_bytes": (
+        "Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across context "
+        "reads, least recently used first out; lower to bound memory."
     ),
     "gact.message_intents.max_acceptances_per_session": (
         "Per-session cap on retained message-acceptance records used for idempotent POST replay; "

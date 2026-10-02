@@ -638,6 +638,11 @@ gact.live_edge_streaming: false
 # out-heavy turns.
 gact.loop_inbox.max_events: 64
 
+# CLIO_GACT_MEDIA_CACHE_BYTES  (int)  <- src/clio_agent/gact/agents/media_cache.py
+# Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across
+# context reads, least recently used first out; lower to bound memory.
+gact.media_cache_bytes: 67108864
+
 # CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
 # Per-session cap on retained message-acceptance records used for idempotent
 # POST replay; raise for clients that retry over long windows, lower to
@@ -841,6 +846,12 @@ arc.message_part_chunk_segments: 512
 # apart.
 # arc.namespace:  # default unset; resolved in code
 
+# CLIO_ARC_SEARCH_CHUNK_ATOMS  (int)  <- src/clio_agent/arc/search_companion.py
+# Atoms per append-only search-companion chunk of an agent scope before a
+# new chunk opens; raise to cut record count, lower to bound the text re-put
+# per append.
+arc.search_chunk_atoms: 16
+
 # CLIO_SERVER_CONF  (str)  <- src/clio_agent/arc/clio_core_liveness.py
 # Path to a clio-core server YAML config the port-resolution logic reads;
 # set to point liveness probing at a non-default config file.
@@ -855,6 +866,12 @@ arc.store: "cte"
 # Path to the clio-core CTE config used when arc.store is "cte"; set to
 # point ARC at a hand-authored multi-tier topology.
 # arc.store_config:  # default unset; resolved in code
+
+# CLIO_ARC_WS_CHUNK_SEGMENTS  (int)  <- src/clio_agent/arc/lane_writer.py
+# Working-set atoms held per on-disk chunk of an expert span's content lane
+# before rolling; an append re-puts only the active chunk, so lower bounds
+# bytes per append.
+arc.ws_chunk_segments: 32
 
 # ==========================================================================
 # Artifacts

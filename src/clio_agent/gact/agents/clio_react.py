@@ -421,7 +421,7 @@ class _Loop:
             self.recorder.arrivals(arrived, max(self.step, 0))
 
     def _context(self) -> list[Message]:
-        return record.read_steps(self.arc, self.session, self.scope)
+        return self.recorder.read_steps()
 
     def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
         """Run the step's calls concurrently; outcomes in call order."""

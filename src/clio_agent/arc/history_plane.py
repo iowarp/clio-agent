@@ -21,6 +21,7 @@ import dspy
 import msgspec
 
 from clio_agent.arc import history_mode
+from clio_agent.arc.context_view import ViewSnapshot, next_generation
 from clio_agent.arc.schema import WORKING_SET_KINDS, Segment
 
 
@@ -31,6 +32,8 @@ class HistoryPlane:
         self._lock = threading.Lock()
         self._scopes: dict[tuple[str, str], dspy.History] = {}
         self._clock = itertools.count(1)
+        # Renewed by every delete / drop, so a reader never reuses a stale prefix.
+        self._generations: dict[tuple[str, str], int] = {}
 
     def history(self, session_id: str, scope: str) -> dspy.History:
         """The scope's record as it stands (segment records, in write order)."""
@@ -84,6 +87,19 @@ class HistoryPlane:
         """The scope's live segments in order."""
         return self.list_segments(session_id, scope)
 
+    def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
+        """The scope's live segments and their generation (appends keep it)."""
+        with self._lock:
+            key = (session_id, scope)
+            generation = self._generations.get(key, 0)
+            records = self._scopes.get(key, dspy.History(messages=[])).messages
+        live = [msgspec.convert(r, Segment) for r in records if r["status"] == "live"]
+        return ViewSnapshot(generation, tuple(live))
+
+    def has_segments(self, session_id: str, scope: str) -> bool:
+        """Whether anything was ever recorded in the scope (any status)."""
+        return bool(self.history(session_id, scope).messages)
+
     def render_working_set(self, session_id: str, scope: str) -> list[Segment]:
         """The live segments the agent's context is folded from."""
         return [s for s in self.render_segments(session_id, scope) if s.kind in WORKING_SET_KINDS]
@@ -103,6 +119,7 @@ class HistoryPlane:
                     deleted += 1
                 out.append(rec)
             self._scopes[key] = dspy.History(messages=out)
+            self._generations[key] = next_generation()
             return deleted
 
     def drop_session(self, session_id: str) -> None:
@@ -111,6 +128,7 @@ class HistoryPlane:
         with self._lock:
             for key in [k for k in self._scopes if k[0] == session_id]:
                 del self._scopes[key]
+                self._generations[key] = next_generation()
 
 
 def plane_for(app: Any) -> Any:

@@ -202,6 +202,11 @@ class _MemoryStore:
     ) -> None:
         self._data[(kind, name)] = data
 
+    def put_many(self, kind: str, records: Any) -> None:
+        """Put each record (an in-process dict cannot refuse one)."""
+        for record in records:
+            self.put(kind, record.name, record.data, search_text=record.search_text)
+
     def get(self, kind: str, name: str) -> Optional[bytes]:
         return self._data.get((kind, name))
 

@@ -140,9 +140,11 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[Harness]:
         return FakeSocket(h.sockets, h.script)
 
     monkeypatch.setattr(direct_engine, "_connect", connect)
-    direct_engine._CONVERSATIONS.clear()
+    for kept in (direct_engine._CONVERSATIONS, direct_engine._RESETS, direct_engine._FORWARDS):
+        kept.clear()
     yield h
-    direct_engine._CONVERSATIONS.clear()
+    for kept in (direct_engine._CONVERSATIONS, direct_engine._RESETS, direct_engine._FORWARDS):
+        kept.clear()
 
 
 @pytest.fixture
@@ -230,6 +232,43 @@ def test_append_only_calls_send_only_new_items_on_the_same_socket(
     assert first.message.parts == (TextPart(text="one"),)
     assert (first.usage.input_tokens, first.usage.cache_read_tokens) == (1000, 900)
     assert _stateful(audit) == [("full", "first_call"), ("delta", None), ("delta", None)]
+
+
+def test_an_arc_op_on_the_forward_resets_typed_ops_reset(
+    harness: Harness, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    """Compaction's hook (``note_prefix_reset_for_active_scope``) reaches Codex direct:
+    the next call is a full send on a new socket audited ``ops_reset``, never an
+    inferred ``prefix_mismatch``. Sabotage: drop the engine's
+    ``register_scope_registry`` -> ``prefix_mismatch`` -> red."""
+    engine = _engine()
+    _run(engine, _request(HEAD))
+    _run(engine, _request(HEAD, *_step(0)))
+    assert stateful_common.note_prefix_reset_for_active_scope("ops_reset") is True
+    _run(engine, _request(Message.user("[earlier context] summary"), *_step(1)))
+
+    assert _stateful(audit) == [("full", "first_call"), ("delta", None), ("full", "ops_reset")]
+    assert len(harness.sockets) == 2 and harness.sockets[0].closed
+    assert "previous_response_id" not in harness.sockets[1].frames[0]
+
+
+def test_each_call_builds_its_wire_request_once(
+    harness: Harness, loop_scope: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A delta is a slice of the one build (no re-render of the prefix)."""
+    wire = _wire()
+    builds: list[int] = []
+    real = wire.build_request
+
+    def counted(request: Request, stream: bool) -> Any:
+        builds.append(len(request.messages))
+        return real(request, stream)
+
+    monkeypatch.setattr(wire, "build_request", counted)
+    engine = _engine(wire=wire)
+    for messages in ((HEAD,), (HEAD, *_step(0)), (HEAD, *_step(0), *_step(1))):
+        _run(engine, _request(*messages))
+    assert builds == [1, 3, 5]
 
 
 def test_an_edited_history_is_a_full_send_on_a_new_socket(

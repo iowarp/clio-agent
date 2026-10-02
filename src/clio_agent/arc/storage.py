@@ -23,7 +23,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
@@ -35,7 +35,8 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
-from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put
+from clio_agent.arc.batch_put import BatchPutError, PutRecord
+from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -131,6 +132,14 @@ class ARCStore(Protocol):
 
         ``search_text`` (optional) is a plain-text projection of the record for BM25 semantic
         discovery (Thread D); a backend may index it. ``None`` drops any existing companion.
+        """
+        ...
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        """Put independent records together (no order between them).
+
+        Every record is attempted; a store that lost any raises
+        :class:`~clio_agent.arc.batch_put.BatchPutError` naming what was written.
         """
         ...
 
@@ -591,6 +600,34 @@ class ClioCoreStore:
         elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        """Put independent records concurrently on the async path (one stall-guarded
+        batch: every ``AsyncPutBlob`` -- bodies and search companions -- is issued, then
+        all are awaited). A stale-companion probe runs only for a record that can carry
+        one and has no text.
+
+        Raises:
+            BatchPutError: Some blob was lost after its bounded retry; the others of the
+                batch were written (named in the error).
+        """
+        blobs: list[tuple[str, bytes]] = []
+        stale: list[str] = []
+        for record in records:
+            payload = base64.b64encode(record.data)
+            if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
+                stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
+            blobs.append((record.name, payload))
+            if record.search_text is not None:
+                blobs.append((record.name + _SEARCH_SUFFIX, record.search_text.encode("utf-8")))
+            elif may_carry_companion(kind, record.name):
+                stale.append(record.name + _SEARCH_SUFFIX)
+        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs)
+        for companion in stale:
+            guarded_store_rpc(self, "put", store_delete, self, kind, companion)
+        if lost:
+            written = [name for name, _ in blobs if name not in lost]
+            raise BatchPutError(kind, written, dict(lost))
 
     def tag(self, kind: str) -> str:
         """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""

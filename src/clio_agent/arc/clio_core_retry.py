@@ -177,7 +177,9 @@ def _reset_put_write_health_for_tests() -> None:
         _lost_write = None
 
 
-def put_blob_with_retry(tag: Any, name: str, payload: bytes) -> None:
+def put_blob_with_retry(
+    tag: Any, name: str, payload: bytes, *, first_failure: RuntimeError | None = None
+) -> None:
     """Write one blob, retrying EVERY native refusal a bounded number of times.
 
     A native refusal carries no structured code, so its transience is not
@@ -189,6 +191,8 @@ def put_blob_with_retry(tag: Any, name: str, payload: bytes) -> None:
         name: Blob name (re-putting the same name is an idempotent overwrite,
             which is what makes the retry safe).
         payload: The exact bytes to store.
+        first_failure: The refusal of a first attempt already made elsewhere (a
+            batch's concurrent put); the ladder continues from attempt 2.
 
     Raises:
         RuntimeError: The final native refusal unmodified after
@@ -200,6 +204,8 @@ def put_blob_with_retry(tag: Any, name: str, payload: bytes) -> None:
     delay = write_retry_first_delay_s()
     for attempt in range(attempts):
         try:
+            if attempt == 0 and first_failure is not None:
+                raise first_failure
             tag.PutBlob(name, payload, 0)
         except RuntimeError as exc:
             if attempt == attempts - 1:
@@ -218,3 +224,9 @@ def put_blob_with_retry(tag: Any, name: str, payload: bytes) -> None:
         else:
             _record_put_success()
             return
+
+
+def note_put_success() -> None:
+    """Record a clio-core write that succeeded outside :func:`put_blob_with_retry`
+    (a batch's concurrent first attempt): write health recovers exactly as it would."""
+    _record_put_success()

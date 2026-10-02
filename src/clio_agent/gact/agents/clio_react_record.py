@@ -43,6 +43,8 @@ from dspy.lm15 import (
 )
 
 from clio_agent.errors import ClioError
+from clio_agent.gact.agents.context_reader import ContextReader
+from clio_agent.gact.agents.media_cache import cached_media
 from clio_agent.gact.injection_parts import emit_injection
 
 logger = logging.getLogger(__name__)
@@ -134,12 +136,12 @@ def arc_scope() -> tuple[Any, str, str]:
 
 
 def read_steps(arc: Any, session: str, scope: str) -> list[Message]:
-    """Fold the scope's live plane into typed messages; typed failure on a read error."""
-    try:
-        segments = arc.render_segments(session, scope)
-    except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
-        raise ContextReadError(scope, exc) from exc
-    return fold_steps(segments)
+    """Fold the scope's live plane into typed messages; typed failure on a read error.
+
+    A one-off read; the loop keeps a :class:`ContextReader` (its recorder's) so each
+    step re-folds only the open tail step.
+    """
+    return ContextReader(arc, session, scope).read()
 
 
 # --------------------------------------------------------------------------- #
@@ -330,15 +332,23 @@ def _media(value: Any) -> ImagePart | DocumentPart | None:
     if not isinstance(value, Mapping):
         return None
     if is_image(value):
-        media, _size = image_hydrate(value)
-        media_type, data = _split_data_url(str(getattr(media, "url", "")))
-        return ImagePart(data=data, media_type=media_type)
+
+        def image() -> ImagePart:
+            media, _size = image_hydrate(value)
+            media_type, data = _split_data_url(str(getattr(media, "url", "")))
+            return ImagePart(data=data, media_type=media_type)
+
+        return cached_media("image", value, image, lambda part: len(part.data))
     if is_pdf(value):
-        media, _size = pdf_hydrate(value)
-        media_type, data = _split_data_url(
-            str(getattr(media, "url", "") or getattr(media, "file_data", ""))
-        )
-        return DocumentPart(data=data, media_type=media_type or "application/pdf")
+
+        def document() -> DocumentPart:
+            media, _size = pdf_hydrate(value)
+            media_type, data = _split_data_url(
+                str(getattr(media, "url", "") or getattr(media, "file_data", ""))
+            )
+            return DocumentPart(data=data, media_type=media_type or "application/pdf")
+
+        return cached_media("document", value, document, lambda part: len(part.data))
     return None
 
 
@@ -375,6 +385,11 @@ class StepRecorder:
         self.expert_id = expert_id
         self.turn_id = _active_semantic_turn_id()
         self.expert_span_id = ""
+        self._reader = ContextReader(arc, session, scope)
+
+    def read_steps(self) -> list[Message]:
+        """The scope's context as messages; only the open tail step is re-folded."""
+        return self._reader.read()
 
     def started(self, expert_span_id: str, inputs: Mapping[str, Any]) -> None:
         """Open the expert lifecycle on the highway."""
@@ -404,9 +419,7 @@ class StepRecorder:
         told its tool details are not included. From then on the scope is
         append-only like any other.
         """
-        if self.arc is None or self.arc.list_segments(
-            self.session, self.scope, include_tombstoned=True
-        ):
+        if self.arc is None or self.arc.has_segments(self.session, self.scope):
             return
         from clio_agent.gact.conversation_projection import (  # noqa: PLC0415
             model_context_messages,

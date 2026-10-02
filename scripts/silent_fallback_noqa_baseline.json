@@ -11,7 +11,7 @@
  "arc/rpc_liveness.py": 3,
  "arc/runtime_stop.py": 2,
  "arc/segments.py": 6,
- "arc/working_set_fold.py": 2,
+ "arc/working_set_fold.py": 1,
  "config.py": 1,
  "errors.py": 1,
  "gact/a2ui_catalogs/activation.py": 2,

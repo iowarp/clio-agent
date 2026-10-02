@@ -318,7 +318,7 @@ def test_read_seam_failure_is_typed() -> None:
     cause -- never swallowed, never an empty context."""
 
     class _BrokenArc:
-        def render_segments(self, session: str, scope: str) -> list[Any]:
+        def context_view(self, session: str, scope: str) -> Any:
             raise OSError("plane unreadable")
 
     with pytest.raises(ContextReadError) as err:
@@ -335,10 +335,10 @@ def test_loop_fails_typed_on_a_plane_read_failure_without_fallback(
     closes the lifecycle ``failed`` -- it does NOT fall back to its own steps, so the
     model is never called on a context the plane did not produce."""
 
-    def _broken(session: str, scope: str) -> list[Any]:
+    def _broken(session: str, scope: str) -> Any:
         raise OSError("plane unreadable")
 
-    monkeypatch.setattr(arc, "render_segments", _broken)
+    monkeypatch.setattr(arc, "context_view", _broken)
     lifecycle: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         runtime_globals,

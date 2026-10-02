@@ -33,10 +33,7 @@ def _raw_lane_atoms(arc: ARCMemory, session: str) -> list:
     """Every raw atom on the fold's content lane (bypassing the fold's render)."""
     store = arc._segments
     assert isinstance(store, FoldingSegmentStore)
-    atoms: list = []
-    for pscope in store._lane_scopes(session):
-        atoms.extend(store.list_segments(session, pscope, include_tombstoned=True))
-    return atoms
+    return store.raw_lane_atoms(session)
 
 
 def test_step_open_excluded_from_render_but_on_the_log() -> None:
