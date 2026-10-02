@@ -1646,10 +1646,11 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - **Status at 10:15 CDT (2026-10-02): the PRs to main are open, not merged.**
     - **iowarp/clio-agent#1604** (develop -> main, v0.9.4.24) and **iowarp/gact-tui#526** (develop -> main): CI green, mergeable. Develop CI green on `846abcd7`.
     - **iowarp/clio-schemas#18** (0.5.2) and **iowarp/clio-agent-marketplace#83**: CI green, mergeable; these repos have no develop.
-    - Data scenario on `846abcd7`: 485 s vs 430 s baseline (the plot turn took more steps; all turns `end_turn`). Its stream audit showed the ReAct side calls (the post-answer extract) sharing the agent's Codex conversation key, forcing a full resend on the next main call (`prefix_mismatch`). **#1603** (`fix/codex-side-call-key`) runs side calls under their own key; its CI rerun of a known timing flake (`test_store_ops_stalled_daemon[put]`) is in progress. Once merged into develop it is part of #1604.
+    - Data scenario on `846abcd7`: 485 s vs 430 s baseline (the plot turn took more steps; all turns `end_turn`). Its stream audit showed the ReAct side calls (the post-answer extract) sharing the agent's Codex conversation key, forcing a full resend on the next main call (`prefix_mismatch`). **Fixed: #1603 merged into develop (`1048527a`)**, side calls run under their own key; it is part of #1604.
+    - **Branches cleaned (10:30 CDT):** every campaign branch already in develop was deleted (36 in clio-agent, 10 in gact-tui) and the phase PRs #1540-#1545 closed. What is left to review is the release PRs (#1604, gact-tui#526), schemas#18, marketplace#83, and one unfinished branch: `fix/transcript-replace-lean-atoms` (`720f5bcb`, wip, untested: mint lean part atoms on a transcript replace, so a message with a large metadata is not re-put once per part).
     - **Release order (owner):** merge gact-tui#526 and tag; bump clio-agent's `external/gact-tui` pin to that tag; merge marketplace#83 and schemas#18, release 0.5.2 and bump the `clio-schemas` pin; merge clio-agent#1604.
     - **Left for the owner:** the Chrome UI check (release gate); the merges above; filing the clio-core `PutBlob` shrink issue; a DSPy stream-reset proposal for drops after visible output.
-    - **Superseded PRs to close after the release:** the phase PRs #1538 (this doc, after its final commit), #1540-#1545, which #1593 merged into develop.
+    - This doc lands in develop with #1538, so it ships with #1604.
 
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
