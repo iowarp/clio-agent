@@ -1587,6 +1587,9 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - MCP connect;
   - finalize drains;
   - 180 s ceilings.
+- **Phase 9 edges** (branch `fix/variant-pick-edges`):
+  - a new message supersedes the pending pick;
+  - typed `cancelled` / `expired` terminal states.
 - **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
   - Claude Code inter-message idle bound;
   - no silent cut in `net_chokepoint`;
@@ -1601,7 +1604,10 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **"The compaction issue" (deferred by the owner):** #1559 (prompt-file format with Jinja2) and #1560 (summaries: the 300-character evidence cut, a structured recall-aware prompt).
 
 ### Still open (development and failure fixing)
-1. **`clio-schemas` release:** the pinned `clio-schemas==0.5.1` lacks the `injection` and `notice` blocks.
+1. **`clio-schemas` release (owner):**
+   - iowarp/clio-schemas#18 (draft) adds the `injection` fields (`trigger`, `compaction_id`, `variants_id`, `try_index`) and the `notice` block, in 0.5.2, which is not yet released. It is checked against what `rework_agent` emits, with 105 tests passing.
+   - After the release, bump clio-agent's `clio-schemas==0.5.1` pin.
+   - Pre-existing gap: `agent_message`, `context_reference`, `mcp_app` and `resource` blocks are emitted but not modelled in clio-schemas.
 2. **Byte budget: closed, justified.** The light-ledger floor in `test_resident_ledgers` went from 1551 to 1587 (bound 1600). The wire already omits empty fields (`exclude_defaults`). The test estimates resident memory, and the in-memory `Part` carries every declared field. Each earlier additive field moved this floor the same way, and the test comment records each step.
 3. **gact-tui e2e:** the Linux baseline for `summarization-row-collapsed.png` is missing; `workspace-mobile-light-reduced` already fails on the base commit.
 4. **Phase 9 edges:**
