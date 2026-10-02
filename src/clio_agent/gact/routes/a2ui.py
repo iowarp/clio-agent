@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
@@ -56,11 +57,20 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         require_session(sid)
-        degradations = app.state.a2ui_store.projection_degradations(sid)
+        try:
+            surfaces, degradations = app.state.a2ui_store.list_wire_with_degradations(sid)
+        except ClioError as exc:
+            surfaces = []
+            degradations = [
+                {
+                    "reason": exc.error_type,
+                    "detail": f"Interactive surfaces for session {sid} could not be read: {exc}",
+                }
+            ]
         if app.state.a2ui_store.load_degradation is not None:
             degradations.insert(0, app.state.a2ui_store.load_degradation)
         return {
-            "surfaces": app.state.a2ui_store.list_wire(sid),
+            "surfaces": surfaces,
             "degradations": degradations,
         }
 

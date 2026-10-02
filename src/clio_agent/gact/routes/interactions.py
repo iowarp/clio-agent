@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
+from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.off_loop import run_off_loop
@@ -579,7 +580,18 @@ def project_pending_interactions(
     walk_order = [root_session_id, *_owners_newest_first(app, scope - {root_session_id})]
     walked, skipped = walk_order[:limit], walk_order[limit:]
     for owner in walked:
-        owner_rows, owner_degradations = _a2ui_interactions(app, owner)
+        try:
+            owner_rows, owner_degradations = _a2ui_interactions(app, owner)
+        except ClioError as exc:
+            # A damaged persisted A2UI record should not hide pending questions
+            # or permissions from this owner or the other sessions in scope.
+            degradations.append(
+                {
+                    "reason": exc.error_type,
+                    "detail": f"Interactive surfaces for session {owner} could not be read: {exc}",
+                }
+            )
+            continue
         rows.extend(owner_rows)
         degradations.extend(owner_degradations)
     if skipped:

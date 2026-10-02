@@ -11,6 +11,7 @@ from typing import Any
 import dspy
 from fastapi.testclient import TestClient
 
+from clio_agent.arc.blob_frame import BlobDecodeError
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_failure
@@ -33,6 +34,25 @@ from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 from tests._scripted_engine import calls, scripted_lm
+
+
+def test_damaged_surface_ledger_degrades_interactions_and_snapshot(tmp_path, monkeypatch) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="damaged")
+
+    def unreadable(_session_id: str) -> tuple[list[dict[str, object]], list[dict[str, str]]]:
+        raise BlobDecodeError("damaged-record")
+
+    monkeypatch.setattr(app.state.a2ui_store, "list_wire_with_degradations", unreadable)
+    with TestClient(app) as client:
+        response = client.get(f"/v1/sessions/{session.id}/interactions", headers=HEADERS)
+        snapshot = client.get(f"/v1/sessions/{session.id}/a2ui/surfaces", headers=HEADERS)
+
+    assert response.status_code == snapshot.status_code == 200
+    assert response.json()["interactions"] == []
+    assert response.json()["degradations"][0]["reason"] == "clio_core_blob_invalid_base64"
+    assert snapshot.json()["surfaces"] == []
+    assert snapshot.json()["degradations"][0]["reason"] == "clio_core_blob_invalid_base64"
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
