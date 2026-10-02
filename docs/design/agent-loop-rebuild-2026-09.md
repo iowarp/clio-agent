@@ -1602,7 +1602,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 
 ### Still open (development and failure fixing)
 1. **`clio-schemas` release:** the pinned `clio-schemas==0.5.1` lacks the `injection` and `notice` blocks.
-2. **Byte budget:** the light-ledger watermark in `test_resident_ledgers` was raised from 1551 to 1600 after the part fields grew. Justify it or remove the growth.
+2. **Byte budget: closed, justified.** The light-ledger floor in `test_resident_ledgers` went from 1551 to 1587 (bound 1600). The wire already omits empty fields (`exclude_defaults`). The test estimates resident memory, and the in-memory `Part` carries every declared field. Each earlier additive field moved this floor the same way, and the test comment records each step.
 3. **gact-tui e2e:** the Linux baseline for `summarization-row-collapsed.png` is missing; `workspace-mobile-light-reduced` already fails on the base commit.
 4. **Phase 9 edges:**
    - a new user message arrives instead of a pick;
