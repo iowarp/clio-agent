@@ -71,6 +71,14 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   (for example, a bounded number of points per entity) instead of trimming the
   data yourself.
 - A single observed value → one metric component per value.
+- A requested illustration, photograph, or generated schematic the person
+  should inspect alongside data → an Image in the same surface. Register the
+  actual file first and use its artifact URL; keep a short description of what
+  it depicts. A file that has not been created or registered cannot be shown.
+  For a generated schematic, keep its labels clear of the title, legend, and
+  edges at the displayed size. Inspect the rendered image when possible and
+  correct collisions before presenting it. The surrounding surface can carry
+  the report title and readings; they need not be repeated inside the image.
 - A weather or field-site conditions question with observed and forecast data →
   a compact weather view, accompanied by the decision-relevant answer in prose.
   Let the view carry the hour-by-hour and day-by-day detail; keep the prose to
@@ -112,6 +120,12 @@ Prefer one small surface at the step it explains. Reuse a stable semantic
 `surface_id` to update that view in place. Do not accumulate unrelated work into
 one final tabbed dashboard. Tabs are appropriate only when several views of the
 same result belong together and the available width justifies them.
+For a briefing or report that asks for several related views, compose the
+relevant metrics, media, map, chart, and table with Row, Grid, or Tabs where
+that makes comparison easier. Let each view carry its own detail and avoid
+repeating a generic heading around it. Use the user's named measurement in
+titles, legends, and captions; when only units are given, call it a reading
+instead of assigning an unstated physical phenomenon.
 For a correction in a later turn, call `inspect_a2ui_surface` to find the
 existing id and current components, then update that surface. A correction
 should replace the earlier view so both versions do not compete in the chat.
