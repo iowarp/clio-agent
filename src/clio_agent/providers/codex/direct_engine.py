@@ -29,8 +29,11 @@ engine changes only the transport:
   upgrades) runs lm15's own stateless HTTP transport instead -- an explicit choice,
   never a silent fallback.
 * **Errors.** An exhausted plan window is clio's terminal ``CodexPlanLimitError``
-  (never retried); a refused sign-in is a typed ``AuthError``; everything else is
-  lm15's typed error.
+  (never retried); a refused sign-in is a typed ``AuthError``; an in-stream failure
+  the Codex CLI would retry (an overload, an unknown code) is a
+  ``CodexTransientStreamError`` DSPy retries, each retry logged with its attempt
+  (:mod:`~clio_agent.providers.codex.stream_errors`); everything else is lm15's
+  typed error.
 * **Auth** is clio's own Codex sign-in when there is one (refreshed per call), else
   the local Codex CLI login (``$CODEX_HOME/auth.json``, default ``~/.codex``, read
   by lm15).
@@ -70,6 +73,12 @@ from clio_agent.providers.codex.audit import (
     emit_raw_event,
 )
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
+from clio_agent.providers.codex.stream_errors import (
+    CallOutcome,
+    CodexTransientStreamError,
+    RetryLog,
+    terminal_error,
+)
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     register_scope_registry,
@@ -90,6 +99,7 @@ _END = object()
 _TERMINAL = frozenset({"response.completed", "response.failed", "response.incomplete", "error"})
 
 logger = logging.getLogger(__name__)
+_RETRY_LOG = RetryLog()
 
 
 @dataclass(frozen=True)
@@ -255,15 +265,19 @@ class AsyncCodexDirectEngine:
         key = _driven_key(conversation_key(self.model))
         future = asyncio.run_coroutine_threadsafe(self._call(request, key, events), _OWNER.loop())
         loop = asyncio.get_running_loop()
+        outcome = CallOutcome(_RETRY_LOG, request)
         try:
             while True:
                 item = await loop.run_in_executor(None, events.get)
                 if item is _END:
+                    outcome.ended()
                     break
+                outcome.saw(item)
                 if isinstance(item, BaseException):
                     raise item
                 yield item
         finally:
+            outcome.close()
             if not future.done():
                 future.cancel()
 
@@ -352,13 +366,19 @@ class CodexDirectEngine(AsyncCodexDirectEngine):
         asyncio.run_coroutine_threadsafe(
             self._call(request, _driven_key(conversation_key(self.model)), events), _OWNER.loop()
         )
-        while True:
-            item = events.get()
-            if item is _END:
-                return
-            if isinstance(item, BaseException):
-                raise item
-            yield item
+        outcome = CallOutcome(_RETRY_LOG, request)
+        try:
+            while True:
+                item = events.get()
+                if item is _END:
+                    outcome.ended()
+                    return
+                outcome.saw(item)
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            outcome.close()
 
     def close(self) -> None:
         """Nothing to release per engine."""
@@ -599,14 +619,21 @@ async def _stream(
             c.PREVIOUS_RESPONSE_NOT_FOUND_CODE
         ):
             raise _ContinuationLost
+        parsed: Any = None
         if kind in {"error", "response.failed"}:
             message = _error_message(payload)
             if is_usage_limit_text(message):
                 # The account's plan window is exhausted: terminal, never retried.
                 raise CodexPlanLimitError(message, code=_error_code(payload))
+            failure = terminal_error(wire, request, payload)
+            if isinstance(failure, CodexTransientStreamError):
+                raise failure  # an overload / unknown code: DSPy retries it
+            parsed = [failure]  # lm15's typed error (lm15 parses no response.failed)
         if kind == "response.output_item.done":
             calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
-        for event in wire.parse_stream_events(request, _WireEvent(event=kind, data=raw)):
+        if parsed is None:
+            parsed = wire.parse_stream_events(request, _WireEvent(event=kind, data=raw))
+        for event in parsed:
             if first and event.type == "delta":
                 first = False
                 emit_raw_event(

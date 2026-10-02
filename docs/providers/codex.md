@@ -106,14 +106,23 @@ bridge -- a provider-reported reasoning delta is never invented text.
 Every failure is typed, never a bare exception: an exhausted plan window is
 `CodexPlanLimitError` (terminal, never retried, a plain-language message for
 the user); a refused sign-in is a typed auth error; a lost continuation resends
-in full once; other backend and transport failures are lm15's typed errors,
-which DSPy retries when they are retryable (never after anything streamed).
+in full once; a terminal in-stream failure (an `error` or `response.failed`
+frame) the Codex CLI would retry -- an overload (`server_is_overloaded`,
+`slow_down`), a code lm15 does not classify, a 5xx frame -- is a retryable
+`CodexTransientStreamError` (`stream_errors.py`), keyed off the backend's code
+and status, never its prose, and each attempt is logged
+(`reason=codex_transient_stream_error ... attempt=N/M`); codes the Codex CLI
+treats as final (context window, quota, usage not included, invalid prompt,
+sign-in, any other 4xx) are not retried. Other backend and transport failures
+are lm15's typed errors, which DSPy retries when they are retryable (never after
+anything streamed), with its own retry count (`limits.lm_transient_retries`) and
+backoff.
 
 ## Related source
 
 - `src/clio_agent/providers/codex/` -- OAuth (`oauth.py`, `login_flow.py`),
-  credentials (`credentials.py`), the engine (`direct_engine.py`) and its
-  stream-audit rows (`audit.py`), the live model list (`model_list.py`)
+  credentials (`credentials.py`), the engine (`direct_engine.py`), its in-stream
+  failure classification (`stream_errors.py`) and its stream-audit rows (`audit.py`), the live model list (`model_list.py`)
 - `src/clio_agent/providers/model_discovery/codex.py` -- discovery rows from
   the live model list
 - `src/clio_agent/gact/routes/codex_readiness.py` -- the bind readiness gate
