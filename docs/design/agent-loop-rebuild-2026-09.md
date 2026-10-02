@@ -1580,7 +1580,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **Done (#1578): `transcript.file: false` is safe and real.**
   - Replacing a transcript is atomic: a new generation under `_events/m/g/N`, then a pointer switch at `_events/m/gen`, then the old generation dropped. A failure before the switch leaves the old transcript intact, typed as `LaneReplaceError`.
   - With the flag off, nothing reads `messages/`.
-  - Open: a failed lane cleanup during session delete is still only a warning (pre-existing).
+  - The failed lane cleanup on delete is now typed (#1580).
 - **Progress signals and clio-core waits** (iowarp/clio-agent#1577, the parts that do not need clio-core). Branch `fix/progress-signals`:
   - a per-server `descendants_work`;
   - macOS-safe probes;
@@ -1595,7 +1595,9 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - `cancelled` and `expired` are typed end states, restart-safe.
   - New `variant.closed` v3 frame.
   - gact-tui renders closed runs (gact-tui #521): the badge and notice, no pick on a closed run, the same after reload, the pick deadline, and the composer never answering a drafts pick.
-- **In flight:** a failed clio-core cleanup on session delete becomes a typed error (branch `fix/delete-cleanup-typed`).
+- **Done (#1580): session delete and clear erase the clio-core data first.**
+  - A failure returns a typed 503 `transcript_erase_failed` (retryable); the session is kept and the retry finishes the job.
+  - `drop_lane` now removes chunks highest first, so a retry never orphans a chunk (found by the retry test).
 - **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
   - Claude Code inter-message idle bound;
   - no silent cut in `net_chokepoint`;
