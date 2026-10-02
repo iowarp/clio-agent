@@ -40,7 +40,8 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   Use `category`/`categoryField` for groups and `value`/`valueField` for a
   measured magnitude. Putting a numeric measure into `category` makes a
   separate legend entry for every distinct number; the numeric value gives
-  the renderer a continuous colour scale. The renderer supplies the legend.
+  the renderer a continuous colour scale. Give that scale a short `valueLabel`
+  and `valueUnit` when known; the renderer supplies the legend.
 - A GeoJSON FeatureCollection of sites, paths, or regions → a map with
   `geojsonUri` pointing to the registered artifact. Name feature-property
   fields for labels or colour when useful; the map draws the actual shapes.
