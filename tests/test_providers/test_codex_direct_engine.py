@@ -14,6 +14,10 @@ with a static test credential); the WebSocket is faked. Pins:
   ``CodexPlanLimitError``, a refused sign-in at the handshake is ``AuthError``, any
   other handshake status is ``ServerError``, a stream that ends without a completion
   event is ``ServerError``;
+* a terminal in-stream failure the Codex CLI retries (an overload, an unknown code, a
+  5xx frame; ``error`` or ``response.failed``) is retried by DSPy's own retry policy,
+  each attempt logged, and reaches the user as ``LMServerError`` once exhausted; a
+  final one (invalid prompt, context window, usage not included, a 4xx) is not;
 * HTTP mode streams lm15's own stateless transport (no socket); a usage-limit 429
   there is ``CodexPlanLimitError``;
 * the wire signs in with clio's own Codex credential (a fresh token per call) and,
@@ -619,3 +623,172 @@ def test_the_providers_own_calls_answered_continue_as_a_delta(
     [socket] = harness.sockets
     assert socket.frames[1]["previous_response_id"] == "resp_1"
     assert [item.get("type") for item in socket.frames[1]["input"]] == ["function_call_output"]
+
+
+# --------------------------------------------------------------------------- #
+# transient in-stream failures: DSPy retries them, loudly                     #
+# --------------------------------------------------------------------------- #
+OVERLOADED = "Our servers are currently overloaded. Please try again later."
+
+
+def _failure(
+    error: dict[str, Any], *, kind: str = "error", status: int | None = None
+) -> list[dict[str, Any]]:
+    """One reply that is only a terminal error frame (``error`` or ``response.failed``)."""
+    if kind == "response.failed":
+        return [{"type": kind, "response": {"id": "resp_x", "status": "failed", "error": error}}]
+    frame: dict[str, Any] = {"type": kind, "error": error}
+    if status is not None:
+        frame["status"] = status
+    return [frame]
+
+
+def _codex_lm(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The real ``create_lm`` Codex LM (DSPy's execution + retry over the direct engine)."""
+    from clio_agent.config import LMProviderConfig
+    from clio_agent.lm.factory import create_lm
+
+    monkeypatch.setattr(direct_engine, "default_wire", _wire)
+    return create_lm(LMProviderConfig(provider="codex", model=MODEL, api_base="codex://direct"))
+
+
+def _retry_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "clio_agent.providers.codex.stream_errors"
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        # The live failure (early adopters' data scenario, 2026-10-02).
+        _failure(
+            {
+                "type": "service_unavailable_error",
+                "code": "server_is_overloaded",
+                "message": OVERLOADED,
+            }
+        ),
+        _failure({"code": "server_is_overloaded", "message": OVERLOADED}, kind="response.failed"),
+        _failure({"code": "slow_down", "message": "Slow down."}),
+        # An unknown code (the live opal case): the Codex CLI retries what it does not know.
+        _failure(
+            {
+                "code": "access_check_failed",
+                "message": "Unable to verify Daybreak Blue access. Please try again.",
+            }
+        ),
+        _failure({"message": OVERLOADED}, status=503),  # no code at all: a 5xx frame
+    ],
+    ids=["overloaded", "response_failed", "slow_down", "unknown_code", "status_5xx"],
+)
+def test_a_transient_in_stream_failure_is_retried_by_dspy_and_logged(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: list[dict[str, Any]],
+) -> None:
+    """Found live (data scenario, 2026-10-02): Codex streamed "Our servers are currently
+    overloaded" as its terminal frame; lm15 typed it a generic ``ProviderError``, DSPy
+    never retried it, and the user's turn died. The Codex CLI retries it; so does clio,
+    through DSPy's own retry policy, each retry logged with its attempt."""
+    from clio_agent.lm.policy import lm_retries
+
+    harness.script[:] = [failure, "recovered"]
+    lm = _codex_lm(monkeypatch)
+    with caplog.at_level("INFO", logger="clio_agent.providers.codex.stream_errors"):
+        out = lm("describe the data")
+
+    assert out == ["recovered"]
+    assert len(harness.sockets) == 2  # one failed attempt, one retry
+    failed, recovered = _retry_lines(caplog)
+    assert "reason=codex_transient_stream_error " in failed
+    assert f"attempt=1/{lm_retries() + 1}" in failed
+    assert "action=dspy_retries" in failed
+    assert "reason=codex_transient_stream_error_recovered attempt=2" in recovered
+
+
+def test_the_overload_code_is_carried_on_the_retryable_error(harness: Harness) -> None:
+    harness.script[:] = [
+        _failure(
+            {
+                "type": "service_unavailable_error",
+                "code": "server_is_overloaded",
+                "message": OVERLOADED,
+            }
+        )
+    ]
+    with pytest.raises(ServerError) as caught:
+        _run(_engine(), _request(HEAD))
+    assert caught.value.provider_code == "server_is_overloaded"
+    assert caught.value.message == OVERLOADED
+    assert is_retryable_lm_error(wrap_error(caught.value, model="codex_direct/gpt-6-sol"))
+
+
+def test_retries_exhausted_reach_the_user_as_the_typed_server_error(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from dspy.utils.exceptions import LMServerError
+
+    from clio_agent.lm.policy import lm_retries
+
+    attempts = lm_retries() + 1
+    overloaded = _failure({"code": "server_is_overloaded", "message": OVERLOADED})
+    harness.script[:] = [overloaded] * attempts
+    lm = _codex_lm(monkeypatch)
+    with (
+        caplog.at_level("INFO", logger="clio_agent.providers.codex.stream_errors"),
+        pytest.raises(LMServerError, match="currently overloaded"),
+    ):
+        lm("describe the data, again")
+
+    assert len(harness.sockets) == attempts  # bounded by DSPy's retry count
+    lines = _retry_lines(caplog)
+    assert len(lines) == attempts
+    for n, line in enumerate(lines, 1):
+        assert f"attempt={n}/{attempts}" in line
+    assert "action=retries_exhausted" in lines[-1]
+
+
+@pytest.mark.parametrize(
+    ("failure", "typed"),
+    [
+        (
+            _failure({"code": "invalid_prompt", "message": "Invalid prompt."}),
+            "LMInvalidRequestError",
+        ),
+        (
+            _failure(
+                {"code": "context_length_exceeded", "message": "Too long."},
+                kind="response.failed",
+            ),
+            "ContextWindowExceededError",
+        ),
+        (_failure({"code": "usage_not_included", "message": "Not in plan."}), "LMProviderError"),
+        (_failure({"code": "bad_thing", "message": "Rejected."}, status=400), "LMProviderError"),
+    ],
+    ids=["invalid_prompt", "context_length_failed", "usage_not_included", "status_4xx"],
+)
+def test_a_final_in_stream_failure_is_not_retried(
+    harness: Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: list[dict[str, Any]],
+    typed: str,
+) -> None:
+    import dspy.utils.exceptions as dspy_errors
+
+    harness.script[:] = [failure, "never sent"]
+    lm = _codex_lm(monkeypatch)
+    with (
+        caplog.at_level("INFO", logger="clio_agent.providers.codex.stream_errors"),
+        pytest.raises(dspy_errors.LMError) as caught,
+    ):
+        lm(f"final failure {typed}")
+
+    assert type(caught.value).__name__ == typed
+    assert not is_retryable_lm_error(caught.value)
+    assert len(harness.sockets) == 1  # never retried
+    assert _retry_lines(caplog) == []
