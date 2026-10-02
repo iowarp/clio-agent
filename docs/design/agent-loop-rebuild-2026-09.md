@@ -1627,6 +1627,15 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **Done (#1589):** the env reference regenerated after combining (CI on 4343493f caught it).
 - **CI green on the clio-agent `rework_agent` tip `1a6e047d`** (run 36966592678, 2026-10-02), with every change, develop included.
 
+- **Night of 2026-10-02 (owner asleep; owner-only items in `opal-work/MORNING-DECISIONS.md`):**
+  - **Bloat pass (#1591):** net src +2,045 → +1,881. The comment/docstring share equals develop's; the growth is new code (mainly variants and the context lanes). Progress helpers consolidated into `runtime/progress.py`; dead code deleted.
+  - **DSPy lazy proxies generalized (#1590):** numpy and openai submodules broke after `import dspy` too. Fixed on DSPy main (#10520).
+  - **Native-attach timeout vs failure (#1592):** monotonic()'s Windows resolution made a full-window wait read as a failure; now perf_counter with a 90% tolerance. Reproduced 6 of 40, now 40 of 40.
+  - **CI green on the clio-agent tip** (run 36971260887).
+  - **PRs opened:** clio-agent #1593 and gact-tui #524 into develop.
+    - gact-tui #524 failed CI: an A2UI map surface renders twice (a real regression), and the `tui/internal/ui` file freeze. Being fixed.
+  - **Ready to merge into main:** clio-schemas #18 and marketplace #83 (CI green; listed for the owner).
+
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
 **Evidence on the tip `1a6e047d` (CI run 36966592678, green):**
