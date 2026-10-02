@@ -151,7 +151,10 @@ from clio_agent.gact.app import build_app
 # registered from routes/artifact_extensions.py.
 # 282 -> 281: POST /v1/sessions/{sid}/context/compact deleted (Phase 11b): compaction is
 # ONE operation, POST /v1/sessions/{sid}/compact?scope= (routes/sessions.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 281
+# 281 -> 282: GET /v1/sessions/{sid}/variant-runs (a session's BestOfN / Refine runs,
+# served from clio-core; Phase 9), owned by routes/variant_runs.py, registered from
+# routes/context.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 282
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
