@@ -16,7 +16,10 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.24"
+EXPECTED_VERSION = "0.9.5b1"
+#: The release the install docs name: the latest stable one. A beta changes the
+#: package version only; users opt into it explicitly.
+DOCUMENTED_VERSION = "0.9.4.24"
 EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -227,7 +230,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     command = (
         f"uv tool install --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
         f"--with {EXPECTED_FASTMCP_SLIM} "
-        f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={EXPECTED_VERSION}"
+        f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={DOCUMENTED_VERSION}"
     )
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
@@ -238,7 +241,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={EXPECTED_VERSION}"
+        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
     ) in _text("README.md")
 
 

@@ -21,11 +21,24 @@ from pathlib import Path
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
 
 
+def _heading_form(version: str) -> str:
+    """The CHANGELOG heading form of ``version``.
+
+    A PEP 440 beta ``X.Y.ZbN`` (the package version) is headed by its tag form
+    ``X.Y.Z-beta.N``; any other version is unchanged.
+    """
+
+    beta = re.fullmatch(r"(\d+\.\d+\.\d+)b(\d+)", version)
+    return f"{beta.group(1)}-beta.{beta.group(2)}" if beta else version
+
+
 def section_for(version: str) -> str | None:
     """Return the ``## [version]`` CHANGELOG section body, or ``None`` if absent."""
 
     text = CHANGELOG.read_text(encoding="utf-8")
-    heading = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n", text, flags=re.MULTILINE)
+    heading = re.search(
+        rf"^## \[{re.escape(_heading_form(version))}\][^\n]*\n", text, flags=re.MULTILINE
+    )
     if heading is None:
         return None
     rest = text[heading.end() :]

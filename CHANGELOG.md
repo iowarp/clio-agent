@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.1] — 2026-10-02
+
 ### Added
 
 - `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned
