@@ -12,7 +12,7 @@ import msgspec
 import pytest
 
 from clio_agent.arc.schema import Segment, decode_segment, decode_segments, encode_segments
-from clio_agent.arc.segments import SegmentStore
+from clio_agent.arc.segments import SegmentReadError, SegmentStore
 from clio_agent.arc.storage import ARC_KINDS
 
 # clio-core is the only ARC store: each backing ``path`` a test used to hand a local
@@ -67,6 +67,15 @@ def _iteration(ss, sid, scope, step, thought, tool, args, obs):
 
 def test_segments_kind_in_arc_kinds():
     assert "segments" in ARC_KINDS
+
+
+def test_invalid_segment_scope_has_typed_read_error(tmp_path) -> None:
+    store = _clio_core(str(tmp_path))
+    segments = SegmentStore(store)
+    store.put("segments", segments._record_name(SID, SCOPE), msgspec.msgpack.encode(42))
+    with pytest.raises(SegmentReadError) as caught:
+        segments.list_segments(SID, SCOPE)
+    assert caught.value.error_type == "clio_core_segments_invalid"
 
 
 def test_append_renders_in_write_order_content_preserved(tmp_path):
