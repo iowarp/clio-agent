@@ -9,7 +9,8 @@ the agent loop share:
   recorded, queryable reason on the ``provider.stateful`` audit row, never an
   invisible re-key (#775);
 * the per-forward stateful scope (:func:`stateful_scope`, bound by
-  ``ClioReAct.forward``) and the registry hook that lets an ARC op on a forward reset
+  ``ClioReAct.forward``), its explicit exit for a side call made during a forward
+  (:func:`outside_stateful_scope`), and the registry hook that lets an ARC op on a forward reset
   every conversation that forward drove (:func:`note_prefix_reset_for_active_scope`).
 """
 
@@ -25,6 +26,7 @@ __all__ = [
     "STATEFUL_RESET_REASONS",
     "active_stateful_scope",
     "note_prefix_reset_for_active_scope",
+    "outside_stateful_scope",
     "register_scope_registry",
     "stateful_reset_payload",
     "stateful_scope",
@@ -217,3 +219,23 @@ def stateful_scope(token: str | None = None) -> Any:
             registries = list(_SCOPE_REGISTRIES)
         for registry in registries:
             registry.release(resolved)
+
+
+@contextlib.contextmanager
+def outside_stateful_scope() -> Any:
+    """Run a side call made during a forward outside that forward's stateful scope.
+
+    A forward's kept provider conversation is the agent's own ReAct conversation: only
+    its steps may continue or replace it. A one-message LM call the forward makes for
+    another purpose (DSPy's extract after the final answer, the compaction summary)
+    keyed on the same conversation would replace the kept response chain, so the
+    agent's next step would be a ``prefix_mismatch`` full send. Inside this block no
+    scope is active, so the stateful engines send the call stateless (a one-shot
+    conversation of its own) and the forward's kept conversation is left untouched.
+    The forward's scope is restored on exit; nothing is released.
+    """
+    var_token = _STATEFUL_SCOPE.set(None)
+    try:
+        yield
+    finally:
+        _STATEFUL_SCOPE.reset(var_token)

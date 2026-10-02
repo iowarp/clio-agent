@@ -437,8 +437,13 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
     except CompactionPromptError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
 
+    from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
+
     def _call() -> str:
-        return str(agent._run_chat_agent(prompt, "") or "")
+        # Not a step of the agent's conversation (auto compaction runs inside its
+        # forward): never continue or replace the agent's kept provider conversation.
+        with outside_stateful_scope():
+            return str(agent._run_chat_agent(prompt, "") or "")
 
     retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
     try:
