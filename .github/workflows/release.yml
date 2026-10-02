@@ -22,6 +22,9 @@ jobs:
   pypi:
     runs-on: ubuntu-latest
     environment: pypi
+    outputs:
+      # The package (PEP 440) version: X.Y.ZbN for a vX.Y.Z-beta.N tag.
+      version: ${{ steps.version.outputs.version }}
     permissions:
       id-token: write   # required for PyPI Trusted Publishing (OIDC)
     steps:
@@ -34,6 +37,7 @@ jobs:
           version: "latest"
 
       - name: Verify tag matches package version
+        id: version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           # A beta tag vX.Y.Z-beta.N is the PEP 440 version X.Y.ZbN, the form
@@ -46,6 +50,9 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match pyproject version $pkg" >&2
             exit 1
           fi
+          # Every later step names the package by this version, never the tag.
+          echo "PKG_VERSION=$pkg" >> "$GITHUB_ENV"
+          echo "version=$pkg" >> "$GITHUB_OUTPUT"
 
       - name: Build sdist + wheel
         run: uv build
@@ -59,7 +66,7 @@ jobs:
           wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
           test -n "$wheel"
           uv tool install --python 3.12 --no-cache "$wheel"
-          version="${GITHUB_REF_NAME#v}"
+          version="$PKG_VERSION"
           "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
 
       - name: Check for an identical existing PyPI artifact
@@ -67,7 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="$PKG_VERSION"
           wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
           test -n "$wheel"
           WHEEL="$wheel" VERSION="$version" GITHUB_OUTPUT="$GITHUB_OUTPUT" python - <<'PY'
@@ -139,6 +146,8 @@ jobs:
   registry-smoke:
     needs: pypi
     runs-on: ubuntu-latest
+    env:
+      PKG_VERSION: ${{ needs.pypi.outputs.version }}
     steps:
       - uses: astral-sh/setup-uv@v5
         with:
@@ -147,7 +156,7 @@ jobs:
       - name: Smoke the published persistent uv tool
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="$PKG_VERSION"
           export UV_TOOL_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/tools"
           export UV_TOOL_BIN_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/bin"
           for attempt in $(seq 1 12); do

@@ -484,7 +484,14 @@ def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
     uv.chmod(0o755)
     script = tmp_path / "check.sh"
     script.write_text(_verify_tag_step(), encoding="utf-8", newline="\n")
-    env = {"PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin", "GITHUB_REF_NAME": tag}
+    for name in ("github_env", "github_output"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    env = {
+        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin",
+        "GITHUB_REF_NAME": tag,
+        "GITHUB_ENV": (tmp_path / "github_env").as_posix(),
+        "GITHUB_OUTPUT": (tmp_path / "github_output").as_posix(),
+    }
     return subprocess.run([bash, script.as_posix()], env=env, check=False).returncode
 
 
@@ -492,9 +499,22 @@ def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: P
     """vX.Y.Z-beta.N publishes the package version X.Y.ZbN; mismatches still fail."""
 
     assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5b1") == 0
+    # Every later step (wheel smoke, PyPI lookup, registry smoke) names the
+    # package by this exported version, never by the tag.
+    assert (tmp_path / "github_env").read_text(encoding="utf-8") == "PKG_VERSION=0.9.5b1\n"
+    assert (tmp_path / "github_output").read_text(encoding="utf-8") == "version=0.9.5b1\n"
     assert _run_tag_check(tmp_path, "v0.9.4.24", "0.9.4.24") == 0
     assert _run_tag_check(tmp_path, "v0.9.5-beta.2", "0.9.5b1") != 0
     assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5") != 0
+
+
+def test_release_steps_after_the_check_use_the_package_version() -> None:
+    """Only the tag check reads the tag; the rest use the package version it exports."""
+
+    workflow = _text(".github/workflows/release.yml")
+    assert workflow.count('"${GITHUB_REF_NAME#v}"') == 1
+    assert workflow.count('version="$PKG_VERSION"') == 3
+    assert "PKG_VERSION: ${{ needs.pypi.outputs.version }}" in workflow
 
 
 def test_a_beta_tag_never_moves_the_latest_container_image() -> None:
