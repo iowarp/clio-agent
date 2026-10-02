@@ -1615,6 +1615,13 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - `leg_compaction` failed only on the old contract's checks; it is being updated.
   - Leg B needs `WEB_REMOTE_URL`.
 
+- **Done: the latest develop merged into both `rework_agent` branches** (clio-agent #1587, gact-tui #522). Merges only, and the final PRs into develop are conflict-free.
+  - develop #1547 (`model_reply_unparseable`) handled an adapter parse failure that the new loop cannot have. Per the accepted ReAct-loop completion contract (2026-09-05), an empty no-call reply stays a direct response, not a typed error.
+  - gact-tui: the e2e fixture lacked `/variant-runs` (an error toast covered the controls in the mobile screenshot). The Windows mobile baseline was stale.
+- **In flight:**
+  - #1577 leftovers: a graceful authenticated `serve` stop; a progress-based table query (per-thread CPU); stale Codex-SDK docstrings. Branch `fix/1577-leftovers`.
+  - gact-tui: the version status spins forever outside the desktop app. Branch `fix/web-version-status`.
+
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
 - **iowarp/clio-agent#1577:** use #1112 when it ships, plus every bad timeout and signal from the audit.
