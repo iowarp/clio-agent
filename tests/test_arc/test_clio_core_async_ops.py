@@ -157,6 +157,15 @@ def test_tag_ids_resolve_once_per_kind_until_cleared() -> None:
     assert cte.tag_calls == ["records", "records"]
 
 
+def test_tag_ids_prewarm_supported_kinds() -> None:
+    cte = _Cte()
+    ids = ops.TagIds(cte)
+    ids.prewarm(("conversations", "segments"))
+    assert cte.tag_calls == ["conversations", "segments"]
+    ids.get("segments")
+    assert cte.tag_calls == ["conversations", "segments"]
+
+
 def test_store_put_writes_async_and_a_refusal_raises_for_the_retry_helper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

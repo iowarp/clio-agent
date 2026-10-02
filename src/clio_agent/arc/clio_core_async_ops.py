@@ -137,6 +137,11 @@ class TagIds:
         with self._lock:
             self._ids.clear()
 
+    def prewarm(self, kinds: tuple[str, ...]) -> None:
+        """Resolve supported tag ids immediately after a healthy daemon attach."""
+        for kind in kinds:
+            self.get(kind)
+
 
 class AsyncPutTag:
     """A ``Tag``-shaped writer over ``AsyncPutBlob`` (for :func:`put_blob_with_retry`).

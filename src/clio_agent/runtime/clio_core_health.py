@@ -389,7 +389,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
 
     Returns:
         A single DEGRADED row when any gate is quarantined (a store wedged after a
-        daemon loss, ops raising ``ClioCoreRuntimeLostError`` until the daemon returns); a
+        daemon loss, ops raising ``ClioCoreRuntimeLostError`` until recovery); a
         single READY row when live gates exist and none is quarantined; and an empty
         list when this process holds no clio-core store (nothing to report).
 
@@ -409,21 +409,29 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
     if quarantined:
         gate = quarantined[0]
         port = gate.get("port")
+        restart_required = any(item.get("restart_required") for item in quarantined)
+        recovery_summary = (
+            "ClioCoreRuntimeLostError until the agent restarts."
+            if restart_required
+            else "ClioCoreRuntimeLostError until the daemon returns (guards against the "
+            "clio-core#722 host access violation)."
+        )
+        next_action = (
+            "Restart the CLIO agent to establish a fresh native clio-core client."
+            if restart_required
+            else "Restart the shared clio-core daemon (clio start / clio_run start); "
+            "the store reconnects on the next ARC op."
+        )
         return [
             IntegrationStatus(
                 name="clio_core_liveness",
                 state=IntegrationState.DEGRADED,
                 summary=(
                     f"{len(quarantined)} of {len(snapshot)} clio-core store(s) are "
-                    "QUARANTINED after a runtime-daemon loss; ARC ops raise "
-                    "ClioCoreRuntimeLostError until the daemon returns (guards against the "
-                    "clio-core#722 host access violation)."
+                    f"QUARANTINED after a runtime-daemon loss; ARC ops raise {recovery_summary}"
                 ),
                 config_source="runtime:clio_core_liveness_gate",
-                next_action=(
-                    "Restart the shared clio-core daemon (clio start / clio_run start); "
-                    "the store reconnects on the next ARC op."
-                ),
+                next_action=next_action,
                 endpoint=None if port is None else f"127.0.0.1:{port}",
                 fallback="none",
                 details={
@@ -431,6 +439,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
                     "quarantined_gates": len(quarantined),
                     "total_gates": len(snapshot),
                     "gate_reason": gate.get("reason", ""),
+                    "restart_required": restart_required,
                 },
                 required=True,
             )

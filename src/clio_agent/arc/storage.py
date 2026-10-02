@@ -470,7 +470,12 @@ class ClioCoreStore:
         # Liveness gate (#892): every op below routes through this before the native
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
-        self._gate = LivenessGate(config_path=config_path, log_level=log_level)
+        # Native CTE tag/read calls hold the GIL. After this client sees daemon
+        # loss, rebuilding its binding in-process can freeze unrelated HTTP work.
+        # Keep the store quarantined until the agent process is restarted.
+        self._gate = LivenessGate(
+            config_path=config_path, log_level=log_level, ttl_s=0.0, auto_recover=False
+        )
         # The probe proves the process's FRESH attach answers one real RPC; it runs once
         # per attach. A later store must not re-probe: a failing re-probe would release
         # the shared attach for every store. A daemon lost later is the liveness gate's job.
@@ -481,6 +486,7 @@ class ClioCoreStore:
                     on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
                 )
                 type(self)._attach_verified = True
+        self._tag_ids.prewarm(ARC_KINDS)
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
