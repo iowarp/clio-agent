@@ -202,7 +202,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 1028,
+    "src/clio_agent/gact/agent_blueprints.py": 996,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
