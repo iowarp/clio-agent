@@ -85,9 +85,7 @@ def test_a_long_system_prompt_rides_a_file_not_the_command_line(
     """Red before: the whole prompt was the option (``--system-prompt <text>``) and the
     command line passed 32,767 characters; now the option is only the file's path."""
     fake.install(monkeypatch)
-    prompt = "You are clio.
-" + "- tool: does one thing well.
-" * 4000
+    prompt = "You are clio.\n" + "- tool: does one thing well.\n" * 4000
     options = build_sdk_options(
         model="sonnet", cwd=None, stream=True, thinking=None, system_prompt=prompt
     )
