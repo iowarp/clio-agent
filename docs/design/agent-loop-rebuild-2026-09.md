@@ -1558,6 +1558,60 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - Turning `transcript.file` off later needs an atomic `replace_session` in clio-core (write the new lane generation, then swap); with the flag off a failed whole-transcript replace can leave a truncated lane. Not needed for release: the default stays on.
 - `SessionStore._legacy_interaction_at` (`sessions.py:566`) still reads the `messages/<sid>.json` mtime for old rows lacking `last_interaction_at`.
 
+## Remaining before release (status 2026-10-02)
+
+### Where things are
+- **clio-agent `rework_agent`** contains everything, built only by merges and rebases (no cherry-picks):
+  - started as Phase 1 (`feat/codex-sdk-stateful`);
+  - phases 2–10 merged in succession (PRs #1561–#1569);
+  - then 11a (#1570), 11b (#1571) and the Phase 9 remainder (#1572), each rebased onto it first.
+- **Fixes made while combining:**
+  - one `semantic.event` projector now serves both compaction and variant frames (the later dict key had silently replaced the compaction projector);
+  - the JSONL trace writer moved to `gact/semantic_trace_file.py` (`semantic_events.py` had passed its 800-line cap).
+- **gact-tui `rework_agent`:** `feat/injection-parts`, then badge, codex-direct and compaction UI (#517–#519), then the variant tabs, rebased (#520). Typecheck, lint and targeted tests are green.
+- **CI:** clio-agent run 36944645064 on `rework_agent` (result pending). gact-tui CI is deferred (owner): it needs a PR into develop or a `codex/` mirror ref.
+- **Final step:** one PR per repo, `rework_agent` → `develop`, when the owner says.
+
+### Development and failure fixing still open
+1. **Linux daemon-progress signal.** The progress-based waits (`arc/daemon_progress.py`, `runtime_stop.py`) count any daemon CPU as progress. An idle `clio_run` burns about 0.3 CPU-s/s on Linux, so a stuck daemon runs to the 600 s ceiling.
+   - The right signal is clio-core's scheduler counters (`processed`/`outstanding`) and its hang watchdog (`[HANGWATCH-HB]`, `DEADLOCK SUSPECTED`). The Python binding does not expose them yet.
+   - Not decided: raise it with clio-core (issue not filed yet), or read what exists.
+2. **`dspy` import order.** `import dspy` before `clio_agent.gact.app` raises an anyio circular import.
+   - Root cause: DSPy 3.4 puts a lazy proxy for `anyio` in `sys.modules`, and `anyio.abc` sets an attribute on it mid-initialization.
+   - Not decided: (a) an upstream DSPy issue plus a load-once guard in clio, or (b) upstream only.
+3. **`clio-schemas` release.** The pinned `clio-schemas==0.5.1` (`gact_v3.py`) lacks the `injection` and `notice` blocks.
+4. **Byte budget raised.** The light-ledger watermark in `test_resident_ledgers` went from 1551 to 1600 after the `trigger`/`compaction_id`/`code` part fields were added. Justify it or remove the growth.
+5. **gact-tui e2e:**
+   - the Linux baseline for `summarization-row-collapsed.png` is missing;
+   - `workspace-mobile-light-reduced` already fails on the base commit.
+6. **Phase 9 edge cases:**
+   - the user sends a new message instead of answering the drafts question;
+   - the question is cancelled or expires (the run is left failed).
+7. **Deletions ≥ additions:**
+   - `src` meets it: +14,884 / −16,082;
+   - the whole branch does not: +33,595 / −32,457, because of the tests and docs added by 11a, 11b and Phase 9.
+   - Owner to say which counts; if it is the whole diff, remove genuinely dead tests or docs, never trim to hit a number.
+8. **Whatever CI on `rework_agent` reports.** Fix it on a branch off `rework_agent`, merged back by PR.
+
+### Verification still open (normal work, not gates)
+- **Live legs, marketplace agents and OPAL exp67** on Codex direct (`gpt-6-sol`) against the recorded baselines. Marketplace agents: earthscope-single-agent, factorio-flat evals, deep-researcher, data-semantics.
+  - The live harness already points at Codex direct (`live/*/user/config.yaml`).
+  - The OPAL runs so far used the generic APPL pack (`marketplace-appl-core` `34cca15`, placeholder APPL skills), only on the SDK path.
+- **The named Definition-of-done tests, on `rework_agent`** (they exist; they pass in CI once that run is green):
+  - the differential against stock ReActV2: `tests/test_gact/test_clio_react.py::test_differential_same_calls_results_and_outputs_as_stock_reactv2`;
+  - prefix stability: `tests/test_gact/test_context_projection.py::test_every_request_is_a_prefix_of_the_next_across_steps_and_turns`, plus `test_multiturn_prefix_cache.py`;
+  - UI vs agent projection and fix-recorded-and-told: the Phase 4 tests listed in this doc.
+
+### Release gates (end only)
+- the Chrome-driven UI verification (owner);
+- the 1k/10k context-view benchmark, `037e66ec` (before) vs the `rework_agent` tip;
+- then the PR into `develop` for both repos, and the merge of marketplace `feat/appl-core-pack` into `main`.
+
+### Deferred by the owner (issues)
+- #1559: the prompt file adopts a standard format with Jinja2.
+- #1560: compaction summaries; fix the 300-character evidence cut and adopt a structured, recall-aware prompt.
+- Making `transcript.file` safe to turn off requires an atomic `replace_session`.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
