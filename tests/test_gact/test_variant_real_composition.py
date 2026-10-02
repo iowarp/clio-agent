@@ -140,3 +140,28 @@ def test_each_try_and_the_selection_are_on_the_highway(tmp_path: Path) -> None:
     assert record.origin == "module_variant"
     assert [c.text for c in record.candidates] == ["BAD draft", "GOOD draft"]
     assert record.selected_index == 1
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "api_base", "sent"),
+    [
+        ("codex", "gpt-6-sol", "codex://direct", None),
+        ("vllm", "openai/gpt-oss-120b", "http://127.0.0.1:8000/v1", 1.0),
+    ],
+)
+def test_best_of_n_sends_its_temperature_only_where_the_model_accepts_it(
+    arc: ARCMemory, provider: str, model: str, api_base: str, sent: float | None
+) -> None:
+    """Found live (2026-10-02): DSPy's BestOfN gives every rollout ``temperature=1.0``
+    and Codex direct refused each try ("Unsupported parameter: temperature"), so every
+    BestOfN on Codex failed. The model's accepted-parameter set gates the copy's
+    sampling, as it gates a saved setting."""
+    from clio_agent.config import LMProviderConfig  # noqa: PLC0415
+
+    lm, engine = scripted_lm([Reply(text="BAD draft"), Reply(text="GOOD draft")])
+    lm._clio_provider_config = LMProviderConfig(provider=provider, model=model, api_base=api_base)
+    with dspy.context(lm=lm):
+        pred = _wrap(module_variants._RunScopedBestOfN)(question="write the email")
+
+    assert pred.answer == "GOOD draft"
+    assert [request.config.temperature for request in engine.requests] == [sent, sent]

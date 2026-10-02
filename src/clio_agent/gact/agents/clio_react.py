@@ -77,6 +77,7 @@ from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, re
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
+from clio_agent.lm.request_builder import sendable_lm_kwargs
 from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.tools import injections
 
@@ -341,9 +342,7 @@ class _Loop:
         self.system = _system(agent.signature, self.inputs)
         self.head = _head(agent.signature, self.inputs)
         self.tools = tuple(_function_tool(t) for t in agent.tools.values())
-        self.config = _with_cache_key(
-            config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {}), self.lm
-        )
+        self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.arc, self.session, self.scope = record.arc_scope()
         if self.arc is None:

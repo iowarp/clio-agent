@@ -212,6 +212,38 @@ def _log_not_sent(config: "LMProviderConfig", dialect: str, field: str) -> None:
     )
 
 
+def sendable_lm_kwargs(lm: Any) -> dict[str, Any]:
+    """``lm``'s kwargs without the sampling settings its model does not accept.
+
+    DSPy sets sampling on a COPY of the bound LM (``BestOfN`` and ``Refine`` give every
+    rollout ``temperature=1.0``), after :func:`build_request_kwargs` gated the LM's own
+    settings. The same accepted-parameter set gates those: a sampling setting the model
+    does not accept is not sent and is logged (``response_setting_not_sent``), as a
+    saved setting is. Codex direct accepts none (a ``temperature`` is refused by the
+    backend). An LM without a clio provider config is returned as it is.
+    """
+
+    kwargs = dict(getattr(lm, "kwargs", None) or {})
+    config = getattr(lm, "_clio_provider_config", None)
+    if config is None:
+        return kwargs
+    sampling = [
+        name
+        for name, value in kwargs.items()
+        if value is not None
+        and (spec := accepted_parameters.tunable(name)) is not None
+        and spec.group == "sampling"
+    ]
+    if not sampling:
+        return kwargs
+    dialect, accepted, _effective = _resolve(config)
+    for name in sampling:
+        if not _accepts(name, accepted):
+            kwargs.pop(name)
+            _log_not_sent(config, dialect, name)
+    return kwargs
+
+
 def _thinking_requested_on(config: "LMProviderConfig", effective: EffectiveCapabilities) -> bool:
     """Whether thinking is switched ON for this request (which sampling mode applies)."""
 
@@ -381,4 +413,4 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
     return extras
 
 
-__all__ = ["build_request_kwargs"]
+__all__ = ["build_request_kwargs", "sendable_lm_kwargs"]
