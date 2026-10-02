@@ -28,7 +28,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import msgspec
 
@@ -234,9 +234,8 @@ class SegmentStore:
         """Return the in-memory segment list for a scope, loading it once.
 
         Always called under this scope's per-scope lock, so the scope's own entry in
-        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated. The shared
-        clock recovery below is done under the dedicated clock lock so it stays
-        serialized across scopes (lock order scope -> clock is honored)."""
+        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated; the shared
+        clock is recovered past the loaded segments (:meth:`_recover_clock`)."""
         key = (session_id, scope)
         if key not in self._loaded:
             raw = self._store.get("segments", self._record_name(session_id, scope))
@@ -244,11 +243,7 @@ class SegmentStore:
             self._scopes[key] = segs
             self._loaded.add(key)
             self._index.bulk_load(session_id, scope, segs)  # parallel locator
-            # recover the monotonic clock past anything persisted (shared -> clock lock)
-            with self._clock_lock:
-                for s in segs:
-                    if s.logical_time >= self._next_lt:
-                        self._next_lt = s.logical_time + 1
+            self._recover_clock(segs)
             logger.debug(
                 "segments: cold-load session=%s scope=%s loaded=%d next_lt=%d",
                 session_id,
@@ -297,6 +292,11 @@ class SegmentStore:
             encode_segments(segs),
             search_text=search_text,
         )
+
+    def _recover_clock(self, segs: Iterable[Segment]) -> None:
+        """Advance the shared clock past persisted segments (scope -> clock lock order)."""
+        with self._clock_lock:
+            self._next_lt = max([self._next_lt, *(s.logical_time + 1 for s in segs)])
 
     def _new_lt(self) -> int:
         """Issue the next monotonic logical tick. Guarded by its OWN tiny lock so the
