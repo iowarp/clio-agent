@@ -89,7 +89,7 @@ TUI/HTTP surface aren't tracked here.
   release, flushes), and waits while the server's process tree progresses
   (`arc.liveness.stop_no_progress_s` window, `arc.liveness.max_wait_s` ceiling). A server
   that cannot be asked or stops progressing is killed and reported as `killed` with a
-  typed `kill_reason`; the fixed terminate-then-kill after 5 s is gone. A stop that lands
+  typed `kill_reason`; a stop no longer starts with terminate-then-kill. A stop that lands
   during the boot clio-core attach waits for it, so the attached client is released.
 
 ### Removed

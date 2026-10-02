@@ -29,7 +29,6 @@ OK_REFLECTED | providers.codex.credential_home_capacity | src/clio_agent/provide
 OK_REFLECTED | providers.model_catalog_ttl_s | src/clio_agent/providers/model_discovery/overlay.py:151 | CLIO_MODEL_CATALOG_TTL_S | Seconds provider model catalog is served fresh before marked stale
 OK_REFLECTED | limits.agent_task_artifact_context_chars | src/clio_agent/gact/agent_task_artifacts.py:251 | CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS | Character bound on artifact content injected into commissioning parent
 OK_REFLECTED | limits.agent_task_output_digest_chars | src/clio_agent/gact/agents/agent_task_output_digest.py:50 | CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS | Threshold above which child output is digested instead of inlined
-OK_REFLECTED | limits.codex_sdk_progress_timeout_s | src/clio_agent/providers/codex_stream.py:43 | CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S | Max silence (seconds) for one Codex SDK exchange before timeout
 OK_REFLECTED | limits.context_inline_bytes | src/clio_agent/gact/runtime/constants.py:41 | CLIO_CTX_MAX_BYTES | Byte cap per attached file inlined into context injection
 OK_REFLECTED | limits.fs_read_bytes | src/clio_agent/tools/servers/fs_server.py:92 | CLIO_FS_MAX_READ_BYTES | Byte cap on a single read_file tool call
 OK_REFLECTED | limits.mcp_content_block_max_bytes | src/clio_agent/tools/mcp_results.py:48 | CLIO_MCP_CONTENT_BLOCK_MAX_BYTES | Byte cap on one MCP content block's decoded binary payload
@@ -164,7 +163,7 @@ OK_UNREFLECTED | lm.thinking_budget | src/clio_agent/config.py:564 | CLIO_LM_THI
 OK_UNREFLECTED | lm.thinking_level | src/clio_agent/config.py:567 | CLIO_LM_THINKING_LEVEL | Provider-generic reasoning level (off/low/medium/high)
 OK_UNREFLECTED | lm.context_window | src/clio_agent/config.py:565 | CLIO_LM_CONTEXT_WINDOW | Override effective context window used by clio
 OK_UNREFLECTED | lm.claude_code_transport | src/clio_agent/config.py:545 | CLIO_CLAUDE_CODE_TRANSPORT | Claude Code transport selection (sdk)
-OK_UNREFLECTED | lm.codex_transport | src/clio_agent/config.py:540 | CLIO_CODEX_TRANSPORT | Codex transport selection (sdk)
+OK_UNREFLECTED | lm.codex_transport | src/clio_agent/config.py:540 | CLIO_CODEX_TRANSPORT | Codex direct wire selection (websocket or sse)
 OK_UNREFLECTED | tools.file_policy.allow_symlinks | src/clio_agent/tools/file_policy.py:120 | CLIO_ALLOW_SYMLINKS | Whether tool file reads/writes may traverse symlinks
 OK_UNREFLECTED | tools.file_policy.max_file_size_bytes | src/clio_agent/tools/file_policy.py:132 | CLIO_MAX_FILE_SIZE_BYTES | Byte-size cap on files a read/write tool call may touch
 OK_UNREFLECTED | tools.mcp.call_timeout_s | src/clio_agent/tools/execution.py:219 | CLIO_MCP_CALL_TIMEOUT_S | Runaway backstop seconds for synchronous MCP tool call
@@ -217,7 +216,7 @@ ENV_BARE | CLIO_COLLABORA_URL | src/clio_agent/gact/documents/editors.py:194 | n
 ENV_BARE | CLIO_GACT_PUBLIC_URL | src/clio_agent/gact/documents/editors.py:204 | n/a | Read twice (204, 209); document editor integration; no conf.resolve
 ENV_BARE | CLIO_ONLYOFFICE_JWT_SECRET | src/clio_agent/gact/documents/editors.py:243 | n/a | OnlyOffice secret; should use conf.resolve (secret tier)
 ENV_BARE | CLIO_DOCUMENT_TYPST_FONT | src/clio_agent/gact/documents/renditions.py:145 | n/a | Typst font path; no conf.resolve equivalent; should add
-ENV_BARE | CODEX_HOME | src/clio_agent/providers/codex_credential_home.py:158 | n/a | Third-party Codex SDK integration; read 3 times total across codebase
+ENV_BARE | CODEX_HOME | src/clio_agent/providers/codex/credentials.py:161 | n/a | The Codex CLI login home ($CODEX_HOME/auth.json) Codex direct reads without a CLIO sign-in; third-party variable, not a CLIO knob
 ENV_BARE | CODEX_HOME | src/clio_agent/runtime/lm_provider_probe.py:94 | n/a | CODEX_HOME duplicate read (third-party integration)
 ENV_BARE | CODEX_HOME | src/clio_agent/runtime/sandbox_codex.py:252 | n/a | CODEX_HOME duplicate read (third-party integration)
 ENV_BARE | FLOWCEPT_SETTINGS_PATH | src/clio_agent/gact/provenance/flowcept.py:191 | n/a | Flowcept provenance integration; third-party tool setup
@@ -250,8 +249,6 @@ HARDCODED | DEFAULT_ELICITATION_TIMEOUT_S | src/clio_agent/gact/elicitation_brid
 HARDCODED | DEFAULT_TIMEOUT_S | src/clio_agent/gact/permission_gate.py:49 | n/a | 600.0 seconds; permission approval timeout; should use conf.resolve
 HARDCODED | _DEFAULT_TIMEOUT_S | src/clio_agent/gact/runtime/ai_review.py:86 | n/a | 45.0 seconds; AI review verdict timeout; mirrors permissions.ai_review_timeout_s
 HARDCODED | _EGRESS_GATE_TIMEOUT_S | src/clio_agent/gact/runtime/grants.py:68 | n/a | 600.0 seconds; egress grant gate timeout; should use conf.resolve
-HARDCODED | DEFAULT_SDK_PROGRESS_TIMEOUT_S | src/clio_agent/providers/codex_stream.py:28 | n/a | 120.0 seconds; Codex SDK progress timeout; mirrors limits.codex_sdk_progress_timeout_s
-HARDCODED | DEFAULT_TURN_TIMEOUT_S | src/clio_agent/providers/codex_stream.py:32 | n/a | 180.0 seconds; Codex turn timeout; should use conf.resolve
 HARDCODED | _CONNECT_READ_TIMEOUT_S | src/clio_agent/runtime/net_chokepoint.py:57 | n/a | 30.0 seconds; network socket timeout; should use conf.resolve
 HARDCODED | _VERSION_PROBE_TIMEOUT_S | src/clio_agent/runtime/sandbox_codex.py:33 | n/a | 5.0 seconds; Codex version probe timeout; should use conf.resolve
 

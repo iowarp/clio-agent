@@ -33,9 +33,9 @@ CODEX_TO_LEVEL: dict[str, str] = {
     "ultra": "ultra",
 }
 
-#: The inverse mapping (a CLIO level -> the SDK's own wire spelling), used to
+#: The inverse mapping (a CLIO level -> Codex's own wire spelling), used to
 #: fill ``ThinkingSpec.effort_by_level`` so the request builder never has to
-#: know the SDK's vocabulary itself.
+#: know Codex's vocabulary itself.
 LEVEL_TO_CODEX: dict[str, str] = {level: codex for codex, level in CODEX_TO_LEVEL.items()}
 
 
@@ -46,7 +46,7 @@ def _now_iso() -> str:
 def build_thinking_spec(raw: dict[str, Any]) -> Fact[ThinkingSpec]:
     """Build the ``ThinkingSpec`` fact from one discovered/overlay codex row.
 
-    ``raw`` carries ``supported_reasoning_efforts`` (a list of the SDK's own
+    ``raw`` carries ``supported_reasoning_efforts`` (a list of Codex's own
     effort strings) and ``default_reasoning_effort``, attached by
     :mod:`clio_agent.providers.model_discovery.codex` at discovery time and
     forwarded verbatim through the refresh overlay

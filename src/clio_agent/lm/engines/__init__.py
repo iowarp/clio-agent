@@ -1,1 +1,1 @@
-"""LM engines and the text tool protocol shared by the SDK transports."""
+"""LM engines and the text tool protocol the Claude Code engine uses."""
