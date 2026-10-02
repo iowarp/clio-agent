@@ -12,7 +12,7 @@ with no system prompt leaves the option unset, so the CLI's own default applies.
 
 from __future__ import annotations
 
-import sys
+import json
 from pathlib import Path
 from typing import Any
 
@@ -79,19 +79,18 @@ async def test_no_system_prompt_leaves_the_option_unset(monkeypatch: pytest.Monk
     assert "system_prompt" not in sdk.clients[0].options.kwargs
 
 
-def test_a_long_system_prompt_keeps_the_cli_command_line_short() -> None:
-    """Red before: the prompt rode ``--system-prompt`` and the command passed 32,767."""
-    from claude_agent_sdk._internal.transport.subprocess_cli import (  # noqa: PLC0415
-        SubprocessCLITransport,
-    )
-
-    prompt = "You are clio.\n" + "- tool: does one thing well.\n" * 4000
+def test_a_long_system_prompt_rides_a_file_not_the_command_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Red before: the whole prompt was the option (``--system-prompt <text>``) and the
+    command line passed 32,767 characters; now the option is only the file's path."""
+    fake.install(monkeypatch)
+    prompt = "You are clio.
+" + "- tool: does one thing well.
+" * 4000
     options = build_sdk_options(
         model="sonnet", cwd=None, stream=True, thinking=None, system_prompt=prompt
     )
-    transport = SubprocessCLITransport(prompt="", options=options)
-    transport._cli_path = sys.executable
-    command = transport._build_command()
     assert len(prompt) > 32767
-    assert len(" ".join(command)) < 8000
+    assert len(json.dumps(options.system_prompt)) < 1000
     assert _system(options) == prompt
