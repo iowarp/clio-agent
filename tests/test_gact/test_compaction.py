@@ -228,7 +228,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import maybe_autocompact
+    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 
     agent = _CapturingAgent(["durable usage summary"])
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -245,7 +245,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
         finally:
             _ctx.reset(token)
 
@@ -263,7 +263,7 @@ def test_a_measured_count_wins_over_the_previous_turns_usage(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import maybe_autocompact
+    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 
     agent = _CapturingAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -279,7 +279,7 @@ def test_a_measured_count_wins_over_the_previous_turns_usage(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
         finally:
             _ctx.reset(token)
 
@@ -293,7 +293,11 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
     import clio_agent.gact.compaction as compaction_module
     from clio_agent.gact import context as _ctx
     from clio_agent.gact.agents import clio_react_record
-    from clio_agent.gact.compaction import AUDIT_AUTO_SKIPPED, maybe_autocompact
+    from clio_agent.gact.compaction import (
+        AUDIT_AUTO_SKIPPED,
+        AutoCompactionGuard,
+        maybe_autocompact,
+    )
 
     audits: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
@@ -302,7 +306,7 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
     monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (object(), "sess-no-app", "scope"))
 
     assert _ctx.active_app() is None
-    maybe_autocompact()
+    maybe_autocompact(AutoCompactionGuard())
 
     skipped = [f for stage, f in audits if stage == AUDIT_AUTO_SKIPPED]
     assert skipped and skipped[-1]["reason"] == "no_active_app"
@@ -440,7 +444,7 @@ def test_compaction_summarizes_the_scopes_own_steps(
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.compaction import maybe_autocompact
+    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 
     agent = _CapturingAgent(["mid-turn summary"])
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -461,7 +465,7 @@ def test_compaction_summarizes_the_scopes_own_steps(
 
         token = _ctx.set_app(app)
         try:
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
         finally:
             _ctx.reset(token)
 

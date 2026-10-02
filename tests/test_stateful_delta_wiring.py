@@ -187,7 +187,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
     from clio_agent.gact import context as _ctx
     from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.app import build_app
-    from clio_agent.gact.compaction import maybe_autocompact
+    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
     from clio_agent.gact.runtime import context_tokens as _ctok
     from clio_agent.gact.types import Message, Part
 
@@ -250,7 +250,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
         _prime("s")
         app_token = _ctx.set_app(app)
         try:
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
         finally:
             _ctx.reset(app_token)
         assert len(summarize_calls) == 1  # the op really fired

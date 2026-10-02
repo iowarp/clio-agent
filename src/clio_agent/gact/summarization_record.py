@@ -10,7 +10,10 @@ prompt (``compacted_message_ids``).
 
 A compaction that fails is recorded where it happened too, as a ``notice`` part
 (``source: "compaction_failed"``, plain-language ``text``, the error ``code``,
-``compaction_id``, ``trigger``): a UI/provenance record the model is never told.
+``compaction_id``, ``trigger``): a UI/provenance record the model is never told. An
+auto compaction the loop stops repeating (the context stayed over the threshold right
+after one) is a ``notice`` too (``source: "compaction_skipped"``, the skip reason as
+``code``, the ``compaction_id`` of the compaction that did not get it under).
 
 The ``compaction`` part this replaces is never written any more. A stored transcript
 that still holds one is read through :func:`as_summarization` (every reader) and
@@ -30,6 +33,7 @@ from clio_agent.gact.parts import Part
 
 __all__ = [
     "COMPACTION_FAILED_SOURCE",
+    "COMPACTION_SKIPPED_SOURCE",
     "RECALL_TOOL",
     "SUMMARIZATION_SOURCE",
     "SummarizationRecord",
@@ -40,6 +44,7 @@ __all__ = [
     "legacy_compaction_block",
     "recall_line",
     "row_summarization",
+    "skipped_notice_part",
     "summarization_part",
 ]
 
@@ -47,6 +52,8 @@ __all__ = [
 SUMMARIZATION_SOURCE = "summarization"
 #: The ``notice`` source of a failed compaction's record.
 COMPACTION_FAILED_SOURCE = "compaction_failed"
+#: The ``notice`` source of an auto compaction skipped because the last one did not help.
+COMPACTION_SKIPPED_SOURCE = "compaction_skipped"
 #: The agent-callable tool that returns what a summary replaced.
 RECALL_TOOL = "recall_context"
 
@@ -112,6 +119,24 @@ def failure_notice_part(
         code=code,
         compaction_id=compaction_id,
         trigger=trigger,
+        metadata={"actor": "algorithm"},
+    )
+
+
+def skipped_notice_part(text: str, *, code: str, compaction_id: str, agent_id: str = "") -> Part:
+    """Build the ``notice`` that records a skipped auto compaction (never shown to the model).
+
+    ``compaction_id`` names the compaction that left the context over the threshold.
+    """
+    return Part(
+        id=f"notice_{uuid.uuid4().hex[:12]}",
+        type="notice",
+        agent_id=agent_id,
+        source=COMPACTION_SKIPPED_SOURCE,
+        text=text,
+        code=code,
+        compaction_id=compaction_id,
+        trigger="auto",
         metadata={"actor": "algorithm"},
     )
 

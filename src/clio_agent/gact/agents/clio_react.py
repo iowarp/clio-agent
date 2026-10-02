@@ -358,6 +358,10 @@ class _Loop:
         # A ``draft_alternatives`` call of this turn: settled once its step is recorded.
         self.variant_outcome: Any = None
         self.variant_claim = threading.Lock()
+        from clio_agent.gact.compaction import AutoCompactionGuard  # noqa: PLC0415
+
+        # Auto compaction stops for this forward once one leaves it over the threshold.
+        self.autocompact = AutoCompactionGuard()
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -407,7 +411,7 @@ class _Loop:
 
         _raise_if_cancelled()
         self._arrivals()
-        maybe_autocompact()
+        maybe_autocompact(self.autocompact)
         request = Request(
             model=self.lm.model,
             system=self.system,
