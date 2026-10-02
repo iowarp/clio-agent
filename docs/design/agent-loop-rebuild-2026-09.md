@@ -1590,9 +1590,12 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - MCP connect;
   - finalize drains;
   - 180 s ceilings.
-- **Phase 9 edges** (branch `fix/variant-pick-edges`):
-  - a new message supersedes the pending pick;
-  - typed `cancelled` / `expired` terminal states.
+- **Done (#1579): Phase 9 edges.**
+  - A new turn supersedes the pending drafts pick: the question closes and a late answer gets a 409, so nothing is spliced into the past.
+  - `cancelled` and `expired` are typed end states, restart-safe.
+  - New `variant.closed` v3 frame.
+  - In flight: gact-tui renders closed runs (branch `fix/variant-closed`).
+- **In flight:** a failed clio-core cleanup on session delete becomes a typed error (branch `fix/delete-cleanup-typed`).
 - **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
   - Claude Code inter-message idle bound;
   - no silent cut in `net_chokepoint`;
