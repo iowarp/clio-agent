@@ -1608,7 +1608,9 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - The first progress sample is taken before the native call takes the GIL (`wait_while_progressing` `start` hook).
   - Stopping a suspended daemon was reported clean while it kept running untracked. A clean stop now requires the process gone, and the daemon is resumed after SIGTERM.
   - New setting `arc.liveness.stop_no_progress_s`.
-- **Live verification:** waits on CI green at the tip. The harness binds Codex direct (`live/bench/common.py`).
+- **Done (#1585):** the cumulative-work test's child burns CPU time, not wall time (a load-sensitive test).
+- **CI green on the `rework_agent` tip `1f454adc`** (run 36959115221, 2026-10-02), with every fix above.
+- **Live verification running on that tip:** `live/bench/suite.sh rework final1`, Codex direct (`gpt-6-sol`), results in `D:/t/bench/legs-rework-final1`. The harness binds Codex direct and maps the `rework` tree.
 
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
