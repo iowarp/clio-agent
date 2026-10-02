@@ -1574,7 +1574,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **gact-tui `rework_agent`:** `injection-parts`, then badge, codex-direct and compaction UI (#517–#519), then the variant tabs, rebased (#520). Typecheck, lint and targeted tests are green. CI is deferred by the owner.
 - **CI (clio-agent):**
   - the first run (36944645064) failed on stale imports, the route count, draft order and the lazy-import guard, all fixed in #1574 and #1576;
-  - a second run is triggered on `rework_agent` after #1576.
+  - **run 36946126271 on `rework_agent` after #1576: green** (2026-10-02). Every later merge re-runs CI.
 
 ### In flight
 - **`transcript.file: false` made safe and real (owner):** an atomic `replace_session` (new lane generation, then pointer swap), and no read of `messages/` with the flag off. Branch `fix/transcript-file-off`.
