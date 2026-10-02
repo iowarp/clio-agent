@@ -536,8 +536,8 @@ def _run_codex_enforcement_probe(
     import tempfile  # noqa: PLC0415
 
     with (
-        tempfile.TemporaryDirectory(prefix="clio-codex-allow-") as allow,
-        tempfile.TemporaryDirectory(prefix="clio-codex-out-") as outside,
+        tempfile.TemporaryDirectory(prefix="clio-agent-codex-allow-") as allow,
+        tempfile.TemporaryDirectory(prefix="clio-agent-codex-out-") as outside,
     ):
         outside_target = Path(outside) / "denied.txt"
         profile = synthesize_codex_profile([allow])

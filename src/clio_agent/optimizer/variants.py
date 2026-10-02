@@ -46,7 +46,7 @@ class VariantManager:
     def __init__(
         self,
         arc_memory: Any,
-        variants_dir: str = ".clio/agent/variants",
+        variants_dir: str | None = None,
     ) -> None:
         """Initialize VariantManager.
 
@@ -55,7 +55,9 @@ class VariantManager:
             variants_dir: Directory for saving variant JSON files
         """
         self._arc = arc_memory
-        self._variants_dir = Path(variants_dir)
+        from clio_agent.paths import user_data_dir
+
+        self._variants_dir = Path(variants_dir) if variants_dir else user_data_dir() / "variants"
         self._variants_dir.mkdir(parents=True, exist_ok=True)
 
     def save_variant(

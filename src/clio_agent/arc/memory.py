@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
-from clio_agent import conf
+from clio_agent import conf, paths
 from clio_agent.arc.cache import LRUCache
 from clio_agent.arc.daemon_progress import drain_while_writes_progress
 from clio_agent.arc.index import BTreeIndex
@@ -94,7 +94,7 @@ class ARCMemory(SegmentPlane):
 
     def __init__(
         self,
-        data_dir: str = ".clio/agent/arc",
+        data_dir: str | None = None,
         cache_capacity: Optional[int] = None,
         store: "ARCStore | None" = None,
         working_set_fold: Optional[bool] = None,
@@ -108,7 +108,7 @@ class ARCMemory(SegmentPlane):
                 store is clio-core, from :func:`make_arc_store` (a typed error when it
                 cannot be brought up). Pass a store to inject one (tests).
         """
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir) if data_dir is not None else paths.arc_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Persistence seam: every record kind is read/written through an

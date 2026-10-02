@@ -21,6 +21,7 @@ import dspy
 from dspy.lm15 import Message, TextPart, ThinkingPart, ToolCallPart, ToolResultPart
 
 from clio_agent import conf
+from clio_agent.providers.stateful_common import outside_stateful_scope
 
 EXTRACT_REASONS = frozenset({"direct_response", "max_iters"})
 
@@ -59,7 +60,12 @@ def extract(
     missing: list[str],
     lm: Any,
 ) -> dict[str, Any]:
-    """Run DSPy's extract over the trajectory; return the ``missing`` outputs it produced."""
+    """Run DSPy's extract over the trajectory; return the ``missing`` outputs it produced.
+
+    The extract is not a step of the agent's conversation: it runs outside the forward's
+    stateful scope, so it never continues or replaces the agent's kept provider
+    conversation (whose next step stays a delta).
+    """
     fields = {
         **{name: signature.input_fields[name] for name in inputs},
         **{name: signature.output_fields[name] for name in missing},
@@ -67,7 +73,7 @@ def extract(
     fallback = dspy.Signature(fields, signature.instructions).append(
         "trajectory", dspy.InputField(), type_=str
     )
-    with dspy.context(lm=lm):
+    with outside_stateful_scope(), dspy.context(lm=lm):
         pred = dspy.ChainOfThought(fallback)(**inputs, trajectory=trajectory_text(steps))
     return {name: getattr(pred, name) for name in missing}
 

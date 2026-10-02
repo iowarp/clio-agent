@@ -28,6 +28,9 @@ services:
       - CLIO_GACT_ALLOWED_HOSTS=${CLIO_GACT_ALLOWED_HOSTS:-}
     volumes:
       - clio-data:/home/clio/.config/clio-agent
+      - clio-agent-data:/home/clio/.local/share/clio-agent
+      - clio-agent-state:/home/clio/.local/state/clio-agent
+      - clio-agent-cache:/home/clio/.cache/clio-agent
     restart: unless-stopped
 
   # Path (d): headless backend only, for scale-out / programmatic clients.
@@ -47,7 +50,13 @@ services:
       - CLIO_GACT_ALLOWED_HOSTS=${CLIO_GACT_ALLOWED_HOSTS:-}
     volumes:
       - clio-data:/home/clio/.config/clio-agent
+      - clio-agent-data:/home/clio/.local/share/clio-agent
+      - clio-agent-state:/home/clio/.local/state/clio-agent
+      - clio-agent-cache:/home/clio/.cache/clio-agent
     restart: unless-stopped
 
 volumes:
   clio-data:
+  clio-agent-data:
+  clio-agent-state:
+  clio-agent-cache:

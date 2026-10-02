@@ -16,6 +16,8 @@ TUI/HTTP surface aren't tracked here.
   true}`) as the next turn's input. A `permission_id` that names no pending
   permission still gets a typed 404, never a silent reroute (#1549 #28).
 
+## [0.9.5-beta.1] — 2026-10-02
+
 ### Added
 
 - `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned

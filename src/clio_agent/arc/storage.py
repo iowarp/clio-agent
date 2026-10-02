@@ -26,6 +26,8 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Optional, Protocol, runtime_checkable
 
+from clio_agent import paths
+
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
@@ -740,7 +742,7 @@ class ClioCoreStore:
 def make_arc_store(
     *,
     backend: Optional[str] = None,
-    data_dir: "str | Path" = ".clio/agent/arc",
+    data_dir: "str | Path | None" = None,
     config_path: str = "",
     namespace: str | None = None,
 ) -> "ARCStore":
@@ -756,6 +758,7 @@ def make_arc_store(
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
+    data_dir = data_dir if data_dir is not None else paths.arc_data_dir()
     resolved = backend or conf.resolve(
         "arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str
     )
@@ -766,8 +769,6 @@ def make_arc_store(
         )
         if not cfg:
             # Per-workspace ``.clio/core`` config if present, else the seeded default.
-            from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
-
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
         ns = (

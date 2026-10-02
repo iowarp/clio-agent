@@ -56,8 +56,22 @@ function RemoveTree($path) {
 }
 
 # ---------- defaults ---------------------------------------------------
-$Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $HOME 'AppData\Local\clio' }
+$Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } elseif ($env:CLIO_USER_DIR) { Join-Path $env:CLIO_USER_DIR 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
+# Continue a pre-namespace installation until it is explicitly migrated.
+$LegacyPrefix = Join-Path $env:LOCALAPPDATA 'clio'
+if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGENT_DATA_DIR -and -not $env:CLIO_USER_DIR -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
 $BinDir      = if ($env:CLIO_BIN_DIR)      { $env:CLIO_BIN_DIR }     else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
+function Get-ClioReleaseTag([string]$Version) {
+    $Version = $Version -replace '^v', ''
+    if ($Version -match '^([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)b([0-9]+)$') {
+        return "v$($Matches[1])-beta.$($Matches[2])"
+    }
+    if ($Version -match '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-beta\.[0-9]+)?$') {
+        return "v$Version"
+    }
+    throw "No GitHub release tag for package version: $Version"
+}
+
 $ClioVersion = $env:CLIO_VERSION
 $GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'latest' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
@@ -106,7 +120,9 @@ $Venv = Join-Path $Prefix 'clio-agent\.venv'
 
 if ($ClioRef) {
     Say "Cloning clio-agent at $ClioRef (source-build mode)"
-    RemoveTree (Join-Path $Prefix 'clio-agent')
+    if (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent')) {
+        Die 'Source reinstall refused: the installation already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data.'
+    }
     RunNative git @('clone', '--quiet', '--recurse-submodules', '--shallow-submodules', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
     Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')
@@ -115,7 +131,7 @@ if ($ClioRef) {
 } else {
     $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
     Say "Installing $pkgSpec from PyPI"
-    RemoveTree (Join-Path $Prefix 'clio-agent')
+    RemoveTree $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     if ($PyInstall -eq 'uv') {
         RunNative uv @('venv', '--python', '>=3.12', $Venv)
@@ -193,8 +209,8 @@ if ($ClioRef -and -not $GactRef) {
 } else {
     $tag = $GactVersion
     if ($tag -eq 'latest') {
-        if ($ClioVersion) {
-            $tag = "v$ClioVersion"
+        if ($InstalledClioVersion -or $ClioVersion) {
+            $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
         } else {
             Say "Resolving latest clio-agent release"
             $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases/latest'
@@ -247,7 +263,7 @@ $launcherRef = if ($ClioRef) {
 } elseif ($ClioInstallerRef) {
     $ClioInstallerRef
 } elseif ($InstalledClioVersion) {
-    "v$InstalledClioVersion"
+    Get-ClioReleaseTag $InstalledClioVersion
 } else {
     'main'
 }

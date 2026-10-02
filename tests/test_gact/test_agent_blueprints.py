@@ -2850,7 +2850,7 @@ def test_session_agent_overlay_can_export_workspace_blueprint(tmp_path: Path) ->
         listed = client.get("/v1/agent-blueprints", params={"workspace_id": wid}).json()
 
     assert exported.status_code == 201, exported.text
-    exported_root = workspace / ".clio" / "agent-blueprints" / "genomics-session-a"
+    exported_root = workspace / ".clio-agent" / "shared" / "agent-blueprints" / "genomics-session-a"
     assert exported_root.joinpath("AGENT.md").exists()
     assert "Session A Variant Expert" in exported_root.joinpath("experts", "variant.md").read_text()
     assert "Variant Expert" in source.joinpath("experts", "variant.md").read_text()
@@ -2970,7 +2970,9 @@ def test_agent_blueprint_install_from_local_marketplace(tmp_path: Path) -> None:
 
     ids = {row["id"] for row in listed["agent_blueprints"]}
     assert "genomics" in ids
-    assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
+    assert (
+        workspace / ".clio-agent" / "shared" / "agent-blueprints" / "genomics" / ".clio-install.md"
+    ).exists()
 
 
 def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
@@ -3038,7 +3040,9 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert deleted.status_code == 200, deleted.text
         assert client.get("/v1/agent-blueprints/sources").json()["sources"] == []
 
-    assert (workspace / ".clio" / "agent-blueprints" / "genomics" / ".clio-install.md").exists()
+    assert (
+        workspace / ".clio-agent" / "shared" / "agent-blueprints" / "genomics" / ".clio-install.md"
+    ).exists()
 
 
 def test_agent_blueprint_source_installs_valid_entries_and_reports_invalid_ones(
@@ -3246,7 +3250,13 @@ Updated behavior.
         assert (
             "Updated Variant Expert"
             in (
-                workspace / ".clio" / "agent-blueprints" / "genomics" / "experts" / "variant.md"
+                workspace
+                / ".clio-agent"
+                / "shared"
+                / "agent-blueprints"
+                / "genomics"
+                / "experts"
+                / "variant.md"
             ).read_text()
         )
         deleted = client.delete(
@@ -3255,7 +3265,7 @@ Updated behavior.
         )
         assert deleted.status_code == 200, deleted.text
 
-    assert not (workspace / ".clio" / "agent-blueprints" / "genomics").exists()
+    assert not (workspace / ".clio-agent" / "shared" / "agent-blueprints" / "genomics").exists()
 
 
 def test_expert_pack_lifecycle_aliases_blueprint_engine(tmp_path: Path) -> None:
@@ -3296,7 +3306,7 @@ def test_expert_pack_lifecycle_aliases_blueprint_engine(tmp_path: Path) -> None:
             params={"scope": "workspace", "workspace_id": wid},
         )
         assert deleted.status_code == 200, deleted.text
-    assert not (workspace / ".clio" / "agent-blueprints" / "genomics").exists()
+    assert not (workspace / ".clio-agent" / "shared" / "agent-blueprints" / "genomics").exists()
 
 
 def test_expert_pack_kind_is_pack_without_root_orchestrator(tmp_path: Path) -> None:

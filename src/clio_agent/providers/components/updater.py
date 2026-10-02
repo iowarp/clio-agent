@@ -473,7 +473,7 @@ def _perform(job: UpdateJob, env: UpdateEnvironment) -> None:
     if all(job.from_versions[n] == job.to_versions[n] for n in spec.distributions):
         return  # already current: done, nothing changed
     job.stage = "downloading"
-    with tempfile.TemporaryDirectory(prefix="clio-component-update-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clio-agent-component-update-") as tmp:
         workdir = Path(tmp)
         (workdir / "target").mkdir()
         (workdir / "previous").mkdir()

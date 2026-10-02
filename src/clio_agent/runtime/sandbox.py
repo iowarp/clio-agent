@@ -26,6 +26,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Optional
 
+from clio_agent import paths
+
 logger = logging.getLogger(__name__)
 
 MECHANISM_LANDLOCK = "landlock"  # native Linux Landlock fs-fence (B2)
@@ -307,8 +309,6 @@ def _child_cache_env(
         and int(state.details.get("landlock_abi") or 0) < 2
         and profile == PROFILE_FLEET
     ):
-        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
-
         fastmcp_home = paths.user_cache_dir() / "fastmcp-child"
         try:
             fastmcp_home.mkdir(parents=True, exist_ok=True)
@@ -325,7 +325,7 @@ def _child_cache_env(
             "FASTMCP_HOME": str(fastmcp_home),
             "FASTMCP_CHECK_FOR_UPDATES": "off",
         }
-    cache_dir = Path(str(write_roots[0])).expanduser() / CHILD_CACHE_DIRNAME
+    cache_dir = paths.workspace_cache_dir(str(write_roots[0]))
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

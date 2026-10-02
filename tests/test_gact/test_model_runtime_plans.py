@@ -80,7 +80,7 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     assert "OLLAMA_NUM_PARALLEL=2" in args
     assert "OLLAMA_CONTEXT_LENGTH=4096" in args
     assert args[args.index("--volume") + 1] == (
-        "/home/alice/.local/share/clio/services/ares/clio-ollama/cache:/cache"
+        "/home/alice/.local/share/clio-agent/services/ares/clio-ollama/cache:/cache"
     )
     assert args[-2:] == [image, "serve"]
     assert plan.readiness is not None
@@ -98,6 +98,29 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     ]
     assert plan.connection_port == 11434
     assert plan.configuration is not None and plan.configuration["container_runtime"] == "docker"
+
+
+def test_model_cache_uses_the_target_agent_data_override() -> None:
+    facts = _facts("docker").model_copy(update={"agent_data_root": "/scratch/alice/agent-data"})
+    plan = build_driver_plan(
+        service_id="ollama",
+        action="install",
+        variant_id="cpu",
+        configuration={"model": "qwen2.5:0.5b"},
+        facts=facts,
+    )
+    args = _run(plan.commands, "docker").args
+    assert args[args.index("--volume") + 1] == (
+        "/scratch/alice/agent-data/services/ares/clio-ollama/cache:/cache"
+    )
+
+
+def test_model_cache_rejects_relative_agent_data_root() -> None:
+    facts = _facts("docker").model_copy(update={"agent_data_root": "relative"})
+    with pytest.raises(ValueError, match="must be absolute"):
+        build_driver_plan(
+            service_id="ollama", action="install", variant_id="cpu", configuration={}, facts=facts
+        )
 
 
 def test_ollama_requires_a_model_to_pull() -> None:
@@ -212,7 +235,7 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
         facts=_facts("apptainer"),
     )
 
-    service_dir = "/home/alice/.local/share/clio/services/ares/clio-ollama"
+    service_dir = "/home/alice/.local/share/clio-agent/services/ares/clio-ollama"
     pull = next(spec for spec in plan.commands if spec.program == "env")
     assert pull.args == [
         f"APPTAINER_CACHEDIR={service_dir}/apptainer-cache",

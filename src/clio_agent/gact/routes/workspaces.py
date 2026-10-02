@@ -34,11 +34,13 @@ from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.workspace_file_listing import (
     collect_workspace_file_entries,
+    resolve_managed_input,
     workspace_file_media_type,
 )
 from clio_agent.gact.routes.workspace_file_policy import workspace_read_redaction_reason
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
+from clio_agent.gact.routes.workspace_warmup import register_workspace_warmup_route
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -245,7 +247,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``build_app`` local.
     """
 
-    # ---- /v1/workspaces -------------------------
+    register_workspace_warmup_route(app)
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
     async def list_workspaces(request: Request) -> ListWorkspacesResponse | JSONResponse:
@@ -655,7 +657,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         try:
-            target = (root / path).resolve()
+            managed = resolve_managed_input(app, wid, root, path)
+            target = managed or (root / path).resolve()
         except Exception:  # noqa: BLE001 - path resolution failure surfaced as HTTP 400
             raise HTTPException(
                 status_code=400,
@@ -669,7 +672,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from None
         # Refuse path-traversal: target must be at-or-below root.
         try:
-            relative_target = target.relative_to(root)
+            relative_target = Path(path) if managed else target.relative_to(root)
         except ValueError:
             raise HTTPException(
                 status_code=403,

@@ -22,6 +22,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from clio_agent import paths
+
 #: Priority FLOOR for the built-in plan-mode ACL (P1.1 #1063): engine-level DEFAULT plan_acl rows
 #: :func:`grant_resolver.resolve` consults for every plan-restricted ``kind="tool"`` call. They are
 #: NEVER persisted (a ``PUT /v1/policies`` cannot drop them) and replace the read-only lock formerly
@@ -69,11 +71,9 @@ PLAN_ACL_MODES = frozenset({"plan", "architect", READ_ONLY_POLICY_MODE})
 def plans_dir() -> Path:
     """Return the sole writable plan-artifact directory for plan mode (P1.1 #1063).
 
-    During a live session turn, ``<workspace>/.clio/plans`` is authoritative. This keeps the
-    CLIO-owned plan inside the same workspace boundary enforced by the file tools when the server
-    hosts workspaces outside its own checkout. Off-turn, ``<repo>/.clio/plans`` is used when the
-    current working directory is inside a VCS (``.git``) repo (so the plan file is committable),
-    else ``~/.clio/plans``. Returned resolved+absolute so the
+    Plans live in Agent state/workspaces/<workspace-hash>/plans. The active tool workspace
+    selects the hash during a turn; otherwise the current working directory does.
+    Returned resolved+absolute so the
     ``path_pattern`` glob it seeds matches the resolved target path the gate hands
     :func:`grant_resolver.resolve`. The actual plan artifact is minted in a later slice (P1.3);
     this helper only defines WHERE the single @70 write carve-out permits a ``*.md`` write.
@@ -92,18 +92,18 @@ def plans_dir() -> Path:
 
         active_root = str(get_active_tool_workspace_root() or "").strip()
         if active_root:
-            return (Path(active_root).expanduser() / ".clio" / "plans").resolve()
+            return (paths.workspace_state_dir(active_root) / "plans").resolve()
     except (ImportError, OSError):
         pass
     try:
         cwd = Path.cwd()
     except OSError:
-        return (Path.home() / ".clio" / "plans").resolve()
+        return (paths.user_state_dir() / "plans").resolve()
     for base in (cwd, *cwd.parents):
         # A git worktree carries a ``.git`` FILE (not a dir); ``.exists()`` covers both.
         if (base / ".git").exists():
-            return (base / ".clio" / "plans").resolve()
-    return (Path.home() / ".clio" / "plans").resolve()
+            return (paths.workspace_state_dir(base) / "plans").resolve()
+    return (paths.user_state_dir() / "plans").resolve()
 
 
 def default_plan_acl_rows() -> list[dict[str, Any]]:

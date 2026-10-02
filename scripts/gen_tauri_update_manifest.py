@@ -97,18 +97,23 @@ def encode_version(tag: str) -> str:
     (``vX.Y.Z``) keeps plain SemVer; a four-part CLIO maintenance release
     (``vX.Y.Z.N``) encodes ``N`` as numeric SemVer BUILD METADATA
     (``X.Y.Z+N``) -- Rust's ``semver`` orders numeric build metadata, so
-    ``0.9.4 < 0.9.4+1 < 0.9.5``.
+    ``0.9.4 < 0.9.4+1 < 0.9.5``. A beta (``vX.Y.Z-beta.N``) encodes as the
+    numeric pre-release ``X.Y.Z-N``: Tauri's MSI bundler accepts only a numeric
+    pre-release identifier, and ``X.Y.Z-N < X.Y.Z`` still holds.
 
     Raises:
         ValueError: ``tag`` (after stripping a leading ``v``) is not a valid
-            three- or four-part CLIO release version.
+            three- or four-part CLIO release version or a ``-beta.N`` pre-release.
     """
 
     version = tag.lstrip("v")
     maintenance = re.match(r"^(\d+\.\d+\.\d+)\.(\d+)$", version)
     if maintenance:
         return f"{maintenance.group(1)}+{maintenance.group(2)}"
-    if not re.match(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$", version):
+    beta = re.match(r"^(\d+\.\d+\.\d+)-beta\.(\d+)$", version)
+    if beta:
+        return f"{beta.group(1)}-{beta.group(2)}"
+    if not re.match(r"^\d+\.\d+\.\d+$", version):
         raise ValueError(f"invalid CLIO release version: {version!r}")
     return version
 

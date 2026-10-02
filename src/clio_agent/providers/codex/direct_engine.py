@@ -34,6 +34,11 @@ engine changes only the transport:
   ``CodexTransientStreamError`` DSPy retries, each retry logged with its attempt
   (:mod:`~clio_agent.providers.codex.stream_errors`); everything else is lm15's
   typed error.
+* **A dropped stream** (the connection closed before the response completed) is a
+  ``CodexStreamDroppedError``: DSPy retries it -- a full send on a fresh socket, never
+  a delta against the unfinished response -- unless the caller already saw part of the
+  reply, which DSPy never replays (the log says ``not_retried_partial_output``). Only
+  a kept socket found closed before any event is resent here, once, in full.
 * **Auth** is clio's own Codex sign-in when there is one (refreshed per call), else
   the local Codex CLI login (``$CODEX_HOME/auth.json``, default ``~/.codex``, read
   by lm15).
@@ -75,6 +80,7 @@ from clio_agent.providers.codex.audit import (
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
 from clio_agent.providers.codex.stream_errors import (
     CallOutcome,
+    CodexStreamDroppedError,
     CodexTransientStreamError,
     RetryLog,
     terminal_error,
@@ -257,15 +263,19 @@ class AsyncCodexDirectEngine:
 
     async def complete(self, request: Request) -> Response:
         """Run one call and return the assembled response."""
-        return materialize_response(iter([e async for e in self.stream(request)]), request)
+        events = self._events(request, listened=False)
+        return materialize_response(iter([e async for e in events]), request)
 
-    async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
-        """Run one call on the owner loop, yielding lm15 stream events."""
+    def stream(self, request: Request) -> AsyncGenerator[Any, None]:
+        """Run one call on the owner loop, yielding lm15 stream events to a listener."""
+        return self._events(request, listened=True)
+
+    async def _events(self, request: Request, *, listened: bool) -> AsyncGenerator[Any, None]:
         events: queue.SimpleQueue[Any] = queue.SimpleQueue()
         key = _driven_key(conversation_key(self.model))
         future = asyncio.run_coroutine_threadsafe(self._call(request, key, events), _OWNER.loop())
         loop = asyncio.get_running_loop()
-        outcome = CallOutcome(_RETRY_LOG, request)
+        outcome = CallOutcome(_RETRY_LOG, request, listened=listened)
         try:
             while True:
                 item = await loop.run_in_executor(None, events.get)
@@ -317,15 +327,20 @@ class AsyncCodexDirectEngine:
         socket = live.socket if live is not None else await _connect(prepared.headers, key)
         _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
         try:
-            response_id, reply_calls = await _exchange(self.wire, request, socket, frame, out)
+            response_id, reply_calls = await _exchange(
+                self.wire, request, socket, frame, out, kept=live is not None
+            )
         except (_ContinuationLost, _ConnectionLost):
-            # The backend no longer holds the previous response, or the connection
-            # dropped (a service restart, an idle-closed socket) -- nothing was streamed:
-            # resend in full on a fresh socket, typed.
+            # The backend no longer holds the previous response, or the kept socket was
+            # found closed (a service restart, an idle-closed socket) -- nothing was
+            # streamed: resend in full on a fresh socket, typed. A fresh socket that
+            # drops is DSPy's retry (CodexStreamDroppedError), never another resend here.
             _close_soon(socket)
             socket = await _connect(prepared.headers, key)
             _audit(key, self.model, request, False, "session_evicted", len(items))
-            response_id, reply_calls = await _exchange(self.wire, request, socket, body, out)
+            response_id, reply_calls = await _exchange(
+                self.wire, request, socket, body, out, kept=False
+            )
         if key is None:
             await socket.close()
             return
@@ -359,14 +374,17 @@ class CodexDirectEngine(AsyncCodexDirectEngine):
     """Sync twin: the same owner-loop call, consumed on the calling thread."""
 
     def complete(self, request: Request) -> Response:  # type: ignore[override]
-        return materialize_response(self.stream(request), request)
+        return materialize_response(self._sync_events(request, listened=False), request)
 
     def stream(self, request: Request) -> Iterator[Any]:  # type: ignore[override]
+        return self._sync_events(request, listened=True)
+
+    def _sync_events(self, request: Request, *, listened: bool) -> Iterator[Any]:
         events: queue.SimpleQueue[Any] = queue.SimpleQueue()
         asyncio.run_coroutine_threadsafe(
             self._call(request, _driven_key(conversation_key(self.model)), events), _OWNER.loop()
         )
-        outcome = CallOutcome(_RETRY_LOG, request)
+        outcome = CallOutcome(_RETRY_LOG, request, listened=listened)
         try:
             while True:
                 item = events.get()
@@ -570,13 +588,25 @@ async def _open_socket_within(ws_headers: dict[str, str], open_timeout: float) -
 
 
 async def _exchange(
-    wire: Any, request: Request, socket: Any, frame: dict[str, Any], out: queue.SimpleQueue[Any]
+    wire: Any,
+    request: Request,
+    socket: Any,
+    frame: dict[str, Any],
+    out: queue.SimpleQueue[Any],
+    *,
+    kept: bool,
 ) -> tuple[str, tuple[str, ...]]:
     """Send one ``response.create`` frame; forward parsed events; return the response id
     and the call ids of the reply's function calls.
 
     Writes the same per-call audit rows as Claude Code (``provider.call_started``,
     the first streamed event, ``provider.call_usage`` with cached input).
+
+    Raises:
+        _ConnectionLost: ``socket`` is a ``kept`` one that closed before any event of
+            the reply was forwarded (the caller resends in full on a fresh socket).
+        CodexStreamDroppedError: Any other close before the response completed: DSPy
+            retries the call (a full send) unless the caller already saw output.
     """
     call_id, call_index = uuid.uuid4().hex, _next_call_index()
     emit_call_started(
@@ -589,12 +619,13 @@ async def _exchange(
     try:
         return await _stream(wire, request, socket, frame, out, call_id, call_index, streamed)
     except websockets.ConnectionClosed as exc:
-        if streamed:
-            reason = f"code {exc.rcvd.code}: {exc.rcvd.reason}" if exc.rcvd else "no close frame"
-            raise ServerError(
-                f"Codex closed the connection during the reply ({reason}); please try again"
-            ) from exc
-        raise _ConnectionLost from exc
+        if kept and not streamed:
+            raise _ConnectionLost from exc
+        reason = f"code {exc.rcvd.code}: {exc.rcvd.reason}" if exc.rcvd else "no close frame"
+        when = "during the reply" if streamed else "before replying"
+        raise CodexStreamDroppedError(
+            f"Codex closed the connection {when} ({reason}); please try again"
+        ) from exc
 
 
 async def _stream(
@@ -707,7 +738,7 @@ class _ContinuationLost(Exception):
 
 
 class _ConnectionLost(Exception):
-    """The WebSocket closed before any event of the reply was forwarded."""
+    """A kept WebSocket closed before any event of the reply was forwarded."""
 
 
 def _error_message(payload: dict[str, Any]) -> str:

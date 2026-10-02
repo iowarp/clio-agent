@@ -1,7 +1,7 @@
 """Materialize immutable uploaded resources as mutable workspace inputs.
 
 Custody remains authoritative for hashes, revisions, conversion, and provenance.
-The copy under ``.clio/inputs`` exists so workspace-scoped filesystem tools can
+The copy under Agent ``state/workspaces/<id>/inputs`` exists so workspace-scoped filesystem tools can
 consume or transform an upload without ever mutating the custody original.
 """
 
@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import paths
 from clio_agent.gact.resource_custody import ResourceMaterialization, windows_safe_filename
 from clio_agent.platform_paths import short_stage_name, win_extended_path
 
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MANAGED_INPUT_DIRECTORY = Path(".clio") / "inputs"
+MANAGED_INPUT_DIRECTORY = Path("inputs")
 
 
 def managed_input_relative_path(record: "ResourceRecord") -> Path:
@@ -57,7 +58,7 @@ def materialize_resource(
     """
 
     source = store.content_path(record)
-    root = Path(workspace_root).expanduser().resolve(strict=False)
+    root = paths.workspace_state_dir(workspace_root).resolve(strict=False)
     relative = managed_input_relative_path(record)
     destination = (root / relative).resolve(strict=False)
     destination.relative_to(root)
@@ -116,7 +117,10 @@ def remove_materialized_resource(record: "ResourceRecord") -> None:
         target.name != windows_safe_filename(record.name)
         or resource_dir.name != record.id
         or inputs_dir.name != "inputs"
-        or clio_dir.name != ".clio"
+        or not (
+            clio_dir.name == ".clio"  # Existing recorded working copies remain removable.
+            or clio_dir.parent == (paths.user_state_dir() / "workspaces").resolve()
+        )
     ):
         raise ValueError("recorded workspace input path is outside the managed layout")
     extended_resource_dir = win_extended_path(resource_dir)

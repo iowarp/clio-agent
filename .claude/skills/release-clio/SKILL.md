@@ -25,6 +25,17 @@ Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop fronten
 - You are an org admin (tags, ghcr). `gh auth status` ok.
 - Decide the version: `vX.Y.Z`. Patch bump for fixes; the user usually says "0.5.x+1".
 
+## Beta (pre-release) cuts
+- Tag `vX.Y.Z-beta.N`; pyproject / `__init__` / `uv.lock` carry the PEP 440 form `X.Y.ZbN`
+  (`release.yml` maps one to the other before comparing).
+- PyPI publishes it as a pre-release (plain `pip install clio-agent` does not pick it up);
+  the GitHub release is published as a pre-release and never marked latest
+  (`github_release.py`), so installed desktops do not update to it; ghcr gets the version
+  tag but not `latest` (`docker.yml`).
+- Desktop builds use `X.Y.Z-N` internally (the MSI bundler takes only a numeric
+  pre-release); assets keep the public `X.Y.Z-beta.N` name. Other pre-release forms
+  (`-rc1`, ...) are refused by `clio-bundles.yml` before the build.
+
 ## Steps
 
 ### 1. Marketplace submodule release (do FIRST — clio-agent will pin its tag)

@@ -273,7 +273,7 @@ def test_create_artifact_used_resolves_source_by_declared_ref_form(
     used_ref = {
         "artifact_id": resource.source_artifact_id,
         "resource_id": resource.id,
-        "workspace_path": f".clio/inputs/{resource.id}/{resource.name}",
+        "workspace_path": resource.workspace_path,
     }[ref_kind]
 
     report, result = _mint_report_via_create_artifact(

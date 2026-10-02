@@ -101,9 +101,11 @@ def default_prompt_sources(
         from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
         config_dir = paths.user_config_dir()
+    from clio_agent import paths  # noqa: PLC0415
+
     return [
         PromptSource("global", config_dir / "prompts"),
-        PromptSource("workspace", cwd / ".clio" / "prompts"),
+        PromptSource("workspace", paths.workspace_config_path(cwd, "prompts")),
     ]
 
 
