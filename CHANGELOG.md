@@ -8,6 +8,13 @@ TUI/HTTP surface aren't tracked here.
 
 ### Added
 
+- `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned
+  (hidden unless the process was started with `CLIO_SERVE_MANAGED=1`). It takes the
+  server's bearer in `Authorization` (loopback included; `401 authentication_required`
+  otherwise) and answers `202 {status: "stopping", exit_path}` like
+  `POST /v1/desktop/shutdown`. `serve.ensure_server` now starts the server with a
+  one-use `CLIO_AUTH_TOKEN`, so such a server also requires that bearer from
+  non-loopback peers (the token is in its owner-only credential record).
 - Compaction is visible: `compaction.started` / `compaction.completed` /
   `compaction.failed` events (`session_id`, `compaction_id`, `scope`, `trigger`
   `auto|manual`, `turn_id`; completed adds `message_id`, `part_id`,
@@ -77,6 +84,13 @@ TUI/HTTP surface aren't tracked here.
   `504 table_query_stalled` (`details.reason` `no_progress` or `ceiling`,
   `details.waited_s`, `details.no_progress_s`), replacing `504 table_query_timeout`.
   A client disconnect still cancels the query (`499 table_query_client_disconnected`).
+- `serve.stop_server` stops a server it spawned gracefully on every platform: it calls
+  `POST /v1/server/shutdown`, so the lifespan teardown runs (turn drain, clio-core client
+  release, flushes), and waits while the server's process tree progresses
+  (`arc.liveness.stop_no_progress_s` window, `arc.liveness.max_wait_s` ceiling). A server
+  that cannot be asked or stops progressing is killed and reported as `killed` with a
+  typed `kill_reason`; the fixed terminate-then-kill after 5 s is gone. A stop that lands
+  during the boot clio-core attach waits for it, so the attached client is released.
 
 ### Removed
 

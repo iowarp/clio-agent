@@ -154,7 +154,9 @@ from clio_agent.gact.app import build_app
 # 281 -> 282: GET /v1/sessions/{sid}/variant-runs (a session's BestOfN / Refine runs,
 # served from clio-core; Phase 9), owned by routes/variant_runs.py, registered from
 # routes/context.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 282
+# 282 -> 283: POST /v1/server/shutdown (graceful stop of a server clio_agent.serve
+# spawned; same bearer contract as the desktop route), owned by routes/lifecycle.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 283
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
