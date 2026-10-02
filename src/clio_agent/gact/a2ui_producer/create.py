@@ -5,7 +5,13 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from clio_agent.gact.a2ui_capability_selection import select_catalog
-from clio_agent.gact.a2ui_producer import _common, _data_reference, _definition_artifact, _export
+from clio_agent.gact.a2ui_producer import (
+    _chart_spec,
+    _common,
+    _data_reference,
+    _definition_artifact,
+    _export,
+)
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import catalog_selection_refusal, refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -61,6 +67,10 @@ def build_create_a2ui_surface_tool() -> Any:
         data_reference_error = _data_reference.validate_component_data_references(app, components)
         if data_reference_error is not None:
             return data_reference_error
+
+        chart_spec_error = _chart_spec.validate_chart_components(components)
+        if chart_spec_error is not None:
+            return chart_spec_error
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"

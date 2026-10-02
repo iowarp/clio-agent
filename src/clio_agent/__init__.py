@@ -49,7 +49,7 @@ def _load_dspy_lazy_anyio() -> None:
 
 _load_dspy_lazy_anyio()
 
-__version__ = "0.9.4.23"
+__version__ = "0.9.4.24"
 __author__ = "IOWarp Team"
 
 __all__ = [

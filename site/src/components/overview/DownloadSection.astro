@@ -1,0 +1,56 @@
+---
+/** Desktop downloads, resolved against the latest GitHub release in the browser. */
+import { ArrowRight } from 'lucide-react';
+import SectionHeading from './SectionHeading.astro';
+import DownloadCards, { type PlatformIcons } from './DownloadCards';
+import { release } from '@/lib/release';
+import apple from '@/assets/platform-icons/apple.svg';
+import linux from '@/assets/platform-icons/linux.svg';
+import windows from '@/assets/platform-icons/windows.svg';
+
+const icons: PlatformIcons = { windows: windows.src, macos: apple.src, linux: linux.src };
+---
+
+<section class="download not-content" aria-labelledby="download">
+	<SectionHeading
+		id="download"
+		label="Download"
+		title="Get CLIO"
+		emphasis={`${release.tag}.`}
+		lede="Pick your platform. The recommended installer includes the CLIO backend, so there is nothing else to set up; on first launch, CLIO asks which model to connect."
+	/>
+	<div class="cards">
+		<DownloadCards client:load icons={icons} />
+	</div>
+	<p class="other">
+		<a href="/docs/install/">Other ways to install <ArrowRight aria-hidden="true" size={16} /></a>
+		<a href={release.notesUrl}>Release notes <ArrowRight aria-hidden="true" size={16} /></a>
+	</p>
+</section>
+
+<style>
+	.download {
+		padding-block: clamp(4rem, 8vw, 6rem);
+		border-top: 1px solid var(--line);
+	}
+	.cards {
+		margin-top: 2.5rem;
+	}
+	.other {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 2rem;
+		margin: 2rem 0 0;
+	}
+	.other a {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-weight: 600;
+		color: var(--ink);
+		text-decoration: none;
+	}
+	.other :global(svg) {
+		color: var(--accent);
+	}
+</style>

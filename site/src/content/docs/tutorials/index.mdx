@@ -1,0 +1,16 @@
+---
+title: Tutorials
+description: Step-by-step workflows you can repeat in your own CLIO workspace, each recorded from a real session.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+A tutorial walks through one real workflow from start to finish: the prompt to type, what CLIO does, and what to check in the result. Each one is recorded from a real CLIO session, so you can repeat it in your own workspace. Model output varies from run to run, so the tutorials tell you what to look for rather than the exact words you will see.
+
+<CardGrid>
+	<LinkCard title="Your first analysis" description="Find the GNSS stations nearest Palm Springs, choose one on a map, and chart its ground motion." href="/tutorials/guides/first-analysis/" />
+</CardGrid>
+
+## Want to contribute a tutorial?
+
+Tutorials live in the `site/` folder of the CLIO repository. The site README explains how to add one, including how to mark it as a draft while you record its screenshots. Start at [github.com/iowarp/clio-agent/tree/develop/site](https://github.com/iowarp/clio-agent/tree/develop/site).

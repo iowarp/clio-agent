@@ -1,0 +1,98 @@
+---
+title: Command line
+description: Start, stop, and inspect the CLIO backend with the clio command, and what differs on Windows.
+---
+
+import { Aside, CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
+
+The install script adds a `clio` command. It starts the CLIO backend when needed, opens an interface, and gives you commands to manage the backend. The backend itself is a separate program, `clio-agent`, described [below](#the-clio-agent-command).
+
+## The clio command
+
+| Command | What it does |
+|---|---|
+| `clio` (or `clio attach`) | Starts the backend if needed, then opens the terminal UI. If this command started the backend, closing the terminal UI stops it. |
+| `clio --web` (or `clio web`) | Starts the backend and opens http://127.0.0.1:17800/ in your browser. |
+| `clio desktop` (or `clio --desktop`) | Launches the desktop app. Linux and macOS only, and it needs `CLIO_DESKTOP_BIN` set to the app's binary. |
+| `clio start` | Starts the backend in the background, then waits up to about 90 seconds for it to become healthy. |
+| `clio stop` | Stops the backend and the tool processes it started. |
+| `clio restart` | Stops, then starts. |
+| `clio status` (or `clio ps`) | Shows the install prefix, port, process id, health, and log locations. |
+| `clio logs [N]` | Follows the backend and terminal UI logs, starting with the last N lines (40 by default). |
+| `clio update` | Upgrades `clio-agent` to the latest release. Linux and macOS only. |
+| `clio doctor` | Checks the install: backend binary, terminal UI binary, the port, and the launcher (plus `curl` on macOS and Linux). Exits with an error if something required is missing. |
+| `clio sandbox status` | Shows whether the OS write fence is active. See [Permissions and sandbox](/docs/permissions/). |
+| `clio sandbox setup` | Sets up the OS write fence. Windows needs this once. |
+| `clio report` | Prints versions, environment, health, and the last 40 lines of each log, for pasting into a bug report. |
+| `clio completion bash` or `zsh` | Prints a shell completion script. |
+| `clio uninstall [--purge] [--yes]` | Uninstalls CLIO. See [Uninstall](/docs/uninstall/). |
+| `clio help` | Shows help. |
+
+Shell completion:
+
+<Tabs syncKey="os">
+<TabItem label="macOS and Linux">
+
+```sh
+clio completion bash >> ~/.bashrc
+clio completion zsh > "${fpath[1]}/_clio"
+```
+
+</TabItem>
+<TabItem label="Windows">
+
+```powershell
+clio completion powershell >> $PROFILE
+```
+
+</TabItem>
+</Tabs>
+
+## What differs on Windows
+
+On Windows the command is `clio.ps1` (with a `clio.cmd` wrapper), and it supports a subset of the commands above:
+
+- Supported: `clio` (or `clio attach`), `clio web` (or `--web`), `start`, `stop`, `restart`, `status` (or `ps`), `logs`, `sandbox`, `doctor`, `report`, `completion`, `uninstall`, and `help`.
+- Not available: `update` and `desktop`. To update, rerun the install script.
+- The uninstall flags are `-Purge` and `-Yes`.
+- The backend writes its output to separate files, `clio-server.log` and `clio-server.err.log`.
+
+## Port and logs
+
+The backend listens on `127.0.0.1` port 17800. Set `CLIO_PORT` to use a different port. The health check is `GET /v1/health`.
+
+| File | Contents |
+|---|---|
+| `clio-server.<hostname>.log` in the install prefix | Backend output on macOS and Linux. The log name includes your host name so a home folder shared across machines keeps one log per machine. |
+| `clio-server.log` and `clio-server.err.log` in the install prefix | Backend output on Windows. |
+| `gact-stderr.log` in the install prefix | Errors from the terminal UI. |
+
+Set `CLIO_LOG` to write the backend log to a different file on macOS and Linux. The install prefix is `~/.local/share/clio` on macOS and Linux, and `%LOCALAPPDATA%\clio` on Windows.
+
+## Update checks
+
+On macOS and Linux, the `clio` command checks PyPI for a newer `clio-agent` at most about once a day and prints a one-line hint. To turn the check off, set `CLIO_NO_UPDATE_CHECK=1`. See [Data and network](/docs/privacy/).
+
+## The clio-agent command
+
+`clio-agent` is the backend program that the `clio` command runs.
+
+| Command | What it does |
+|---|---|
+| `clio-agent serve` | Runs the backend in the foreground. Options: `--host` (default `127.0.0.1`) and `--port` (default `8100`). |
+| `clio-agent doctor` | Runs deeper checks than `clio doctor`: file access policy, model provider, memory store, tool gateway, and API. Add `--json` for machine-readable output. |
+| `clio-agent sandbox status` and `clio-agent sandbox setup` | The same sandbox commands as `clio`. |
+| `clio-agent --version` | Prints the installed version. |
+
+<Aside type="note">
+`clio-agent serve` listens on port 8100 unless you pass `--port`. The `clio` command passes port 17800 for you.
+</Aside>
+
+Inside the terminal UI, `/doctor` runs the health checks and `/mcp` works with tool servers.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Configuration" description="Settings files and environment variables." href="/docs/configuration/" />
+  <LinkCard title="Troubleshooting" description="When something does not start or connect." href="/docs/troubleshooting/" />
+</CardGrid>
