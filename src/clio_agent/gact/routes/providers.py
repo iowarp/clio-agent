@@ -475,8 +475,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             if req.provider != "lm_studio" or req.context_length <= 0:
                 return
 
-            import requests  # noqa: PLC0415
-
             root = _lm_studio_api_root(req.api_base)
             if not root:
                 raise RuntimeError("LM Studio api_base is empty")
@@ -487,56 +485,15 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # box wedges when the backend serves them concurrently, so serialize.
             _lm_studio_parallel = int(req.parallel) if req.parallel and req.parallel > 0 else 1
 
-            def _already_loaded_with_requested_context() -> str:
-                try:
-                    response = requests.get(
-                        f"{root}/api/v1/models",
-                        headers=headers,
-                        timeout=10,
-                    )
-                    if response.status_code >= 400:
-                        return ""
-                    payload = response.json()
-                except Exception:  # noqa: BLE001 - unparseable instance response yields empty id
-                    return ""
+            from clio_agent.gact import lm_studio_load  # noqa: PLC0415
 
-                models = payload.get("models")
-                if not isinstance(models, list):
-                    return ""
-                for item in models:
-                    if not isinstance(item, dict):
-                        continue
-                    key = str(item.get("key") or "")
-                    loaded = item.get("loaded_instances")
-                    if not isinstance(loaded, list):
-                        continue
-                    for instance in loaded:
-                        if not isinstance(instance, dict):
-                            continue
-                        instance_id = str(instance.get("id") or "")
-                        if req.model not in {key, instance_id}:
-                            continue
-                        config = instance.get("config")
-                        if not isinstance(config, dict):
-                            continue
-                        try:
-                            loaded_context = int(config.get("context_length") or 0)
-                        except (TypeError, ValueError):
-                            loaded_context = 0
-                        try:
-                            loaded_parallel = int(config.get("parallel") or 0)
-                        except (TypeError, ValueError):
-                            loaded_parallel = 0
-                        # Reuse only if BOTH the context and the concurrency cap
-                        # already match what we'd load — otherwise a stale
-                        # parallel=4 instance would be kept and keep stalling.
-                        if loaded_context == req.context_length and (
-                            loaded_parallel == _lm_studio_parallel
-                        ):
-                            return instance_id
-                return ""
-
-            loaded_instance_id = _already_loaded_with_requested_context()
+            loaded_instance_id = lm_studio_load.loaded_instance_matching(
+                root,
+                headers,
+                model=req.model,
+                context_length=req.context_length,
+                parallel=_lm_studio_parallel,
+            )
             if loaded_instance_id:
                 _release_owned_lm_studio_instance(
                     app,
@@ -546,10 +503,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return
 
             _release_owned_lm_studio_instance(app, raise_on_error=True)
-            response = requests.post(
-                f"{root}/api/v1/models/load",
-                headers=headers,
-                json={
+            # Waited for while LM Studio stays responsive (no REST load progress exists).
+            response = lm_studio_load.load_model(
+                root,
+                headers,
+                {
                     "model": req.model,
                     "context_length": req.context_length,
                     # LM Studio's "Max Concurrent Predictions". The agent issues
@@ -567,7 +525,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "flash_attention": _lmstudio_flash_attention_enabled(),
                     "echo_load_config": True,
                 },
-                timeout=180,
             )
             if response.status_code >= 400:
                 raise RuntimeError(

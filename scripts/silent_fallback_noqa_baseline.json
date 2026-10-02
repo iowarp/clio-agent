@@ -108,7 +108,7 @@
  "gact/routes/mcp_rows.py": 1,
  "gact/routes/mcp_specs.py": 2,
  "gact/routes/provenance.py": 1,
- "gact/routes/providers.py": 7,
+ "gact/routes/providers.py": 6,
  "gact/routes/sessions.py": 1,
  "gact/routes/system.py": 3,
  "gact/routes/workspace_file_listing.py": 1,
