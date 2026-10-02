@@ -91,7 +91,15 @@ REFRESH_MARGIN_MS = 5 * 60 * 1000
 # ---------------------------------------------------------------------------
 WS_IDLE_CLOSE_S = 5 * 60
 WS_MAX_AGE_S = 55 * 60
+#: The opening handshake's bound; a handshake that times out is retried once with
+#: WS_CONNECT_RETRY_TIMEOUT_S before it is reported "slow or unresponsive" (#1577).
 WS_CONNECT_TIMEOUT_S = 15.0
+WS_CONNECT_RETRY_TIMEOUT_S = 45.0
+#: Keepalive, explicit rather than websockets' implicit defaults: a ping every 20 s, and
+#: 60 s for its pong -- a busy event loop reads the pong late, and a keepalive miss
+#: closes a reply that is still streaming (1011).
+WS_PING_INTERVAL_S = 20.0
+WS_PING_TIMEOUT_S = 60.0
 
 # ---------------------------------------------------------------------------
 # Retry / error handling (A.7)
