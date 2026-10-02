@@ -72,6 +72,11 @@ Match the surface to the shape of the evidence, not to what looks impressive:
 - Structured rows and columns → a data table.
 - A quantity that changes over an index or time for a few series → the catalog's
   chart component (`clio.chart.v1`), typically its `trajectories` preset.
+  When comparing series from different calendar periods, use elapsed time or
+  sample index from each series' own start if the question is about their
+  shapes. Keep absolute timestamps available in the data and map or table.
+  If the user asks for a few examples without naming them, choose a
+  representative subset, state the criterion, and let them refine it.
 - Many entities or grouped comparisons (one line per sample over time, spectra,
   distributions per group, a matrix of values) → the same `clio.chart.v1`
   component. Use one of its **named presets** by filling in field names; don't
@@ -146,7 +151,9 @@ and `Reference this`. If omitted, it exposes its default map fields. Use
 `dataUri` when a map needs filters on measured columns, even for a small
 dataset: inline points do not carry arbitrary measurements. A referenced map,
 chart, or table needs a registered CSV or Parquet table; a source JSON file is
-not a queryable table. Preserve numeric columns as numbers and timestamps as
+not a queryable table. Check relevant workspace artifacts before searching
+for a new external source; reuse a suitable local table when its provenance
+and columns answer the question. Preserve numeric columns as numbers and timestamps as
 ISO-8601 strings with an offset when writing it. Check the registered table's
 schema and a sample row before presenting the view: a conversion can silently
 turn a timestamp into locale-formatted text. A chart exposes
