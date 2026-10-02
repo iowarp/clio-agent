@@ -1779,7 +1779,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **Provider probes** on a cold machine report "slow" rather than "not installed" or "signed out".
 
 **10. Fixes recorded and told (Phase 4), and injections.**
-- A malformed tool argument is repaired, a path is grounded, the circuit breaker trips: each firing appears in the UI as an injection and the model is told next to the result.
+- Nothing is repaired behind the agent's back (owner, 2026-09-29): a call with a missing path runs as asked and fails with a "did you mean" hint, the circuit breaker warns at its limit and tells a blocked call, an oversize result is told as head + file path. Each appears in the UI as an injection and the model is told next to the result.
 - Plan reminder and todo injections are recorded once.
 
 **11. Subagents and delegation.** One deep-research run checks alternative execution modes, division of labour, and child results at the step boundary.
