@@ -7,9 +7,32 @@
 		allow="clipboard-write"
 	></iframe>
 </div>
+<dialog class="widget-skill-dialog" aria-label="A2UI skill guide">
+	<iframe title="A2UI skill guide" loading="lazy"></iframe>
+</dialog>
 
 <script>
 	const frame = document.querySelector<HTMLIFrameElement>('.widget-gallery-frame');
+	const skillDialog = document.querySelector<HTMLDialogElement>('.widget-skill-dialog');
+	const skillFrame = skillDialog?.querySelector('iframe');
+	window.addEventListener('message', (event) => {
+		if (event.origin !== window.location.origin) return;
+		const message = event.data as { type?: string; name?: string };
+		if (message?.type === 'clio:gallery-skill' && event.source === frame?.contentWindow && skillDialog && skillFrame) {
+			const name = message.name ?? 'general';
+			skillFrame.src = `/widgets/widget-preview.html?embedded=1&skill=${encodeURIComponent(name)}`;
+			skillDialog.showModal();
+		} else if (message?.type === 'clio:gallery-skill-close' && event.source === skillFrame?.contentWindow) {
+			skillDialog?.close();
+		}
+	});
+	skillDialog?.addEventListener('close', () => { if (skillFrame) skillFrame.src = 'about:blank'; });
+	skillFrame?.addEventListener('load', () => {
+		skillFrame.contentWindow?.postMessage({
+			type: 'clio:gallery-theme',
+			theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
+		}, window.location.origin);
+	});
 	frame?.addEventListener('load', () => {
 		const page = frame.contentDocument;
 		if (!page) return;
