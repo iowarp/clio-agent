@@ -35,8 +35,8 @@ def build_create_a2ui_surface_tool() -> Any:
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
         ``catalog.json#/components/<ExactComponentId>`` for its schema.
-        Charts, maps, tables, and widgets render inline. A map can join
-        tracks and expose chosen ``filterFields`` from a data reference.
+        Connect every component to ``id=root``; use a layout for several views.
+        A map can join tracks and expose chosen ``filterFields``.
         The renderer supplies selection, zoom, and export.
         """
 
@@ -74,6 +74,10 @@ def build_create_a2ui_surface_tool() -> Any:
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
+        if is_new:
+            tree_error = _common.component_tree_error(components)
+            if tree_error is not None:
+                return refusal("a2ui_validation_failed", detail=tree_error)
         if not is_new:
             # Locked per surface: an existing surface's own catalog wins
             # regardless of what this call's catalog_id argument says.

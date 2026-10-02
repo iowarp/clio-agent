@@ -169,6 +169,9 @@ that makes comparison easier. Let each view carry its own detail and avoid
 repeating a generic heading around it. Use the user's named measurement in
 titles, legends, and captions; when only units are given, call it a reading
 instead of assigning an unstated physical phenomenon.
+For several components on one surface, make the `root` component a layout and
+reference every child by id. A second unconnected component is not visible;
+the producer names unattached ids so you can repair the tree.
 For a correction in a later turn, call `inspect_a2ui_surface` to find the
 existing id and current components, then update that surface. A correction
 should replace the earlier view so both versions do not compete in the chat.
