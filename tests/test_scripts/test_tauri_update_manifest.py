@@ -95,6 +95,16 @@ def test_manifest_version_encodes_fourth_part_as_build_metadata(tmp_path: Path) 
     assert manifest["version"] == "0.9.4+1"
 
 
+def test_beta_tag_encodes_as_a_numeric_pre_release() -> None:
+    """A beta builds as X.Y.Z-N (the MSI bundler takes only a numeric pre-release)."""
+
+    assert encode_version("v0.9.5-beta.1") == "0.9.5-1"
+    assert encode_version("v0.9.5-beta.12") == "0.9.5-12"
+    for bad in ("v0.9.5-rc1", "v0.9.5-beta", "v0.9.5-beta.x", "v0.9.4.1-beta.1"):
+        with pytest.raises(ValueError):
+            encode_version(bad)
+
+
 def test_manifest_maps_every_platform_from_asset_names(tmp_path: Path) -> None:
     """Every LITE platform PLATFORM_PATTERNS declares gets a signature + url."""
 

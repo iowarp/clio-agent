@@ -421,9 +421,18 @@ jobs:
           // in tags/assets and encode N as numeric SemVer build metadata
           // internally. Tauri's Windows bundlers reject nonnumeric metadata.
           const maintenance = releaseVersion.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+          // A beta (vX.Y.Z-beta.N) builds as the numeric pre-release X.Y.Z-N:
+          // the MSI bundler accepts only a numeric pre-release identifier.
+          // Any other pre-release form is refused here, before a long build.
+          const beta = releaseVersion.match(/^(\d+\.\d+\.\d+)-beta\.(\d+)$/);
+          if (releaseVersion.includes("-") && !beta) {
+            throw new Error(`invalid CLIO release version: ${releaseVersion} (pre-releases are vX.Y.Z-beta.N)`);
+          }
           const tauriVersion = maintenance
             ? `${maintenance[1]}+${maintenance[2]}`
-            : releaseVersion;
+            : beta
+              ? `${beta[1]}-${beta[2]}`
+              : releaseVersion;
 
           const isObject = (value) =>
             value !== null && typeof value === "object" && !Array.isArray(value);
@@ -548,6 +557,8 @@ jobs:
           tauri_version="$release_version"
           if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
             tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
+          elif [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
+            tauri_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
           fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
