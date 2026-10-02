@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import paths
 from clio_agent.gact.artifacts.observer_bridge import observer_call_id
 from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
@@ -155,14 +156,14 @@ def _session_plans_dir(app: "FastAPI", session: Any, *, fallback: Path) -> Path:
 
     active_root = str(get_active_tool_workspace_root() or "").strip()
     if active_root:
-        return (Path(active_root).expanduser() / ".clio" / "plans").resolve(strict=False)
+        return (paths.workspace_state_dir(active_root) / "plans").resolve(strict=False)
 
     workspace_id = str(getattr(session, "workspace_id", "") or "").strip()
     workspaces = getattr(app.state, "workspaces", None)
     workspace = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
     root_path = str(getattr(workspace, "root_path", "") or "").strip()
     if root_path:
-        return (Path(root_path).expanduser() / ".clio" / "plans").resolve(strict=False)
+        return (paths.workspace_state_dir(root_path) / "plans").resolve(strict=False)
     return fallback.resolve(strict=False)
 
 

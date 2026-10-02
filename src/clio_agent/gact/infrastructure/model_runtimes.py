@@ -306,15 +306,21 @@ def _service_dir(spec: EngineSpec, facts: TargetFacts, target: InfrastructureTar
     module = ntpath if windows else posixpath
     root = (target.install_root.strip() if target else "").rstrip("/\\")
     if not root:
+        root = facts.agent_data_root
+    if not root:
         if not facts.home:
             raise ValueError(
                 "Could not determine the target's home directory; set an install location for this host."
             )
         root = (
-            module.join(facts.home, "AppData", "Local", "CLIO")
+            module.join(facts.home, "AppData", "Local", "clio-agent", "data")
             if windows
-            else module.join(facts.home, ".local", "share", "clio")
+            else module.join(facts.home, "Library", "Application Support", "clio-agent", "data")
+            if facts.os == "macos"
+            else module.join(facts.home, ".local", "share", "clio-agent")
         )
+    if not module.isabs(root):
+        raise ValueError("The target's Agent data directory must be absolute")
     # Cluster nodes share one home: without the host in the path, a login node
     # and a compute node deploying the same engine would share one cache and
     # one SIF, and uninstalling on one would delete the other's.

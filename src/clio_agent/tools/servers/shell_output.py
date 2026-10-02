@@ -14,7 +14,7 @@ This module owns the replacement:
 * :class:`StreamCapture` reads one process stream with bounded memory (a head
   buffer and a tail ring, each ``inline_limit`` bytes) and, the moment the stream
   outgrows ``inline_limit``, writes the COMPLETE stream (raw bytes) to
-  ``<workspace>/.clio/tool-output/<session>/<call-id>.<stream>.txt``
+  ``<workspace-state>/tool-output/<session>/<call-id>.<stream>.txt``
   (location + retention: :mod:`clio_agent.tools.servers.shell_spill_store`).
 * :func:`compose_output_fields` sizes the result so its encoded JSON fits
   :func:`shell_result_char_budget` (the tighter of the two downstream bounds):
@@ -25,9 +25,9 @@ This module owns the replacement:
   cannot be written returns :data:`SPILL_FAILED_REASON` with the excerpt — never
   a silent drop.
 
-The spill directory sits under the workspace's CLIO-owned ``.clio`` root
-(:func:`clio_agent.paths.workspace_clio`, the same root ``.clio/inputs`` and
-``.clio/plans`` live under), so the model's file tools can read or grep it.
+The spill directory sits under the workspace's Agent-managed state root
+(:func:`clio_agent.paths.workspace_state_dir`). The model's file tools can read
+or grep the returned path through the owning workspace's file policy.
 """
 
 from __future__ import annotations

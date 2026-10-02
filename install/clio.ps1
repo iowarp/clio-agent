@@ -33,19 +33,30 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------- resolved paths --------------------------------------------
-if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $HOME 'AppData\Local\clio' }
+if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } elseif ($env:CLIO_USER_DIR) { Join-Path $env:CLIO_USER_DIR 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
+# Continue a pre-namespace installation until it is explicitly migrated.
+$LegacyPrefix = Join-Path $env:LOCALAPPDATA 'clio'
+if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGENT_DATA_DIR -and -not $env:CLIO_USER_DIR -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
 if ($env:CLIO_PORT)   { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR){ $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 # Agent data stays with the selected install. The clio-core daemon does NOT: there
 # is exactly one per machine (host-global ~/.clio state, fixed ports, one CTE
 # config), shared by every CLIO, so the launcher never scopes its identity.
-if (-not $env:CLIO_DATA_DIR) { $env:CLIO_DATA_DIR = Join-Path $Prefix 'data' }
+$LegacySessions = Join-Path $Prefix 'clio-agent\.clio\agent\sessions.json'
+if (-not $env:CLIO_SESSIONS_PATH -and (Test-Path -LiteralPath $LegacySessions)) { $env:CLIO_SESSIONS_PATH = $LegacySessions }
 $env:PATH = "$BinDir;$env:PATH"
 
-$PidFile   = Join-Path $Prefix 'clio-server.pid'
-$ServerLog = Join-Path $Prefix 'clio-server.log'
-$ServerErr = Join-Path $Prefix 'clio-server.err.log'
-$GactLog   = Join-Path $Prefix 'gact-stderr.log'
+$AgentPython = Join-Path $Prefix 'clio-agent\.venv\Scripts\python.exe'
+$ClioState = $Prefix
+if (Test-Path -LiteralPath $AgentPython) {
+    $ClioState = (& $AgentPython -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())').Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve Agent state directory' }
+    New-Item -ItemType Directory -Path $ClioState -Force | Out-Null
+}
+$PidFile   = Join-Path $ClioState 'clio-server.pid'
+$ServerLog = Join-Path $ClioState 'clio-server.log'
+$ServerErr = Join-Path $ClioState 'clio-server.err.log'
+$GactLog   = Join-Path $ClioState 'gact-stderr.log'
 $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
 # The Go TUI white-labels purely from GACT_BRAND_NAME at runtime (no brand root /

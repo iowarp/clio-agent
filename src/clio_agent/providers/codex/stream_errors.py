@@ -19,8 +19,13 @@ lm15 ``ServerError``, which DSPy's own retry policy retries with its own count a
 backoff) unless the Codex CLI treats it as final. The classification keys off the
 provider's code and status, never off the message prose.
 
+A WebSocket that closes before the response completed is a
+:class:`CodexStreamDroppedError` (the Codex CLI re-sends a dropped stream too); DSPy
+retries it the same way, except after output the caller already saw.
+
 :class:`RetryLog` makes each retry loud: one warning per failed attempt (reason, code,
-attempt of the attempts DSPy allows) and one line when a later attempt recovers.
+attempt of the attempts DSPy allows, or ``not_retried_partial_output``) and one line
+when a later attempt recovers.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from dspy.lm15 import ServerError
 __all__ = [
     "CODEX_FINAL_ERROR_CODES",
     "CallOutcome",
+    "CodexStreamDroppedError",
     "CodexTransientStreamError",
     "RetryLog",
     "terminal_error",
@@ -54,6 +60,7 @@ CODEX_FINAL_ERROR_CODES = frozenset({"usage_not_included", "usage_limit_reached"
 _RETRYABLE_4XX = frozenset({408, 429})
 
 TRANSIENT_REASON = "codex_transient_stream_error"
+DROPPED_REASON = "codex_stream_dropped"
 
 
 class CodexTransientStreamError(ServerError):
@@ -65,6 +72,16 @@ class CodexTransientStreamError(ServerError):
     """
 
     reason = TRANSIENT_REASON
+
+
+class CodexStreamDroppedError(CodexTransientStreamError):
+    """Codex closed the WebSocket before the response completed: DSPy retries it.
+
+    The retry is DSPy's: it re-issues the call (a full send on a fresh socket) unless
+    the caller already saw part of the reply, which DSPy never replays.
+    """
+
+    reason = DROPPED_REASON
 
 
 @dataclass(frozen=True)
@@ -132,26 +149,41 @@ class RetryLog:
         """An empty log tracking at most ``capacity`` calls."""
         self._lock = threading.Lock()
         self._capacity = capacity
-        self._failed: OrderedDict[int, tuple[Any, int]] = OrderedDict()
+        self._failed: OrderedDict[int, tuple[Any, int, str]] = OrderedDict()
 
-    def failed(self, request: Any, error: CodexTransientStreamError, attempts: int) -> None:
-        """Log one transient failure of ``request`` (DSPy allows ``attempts`` in all)."""
+    def failed(
+        self,
+        request: Any,
+        error: CodexTransientStreamError,
+        attempts: int,
+        *,
+        replayable: bool = True,
+    ) -> None:
+        """Log one transient failure of ``request`` (DSPy allows ``attempts`` in all).
+
+        ``replayable`` is ``False`` when the caller already saw part of this attempt's
+        reply: DSPy never replays such a call, so the failure is final.
+        """
         with self._lock:
             held = self._failed.pop(id(request), None)
             attempt = held[1] + 1 if held is not None and held[0] is request else 1
-            if attempt < attempts:
-                self._failed[id(request)] = (request, attempt)
+            if replayable and attempt < attempts:
+                self._failed[id(request)] = (request, attempt, error.reason)
                 while len(self._failed) > self._capacity:
                     self._failed.popitem(last=False)
+        if not replayable:
+            action = "not_retried_partial_output"
+        else:
+            action = "dspy_retries" if attempt < attempts else "retries_exhausted"
         logger.warning(
             "codex direct transient failure reason=%s code=%s status=%s attempt=%d/%d "
             "action=%s message=%r",
-            TRANSIENT_REASON,
+            error.reason,
             error.provider_code or "-",
             error.status if error.status is not None else "-",
             attempt,
             attempts,
-            "dspy_retries" if attempt < attempts else "retries_exhausted",
+            action,
             error.message,
         )
 
@@ -161,9 +193,7 @@ class RetryLog:
             held = self._failed.pop(id(request), None)
         if ok and held is not None and held[0] is request:
             logger.info(
-                "codex direct recovered reason=%s_recovered attempt=%d",
-                TRANSIENT_REASON,
-                held[1] + 1,
+                "codex direct recovered reason=%s_recovered attempt=%d", held[2], held[1] + 1
             )
 
 
@@ -173,12 +203,18 @@ class CallOutcome:
     ``saw`` each item (event or exception), ``ended`` at the end of the stream, and
     ``close`` always (a ``finally``): a transient failure is logged with its attempt;
     any other outcome settles the call (a recovery is logged).
+
+    ``listened``: the events go to a streaming listener (DSPy's ``stream`` path). Once a
+    delta the listener shows has gone out, DSPy never replays the call -- a transient
+    failure after it is final, and logged so.
     """
 
-    def __init__(self, log: RetryLog, request: Any) -> None:
+    def __init__(self, log: RetryLog, request: Any, *, listened: bool = False) -> None:
         """Watch the call that ``request`` names."""
         self._log = log
         self._request = request
+        self._listened = listened
+        self._shown = False
         self._state = "open"
 
     def saw(self, item: Any) -> None:
@@ -186,10 +222,13 @@ class CallOutcome:
         if isinstance(item, CodexTransientStreamError):
             from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
 
-            self._state = "transient"
-            self._log.failed(self._request, item, lm_retries() + 1)
+            replayable = not self._shown
+            self._state = "transient" if replayable else "failed"
+            self._log.failed(self._request, item, lm_retries() + 1, replayable=replayable)
         elif isinstance(item, BaseException) or getattr(item, "type", None) == "error":
             self._state = "failed"
+        elif self._listened and _shown_delta(item):
+            self._shown = True
 
     def ended(self) -> None:
         """The stream reached its end: a call with no error succeeded."""
@@ -200,3 +239,12 @@ class CallOutcome:
         """Settle the call unless it failed transiently (DSPy's retry continues it)."""
         if self._state != "transient":
             self._log.settled(self._request, ok=self._state == "ok")
+
+
+def _shown_delta(event: Any) -> bool:
+    """Whether DSPy's listener bridge makes ``event`` a chunk the caller sees: every
+    delta but opaque continuation state (``dspy.clients.engines.streaming.ListenerBridge``).
+    """
+    if getattr(event, "type", None) != "delta":
+        return False
+    return getattr(getattr(event, "delta", None), "type", None) != "continuation"

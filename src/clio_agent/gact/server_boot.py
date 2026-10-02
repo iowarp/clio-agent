@@ -29,6 +29,8 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import paths
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -84,7 +86,7 @@ def _construct_process_arc(app: "FastAPI") -> Any:
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
-    data_dir = ".clio/agent/arc"
+    data_dir = str(paths.arc_data_dir())
     arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
     from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415 - import cycle
 

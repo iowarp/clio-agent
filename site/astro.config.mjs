@@ -25,7 +25,7 @@ export default defineConfig({
 			description:
 				'An open-source AI workspace for scientific data: data discovery, analysis, expert agents, and provenance in one place.',
 			logo: { src: './src/assets/brand/clio-mark.png', alt: 'CLIO' },
-			favicon: '/favicon.png',
+			favicon: '/favicon.svg',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/iowarp/clio-agent' }],
 			editLink: { baseUrl: 'https://github.com/iowarp/clio-agent/edit/develop/site/' },
 			lastUpdated: true,

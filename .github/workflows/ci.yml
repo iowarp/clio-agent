@@ -10,6 +10,33 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  filesystem-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # This consumer is public and the contract checker is private. Cross-repo
+      # action sharing does not grant access here; use a read-only repository token.
+      - name: Require access to the private contract checker
+        env:
+          CLIO_NS_TOKEN: ${{ secrets.CLIO_NAMESPACES_READ_TOKEN }}
+        run: |
+          if [ -z "$CLIO_NS_TOKEN" ]; then
+            echo "::error::Configure CLIO_NAMESPACES_READ_TOKEN with read-only Contents access to iowarp/clio-namespaces."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: iowarp/clio-namespaces
+          ref: c7dceb98c106bbe696f0750103c024c956a6e16c
+          token: ${{ secrets.CLIO_NAMESPACES_READ_TOKEN }}
+          persist-credentials: false
+          path: .ci/clio-namespaces
+      - uses: ./.ci/clio-namespaces
+
   # Every job carries timeout-minutes just above its measured normal duration, so a
   # hang fails the job in minutes instead of running to GitHub's 6-hour limit. The
   # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,

@@ -16,11 +16,6 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
-# CLIO_DATA_DIR  (str)  <- src/clio_agent/runtime/status.py
-# Base directory for the agent's on-disk data (ARC, sessions, etc.), default
-# ".clio/agent" under the workspace; relocates agent state.
-paths.data_dir: ".clio/agent"
-
 # CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Overrides the file path for the discovered-model catalog cache; set to
 # relocate it off the default user-data directory.
@@ -33,7 +28,8 @@ paths.data_dir: ".clio/agent"
 
 # CLIO_SESSIONS_PATH  (str)  <- src/clio_agent/gact/sessions.py
 # Full override path for the sessions.json registry file; unset defaults to
-# `<workspace>/.clio/agent/sessions.json`.
+# Agent state/server/sessions.json (existing legacy session stores remain
+# readable).
 # paths.sessions:  # default unset; resolved in code
 
 # CLIO_WEB_DIR  (str)  <- src/clio_agent/gact/app.py

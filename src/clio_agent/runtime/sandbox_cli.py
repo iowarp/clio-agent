@@ -128,7 +128,7 @@ if sys.platform == "win32":  # pragma: no cover - win32 live gate only (CI runs 
 
         from clio_agent.runtime import sandbox_codex as scx  # noqa: PLC0415
 
-        with tempfile.TemporaryDirectory(prefix="clio-codex-setup-") as allow:
+        with tempfile.TemporaryDirectory(prefix="clio-agent-codex-setup-") as allow:
             profile = scx.synthesize_codex_profile([allow])
             layer = scx.write_codex_layer("clio-setup", profile, elevated=True)
             argv = [

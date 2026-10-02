@@ -34,6 +34,7 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
             "a2ui_capabilities": agent_capabilities(app, None),
             "replay": replay_supported,
             "workspace_display_names": bool(capabilities.get("workspaces")),
+            "x_clio_workspace_warmup": True,
             "scoped_events": bool(raw_flags.get("x_clio_semantic_events")),
         }
     )

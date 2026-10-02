@@ -110,9 +110,9 @@ def _warm(app: Any, sid: str, trigger: str) -> None:
 
 
 def warm_session_servers(agent: Any) -> dict[str, str]:
-    """List and connect the bound session's servers concurrently.
+    """List and connect the bound workspace/blueprint's servers concurrently.
 
-    Runs inside the session's tool context (workspace root, activated blueprint).
+    Runs inside a session or draft tool context (workspace root, blueprint).
 
     Returns:
         ``{namespace: "ready" | <typed failure reason>}``.
@@ -128,10 +128,16 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
     specs = getattr(executor, "_clio_namespace_specs", None) or {}
     prepared = getattr(executor, "is_namespace_prepared", None)
     warmed = getattr(executor, _WARMED_ATTR, None)
-    if warmed is not None and callable(prepared) and all(prepared(ns) for ns in warmed):
+    blueprint_id = get_active_tool_blueprint_id()
+    if (
+        warmed is not None
+        and getattr(executor, "_clio_warmed_blueprint_id", "") == blueprint_id
+        and callable(prepared)
+        and all(prepared(ns) for ns in warmed)
+    ):
         return {}  # its servers are all up: no blueprint re-read beside the turn
     declared = agent._discover_pack_servers(
-        get_active_tool_blueprint_id(), cwd=get_active_tool_workspace_root() or None
+        blueprint_id, cwd=get_active_tool_workspace_root() or None
     )
     namespaces = sorted(
         ns
@@ -144,6 +150,7 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
     cold = {ns: specs[ns] for ns in namespaces if not (callable(prepared) and prepared(ns))}
     _mounted, failures = mcp_readiness.mount_namespaces_for_session(executor, cold, connect=True)
     setattr(executor, _WARMED_ATTR, frozenset(namespaces))
+    executor._clio_warmed_blueprint_id = blueprint_id
     return {ns: failures.get(ns, READY) for ns in namespaces}
 
 

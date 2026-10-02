@@ -16,11 +16,16 @@ append-only ``replace`` atoms. These pin, on clio-core with the real fold
 * a legacy call with no adjacent observation (a cancelled turn) gets its id but no
   invented output: the fold fails typed ``unanswered_call``;
 * an id-less call that is not a legacy pair (written to an indexed session) still fails
-  typed ``malformed_call``.
+  typed ``malformed_call``;
+* the old loop's failed-turn observation ``[turn escalated] ...`` becomes the rebuilt
+  loop's own ``turn_escalated`` note; any other orphan observation still fails typed
+  ``orphan_observation``.
 
 Sabotage (each turns a test here red; restored after):
 * the migration skipping the id pass -> the legacy fold fails ``malformed_call``;
-* the observation keeping no ``call_id`` -> the legacy fold fails ``orphan_observation``.
+* the observation keeping no ``call_id`` -> the legacy fold fails ``orphan_observation``;
+* the escalation note left unmigrated -> the note test fails ``orphan_observation``;
+* every id-less orphan observation migrated as a note -> the orphan test folds.
 """
 
 from __future__ import annotations
@@ -171,5 +176,60 @@ def test_an_idless_call_in_an_indexed_session_still_fails_typed() -> None:
         with pytest.raises(ContextFoldError) as info:
             _read(again, sid)
         assert info.value.details["problem"] == "malformed_call"
+    finally:
+        store.clear()
+
+
+def test_a_legacy_escalation_note_becomes_the_loops_own_note() -> None:
+    """Old develop recorded a failed turn's reason as a call-less id-less observation
+    ``[turn escalated] <reason>: <error>``; the migration replaces it in its slot with
+    the note the rebuilt loop records for a failed turn (a ``user`` segment, actor
+    ``algorithm``, source ``turn_escalated``), so the session continues."""
+    store = _store()
+    try:
+        old = _OldSession(store)
+        old.atom("thought", {"text": "read it"})
+        call = old.atom("tool_call", {"name": "fs_read_file", "args": {"path": "a"}})
+        old.atom("observation", {"text": "A"})
+        old.atom("thought", {"text": "now the shell"})
+        note = old.atom("observation", {"text": "[turn escalated] tool_denied: no shell"})
+        old.put()
+        migrated_at = old._lt
+
+        arc = ARCMemory(store=store)
+        messages = _read(arc, old.sid)
+        assert [m.role for m in messages] == ["assistant", "tool", "assistant", "user"]
+        assert [p.id for p in messages[0].parts if isinstance(p, ToolCallPart)] == [
+            f"legacy_{call.id}"
+        ]
+        assert messages[3].parts == (
+            TextPart(text="[clio: turn_escalated]\ntool_denied: no shell"),
+        )
+        live = arc.render_segments(old.sid, SCOPE)
+        assert (live[-1].kind, live[-1].content, live[-1].derived_from) == (
+            "user",
+            {"text": "tool_denied: no shell", "source": "turn_escalated", "actor": "algorithm"},
+            [note.id],
+        )
+        before = arc.render_segments(old.sid, SCOPE, as_of=migrated_at)
+        assert before[-1].kind == "observation"  # append-only: the original stays
+    finally:
+        store.clear()
+
+
+def test_any_other_orphan_observation_still_fails_typed() -> None:
+    """An id-less observation with no call before it that is not the old escalation
+    note is not migrated: the fold refuses it as an orphan."""
+    store = _store()
+    try:
+        old = _OldSession(store)
+        old.atom("thought", {"text": "t"})
+        old.atom("observation", {"text": "stray output"})
+        old.put()
+
+        arc = ARCMemory(store=store)
+        with pytest.raises(ContextFoldError) as info:
+            _read(arc, old.sid)
+        assert info.value.details["problem"] == "orphan_observation"
     finally:
         store.clear()

@@ -7,25 +7,19 @@ failing against it leaves the user stuck. Before installing, the deploy
 therefore *claims* the port:
 
 * nothing listens: proceed;
-* this install's own server listens, is healthy, and runs the target
-  version: **adopt** it (the install and start steps are skipped) --
-  whether this desktop started it or not (a hand-run ``clio start``, or a
-  different desktop's earlier deploy, adopt the same way);
-* a healthy CLIO server listens under a different root or version, and the
-  caller has not said to replace it: **found** -- nothing is touched or
-  installed; the caller decides (see ``replace`` below);
+* a recognized CLIO server listens, including the same root and version:
+  **found** -- nothing is touched or installed; the caller must explicitly
+  choose reconnect, update, replace, another installation, or cancel;
 * the same case, but the caller passed ``replace=1`` (the person chose
   "Replace it" after being shown the found version): **stop** it and report
   ``Stopped an old CLIO (pid N, path)``;
 * anything that is not a CLIO server listens: fail with a typed line naming
   it. Unrelated processes are never touched.
 
-A CLIO is never stopped just because it differs from what this desktop would
-install -- only ``adopt`` (exact match) or an explicit ``replace=1`` may end
-one. This is a claim-time decision, not a core-agent one: the frontend shows
-the found version and asks "Connect to the running CLIO (vX)" or "Replace
-it", and either answer becomes one more claim call with ``replace`` set only
-for "Replace".
+A CLIO is never stopped just because its version differs. Only an explicit
+update or replace answer sets ``replace=1``; the process must still have the
+confirmed PID and belong to the SSH account. Reconnect adopts it without
+acquiring Desktop shutdown ownership.
 
 A CLIO server is recognized only by what CLIO's own launcher leaves: the
 command line ``<prefix>/clio-agent/.venv/bin/clio-agent serve`` confirmed by
@@ -64,12 +58,39 @@ from dataclasses import dataclass
 from typing import Literal
 
 from clio_agent.gact.infrastructure.models import CommandSpec
+from clio_agent.gact.infrastructure.release_tag import release_tag
+from clio_agent.gact.infrastructure.remote_install_guard import INSTALL_GUARD
 
 # Shared by both scripts: resolve the install root the same way the install
 # and start commands do, find a TCP listener's pid, and recognize a CLIO
 # server process.
-_COMMON = r"""
-root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi
+_ROOT = r"""
+root="$1"
+if [ -z "$root" ]; then
+  data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+  data="${data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
+  if [ -z "$data" ]; then
+    if [ "$(uname -s)" = Darwin ]; then
+      data="$HOME/Library/Application Support/clio-agent/data"
+    else
+      xdg_data="${XDG_DATA_HOME:-}"
+      case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+      data="$xdg_data/clio-agent"
+    fi
+  fi
+  root="$data/app"
+  if [ -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" ] && [ ! -d "$root/clio-agent/.venv" ] && [ -d "$HOME/.local/share/clio/clio-agent/.venv" ]; then
+    root="$HOME/.local/share/clio"
+  fi
+fi
+case "$root" in /*) ;; *) printf 'The CLIO installation path must be absolute.\n'; exit 75 ;; esac
+root="${root%/}"
+[ -n "$root" ] && [ "$root" != "$HOME" ] || { printf 'Choose a dedicated CLIO installation directory.\n'; exit 75; }
+"""
+
+_COMMON = (
+    _ROOT
+    + r"""
 port="$2"
 host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
@@ -91,6 +112,13 @@ alive() {
   kill -0 "$1" 2>/dev/null || return 1
   ! grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null
 }
+pidfile_for() {
+  local prefix="$1" candidate
+  for candidate in "$prefix/user/state/clio-server.$host_id.pid" "$prefix/clio-server.$host_id.pid" "$prefix/clio-server.pid"; do
+    if [ -f "$candidate" ]; then printf '%s' "$candidate"; return; fi
+  done
+  printf '%s' "$prefix/user/state/clio-server.$host_id.pid"
+}
 # Echo the install prefix of a CLIO server process, or fail (return 1).
 clio_prefix_of() {
   local pid="$1" line script prefix recorded cwd
@@ -99,7 +127,7 @@ clio_prefix_of() {
   [ -n "$script" ] || return 1
   script="${script% serve*}"
   prefix="${script%/clio-agent/.venv/bin/clio-agent}"
-  recorded="$(cat "$prefix/clio-server.$host_id.pid" 2>/dev/null || cat "$prefix/clio-server.pid" 2>/dev/null || true)"
+  recorded="$(cat "$(pidfile_for "$prefix")" 2>/dev/null || true)"
   cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   if [ "$recorded" = "$pid" ] || [ "$cwd" = "$prefix/clio-agent" ]; then
     printf '%s' "$prefix"
@@ -159,6 +187,7 @@ except Exception:
   esac
 }
 """
+)
 
 _CLAIM = (
     "# clio-deploy:claim\n"
@@ -167,7 +196,11 @@ _CLAIM = (
 version="$3"
 replace="${4:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
+recorded="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 if ! port_busy "$port"; then
+  if [ -n "$recorded" ] && alive "$recorded"; then
+    fail "This installation already has a running process. Choose a separate installation directory for another port."
+  fi
   say "Port $port is free"
   printf 'clio-deploy result=free existing_root=%s\n' "$existing_root"
   exit 0
@@ -177,13 +210,10 @@ if [ -z "$pid" ]; then
   fail "Port $port is used by a process this account cannot inspect (another user's program)"
 fi
 owner="$(clio_prefix_of "$pid")" || fail "Port $port is used by another program (pid $pid: $(cmdline_of "$pid" | cut -c1-160))"
+uid="$(stat -c %u "/proc/$pid" 2>/dev/null || true)"
+[ "$uid" = "$(id -u)" ] || fail "Port $port belongs to another user. Leave it running and choose another port."
 installed="$("$owner/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
 health_state="$(check_health_state "http://127.0.0.1:$port/v1/health")"
-if [ "$health_state" = "healthy" ] && [ "$installed" = "$version" ] && [ "$(real "$owner")" = "$(real "$root")" ]; then
-  say "Reusing the running CLIO (pid $pid, $owner)"
-  printf 'clio-deploy result=adopted existing_root=%s pid=%s owner=%s\n' "$existing_root" "$pid" "$owner"
-  exit 0
-fi
 if [ "$replace" != "1" ]; then
   if [ "$health_state" = "healthy" ]; then
     say "CLIO ${installed:-(unknown version)} is already running (pid $pid, $owner)"
@@ -194,6 +224,8 @@ if [ "$replace" != "1" ]; then
     "$existing_root" "$pid" "${installed:-unknown}" "$health_state" "$owner"
   exit 0
 fi
+# A response authorizes this particular process, not a new occupant of its port.
+[ -n "${5:-}" ] && [ "$pid" != "$5" ] && fail "The process on port $port changed. Inspect it again before replacing it."
 stop_clio_server "$pid" || fail "An old CLIO (pid $pid, $owner) did not stop"
 for i in $(seq 1 20); do
   port_busy "$port" || break
@@ -211,17 +243,22 @@ _TEARDOWN = (
     + r"""
 purge_root="$3"
 did=0
-pidfile="$root/clio-server.$host_id.pid"
-[ -f "$pidfile" ] || pidfile="$root/clio-server.pid"
+pidfile="$(pidfile_for "$root")"
 pid="$(cat "$pidfile" 2>/dev/null || true)"
 if [ -n "$pid" ] && alive "$pid"; then
   owner="$(clio_prefix_of "$pid" || true)"
   if [ -n "$owner" ] && [ "$(real "$owner")" = "$(real "$root")" ]; then
+    [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$(id -u)" ] || fail "Leaving another user's process running"
+    if [ -n "${4:-}" ]; then
+      tr '\0' '\n' <"/proc/$pid/environ" | grep -Fxq "CLIO_DESKTOP_LAUNCH=$4" || fail "Leaving a process from another launch running"
+    fi
     # Graceful first: the server releases this machine's shared clio-core
     # daemon, which stops once its last client has gone.
     stop_clio_server "$pid" || fail "The CLIO this deploy started (pid $pid) did not stop"
     say "Stopped the CLIO this deploy started (pid $pid)"
     did=1
+  elif [ -n "${4:-}" ]; then
+    fail "Leaving a replaced or shared process and its installation untouched"
   fi
 fi
 rm -f "$pidfile"
@@ -263,7 +300,9 @@ class ClaimResult:
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
-def claim_command(root: str, port: int, version: str, *, replace: bool = False) -> CommandSpec:
+def claim_command(
+    root: str, port: int, version: str, *, replace: bool = False, expected_pid: str = ""
+) -> CommandSpec:
     """The adopt-or-stop step that runs before installing.
 
     Args:
@@ -278,17 +317,28 @@ def claim_command(root: str, port: int, version: str, *, replace: bool = False) 
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _CLAIM, "clio", root, str(port), version, "1" if replace else "0"],
+        args=[
+            "-lc",
+            _CLAIM,
+            "clio",
+            root,
+            str(port),
+            version,
+            "1" if replace else "0",
+            expected_pid,
+        ],
         timeout_seconds=90,
     )
 
 
-def teardown_command(root: str, port: int, *, purge_root: bool) -> CommandSpec:
+def teardown_command(
+    root: str, port: int, *, purge_root: bool, launch_token: str = ""
+) -> CommandSpec:
     """Undo what a failed or cancelled deploy started."""
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _TEARDOWN, "clio", root, str(port), "1" if purge_root else "0"],
+        args=["-lc", _TEARDOWN, "clio", root, str(port), "1" if purge_root else "0", launch_token],
         timeout_seconds=90,
     )
 
@@ -296,12 +346,12 @@ def teardown_command(root: str, port: int, *, purge_root: bool) -> CommandSpec:
 # Resolve the install root the same way every step does, and keep the
 # launcher and agent data inside it, so removing the root removes the install.
 LAUNCHER_PRELUDE = (
-    'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; bin="$root/bin"; '
-    'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_DATA_DIR="$root/data"; '
+    _ROOT + 'bin="$root/bin"; '
+    'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_AGENT_HOME="$root/user"; '
 )
 
 PYPI_RELEASE_URL = "https://pypi.org/pypi/clio-agent/{version}/json"
-INSTALLER_URL = "https://raw.githubusercontent.com/iowarp/clio-agent/v{version}/install/install.sh"
+INSTALLER_URL = "https://raw.githubusercontent.com/iowarp/clio-agent/{tag}/install/install.sh"
 
 _INSTALL = (
     "# clio-deploy:install\n"
@@ -331,8 +381,12 @@ if ! command -v uv >/dev/null 2>&1; then
   printf '==> Installing uv into %s\n' "$bin"
   curl -LsSf https://astral.sh/uv/install.sh | sh || { printf 'Could not install uv.\n'; exit 75; }
 fi
-export CLIO_VERSION="$version" CLIO_INSTALLER_REF="v$version"
-curl -fsSL "$4" | bash
+export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+"""
+    + INSTALL_GUARD
+    + r"""
+curl -fsSL "$4" | bash || { code=$?; printf 'Could not install CLIO %s from GitHub release %s (%s).\n' "$version" "$5" "$4"; exit "$code"; }
+install_ok=1
 """
 )
 
@@ -355,7 +409,8 @@ def install_command(root: str, version: str) -> CommandSpec:
             root,
             version,
             PYPI_RELEASE_URL.format(version=version),
-            INSTALLER_URL.format(version=version),
+            INSTALLER_URL.format(tag=release_tag(version)),
+            release_tag(version),
         ],
         timeout_seconds=900,
     )

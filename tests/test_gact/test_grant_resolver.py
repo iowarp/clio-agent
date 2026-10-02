@@ -945,22 +945,24 @@ def test_plan_acl_web_fetch_allowed_in_plan_with_empty_store() -> None:
     assert resolve("tool", "web_fetch", policies=[], session_id="s", mode="plan") == "allow"
 
 
-def test_plans_dir_uses_repo_dot_clio_in_vcs() -> None:
-    """In a VCS repo (the test tree has a ``.git``), the plans dir is ``<repo>/.clio/plans``."""
+def test_plans_dir_uses_agent_workspace_state_in_vcs() -> None:
+    """A VCS workspace keeps generated plans outside its checkout."""
+    from clio_agent.paths import workspace_state_dir
+
     p = plans_dir()
-    assert p.name == "plans"
-    assert p.parent.name == ".clio"
+    assert p == workspace_state_dir(Path.cwd()) / "plans"
     assert p.is_absolute()
 
 
 def test_plans_dir_uses_active_session_workspace(tmp_path: Path) -> None:
     """A hosted workspace owns its plan directory even when server cwd is another repo."""
 
+    from clio_agent.paths import workspace_state_dir
     from clio_agent.tools.execution import tool_workspace_context
 
     workspace = tmp_path / "hosted-workspace"
     with tool_workspace_context(str(workspace)):
-        assert plans_dir() == (workspace / ".clio" / "plans").resolve()
+        assert plans_dir() == workspace_state_dir(workspace) / "plans"
 
 
 @pytest.mark.parametrize(

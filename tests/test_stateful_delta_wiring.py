@@ -195,11 +195,16 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
         """Minimal compact agent (matches test_compaction.py's ``_CapturingAgent``)."""
 
         def _run_chat_agent(self, question: str, _session_id: str) -> str:
+            summary_scopes.append(active_stateful_scope())
             return "auto summary"
 
         def _call_with_transient_provider_retries(self, _label: str, call: Any) -> Any:
             return call()
 
+    # The summary is not a step of the agent's conversation: it runs outside the
+    # forward's stateful scope, so it never replaces the agent's kept conversation.
+    # Sabotage: drop ``outside_stateful_scope`` in ``compaction._summary`` -> ["s"] -> red.
+    summary_scopes: list[str | None] = []
     now = "2026-09-11T00:00:00+00:00"
     # This file lives outside tests/test_gact/, so it does not get that package's
     # conftest.py in-memory-ARC-by-default wrapper around build_app -- construct one
@@ -254,6 +259,8 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
         finally:
             _ctx.reset(app_token)
         assert len(summarize_calls) == 1  # the op really fired
+        assert summary_scopes == [None], "the summary call ran outside the agent's scope"
+        assert active_stateful_scope() == "s", "the forward's scope is restored"
         send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
         assert (send.handle, send.reason) == (None, "ops_reset")
     registry.clear_for_tests()

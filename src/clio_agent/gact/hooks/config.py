@@ -300,7 +300,7 @@ def discover_hook_entries(
         user_config_path = paths.user_config_dir() / "hooks.json"
     if project_config_path is None:
         base = cwd if cwd is not None else Path.cwd()
-        project_config_path = base / ".clio" / "hooks.json"
+        project_config_path = paths.workspace_config_path(base, "hooks.json")
 
     merged: dict[str, HookEntry] = {}
     for entry in _load_file(user_config_path, scope="user"):

@@ -47,8 +47,35 @@ die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# PyPI package spelling and GitHub tag spelling differ for beta releases.
+release_tag() {
+  local version="${1#v}"
+  if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)b([0-9]+)$ ]]; then
+    printf 'v%s-beta.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+)?$ ]]; then
+    printf 'v%s' "$version"
+  else
+    die "no GitHub release tag for package version: $version"
+  fi
+}
+
 # ---------- defaults ---------------------------------------------------
-PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
+if [[ "$(uname -s)" = Darwin* ]]; then
+  agent_data_default="$HOME/Library/Application Support/clio-agent/data"
+else
+  xdg_data="${XDG_DATA_HOME:-}"
+  case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+  agent_data_default="$xdg_data/clio-agent"
+fi
+agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
+agent_data="${agent_data:-$agent_data_default}"
+case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 2 ;; esac
+PREFIX="${CLIO_PREFIX:-$agent_data/app}"
+# An existing legacy install remains addressable until explicit migration.
+if [[ -z "${CLIO_PREFIX:-}" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" && ! -d "$PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+  PREFIX="$HOME/.local/share/clio"
+fi
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_VERSION="${CLIO_VERSION:-}"
 GACT_VERSION="${GACT_VERSION:-latest}"
@@ -115,14 +142,16 @@ VENV="$PREFIX/clio-agent/.venv"
 
 if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
-  rm -rf "$PREFIX/clio-agent"
+  if [[ -e "$PREFIX/clio-agent" ]]; then
+    die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
+  fi
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
   say "Installing clio-agent deps (uv sync --extra argonne)"
   ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
 else
   pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
-  rm -rf "$PREFIX/clio-agent"
+  rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
     uv venv --python ">=3.12" "$VENV" >/dev/null
@@ -181,8 +210,8 @@ elif [ -n "$GACT_REF" ]; then
 else
   tag="$GACT_VERSION"
   if [ "$tag" = "latest" ]; then
-    if [ -n "$CLIO_VERSION" ]; then
-      tag="v$CLIO_VERSION"
+    if [ -n "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}" ]; then
+      tag="$(release_tag "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}")"
     else
       say "Resolving latest clio-agent release"
       tag="$(curl -fsSL https://api.github.com/repos/iowarp/clio-agent/releases/latest \
@@ -221,7 +250,7 @@ fi
 # installed PyPI version, unless an explicit installer ref is provided.
 launcher_ref="${CLIO_REF:-${CLIO_INSTALLER_REF:-}}"
 if [ -z "$launcher_ref" ] && [ -n "$CLIO_INSTALLED_VERSION" ]; then
-  launcher_ref="v$CLIO_INSTALLED_VERSION"
+  launcher_ref="$(release_tag "$CLIO_INSTALLED_VERSION")"
 fi
 launcher_ref="${launcher_ref:-main}"
 RAW="https://raw.githubusercontent.com/iowarp/clio-agent/${launcher_ref}/install"

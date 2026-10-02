@@ -5,7 +5,7 @@ app owns a small registry of ``Session`` records:
 
 - in-memory dict keyed by session id
 - optional JSON persistence so sessions survive ``clio-agent-gact``
-  restarts (default: ``<cwd>/.clio/agent/sessions.json`` per
+  restarts (default: Agent ``state/server/sessions.json`` per
   :func:`_default_store_path`; ``CLIO_SESSIONS_PATH`` overrides the full path)
 
 The registry is thread-safe for the workload we expect (FastAPI
@@ -79,13 +79,7 @@ def _utcnow_iso() -> str:
 
 
 def _default_store_path() -> Path:
-    """Default on-disk location for the registry: ``<cwd>/.clio/agent/sessions.json``.
-
-    Per-workspace: the registry — and the messages / semantic traces / context-file
-    metadata derived from its parent directory — all live under the workspace
-    ``.clio/agent`` root alongside ARC. ``CLIO_SESSIONS_PATH`` overrides the full path.
-    The directory is created lazily on first write.
-    """
+    """Resolve server state, preserving an existing legacy store until migration."""
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -96,7 +90,11 @@ def _default_store_path() -> Path:
         return Path(override).expanduser()
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
-    return paths.workspace_agent_dir() / "sessions.json"
+    legacy = Path.cwd() / ".clio" / "agent" / "sessions.json"
+    if legacy.is_file():
+        logger.warning("Using legacy sessions at %s; migrate-paths relocates this store", legacy)
+        return legacy
+    return paths.server_state_dir() / "sessions.json"
 
 
 #: Modes this record may hold on disk that the wire model no longer accepts,
