@@ -231,7 +231,7 @@ class _RunKeyedModule(dspy.Module):
         ledger.next_index += 1
         run = ledger.run
         record = TryRecord(try_index=run_index, scope=variant_lines.try_scope(run_index))
-        run.tries.append(record)
+        run.add_try(record)
         _record_try(run, record)
         try:
             with try_context(run, record):

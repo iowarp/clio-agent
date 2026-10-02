@@ -192,3 +192,24 @@ def test_an_unreadable_record_and_an_unknown_session_are_typed(world: World) -> 
     broken = client.get(f"/v1/sessions/{world.sid}/variant-runs")
     assert broken.status_code == 500
     assert broken.json()["error"]["error"] == "variant_record_unreadable"
+
+
+def test_a_run_lists_its_tries_in_try_order_whatever_order_they_start() -> None:
+    """Parallel tries start in any order; the run keeps them as Draft 1, 2, 3 (CI, Linux)."""
+    from clio_agent.gact.agents.variant_records import TryRecord, VariantRun
+
+    run = VariantRun(
+        variants_id="var_t",
+        session_id="sess_t",
+        agent_id="main",
+        turn_id="",
+        origin="draft_alternatives",
+        strategy="best_of_n",
+        judge="user",
+        n=3,
+        n_requested=3,
+        rubric="",
+    )
+    for index in (0, 2, 1):
+        run.add_try(TryRecord(try_index=index, scope=f"main#run{index}"))
+    assert [t.try_index for t in run.tries] == [0, 1, 2]
