@@ -315,6 +315,12 @@ def attach_native_client(
     raise error
 
 
+#: A native wait may return marginally before its window: within this fraction of the
+#: window an unanswered handshake is a timeout (retried while the daemon works), below it
+#: a failure.
+_EARLY_RETURN_TOLERANCE = 0.9
+
+
 def _handshake_while_daemon_progresses(
     client_init: Callable[[object, bool], bool], mode: object, window: float
 ) -> tuple[str, str] | None:
@@ -331,7 +337,7 @@ def _handshake_while_daemon_progresses(
     from clio_agent.arc import daemon_progress  # noqa: PLC0415 - cycle
 
     ceiling = daemon_progress.max_wait_s()
-    started = time.monotonic()
+    started = time.perf_counter()
 
     def _work() -> float | None:
         return daemon_progress.daemon_work()
@@ -342,11 +348,13 @@ def _handshake_while_daemon_progresses(
     except daemon_progress.DaemonPidUnresolved:
         last = None
     while True:
-        slice_started = time.monotonic()
+        # perf_counter: monotonic() ticks in ~15.6 ms steps on Windows, so a native wait
+        # that ran its whole window could read as shorter -- a hard failure, not a timeout.
+        slice_started = time.perf_counter()
         if client_init(mode, False):
             return None
-        now = time.monotonic()
-        if now - slice_started < window:
+        now = time.perf_counter()
+        if now - slice_started < window * _EARLY_RETURN_TOLERANCE:
             return (
                 CLIO_CORE_CLIENT_ATTACH_FAILED,
                 f"the native client handshake failed after {now - slice_started:.1f}s",
