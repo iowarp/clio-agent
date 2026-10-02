@@ -35,8 +35,9 @@ def build_create_a2ui_surface_tool() -> Any:
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
         ``catalog.json#/components/<ExactComponentId>`` for its schema.
-        Charts, maps, tables, drafts, weather, steps, and other components
-        render inline. The renderer supplies selection, zoom, and export.
+        Charts, maps, tables, registered images, drafts, weather, steps, and
+        related layouts render inline. The renderer supplies selection, zoom,
+        and export.
         """
 
         resolved = _common.active_app_and_session()
