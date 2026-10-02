@@ -370,14 +370,15 @@ _COMPACTION_EVENTS = frozenset({"compaction.started", "compaction.completed", "c
 
 
 def _semantic_event(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
-    """A compaction's highway event as ``compaction.started|completed|failed``.
+    """A highway event served as its own typed v3 event, else ``None``.
 
-    Every other semantic event keeps its generic ``semantic.event`` envelope.
+    A compaction's event becomes ``compaction.started|completed|failed``; a variant
+    run's tries and selection get their own frames (the try tabs). Every other semantic
+    event keeps its generic ``semantic.event`` envelope.
     """
-    del event, session
     event_type = str(payload.get("event_type") or "")
     if event_type not in _COMPACTION_EVENTS:
-        return None
+        return project_variant_event(event, payload, session)
     body = dict(_mapping(payload.get("payload")))
     return _Projection(event_type, body, str(body.get("compaction_id") or "") or None)
 
@@ -400,9 +401,6 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,
-    # A variant run's tries and selection get frames of their own (the try tabs);
-    # every other semantic row stays ``semantic.event``.
-    "semantic.event": project_variant_event,
     **COMPOSER_PROJECTORS,
 }
 
