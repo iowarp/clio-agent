@@ -1,0 +1,128 @@
+---
+title: Hooks
+description: Run your own checks at key points in a CLIO session, such as before a tool runs or before a request goes to the model.
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+
+A hook runs your own code at a defined point in a session: before a tool runs, before a prompt is accepted, before a request goes to the model, and at other boundaries. Use hooks for checks that fixed permission rules cannot express, such as scanning tool input for secrets or logging every shell command to a file.
+
+Hooks can only tighten what CLIO allows. A hook that says "allow" never lifts a denial made by a rule, a mode, or another hook, and reads are never gated by hooks.
+
+## Where hooks are defined
+
+Hooks are listed in a file named `hooks.json`. CLIO reads up to three, from lowest to highest precedence:
+
+| Scope | Location | Use |
+|---|---|---|
+| User | `hooks.json` in your CLIO configuration folder | Hooks for every workspace on this machine. |
+| Project | `<workspace>/.clio/hooks.json` | Hooks for one workspace. |
+| Managed | The file named by the `hooks.managed_config` setting | Administrator-controlled hooks. This scope has no default location. |
+
+<FileTree>
+
+- my-workspace/
+  - .clio/
+    - hooks.json
+
+</FileTree>
+
+If two scopes define a hook with the same `id`, the higher scope wins. To read a single explicit file instead of the user and project files, set `CLIO_HOOKS_CONFIG`. A malformed hook is skipped with a message that names its `id`, and the rest of the file still loads.
+
+Administrators can set `hooks.allow_managed_only` (environment variable `CLIO_HOOKS_ALLOW_MANAGED_ONLY`) to ignore user and project hooks, so only managed hooks run.
+
+## A minimal hook
+
+This project hook blocks any shell command or file write whose input contains a private key:
+
+```json title=".clio/hooks.json"
+{
+  "hooks": [
+    {
+      "id": "block-private-keys",
+      "on": ["PreToolUse"],
+      "match": {
+        "tool": "(shell_bash|fs_apply_edit_write)",
+        "argsPattern": "BEGIN [A-Z ]*PRIVATE KEY"
+      },
+      "run": {
+        "type": "command",
+        "command": "python3",
+        "args": ["/opt/hooks/block_private_keys.py"]
+      },
+      "timeoutMs": 10000,
+      "failClosed": true
+    }
+  ]
+}
+```
+
+And the script it runs:
+
+```python title="/opt/hooks/block_private_keys.py"
+import json
+import sys
+
+envelope = json.load(sys.stdin)
+print(f"Blocked: {envelope['tool_name']} input contains a private key.", file=sys.stderr)
+sys.exit(2)
+```
+
+CLIO runs the script with the event as JSON on standard input. Exit code 2 denies the action, and what the script writes to standard error becomes the reason the agent sees. This script only runs when the `argsPattern` has already matched, so it denies every time. The hook runs without a terminal, so it cannot prompt for input. Give the script an absolute path.
+
+### Fields
+
+| Field | Meaning |
+|---|---|
+| `id` | Required. A stable name for the hook. |
+| `on` | One or more events, from the table below. |
+| `match` | Optional filters. Without it, the hook matches everything. |
+| `match.tool` | A regular expression on the tool name, matched against the whole name. `Edit` does not match `NotebookEdit`. |
+| `match.annotations` | Match on tool annotations, such as `{"destructive": true}`. |
+| `match.argsPattern` | A regular expression searched in the tool's JSON input. |
+| `run` | What to run. `type` is `command`, `http`, or `prompt`. A `command` hook needs `command` and optionally `args`. |
+| `timeoutMs` | Time limit for the hook. The default is 30000. |
+| `failClosed` | If `true`, a hook that crashes, times out, or is missing denies the action on events that can deny. The default is `false`. |
+| `enabled` | Set to `false` to turn the hook off without deleting it. |
+| `loopLimit` | For `Stop` hooks, the most times this hook may send the agent back for another turn. |
+
+## Events
+
+| Event | Can deny | When it runs |
+|---|---|---|
+| `PreToolUse` | Yes | Before a tool runs. |
+| `PostToolUse` | No | After a tool returns. A hook can rewrite the output the agent sees. |
+| `PostToolBatch` | No | After a round of tool calls finishes. |
+| `UserPromptSubmit` | Yes | When you send a message. A denial stops the turn. |
+| `Stop` | Limited | When the agent finishes. A hook can send it back for one more turn, within `loopLimit`. |
+| `SessionStart`, `SessionEnd` | No | At the start and end of a session. |
+| `SubagentStart`, `SubagentStop` | No | At the start and end of a child session. |
+| `PreCompact` | No | Before the transcript is compacted. |
+| `SemanticEvent` | No | On every event CLIO records. |
+| `BeforeModel` | Yes | Before each request to the model. |
+| `AfterModel` | No | After each model response, before it enters the context. |
+
+## What a hook can answer
+
+A command hook can answer with a decision on standard output, as JSON:
+
+- `allow`, `deny`, or `ask`.
+- `modify`, to change a tool's input.
+- `synthesize`, to supply a result instead of running the tool.
+- `defer`, to wait for a person.
+
+Empty output means allow. When several hooks answer for the same event, the most restrictive answer wins, in this order: `deny`, `defer`, `ask`, `synthesize`, `modify`, `allow`. Two hooks that both modify the same call is an error, and the call is blocked.
+
+A hook that fails is not the same as a hook that says no. A crash, timeout, or missing program is reported as a hook failure. It blocks the action only if the hook is `failClosed` and the event can deny.
+
+## Trust
+
+A hook is code, so CLIO remembers a fingerprint of each one. The first time a hook is seen, it is trusted and its fingerprint is saved next to the hooks file, in `hooks.json.trust.json`. Set `CLIO_HOOKS_TRUST_STORE` to keep it somewhere else. If the hook's configuration or script later changes, for example after pulling a repository, the hook stops running until you re-approve it. This protects you from a hook that was quietly rewritten.
+
+## Audit
+
+Every hook run is recorded, with its decision and any reason. To list the hooks CLIO has loaded, including disabled and untrusted ones, with their scope and recent runs, use `GET /v1/hooks`.
+
+<Aside type="note">
+Hooks and [permission rules](/docs/permissions/) work together. Use rules to say what is allowed, and hooks for checks that need code.
+</Aside>

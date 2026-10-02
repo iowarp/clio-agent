@@ -1,0 +1,54 @@
+---
+title: What CLIO is
+description: CLIO is an open-source AI workspace that finds scientific data, runs the analysis with expert agents, and keeps the evidence for every result.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+CLIO is an open-source AI workspace for scientific data. You describe a question in plain language. CLIO finds the data, runs the analysis, shows you the results, and keeps a record of what it read, what it ran, and what it produced.
+
+It is built for researchers who work with real datasets and want to check how an answer was reached: geoscientists, climate and environmental scientists, and anyone who spends more time wrangling files than asking questions. You do not need to write code to use it, and you can read everything it did if you want to.
+
+## How a session works
+
+Work happens in sessions, and each session belongs to a workspace, which is a folder on your computer.
+
+1. You ask a question, for example "Find the five EarthScope GNSS stations nearest Palm Springs, California, show them on a map, and wait for me to choose one."
+2. The agent for that session plans the work. Each session runs one [agent blueprint](/docs/blueprints/), which defines the agent's instructions, its tools, and the expert agents it can call on.
+3. The agent calls tools to read files, query data sources, and run analyses. When a task suits a domain expert, it hands that task to one of the expert agents its blueprint declares. Each expert runs as its own child session, and several can work at the same time.
+4. When a choice is yours to make, the agent stops and asks you. The question can be free text, a list of choices, a confirmation, or an interactive view such as a map.
+5. Results come back with their evidence: the files that were read, the changes that were proposed, and the artifacts that were created. See [Memory and evidence](/docs/memory-and-evidence/).
+
+The model decides what to do next. CLIO does not route your request with keyword rules, and an agent can only call the experts its blueprint declares.
+
+## Where it runs
+
+CLIO runs on your computer. The same backend is available through several interfaces:
+
+- The desktop app for Windows, macOS, and Linux.
+- A web interface, opened in your browser.
+- A terminal interface.
+- Docker images, for running the workspace on a server.
+
+See [Install](/docs/install/) for each option.
+
+## Models
+
+CLIO does not ship a model. You connect one: a model running on your machine through LM Studio, Ollama, llama.cpp, or vLLM; a cloud API; a Claude Code or Codex subscription; or an ALCF system. Prompts go only to the provider you choose. See [Connect a model](/docs/connect-a-model/).
+
+## What makes it different
+
+- Evidence and provenance. Every tool call is recorded, proposed file edits wait for your approval, and each artifact has a content hash with versions and lineage.
+- Your models. You choose where the model runs, and you can switch at any time.
+- Blueprints you can read. An agent is a folder of Markdown files, not a hidden configuration. You can open one, change it, or write your own.
+- Permissions you control. Reading is always allowed. Writing, running commands, and network access ask first unless you have allowed them. See [Permissions and sandbox](/docs/permissions/).
+
+CLIO is in beta and releases ship often.
+
+## Next steps
+
+<CardGrid>
+	<LinkCard title="Install" description="Get the desktop app, the web interface, or Docker running." href="/docs/install/" />
+	<LinkCard title="Connect a model" description="Choose a local model, a cloud API, or a subscription." href="/docs/connect-a-model/" />
+	<LinkCard title="Your first analysis" description="Find GNSS stations near Palm Springs and chart their motion." href="/tutorials/guides/first-analysis/" />
+</CardGrid>

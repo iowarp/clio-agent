@@ -91,12 +91,26 @@ TUI/HTTP surface aren't tracked here.
   error naming where it is set; `providers.codex.stateful_capacity` and
   `limits.codex_sdk_progress_timeout_s` are gone. The Codex user-updatable
   component is the `openai-codex-cli-bin` runtime alone.
+- The `model_reply_unparseable` turn error (0.9.4.24): the agent loop reads the
+  model's reply typed, with no output-format parsing, so a reply with no tool call is
+  the answer, shown as written, and an unreadable text tool-call block goes back to
+  the model as a tool error it can correct.
 
 ### Fixed
 
 - Without a CLIO sign-in, Codex direct reads the Codex CLI login from
   `$CODEX_HOME/auth.json`; it read `~/.codex/auth.json` whatever `CODEX_HOME`
   said.
+
+## [0.9.4.24] — 2026-09-30
+
+### Fixed
+
+- A turn whose model reply is neither a tool call nor a readable answer (for
+  example, the model announces its next step and stops) now ends with the
+  recoverable error `model_reply_unparseable` instead of `empty_response`.
+  `error_info.details` carries the raw reply (`raw_reply`), the parse message,
+  the exception type and the step index, so the trace shows what the model said.
 
 ## [0.9.4.23] — 2026-09-30
 

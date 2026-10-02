@@ -1,0 +1,50 @@
+---
+title: Install a blueprint from the marketplace
+description: Browse the CLIO marketplace, install an agent blueprint, start a session with it, and update or remove it later.
+sidebar:
+  label: Install a blueprint
+draft: true
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+An agent blueprint gives a session a domain agent: its instructions, its experts, and its tools. This tutorial installs one from the default marketplace, uses it, and then shows how to update and remove it.
+
+<Steps>
+
+1. Open the marketplace list.
+
+   Open Settings and choose **Marketplaces & blueprints**, then open the **Marketplaces** tab. The default marketplace lists the blueprints it publishes, with a version for each, and a status that should read **Ready**.
+
+2. Install a blueprint.
+
+   Choose **Install** next to a blueprint, for example **EarthScope Skills**. The row changes to **Installed**, and the blueprint appears on the **Installed** tab.
+
+3. Look at what you installed.
+
+   On the **Installed** tab, open the actions menu for the blueprint and choose **View details**. The dialog shows its status, who can use it, its version, the services it connects to, and where it was installed from.
+
+4. Start a session with it.
+
+   Choose the plus button in the sidebar, then **New session**. Open the **Agent blueprint** list and choose the blueprint. After you create the session, its name shows next to the session title.
+
+5. Check for updates.
+
+   CLIO does not update installed blueprints by itself. On the **Installed** tab, choose **Check for update** from the actions menu when you want the latest version.
+
+6. Remove it.
+
+   From the same menu, choose **Remove** and confirm.
+
+</Steps>
+
+To add a different marketplace, such as one your lab maintains, choose **Add marketplace** on the **Marketplaces** tab. See [Agent blueprints](/docs/blueprints/).
+
+:::note[Captures needed]
+- The **Marketplaces** tab with the default marketplace expanded and an **Install** button visible.
+- The **Installed** tab after installing, with the actions menu open.
+- The **View details** dialog.
+- The New session dialog with the **Agent blueprint** list open.
+- The session header showing the blueprint name.
+- The **Add marketplace** dialog.
+:::
