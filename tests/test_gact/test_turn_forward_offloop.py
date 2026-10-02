@@ -149,6 +149,7 @@ async def test_the_module_runs_native_input_resolve_off_the_loop(
     state = SimpleNamespace(
         app=app,
         sid="sid",
+        user_msg=SimpleNamespace(id="msg_user", metadata={}),
         enriched_text="hello",
         sess=SimpleNamespace(mode="edit", edit_mode="diff"),
         native_images=[],
