@@ -215,7 +215,7 @@ class _Drafts:
             advice=advice,
         )
         with self.lock:
-            self.run.tries.append(record)
+            self.run.add_try(record)
         self.save(record)
         forked: list[str] = []
         try:

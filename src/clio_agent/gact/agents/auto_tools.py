@@ -54,7 +54,6 @@ from clio_agent.gact.a2ui_producer import (
     build_update_a2ui_data_model_tool,
 )
 from clio_agent.gact.action_cards import build_raise_alert_card_tool
-from clio_agent.gact.agents.variant_drafts import build_draft_alternatives_tool
 from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
 from clio_agent.gact.cron_tools import build_cron_tools
@@ -139,6 +138,11 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
         tools.append(build_refresh_provider_models_tool())
         tools.extend(build_memory_tools(agent_def))
         # Phase 9: the main agent may draft alternatives of its answer (BestOfN /
-        # Refine on demand, judged by the user or an LM).
+        # Refine on demand, judged by the user or an LM). Imported here: the drafting
+        # module needs dspy, which the server's app import must not load.
+        from clio_agent.gact.agents.variant_drafts import (  # noqa: PLC0415
+            build_draft_alternatives_tool,
+        )
+
         tools.append(build_draft_alternatives_tool())
     return tools

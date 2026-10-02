@@ -117,6 +117,18 @@ class VariantRun:
     # selected line replaces everything from it on.
     base_cut_id: str = ""
 
+    def add_try(self, record: TryRecord) -> None:
+        """Add a try, keeping :attr:`tries` in try order.
+
+        Parallel tries start and finish in any order; every reader (the preference
+        record, the pick question's options, ``/variant-runs``) lists them as Draft 1, 2,
+        3 -- found in CI on Linux, where a parallel run listed its drafts A, C, B.
+        """
+        index = len(self.tries)
+        while index > 0 and self.tries[index - 1].try_index > record.try_index:
+            index -= 1
+        self.tries.insert(index, record)
+
     def try_at(self, try_index: int) -> TryRecord:
         """The try with ``try_index`` (``KeyError`` when the run has none)."""
         for record in self.tries:
