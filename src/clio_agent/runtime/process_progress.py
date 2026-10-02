@@ -144,6 +144,8 @@ def run_probe(
                 pass
             else:
                 return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+            if proc.poll() is not None:
+                continue  # it exited just now: the next communicate() collects its output
             waited = time.monotonic() - started
             work = tree_work(proc.pid)
             reason = ""

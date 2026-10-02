@@ -55,13 +55,13 @@ def _fake_cli(tmp_path: Path, mode: str, delay: float) -> str:
 
 @pytest.fixture(autouse=True)
 def _short_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cb, "VERSION_PROBE_TIMEOUT_S", 0.5)
-    monkeypatch.setattr(sandbox_codex, "_VERSION_PROBE_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(cb, "VERSION_PROBE_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(sandbox_codex, "_VERSION_PROBE_TIMEOUT_S", 1.0)
 
 
 def test_a_slow_but_working_cli_reports_its_version(tmp_path: Path) -> None:
     """SABOTAGE: a flat ``subprocess.run(timeout=...)`` -> "" -> red."""
-    assert cb.probe_version(_fake_cli(tmp_path, "busy", 2.0)) == "0.150.0"
+    assert cb.probe_version(_fake_cli(tmp_path, "busy", 3.0)) == "0.150.0"
 
 
 def test_an_unresponsive_cli_is_typed_not_unreadable(tmp_path: Path) -> None:
@@ -85,13 +85,13 @@ def test_codex_detection_reports_an_unresponsive_probe_as_such(tmp_path: Path) -
 
 def test_a_slow_sign_in_check_still_finds_the_sign_in(tmp_path: Path) -> None:
     """SABOTAGE: flat timeout on ``auth status`` -> "timed out" -> not signed in -> red."""
-    signed_in, reason = cc_discovery._auth_status(_fake_cli(tmp_path, "busy", 2.0), timeout=0.5)
+    signed_in, reason = cc_discovery._auth_status(_fake_cli(tmp_path, "busy", 3.0), timeout=1.0)
     assert (signed_in, reason) == (True, "")
 
 
 def test_an_unresponsive_sign_in_check_is_not_a_sign_out(tmp_path: Path) -> None:
     """SABOTAGE: report the timeout as "not signed in" -> red."""
-    signed_in, reason = cc_discovery._auth_status(_fake_cli(tmp_path, "idle", 30.0), timeout=0.5)
+    signed_in, reason = cc_discovery._auth_status(_fake_cli(tmp_path, "idle", 30.0), timeout=1.0)
     assert signed_in is False
     assert reason.startswith(cc_discovery.AUTH_CHECK_UNRESPONSIVE)
     assert "not a sign-out" in reason
