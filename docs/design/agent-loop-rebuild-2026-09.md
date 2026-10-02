@@ -1660,7 +1660,7 @@ Owner, 2026-10-02: implementation and bug fixing first. All testing and evaluati
      - OPAL.
    - **Legs:**
      - `preflight`, `leg_c_synthetic_session` and `leg_goal_judge`: passed on `1f454adc` (36 s, 132 s, 74 s).
-     - `leg_compaction`: re-run with the leg updated to the Phase 11b contract.
+     - `leg_compaction`: updated to the Phase 11b contract (#1586). Its checks are pure functions over saved evidence, and replaying the 1f454adc run passed 28 of 28. The live run must confirm: recall by compaction id on a natural prompt, and whole-row byte-equality across a restart.
      - `leg_b_web_fetch`: needs `WEB_REMOTE_URL`, a local `clio-web-search` container.
      - `leg_bd_stress`.
      - Leg A (v1 fleet) and leg D (deep researcher), per `scripts/live_verification/RUNBOOK.md`.
