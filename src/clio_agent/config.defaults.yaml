@@ -846,6 +846,12 @@ arc.liveness.retries: 3
 # a stalled zombie peer; raise for very large blob ops.
 arc.liveness.stall_after_s: 30.0
 
+# CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S  (float)  <- src/clio_agent/arc/runtime_stop.py
+# How long (seconds) a stopping clio-core daemon may make no progress (CPU
+# and I/O flat) before it is killed; keep it inside the desktop supervisor's
+# 30 s window.
+arc.liveness.stop_no_progress_s: 15.0
+
 # CLIO_ARC_LSM_COMPACTION_THRESHOLD  (int)  <- src/clio_agent/arc/memory.py
 # Memtable flushes accumulated before the ARC metrics LSM tree compacts into
 # one file; raise to compact less often, lower for eager compaction.

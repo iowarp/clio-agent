@@ -243,10 +243,14 @@ def _stall_watch_worker() -> None:
             fut.set_exception(exc)
 
 
-def _submit_stall_watch(make_call: Callable[[], Any]) -> Future:
-    """Hand ``make_call`` to an idle pooled worker, growing the pool up to its bound."""
+def _submit_stall_watch(make_call: Callable[[], Any], fut: Future) -> None:
+    """Hand ``make_call`` to an idle pooled worker (fulfilling ``fut``), growing the pool.
+
+    The caller creates ``fut`` first, so it can wait on it, and submits from
+    :func:`~clio_agent.arc.daemon_progress.wait_while_progressing`'s ``start`` hook,
+    after the baseline progress sample.
+    """
     global _pool_threads_started, _work_queue
-    fut: Future = Future()
     with _pool_lock:
         if _work_queue is None:
             _work_queue = _WorkQueue()
@@ -255,7 +259,6 @@ def _submit_stall_watch(make_call: Callable[[], Any]) -> Future:
             _pool_threads_started += 1
             threading.Thread(target=_stall_watch_worker, name="arc-rpc", daemon=True).start()
     _work_queue.put((make_call, fut))
-    return fut
 
 
 def _run_with_stall_watch(
@@ -277,10 +280,17 @@ def _run_with_stall_watch(
         wait_while_progressing,
     )
 
-    fut = _submit_stall_watch(make_call)
+    fut: Future = Future()
     # A stall is a whole window with the daemon making NO progress (gone, or its CPU time
     # flat); a slow but working daemon is waited for -- never a fixed wall-clock failure.
-    outcome = wait_while_progressing(future_done_within(fut), slice_s=stall_after_s, op_name="rpc")
+    # The call starts only after the baseline sample, so this thread is parked in its
+    # wait (not mid-sample) when the GIL-holding native call begins.
+    outcome = wait_while_progressing(
+        future_done_within(fut),
+        slice_s=stall_after_s,
+        op_name="rpc",
+        start=lambda: _submit_stall_watch(make_call, fut),
+    )
     if not outcome.done:
         return outcome.reason, None, None  # worker abandoned, still holds its pool slot
     error = fut.exception()

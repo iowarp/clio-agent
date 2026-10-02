@@ -37,6 +37,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -362,8 +363,9 @@ def _handshake_while_daemon_progresses(
         if work is None or last is None or work - last < 0.01:
             return (
                 CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
-                f"the native client handshake got no answer and the daemon made no "
-                f"progress for {window:g}s",
+                f"the native client handshake got no answer within {window:g}s and the "
+                f"daemon made no progress in that time "
+                f"(wait={daemon_progress.NO_PROGRESS})",
             )
         if now - started >= ceiling:
             return (
@@ -431,12 +433,16 @@ def _initialize_cte_while_daemon_progresses(cte: object, *, config_path: str, po
 
     # The pooled daemon workers of the per-RPC stall watch: an abandoned call never
     # blocks interpreter exit, and the pool bound caps the leak.
-    fut = _submit_stall_watch(
-        lambda: cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # type: ignore[attr-defined]
-    )
+    fut: Future = Future()
     window = attach_window_s()
     outcome = wait_while_progressing(
-        future_done_within(fut), slice_s=window, op_name="initialize_cte"
+        future_done_within(fut),
+        slice_s=window,
+        op_name="initialize_cte",
+        start=lambda: _submit_stall_watch(
+            lambda: cte.initialize_cte(config_path, cte.PoolQuery.Dynamic()),  # type: ignore[attr-defined]
+            fut,
+        ),
     )
     if outcome.done:
         fut.result()  # re-raises the binding's own error

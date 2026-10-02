@@ -27,7 +27,6 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
-from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
 from typing import Any
 
@@ -194,8 +193,16 @@ def daemon_work() -> float | None:
 
 
 def future_done_within(future: Future) -> Callable[[float], bool]:
-    """``done_within`` for a ``concurrent.futures.Future``."""
-    return lambda timeout: future in futures_wait([future], timeout=timeout)[0]
+    """``done_within`` for a ``concurrent.futures.Future``.
+
+    Waits on an :class:`threading.Event` the future sets when it completes, created
+    here, before the wait: each wait is then a plain lock wait that allocates nothing,
+    so a caller parked in it while a native call holds the GIL shows a stack that
+    ``faulthandler`` can walk (see :func:`wait_while_progressing`).
+    """
+    finished = threading.Event()
+    future.add_done_callback(lambda _future: finished.set())
+    return finished.wait
 
 
 def _read_work(work: Callable[[], float | None]) -> tuple[float | None, bool]:
@@ -213,6 +220,7 @@ def wait_while_progressing(
     op_name: str,
     work: Callable[[], float | None] | None = None,
     ceiling_s: float | None = None,
+    start: Callable[[], None] | None = None,
 ) -> WaitOutcome:
     """Wait (``done_within(slice_s)``) while ``work`` advances; the outcome says how it ended.
 
@@ -220,11 +228,22 @@ def wait_while_progressing(
     wait as :data:`NO_PROGRESS` when the work did not advance (or the process is gone),
     :data:`DAEMON_PID_UNRESOLVED` when it could not be read, and :data:`CEILING` once the
     ceiling passed with the work still advancing.
+
+    ``start``, when given, begins the awaited work AFTER the baseline work sample, so
+    the baseline precedes the work and the caller goes straight from starting it to
+    waiting. That ordering matters for a blocking native call started on a worker
+    thread: the clio-core binding holds the GIL for the whole RPC, so a caller still
+    sampling (``psutil`` reads, object construction) when the call takes the GIL is
+    frozen mid-Python, where CPython 3.13's ``faulthandler`` cannot walk its stack (an
+    ``__init__`` shim frame ends the dump at ``<invalid frame>``). Parked in its wait
+    instead, its frames -- the caller's own code -- appear in any hang dump.
     """
     ceiling = ceiling_s if ceiling_s is not None else max_wait_s()
     read: Callable[[], Any] = work or (lambda: daemon_work())  # late-bound (patchable)
     started = time.monotonic()
     last, resolved = _read_work(read)
+    if start is not None:
+        start()
     while True:
         if done_within(slice_s):
             return WaitOutcome(DONE, time.monotonic() - started)

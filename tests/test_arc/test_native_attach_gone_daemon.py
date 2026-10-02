@@ -86,6 +86,9 @@ def test_native_attach_is_bounded_against_a_gone_or_stuck_daemon(tmp_path: Path,
         CLIO_SERVER_CONF=str(config_path),
         CLIO_CORE_PORT=str(port),
         CLIO_ARC_LIVENESS_STALL_AFTER_S=str(_WINDOW_S),
+        # The failed attach stops the daemon it no longer needs; a suspended one makes no
+        # progress, so it is killed after this stretch (15 s in production).
+        CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S=str(_WINDOW_S),
         CLIO_STUCK_OUT=str(out_path),
         CLIO_STUCK_MODE=mode,
         CTP_LOG_LEVEL="error",
@@ -123,6 +126,8 @@ def test_native_attach_is_bounded_against_a_gone_or_stuck_daemon(tmp_path: Path,
         # The whole bound ran out: the typed timeout (Windows TCP, and any stuck daemon).
         assert result["reason"] == "clio_core_client_attach_timeout", result
         assert f"no answer within {_WINDOW_S:g}s" in result["error"], result
+        if mode == "suspend":  # alive but silent: located, and seen making no progress
+            assert "wait=no_progress" in result["error"], result
     else:
         # The native client gave up sooner (a refused connect to a gone daemon, as over
         # Linux's IPC socket): typed as a failed attach, never as a timeout.

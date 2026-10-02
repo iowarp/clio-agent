@@ -212,6 +212,10 @@ KEY_NOTES: dict[str, str] = {
         "Ceiling (seconds) on waiting for a clio-core answer while the daemon is visibly working "
         "(its CPU or I/O advancing); a daemon making no progress is a stall well before this."
     ),
+    "arc.liveness.stop_no_progress_s": (
+        "How long (seconds) a stopping clio-core daemon may make no progress (CPU and I/O "
+        "flat) before it is killed; keep it inside the desktop supervisor's 30 s window."
+    ),
     "arc.namespace": (
         "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
         "bare tags. Set to keep two deployments on one clio-core apart."
