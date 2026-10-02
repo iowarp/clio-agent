@@ -297,6 +297,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+        await run_off_loop(deps.delete_session_messages, app, sid)  # clio-core first: 503 keeps it
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(
@@ -310,7 +311,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        await run_off_loop(deps.delete_session_messages, app, sid)
         deps.delete_session_context_files(app, sid)
         await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes

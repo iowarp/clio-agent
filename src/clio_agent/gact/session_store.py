@@ -293,16 +293,30 @@ def _replace_session_messages(
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
-    """Remove one session's message ledger from memory and disk.
+    """Remove one session's message ledger from clio-core, memory and disk.
 
-    Uses the resident set's non-materializing :meth:`~clio_agent.gact.resident_ledgers.ResidentLedgerSet.discard`
-    when available so deleting an EVICTED session does not rehydrate its (possibly
+    clio-core goes FIRST (#737 S5: the canonical atom lane and its op lane; ARC memory
+    is untouched, ``gact_visible_transcript_only``). When it cannot finish, the typed
+    :class:`~clio_agent.gact.transcript_file.TranscriptEraseError` propagates before
+    anything else is removed: the caller keeps the session and a retry finishes the
+    erase -- the transcript is never left behind in clio-core silently.
+
+    Then the resident set's non-materializing :meth:`~clio_agent.gact.resident_ledgers.ResidentLedgerSet.discard`
+    when available, so deleting an EVICTED session does not rehydrate its (possibly
     huge) ledger from disk just to drop it — which would also emit a misleading
     ``rehydrate`` audit row and transiently count the doomed ledger against the byte
     cap, evicting warm sessions to make room for one deleted immediately after. Falls
     back to ``pop`` for a plain-dict ``app.state.messages`` (older/test wiring).
+
+    Raises:
+        TranscriptEraseError: clio-core did not finish erasing the transcript.
     """
 
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        on_ledger_deleted,
+    )
+
+    on_ledger_deleted(app, session_id)
     messages = app.state.messages
     discard = getattr(messages, "discard", None)
     if callable(discard):
@@ -315,26 +329,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.delete_session(session_id)
-    # #737 S5: drop the session's canonical atom lane (transcript projection erasure);
-    # ARC memory is untouched (gact_visible_transcript_only). Cheap when no atoms exist.
-    from clio_agent.arc.lane_generations import LaneReplaceError  # noqa: PLC0415
-    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
-        on_ledger_deleted,
-    )
-
-    try:
-        on_ledger_deleted(app, session_id)
-    except (RuntimeError, LaneReplaceError) as exc:
-        # The session row and durable message ledger are already deleted at this
-        # point. A native ARC cleanup failure must not turn that completed delete
-        # into a misleading HTTP 500 or make the caller retry a now-missing row.
-        # The unreachable atom lane is orphan cleanup, not authorization to
-        # resurrect the user-visible session.
-        logger.warning(
-            "session transcript atom cleanup failed session_id=%s reason=%s",
-            session_id,
-            exc,
-        )
 
 
 def _release_session_arc(app: "FastAPI", session_id: str) -> None:

@@ -35,6 +35,11 @@ file copy. It is resolved ONCE, at app build, by :func:`boot_transcript_store`:
     out of the in-memory ledger (:func:`forget_unminted_on_failure`) and the
     typed error propagates.
 
+With either setting, erasing a session's transcript (``DELETE`` / ``/clear``) runs
+against clio-core FIRST; when clio-core cannot finish it, :class:`TranscriptEraseError`
+(a retryable 503) is raised before anything else is removed, so a deleted session
+never leaves its clio-core data behind unreported, and retrying finishes the erase.
+
   History mode (no clio-core binding) keeps the transcript only in the file, so
   ``off`` there is a typed boot error (:class:`TranscriptFileRequiredError`).
 
@@ -109,6 +114,27 @@ class TranscriptNotReadyError(ClioError):
         )
         self.session_id = session_id
         self.reason = reason
+
+
+class TranscriptEraseError(ClioError):
+    """clio-core could not erase a session's transcript; nothing else was removed.
+
+    Raised by the delete seam (``DELETE /v1/sessions/{id}``, ``/clear``) before the
+    session row, the in-memory ledger or the file copy is touched, so the session
+    stays and repeating the request finishes the erase (every step is idempotent).
+    Served as a 503 with ``recoverable: true``.
+    """
+
+    def __init__(self, session_id: str, cause: BaseException) -> None:
+        details: dict[str, Any] = {"session_id": session_id, "cause": type(cause).__name__}
+        if isinstance(cause, ClioError):
+            details["stage"] = cause.details.get("stage")
+        super().__init__(
+            f"erasing the transcript of session {session_id!r} in clio-core failed: {cause}",
+            error_type="transcript_erase_failed",
+            details=details,
+        )
+        self.session_id = session_id
 
 
 def resolve_transcript_file() -> bool:
@@ -447,7 +473,8 @@ def install_transcript_error_handler(app: "FastAPI") -> None:
     replace (:class:`~clio_agent.arc.lane_generations.LaneReplaceError`) is a
     retryable 503 when the conversation is unchanged, and a non-retryable 500 when
     the change landed but the old copy is still there (repeating it would apply it
-    twice); the message says which, in plain words.
+    twice); the message says which, in plain words. A failed erase
+    (:class:`TranscriptEraseError`) is always a retryable 503: the session was kept.
     """
 
     from fastapi.responses import JSONResponse  # noqa: PLC0415
@@ -459,6 +486,23 @@ def install_transcript_error_handler(app: "FastAPI") -> None:
     async def _transcript_not_ready(_request: object, exc: TranscriptNotReadyError) -> JSONResponse:
         info = ErrorInfo(
             error=exc.error_type, message=exc.message, details=exc.details, recoverable=True
+        )
+        return JSONResponse(
+            status_code=503,
+            content=ErrorEnvelope(error=info).model_dump(exclude_none=True),
+            headers={"Retry-After": "1"},
+        )
+
+    @app.exception_handler(TranscriptEraseError)
+    async def _transcript_erase_failed(_request: object, exc: TranscriptEraseError) -> JSONResponse:
+        info = ErrorInfo(
+            error=exc.error_type,
+            message=(
+                "The conversation could not be removed: clio-core did not finish erasing "
+                "it, so the session was kept and nothing else was deleted. Retry to finish."
+            ),
+            details={**exc.details, "detail": exc.message},
+            recoverable=True,
         )
         return JSONResponse(
             status_code=503,
@@ -560,6 +604,7 @@ __all__ = [
     "TRANSCRIPT_FILE_ENV",
     "TRANSCRIPT_FILE_KEY",
     "RegistryTranscriptIndex",
+    "TranscriptEraseError",
     "TranscriptFileRequiredError",
     "TranscriptNotReadyError",
     "boot_transcript_store",
