@@ -29,25 +29,10 @@ Example:
 """
 
 import os
-import sys
 
+from clio_agent import _dspy_lazy_proxies
 
-def _load_dspy_lazy_anyio() -> None:
-    """Load ``anyio`` if DSPy left its lazy proxy for it in ``sys.modules``.
-
-    DSPy 3.4 (``dspy.utils.lazy_import``) installs a lazy proxy for ``anyio``. When
-    FastAPI then imports ``anyio.abc`` before anything loaded anyio, ``anyio.abc`` sets
-    an attribute on the proxy mid-initialization; the proxy loads anyio, which re-imports
-    the half-initialized ``anyio.abc`` -> a circular ``ImportError``. Touching one real
-    attribute here loads anyio once, in a clean order. A DSPy integration finding: remove
-    when DSPy no longer proxies anyio.
-    """
-    module = sys.modules.get("anyio")
-    if module is not None and type(module).__module__ == "dspy.utils.lazy_import":
-        _ = module.run  # the proxy's ``__getattr__`` executes the real module
-
-
-_load_dspy_lazy_anyio()
+_dspy_lazy_proxies.install()
 
 __version__ = "0.9.4.24"
 __author__ = "IOWarp Team"
