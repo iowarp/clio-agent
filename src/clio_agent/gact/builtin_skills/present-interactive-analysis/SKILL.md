@@ -144,7 +144,12 @@ Keep chosen fields in the registered artifact and the view's projected
 worth narrowing; the viewer creates the controls and applies them to the map
 and `Reference this`. If omitted, it exposes its default map fields. Use
 `dataUri` when a map needs filters on measured columns, even for a small
-dataset: inline points do not carry arbitrary measurements. A chart exposes
+dataset: inline points do not carry arbitrary measurements. A referenced map,
+chart, or table needs a registered CSV or Parquet table; a source JSON file is
+not a queryable table. Preserve numeric columns as numbers and timestamps as
+ISO-8601 strings with an offset when writing it. Check the registered table's
+schema and a sample row before presenting the view: a conversion can silently
+turn a timestamp into locale-formatted text. A chart exposes
 native filters for encoded fields; a table exposes them for displayed columns.
 Include a field in an encoding or table column list when readers need it
 visible there. Do not add filter buttons or actions to the component spec.
