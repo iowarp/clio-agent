@@ -107,7 +107,6 @@ OK_REFLECTED | hooks.stop_loop_cap | src/clio_agent/gact/hooks/stop_loop.py:71 |
 OK_REFLECTED | hooks.trust_store | src/clio_agent/gact/hooks/dispatcher.py:340 | CLIO_HOOKS_TRUST_STORE | conf.resolve; documented unset in defaults
 OK_REFLECTED | limits.agent_task_artifact_context_chars | src/clio_agent/gact/agent_task_artifacts.py:251 | CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS | conf.resolve; set in defaults (64000)
 OK_REFLECTED | limits.agent_task_output_digest_chars | src/clio_agent/gact/agents/agent_task_output_digest.py:78 | CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS | conf.resolve; set in defaults (8000)
-OK_REFLECTED | limits.codex_sdk_progress_timeout_s | src/clio_agent/providers/codex_stream.py:145 | CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S | conf.resolve; set in defaults (120.0)
 OK_REFLECTED | limits.context_inline_bytes | src/clio_agent/gact/runtime/constants.py:82 | CLIO_CTX_MAX_BYTES | conf.resolve; set in defaults (32768)
 OK_REFLECTED | limits.fs_read_bytes | src/clio_agent/tools/servers/fs_server.py:41 | CLIO_FS_MAX_READ_BYTES | conf.resolve; set in defaults (262144)
 OK_REFLECTED | limits.lm_call_s | src/clio_agent/runtime/lm_activity.py:411 | CLIO_MAX_LM_CALL_S | conf.resolve; set in defaults (1800.0)
@@ -340,11 +339,11 @@ ENV_SANCTIONED | os.environ (relay_cli_runner passthrough) | src/clio_agent/tool
 ENV_SANCTIONED | os.environ (runtime health envs) | src/clio_agent/runtime/clio_core_health.py:76,356,476,586 | | env mapping injection into health check helpers; infrastructure
 ENV_SANCTIONED | os.environ (disk_gc subprocess) | src/clio_agent/runtime/disk_gc.py:409,551 | | Subprocess env for disk GC; infrastructure
 ENV_SANCTIONED | APPDATA / LOCALAPPDATA (Windows paths) | src/clio_agent/runtime/sandbox_cli.py:252-253 | | Windows platform path lookup; not a user config knob
-ENV_SANCTIONED | CODEX_HOME | src/clio_agent/runtime/sandbox_codex.py:252 | | SDK-standard env for codex home; not a CLIO config knob (read-only probe)
+ENV_SANCTIONED | CODEX_HOME | src/clio_agent/runtime/sandbox_codex.py:252 | | The Codex CLI home; not a CLIO config knob (read-only probe)
 ENV_SANCTIONED | LOCALAPPDATA / XDG_DATA_HOME | src/clio_agent/providers/argonne_auth.py:191,197 | | Platform data dir discovery; not a user config knob
 ENV_SANCTIONED | ProgramFiles / ProgramFiles(x86) | src/clio_agent/gact/documents/renditions.py:83-84 | | Windows executable search; OS env, not a config knob
-ENV_SANCTIONED | CODEX_HOME | src/clio_agent/runtime/lm_provider_probe.py:94 | | SDK-standard env for codex home; not a CLIO config knob
-ENV_SANCTIONED | CODEX_HOME | src/clio_agent/providers/codex_credential_home.py:158 | | SDK-standard env for codex home; not a CLIO config knob
+ENV_SANCTIONED | CODEX_HOME | src/clio_agent/runtime/lm_provider_probe.py:94 | | The Codex CLI home; not a CLIO config knob
+ENV_SANCTIONED | CODEX_HOME | src/clio_agent/providers/codex/credentials.py:161 | | The Codex CLI home (its auth.json login); not a CLIO config knob
 ENV_SANCTIONED | CODEX_HOME | src/clio_agent/providers/handshake/argonne.py:95 | | Argonne auth probe vars; credential/auth-status tier
 ENV_SANCTIONED | os.environ (status env mapping) | src/clio_agent/runtime/status.py:206 | | env mapping for status doctor; infrastructure-level
 ENV_SANCTIONED | CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS (secondary bare read) | src/clio_agent/agent.py:880 | CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS | Special case: bare read only on conf.resolve fallthrough to detect set-but-empty sentinel; the knob itself is resolved via conf.resolve at line 865
@@ -400,7 +399,6 @@ HARDCODED | CONSOLE_SSE_READ_TIMEOUT_SECONDS=30.0 | src/clio_agent/tools/relay_c
 HARDCODED | _OUTER_TIMEOUT_MARGIN_S=15.0 | src/clio_agent/gact/agent_elicitation.py:206 | | Grace margin added to elicitation turn timeout; hardcoded — tunable margin
 HARDCODED | _CONTEXT_EXCERPT_MAX_CHARS=6000 | src/clio_agent/gact/agent_elicitation.py:207 | | Char cap on context excerpt injected into elicitation answer prompt; hardcoded
 HARDCODED | DEFAULT_MAX_GOAL_ITERS=25 | src/clio_agent/gact/goal.py:70 | | Default max iterations for goal-monitoring loop; hardcoded — tunable default
-HARDCODED | DEFAULT_TURN_TIMEOUT_S=180.0 | src/clio_agent/providers/codex_stream.py:64 | | Per-turn ceiling passed to Codex SDK; hardcoded constant (actual operative limit is limits.codex_sdk_progress_timeout_s via conf.resolve) — redundant ceiling may surprise operators
 HARDCODED | _MCP_REGISTRY_LIMIT=64 | src/clio_agent/gact/mcp_apps.py:59 | | MCP app instance registry cap; hardcoded — tunable for high-concurrency MCP app workloads
 HARDCODED | _MCP_REGISTRY_TTL_S=3600 | src/clio_agent/gact/mcp_apps.py:60 | | TTL for MCP app registry entries; hardcoded — tunable for long-lived MCP apps
 
@@ -410,12 +408,12 @@ HARDCODED | _MCP_REGISTRY_TTL_S=3600 | src/clio_agent/gact/mcp_apps.py:60 | | TT
 
 | Status | Count |
 |---|---|
-| OK_REFLECTED | 223 |
+| OK_REFLECTED | 222 |
 | OK_UNREFLECTED | 4 |
 | ENV_SANCTIONED | 43 |
 | ENV_BARE | 12 |
-| HARDCODED | 32 |
-| **TOTAL** | **314** |
+| HARDCODED | 31 |
+| **TOTAL** | **312** |
 
 ---
 

@@ -44,7 +44,7 @@ _PROGRESS_WAITS = (
 )
 #: The fixed MCP deadline keys these waits replaced: (key, env, what was removed). A
 #: leftover one is a typed ``config_key_removed`` error
-#: (:func:`clio_agent.config.reject_removed_config_keys`), never ignored.
+#: (:func:`clio_agent.removed_config_keys.reject_removed_config_keys`), never ignored.
 REMOVED_DEADLINE_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tools.mcp.setup_timeout_s", "CLIO_MCP_SETUP_TIMEOUT_S", _PROGRESS_WAITS),
     ("tools.mcp.cold_spawn_runaway_s", "CLIO_MCP_COLD_SPAWN_RUNAWAY_S", _PROGRESS_WAITS),

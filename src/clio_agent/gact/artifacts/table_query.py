@@ -17,8 +17,10 @@ see :func:`~clio_agent.gact.artifacts.table_query_downsample.apply_over_limit_st
 Sorting runs AFTER downsampling (not before): an explicit or automatic
 sample picks its rows from the filtered/aggregated set first, and the
 caller's ``sort`` then orders exactly the rows that made it into the
-response. A query's own client disconnecting, or a configured wall-clock
-backstop, cancels it between stages (see :class:`QueryCancellation`).
+response. A query's own client disconnecting, or the route giving up on a
+stalled query, cancels it between stages (see :class:`QueryCancellation`).
+Every stage runs on the CALLING thread (pyarrow's own thread pool is not
+used): the route measures that one thread's CPU time as the query's progress.
 
 This module owns no HTTP machinery: it raises :class:`TableQueryError` with a
 status code and a typed error code, and the route turns that into the standard
@@ -33,7 +35,6 @@ import datetime as _dt
 import decimal
 import math
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,6 @@ from clio_agent.gact.artifacts.table_query_models import (
     TableQueryCancelled,
     TableQueryError,
     TableQueryRequest,
-    TableQueryTimeout,
     TableSort,
     table_format_for,
 )
@@ -68,27 +68,19 @@ from clio_agent.gact.artifacts.table_query_models import (
 
 @dataclass
 class QueryCancellation:
-    """The two ways one table-query execution stops early.
+    """How one table-query execution is told to stop early.
 
-    ``cancel_event`` (PRIMARY, owner ruling): set by the route when its own
-    HTTP client disconnects -- checked between EVERY stage and, in the
-    per-entity downsample loop, on every iteration (not only between
-    stages), so an abandoned query stops promptly. ``deadline`` (SECONDARY):
-    a configured wall-clock backstop (``artifacts.table_query_timeout_s``)
-    for a client that is still connected and waiting but has run too long --
-    never the primary mechanism, and never a statement about how much data
-    is reachable.
+    ``cancel_event`` is set by the route when its own HTTP client disconnects
+    (the primary path, owner ruling) or when the route stopped waiting on a
+    stalled query. It is checked between EVERY stage and, in the per-entity
+    downsample loop, on every iteration, so an abandoned query stops promptly.
     """
 
-    deadline: float
-    timeout_s: float
     cancel_event: "threading.Event | None" = None
 
     def check(self) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
             raise TableQueryCancelled()
-        if time.monotonic() > self.deadline:
-            raise TableQueryTimeout(self.timeout_s)
 
 
 def _read_schema(source: Path, fmt: TableFormat) -> pa.Schema:
@@ -211,10 +203,11 @@ def _validate_requested_output_columns(
 def _read_table(source: Path, fmt: TableFormat, columns: list[str]) -> pa.Table:
     try:
         if fmt == "parquet":
-            table = pq.read_table(source, columns=columns)
+            table = pq.read_table(source, columns=columns, use_threads=False)
         else:
             table = pacsv.read_csv(
                 source,
+                read_options=pacsv.ReadOptions(use_threads=False),
                 # Empty / NA cells are nulls in every column, text included.
                 convert_options=pacsv.ConvertOptions(
                     include_columns=columns, strings_can_be_null=True
@@ -507,9 +500,8 @@ def compute_processed_table(
     that sampling happens HERE (before any page is sliced), never twice.
     ``cancellation`` is checked between every stage (and, for a per-entity
     downsample, on every entity): the requesting client disconnecting stops
-    the query immediately (:class:`TableQueryCancelled`); a configured
-    wall-clock backstop (:class:`TableQueryTimeout`) is the secondary guard
-    for a client that is still connected but has waited too long.
+    the query immediately (:class:`TableQueryCancelled`), and so does the
+    route giving up on a query that stopped making progress.
 
     Raises:
         TableQueryError: for unknown columns, incomparable filter/sort
@@ -651,7 +643,6 @@ __all__ = [
     "TableMetric",
     "TableQueryError",
     "TableQueryRequest",
-    "TableQueryTimeout",
     "TableSort",
     "compute_processed_table",
     "page_processed_table",

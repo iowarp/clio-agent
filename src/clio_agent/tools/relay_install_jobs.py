@@ -425,7 +425,7 @@ def _kill_process_tree(proc: "subprocess.Popen[str]") -> None:
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    """Windows: keep the console window hidden (parity with codex_app_server.py)."""
+    """Windows: keep the console window hidden."""
 
     if os.name == "nt":
         return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}

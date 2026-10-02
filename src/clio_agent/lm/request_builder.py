@@ -62,8 +62,8 @@ anthropic/openai, all driven by the model's own
 control :mod:`.combine` chose (Part 5.5). ``providers/thinking.py`` (the old
 provider-name-keyed ``resolve_thinking``/``ACCEPTED_LEVELS`` engine) and
 ``providers/reasoning_levels.py`` (its catalog-display counterpart) are
-deleted: codex's ``ThinkingSpec`` comes from its SDK's own reported
-``supportedReasoningEfforts`` (``providers.capabilities.dialects.codex``),
+deleted: codex's ``ThinkingSpec`` comes from the reasoning efforts the Codex
+backend's own model list reports (``providers.capabilities.dialects.codex``),
 claude_code's from the CLI's own ``supportedEffortLevels``
 (``providers.capabilities.dialects.claude_code``), and anthropic/openai's
 from LiteLLM's own introspection (``providers.capabilities.dialects.

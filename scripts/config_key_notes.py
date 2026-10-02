@@ -300,9 +300,13 @@ KEY_NOTES: dict[str, str] = {
         "Processed (pre-page) query results the per-server cache keeps; lets paging through "
         "one large result reuse the same processed table instead of re-reading it per page."
     ),
-    "artifacts.table_query_timeout_s": (
-        "Wall-clock budget in seconds for one artifact table-query request; an overrun "
-        "answers a typed 504."
+    "artifacts.table_query_max_wait_s": (
+        "Ceiling (seconds) on waiting for an artifact table query whose thread is still "
+        "working; reaching it answers a typed 504 table_query_stalled (reason ceiling)."
+    ),
+    "artifacts.table_query_no_progress_s": (
+        "Seconds an artifact table query may go with no answer AND no CPU work on its own "
+        "thread before a typed 504 table_query_stalled; a query still working is waited for."
     ),
     "autocompact.pct": (
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "

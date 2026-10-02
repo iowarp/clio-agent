@@ -6,8 +6,9 @@ expert's system prompt), the task as one user message, every earlier step of thi
 as typed messages, and the tools as native function tools (``submit`` among them for
 structured outputs). The reply comes back typed: thinking (with the provider's
 continuation state, sent back as-is on the next call), the visible text (shown as
-written), and tool calls. Transports without native tools (the Codex and Claude Code
-SDKs) carry tools as text inside their engine; the loop is the same for every provider.
+written), and tool calls. Codex direct sends them as native function tools too; only
+the Claude Code engine, whose transport has no native tools, carries them as text
+inside the engine (``text_block``). The loop is the same for every provider.
 
 Per step:
 
@@ -180,8 +181,9 @@ class ClioReAct(dspy.Module):
         resumed = resume_pending(self, input_args)
         if resumed is not None:
             return resumed
-        # A fresh stateful scope per forward: the SDK transports key their sessions on
-        # it (Codex keeps its thread across turns; the scope routes ARC-op resets).
+        # A fresh stateful scope per forward: the stateful engines key their kept
+        # conversations on it (Codex direct its WebSocket, Claude Code its session), and
+        # the scope routes ARC-op resets to the conversations this forward drove.
         with stateful_scope():
             return _Loop(self, input_args).run()
 

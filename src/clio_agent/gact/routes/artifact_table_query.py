@@ -9,9 +9,10 @@ bytes come from the provider-owned store / CAS blob / contained workspace path,
 and every read is re-hashed against the immutable version hash.
 
 The query engine lives in :mod:`clio_agent.gact.artifacts.table_query`; this
-module owns limits, cancellation (client-disconnect PRIMARY, a configured
-wall-clock backstop secondary), a concurrency guard over the shared worker
-thread pool, two small result caches (the exact final response, and the
+module owns limits, cancellation (the client disconnecting), the
+progress-based wait (the query runs on its own thread and is waited for while
+that thread keeps consuming CPU, :mod:`clio_agent.runtime.thread_progress`),
+a concurrency guard over those query threads, two small result caches (the exact final response, and the
 processed-but-unpaged result so paging through a large query does not
 re-read/re-process the source file per page), and the error envelope.
 """
@@ -21,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -95,41 +95,56 @@ def table_query_max_source_bytes() -> int:
     )
 
 
-def table_query_timeout_s() -> float:
-    """Wall-clock budget, in seconds, for one table-query request.
+def table_query_no_progress_s() -> float:
+    """Seconds a table query may go without an answer AND without CPU work.
 
-    Config: ``artifacts.table_query_timeout_s`` /
-    ``CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`` (default 10). An overrun answers a
-    typed 504 ``table_query_timeout``.
-
-    This is the SECONDARY guard, for a client that is still connected but has
-    waited too long — never a statement about how much data a caller can
-    reach (owner ruling: no cap that kneecaps intent); it is configurable
-    (raise it for a genuinely large one-shot query) and the reason is always
-    typed, never a silent drop. The PRIMARY cancellation path is the
-    requesting client disconnecting (see ``_watch_for_disconnect``): checked
-    between every stage and, in the per-entity downsample loop, on every
-    entity, not only once between stage boundaries.
+    Config: ``artifacts.table_query_no_progress_s`` /
+    ``CLIO_ARTIFACTS_TABLE_QUERY_NO_PROGRESS_S`` (default 30). The query runs
+    on its own thread; while that thread keeps consuming CPU the client keeps
+    waiting (a large query on a slow machine is never cut off by a clock). A
+    whole window with neither is a typed 504 ``table_query_stalled``
+    (``reason: no_progress``).
     """
 
     from clio_agent import conf  # noqa: PLC0415
 
-    return conf.resolve(
-        "artifacts.table_query_timeout_s",
-        env="CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S",
-        default=10.0,
+    value = conf.resolve(
+        "artifacts.table_query_no_progress_s",
+        env="CLIO_ARTIFACTS_TABLE_QUERY_NO_PROGRESS_S",
+        default=30.0,
         cast=conf.as_float,
     )
+    return value if value > 0 else 30.0
+
+
+def table_query_max_wait_s() -> float:
+    """Ceiling, in seconds, on waiting for a table query that keeps working.
+
+    Config: ``artifacts.table_query_max_wait_s`` /
+    ``CLIO_ARTIFACTS_TABLE_QUERY_MAX_WAIT_S`` (default 180). A query still
+    consuming CPU at the ceiling is a typed 504 ``table_query_stalled``
+    (``reason: ceiling``).
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    value = conf.resolve(
+        "artifacts.table_query_max_wait_s",
+        env="CLIO_ARTIFACTS_TABLE_QUERY_MAX_WAIT_S",
+        default=180.0,
+        cast=conf.as_float,
+    )
+    return value if value > 0 else 180.0
 
 
 def table_query_max_concurrency() -> int:
-    """Max table-query executions running at once, sharing the worker thread pool.
+    """Max table-query executions running at once, each on its own thread.
 
     Config: ``artifacts.table_query_max_concurrency`` /
-    ``CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY`` (default 8). A slow query
-    (a large source, an expensive aggregate) must not be free to exhaust the
-    process's shared default thread pool and starve every other request;
-    a request beyond this bound simply waits its turn, never refused.
+    ``CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY`` (default 8). Slow queries
+    (a large source, an expensive aggregate) must not be free to pile up
+    threads and starve every other request of CPU; a request beyond this
+    bound simply waits its turn, never refused.
     """
 
     from clio_agent import conf  # noqa: PLC0415
@@ -465,14 +480,20 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
     ) -> dict[str, Any]:
         """Filter -> aggregate -> downsample -> sort -> offset/limit over a CSV/Parquet artifact."""
 
-        from clio_agent.gact.artifacts.table_query import (  # noqa: PLC0415
-            QueryCancellation,
-            TableQueryTimeout,
+        from clio_agent.gact.artifacts.table_query import QueryCancellation  # noqa: PLC0415
+        from clio_agent.gact.artifacts.table_query_models import (  # noqa: PLC0415
+            TableQueryCancelled,
+            TableQueryStalled,
+        )
+        from clio_agent.runtime.thread_progress import (  # noqa: PLC0415
+            ThreadStalled,
+            ThreadWorkUnresolved,
+            run_while_thread_works,
         )
 
         limit = _effective_limit(body.limit)
-        timeout_s = table_query_timeout_s()
-        deadline = time.monotonic() + timeout_s
+        no_progress_s = table_query_no_progress_s()
+        max_wait_s = table_query_max_wait_s()
         registry = await asyncio.to_thread(get_registry, app)
         found = registry.get_by_artifact_id(artifact_id)
         if found is None:
@@ -484,38 +505,59 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
             )
         record, version = found
 
-        # PRIMARY cancellation (owner ruling): a background task watches this
-        # request's own HTTP connection and flips cancel_event the moment the
-        # client disconnects; the engine checks it between every stage (and,
-        # in the per-entity downsample loop, on every entity).
+        # A background task watches this request's own HTTP connection and
+        # flips cancel_event the moment the client disconnects (the primary
+        # cancellation, owner ruling); the engine checks it between every stage
+        # (and, in the per-entity downsample loop, on every entity), and the
+        # wait below ends at once, even while the query thread is blocked.
         cancel_event = threading.Event()
-        cancellation = QueryCancellation(
-            deadline=deadline, timeout_s=timeout_s, cancel_event=cancel_event
-        )
+        cancellation = QueryCancellation(cancel_event=cancel_event)
         watcher = asyncio.ensure_future(_watch_for_disconnect(request, cancel_event))
         watcher.add_done_callback(_report_watcher_failure)
         semaphore = _concurrency_semaphore_for(app)
         try:
             async with semaphore:
-                # The outer wait_for is the SECONDARY, hard backstop: pyarrow's
-                # synchronous calls are not preemptible mid-call, so a single
-                # oversized stage could otherwise still run past the deadline
-                # before the next cancellation.check(); this bounds the HTTP
-                # response itself regardless.
-                return await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _table_query, app, record, version, body, limit, cancellation
-                    ),
-                    timeout=max(0.0, deadline - time.monotonic()),
+                query = asyncio.ensure_future(
+                    run_while_thread_works(
+                        lambda: _table_query(app, record, version, body, limit, cancellation),
+                        op=f"table-query {artifact_id}",
+                        no_progress_s=no_progress_s,
+                        ceiling_s=max_wait_s,
+                        thread_name="clio-table-query",
+                    )
                 )
-        except TimeoutError as exc:
-            timeout = TableQueryTimeout(timeout_s)
+                done, _pending = await asyncio.wait(
+                    {query, watcher}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if query not in done:
+                    query.cancel()
+                    cancelled = TableQueryCancelled()
+                    raise _error(
+                        cancelled.status_code,
+                        cancelled.code,
+                        cancelled.message,
+                        artifact_id=artifact_id,
+                    )
+                return query.result()
+        except ThreadStalled as exc:
+            # Tell the query thread to stop at its next check should it resume.
+            cancel_event.set()
+            stalled = TableQueryStalled(exc.reason, exc.waited_s, no_progress_s)
             raise _error(
-                timeout.status_code,
-                timeout.code,
-                timeout.message,
+                stalled.status_code,
+                stalled.code,
+                stalled.message,
                 artifact_id=artifact_id,
-                **timeout.details,
+                **stalled.details,
+            ) from exc
+        except ThreadWorkUnresolved as exc:
+            cancel_event.set()
+            raise _error(
+                500,
+                "table_query_progress_unmeasurable",
+                "the table query's progress (its thread's CPU time) cannot be read here",
+                artifact_id=artifact_id,
+                detail=str(exc),
             ) from exc
         finally:
             # Cancel but deliberately do NOT await the watcher here. The
@@ -539,6 +581,7 @@ __all__ = [
     "table_query_max_concurrency",
     "table_query_max_rows",
     "table_query_max_source_bytes",
+    "table_query_max_wait_s",
+    "table_query_no_progress_s",
     "table_query_processed_cache_entries",
-    "table_query_timeout_s",
 ]

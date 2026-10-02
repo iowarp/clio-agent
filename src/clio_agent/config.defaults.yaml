@@ -989,16 +989,23 @@ artifacts.table_query_max_rows: 50000
 # memory.
 artifacts.table_query_max_source_bytes: 268435456
 
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_WAIT_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Ceiling (seconds) on waiting for an artifact table query whose thread is
+# still working; reaching it answers a typed 504 table_query_stalled (reason
+# ceiling).
+artifacts.table_query_max_wait_s: 180.0
+
+# CLIO_ARTIFACTS_TABLE_QUERY_NO_PROGRESS_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Seconds an artifact table query may go with no answer AND no CPU work on
+# its own thread before a typed 504 table_query_stalled; a query still
+# working is waited for.
+artifacts.table_query_no_progress_s: 30.0
+
 # CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
 # Processed (pre-page) query results the per-server cache keeps; lets paging
 # through one large result reuse the same processed table instead of re-
 # reading it per page.
 artifacts.table_query_processed_cache_entries: 8
-
-# CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
-# Wall-clock budget in seconds for one artifact table-query request; an
-# overrun answers a typed 504.
-artifacts.table_query_timeout_s: 10.0
 
 # ==========================================================================
 # Workspace resources

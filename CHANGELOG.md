@@ -8,6 +8,13 @@ TUI/HTTP surface aren't tracked here.
 
 ### Added
 
+- `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned
+  (hidden unless the process was started with `CLIO_SERVE_MANAGED=1`). It takes the
+  server's bearer in `Authorization` (loopback included; `401 authentication_required`
+  otherwise) and answers `202 {status: "stopping", exit_path}` like
+  `POST /v1/desktop/shutdown`. `serve.ensure_server` now starts the server with a
+  one-use `CLIO_AUTH_TOKEN`, so such a server also requires that bearer from
+  non-loopback peers (the token is in its owner-only credential record).
 - Compaction is visible: `compaction.started` / `compaction.completed` /
   `compaction.failed` events (`session_id`, `compaction_id`, `scope`, `trigger`
   `auto|manual`, `turn_id`; completed adds `message_id`, `part_id`,
@@ -70,6 +77,20 @@ TUI/HTTP surface aren't tracked here.
   progresses (`arc.liveness.max_wait_s`); a daemon that cannot be located is
   `clio_core_daemon_pid_unresolved`, a daemon still starting at the ceiling is
   `clio_core_daemon_start_ceiling` and is left running for the next attach.
+- `POST /v1/artifacts/{id}/table-query` is progress-based (#1577): the query runs on
+  its own thread and is waited for while that thread consumes CPU, up to
+  `artifacts.table_query_max_wait_s` (180 s); a `artifacts.table_query_no_progress_s`
+  window (default 30 s) with no answer and no CPU work is a typed
+  `504 table_query_stalled` (`details.reason` `no_progress` or `ceiling`,
+  `details.waited_s`, `details.no_progress_s`), replacing `504 table_query_timeout`.
+  A client disconnect still cancels the query (`499 table_query_client_disconnected`).
+- `serve.stop_server` stops a server it spawned gracefully on every platform: it calls
+  `POST /v1/server/shutdown`, so the lifespan teardown runs (turn drain, clio-core client
+  release, flushes), and waits while the server's process tree progresses
+  (`arc.liveness.stop_no_progress_s` window, `arc.liveness.max_wait_s` ceiling). A server
+  that cannot be asked or stops progressing is killed and reported as `killed` with a
+  typed `kill_reason`; a stop no longer starts with terminate-then-kill. A stop that lands
+  during the boot clio-core attach waits for it, so the attached client is released.
 
 ### Removed
 
@@ -77,6 +98,9 @@ TUI/HTTP surface aren't tracked here.
   `tools.mcp.launcher_cache_lock_timeout_s` and `limits.mcp_reconnect_timeout_s` (and
   their `CLIO_*` variables): replaced by the progress-based waits above. A leftover one
   is a typed `config_key_removed` error naming where it is set.
+- `artifacts.table_query_timeout_s` (`CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`): replaced
+  by the progress-based table-query wait above. A leftover one is a typed
+  `config_key_removed` error.
 
 - `POST /v1/sessions/{sid}/context/compact` (use `POST /v1/sessions/{sid}/compact?scope=`),
   the `session.compacted` event and the `compaction` part: new compactions never write

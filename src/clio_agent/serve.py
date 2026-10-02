@@ -11,8 +11,15 @@ Two entry points:
   server already answers, otherwise **spawn** ``clio-agent-gact --port <port>`` detached,
   wait for health, and return the base URL. Only servers *we* spawn are recorded as
   managed-by-us in the pidfile.
-* :func:`stop_server` — terminate the process tree of a server *we* spawned (never an
-  attached external one) and clean up the pidfile. Idempotent.
+* :func:`stop_server` — stop a server *we* spawned (never an attached external one) and
+  clean up the pidfile. Idempotent. The stop is graceful: ``ensure_server`` hands the
+  server a one-use bearer token (``CLIO_AUTH_TOKEN``, the same contract the desktop
+  launcher uses) and marks it ``CLIO_SERVE_MANAGED=1``; ``stop_server`` presents the
+  token the server publishes in its owner-only credential record
+  (:mod:`clio_agent.gact.server_credentials`) to ``POST /v1/server/shutdown``, which runs
+  the app's normal lifespan shutdown (turn drain, clio-core client release, flushes).
+  It waits while the server's process tree makes progress shutting down; only a server
+  that stops progressing (or never accepts the request) is killed -- typed and logged.
 
 Every outcome (attach / spawn / already-running / timeout / stop) is reported through a
 closed, typed reason catalog (:data:`_SERVE_REASON_DEFINITIONS`) — mirroring the
@@ -30,10 +37,12 @@ host/port, and a ``spawned_by_us`` marker.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import json
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import sys
@@ -49,6 +58,12 @@ from clio_agent.paths import user_data_dir
 logger = logging.getLogger(__name__)
 
 _HEALTH_PATH = "/v1/health"
+_SHUTDOWN_PATH = "/v1/server/shutdown"
+#: The env marker that exposes ``POST /v1/server/shutdown`` in a server we spawn
+#: (``gact/routes/lifecycle.py::SERVE_MANAGED_ENV``).
+_SERVE_MANAGED_ENV = "CLIO_SERVE_MANAGED"
+#: The one-use bearer a spawned server enforces (``gact/auth.py``).
+_AUTH_TOKEN_ENV = "CLIO_AUTH_TOKEN"
 _SERVER_BIN = "clio-agent-gact"
 #: HTTP status codes that mean "the server process is answering" (up), even when it
 #: reports a degraded/unavailable subsystem. ``/v1/health`` returns 200 (ready/degraded)
@@ -85,7 +100,17 @@ _SERVE_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "stopped": {
         "managed": True,
-        "detail": "terminated the gact server process tree we spawned; removed the pidfile",
+        "detail": (
+            "the gact server we spawned shut down gracefully (lifespan teardown ran); "
+            "removed the pidfile"
+        ),
+    },
+    "killed": {
+        "managed": True,
+        "detail": (
+            "the gact server we spawned did not shut down gracefully (see kill_reason); "
+            "killed its process tree and removed the pidfile"
+        ),
     },
     "no_server": {
         "managed": False,
@@ -396,6 +421,14 @@ def ensure_server(
 
     server_bin = _server_bin()  # raises ServerBinaryNotFound (structured) if missing
     log_path = user_data_dir() / f"gact-server-{port}.log"
+    # The owner contract the desktop launcher also uses: a one-use bearer the server
+    # enforces (and publishes in its owner-only credential record), plus the marker
+    # that exposes the graceful shutdown route stop_server calls.
+    child_env = {
+        **os.environ,
+        _AUTH_TOKEN_ENV: secrets.token_urlsafe(32),
+        _SERVE_MANAGED_ENV: "1",
+    }
     log_fh = open(log_path, "ab")  # noqa: SIM115 - closed in finally after Popen
     try:
         proc = subprocess.Popen(
@@ -403,6 +436,7 @@ def ensure_server(
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,
+            env=child_env,
             **_detached_popen_kwargs(),
         )
     finally:
@@ -514,32 +548,158 @@ def _psutil_wait(procs: list[Any], *, timeout: float) -> tuple[list[Any], list[A
         return [], list(procs)
 
 
+def _loopback_host(host: str) -> str:
+    """The address to reach a server bound to ``host`` from this machine."""
+    return "127.0.0.1" if host in ("", "0.0.0.0") else ("::1" if host == "::" else host)
+
+
+def _tree_pids(pid: int) -> set[int]:
+    """``pid`` and its live descendants (empty once it is gone)."""
+    import psutil  # noqa: PLC0415
+
+    try:
+        root = psutil.Process(pid)
+        return {pid, *(child.pid for child in root.children(recursive=True))}
+    except psutil.Error:
+        return set()
+
+
+def _shutdown_token(port: int, pid: int) -> str | None:
+    """The bearer the server on ``port`` (spawned as ``pid``) enforces, from its record.
+
+    The record names the serving interpreter, which is ``pid`` itself or -- on Windows,
+    where the console-script launcher execs a child interpreter -- a descendant of it.
+    ``None`` when the record is absent, belongs to another process tree, or the server
+    enforces no token: the graceful route cannot be used then.
+    """
+    from clio_agent.gact.server_credentials import credential_record_path  # noqa: PLC0415
+
+    try:
+        record = json.loads(credential_record_path(port).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("pid") not in _tree_pids(pid):
+        return None
+    token = record.get("bearer_token")
+    return token if isinstance(token, str) and token else None
+
+
+def _post_shutdown(base_url: str, token: str) -> int:
+    """POST the shutdown route; returns the HTTP status (raises on transport error)."""
+    # No client-side timeout: the caller waits on this request only while the server's
+    # process tree makes progress, and kills a server that stops progressing.
+    response = httpx.post(
+        base_url + _SHUTDOWN_PATH,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=None,
+    )
+    return response.status_code
+
+
+def _graceful_stop(
+    pid: int,
+    port: int,
+    host: str,
+    *,
+    no_progress_s: float,
+    ceiling_s: float,
+) -> str | None:
+    """Ask the server to shut down and wait while it progresses; ``None`` once it exited.
+
+    Returns:
+        ``None`` when the server exited on its own, else the typed reason the graceful
+        stop did not complete (the caller kills the tree): ``no_credential_record``,
+        ``shutdown_unreachable``, ``shutdown_refused_<status>``, ``shutdown_unanswered``,
+        ``no_progress`` or ``ceiling``.
+    """
+    import psutil  # noqa: PLC0415
+
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415
+
+    token = _shutdown_token(port, pid)
+    if token is None:
+        return "no_credential_record"
+    tree = daemon_progress.ProcessTreeWork(pid)
+    base_url = server_base_url(_loopback_host(host), port)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-stop")
+    request = pool.submit(_post_shutdown, base_url, token)
+    pool.shutdown(wait=False)
+    answered = daemon_progress.wait_while_progressing(
+        daemon_progress.future_done_within(request),
+        slice_s=no_progress_s,
+        op_name=f"gact server shutdown request (pid {pid})",
+        work=tree.sample,
+        ceiling_s=ceiling_s,
+    )
+    if not answered.done:
+        return "shutdown_unanswered"
+    try:
+        status = request.result()
+    except httpx.HTTPError as exc:
+        logger.warning("gact server shutdown request failed pid=%s error=%r", pid, exc)
+        return "shutdown_unreachable"
+    if status != 202:
+        return f"shutdown_refused_{status}"
+
+    try:
+        server = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return None
+
+    def exited_within(timeout: float) -> bool:
+        try:
+            server.wait(timeout=timeout)
+        except psutil.TimeoutExpired:
+            return False
+        except psutil.NoSuchProcess:
+            return True
+        return True
+
+    exited = daemon_progress.wait_while_progressing(
+        exited_within,
+        slice_s=no_progress_s,
+        op_name=f"gact server shutdown (pid {pid})",
+        work=tree.sample,
+        ceiling_s=ceiling_s,
+    )
+    if exited.done:
+        return None
+    return exited.reason
+
+
 def stop_server(
     port: int = 8100,
     host: str = "127.0.0.1",
     *,
-    timeout_s: float = 10.0,
+    no_progress_s: float | None = None,
 ) -> dict[str, Any]:
     """Stop the gact server *we* spawned on ``port`` and clean up its pidfile. Idempotent.
 
     Reads the pidfile: if it is absent, references a dead process, or marks a server we did
     not spawn, this is a clean no-op that returns the corresponding structured note (and
-    prunes a stale pidfile). Otherwise the recorded process tree is terminated (SIGTERM
-    then SIGKILL), PID-reuse-guarded by the recorded creation time, and the pidfile removed.
-    An **attached external** server is never recorded as ours, so this can never kill it.
+    prunes a stale pidfile). An **attached external** server is never recorded as ours, so
+    this can never stop it.
+
+    Otherwise the stop is graceful: the server's own bearer (from its credential record)
+    authenticates ``POST /v1/server/shutdown``, which runs the app's normal lifespan
+    teardown -- turn drain, clio-core client release, flushes. The request and the exit
+    are waited for while the server's process tree progresses (CPU or I/O), up to
+    ``arc.liveness.max_wait_s`` (180 s). Only a server that stops progressing for a
+    whole ``no_progress_s`` window, reaches the ceiling, or cannot be asked (no
+    credential record, refused, unreachable) is killed -- reported as ``killed`` with
+    its ``kill_reason`` and logged as a warning, never silently.
 
     Args:
         port: Port whose recorded server should be stopped. Defaults to 8100.
-        host: Unused for the kill (the PID is authoritative); kept for signature symmetry
-            with :func:`ensure_server` and future host-scoped pidfiles.
-        timeout_s: Reserved for future graceful-drain use; the terminate/kill escalation
-            uses its own fixed 5s window.
+        host: Host the server was bound to (the shutdown request goes to its loopback).
+        no_progress_s: The no-progress window; defaults to
+            ``arc.liveness.stop_no_progress_s`` (15 s).
 
     Returns:
         A structured note payload (see :data:`_SERVE_REASON_DEFINITIONS`): ``stopped``,
-        ``no_server``, ``dead_pid``, ``unverifiable``, or ``not_ours``.
+        ``killed``, ``no_server``, ``corrupt_pidfile``, ``dead_pid``, ``unverifiable``, or
+        ``not_ours``.
     """
-    del host, timeout_s  # not load-bearing today; see docstring
     pidfile = _pidfile_path(port)
     record = _read_pidfile(pidfile)
 
@@ -571,6 +731,27 @@ def stop_server(
         _remove_pidfile(pidfile)
         return _record_action(_serve_reason("dead_pid", pid=pid))
 
+    from clio_agent.arc import daemon_progress, runtime_stop  # noqa: PLC0415
+
+    window = no_progress_s if no_progress_s is not None else runtime_stop.stop_no_progress_s()
+    kill_reason = _graceful_stop(
+        pid,
+        port,
+        str(record.get("host") or host),
+        no_progress_s=window,
+        ceiling_s=daemon_progress.max_wait_s(),
+    )
+    if kill_reason is None:
+        _remove_pidfile(pidfile)
+        return _record_action(_serve_reason("stopped", pid=pid))
+
+    logger.warning(
+        "gact server pid=%s port=%s did not shut down gracefully (kill_reason=%s); "
+        "killing its process tree",
+        pid,
+        port,
+        kill_reason,
+    )
     _terminate_tree(pid, record_create_time=create_time)
     _remove_pidfile(pidfile)
-    return _record_action(_serve_reason("stopped", pid=pid))
+    return _record_action(_serve_reason("killed", pid=pid, kill_reason=kill_reason))

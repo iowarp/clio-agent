@@ -15,8 +15,8 @@ items, so ``pdf`` is added with its own evidence source
 list and stays unknown rather than guessed.
 
 The result is recorded by the refresh overlay (the ONE model-catalog cache:
-TTL, kept last-good list, typed staleness), exactly like the SDK transport's
-``model/list`` result.
+TTL, kept last-good list, typed staleness), exactly like every other provider's
+discovered list.
 """
 
 from __future__ import annotations
