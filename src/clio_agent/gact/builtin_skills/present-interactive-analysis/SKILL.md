@@ -157,18 +157,19 @@ the catalog skill before putting the spec into a surface.
 
 ## Linking views on one surface
 
-Views on one surface that read the same artifact share selected rows through
-the renderer's stable `__row` key. Give each linked view, including the table, the same `dataUri`; copying artifact rows into an inline table breaks that link. The user can click or box-select in a chart,
-map or table, see the corresponding rows highlighted, and use Reference this to
-carry the selected rows and active filters into the next message. When views
-compare the same observations, prefer one shared artifact even for a small set
-if clicking an item should identify it in the other views. Separate inline
-arrays do not link automatically; bind an explicit shared selection if they
-must stay inline, or present them as independent views. When views
-represent different datasets or need a conceptual selection (such as a station
-name shared across files), bind their `selection` props to the same data-model
-path under `/selection/` and set each component's `selectionField` to its
-matching column. Views on different surfaces keep separate selection state.
+When multiple views on one surface show the same observations, build them from
+one shared dataset. The renderer links chart, map and table selection by the
+artifact's stable `__row` key when they use the same `dataUri`. Small inline
+views also link when each has the same set of unique entity values, even if
+the rows appear in a different order. This is normal interaction; the person
+does not need to ask for linking, and you do not need to add selection controls
+or a selection path. The user can click or box-select a chart, map or table,
+see matching rows highlighted, and use Reference this to carry those rows and
+active filters into the next message. For larger or evolving data, prefer one
+shared artifact so filtering, sorting and pagination retain stable identity.
+Only bind an explicit `/selection/` path with matching `selectionField` values
+when separate datasets share a concept across different columns or files.
+Views on different surfaces keep separate selection state.
 
 ## Preserving a user's choice into the next turn
 

@@ -1,6 +1,6 @@
 ---
 name: a2ui-component-design
-description: Guidance for designing or changing A2UI components and catalogs across clio-schemas, clio-agent, and gact-tui — the data-by-reference contract, one charting layer, shared selection, and progressive disclosure. Load before adding a component, a component property, or a catalog/validator/renderer change, and before writing an agent-facing catalog description or instructions.md section. clio-schemas is the canonical copy of this skill; clio-agent and gact-tui vendor their own copies and keep them byte-identical to each other.
+description: Guidance for designing or changing A2UI components and catalogs across clio-schemas, clio-agent, and gact-tui — the data-by-reference contract, one charting layer, shared selection, and progressive disclosure. Load before adding a component, a component property, or a catalog/validator/renderer change, and before writing an agent-facing catalog description or instructions.md section.
 ---
 
 # Designing A2UI components (CLIO catalogs)
@@ -47,12 +47,15 @@ data-by-reference and selection work this skill exists to keep in one place.
 
 ## 3. Linking views: shared selection
 
-Components that show the same entities from different angles (a chart, a map, a table) bind their
-`selection` property to the same `/selection/<key>` data-model path. The value there is a
-`SelectionState` (`{field, values[], source?}`, one shared `$defs/SelectionState`). Clicking an
-entity in one view writes the shared path; every other component bound to it follows, with no
-agent turn in between — the marimo-style reactive goal. Give every linked, data-carrying component
-a `selection` property when you add one; do not invent a second selection mechanism.
+Components that show the same rows from different angles should share selection as a normal
+renderer behavior. Views using one `dataUri` link through the dataset's stable `__row` key.
+Inline chart, map and table views also link when they contain the same unique entity values,
+regardless of row order. The person does not need to ask for this, and the producer does not add
+a selection control or path for ordinary same-dataset views. Preserve a stable entity key when
+transforming rows for another view. Only use an explicit `/selection/<key>` path and matching
+`selectionField` values when different datasets share a conceptual entity. The value at that
+path is `SelectionState` (`{field, values[], source?}`, one shared `$defs/SelectionState`).
+Do not invent a second selection mechanism.
 
 ## 4. Document in the catalog, not beside it
 
@@ -74,26 +77,30 @@ An agent reads a component's contract two ways: the generated one-line catalog i
 
 A new property or component lands as one change across: the JSON Schema (`catalog_bounded.py` for
 anything with bounds or cross-field rules, the generic factory for a plain scalar shape), the
-pydantic model that mirrors it, and the renderer that draws it (gact-tui). The validator checks
-`*Field` column names against the referenced dataset's real columns — a wrong column name is a
-typed error at validation time, not a blank chart discovered by the scientist. Landing only the
-schema half of a change ships a contract nothing enforces or draws.
+pydantic model that mirrors it, and the renderer that draws it (gact-tui). Landing only the schema
+half of a change ships a contract nothing enforces or draws. Where a rule needs the actual dataset
+to check (a `*Field` column name against a referenced table's real columns), that check belongs in
+the producer/validator boundary that has the data — it must reject a wrong column name as a typed
+error at validation time, not let the scientist discover it as a blank chart. This repo's JSON
+Schema can only validate a name's *shape* (a non-empty string, a length bound); it cannot see the
+dataset, so it is not where that existence check runs.
 
 ## 6. Progressive disclosure: one or two lookups per surface
 
-An agent should be able to build most surfaces from the generated index alone (one line per
+An agent should be able to build most surfaces from a generated index alone (one line per
 component: description + signature) plus, at most, one `load_skill` call for the one component it
 needs more detail on. Keep signatures in the index short enough that this stays true — this is why
-descriptions and property lists stay terse (rule 4) and why `$defs` referenced by a schema resolve
-inline in the returned file rather than costing a further round trip.
+descriptions and property lists stay terse (rule 4). Whatever mechanism returns a component's
+schema to an agent should keep the `$defs` that schema references resolvable inline in the same
+returned file, rather than costing the agent a further round trip per referenced `$def`.
 
 ## 7. Surfaces keep their definition
 
-A surface's component list may be authored as an inline array or written to a file
-(`components_path`) — either way, the final component JSON that was actually sent is stored as a
-registered artifact attached to the surface. A surface's definition is always recoverable after
-the fact, the same way a component's data is always a real reference, never a value that only
-existed inside one tool call.
+A surface's component list should be authorable either as an inline array or from a file (e.g. a
+`components_path`-style parameter naming a file the agent wrote); whichever way it was authored,
+the final component JSON that was actually sent should be stored as a registered artifact attached
+to the surface. A surface's definition should always be recoverable after the fact, the same way a
+component's data is always a real reference, never a value that only existed inside one tool call.
 
 ## 8. Acceptance is a live run, not a schema review
 
