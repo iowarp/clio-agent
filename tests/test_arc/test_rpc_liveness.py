@@ -568,3 +568,36 @@ def test_an_unlocatable_daemon_degrades_typed_unresolved_not_stalled(released, m
     assert payload["details"]["wait"] == "daemon_pid_unresolved"
     assert exhausted["reason"] == DAEMON_PID_UNRESOLVED_REASON
     assert "could not be located" in str(exc.value)
+
+
+def test_the_rpc_starts_only_after_the_baseline_progress_sample(monkeypatch):
+    """The native call is handed to the worker AFTER the daemon-work baseline is read.
+
+    The clio-core binding holds the GIL for a whole blocking RPC: a caller still
+    sampling when the worker's call takes the GIL is frozen mid-Python, where CPython
+    3.13's ``faulthandler`` cannot walk its stack, so a hang dump loses the caller's
+    (the test's) frames. Started after the baseline, the caller is already parked in
+    its wait.
+
+    Sabotage: submit the call before ``wait_while_progressing`` samples -> the call runs
+    during the (slow, GIL-releasing) first sample and sees no baseline taken.
+    """
+    from clio_agent.arc import daemon_progress
+
+    samples = {"n": 0}
+
+    def slow_sample() -> float:
+        time.sleep(0.2)  # releases the GIL: a call already submitted would run now
+        samples["n"] += 1
+        return float(samples["n"])
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", slow_sample)
+    out = call_with_liveness(
+        lambda: samples["n"],
+        op_name="get",
+        port=9413,
+        reconnect=lambda: None,
+        policy=_FAST,
+        _sleep=_NO_SLEEP,
+    )
+    assert out == 1  # the call saw the baseline already taken

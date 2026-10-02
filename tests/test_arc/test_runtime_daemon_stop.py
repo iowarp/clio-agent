@@ -149,7 +149,7 @@ def test_stop_stall_budget_fits_desktop_supervisor_window() -> None:
     joins run around it -- so its own stall budget must leave real headroom,
     not spend the whole 30s itself.
     """
-    assert runtime_stop._RUNTIME_STOP_STALL_SECONDS < 30.0
+    assert runtime_stop._DEFAULT_STOP_NO_PROGRESS_S < 30.0
 
 
 def test_stop_outcome_reports_clean_stop(
@@ -199,7 +199,7 @@ def test_stop_outcome_reports_stall_kill(
     monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: NeverExitsProcess())
     monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
-    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0.05")
     monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
     killed: list[bool] = []
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
@@ -269,7 +269,10 @@ def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     monkeypatch.setattr(
         runtime_stop, "_runtime_alive", lambda port: time.monotonic() < alive["until"]
     )
-    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
+    monkeypatch.setattr(
+        runtime_stop, "_daemon_process_alive", lambda pid, ct: time.monotonic() < alive["until"]
+    )
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0.05")
     monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
     monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
     monkeypatch.setattr(daemon_progress, "process_work", advancing)
@@ -295,7 +298,7 @@ def test_a_daemon_making_no_progress_is_killed_loudly(
     monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
     monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
-    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0.05")
     monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
     killed: list[bool] = []
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
@@ -350,7 +353,7 @@ def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
 def test_the_stop_waits_a_long_stretch_without_progress_before_a_kill() -> None:
     """Not 3 s: a daemon flushing to a slow disk pauses between writes; the no-progress
     stretch is long, yet inside the desktop supervisor's 30 s graceful window."""
-    assert 10.0 <= runtime_stop._RUNTIME_STOP_STALL_SECONDS < 30.0
+    assert 10.0 <= runtime_stop._DEFAULT_STOP_NO_PROGRESS_S < 30.0
 
 
 def test_a_pidfile_kill_that_fails_is_reported_and_keeps_the_pidfile(
@@ -385,3 +388,94 @@ def test_a_pidfile_kill_that_fails_is_reported_and_keeps_the_pidfile(
     finally:
         daemon.kill()
         daemon.wait(timeout=10)
+
+
+def test_the_stop_no_progress_window_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``arc.liveness.stop_no_progress_s`` sets the stretch; a non-positive value keeps 15 s."""
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "2.5")
+    assert runtime_stop.stop_no_progress_s() == 2.5
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "0")
+    assert runtime_stop.stop_no_progress_s() == runtime_stop._DEFAULT_STOP_NO_PROGRESS_S
+
+
+_SILENT_LISTENER = (
+    "import socket, sys, time\n"
+    "s = socket.socket()\n"
+    "s.bind(('127.0.0.1', 0))\n"
+    "s.listen(0)\n"
+    "print(s.getsockname()[1], flush=True)\n"
+    "time.sleep(600)\n"
+)
+
+
+def test_a_suspended_daemon_whose_port_stops_answering_is_killed_not_a_clean_stop(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A daemon that stopped running keeps its listener; once the accept backlog is full
+    a connect probe times out exactly like a freed port. The stop must not take that
+    for a clean stop (which left the daemon running with its pidfile gone): the process
+    is still there and makes no progress, so it is killed, loudly.
+
+    **Sabotage:** decide the clean stop on the port probe alone -> ``clean_stop``, and the
+    suspended process survives the stop. Drop the resume after the SIGTERM (POSIX) -> the
+    stopped process ignores it for the whole grace and needs the SIGKILL.
+    """
+    import socket
+    import subprocess
+
+    import psutil
+
+    class ExitedProcess:  # ``clio_run stop`` delivered its request and exited
+        def poll(self) -> int:
+            return 0
+
+    daemon = subprocess.Popen(
+        [sys.executable, "-c", _SILENT_LISTENER], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert daemon.stdout is not None
+        port = int(daemon.stdout.readline())
+        proc = psutil.Process(daemon.pid)
+        proc.suspend()
+        held: list[socket.socket] = []
+        # Fill the accept backlog the suspended process never drains, until a probe fails.
+        while runtime_stop._runtime_alive(port):
+            assert len(held) < 64, "the accept backlog never filled"
+            try:
+                held.append(socket.create_connection(("127.0.0.1", port), timeout=0.5))
+            except OSError:
+                break  # full: the probe in the loop condition confirms it
+        assert not runtime_stop._runtime_alive(port)
+
+        pidfile = tmp_path / "daemon.pid"
+        pidfile.write_text(f"{daemon.pid} {proc.create_time()!r}", encoding="utf-8")
+        monkeypatch.setattr(storage, "_daemon_pidfile", lambda: pidfile)
+        monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+        monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: port)
+        monkeypatch.setenv("CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S", "1.5")
+        sigkills: list[int] = []
+        real_kill = psutil.Process.kill
+
+        def recording_kill(self: psutil.Process) -> None:
+            sigkills.append(self.pid)
+            real_kill(self)
+
+        monkeypatch.setattr(psutil.Process, "kill", recording_kill)
+
+        outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+        assert outcome == runtime_stop.StopOutcome(stopped=False, path="stall_kill")
+        assert daemon.wait(timeout=10) is not None  # killed, not left running
+        assert not pidfile.exists()
+        # The terminate took (a suspended process is continued so it can act on it); the
+        # SIGKILL after the whole grace was never needed.
+        assert sigkills == []
+        for sock in held:
+            sock.close()
+    finally:
+        if daemon.poll() is None:
+            psutil.Process(daemon.pid).resume()
+            daemon.kill()
+            daemon.wait(timeout=10)

@@ -47,8 +47,48 @@ logger = logging.getLogger(__name__)
 # this long with NO progress is a stall (see ``stop_runtime_daemon``). A long stretch --
 # a daemon flushing to a slow disk pauses between writes -- yet half of the desktop
 # supervisor's 30 s graceful-shutdown window, which this stop is one step inside.
-_RUNTIME_STOP_STALL_SECONDS = 15.0
+# Configurable (``arc.liveness.stop_no_progress_s``), see :func:`stop_no_progress_s`.
+_DEFAULT_STOP_NO_PROGRESS_S = 15.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
+
+
+def stop_no_progress_s() -> float:
+    """``arc.liveness.stop_no_progress_s`` / ``CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S`` (15 s).
+
+    How long a stopping daemon may make no progress (CPU or I/O flat) before it is
+    killed. A non-positive value keeps the default.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    value = conf.resolve(
+        "arc.liveness.stop_no_progress_s",
+        env="CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S",
+        default=_DEFAULT_STOP_NO_PROGRESS_S,
+        cast=conf.as_float,
+    )
+    return value if value > 0 else _DEFAULT_STOP_NO_PROGRESS_S
+
+
+def _daemon_process_alive(pid: int | None, recorded_create_time: float | None) -> bool:
+    """Whether the pidfile daemon's process still runs (``False`` when it is unknown).
+
+    An exited child not yet reaped (a zombie) has stopped: it holds no port and does
+    no work.
+    """
+    if pid is None:
+        return False
+    import psutil  # noqa: PLC0415
+
+    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+    if not storage._pid_alive(pid, recorded_create_time):
+        return False
+    try:
+        return bool(psutil.Process(pid).status() != psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False  # exited between the two checks
+    except psutil.AccessDenied:
+        return True  # it exists (pid_alive said so); its state is just unreadable
 
 
 StopPath = Literal[
@@ -135,7 +175,13 @@ def kill_daemon_pidfile() -> None:
 
     try:
         proc = psutil.Process(pid)
+        # POSIX: a suspended (SIGSTOP) daemon only acts on the SIGTERM once continued;
+        # left stopped it would cost the whole grace below before the SIGKILL. (Windows
+        # terminates a suspended process outright.)
+        suspended = os.name != "nt" and proc.status() == psutil.STATUS_STOPPED
         proc.terminate()
+        if suspended:
+            proc.resume()
         try:
             proc.wait(timeout=5.0)
         except psutil.TimeoutExpired:
@@ -260,9 +306,14 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
     stopped = False
     path: StopPath = "error_kill"
     try:
-        daemon_pid = int(storage._daemon_pidfile().read_text(encoding="utf-8").split()[0])
-    except (OSError, ValueError, IndexError):
-        daemon_pid = None
+        parts = storage._daemon_pidfile().read_text(encoding="utf-8").split()
+    except OSError:
+        parts = []  # no pidfile: the port alone tells the stop
+    daemon_pid = int(parts[0]) if parts and parts[0].isdigit() else None
+    recorded_create_time: float | None = None
+    if daemon_pid is not None and len(parts) > 1:
+        with contextlib.suppress(ValueError):
+            recorded_create_time = float(parts[1])
     if daemon_pid is not None:
         expect_daemon_exit(daemon_pid)
     try:
@@ -294,20 +345,29 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                 stderr=subprocess.DEVNULL,
             )
             # Wait on the DAEMON, not a fixed deadline: a durable daemon flushes its data
-            # while stopping, which takes as long as the disk takes. The port freeing is a
-            # clean stop; the daemon still working (CPU or I/O advancing) keeps the wait
-            # going; a whole slice with no progress -- or the long ceiling -- is a stall,
-            # killed loudly (data not yet flushed may be lost), never silently.
+            # while stopping, which takes as long as the disk takes. The port freeing AND
+            # the daemon process exiting is a clean stop; the daemon still working (CPU or
+            # I/O advancing) keeps the wait going; a whole slice with no progress -- or
+            # the long ceiling -- is a stall, killed loudly (data not yet flushed may be
+            # lost), never silently.
+            #
+            # The port alone is not proof: a daemon that stopped running (suspended, or
+            # hung without accepting) leaves its listener's accept backlog to fill with
+            # the probes below, after which a probe times out exactly like a freed port.
+            # Taking that for a clean stop left the daemon running with its pidfile gone.
             from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
                 max_wait_s,
                 process_work,
             )
 
             ceiling = max_wait_s()
+            no_progress_s = stop_no_progress_s()
             started = window = time.monotonic()
             last_work = process_work(daemon_pid) if daemon_pid is not None else None
             while True:
-                if not _runtime_alive(runtime_port):
+                if not _runtime_alive(runtime_port) and not _daemon_process_alive(
+                    daemon_pid, recorded_create_time
+                ):
                     stopped = True
                     path = "clean_stop"
                     break
@@ -327,7 +387,7 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     path = "helper_failed_kill"
                     break
                 now = time.monotonic()
-                if now - window >= _RUNTIME_STOP_STALL_SECONDS:
+                if now - window >= no_progress_s:
                     work = process_work(daemon_pid) if daemon_pid is not None else None
                     if work is None or last_work is None or work - last_work < 0.01:
                         logger.warning(

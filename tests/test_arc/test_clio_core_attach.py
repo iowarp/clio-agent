@@ -222,7 +222,8 @@ def test_an_attach_whose_daemon_made_no_progress_is_typed_as_a_timeout(monkeypat
             cte, config_path="c.yaml", port=1, on_failure=lambda: deregistered.append(True)
         )
     assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_TIMEOUT
-    assert "the daemon made no progress for 0.05s" in str(info.value)
+    assert "got no answer within 0.05s and the daemon made no progress" in str(info.value)
+    assert "wait=no_progress" in str(info.value)
     assert info.value.stage == "client_init"
     assert deregistered == [True]
 

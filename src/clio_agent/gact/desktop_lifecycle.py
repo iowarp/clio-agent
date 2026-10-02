@@ -53,8 +53,8 @@ _SHUTDOWN_SIGNAL_DELAY_SECONDS = 0.1
 # Rust supervisor's 30s GRACEFUL_SHUTDOWN_STALL force-kills the process,
 # leaking the shared clio-core daemon. Budget arithmetic against that 30s
 # window: 0.1s call_later delay + this 3s connection grace + the turn drain
-# (bounded by cooperative cancellation, not this) + the 3s clean-stop loop
-# (arc/runtime_stop.py::_RUNTIME_STOP_STALL_SECONDS) + agent-task executor
+# (bounded by cooperative cancellation, not this) + the clean-stop loop's 15s
+# no-progress stretch (arc.liveness.stop_no_progress_s) + agent-task executor
 # joins must all land under 30s; 3s leaves ample headroom for the rest.
 _DESKTOP_GRACEFUL_TIMEOUT_S = 3  # uvicorn types this as int | None
 

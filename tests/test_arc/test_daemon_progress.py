@@ -120,6 +120,32 @@ def test_a_prompt_answer_returns_at_once() -> None:
     assert outcome.done
 
 
+def test_start_runs_after_the_baseline_sample() -> None:
+    """``start`` begins the awaited work after the baseline sample, then the wait begins."""
+    events: list[str] = []
+    fut: Future = Future()
+
+    def work() -> float:
+        events.append("sample")
+        return float(len(events))
+
+    def start() -> None:
+        events.append("start")
+        fut.set_result("ok")
+
+    outcome = wait_while_progressing(
+        future_done_within(fut), slice_s=5.0, op_name="get", work=work, start=start
+    )
+    assert outcome.done
+    assert events == ["sample", "start"]
+
+
+def test_future_done_within_waits_for_a_later_answer() -> None:
+    done_within = future_done_within(_answer_after(0.2))
+    assert not done_within(0.01)
+    assert done_within(5.0)
+
+
 def test_an_unlocatable_daemon_is_typed_unresolved_not_a_stall() -> None:
     """``_resolve_daemon_pid`` finding nothing is ``daemon_pid_unresolved``, never ``no_progress``.
 
