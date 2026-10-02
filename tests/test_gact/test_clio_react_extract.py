@@ -14,6 +14,7 @@ from typing import Any
 
 import dspy
 import pytest
+from dspy.utils.exceptions import AdapterParseError
 
 from clio_agent.gact.agents.clio_react import ClioReAct
 from tests._scripted_engine import Reply, calls, scripted_lm
@@ -79,6 +80,34 @@ def test_a_direct_answer_with_nothing_missing_does_not_extract(extract_config: A
 
     assert pred.answer == "The answer."
     assert len(engine.requests) == 6
+
+
+def test_malformed_optional_extract_keeps_the_direct_answer(extract_config: Any) -> None:
+    extract_config()
+    pred, engine = _run(
+        [
+            *_steps(4),
+            Reply(text="The map and its filters are ready."),
+            Reply(text="not a structured extract"),
+            Reply(text="still not a structured extract"),
+        ],
+        "question -> answer, summary",
+    )
+
+    assert pred.answer == "The map and its filters are ready."
+    assert not hasattr(pred, "summary") or pred.summary is None
+    assert pred.termination_reason == "direct_response"
+    assert len(engine.requests) == 7
+
+
+def test_malformed_required_extract_still_fails_without_an_answer(extract_config: Any) -> None:
+    extract_config()
+    with pytest.raises(AdapterParseError):
+        _run(
+            [*_steps(4), Reply(text="not structured"), Reply(text="still not structured")],
+            "question -> answer",
+            max_iters=4,
+        )
 
 
 def test_a_loop_that_ran_out_of_steps_gets_its_answer_extracted(extract_config: Any) -> None:

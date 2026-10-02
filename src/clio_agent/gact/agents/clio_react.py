@@ -41,6 +41,7 @@ import contextvars
 import dataclasses
 import inspect
 import itertools
+import logging
 import math
 import threading
 import traceback
@@ -68,7 +69,7 @@ from dspy.lm15 import (
     ThinkingPart,
     ToolCallPart,
 )
-from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
+from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError, LMUnexpectedError
 
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
@@ -89,6 +90,7 @@ REACT_SUBMIT_FIELD_SUPPRESSED = "react_submit_field_suppressed"
 REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
 _SYSTEM_INPUT = "system_prompt"
 _MEDIA_INPUTS = ("images", "files")
+_log = logging.getLogger(__name__)
 
 
 #: Recorded once per agent context (an injection the user sees): a step's calls run at
@@ -573,12 +575,25 @@ class _Loop:
         missing = extract.missing_outputs(self.agent.signature, outputs, reason, steps)
         if missing:
             _raise_if_cancelled()
-            outputs = {
-                **outputs,
-                **extract.extract(
-                    self.agent.signature, self.inputs, self._context(), missing, self.lm
-                ),
-            }
+            try:
+                outputs = {
+                    **outputs,
+                    **extract.extract(
+                        self.agent.signature, self.inputs, self._context(), missing, self.lm
+                    ),
+                }
+            except AdapterParseError:
+                # The answer has already streamed into the conversation. A
+                # malformed optional extract must not turn that answer and its
+                # rendered surfaces into a failed turn. With no answer (for
+                # example max_iters), the extract remains required.
+                if reason != "direct_response" or not outputs.get("answer"):
+                    raise
+                _log.warning(
+                    "Optional agent output extraction failed; retaining the direct answer",
+                    exc_info=True,
+                )
+                missing = []
         self.recorder.completed(outputs, steps, extracted=missing)
         return self._prediction(outputs, reason)
 
