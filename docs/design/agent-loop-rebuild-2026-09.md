@@ -1604,6 +1604,12 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - Left, with reasons: the table query (no in-engine progress signal) and the detached-server stop on Windows (needs an authenticated shutdown route).
 - **Done (#1583): CI round three.** The fake turn states needed `user_msg`, and the hygiene audit's leak forensics is now injectable (a latent flake: a real process on the runner had the fake pid).
 
+- **Done (#1584): Linux CI after #1581.**
+  - The first progress sample is taken before the native call takes the GIL (`wait_while_progressing` `start` hook).
+  - Stopping a suspended daemon was reported clean while it kept running untracked. A clean stop now requires the process gone, and the daemon is resumed after SIGTERM.
+  - New setting `arc.liveness.stop_no_progress_s`.
+- **Live verification:** waits on CI green at the tip. The harness binds Codex direct (`live/bench/common.py`).
+
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
 - **iowarp/clio-agent#1577:** use #1112 when it ships, plus every bad timeout and signal from the audit.
