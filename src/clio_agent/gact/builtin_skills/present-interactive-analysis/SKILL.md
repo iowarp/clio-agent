@@ -78,17 +78,22 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   use `YYYY-MM-DD` for each daily date.
 - A request for email, chat, or text alternatives the person can revise → a
   message-draft view with labelled versions. The person edits the draft in
-  place and decides whether to copy or use it; CLIO does not send it.
+  place and decides whether to copy, use, or open an email version in their
+  chosen mail app; CLIO does not send it.
 - A protocol, recipe, or setup guide with steps the person will perform → an
-  interactive steps view, especially when timers or quantities matter. Put
+  interactive steps view, especially when timers or quantities matter. For a
+  recipe, put measured materials in `ingredients` and actions in `steps` so
+  the completion count tracks cooking rather than the shopping list. Put
   amounts that change with the scale in quantity fields. Keep step details
   true after a changed count: if `quantity` shows 8 mL for 4 samples, write
   “Add 2 mL to each tube” in `detail`, not “8 mL total for 4 samples.” The
   fixed per-unit instruction matters when the starting count changes. In a
   recipe, omit fixed cup/tablespoon/egg equivalents from `detail` beside a
   scaled amount; give countable units singular and plural labels so the
-  display reads correctly at one and many; group related prep so the
-  checklist remains easy to scan.
+  display reads correctly at one and many. If the amount is adjustable, keep
+  the title independent of the starting count (for example “Tomato pasta”
+  rather than “Tomato pasta for two”); the control displays the current
+  servings. Group related prep so the checklist remains easy to scan.
 - A parameter the person should adjust while inspecting a result → a bound
   slider; use its two-value range mode for an interval. A date or time cutoff
   can use `DateTimeInput`. Read the component schemas for their value shapes,
