@@ -132,12 +132,12 @@ def _resolve_global_timeout_retries() -> int:
 
 
 def mcp_max_wait_s() -> float:
-    """``tools.mcp.max_wait_s`` / ``CLIO_MCP_MAX_WAIT_S`` (600 s): the ceiling on waiting for
+    """``tools.mcp.max_wait_s`` / ``CLIO_MCP_MAX_WAIT_S`` (180 s): the ceiling on waiting for
     a server that is still visibly starting (its process tree working)."""
     from clio_agent import conf  # noqa: PLC0415
 
     return conf.resolve(
-        "tools.mcp.max_wait_s", env="CLIO_MCP_MAX_WAIT_S", default=600.0, cast=conf.as_float
+        "tools.mcp.max_wait_s", env="CLIO_MCP_MAX_WAIT_S", default=180.0, cast=conf.as_float
     )
 
 

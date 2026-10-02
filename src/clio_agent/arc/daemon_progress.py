@@ -25,11 +25,11 @@ from concurrent.futures import wait as futures_wait
 logger = logging.getLogger(__name__)
 
 _MIN_CPU_PROGRESS_S = 0.01  # the daemon's CPU time must advance by at least this per slice
-_DEFAULT_MAX_WAIT_S = 600.0
+_DEFAULT_MAX_WAIT_S = 180.0
 
 
 def max_wait_s() -> float:
-    """``arc.liveness.max_wait_s`` / ``CLIO_ARC_LIVENESS_MAX_WAIT_S`` (default 600 s)."""
+    """``arc.liveness.max_wait_s`` / ``CLIO_ARC_LIVENESS_MAX_WAIT_S`` (default 180 s)."""
     from clio_agent import conf  # noqa: PLC0415
 
     value = conf.resolve(

@@ -839,7 +839,7 @@ arc.liveness.backoff_max_s: 15.0
 # Ceiling (seconds) on waiting for a clio-core answer while the daemon is
 # visibly working (its CPU or I/O advancing); a daemon making no progress is
 # a stall well before this.
-arc.liveness.max_wait_s: 600.0
+arc.liveness.max_wait_s: 180.0
 
 # CLIO_ARC_LIVENESS_RETRIES  (int)  <- src/clio_agent/arc/rpc_liveness.py
 # Retry attempts after a clio-core RPC stalls (no response) before the store
@@ -1271,7 +1271,7 @@ tools.mcp.listing_ttl_h: 24.0
 # Ceiling (seconds) on waiting for an MCP server that is still visibly
 # starting (its process tree working); until then a slow start never spends
 # the probe retry budget.
-tools.mcp.max_wait_s: 600.0
+tools.mcp.max_wait_s: 180.0
 
 # CLIO_MCP_MOUNT_RETRY_DELAYS_S  (list)  <- src/clio_agent/gact/mcp_readiness.py
 # Increasing waits (seconds, comma-separated) between an on-demand MCP
