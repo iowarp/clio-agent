@@ -147,6 +147,14 @@ _DEFAULT_HINTS: dict[str, str] = {
         "fix the referenced file's shape or content to match what this "
         "component's dataUri requires, then retry"
     ),
+    "a2ui_mesh_format_invalid": (
+        "check the registered mesh bytes and format field; use materialUri only "
+        "for an OBJ model with a registered MTL companion"
+    ),
+    "a2ui_raster_invalid": (
+        "check the registered grid format and two-dimensional shape; for NetCDF/Zarr "
+        "choose a variable, or set band for a multiband GeoTIFF"
+    ),
     "a2ui_components_source_conflict": (
         "pass exactly one of components or components_path, never both"
     ),
@@ -207,6 +215,8 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_data_reference_unsupported_format",
         "a2ui_field_not_in_dataset",
         "a2ui_data_reference_shape_invalid",
+        "a2ui_mesh_format_invalid",
+        "a2ui_raster_invalid",
         "a2ui_components_source_conflict",
         "a2ui_components_source_missing",
         "a2ui_components_path_unresolved",

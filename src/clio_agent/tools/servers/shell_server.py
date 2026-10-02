@@ -313,8 +313,10 @@ def _detect_shell_env() -> ShellEnvFacts:
             shell_label = "bash (Windows, e.g. Git Bash)"
         elif backend == "cmd" or not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
             shell_label = "cmd.exe" if backend == "cmd" else "cmd.exe (PowerShell not on PATH)"
+        elif shutil.which("pwsh.exe"):
+            shell_label = "PowerShell Core (pwsh.exe)"
         else:
-            shell_label = "PowerShell"
+            shell_label = "Windows PowerShell (powershell.exe)"
         return ShellEnvFacts(
             is_windows=True,
             system_label=platform.system() or "Windows",
@@ -366,19 +368,31 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         else f"POSIX text tools ({tools}) are NOT available on this host's PATH."
     )
     if facts.is_windows:
+        is_bash = facts.shell_label.lower().startswith("bash")
+        invocation = (
+            "Windows drive paths in commands are translated to /mnt/<drive>/ for bash. "
+            if is_bash
+            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command. "
+            if "PowerShell" in facts.shell_label
+            else "The tool invokes cmd.exe with /d /s /c. "
+        )
         return (
             f"Run ONE local shell command on a {facts.system_label} host and return "
             f"stdout, stderr, and exit code. Commands execute under {facts.shell_label} "
-            "semantics (this is NOT a bash/POSIX shell). "
+            f"semantics{' (this is NOT a bash/POSIX shell)' if not is_bash else ''}. "
+            f"{invocation}"
             f"{tools_line} "
             "Do NOT assume WSL exists: do not invoke `wsl`, `wsl bash -c`, or POSIX "
             "pipelines to reach cut/sed/awk/grep — on a WSL-less host they fail, and the "
             "first `wsl` call boots a utility VM that stays resident holding gigabytes. "
-            "Paths use Windows conventions (drive letters, backslashes). For tabular, "
+            "Paths use Windows conventions (drive letters, backslashes) unless the bash "
+            "backend is active. For tabular, "
             "CSV, or columnar work (column selection, filtering, joins) use the pandas "
             "MCP tool when available instead of shell text pipelines — it is portable and "
-            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS; the "
-            f"command runs until it exits unless you pass timeout_s. {limits_text}"
+            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS. "
+            "A command can retrieve public HTTPS data when network policy permits; "
+            "inspect its returned status and output before concluding access failed. "
+            f"The command runs until it exits unless you pass timeout_s. {limits_text}"
         )
     return (
         f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
@@ -387,8 +401,10 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
         "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
         "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS; the command runs until it exits unless you pass timeout_s. "
-        f"{limits_text}"
+        "CLIO_ALLOWED_ROOTS. "
+        "A command can retrieve public HTTPS data when network policy permits; "
+        "inspect its returned status and output before concluding access failed. "
+        f"The command runs until it exits unless you pass timeout_s. {limits_text}"
     )
 
 
@@ -446,8 +462,9 @@ async def bash(
     max_chars = _SHELL_LIMITS.max_command_chars
     if len(command) > max_chars:
         next_action = (
-            "Write the script to a file in the workspace with your file-writing tool, then "
-            "run that file with a short command (for example `uv run python analysis.py`)."
+            "Split the script into shorter shell calls that write a file inside the workspace, "
+            "then run that file with a short command (for example `uv run python analysis.py`). "
+            "fs_propose_edit only stages a reviewable diff; it does not write the file."
         )
         return _error(
             "command_too_long",
@@ -505,7 +522,7 @@ async def bash(
         pdeathsig=False,
     )
     run_argv = [confined.command, *confined.args]
-    run_env = {**os.environ, **confined.env_overlay} if confined.env_overlay else None
+    run_env = {**os.environ, "PYTHONUTF8": "1", **confined.env_overlay}
 
     try:
         process = await asyncio.create_subprocess_exec(

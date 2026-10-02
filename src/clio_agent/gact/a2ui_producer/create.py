@@ -28,16 +28,15 @@ def build_create_a2ui_surface_tool() -> Any:
         data_model: Optional[dict[str, Any]] = None,
         catalog_id: str = "",
     ) -> dict[str, Any]:
-        """Create or update an interactive analysis surface in this conversation.
+        """Create or update an inline interactive view or widget in this conversation.
 
-        ``surface_id`` selects the surface: reuse an id from a prior result's
-        ``session_surface_ids`` to revise it in place; any other id creates a
-        new one. A new surface uses ``catalog_id``, or this agent's default
-        catalog if empty. Pass exactly one of ``components`` or
-        ``components_path`` (a workspace JSON file with the components array).
-
-        Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
-        one component: load_skill(..., file="catalog.json#/components/<Name>").
+        Reuse an existing ``surface_id`` to revise in place; call
+        ``inspect_a2ui_surface`` when the id is missing from this turn.
+        Pass exactly one of ``components`` or ``components_path``.
+        Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
+        ``catalog.json#/components/<ExactComponentId>`` for its schema.
+        Charts, maps, tables, drafts, weather, steps, and other components
+        render inline. The renderer supplies selection, zoom, and export.
         """
 
         resolved = _common.active_app_and_session()

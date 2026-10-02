@@ -1147,6 +1147,7 @@ class RuntimeProbe:
             temperature=self._float_env("CLIO_LM_TEMPERATURE", None),
             max_tokens=self._int_env("CLIO_LM_MAX_TOKENS", 0),
             environment=self.env.get("CLIO_ENVIRONMENT", "dev"),
+            codex_variant=self.env.get("CLIO_CODEX_VARIANT", ""),
         )
         source_parts = [
             "env:CLIO_LM_PROVIDER" if "CLIO_LM_PROVIDER" in self.env else f"default:{provider}",

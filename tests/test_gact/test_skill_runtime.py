@@ -686,6 +686,20 @@ def test_root_agent_with_no_blueprint_declares_the_builtin_main_catalog_skill(
     assert catalog_skills == ["a2ui-catalog-clio-workspace"]
 
 
+def test_builtin_main_with_a2ui_catalog_sees_presentation_skill(tmp_path: Path) -> None:
+    """A bare chat can discover when to offer editable views, not only their schema."""
+
+    from clio_agent.gact.catalog import _builtin_main_agent
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="draft")
+    runtime = skill_runtime_for_agent(app, _builtin_main_agent(), session_id=session.id)
+
+    assert "present-interactive-analysis" in runtime.resolved
+    assert "editable message draft" in runtime.prompt_block
+    assert "a2ui-catalog-clio-workspace" in runtime.resolved
+
+
 def test_root_agent_declares_one_catalog_skill_line_per_declared_catalog_in_order(
     tmp_path: Path,
 ) -> None:

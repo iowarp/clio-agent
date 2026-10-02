@@ -356,6 +356,22 @@ def test_doctor_reports_healthy_gate():
     assert rows[0].state is IntegrationState.READY
 
 
+def test_doctor_live_gate_reports_daemon_loss_before_next_arc_operation(monkeypatch):
+    """Health must not call a stale gate healthy after the daemon disappears."""
+    monkeypatch.setattr(
+        "clio_agent.arc.clio_core_liveness.liveness_snapshot",
+        lambda: [{"quarantined": False, "reason": "", "port": 23490}],
+    )
+    monkeypatch.setattr("clio_agent.arc.clio_core_liveness._runtime_alive", lambda _port: False)
+
+    rows = probe_clio_core_liveness()
+
+    assert len(rows) == 1
+    assert rows[0].state is IntegrationState.DEGRADED
+    assert rows[0].details["reason"] == "clio_core_daemon_lost"
+    assert rows[0].endpoint == "127.0.0.1:23490"
+
+
 def test_doctor_no_gate_no_row():
     assert probe_clio_core_liveness(snapshot=[]) == []
 

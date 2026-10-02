@@ -26,6 +26,23 @@ from clio_agent.gact.app import build_app
 
 WORKSPACE_ID = workspace_catalog_id()
 
+
+def _mesh_glb_metadata(document: dict[str, Any]) -> bytes:
+    """Construct the GLB header and JSON chunk inspected at the producer boundary."""
+
+    chunk = json.dumps(document).encode("utf-8")
+    chunk += b" " * ((-len(chunk)) % 4)
+    length = 20 + len(chunk)
+    return (
+        b"glTF"
+        + (2).to_bytes(4, "little")
+        + length.to_bytes(4, "little")
+        + len(chunk).to_bytes(4, "little")
+        + b"JSON"
+        + chunk
+    )
+
+
 CSV_ROWS = "time,lat,lon,label,entity\n0,34.0,-118.0,Site A,alpha\n1,34.1,-118.1,Site B,alpha\n"
 
 
@@ -395,6 +412,29 @@ def test_map_selection_field_is_validated_against_real_columns(
     assert "selectionField='not_a_real_column'" in bad["detail"]
 
 
+def test_geojson_map_reference_validates_shape_and_feature_property(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import validate_component_data_references
+
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(
+        app,
+        sid,
+        root,
+        "regions.geojson",
+        '{"type":"FeatureCollection","features":[{"type":"Feature","id":"west",'
+        '"properties":{"name":"West","group":"region"},'
+        '"geometry":{"type":"Point","coordinates":[-120,38]}}]}',
+    )
+    component = {"id": "map", "component": "clio.map.v1", "geojsonUri": uri}
+    assert validate_component_data_references(app, [{**component, "labelField": "name"}]) is None
+    missing = validate_component_data_references(app, [{**component, "categoryField": "unknown"}])
+    assert missing is not None
+    assert missing["reason"] == "a2ui_field_not_in_dataset"
+    assert "categoryField='unknown'" in missing["detail"]
+
+
 def test_data_table_selection_field_is_validated_against_real_columns(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
@@ -740,6 +780,61 @@ def test_new_data_reference_reasons_have_default_hints() -> None:
         "a2ui_data_reference_unsupported_format",
         "a2ui_field_not_in_dataset",
         "a2ui_data_reference_shape_invalid",
+        "a2ui_mesh_format_invalid",
     ):
         assert reason in KNOWN_REFUSAL_REASONS
         assert _DEFAULT_HINTS.get(reason)
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "hint"),
+    [
+        ("model.obj", b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", None),
+        ("model.glb", _mesh_glb_metadata({"asset": {"version": "2.0"}}), None),
+        ("model.3mf", b"PK\x03\x04" + b"\x00" * 20, "3mf"),
+        ("model.vtp", b'<VTKFile type="PolyData">', None),
+    ],
+)
+def test_mesh_reference_recognizes_supported_artifact_shapes(
+    tmp_path: Path, filename: str, content: bytes, hint: str | None
+) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _validate_mesh_source
+
+    path = tmp_path / filename
+    path.write_bytes(content)
+    assert _validate_mesh_source(path, component_id="mesh", format_hint=hint, name=filename) is None
+
+
+def test_mesh_reference_refuses_wrong_hint_and_unknown_bytes(tmp_path: Path) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _validate_mesh_source
+
+    path = tmp_path / "model.dat"
+    path.write_bytes(b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+    wrong = _validate_mesh_source(path, component_id="mesh", format_hint="ply", name=path.name)
+    assert wrong is not None and wrong["reason"] == "a2ui_mesh_format_invalid"
+    assert "format='ply'" in wrong["detail"]
+    path.write_bytes(b"opaque data")
+    unknown = _validate_mesh_source(path, component_id="mesh", format_hint=None, name=path.name)
+    assert unknown is not None and unknown["reason"] == "a2ui_mesh_format_invalid"
+    assert "set format" in unknown["detail"]
+
+
+def test_mesh_reference_refuses_external_gltf_resource(tmp_path: Path) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _validate_mesh_source
+
+    path = tmp_path / "model.gltf"
+    path.write_text(json.dumps({"asset": {"version": "2.0"}, "buffers": [{"uri": "private.bin"}]}))
+    outcome = _validate_mesh_source(path, component_id="mesh", format_hint=None, name=path.name)
+    assert outcome is not None and outcome["reason"] == "a2ui_mesh_format_invalid"
+    assert "self-contained GLB" in outcome["detail"]
+
+
+@pytest.mark.parametrize("section", ["buffers", "images"])
+def test_mesh_reference_refuses_malformed_gltf_resource_array(tmp_path: Path, section: str) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _validate_mesh_source
+
+    path = tmp_path / "model.gltf"
+    path.write_text(json.dumps({"asset": {"version": "2.0"}, section: 4}))
+    outcome = _validate_mesh_source(path, component_id="mesh", format_hint=None, name=path.name)
+    assert outcome is not None and outcome["reason"] == "a2ui_mesh_format_invalid"
+    assert f"{section} must be an array of objects" in outcome["detail"]

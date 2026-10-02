@@ -16,6 +16,7 @@ def runtime_provider_probe_env(live_lm: object) -> dict[str, str]:
         ("CLIO_LM_PROVIDER", live_lm.get("provider")),
         ("CLIO_LM_API_BASE", live_lm.get("api_base")),
         ("CLIO_LM_MODEL", live_lm.get("model")),
+        ("CLIO_CODEX_VARIANT", live_lm.get("codex_variant")),
     ):
         if value is not None:
             env[key] = str(value)

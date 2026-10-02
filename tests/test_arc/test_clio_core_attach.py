@@ -32,6 +32,8 @@ from clio_agent.arc.init_degradation import (
     classify_init_failure,
     reset_arc_init_degradation,
 )
+from clio_agent.runtime.clio_core_health import probe_clio_core_attach
+from clio_agent.runtime.status import IntegrationState
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +43,18 @@ def _fresh_attach_state():
     yield
     clio_core_attach.reset_attach_state()
     reset_arc_init_degradation()
+
+
+def test_health_reports_daemon_loss_after_successful_attach(monkeypatch):
+    """A historical successful attach cannot make a stopped daemon look ready."""
+    clio_core_attach.mark_attached("private-cte.yaml", 23490)
+    monkeypatch.setattr("clio_agent.arc.clio_core_liveness._runtime_alive", lambda _port: False)
+
+    rows = probe_clio_core_attach()
+
+    assert len(rows) == 1
+    assert rows[0].state is IntegrationState.DEGRADED
+    assert rows[0].details["reason"] == "clio_core_daemon_lost_after_attach"
 
 
 def _cfg(tmp_path: Path, port: int) -> str:

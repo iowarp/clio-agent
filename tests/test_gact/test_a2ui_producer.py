@@ -19,6 +19,7 @@ from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_ca
 from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
+    build_inspect_a2ui_surface_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -110,6 +111,21 @@ def test_producer_round_trip_through_the_store(tmp_path: Path, monkeypatch: Any)
     )
     assert refused["ok"] is False
     assert refused["reason"] == "a2ui_surface_not_found"
+
+
+def test_inspect_surface_finds_prior_turn_definition(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    create = build_create_a2ui_surface_tool()
+    inspect = build_inspect_a2ui_surface_tool()
+    component = {"id": "root", "component": "Text", "text": "Original"}
+    create(surface_id="recipe", components=[component])
+
+    listed = inspect()
+    assert listed["total"] == 1
+    assert listed["surfaces"][0]["surface_id"] == "recipe"
+    assert inspect(surface_id="recipe")["components"] == [component]
+    assert inspect(surface_id="other")["reason"] == "a2ui_surface_not_found"
 
 
 def test_update_data_model_delete_true_omits_the_value_key(

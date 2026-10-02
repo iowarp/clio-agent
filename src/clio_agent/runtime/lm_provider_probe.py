@@ -8,13 +8,14 @@ transport handling has a single owner:
 * :func:`extract_models` / :class:`ModelDiscoverySchemaError` -- parse an
   OpenAI-compatible ``/models`` HTTP response (the HTTP-transport path).
 * :func:`probe_cli_transport` -- the **transport-aware** probe for the CLI/SDK
-  pseudo-schemes (``codex://direct``, ``claude-code://sdk``). These providers
+  pseudo-schemes (``codex://sdk``, ``codex://direct``, ``claude-code://sdk``). These providers
   have no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme
   yields ``requests``' ``No connection adapters were found`` and reports the
   provider UNAVAILABLE while turns actually run fine (#899). Claude's SDK
   transport requires both the optional ``claude_agent_sdk`` package and the
-  local CLI; the direct Codex provider's only local dependency is a
-  signed-in credential (no CLI, no SDK). No pseudo-scheme is HTTP-probed.
+  local CLI; the direct Codex provider requires a CLIO-managed signed-in
+  credential, while the Codex SDK owns its separate sign-in. No pseudo-scheme
+  is HTTP-probed.
 """
 
 from __future__ import annotations
@@ -137,6 +138,38 @@ def _probe_codex_direct(
     )
 
 
+def _probe_codex_sdk(config: LMProviderConfig, source: str, auth_mode: str) -> IntegrationStatus:
+    """Report SDK installation without applying direct-provider credential rules."""
+    details: dict[str, Any] = {
+        "provider": "codex",
+        "model": config.model,
+        "transport": "sdk",
+    }
+    if importlib.util.find_spec("openai_codex") is None:
+        return IntegrationStatus(
+            name="lm_provider",
+            state=IntegrationState.UNAVAILABLE,
+            summary="The Codex SDK is not installed.",
+            config_source=source,
+            next_action="Install Codex SDK support, then check the provider in Settings.",
+            endpoint=config.api_base,
+            auth_mode=auth_mode,
+            details={**details, "reason": "codex_sdk_not_installed"},
+            required=True,
+        )
+    return IntegrationStatus(
+        name="lm_provider",
+        state=IntegrationState.DEGRADED,
+        summary="Codex SDK is installed; provider sign-in has not been checked by this health probe.",
+        config_source=source,
+        next_action="Use Check provider in Settings to verify SDK sign-in and available models.",
+        endpoint=config.api_base,
+        auth_mode=auth_mode,
+        details={**details, "reason": "auth_check_required"},
+        required=True,
+    )
+
+
 def _which_cli(binary: str) -> str | None:
     """Resolve a CLI binary on PATH, honouring the Windows ``.cmd`` launcher shim.
 
@@ -180,6 +213,8 @@ def probe_cli_transport(
         the missing binary (``reason=cli_binary_absent``).
     """
     if config.provider == "codex":
+        if config.codex_variant == "sdk":
+            return _probe_codex_sdk(config, source, auth_mode)
         return _probe_codex_direct(config, source, auth_mode)
 
     parsed = urlparse(config.api_base)

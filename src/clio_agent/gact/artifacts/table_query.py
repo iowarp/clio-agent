@@ -117,6 +117,7 @@ def _source_columns_needed(request: TableQueryRequest, available: list[str]) -> 
     """
 
     wanted: list[str] = []
+    virtual_row_key = _row_key_column_name(available) if request.aggregate is None else None
 
     def add(name: str | None) -> None:
         if name is not None and name not in wanted:
@@ -139,7 +140,11 @@ def _source_columns_needed(request: TableQueryRequest, available: list[str]) -> 
         for column in available:
             add(column)
     for flt in request.filters:
-        add(flt.column)
+        # The stable row key is appended after reading the source, before
+        # filters run. It can identify selected rows across pages, but it is
+        # not a source column to project from CSV or Parquet.
+        if flt.column != virtual_row_key:
+            add(flt.column)
     if request.aggregate is None:
         # With aggregate set, downsample/sort target the AGGREGATE'S OWN
         # output columns (validated separately, stage="aggregated") -- they

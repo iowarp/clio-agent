@@ -135,6 +135,10 @@ dependencies = [
     "python-pptx>=1.0.2,<2",
     "odfpy>=1.4.1,<2",
     "pypdf>=5.1.0,<7",
+    "xarray>=2024.10",
+    "zarr>=3",
+    "rasterio>=1.4",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

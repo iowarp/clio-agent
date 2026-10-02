@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import importlib
 import io
 import json
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -25,6 +27,7 @@ import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from clio_agent import conf
@@ -136,6 +139,18 @@ def test_json_export_current_scope_is_row_oriented(env: _Env) -> None:
     payload = json.loads(response.content)
     assert payload[0] == {"sensor": "a", "value": 1.0}
     assert len(payload) == 7
+
+
+def test_csv_export_writes_nan_as_empty_cell(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = _export(
+        env, artifact_id, {"columns": ["sensor", "value"], "scope": "current", "format": "csv"}
+    )
+
+    assert response.status_code == 200, response.text
+    rows = _rows_from_csv(response.content)
+    assert rows[4] == {"sensor": "b", "value": ""}
 
 
 def test_parquet_export_current_scope_is_readable(env: _Env) -> None:
@@ -262,7 +277,7 @@ def test_full_scope_export_too_large_also_refuses(
 ) -> None:
     """#1551 review item 2: `_full_scope_result` never checked `max_rows` at
     all -- "full" means "ignore the view's own filter," never "ignore the row
-    ceiling.\""""
+    ceiling.\" """
 
     from clio_agent.gact.routes import artifact_table_export as route
 
@@ -416,3 +431,61 @@ def test_concurrent_exports_are_bounded_by_the_shared_semaphore(
 
     asyncio.run(_run())
     assert peak == 1
+
+
+def test_failed_live_stream_aborts_transfer_and_releases_permit(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-header serializer failure must be visible to HTTP and free the shared slot."""
+
+    table_export = importlib.import_module("clio_agent.gact.artifacts.table_export")
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    original = table_export.stream_export
+
+    def _broken_stream(*args: Any, **kwargs: Any):
+        yield b"partial"
+        raise RuntimeError("serializer failed after headers")
+
+    monkeypatch.setattr(table_export, "stream_export", _broken_stream)
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            env.client.app, host="127.0.0.1", port=port, log_level="critical", lifespan="off"
+        )
+    )
+    thread = threading.Thread(target=lambda: server.run(sockets=[listener]), daemon=True)
+    thread.start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.01)
+        assert server.started
+        with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=10) as client:
+            for attempt in range(9):
+                try:
+                    response = client.post(
+                        f"/v1/artifacts/{artifact_id}/table-export",
+                        json={"scope": "current", "format": "csv"},
+                    )
+                except httpx.RemoteProtocolError:
+                    continue
+                pytest.fail(
+                    f"attempt {attempt} returned HTTP {response.status_code} with "
+                    f"{response.content!r} after a broken stream"
+                )
+            monkeypatch.setattr(table_export, "stream_export", original)
+            response = client.post(
+                f"/v1/artifacts/{artifact_id}/table-export",
+                json={"scope": "current", "format": "csv"},
+            )
+            assert response.status_code == 200
+            assert len(_rows_from_csv(response.content)) == 7
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+        listener.close()
+        assert not thread.is_alive()

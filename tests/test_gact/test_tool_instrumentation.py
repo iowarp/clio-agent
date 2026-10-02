@@ -604,7 +604,9 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
                 "path": "/ack",
                 "value": True,
             },
-            "delete_a2ui_surface": {"surface_id": "test-surface"},
+                "delete_a2ui_surface": {"surface_id": "test-surface"},
+                "inspect_a2ui_surface": {},
+                "get_weather_forecast": {"location": ""},
             # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
             # (this harness's agent_def has no parent_id, so it qualifies).
             # Scans configured providers only (is_provider_configured) and each

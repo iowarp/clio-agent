@@ -6,9 +6,8 @@ into its spec). Shares that route's custody rules (only registered artifacts,
 re-hashed against the immutable version), its cancellation/size-ceiling shape,
 and its concurrency budget (the SAME ``_concurrency_semaphore_for(app)``, so a
 burst of exports cannot starve ordinary chart/table queries or each other) --
-but never samples or pages, and never buffers a whole export in memory before
-the first byte goes out, see :mod:`clio_agent.gact.artifacts.table_export` for
-why.
+but never samples or pages. The processed Arrow table is materialized before
+streaming; serialization and transfer proceed in bounded chunks.
 """
 
 from __future__ import annotations
@@ -16,11 +15,13 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request
-from starlette.background import BackgroundTask
+from starlette.concurrency import iterate_in_threadpool
 from starlette.responses import StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
@@ -41,6 +42,21 @@ from clio_agent.gact.routes.table_route_shared import (
 if TYPE_CHECKING:
     from clio_agent.gact.artifacts.table_export import ExportResult
     from clio_agent.gact.artifacts.table_query import QueryCancellation
+
+
+class ExportStreamingResponse(StreamingResponse):
+    """Stream with one disconnect watcher so serializer errors abort the HTTP body.
+
+    Starlette's default response starts a second ASGI receive consumer for
+    spec versions before 2.4. It races our query cancellation watcher and
+    can cancel the body task after a partial chunk, sending a normal HTTP end
+    marker. The export route owns the watcher across resolve and transfer.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await self.stream_response(send)
+        if self.background is not None:
+            await self.background()
 
 
 def table_export_max_rows() -> int:
@@ -67,12 +83,7 @@ def table_export_max_rows() -> int:
 
 
 def table_export_timeout_s() -> float:
-    """Wall-clock budget, in seconds, for one export (see ``table_query_timeout_s``).
-
-    Gates both the resolve step below AND, via the same shared
-    ``QueryCancellation.deadline``, the streaming/serialization step: a
-    slow client is bounded the same as a slow resolve.
-    """
+    """Wall-clock budget for resolving an export before transfer starts."""
 
     from clio_agent import conf  # noqa: PLC0415
 
@@ -167,7 +178,7 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
             )
         record, version = found
 
-        # One cancel token for the WHOLE request -- resolution AND streaming.
+        # Disconnect cancellation remains active through resolution and transfer.
         # PRIMARY cancellation (owner ruling): the watcher keeps polling the
         # client's own connection for the entire response, including while
         # bytes are still being streamed, so an abandoned download stops
@@ -179,12 +190,8 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
         watcher = asyncio.ensure_future(watch_for_disconnect(request, cancel_event))
         watcher.add_done_callback(report_watcher_failure)
 
-        # Bounds concurrent exports sharing table-query's own worker-thread
-        # budget (#1551 review item 3): acquired here, released only once the
-        # WHOLE streamed response has finished sending (the `BackgroundTask`
-        # below) -- releasing when this handler merely RETURNS would be wrong,
-        # since returning a `StreamingResponse` happens before any byte of a
-        # streamed body is actually sent.
+        # Hold the shared permit until the stream completes or fails. A
+        # StreamingResponse background task is skipped on an in-stream error.
         semaphore = _concurrency_semaphore_for(app)
         await semaphore.acquire()
         released = False
@@ -214,9 +221,24 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
             await release_resources()
             raise
 
+        # Keep one watcher throughout the transfer. ExportStreamingResponse
+        # has no competing ASGI receive consumer.
+        transfer_cancellation = QueryCancellation(
+            deadline=float("inf"), timeout_s=timeout_s, cancel_event=cancel_event
+        )
+
+        async def body_stream() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in iterate_in_threadpool(
+                    stream_export(result, body.format, cancellation=transfer_cancellation)
+                ):
+                    yield chunk
+            finally:
+                await release_resources()
+
         filename = export_filename(record.name, body.scope, body.format)
-        return StreamingResponse(
-            stream_export(result, body.format, cancellation=cancellation),
+        return ExportStreamingResponse(
+            body_stream(),
             media_type=EXPORT_MEDIA_TYPES[body.format],
             headers={
                 "Content-Disposition": content_disposition(filename),
@@ -224,7 +246,6 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
                 "X-Clio-Export-Matched-Rows": str(result.matched_rows),
                 "X-Clio-Export-Returned-Rows": str(result.table.num_rows),
             },
-            background=BackgroundTask(release_resources),
         )
 
 

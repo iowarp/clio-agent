@@ -1,13 +1,13 @@
 ---
 name: present-interactive-analysis
 title: Present Interactive Analysis
-description: When and why to present observed data as an interactive A2UI surface instead of prose, and how to reach the exact component shapes for the active catalog.
+description: Use for answers people will explore or edit: charts, maps, forecasts, checklists, and especially email/chat/text drafts with alternative versions to tweak. Load the active A2UI catalog for exact shapes.
 ---
 
-Use this generic presentation skill only after the underlying evidence exists and
-only when interaction or structure helps the user more than prose. A2UI is a view
-of observed state, never an analysis substitute. Do not mention the protocol or
-ask the user to supply component payloads.
+Use this skill when interaction or structure helps the person use the answer.
+Data views reflect observed evidence; message drafts and guides can present
+authored content for the person to edit or follow. Do not mention the protocol
+or ask the user to supply component payloads.
 
 A `create_a2ui_surface` call renders inline in the chat as an interactive
 view — hoverable, clickable, linkable to the session's other views.
@@ -21,8 +21,15 @@ Component shapes are NOT in this skill — the catalog itself is the allowlist a
 the source of truth (`docs/design/a2ui-compat-campaign-2026-09.md` S2/S4). Load a
 catalog's index with `load_skill("a2ui-catalog-<slug>")` (see "Skills available to
 you" for the ids your session can currently produce) and one component's exact
-schema with `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
-before producing it.
+schema with `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<ExactComponentId>")`
+before producing it. Copy the complete key from the catalog index: for example,
+`catalog.json#/components/clio.chart.v1`, not a display label such as `Chart`.
+
+When a user names a public data source, use an available fetch tool or a local
+shell HTTP request to obtain the data before deciding that access is unavailable.
+Check the returned status and data shape; a shell request may need the person's
+normal tool approval. Keep the source data as a registered artifact when a view
+will query more than a small inline sample.
 
 ## Choosing a view
 
@@ -30,10 +37,24 @@ Match the surface to the shape of the evidence, not to what looks impressive:
 
 - A spatial result shown as point markers (stations, sites, cities) → a map
   component.
-- A choropleth or other filled-region map (regions colored by a value) →
-  `clio.chart.v1` with a `geoshape` mark and `projection`, fed inline rows
-  whose geometry column holds the GeoJSON shapes — the map component only
-  places point markers, it does not fill regions.
+  Use `categoryField` for groups or `valueField` for a numeric measure; the
+  renderer colours the markers and supplies a readable legend.
+- A GeoJSON FeatureCollection of sites, paths, or regions → a map with
+  `geojsonUri` pointing to the registered artifact. Name feature-property
+  fields for labels or colour when useful; the map draws the actual shapes.
+  A custom projected chart remains available when its encodings or layers
+  are the point of the analysis.
+- A registered 3D model or simulation mesh → an orbitable mesh viewport.
+  It accepts common model formats; use its `format` field when the bytes are
+  ambiguous, and `materialUri` for an OBJ's registered MTL companion.
+  Scalar colouring, frames, and thresholds apply when the GLB contains
+  CLIO FEA result fields. Read the exact catalog schema before creating it.
+- A registered two-dimensional field, image grid, or geographic raster →
+  `clio.raster-viewport.v1`. Give it `rasterUri`; choose `variable` for a
+  NetCDF or zipped Zarr archive with multiple fields, or `band` for a
+  multiband GeoTIFF. The viewer requests bounded samples while the person
+  pans and zooms, and shows values and a colour legend. Use `unit` when known.
+  Read the catalog entry for the exact accepted shape.
 - Structured rows and columns → a data table.
 - A quantity that changes over an index or time for a few series → the catalog's
   chart component (`clio.chart.v1`), typically its `trajectories` preset.
@@ -47,6 +68,31 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   (for example, a bounded number of points per entity) instead of trimming the
   data yourself.
 - A single observed value → one metric component per value.
+- A weather or field-site conditions question with observed and forecast data →
+  a compact weather view, accompanied by the decision-relevant answer in prose.
+  Let the view carry the hour-by-hour and day-by-day detail; keep the prose to
+  the useful judgment, uncertainty, and source rather than repeating its rows.
+  For a live named-location forecast, `get_weather_forecast` supplies the data;
+  the renderer makes no weather request of its own.
+  Give `observedAt` and every hourly `time` an ISO 8601 UTC offset or `Z`;
+  use `YYYY-MM-DD` for each daily date.
+- A request for email, chat, or text alternatives the person can revise → a
+  message-draft view with labelled versions. The person edits the draft in
+  place and decides whether to copy or use it; CLIO does not send it.
+- A protocol, recipe, or setup guide with steps the person will perform → an
+  interactive steps view, especially when timers or quantities matter. Put
+  amounts that change with the scale in quantity fields. Keep step details
+  true after a changed count: if `quantity` shows 8 mL for 4 samples, write
+  “Add 2 mL to each tube” in `detail`, not “8 mL total for 4 samples.” The
+  fixed per-unit instruction matters when the starting count changes. In a
+  recipe, omit fixed cup/tablespoon/egg equivalents from `detail` beside a
+  scaled amount; give countable units singular and plural labels so the
+  display reads correctly at one and many; group related prep so the
+  checklist remains easy to scan.
+- A parameter the person should adjust while inspecting a result → a bound
+  slider; use its two-value range mode for an interval. A date or time cutoff
+  can use `DateTimeInput`. Read the component schemas for their value shapes,
+  then bind the values used by the view's data query.
 - Ongoing/completed work, a warning, or a diff → the matching status/callout/diff
   component, never repurposing a generic text block for it.
 - A durable export (an image, a report) the user did not ask to view inline → a
@@ -58,6 +104,9 @@ Prefer one small surface at the step it explains. Reuse a stable semantic
 `surface_id` to update that view in place. Do not accumulate unrelated work into
 one final tabbed dashboard. Tabs are appropriate only when several views of the
 same result belong together and the available width justifies them.
+For a correction in a later turn, call `inspect_a2ui_surface` to find the
+existing id and current components, then update that surface. A correction
+should replace the earlier view so both versions do not compete in the chat.
 
 ## Custom charts with Altair
 
@@ -81,9 +130,10 @@ exported spec to the component instead of writing Vega-Lite JSON by hand.
   shapes straight from rows the agent already has, no artifact needed. Set
   `projection` for the map projection; leave `projection.fit` unset — the
   renderer fits the map to the geometry actually present in the rows.
-- **Shared selection.** Define one point selection whose name matches the
-  component's selection parameter, over the entity field. The component's
-  selection binding then links the chart to the other views (see below).
+- **Shared selection.** Charts, maps and tables reading the same artifact
+  automatically link through its stable `__row` key. A custom chart gains a
+  point selection from the renderer when it has a selectable field; the
+  renderer also supplies box selection, zoom and Reference this.
 - **Keep specs small.** The guard caps size, nesting and view count.
 
 Write a Python file that assigns the Altair chart to `chart`, resolve this
@@ -102,12 +152,14 @@ the catalog skill before putting the spec into a surface.
 
 ## Linking views on one surface
 
-To let several views on the same surface follow one selection, bind each view's
-selection to the same data-model path under `/selection/`, one path per concept
-(e.g. the selected samples). A chart, table or map on that surface then
-highlights whatever the others select, entirely in the client, with no agent
-turn. Use this whenever views show the same entities from different angles.
-Views on different surfaces don't share selection.
+Views on one surface that read the same artifact share selected rows through
+the renderer's stable `__row` key. Give each linked view, including the table, the same `dataUri`; copying artifact rows into an inline table breaks that link. The user can click or box-select in a chart,
+map or table, see the corresponding rows highlighted, and use Reference this to
+carry the selected rows and active filters into the next message. When views
+represent different datasets or need a conceptual selection (such as a station
+name shared across files), bind their `selection` props to the same data-model
+path under `/selection/` and set each component's `selectionField` to its
+matching column. Views on different surfaces keep separate selection state.
 
 ## Preserving a user's choice into the next turn
 
@@ -116,7 +168,12 @@ itself reach the agent. When the user must choose among options before analysis
 continues, pair the selector with a submit action whose event delivers the
 resolved selection as structured context; load the catalog's Button/action and
 your chosen selector's schemas together so the wiring between them is correct on
-the first try.
+the first try. Bind the selector's value to the same data-model path read by the submit action; a path mentioned only by the action has no selected value to deliver. Include the selected item's displayed fields in that context
+when a follow-up may ask about them; an ID alone can lose the detail the
+person just saw. If a later question needs details beyond a selected ID, use
+`inspect_a2ui_surface` to read the existing view before answering. A field
+visible in that view should not be called unavailable merely because the
+submit event carried only its ID.
 
 ## Producing and verifying
 

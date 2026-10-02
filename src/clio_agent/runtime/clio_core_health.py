@@ -216,6 +216,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         removed_embedded_runtime_env,
     )
 
+    live_snapshot = state is None
     snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
     if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
         return []
@@ -231,9 +232,17 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         summary = f"clio-core attach in progress ({where}); ARC is not live yet."
         next_action = "Wait; this row turns ready (attached) or names the failure."
     elif snap.phase is ClioCoreAttachPhase.ATTACHED:
-        state_, required = IntegrationState.READY, False
-        summary = f"clio-core attached ({where})."
-        next_action = "No action required."
+        from clio_agent.arc.clio_core_liveness import _runtime_alive  # noqa: PLC0415
+
+        if live_snapshot and snap.port is not None and not _runtime_alive(snap.port):
+            state_, required = IntegrationState.DEGRADED, True
+            details["reason"] = "clio_core_daemon_lost_after_attach"
+            summary = f"clio-core was attached, but its daemon is no longer listening ({where})."
+            next_action = "Restart the clio-core daemon; retry the affected ARC operation."
+        else:
+            state_, required = IntegrationState.READY, False
+            summary = f"clio-core attached ({where})."
+            next_action = "No action required."
     else:
         state_, required = IntegrationState.DEGRADED, True
         summary = f"clio-core unavailable (reason={snap.reason}, {where}): {snap.error}"
@@ -326,6 +335,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
         snapshot: Optional injected gate snapshot (list of status dicts) for testing;
             defaults to the live process registry.
     """
+    live_snapshot = snapshot is None
     if snapshot is None:
         from clio_agent.arc.clio_core_liveness import liveness_snapshot  # noqa: PLC0415
 
@@ -363,6 +373,33 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
                 required=True,
             )
         ]
+    if live_snapshot:
+        from clio_agent.arc.clio_core_liveness import _runtime_alive  # noqa: PLC0415
+
+        missing = [
+            gate
+            for gate in snapshot
+            if isinstance(gate.get("port"), int) and not _runtime_alive(gate["port"])
+        ]
+        if missing:
+            port = missing[0]["port"]
+            return [
+                IntegrationStatus(
+                    name="clio_core_liveness",
+                    state=IntegrationState.DEGRADED,
+                    summary=f"{len(missing)} of {len(snapshot)} clio-core daemon endpoint(s) are not listening; ARC operations may fail until the daemon returns.",
+                    config_source="runtime:clio_core_liveness_gate",
+                    next_action="Restart the clio-core daemon; retry the affected ARC operation.",
+                    endpoint=f"127.0.0.1:{port}",
+                    fallback="none",
+                    details={
+                        "reason": "clio_core_daemon_lost",
+                        "missing_gates": len(missing),
+                        "total_gates": len(snapshot),
+                    },
+                    required=True,
+                )
+            ]
     return [
         IntegrationStatus(
             name="clio_core_liveness",

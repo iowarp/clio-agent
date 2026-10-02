@@ -66,6 +66,7 @@ _TABULAR_FIELD_PROPERTIES: dict[str, tuple[str, ...]] = {
         "idField",
         "detailField",
         "categoryField",
+        "valueField",
         "selectionField",
     ),
     "clio.data-table.v1": ("selectionField",),
@@ -84,6 +85,9 @@ _TABULAR_COMPONENTS = frozenset({"clio.map.v1", "clio.data-table.v1", "clio.char
 #: dataUri's file content IS the component's literal text value.
 _TEXT_COMPONENTS = frozenset({"clio.code.v1", "clio.mermaid.v1", "clio.diff.v1"})
 _WORKFLOW_COMPONENT = "clio.workflow.v1"
+_MESH_COMPONENT = "clio.mesh-viewport.v1"
+_RASTER_COMPONENT = "clio.raster-viewport.v1"
+_MESH_FORMATS = frozenset({"glb", "gltf", "obj", "stl", "ply", "fbx", "3mf", "vtk", "vtp", "drc"})
 
 _DATA_URI_RE = re.compile(r"^artifact://(artifact_[A-Za-z0-9_-]+)$")
 
@@ -91,6 +95,105 @@ _DATA_URI_RE = re.compile(r"^artifact://(artifact_[A-Za-z0-9_-]+)$")
 def _artifact_id_from_data_uri(value: str) -> str | None:
     match = _DATA_URI_RE.match(value)
     return match.group(1) if match else None
+
+
+def _validate_mesh_source(
+    path: Path, *, component_id: str, format_hint: Any, name: str
+) -> dict[str, Any] | None:
+    """Check a mesh's declared or recognizable format before a client loads it."""
+
+    try:
+        with path.open("rb") as stream:
+            head = stream.read(512)
+    except OSError as exc:
+        return refusal(
+            "a2ui_data_reference_unreadable",
+            detail=f"component {component_id!r} meshUri file could not be read: {exc}",
+        )
+    if not head:
+        return refusal(
+            "a2ui_mesh_format_invalid",
+            detail=f"component {component_id!r} meshUri names an empty file",
+        )
+    text = head.decode("utf-8", errors="ignore").lstrip()
+    detected: str | None = None
+    if head.startswith(b"glTF"):
+        detected = "glb"
+    elif text.startswith("{") and '"asset"' in text:
+        detected = "gltf"
+    elif text.startswith("ply"):
+        detected = "ply"
+    elif text.startswith("# vtk DataFile"):
+        detected = "vtk"
+    elif "<VTKFile" in text:
+        detected = "vtp"
+    elif text.startswith(("Kaydara FBX Binary", "; FBX")):
+        detected = "fbx"
+    elif text.startswith("DRACO"):
+        detected = "drc"
+    elif re.search(r"(?m)^v\s+[-\d]", text):
+        detected = "obj"
+    elif text.startswith("solid ") and "facet" in text:
+        detected = "stl"
+    suffix = Path(name).suffix.lower().lstrip(".")
+    if not isinstance(format_hint, str):
+        format_hint = None
+    chosen = format_hint or detected or (suffix if suffix in _MESH_FORMATS else None)
+    if chosen not in _MESH_FORMATS:
+        return refusal(
+            "a2ui_mesh_format_invalid",
+            detail=(
+                f"component {component_id!r} meshUri names {name!r}, whose format is unknown; "
+                "set format to glb, gltf, obj, stl, ply, fbx, 3mf, vtk, vtp, or drc"
+            ),
+        )
+    if detected and format_hint and detected != format_hint:
+        return refusal(
+            "a2ui_mesh_format_invalid",
+            detail=f"component {component_id!r} format={format_hint!r} conflicts with {name!r} ({detected} bytes)",
+        )
+    if chosen in {"glb", "gltf"}:
+        try:
+            with path.open("rb") as stream:
+                if chosen == "glb":
+                    header = stream.read(20)
+                    if len(header) != 20 or header[:4] != b"glTF" or header[16:20] != b"JSON":
+                        raise ValueError("GLB has no valid JSON chunk")
+                    json_size = int.from_bytes(header[12:16], "little")
+                    if json_size > 8 * 1024 * 1024:
+                        raise ValueError("GLB JSON chunk exceeds the 8 MiB metadata limit")
+                    document = json.loads(stream.read(json_size))
+                else:
+                    if path.stat().st_size > 8 * 1024 * 1024:
+                        raise ValueError("glTF JSON exceeds the 8 MiB metadata limit")
+                    document = json.load(stream)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            return refusal(
+                "a2ui_mesh_format_invalid",
+                detail=f"component {component_id!r} meshUri glTF metadata could not be read: {exc}",
+            )
+        if not isinstance(document, dict):
+            return refusal(
+                "a2ui_mesh_format_invalid",
+                detail=f"component {component_id!r} meshUri glTF metadata must be an object",
+            )
+        for section in ("buffers", "images"):
+            entries = document.get(section, [])
+            if not isinstance(entries, list) or any(not isinstance(item, dict) for item in entries):
+                return refusal(
+                    "a2ui_mesh_format_invalid",
+                    detail=f"component {component_id!r} meshUri glTF {section} must be an array of objects",
+                )
+            for item in entries:
+                if isinstance(item.get("uri"), str) and not item["uri"].startswith("data:"):
+                    return refusal(
+                        "a2ui_mesh_format_invalid",
+                        detail=(
+                            f"component {component_id!r} meshUri glTF {section} references external "
+                            "content; register a self-contained GLB or embed resources as data URIs"
+                        ),
+                    )
+    return None
 
 
 def _resolve_artifact_path(
@@ -382,6 +485,54 @@ def _validate_text_readable(path: Path, *, component_id: str) -> dict[str, Any] 
     return None
 
 
+def _validate_geojson_shape(
+    path: Path, *, component_id: str, field_names: dict[str, str]
+) -> dict[str, Any] | None:
+    """Give the producer a typed retry hint for invalid GeoJSON and property fields."""
+    try:
+        parsed = json.loads(_read_text_streaming(path))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return refusal(
+            "a2ui_data_reference_shape_invalid",
+            detail=f"component {component_id!r} geojsonUri is not readable GeoJSON: {exc}",
+        )
+    if not isinstance(parsed, dict) or parsed.get("type") != "FeatureCollection":
+        return refusal(
+            "a2ui_data_reference_shape_invalid",
+            detail=f"component {component_id!r} geojsonUri must contain a FeatureCollection",
+        )
+    features = parsed.get("features")
+    if not isinstance(features, list) or not 0 < len(features) <= 20_000:
+        return refusal(
+            "a2ui_data_reference_shape_invalid",
+            detail=f"component {component_id!r} geojsonUri needs 1 to 20000 features",
+        )
+    for index, feature in enumerate(features):
+        if (
+            not isinstance(feature, dict)
+            or feature.get("type") != "Feature"
+            or not isinstance(feature.get("geometry"), dict)
+        ):
+            return refusal(
+                "a2ui_data_reference_shape_invalid",
+                detail=f"component {component_id!r} geojsonUri feature {index + 1} needs geometry",
+            )
+    properties = [feature.get("properties") for feature in features]
+    available = sorted(
+        {"id", *(key for item in properties if isinstance(item, dict) for key in item)}
+    )
+    missing = _missing_column_labels(list(field_names.items()), available)
+    if missing:
+        return refusal(
+            "a2ui_field_not_in_dataset",
+            detail=(
+                f"component {component_id!r} geojsonUri names absent feature properties: "
+                f"{', '.join(missing)}; available properties: {available}"
+            ),
+        )
+    return None
+
+
 def validate_component_data_references(
     app: "FastAPI", components: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -403,7 +554,12 @@ def validate_component_data_references(
         if not isinstance(component, dict):
             continue
         name = component.get("component")
-        data_uri = component.get("dataUri")
+        data_uri = (
+            component.get("geojsonUri")
+            or component.get("dataUri")
+            or (component.get("meshUri") if name == _MESH_COMPONENT else None)
+            or (component.get("rasterUri") if name == _RASTER_COMPONENT else None)
+        )
         if not isinstance(name, str) or not isinstance(data_uri, str) or not data_uri:
             continue
         artifact_id = _artifact_id_from_data_uri(data_uri)
@@ -417,7 +573,78 @@ def validate_component_data_references(
             return resolved
         record, path = resolved
 
-        if name in _TABULAR_COMPONENTS:
+        if name == _RASTER_COMPONENT:
+            from clio_agent.gact.artifacts.raster_query import (  # noqa: PLC0415
+                RasterQueryError,
+                load_raster,
+            )
+
+            try:
+                load_raster(
+                    path,
+                    name=record.name,
+                    variable=component.get("variable"),
+                    band=component.get("band", 1),
+                )
+            except RasterQueryError as exc:
+                return refusal(
+                    "a2ui_raster_invalid",
+                    detail=f"component {component_id!r} rasterUri cannot be displayed: {exc}",
+                )
+        elif name == _MESH_COMPONENT:
+            outcome = _validate_mesh_source(
+                path,
+                component_id=component_id,
+                format_hint=component.get("format"),
+                name=record.name,
+            )
+            if outcome is not None:
+                return outcome
+            material_uri = component.get("materialUri")
+            if isinstance(material_uri, str):
+                if component.get("format") not in (None, "obj"):
+                    return refusal(
+                        "a2ui_mesh_format_invalid",
+                        detail=f"component {component_id!r} materialUri is only used with OBJ meshes",
+                    )
+                material_id = _artifact_id_from_data_uri(material_uri)
+                if material_id is None:
+                    continue  # The catalog reports malformed materialUri.
+                material = _resolve_artifact_path(app, material_id)
+                if isinstance(material, dict):
+                    return material
+                _, material_path = material
+                try:
+                    with material_path.open("rb") as stream:
+                        material_text = stream.read(65536).decode("utf-8")
+                except (OSError, UnicodeError) as exc:
+                    return refusal(
+                        "a2ui_data_reference_unreadable",
+                        detail=f"component {component_id!r} materialUri could not be read as MTL: {exc}",
+                    )
+                if "newmtl " not in material_text:
+                    return refusal(
+                        "a2ui_mesh_format_invalid",
+                        detail=f"component {component_id!r} materialUri has no MTL newmtl declaration",
+                    )
+        elif name == "clio.map.v1" and isinstance(component.get("geojsonUri"), str):
+            field_names = {
+                prop: component[prop]
+                for prop in (
+                    "labelField",
+                    "detailField",
+                    "categoryField",
+                    "valueField",
+                    "selectionField",
+                )
+                if isinstance(component.get(prop), str) and component[prop] != "__row"
+            }
+            outcome = _validate_geojson_shape(
+                path, component_id=component_id, field_names=field_names
+            )
+            if outcome is not None:
+                return outcome
+        elif name in _TABULAR_COMPONENTS:
             field_props = _TABULAR_FIELD_PROPERTIES.get(name, ())
             wanted_fields = {
                 prop: component[prop]

@@ -334,6 +334,45 @@ def test_codex_doctor_reports_missing_auth(tmp_path, monkeypatch):
     assert status.details["reason"] == "auth_absent"
 
 
+def test_codex_sdk_doctor_does_not_use_direct_credentials(tmp_path, monkeypatch):
+    """A working SDK uses its own credential home, not CLIO direct credentials."""
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+    from clio_agent.runtime import lm_provider_probe
+
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: False)
+    monkeypatch.setattr(
+        lm_provider_probe.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "openai_codex" else None,
+    )
+    probe = RuntimeProbe(
+        env={
+            "CLIO_DATA_DIR": str(tmp_path),
+            "CLIO_LM_PROVIDER": "codex",
+            "CLIO_CODEX_VARIANT": "sdk",
+        },
+        http_get=_http_get_must_not_run,
+    )
+
+    status = probe.probe_lm_provider()
+
+    assert status.state == IntegrationState.DEGRADED
+    assert status.details["reason"] == "auth_check_required"
+    assert status.details["transport"] == "sdk"
+
+
+def test_health_probe_uses_active_codex_variant(monkeypatch):
+    """The GACT health row must diagnose the active SDK rather than direct auth."""
+    from clio_agent.gact.routes.provider_probe_env import runtime_provider_probe_env
+
+    monkeypatch.setenv("CLIO_CODEX_VARIANT", "direct")
+    env = runtime_provider_probe_env(
+        {"provider": "codex", "model": "gpt-6-luna", "codex_variant": "sdk"}
+    )
+
+    assert env["CLIO_CODEX_VARIANT"] == "sdk"
+
+
 def test_lm_provider_http_provider_still_probes_models(tmp_path):
     """HTTP providers are unchanged: the /models GET path still drives the row (#899)."""
     seen: dict[str, str] = {}

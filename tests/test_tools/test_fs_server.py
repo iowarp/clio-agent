@@ -55,6 +55,8 @@ def test_propose_edit_allows_new_file_under_write_policy(
     target = tmp_path / "new.txt"
 
     result = propose_edit(str(target), "hello\n")
+    assert result["applied"] is False
+    assert result["requires_review"] is True
 
     assert result["path"] == str(target.resolve())
     assert result["lines_added"] == 1

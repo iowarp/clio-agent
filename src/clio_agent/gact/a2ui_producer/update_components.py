@@ -25,16 +25,13 @@ def build_update_a2ui_components_tool() -> Any:
         components: Optional[list[dict[str, Any]]] = None,
         components_path: str = "",
     ) -> dict[str, Any]:
-        """Replace one or more components on an already-created A2UI surface.
+        """Replace one or more components on an existing inline view or widget.
 
-        ``surface_id`` must name a live (non-deleted) surface from a prior
-        create_a2ui_surface result's ``session_surface_ids``; an unknown or
-        deleted id is a typed refusal, not an error. Pass exactly one of
-        ``components`` or ``components_path`` (a workspace JSON file with
-        the components array).
-
-        Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
-        one component: load_skill(..., file="catalog.json#/components/<Name>").
+        Find the live ``surface_id`` with ``inspect_a2ui_surface`` if needed.
+        Pass exactly one of ``components`` or ``components_path``.
+        Load ``a2ui-catalog-<slug>`` for guidance; inspect one schema at
+        ``catalog.json#/components/<ExactComponentId>``. The renderer owns
+        pan, zoom, selection, export, and Reference this controls.
         """
 
         resolved = _common.active_app_and_session()

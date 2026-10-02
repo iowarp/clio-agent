@@ -121,6 +121,55 @@ def test_row_key_survives_filter_and_keeps_original_identity(env: _Env) -> None:
     assert body["rowKey"]["values"] == [3, 4, 5]
 
 
+def test_filter_by_synthetic_row_key_selects_exact_source_rows(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    first = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "t"],
+                "filter": [{"column": "__row", "op": "in", "value": [1, 4, 6]}],
+                "offset": 0,
+                "limit": 2,
+            },
+        )
+    )
+    second = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "t"],
+                "filter": [{"column": "__row", "op": "in", "value": [1, 4, 6]}],
+                "offset": 2,
+                "limit": 2,
+            },
+        )
+    )
+
+    assert first["matchedRows"] == second["matchedRows"] == 3
+    assert sorted(first["rowKey"]["values"] + second["rowKey"]["values"]) == [1, 4, 6]
+    assert sorted(first["columns"]["sensor"] + second["columns"]["sensor"]) == ["a", "b", "c"]
+
+
+def test_filter_by_disambiguated_row_key_keeps_real_column_distinct(env: _Env) -> None:
+    artifact_id = env.pin_csv("collide-filter.csv", "__row,value\n5,1.0\n6,2.0\n")
+    key = _ok(env.query(artifact_id, {"columns": ["value"]}))["rowKey"]["column"]
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["__row", "value"],
+                "filter": [{"column": key, "op": "eq", "value": 1}],
+            },
+        )
+    )
+
+    assert body["columns"]["__row"] == [6]
+    assert body["rowKey"]["values"] == [1]
+
+
 def test_row_key_survives_sort_reordering(env: _Env) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
 

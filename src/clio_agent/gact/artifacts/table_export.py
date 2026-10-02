@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Literal
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
@@ -247,7 +248,16 @@ def _stream_csv(result: ExportResult, *, cancellation: QueryCancellation) -> Ite
     try:
         for batch in table.to_batches(max_chunksize=_STREAM_BATCH_ROWS):
             cancellation.check()
-            writer.write_batch(batch)
+            # Arrow's CSVWriter writes IEEE NaN literally as `nan`, while the
+            # JSON export represents the same missing measurement as null.
+            # Normalize only floating NaNs so CSV leaves an empty cell.
+            columns = [
+                pc.if_else(pc.is_nan(column), None, column)
+                if pa.types.is_floating(column.type)
+                else column
+                for column in batch.columns
+            ]
+            writer.write_batch(pa.RecordBatch.from_arrays(columns, schema=batch.schema))
             chunk = sink.drain()
             if chunk:
                 yield chunk

@@ -55,6 +55,7 @@ def test_shell_description_windows_warns_off_wsl_and_steers_pandas():
     text = build_shell_tool_description(facts)
     assert "Windows" in text
     assert "PowerShell 5.1" in text
+    assert "-NoProfile -NonInteractive -Command" in text
     assert "Do NOT assume WSL exists" in text
     assert "wsl" in text.lower()
     assert "pandas" in text
@@ -118,9 +119,9 @@ async def test_shell_bash_runs_simple_command(
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     conf.reload()
     if os.name == "nt":
-        command = f"& '{sys.executable}' -c \"print('CLIO_SHELL_OK')\""
+        command = f"& '{sys.executable}' -c \"import os; print('CLIO_SHELL_OK'); print(os.environ.get('PYTHONUTF8'))\""
     else:
-        command = f"'{sys.executable}' -c \"print('CLIO_SHELL_OK')\""
+        command = f"'{sys.executable}' -c \"import os; print('CLIO_SHELL_OK'); print(os.environ.get('PYTHONUTF8'))\""
 
     try:
         async with Client(shell_server) as client:
@@ -134,7 +135,7 @@ async def test_shell_bash_runs_simple_command(
     data = _parse_result(result)
     assert data["exit_code"] == 0
     assert data["timed_out"] is False
-    assert data["stdout"].strip() == "CLIO_SHELL_OK"
+    assert data["stdout"].strip().splitlines() == ["CLIO_SHELL_OK", "1"]
     assert data["stderr"] == ""
 
 
