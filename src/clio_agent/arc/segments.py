@@ -491,13 +491,12 @@ class SegmentStore:
         turn_id: str = "",
         expert_span_id: str = "",
         run_span_id: str = "",
+        position: int | None = None,
     ) -> Segment:
-        """summarize = delete(ids) + insert(summary at the first replaced position),
-        ATOMIC under the lock. The new Segment is ``kind="summary"`` with
-        ``derived_from=ids``. The caller produces ``summary_content`` (the LLM
-        call). context-compaction = ``summarize(all live ids)``. ``turn_id`` /
-        ``expert_span_id`` / ``run_span_id`` are optional correlation span ids
-        stamped on the summary segment."""
+        """summarize = delete(ids) + insert(summary at the first replaced position, or
+        at render ``position`` over the live segments), ATOMIC under the lock. The new
+        Segment is ``kind="summary"`` with ``derived_from=ids``; the caller produces
+        ``summary_content`` (the LLM call). The span ids are stamped on it."""
         summary_content = _coerce_content(summary_content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
@@ -505,10 +504,9 @@ class SegmentStore:
             require_live(ids, live_ids, op="summarize", scope=scope)
             target = set(ids)
             replaced = [s for s in segs if s.id in target and s.status == "live"]
-            # Summary takes the position (order) of the first replaced segment so it
-            # renders where the range was; its step is the min replaced step.
-            first = min(replaced, key=lambda s: (s.order, s.logical_time))
-            order = first.order
+            first = min(replaced, key=lambda s: (s.order, s.logical_time))  # the range's slot
+            at = self._order_for_position(segs, self._live_sorted(segs), position or 0)
+            order = first.order if position is None else at
             step = min((s.step for s in replaced), default=-1)
             summary_lt = self._new_lt()
             tombstoned: list[str] = []

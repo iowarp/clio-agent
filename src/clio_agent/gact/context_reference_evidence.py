@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlsplit
 from clio_agent import conf
 from clio_agent.gact.context_reference_result import reference_result as _reference_result
 from clio_agent.gact.runtime.retention import ledger_guard
+from clio_agent.gact.summarization_record import as_summarization
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -146,18 +147,19 @@ def _plan_snapshots(
     for session in _workspace_sessions(app, workspace_id):
         for message in app.state.messages.get(session.id, []) or []:
             for index, part in enumerate(message.parts):
-                if part.type not in {"plan", "compaction"}:
+                record = as_summarization(part)
+                if part.type != "plan" and record is None:
                     continue
                 part_id = part.id or str(index)
                 ref_id = f"{session.id}:{message.id}:{part_id}"
-                title = part.title or ("Compacted context" if part.type == "compaction" else "Plan")
+                title = part.title or ("Compacted context" if record is not None else "Plan")
                 payload = {
                     "session_id": session.id,
                     "message_id": message.id,
                     "part_id": part_id,
                     "title": title,
-                    "detail": part.summary or part.text,
-                    "type": part.type,
+                    "detail": record.text if record is not None else (part.summary or part.text),
+                    "type": "summarization" if record is not None else part.type,
                 }
                 snapshots.append(
                     _snapshot_result(

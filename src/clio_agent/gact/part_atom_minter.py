@@ -42,6 +42,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.off_loop import schedule_off_loop
 from clio_agent.gact.part_atoms import (
     append_part_atom,
@@ -63,6 +64,19 @@ _STOP = object()
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+class MinterClosedError(ClioError):
+    """A write was handed to a turn's minter after it stopped taking jobs."""
+
+    reason = "transcript_minter_closed"
+
+    def __init__(self, session_id: str, label: str) -> None:
+        super().__init__(
+            f"the transcript minter of session {session_id} is closed; {label} not written",
+            error_type=self.reason,
+            details={"session_id": session_id, "label": label},
+        )
 
 
 class PartAtomMinter:
@@ -128,6 +142,64 @@ class PartAtomMinter:
                 self._minted_index[part_id] = part_index
 
         return self.enqueue(f"seal:{part_id}", _mint)
+
+    def run_now(self, label: str, fn: Callable[[], Any]) -> Any:
+        """Run ``fn`` in FIFO order with the queued jobs and wait for it: its result, or
+        its failure raised here (the caller's write must be durable before it goes on).
+
+        Waits on progress (the FIFO draining), never a wall clock.
+
+        Raises:
+            MinterClosedError: the turn's minter no longer takes jobs.
+        """
+
+        done = threading.Event()
+        outcome: list[Any] = []
+        failure: list[BaseException] = []
+
+        def _job() -> None:
+            try:
+                outcome.append(fn())
+            except BaseException as exc:
+                failure.append(exc)
+                raise  # recorded and audited by the consumer like any job
+            finally:
+                done.set()
+
+        if not self.enqueue(label, _job):
+            raise MinterClosedError(self.session_id, label)
+        done.wait()
+        if failure:
+            raise failure[0]
+        return outcome[0]
+
+    def seal_now(
+        self, message_id: str, part_dump: dict[str, Any], part_index: int, *, source: str
+    ) -> None:
+        """Persist one part atom NOW (FIFO order kept) and remember it as minted.
+
+        The durable half of a record that must exist before anything depends on it
+        (a compaction's record, written before its fold). Raises the write's failure.
+        """
+
+        part_id = str(part_dump.get("id") or "")
+        stub = message_stub(
+            message_id=message_id,
+            turn_id=self.turn_id,
+            session_id=self.session_id,
+            created_at=self.opened_at,
+        )
+        content = build_sealed_part_atom(
+            stub, part_dump, part_index, sealed_at=_now_iso(), seal_source=source
+        )
+
+        def _mint() -> None:
+            append_part_atom(self.arc._segments, self.session_id, content)
+            with self._lock:
+                self._minted[part_id] = part_dump
+                self._minted_index[part_id] = part_index
+
+        self.run_now(f"seal:{part_id}", _mint)
 
     # ---- consumer side --------------------------------------------------------
 
@@ -254,6 +326,15 @@ class PartAtomMinter:
         append_part_atom(self.arc._segments, self.session_id, build_envelope_atom(message))
         return written + 1
 
+    def wait_closed(self) -> None:
+        """Block until this minter closed and its consumer drained (the turn settled).
+
+        Progress-based: returns when the turn's settle closes the minter, never on a
+        wall clock.
+        """
+
+        self._thread.join()
+
     def close(self, *, timeout: float = 5.0) -> None:
         """Stop accepting jobs, drain what is queued, stop the thread."""
 
@@ -319,30 +400,13 @@ def turn_minter(app: Any, session_id: str) -> Optional[PartAtomMinter]:
 
 
 def close_turn_minter(app: Any, session_id: str) -> None:
-    """Close and drop the session's minter (no-op when none is open).
-
-    Backstop flush (#1339): every turn exit path calls this
-    (``turn_stream.settle_turn_transcript``), including one that never reaches
-    ``persist_finalized_message`` (e.g. an ask-user early return with no assistant
-    message to persist) -- so a checkpoint staged during that turn would otherwise
-    never land. Idempotent with the primary flush point: a checkpoint already
-    flushed there is simply not staged any more.
-    """
+    """Close and drop the session's minter (no-op when none is open)."""
 
     with _REGISTRY_LOCK:
         reg = getattr(app.state, "turn_minters", None)
         minter = reg.pop(session_id, None) if reg is not None else None
     if minter is not None:
         minter.close()
-
-    flushed = _flush_staged_checkpoint(app, session_id)
-    if flushed is not None:
-        stream_audit(
-            "compaction.staged_flush_at_close",
-            session_id=session_id,
-            event_id=flushed.get("event_id", ""),
-            reason="compaction.staged_flush_at_close",
-        )
 
 
 def transcript_sink(app: Any, session_id: str) -> Callable[[str, dict[str, Any], int, str], None]:
@@ -370,51 +434,12 @@ def run_transcript_job(app: Any, session_id: str, label: str, fn: Callable[[], A
     schedule_off_loop(fn, label=label)
 
 
-def _flush_staged_checkpoint(app: Any, session_id: str) -> Optional[dict[str, Any]]:
-    """#1339: a checkpoint built while this turn's minter was open is staged, never
-    inserted ahead of the in-flight assistant row; flush it right after that row
-    persists so ledger order is always ``[..., assistant, compaction]``.
-
-    A flush failure (review F1) must NEVER fail the turn whose finalize triggered
-    it -- the turn's own, already-real, assistant answer must still settle. Caught
-    here, audited typed (:data:`~clio_agent.gact.compaction.
-    AUDIT_STAGED_FLUSH_FAILED`) with the event id peeked before the attempt (the
-    entry is already popped from the staged dict by the time
-    ``flush_staged_checkpoint`` can raise), and dropped -- the checkpoint is lost,
-    never silently retried or left stuck. Returns the flush result on success,
-    ``None`` on nothing-staged OR a caught failure (the audit row is what tells
-    the two apart, never a return-value ambiguity).
-    """
-
-    from clio_agent.gact.compaction import (  # noqa: PLC0415
-        AUDIT_STAGED_FLUSH_FAILED,
-        flush_staged_checkpoint,
-        staged_checkpoint,
-    )
-
-    pending = staged_checkpoint(app, session_id)
-    if pending is None:
-        return None
-    event_id = str(pending.get("event_id", ""))
-    try:
-        return flush_staged_checkpoint(app, session_id)
-    except Exception as exc:  # noqa: BLE001 - #1339 review F1: never fail the turn's finalize
-        stream_audit(
-            AUDIT_STAGED_FLUSH_FAILED,
-            session_id=session_id,
-            event_id=event_id,
-            error=repr(exc),
-        )
-        return None
-
-
 def persist_finalized_message(app: Any, session_id: str, message: Any) -> None:
     """Finalize's persist (on the finalize executor): barrier, remainder, then the append.
 
     With an open minter that has an ARC, the atoms are minted here (the eager profile:
     sealed parts already landed, the remainder + envelope now) and the append skips its
-    own mint; without one the append mints the inline profile as before. Either way this
-    is the primary flush point for a checkpoint staged during this turn (#1339).
+    own mint; without one the append mints the inline profile as before.
     """
 
     from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
@@ -427,7 +452,6 @@ def persist_finalized_message(app: Any, session_id: str, message: Any) -> None:
         if minter is not None:
             minter.barrier()
         _append_session_message(app, session_id, message)
-        _flush_staged_checkpoint(app, session_id)
         return
     # The in-memory ledger + local store copy lands FIRST — the order
     # ``_append_session_message`` has always used (append, then mint). That retained
@@ -438,7 +462,6 @@ def persist_finalized_message(app: Any, session_id: str, message: Any) -> None:
     _append_session_message(app, session_id, message, atoms_minted=True)
     minter.mint_remainder(message)
     record_state_merge_best_effort(minter.arc, session_id, message)
-    _flush_staged_checkpoint(app, session_id)
 
 
 def failed_finalize_identity(app: Any, session_id: str) -> tuple[str, list[Any]]:
@@ -481,6 +504,7 @@ def failed_finalize_identity(app: Any, session_id: str) -> tuple[str, list[Any]]
 
 __all__ = [
     "MINTER_DRAIN_TIMEOUT",
+    "MinterClosedError",
     "PART_ATOM_SEAL_FAILED",
     "TRANSCRIPT_JOB_FAILED",
     "PartAtomMinter",

@@ -186,14 +186,10 @@ def test_routes_that_touch_the_ledger_never_write_from_the_loop(tmp_path: Path, 
 def test_compact_folds_the_arc_working_set_off_the_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1339: compaction is now ONE operation whose ARC fold
-    (``compaction._fold_arc_working_set``) runs the SAME ``arc.summarize_segments``
-    store RPC the old conversation-record mirror used to run inline. Between turns
-    there is no active react scope (the parametrized sweep above already proves that
-    leg: ``arc_status == "no_active_scope"``, no store RPC at all) -- to prove the RPC
-    itself is off-loop this test fixes the scope compaction resolves (a real ARC,
-    ``clio_react_record.arc_scope`` monkeypatched to point at it, mirroring turn-scoped resolution)
-    with >=2 live segments so the fold actually runs end-to-end.
+    """Compaction's ARC fold (``compaction._fold``) is the ``arc.summarize_segments``
+    store RPC: it must run off the loop. The scope compaction resolves is fixed
+    (``clio_react_record.arc_scope`` monkeypatched to a real ARC, mirroring turn-scoped
+    resolution) with >=2 live segments so the fold runs end-to-end.
     """
 
     reset_guard_hits()
@@ -233,8 +229,8 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
 
         response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert response.status_code == 200, response.text
-        events = app.state.memory_events[sid]
-        assert events[-1]["arc_status"] == "folded", events[-1]
+        [done] = response.json()["compactions"]
+        assert (done["scope"], done["replaced_count"]) == (scope, 5)
     assert on_loop == [False], f"the ARC fold ran on the loop: {on_loop}"
     assert _write_hits() == []
 

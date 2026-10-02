@@ -72,6 +72,10 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "react.step.completed",
+        # A compaction: the "Summarizing context" row, then its record (or failure).
+        "compaction.started",
+        "compaction.completed",
+        "compaction.failed",
         # A BestOfN / Refine run: one row per try, then the selection with its scores.
         "variant.try",
         "variant.selected",

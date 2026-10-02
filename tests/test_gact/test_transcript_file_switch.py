@@ -227,7 +227,8 @@ def test_off_undo_rewind_fork_and_compact_persist_through_a_restart(
         live = _wire(client, sid)
         live_fork = _wire(client, fork_sid)
     assert [row["id"] for row in live][:3] == ["msg_1", "msg_2", "msg_3"]
-    assert len(live) == 4 and live[3]["parts"][0]["type"] == "compaction"
+    assert len(live) == 4 and live[3]["parts"][0]["type"] == "injection"
+    assert live[3]["parts"][0]["source"] == "summarization"
     assert [row["id"] for row in live_fork] == ["msg_1", "msg_2"]
     _no_message_files(tmp_path)
 
@@ -341,9 +342,13 @@ def test_off_the_not_ready_error_is_a_retryable_503(
 
 
 @pytest.mark.usefixtures("file_off")
-def test_off_a_failed_checkpoint_mint_is_typed_and_leaves_no_ghost_row(
+def test_off_a_failed_record_mint_is_typed_and_leaves_no_ghost_row(
     tmp_path: Path, core_store: _MemoryStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The transcript lane is down: neither the record nor its failure notice can be
+    written. The compaction fails typed, folds nothing and leaves no row behind."""
+    from clio_agent.gact import part_atoms
+
     app = _app(tmp_path, core_store, "mint_fail", agent=_CompactingAgent())
     with TestClient(app) as client:
         sid = _create_session(client)
@@ -355,11 +360,13 @@ def test_off_a_failed_checkpoint_mint_is_typed_and_leaves_no_ghost_row(
         def _store_down(*_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("clio-core store write failed")
 
-        monkeypatch.setattr(projection, "mint_message_part_atoms", _store_down)
+        monkeypatch.setattr(part_atoms, "append_part_atom", _store_down)
         response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert response.status_code == 500, response.text
-        assert response.json()["error"]["error"] == "memory_update_failed"
+        assert response.json()["error"]["error"] == "compaction_failure_unrecorded"
         assert [m.id for m in app.state.messages[sid]] == ["msg_1", "msg_2"]
+        live = app.state.arc.render_working_set(sid, "main")
+        assert [(s.kind, s.content["text"]) for s in live] == [("user", "one")]
 
 
 @pytest.mark.history_mode

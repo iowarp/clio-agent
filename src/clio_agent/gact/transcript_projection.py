@@ -62,9 +62,11 @@ from clio_agent.arc.lane_chunking import drop_lane, lane_has_segments, lane_segm
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
+    fully_retracted,
     group_atoms_in_order,
     mint_message_part_atoms,
     reproduce_message_wire,
+    retracted_part_ids,
 )
 from clio_agent.gact.transcript_file import file_transcript_enabled, materialize_from_atoms
 from clio_agent.gact.types import Message
@@ -214,7 +216,12 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
         seg.content
         for seg in lane_segments(store, session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
     ]
-    messages = [Message(**reproduce_message_wire(atoms)) for atoms in group_atoms_in_order(lane)]
+    retracted = retracted_part_ids(lane)  # a compaction record whose fold failed
+    messages = [
+        Message(**reproduce_message_wire(atoms, retracted))
+        for atoms in group_atoms_in_order(lane)
+        if not fully_retracted(atoms, retracted)
+    ]
     # #737 S6: workflow_state on the delegate rows is the recorded RESULT of the last
     # state_merge op for the scope — materialized schema-free here, NEVER re-folded on
     # read (design §2.8.d). A no-op when no op was recorded (rows keep their verbatim,

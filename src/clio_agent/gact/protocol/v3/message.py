@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Mapping
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.summarization_record import legacy_compaction_block
 from clio_agent.gact.tool_result_presentation import project_presentation
 
 if TYPE_CHECKING:
@@ -130,6 +131,8 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     than silently disappearing or masquerading as prose.
     """
 
+    if part.get("type") == "compaction":  # stored before the summarization record
+        part = legacy_compaction_block(part)
     part_id = str(part.get("id") or "")
     part_type = str(part.get("type") or "unknown")
     metadata = _mapping(part.get("metadata"))
@@ -187,14 +190,6 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "type": "plan",
             "title": str(part.get("title") or "Plan"),
             "detail": str(part.get("text") or ""),
-            **common,
-        }
-    if part_type == "compaction":
-        return {
-            "id": part_id,
-            "type": "compaction",
-            "summary": str(part.get("summary") or ""),
-            **({"auto": part["auto"]} if isinstance(part.get("auto"), bool) else {}),
             **common,
         }
     if part_type in {"task", "session_task", "task_notification"}:
@@ -261,6 +256,21 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "source": str(part.get("source") or ""),
             "text": str(part.get("text") or ""),
             "call_id": str(metadata.get("call_id") or ""),
+            # A compaction's record (source "summarization"): who asked, and its id.
+            **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
+            **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
+            **common,
+        }
+    if part_type == "notice":
+        # A UI/provenance record the model was never told (a failed compaction).
+        return {
+            "id": part_id,
+            "type": "notice",
+            "source": str(part.get("source") or ""),
+            "text": str(part.get("text") or ""),
+            "code": str(part.get("code") or ""),
+            **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
+            **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
             **common,
         }
     if part_type == "action_card":

@@ -269,7 +269,7 @@ from clio_agent.gact._params import (  # noqa: E402,F401
 )
 from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
-# gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
+# gact/agents/builders.py -- expert/blueprint runtime engine;
 # the kept turn-handler dispatch wrappers below reach the builders through these.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
@@ -326,9 +326,6 @@ from clio_agent.gact.agents.runners import (  # noqa: E402
     _run_blueprint_dspy_agent,
     _run_prompt_user_agent,
     _run_tool_user_agent,
-)
-from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
-    _summarize_segments_llm,
 )
 from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
 

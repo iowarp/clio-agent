@@ -28,11 +28,9 @@ nor an append costs O(history):
 * **Op records, append-only (§2.5).** A ``delete`` is an appended ``ws_op`` atom
   ``{op, targets}``; ``summarize`` / ``replace`` retire the ids in their producer's
   ``derived_from``. Stored content is never rewritten, so as-of-T replay is exact.
-* **Byte-exact ``order`` (§4.1.A).** Each content atom carries the scope-local ``order``
-  the plain :class:`~clio_agent.arc.segments.SegmentStore` would give it.
-* **Search companion (§2.7)** (:mod:`clio_agent.arc.search_companion`): append-only
-  per-scope text chunks over every atom ever written; retired atoms are marked at query
-  time. A companion write clio-core refuses is a typed write failure.
+* **Byte-exact ``order`` (§4.1.A)**: the scope-local ``order`` the plain store would give.
+* **Search companion (§2.7)** (:mod:`clio_agent.arc.search_companion`): append-only text
+  over every atom ever written, retired ones marked at query time; typed write failures.
 
 Every reserved-scope call (the semantic-event log itself) is delegated to ``super()``.
 """
@@ -520,10 +518,11 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
         turn_id: str = "",
         expert_span_id: str = "",
         run_span_id: str = "",
+        position: int | None = None,
     ) -> Segment:
-        """summarize = retire ``ids`` + one ``summary`` atom at the first replaced slot,
-        at ONE ``logical_time``. When it retires everything before it, it becomes the
-        scope's anchor (recorded in the session index)."""
+        """summarize = retire ``ids`` + one ``summary`` atom at the first replaced slot
+        (or render ``position``), at ONE ``logical_time``. When it retires everything
+        before it, it becomes the scope's anchor (recorded in the session index)."""
         if not self._is_working_set_scope(scope):
             return super().summarize(
                 session_id,
@@ -535,6 +534,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 turn_id=turn_id,
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
+                position=position,
             )
         view = self._view(session_id, scope)
         with view.lock:
@@ -548,7 +548,7 @@ class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
                 scope,
                 "summary",
                 summary_content,
-                order=first.order,
+                order=first.order if position is None else view.order_for_position(position),
                 step=step,
                 trace_ref=trace_ref,
                 derived_from=list(ids),

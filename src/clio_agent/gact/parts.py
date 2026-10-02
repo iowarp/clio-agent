@@ -287,14 +287,18 @@ class Part(DocumentPartFields):
     lines_added: int = 0
     lines_removed: int = 0
 
-    # compaction part (SPEC §4.5, #832): a model-context checkpoint, rendered from
-    # typed fields (not a ``[compact summary]`` prefix). History is retained --
-    # nothing is deleted (#1339); ``compacted_message_ids`` lists the rows this
-    # checkpoint stands in for in the MODEL context. ``auto`` flags a policy- (vs
-    # user-) triggered compaction.
+    # The stored ``compaction`` part (SPEC §4.5): READ ONLY. A compaction is recorded as
+    # an ``injection`` part with ``source: "summarization"`` (``trigger`` = auto|manual,
+    # ``compaction_id``); an old stored one is read as that record
+    # (``gact.summarization_record``).
     summary: str = ""
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)
+    trigger: str = ""
+    compaction_id: str = ""
+    # notice part: a UI/provenance record the model is never told (``source`` names
+    # it, e.g. ``compaction_failed``; ``code`` is the typed error code).
+    code: str = ""
 
     # action_card part (frozen wire contract, SPOTTER MVP): a generic in-transcript
     # notification/action card. ``source`` is the emitter identity (free string,

@@ -364,7 +364,25 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     return _Projection("subagent.upserted", projected, entity_id)
 
 
+#: Highway events served to v3 as their own typed events (payload: the event's payload).
+_COMPACTION_EVENTS = frozenset({"compaction.started", "compaction.completed", "compaction.failed"})
+
+
+def _semantic_event(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
+    """A compaction's highway event as ``compaction.started|completed|failed``.
+
+    Every other semantic event keeps its generic ``semantic.event`` envelope.
+    """
+    del event, session
+    event_type = str(payload.get("event_type") or "")
+    if event_type not in _COMPACTION_EVENTS:
+        return None
+    body = dict(_mapping(payload.get("payload")))
+    return _Projection(event_type, body, str(body.get("compaction_id") or "") or None)
+
+
 _EVENT_PROJECTORS: dict[str, _Projector] = {
+    "semantic.event": _semantic_event,
     "server.connected": _stream_live,
     "session.snapshot": _session_upsert,
     "session.status_changed": _session_upsert,

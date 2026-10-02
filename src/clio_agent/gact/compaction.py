@@ -1,146 +1,82 @@
-"""#1339: compaction is ONE operation -- an appended checkpoint -- with two triggers.
+"""Compaction: ONE operation, two triggers, visible and lossless.
 
-Both ``POST /v1/sessions/{sid}/compact`` (manual) and the proactive threshold-crossing
-autocompact (auto) now go through :func:`compact_session_context`. Neither destroys
-the ledger: a checkpoint is an ordinary assistant message carrying one ``compaction``
-part, APPENDED after the rows it stands in for -- history is retained in full for
-display and undo; only the MODEL-facing prompt shrinks at the checkpoint (see
-:mod:`clio_agent.gact.conversation_projection`).
+clio-core holds everything. A compaction changes only the MODEL's context view of one
+agent scope: the live segments :func:`~clio_agent.gact.compaction_policy.
+post_compaction_context` picks are replaced (``summarize_segments``, a recorded op) by
+one summary that renders first, ahead of what the policy keeps verbatim (by default the
+current user question). Every replaced step stays in clio-core, searchable and
+recallable byte-exact (``recall_context``).
 
-Deleted along with this: ``gact/compact_memory.py`` (the ARC ``conversations``-record
-mirror -- its readers were unreachable) and the ``session_archives`` ledger snapshot
-(zero readers). The old ``ledger[-50:]`` summariser cap is gone too: the checkpoint IS
-the bound now, by construction, so there is nothing left to truncate defensively.
+Both triggers run :func:`compact_session_context`: ``POST /v1/sessions/{sid}/compact``
+(``trigger="manual"``; the context panel passes ``?scope=``) and the threshold check
+the loop runs between ReAct steps (:func:`maybe_autocompact`, ``trigger="auto"``).
 
-What is summarized is what the model sees: the agent scope's clio-core projection
-(its live working set, spanning turns -- every user message, step, tool result and
-answer, the running turn's own steps included). The summary replaces exactly the
-segments it was written from (``summarize_segments``, a recorded op), so nothing the
-model knew is dropped unsummarized. The AUTO trigger compacts the running scope; a
-MANUAL compact compacts every agent scope of the session that holds live context.
-``arc_status`` types the plane outcome (:data:`ARC_STATUSES`). The ledger checkpoint
-row is the UI's record of the same compaction.
+Per compacted scope:
 
-Placement: a checkpoint is never inserted ahead of an in-flight assistant message (that
-would reorder ``reload`` ahead of ``live``, see design note in the tracking issue), so
-while a turn's transcript minter is open the checkpoint is STAGED
-(:func:`stage_checkpoint`) and flushed right after that turn's assistant message
-persists (:func:`flush_staged_checkpoint`, wired from
-``part_atom_minter.persist_finalized_message`` / ``close_turn_minter``). Otherwise it
-is appended immediately (:func:`append_checkpoint`).
+1. ``compaction.started`` (highway semantic event, served to the UI);
+2. the summary (one LM call over what is replaced);
+3. the record, written durably where it happened (:mod:`clio_agent.gact.
+   compaction_record`): mid-turn a summarization injection in the open turn's
+   assistant message at this step boundary, between turns its own row;
+4. the fold. A record that cannot be written folds nothing; a fold that fails
+   retracts the record;
+5. ``compaction.completed`` -- or ``compaction.failed`` for any failure after
+   ``started`` (always paired), then the typed :class:`CompactionError`.
 """
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.compaction_policy import keep_policy, post_compaction_context
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
-from clio_agent.gact.events import Event
-from clio_agent.gact.routes.compaction import build_compact_summary_message
-from clio_agent.gact.runtime.context_tokens import (
-    _estimate_text_tokens,
-    _resolve_expert_context_window,
+from clio_agent.gact.runtime.context_tokens import _estimate_text_tokens
+from clio_agent.gact.runtime.globals import _active_semantic_turn_id, _emit_semantic_event
+from clio_agent.gact.summarization_record import (
+    failure_notice_part,
+    recall_line,
+    summarization_part,
 )
-from clio_agent.gact.runtime.globals import (
-    _active_semantic_turn_id,
-    _emit_semantic_event,
-    _new_memory_event_id,
-)
-from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Message
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.runtime.stream_audit import stream_audit
 
 __all__ = [
-    "ARC_STATUSES",
-    "ARC_FOLDED",
-    "ARC_NOT_CONFIGURED",
-    "ARC_NO_ACTIVE_SCOPE",
-    "ARC_WORKING_SET_TOO_SMALL",
     "AUDIT_AUTO_FAILED",
     "AUDIT_AUTO_SKIPPED",
-    "AUDIT_INPUT_OVER_WINDOW",
-    "AUDIT_PERSIST_FAILED",
-    "AUDIT_STAGED_FLUSH_AT_CLOSE",
-    "AUDIT_STAGED_FLUSH_FAILED",
-    "PLACEMENT_APPENDED",
-    "PLACEMENT_STAGED",
-    "SKIP_CHECKPOINT_ALREADY_STAGED",
-    "SKIP_MODEL_CONTEXT_EMPTY",
+    "SKIP_NO_LIVE_CONTEXT",
     "SKIP_NOTHING_NEW",
-    "SKIP_SESSION_HAS_NO_MESSAGES",
+    "AutoCompactionFailedError",
     "CompactionError",
-    "append_checkpoint",
     "compact_session_context",
-    "flush_staged_checkpoint",
     "maybe_autocompact",
-    "stage_checkpoint",
-    "staged_checkpoint",
 ]
 
-# ---------------------------------------------------------------------------
-# Typed catalog (#775 no-silent-fallback ground rule) -- every degraded/skip
-# path below is one of these, never an ad-hoc string.
-# ---------------------------------------------------------------------------
-
 #: Skip reasons: ``compact_session_context`` returns ``{"compacted": False, "reason": ...}``.
-SKIP_SESSION_HAS_NO_MESSAGES = "session_has_no_messages"
-SKIP_MODEL_CONTEXT_EMPTY = "model_context_empty"
-SKIP_CHECKPOINT_ALREADY_STAGED = "checkpoint_already_staged"
+SKIP_NO_LIVE_CONTEXT = "no_live_context"
 SKIP_NOTHING_NEW = "nothing_new_since_last_compaction"
-
-#: ``arc_status`` values on the compaction memory event (frozen wire surface).
-ARC_NOT_CONFIGURED = "not_configured"
-ARC_NO_ACTIVE_SCOPE = "no_active_scope"
-ARC_WORKING_SET_TOO_SMALL = "working_set_too_small"
-ARC_FOLDED = "folded"
-ARC_STATUSES = frozenset(
-    {ARC_NOT_CONFIGURED, ARC_NO_ACTIVE_SCOPE, ARC_WORKING_SET_TOO_SMALL, ARC_FOLDED}
-)
-
-#: ``checkpoint_placement`` values.
-PLACEMENT_APPENDED = "appended"
-PLACEMENT_STAGED = "staged_for_finalize"
+SKIP_NO_TOKEN_COUNT = "no_token_count"
 
 #: Audit reasons (``stream_audit`` stage names double as the reason).
-AUDIT_INPUT_OVER_WINDOW = "compaction.input_over_window"
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
-SKIP_NO_TOKEN_COUNT = "no_token_count"
 AUDIT_AUTO_SKIPPED = "compaction.auto_skipped"
-AUDIT_STAGED_FLUSH_AT_CLOSE = "compaction.staged_flush_at_close"
-AUDIT_PERSIST_FAILED = "compaction.persist_failed"
-AUDIT_STAGED_FLUSH_FAILED = "compaction.staged_flush_failed"
 
 _BOUNDED_CHARS = 300
-
-
-class AutoCompactionFailedError(ClioError):
-    """The proactive compaction a turn needed failed: the turn fails typed, nothing folded.
-
-    It used to be audited and the turn went on, so the user never learned the context was
-    not compacted. The working set is untouched (the fold runs only after a summary).
-    """
-
-    reason = "auto_compaction_failed"
-
-    def __init__(self, exc: "CompactionError", session_id: str) -> None:
-        super().__init__(
-            f"automatic context compaction failed ({exc.error}): {exc.message}",
-            error_type=self.reason,
-            details={"session_id": session_id, "compaction_error": exc.error},
-        )
 
 
 class CompactionError(Exception):
     """One typed error surface for both triggers.
 
-    The manual route turns this straight into an HTTP response
-    (``HTTPException(exc.status, exc.envelope())``); the auto trigger catches it and
-    audits :data:`AUDIT_AUTO_FAILED` instead of raising into the turn loop.
+    The manual route turns it into an HTTP response (``HTTPException(exc.status,
+    exc.envelope())``); the auto trigger fails the turn with
+    :class:`AutoCompactionFailedError`.
     """
 
     def __init__(
@@ -148,7 +84,7 @@ class CompactionError(Exception):
         status: int,
         error: str,
         message: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
         *,
         recoverable: bool = True,
     ) -> None:
@@ -161,7 +97,6 @@ class CompactionError(Exception):
 
     def envelope(self) -> dict[str, Any]:
         """The HTTP body: an :class:`ErrorEnvelope`, same shape every route uses."""
-
         return ErrorEnvelope(
             error=ErrorInfo(
                 error=self.error,
@@ -172,47 +107,35 @@ class CompactionError(Exception):
         ).model_dump(exclude_none=True)
 
 
+class AutoCompactionFailedError(ClioError):
+    """The proactive compaction a turn needed failed: the turn fails typed, nothing folded."""
+
+    reason = "auto_compaction_failed"
+
+    def __init__(self, exc: CompactionError, session_id: str) -> None:
+        super().__init__(
+            f"automatic context compaction failed ({exc.error}): {exc.message}",
+            error_type=self.reason,
+            details={"session_id": session_id, "compaction_error": exc.error},
+        )
+
+
 def _skip(sid: str, reason: str) -> dict[str, Any]:
-    return {"session_id": sid, "compacted": False, "reason": reason}
-
-
-def _typed_persist_error(exc: BaseException, *, event_id: str, stage: str) -> CompactionError:
-    """Wrap ANY exception raised while landing a checkpoint as the ONE typed 500 a
-    manual-route caller sees (#1339 review F1).
-
-    Both the ARC fold (``_fold_arc_working_set``, an ``arc.summarize_segments`` store
-    RPC) and the checkpoint landing (``append_checkpoint``, an atom-mint store RPC) can
-    raise a real store defect; before this wrap, that raw exception reached
-    ``routes/sessions.py``'s generic error middleware as an UNTYPED 500
-    ``internal_error``, exactly the silent-fallback shape #772 forbids. ``stage``
-    distinguishes the two landing points in the audit row and the error's ``details``.
-    """
-
-    stream_audit(AUDIT_PERSIST_FAILED, event_id=event_id, landing_stage=stage, error=repr(exc))
-    return CompactionError(
-        500,
-        "memory_update_failed",
-        f"checkpoint persist failed: {exc!r}",
-        {"event_id": event_id, "stage": stage},
-        recoverable=False,
-    )
+    return {"session_id": sid, "compacted": False, "reason": reason, "compactions": []}
 
 
 # ---------------------------------------------------------------------------
-# Transcript rendering helpers.
+# The summarizer prompt's inputs (the template: ``clio_agent.compaction_prompt``).
 # ---------------------------------------------------------------------------
 
 
 def _bounded(text: str, limit: int = _BOUNDED_CHARS) -> str:
     text = text or ""
-    if len(text) <= limit:
-        return text
-    return text[: limit - 3] + "..."
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _context_file_inventory(app: Any, sid: str) -> str:
     """Render stable facts for files attached outside the message ledger."""
-
     registry = getattr(app.state, "context_files", {}) or {}
     bucket = registry.get(sid, {}) or {}
     rows: list[str] = []
@@ -228,90 +151,6 @@ def _context_file_inventory(app: Any, sid: str) -> str:
                 facts.append(f"{key}={_bounded(str(value))}")
         rows.append("- " + "; ".join(facts))
     return "\n".join(sorted(rows))
-
-
-_PROMPT_RULES = (
-    "Create an evidence-preserving compact memory for the following CLIO "
-    "conversation transcript. This becomes the next model-context checkpoint, "
-    "so preserve concrete scientific evidence, not just a high-level story.\n\n"
-    "Rules:\n"
-    "- Keep exact file paths, dataset names, column names, variable names, "
-    "units, dimensions, counts, statistics, artifact paths, and error messages "
-    "when they appear in the transcript.\n"
-    "- Preserve which findings came from which source, grouped by file/provider "
-    "or workflow stage.\n"
-    "- Preserve unresolved gaps, failed inspections, missing dependencies, and "
-    "next checks.\n"
-    "- If evidence is missing or a source was not inspected, say that explicitly. "
-    "Do not fill gaps with plausible details.\n"
-    "- Do not invent dataset names, columns, statistics, compression settings, "
-    "or readiness conclusions that are not supported by the transcript.\n"
-    "- Prefer concise structured bullets over prose. Keep the summary compact, "
-    "but do not omit identifiers needed for a later expert to continue the work."
-)
-
-
-def _build_prompt(transcript: str, focus: str, context_files: str = "") -> str:
-    prompt = _PROMPT_RULES
-    if focus:
-        prompt += f"\n\nFocus the summary on: {focus}"
-    if context_files:
-        prompt += f"\n\n--- attached session files ---\n{context_files}\n--- end files ---"
-    prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
-    return prompt
-
-
-# ---------------------------------------------------------------------------
-# What is compacted: the agent scopes' live projection (see module docstring).
-# ---------------------------------------------------------------------------
-
-
-def _live_scopes(app: Any, sid: str) -> tuple[str, dict[str, list[Any]]]:
-    """The agent scopes to compact and their live segments, with the plane status.
-
-    Inside a turn (the auto trigger) that is the running scope; otherwise (a manual
-    compact) every scope of the session holding live context.
-    """
-
-    arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is None:
-        return ARC_NOT_CONFIGURED, {}
-
-    from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
-
-    active, session, scope = arc_scope()
-    if active is not None and session == sid:
-        scopes = [scope]
-    else:
-        scopes = sorted(s for s in arc.list_segment_scopes(sid) if not s.startswith("_"))
-    live = {name: arc.render_working_set(sid, name) for name in scopes}
-    live = {name: segments for name, segments in live.items() if segments}
-    if not live:
-        return ARC_NO_ACTIVE_SCOPE, {}
-    if not any(_foldable(segments) for segments in live.values()):
-        return ARC_WORKING_SET_TOO_SMALL, live
-    return ARC_FOLDED, live
-
-
-def _foldable(segments: list[Any]) -> bool:
-    """A scope has something to compact unless it is already one lone summary."""
-
-    return not (len(segments) == 1 and getattr(segments[0], "kind", "") == "summary")
-
-
-def _scope_transcript(live: Mapping[str, list[Any]]) -> str:
-    """Render what the model sees in each scope as the summarizer's transcript."""
-
-    from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
-
-    blocks: list[str] = []
-    for scope, segments in live.items():
-        lines = [line for message in fold_steps(segments) for line in _message_lines(message)]
-        if not lines:
-            continue
-        body = "\n".join(lines)
-        blocks.append(body if len(live) == 1 else f"[agent {scope}]\n{body}")
-    return "\n\n".join(blocks)
 
 
 def _message_lines(message: Any) -> list[str]:
@@ -332,27 +171,69 @@ def _message_lines(message: Any) -> list[str]:
     return lines
 
 
-def _fold_scopes(
-    app: Any, sid: str, live: Mapping[str, list[Any]], summary: str, turn_id: str
-) -> None:
-    """Replace each scope's live segments with the summary written from them.
+# ---------------------------------------------------------------------------
+# What is compacted.
+# ---------------------------------------------------------------------------
 
-    CAN raise: ``arc.summarize_segments`` is a real store RPC; the caller wraps a
-    store defect into the one typed ``CompactionError`` (#1339 review F1).
-    """
 
-    arc = app.state.arc
-    for scope, segments in live.items():
-        if not _foldable(segments):
-            continue
-        arc.summarize_segments(
-            sid,
-            scope,
-            [s.id for s in segments],
-            {"text": summary},
-            token_count=_estimate_text_tokens(summary),
-            turn_id=turn_id,
-        )
+@dataclass(frozen=True)
+class _ScopePlan:
+    """One scope's compaction, decided before anything is written."""
+
+    scope: str
+    summarize: tuple[str, ...]
+    kept_turns: frozenset[str]
+    transcript: str
+
+
+def _open_turn_id(app: Any, sid: str) -> str:
+    from clio_agent.gact.tool_observer import _session_turn_transcript  # noqa: PLC0415
+
+    transcript = _session_turn_transcript(app, sid)
+    if transcript is not None and not transcript.frozen:
+        return str(transcript.turn_id or "")
+    return _active_semantic_turn_id()
+
+
+def _scopes(app: Any, sid: str, scope: str) -> list[str]:
+    """The scope asked for; inside a turn the running one; else every agent scope."""
+    from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
+
+    if scope:
+        return [scope]
+    active, session, running = arc_scope()
+    if active is not None and session == sid:
+        return [running]
+    return sorted(s for s in app.state.arc.list_segment_scopes(sid) if not s.startswith("_"))
+
+
+def _plan(app: Any, sid: str, scope: str, open_turn: str) -> _ScopePlan | None:
+    """What the policy summarizes in ``scope`` (``None``: nothing to compact)."""
+    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415
+        ContextFoldError,
+        fold_steps,
+    )
+
+    live = list(app.state.arc.render_working_set(sid, scope))
+    decision = post_compaction_context(live, open_turn_id=open_turn, policy=keep_policy())
+    replaced = [s for s in live if s.id in set(decision.summarize)]
+    if not replaced or (len(replaced) == 1 and replaced[0].kind == "summary"):
+        return None
+    try:
+        lines = [line for m in fold_steps(replaced) for line in _message_lines(m)]
+    except ContextFoldError as exc:
+        raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
+    if not lines:
+        return None
+    kept = frozenset(s.turn_id for s in live if s.id in set(decision.keep))
+    return _ScopePlan(scope, decision.summarize, kept, "\n".join(lines))
+
+
+def _covered_rows(app: Any, sid: str, open_turn: str, kept_turns: frozenset[str]) -> list[str]:
+    """The transcript rows the summary stands in for in a summarizer prompt."""
+    rows = model_context_messages(list(app.state.messages.get(sid, [])))
+    skip = set(kept_turns) | {open_turn}
+    return [m.id for m in rows if (getattr(m, "turn_id", "") or m.id) not in skip]
 
 
 # ---------------------------------------------------------------------------
@@ -361,32 +242,34 @@ def _fold_scopes(
 
 
 def compact_session_context(
-    app: Any, sid: str, *, trigger: Literal["manual", "auto"], focus: str = ""
+    app: Any,
+    sid: str,
+    *,
+    trigger: Literal["manual", "auto"],
+    focus: str = "",
+    scope: str = "",
 ) -> dict[str, Any]:
-    """Compact ``sid``'s session context into ONE appended checkpoint. Blocking,
-    off-loop only (every step below is a store RPC and/or an LM call).
+    """Compact ``sid``'s agent context. Blocking, off-loop only (store RPCs, LM calls).
 
     Args:
         app: The FastAPI app.
         sid: The session being compacted.
-        trigger: ``"manual"`` for ``POST /compact``, ``"auto"`` for the proactive
-            threshold trigger.
+        trigger: ``"manual"`` (``POST /compact``) or ``"auto"`` (the threshold).
         focus: Optional user-supplied focus instructions (manual only).
+        scope: The agent scope to compact; ``""`` means the running scope inside a
+            turn, else every agent scope of the session (one compaction each).
 
     Returns:
-        On success: ``{session_id, compacted: True, event_id, archived_count,
-        summary, checkpoint_placement}``. On a typed skip:
-        ``{session_id, compacted: False, reason}``.
+        ``{session_id, compacted, compactions: [...]}``, one entry per compacted scope
+        (``compaction_id``, ``scope``, ``trigger``, ``turn_id``, ``message_id``,
+        ``part_id``, ``replaced_count``, ``summary``); ``reason`` on a typed skip.
 
     Raises:
-        CompactionError: session not found (404), no LM agent wired (503), the LM
-            call failed after retries (502), or the ARC fold / checkpoint landing
-            raised a store defect (500 ``memory_update_failed``, #1339 review F1 --
-            never an untyped 500).
+        CompactionError: session not found (404), History mode (409), no clio-core
+            context (503), a fold-unreadable context (409), no LM agent (503), the LM
+            call failed (502) or the record / fold could not be written (500).
     """
-
-    sess = app.state.sessions.get(sid)
-    if sess is None:
+    if app.state.sessions.get(sid) is None:
         raise CompactionError(404, "not_found", f"session not found: {sid}", {"session_id": sid})
     if history_mode.active():
         raise CompactionError(
@@ -395,301 +278,225 @@ def compact_session_context(
             "compaction needs clio-core; this CLIO runs in History mode",
             {"session_id": sid, "context_mode": "history"},
         )
-
-    ledger = list(app.state.messages.get(sid, []))
-    if not ledger:
-        return _skip(sid, SKIP_SESSION_HAS_NO_MESSAGES)
-
-    model_messages = model_context_messages(ledger)
-    if not model_messages:
-        return _skip(sid, SKIP_MODEL_CONTEXT_EMPTY)
-
-    arc_status, live = _live_scopes(app, sid)
-    if arc_status == ARC_WORKING_SET_TOO_SMALL:
+    if getattr(app.state, "arc", None) is None:
+        raise CompactionError(
+            503, "context_store_unavailable", "no clio-core context to compact", {"session_id": sid}
+        )
+    open_turn = _open_turn_id(app, sid)
+    scopes = _scopes(app, sid, scope)
+    if not any(app.state.arc.render_working_set(sid, s) for s in scopes):
+        return _skip(sid, SKIP_NO_LIVE_CONTEXT)
+    plans = [p for p in (_plan(app, sid, s, open_turn) for s in scopes) if p is not None]
+    if not plans:
         return _skip(sid, SKIP_NOTHING_NEW)
-    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
-        ContextFoldError,
+    done = [_compact_scope(app, sid, plan, trigger, focus, open_turn) for plan in plans]
+    return {"session_id": sid, "compacted": True, "compactions": done}
+
+
+def _event(app: Any, sid: str, kind: str, turn_id: str, payload: dict[str, Any]) -> None:
+    status = {"started": "running", "completed": "completed", "failed": "failed"}[kind]
+    _emit_semantic_event(
+        app,
+        sid,
+        f"compaction.{kind}",
+        turn_id=turn_id,
+        status=status,
+        summary=f"Context compaction {kind}.",
+        actor={"role": "runtime", "component": "compaction"},
+        subject={"compaction_id": payload["compaction_id"], "scope": payload["scope"]},
+        payload=payload,
     )
 
+
+def _compact_scope(
+    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, open_turn: str
+) -> dict[str, Any]:
+    """Compact one scope: started, summary, record, fold, completed (or failed)."""
+    base = {
+        "session_id": sid,
+        "compaction_id": f"cmp_{uuid.uuid4().hex[:16]}",
+        "scope": plan.scope,
+        "trigger": trigger,
+        "turn_id": open_turn,
+    }
+    _event(app, sid, "started", open_turn, base)
     try:
-        transcript = _scope_transcript(live)
-    except ContextFoldError as exc:
-        raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
-    if not transcript.strip():
-        # #1339 review F2: a session whose model-context rows render to nothing (e.g.
-        # only a2ui/mcp_app parts with no text-bearing class) has real work to skip,
-        # not an empty LLM call -- checked before dispatch_pre_compact/the LLM so
-        # neither ever sees an empty ``--- transcript ---`` block. Otherwise
-        # unreachable in steady state: the latest checkpoint row always renders (its
-        # ``summary`` line) once one exists.
-        return _skip(sid, SKIP_MODEL_CONTEXT_EMPTY)
+        result = _summarize_record_fold(app, sid, plan, trigger, focus, base)
+    except CompactionError as exc:
+        _failed(app, sid, base, exc)
+        raise
+    except Exception as exc:  # noqa: BLE001 - reported failed and re-raised typed
+        typed = CompactionError(500, "compaction_failed", f"compaction failed: {exc!r}")
+        _failed(app, sid, base, typed)
+        raise typed from exc
+    _event(app, sid, "completed", open_turn, {k: v for k, v in result.items() if k != "summary"})
+    return result
 
-    input_tokens = _estimate_text_tokens(transcript)
-    context_window = _ctx.active_react_context_window()
-    if not context_window:
-        cfg = getattr(getattr(app.state, "agent", None), "_provider_config", None)
-        context_window = _resolve_expert_context_window(cfg) if cfg is not None else 0
-    if context_window and input_tokens > context_window:
-        stream_audit(
-            AUDIT_INPUT_OVER_WINDOW,
-            session_id=sid,
-            trigger=trigger,
-            input_tokens=input_tokens,
-            context_window=context_window,
-        )
 
+def _failed(app: Any, sid: str, base: dict[str, Any], exc: CompactionError) -> None:
+    """Record the failure where it happened (a ``notice`` the model is never told),
+    then ``compaction.failed`` naming it. A notice that cannot be written is reported
+    in the same event and raised typed with both causes."""
+    from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
+
+    notice = failure_notice_part(
+        f"Summarizing the context failed, so it was left as it was. {exc.message}",
+        code=exc.error,
+        compaction_id=base["compaction_id"],
+        trigger=base["trigger"],
+        agent_id=base["scope"],
+    )
+    error = {"code": exc.error, "message": exc.message}
+    try:
+        message_id, part_id = write_notice(app, sid, notice)
+    except Exception as notice_exc:  # noqa: BLE001 - reported failed, raised typed below
+        _event(app, sid, "failed", base["turn_id"], {**base, "error": error, "part_id": ""})
+        raise CompactionError(
+            500,
+            "compaction_failure_unrecorded",
+            f"{exc.message}; its failure notice could not be written: {notice_exc!r}",
+            {"compaction_error": exc.error},
+            recoverable=False,
+        ) from notice_exc
+    payload = {**base, "error": error, "message_id": message_id, "part_id": part_id}
+    _event(app, sid, "failed", base["turn_id"], payload)
+
+
+def _summarize_record_fold(
+    app: Any, sid: str, plan: _ScopePlan, trigger: str, focus: str, base: dict[str, Any]
+) -> dict[str, Any]:
+    from clio_agent.gact.compaction_record import RecordWriteError, write_record  # noqa: PLC0415
     from clio_agent.gact.hooks import dispatch_pre_compact  # noqa: PLC0415
 
+    sess = app.state.sessions.get(sid)
     dispatch_pre_compact(
         session_id=sid,
         cwd=str(getattr(sess, "workspace_root", "") or ""),
         payload={
-            "message_count": len(model_messages),
-            "transcript_chars": len(transcript),
+            "message_count": len(plan.summarize),
+            "transcript_chars": len(plan.transcript),
             "trigger": trigger,
         },
     )
+    summary = _summary(app, sid, plan.transcript, focus)
+    text = f"{summary}\n\n{recall_line(base['compaction_id'])}"
+    part = summarization_part(
+        text,
+        trigger=trigger,
+        compaction_id=base["compaction_id"],
+        derived_from=plan.summarize,
+        compacted_message_ids=_covered_rows(app, sid, base["turn_id"], plan.kept_turns),
+        agent_id=plan.scope,
+    )
+    try:
+        record = write_record(app, sid, part)
+    except RecordWriteError as exc:
+        raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
+    _fold(app, sid, plan, text, base, record)
+    message_id, part_id = record.publish()
+    _remember(app, sid, base, message_id, len(plan.summarize))
+    return {
+        **base,
+        "message_id": message_id,
+        "part_id": part_id,
+        "replaced_count": len(plan.summarize),
+        "summary": text,
+    }
 
-    from clio_agent.gact.part_atom_minter import turn_minter  # noqa: PLC0415
 
-    in_turn = turn_minter(app, sid) is not None
-    if in_turn and staged_checkpoint(app, sid) is not None:
-        return _skip(sid, SKIP_CHECKPOINT_ALREADY_STAGED)  # before any LM call or fold
-
+def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise CompactionError(
-            503,
-            "agent_unavailable",
-            "no LM agent wired; configure one via PUT /v1/providers/lm",
+            503, "agent_unavailable", "no LM agent wired; configure one via PUT /v1/providers/lm"
         )
+    from clio_agent.compaction_prompt import (  # noqa: PLC0415
+        CompactionPromptError,
+        render_compaction_prompt,
+    )
 
-    prompt = _build_prompt(transcript, focus, _context_file_inventory(app, sid))
+    try:  # read from the configured file at every compaction (no restart, no fallback)
+        prompt = render_compaction_prompt(
+            transcript, focus=focus, files=_context_file_inventory(app, sid)
+        )
+    except CompactionPromptError as exc:
+        raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
 
-    def _summarize() -> str:
-        return agent._run_chat_agent(prompt, "")
+    def _call() -> str:
+        return str(agent._run_chat_agent(prompt, "") or "")
 
     retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
     try:
-        summary = (
-            retry_call("compact_summary", _summarize) if callable(retry_call) else _summarize()
-        )
-    except Exception as exc:  # noqa: BLE001 - surfaced typed below, never silently dropped
+        summary = retry_call("compact_summary", _call) if callable(retry_call) else _call()
+    except Exception as exc:  # noqa: BLE001 - re-raised typed, never silently dropped
         raise CompactionError(
             502, "upstream_error", f"compact summarisation failed: {exc!r}"
         ) from exc
-
-    if not (summary or "").strip():
+    if not summary.strip():
         raise CompactionError(
             502, "empty_summary", "the summary LM returned no text; nothing was compacted"
         )
-
     evidence_index = _compact_exact_evidence_index(transcript)
-    if evidence_index:
-        summary = (summary or "").rstrip() + "\n\n" + evidence_index
+    return summary.strip() + (f"\n\n{evidence_index}" if evidence_index else "")
 
-    event_id = _new_memory_event_id()
-    turn_id = _active_semantic_turn_id()
-    checkpoint = build_compact_summary_message(
-        session_id=sid,
-        turn_id=turn_id,
-        summary=summary or "",
-        event_id=event_id,
-        compacted_message_ids=[m.id for m in model_messages],
-        auto=(trigger == "auto"),
+
+def _fold(
+    app: Any, sid: str, plan: _ScopePlan, text: str, base: dict[str, Any], record: Any
+) -> None:
+    """Replace the planned ids with the summary, ahead of what is kept. A failed fold
+    retracts the (already durable) record before it raises typed."""
+    try:
+        app.state.arc.summarize_segments(
+            sid,
+            plan.scope,
+            list(plan.summarize),
+            {"text": text, "compaction_id": base["compaction_id"]},
+            token_count=_estimate_text_tokens(text),
+            turn_id=base["turn_id"] or record.message_id,
+            position=0,
+        )
+    except Exception as exc:  # noqa: BLE001 - the record is retracted, then raised typed
+        _retract(record, exc)
+        raise CompactionError(
+            500, "fold_failed", f"the context fold failed: {exc!r}", {"scope": plan.scope}
+        ) from exc
+    from clio_agent.providers.stateful_common import (  # noqa: PLC0415
+        note_prefix_reset_for_active_scope,
     )
 
+    note_prefix_reset_for_active_scope("ops_reset")
+
+
+def _retract(record: Any, cause: BaseException) -> None:
     try:
-        if arc_status == ARC_FOLDED:
-            # Outside a turn (manual) the checkpoint row is the compaction's turn, so a
-            # rollback of that row also rolls the fold back.
-            _fold_scopes(app, sid, live, summary or "", turn_id or checkpoint.id)
-    except Exception as exc:  # noqa: BLE001 - typed below (#1339 review F1)
-        raise _typed_persist_error(exc, event_id=event_id, stage="fold_arc_working_set") from exc
-    if arc_status == ARC_FOLDED:
-        from clio_agent.providers.stateful_common import (  # noqa: PLC0415
-            note_prefix_reset_for_active_scope,
-        )
-
-        note_prefix_reset_for_active_scope("ops_reset")
-
-    fields: dict[str, Any] = {
-        "event_id": event_id,
-        "archived_count": len(model_messages),
-        "arc_status": arc_status,
-        "trigger": trigger,
-        "input_tokens_estimated": input_tokens,
-        "context_window": context_window,
-        "summary": summary,
-    }
-
-    if in_turn:
-        return stage_checkpoint(app, sid, checkpoint, **fields)
-    try:
-        return append_checkpoint(app, sid, checkpoint, **fields)
-    except Exception as exc:  # noqa: BLE001 - typed below (#1339 review F1)
-        raise _typed_persist_error(exc, event_id=event_id, stage="append_checkpoint") from exc
+        record.retract()
+    except Exception as exc:  # noqa: BLE001 - both failures raised typed together
+        raise CompactionError(
+            500,
+            "record_retract_failed",
+            f"the fold failed ({cause!r}) and its record could not be retracted: {exc!r}",
+            {"part_id": record.part_id},
+            recoverable=False,
+        ) from exc
 
 
-def append_checkpoint(
-    app: Any,
-    sid: str,
-    checkpoint: Message,
-    *,
-    event_id: str,
-    archived_count: int,
-    arc_status: str,
-    trigger: str,
-    input_tokens_estimated: int,
-    context_window: int,
-    summary: str,
-) -> dict[str, Any]:
-    """The single landing point for a checkpoint row. Blocking, off-loop only.
-
-    Appends the checkpoint to the ledger (the a2ui mid-turn pattern: the ledger +
-    per-session file write here, the atoms through the minter FIFO when a turn is
-    open, else inline off-loop), records the memory event, and publishes both
-    ``message.created`` (the only way the web client learns of the new row -- the
-    v3 ``message.upserted`` projector) and ``session.compacted``.
-
-    A failure below the ledger/file write (the atom mint, via ``run_transcript_job``
-    -> ``on_message_appended``) can still raise. With ``transcript.file`` on the row
-    is then ALREADY in the in-memory ledger and the per-session ``MessageStore`` file
-    -- the durable copy the next read repairs the atom lane from. With it off the
-    mint IS the durable write: the row is taken back out of the in-memory ledger
-    (``transcript_file.forget_unminted_on_failure``) and nothing was persisted. Every
-    caller (the immediate manual-route landing, and :func:`flush_staged_checkpoint`)
-    turns that raise into ITS OWN typed handling -- this function raises whatever the
-    write seams raise, untyped.
-    """
-
-    from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415
-    from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
-    from clio_agent.gact.transcript_file import forget_unminted_on_failure  # noqa: PLC0415
-    from clio_agent.gact.transcript_projection import on_message_appended  # noqa: PLC0415
-
-    _append_session_message(app, sid, checkpoint, atoms_minted=True)
-    with forget_unminted_on_failure(app, sid, checkpoint):
-        run_transcript_job(
-            app, sid, f"compaction:{event_id}", lambda: on_message_appended(app, sid, checkpoint)
-        )
-    app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
-
+def _remember(app: Any, sid: str, base: dict[str, Any], message_id: str, replaced: int) -> None:
+    """The session's memory-event row (``GET /v1/sessions/{sid}/memory_events``)."""
     now = datetime.now(timezone.utc).isoformat()
-    summary_chars = len(summary or "")
-    memory_event = {
-        "id": event_id,
-        "version": 1,
-        "type": "compact_summary",
-        "session_id": sid,
-        "created_at": now,
-        "updated_at": now,
-        "summary_message_id": checkpoint.id,
-        "archived_count": archived_count,
-        "summary_chars": summary_chars,
-        "arc_status": arc_status,
-        "trigger": trigger,
-        "checkpoint_placement": PLACEMENT_APPENDED,
-        "input_tokens_estimated": input_tokens_estimated,
-        "context_window": context_window,
-        "metadata": {
-            "source": "gact_compact",
-            "synthetic": "compact_summary",
-            "evidence_index": "[exact retained evidence index]" in (summary or ""),
-        },
-    }
-    app.state.memory_events.setdefault(sid, []).append(memory_event)
-    _emit_semantic_event(
-        app,
-        sid,
-        "memory.compacted",
-        turn_id=_ctx.active_turn_id(),
-        trace_id=_ctx.active_trace_id(),
-        summary="Session transcript was compacted into memory.",
-        actor={"role": "runtime", "component": "memory"},
-        subject={"memory_event_id": event_id},
-        payload=memory_event,
+    app.state.memory_events.setdefault(sid, []).append(
+        {
+            "id": base["compaction_id"],
+            "version": 1,
+            "type": "compact_summary",
+            "session_id": sid,
+            "created_at": now,
+            "updated_at": now,
+            "summary_message_id": message_id,
+            "archived_count": replaced,
+            "trigger": base["trigger"],
+            "scope": base["scope"],
+        }
     )
-
-    app.state.bus.publish(
-        Event(type="message.created", session_id=sid, payload=checkpoint.to_wire())
-    )
-    app.state.bus.publish(
-        Event(
-            type="session.compacted",
-            session_id=sid,
-            payload={
-                "event_id": event_id,
-                "archived_count": archived_count,
-                "summary_chars": summary_chars,
-                "summary_message_id": checkpoint.id,
-                "version": 1,
-                "trigger": trigger,
-            },
-        )
-    )
-    return {
-        "session_id": sid,
-        "compacted": True,
-        "event_id": event_id,
-        "archived_count": archived_count,
-        "summary": summary,
-        "checkpoint_placement": PLACEMENT_APPENDED,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Staging -- a checkpoint built while a turn's minter is open waits for that
-# turn's assistant message to persist first (never inserted ahead of it).
-# ---------------------------------------------------------------------------
-
-
-def _staged_compactions(app: Any) -> dict[str, dict[str, Any]]:
-    staged = getattr(app.state, "staged_compactions", None)
-    if staged is None:
-        staged = {}
-        app.state.staged_compactions = staged
-    return staged
-
-
-def stage_checkpoint(app: Any, sid: str, checkpoint: Message, **fields: Any) -> dict[str, Any]:
-    """Hold ``checkpoint`` until the open turn's assistant message persists."""
-
-    staged = _staged_compactions(app)
-    staged[sid] = {"checkpoint": checkpoint, **fields}
-    return {
-        "session_id": sid,
-        "compacted": True,
-        "event_id": fields["event_id"],
-        "archived_count": fields["archived_count"],
-        "summary": fields["summary"],
-        "checkpoint_placement": PLACEMENT_STAGED,
-    }
-
-
-def staged_checkpoint(app: Any, sid: str) -> Optional[dict[str, Any]]:
-    """The session's pending staged checkpoint entry, or ``None``."""
-
-    return _staged_compactions(app).get(sid)
-
-
-def flush_staged_checkpoint(app: Any, sid: str) -> Optional[dict[str, Any]]:
-    """Append the session's staged checkpoint, if any. ``None`` when nothing is staged.
-
-    CAN raise (see :func:`append_checkpoint`'s docstring): a persist failure here
-    must never fail the turn whose finalize triggered the flush, so both callers
-    (``part_atom_minter``'s ``persist_finalized_message`` primary flush and
-    ``close_turn_minter`` backstop) catch around this call, audit
-    :data:`AUDIT_STAGED_FLUSH_FAILED`, and continue (#1339 review F1) -- this
-    function itself does not swallow anything.
-    """
-
-    staged = _staged_compactions(app)
-    entry = staged.pop(sid, None)
-    if entry is None:
-        return None
-    checkpoint = entry.pop("checkpoint")
-    return append_checkpoint(app, sid, checkpoint, **entry)
 
 
 # ---------------------------------------------------------------------------
@@ -698,25 +505,17 @@ def flush_staged_checkpoint(app: Any, sid: str) -> Optional[dict[str, Any]]:
 
 
 def maybe_autocompact() -> None:
-    """Proactive, threshold-crossing auto-compaction -- the V2 trigger (#901 S6,
-    unified onto :func:`compact_session_context` by #1339).
+    """Compact the running scope between ReAct steps when its context is too full.
 
-    When ``prompt_tokens / context_window`` crosses the session's configured
-    threshold, run the SAME operation manual compaction uses, with
-    ``trigger="auto"``. At most one checkpoint may be staged during an open
-    turn: later ReAct iterations preserve the newly accumulated live working
-    set instead of repeatedly summarizing the same pre-turn ledger. A failure is
-    audited (:data:`AUDIT_AUTO_FAILED`) and
-    swallowed -- the loop continues, backstopped by the existing
-    ``ContextWindowExceededError`` handling; auto-compaction is a proactive
-    optimization, never a hard turn dependency. The previous turn's durable
-    per-scope usage backs up ephemeral LM history for subscription providers
-    that create a fresh binding per turn. No active app to compact
-    through (``_ctx.active_app()`` is documented nullable) is likewise a typed,
-    audited skip (:data:`AUDIT_AUTO_SKIPPED`, ``reason="no_active_app"``), never
-    a silent no-op.
+    The loop calls this at every step boundary. When the last measured prompt size
+    over the context window crosses the session's threshold, the running scope is
+    compacted with ``trigger="auto"`` (the same operation as a manual compact). A
+    failed compaction is NOT swallowed: it is audited (:data:`AUDIT_AUTO_FAILED`) and
+    raised as :class:`AutoCompactionFailedError`, so the turn fails typed with its
+    context unfolded. With no measured count yet in this binding, the previous turn's
+    durable per-scope usage stands in (subscription providers bind a fresh LM per
+    turn). History mode has no compaction; no active app is an audited skip.
     """
-
     from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
     from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
         _last_prompt_tokens,
@@ -728,59 +527,32 @@ def maybe_autocompact() -> None:
         return  # History mode has no compaction (declared on the health row and the UI)
     app = _ctx.active_app()
     if app is None:
-        # #1339 review round: active_app() is documented nullable
-        # (gact/context.py); compact_session_context requires a real app
-        # (it reads app.state.sessions unguarded) -- never a hard crash for a
-        # proactive optimization the docstring itself promises is optional.
-        # No silent fallback (owner rule): the skip is typed and audited, not
-        # merely swallowed.
         stream_audit(AUDIT_AUTO_SKIPPED, reason="no_active_app", session_id=session)
         return
-    sessions = getattr(getattr(app, "state", None), "sessions", None)
-    session_row = sessions.get(session) if sessions is not None else None
-    if staged_checkpoint(app, session) is not None:
-        stream_audit(
-            AUDIT_AUTO_SKIPPED,
-            reason=SKIP_CHECKPOINT_ALREADY_STAGED,
-            session_id=session,
-        )
-        return
-    enabled, threshold = _session_autocompact_preferences(getattr(session_row, "metadata", None))
+    sessions = getattr(app.state, "sessions", None)  # a bare loop app has no session store
+    metadata = getattr(sessions.get(session) if sessions is not None else None, "metadata", None)
+    enabled, threshold = _session_autocompact_preferences(metadata)
     if not enabled:
         return
     window = _ctx.active_react_context_window()
-    last = _last_prompt_tokens()
-    metadata = getattr(session_row, "metadata", None)
-    usage_by_scope = (
-        metadata.get("context_usage_by_scope", {}) if isinstance(metadata, Mapping) else {}
-    )
-    usage_scope = scope.partition("#run")[0]
-    durable_usage = (
-        usage_by_scope.get(usage_scope, {}) if isinstance(usage_by_scope, Mapping) else {}
-    )
-    # Only a measured count decides: an ``estimated`` usage is the user prompt alone.
-    measured = isinstance(durable_usage, Mapping) and durable_usage.get("source") != "estimated"
-    try:
-        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0) if measured else 0
-    except (TypeError, ValueError, AttributeError):
-        durable_prompt_tokens = 0
-    # Subscription-backed providers create a fresh LM binding for each turn, so
-    # its in-memory history can be empty before the first send. Finalization
-    # durably records the preceding turn's prompt usage on the session; retain
-    # that signal so proactive compaction still works across those bindings.
-    last = max(last, durable_prompt_tokens)
+    last = _last_prompt_tokens() or _durable_prompt_tokens(metadata, scope)
     if not window or not last:
         stream_audit(AUDIT_AUTO_SKIPPED, reason=SKIP_NO_TOKEN_COUNT, session_id=session)
         return
     if (last / window) < threshold:
         return
     try:
-        compact_session_context(app, session, trigger="auto")
+        compact_session_context(app, session, trigger="auto", scope=scope)
     except CompactionError as exc:
-        stream_audit(
-            AUDIT_AUTO_FAILED,
-            session_id=session,
-            error=exc.error,
-            message=exc.message[:300],
-        )
+        stream_audit(AUDIT_AUTO_FAILED, session_id=session, error=exc.error, message=exc.message)
         raise AutoCompactionFailedError(exc, session) from exc
+
+
+def _durable_prompt_tokens(metadata: Any, scope: str) -> int:
+    """The previous turn's measured prompt tokens for ``scope`` (0 when not measured)."""
+    by_scope = metadata.get("context_usage_by_scope", {}) if isinstance(metadata, Mapping) else {}
+    usage = by_scope.get(scope.partition("#run")[0], {}) if isinstance(by_scope, Mapping) else {}
+    if not isinstance(usage, Mapping) or usage.get("source") == "estimated":
+        return 0  # an ``estimated`` usage is the user prompt alone, not a measurement
+    value = usage.get("used_tokens", 0)
+    return int(value) if isinstance(value, int | float) else 0

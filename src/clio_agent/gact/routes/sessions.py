@@ -640,16 +640,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/sessions/{sid}/compact ----------------------------------
 
     @app.post("/v1/sessions/{sid}/compact")
-    async def compact_session(sid: str, request: Request) -> dict[str, Any]:
-        """Append one evidence-preserving checkpoint (#1339). One operation, two
-        triggers -- see :func:`clio_agent.gact.compaction.compact_session_context`;
-        this route is the manual trigger."""
-
+    async def compact_session(sid: str, request: Request, scope: str = "") -> dict[str, Any]:
+        """Compact the session's context NOW: the manual trigger (the panel too, with
+        ``?scope=``) of the ONE operation, :func:`~clio_agent.gact.compaction.
+        compact_session_context`; no ``scope`` compacts every agent scope."""
         body = await json_body(request, route="POST /v1/sessions/{sid}/compact")
         focus = (body.get("focus") or "").strip()
+        compact = compact_session_context
         try:
             return await run_off_loop(
-                lambda: compact_session_context(app, sid, trigger="manual", focus=focus)
+                lambda: compact(app, sid, trigger="manual", focus=focus, scope=scope)
             )
         except CompactionError as exc:
             raise HTTPException(status_code=exc.status, detail=exc.envelope()) from exc

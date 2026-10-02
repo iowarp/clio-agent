@@ -38,7 +38,6 @@ import string
 import dspy
 import pytest
 
-import clio_agent.gact.app as app
 from clio_agent.arc.schema import segment_text
 
 from .conftest import live_plane_context, probe_live_context
@@ -324,6 +323,18 @@ def test_as_of_t_time_travel(arc, seed):
     )
 
 
+def _summarize(segments: list, lm: dspy.LM) -> str:
+    """A real provider summary of ``segments`` (the compaction text under test)."""
+    body = "\n".join(segment_text(s) for s in segments)
+    predict = dspy.Predict(
+        dspy.Signature(
+            "prior_context -> summary",
+            "Summarize the prior steps into a compact summary that loses no fact.",
+        )
+    )
+    return str(predict(prior_context=body, lm=lm).summary or "").strip()
+
+
 # ---------------------------------------------------------------------------
 # 4. SURVIVES COMPACTION: real provider summarize, fact still recalled.
 # ---------------------------------------------------------------------------
@@ -373,7 +384,7 @@ def test_needle_survives_real_compaction(arc, seed):
 
     # Real provider summary over the whole scope (the genuine compaction text).
     with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-        summary = app._summarize_segments_llm(live)
+        summary = _summarize(live, lm)
     assert summary, "provider summary came back empty (LLM compaction failed)"
     assert _recalled(code, summary), (
         f"the REAL summary dropped the unguessable code — compaction lost the fact. "

@@ -114,8 +114,9 @@ def _chunk_capacity() -> int:
 #     they exist for that message. A message whose envelope never landed (a crash before
 #     finalize) reassembles as a TYPED incomplete message, never a silently complete one.
 # ``atom_role == "retract"`` (``retracted_part_ids``) is honored by the reproducer as the
-# escape hatch for a sealed part that must not be served; no live path emits it (the
-# ledger only ever removes UNSEALED parts — pinned by tests).
+# escape hatch for a sealed part that must not be served. One live path emits it: a
+# compaction whose fold failed retracts the record it wrote first
+# (:func:`build_retract_atom`); a message whose every part is retracted is not served.
 PART_ATOM_SCHEMA_VERSION = 2
 ENVELOPE_AUTHORITY_INLINE = "inline"
 ENVELOPE_AUTHORITY_ATOM = "atom"
@@ -128,22 +129,17 @@ TRANSCRIPT_INCOMPLETE_REASON = "transcript_incomplete_no_envelope"
 
 
 def _compaction_identity(part_dump: dict[str, Any]) -> dict[str, str] | None:
-    """Return ``{msg_compact_id, memory_event_id}`` for a compaction part, else ``None``.
+    """``{compaction_id, trigger}`` for a compaction's record part, else ``None``.
 
-    A compaction part (SPEC §4.5 / §6.25, produced by the ``/compact`` route) carries
-    the synthetic-summary identity in its ``id`` (``msg_compact_*``) + ``metadata``
-    (``memory_event_id``). Captured so S5 can reproduce the compaction wire identity
-    (frozen surface 1.8). ``None`` for every non-compaction part (the finalize path
-    never produces one; only ``/compact`` does — both flow through the same persist
-    seam, so both are covered).
+    The queryable header of a summarization injection's atom (the part dump itself is
+    the reproduction source).
     """
-    if part_dump.get("type") != "compaction":
+    from clio_agent.gact.summarization_record import as_summarization  # noqa: PLC0415
+
+    record = as_summarization(part_dump)
+    if record is None or part_dump.get("type") != "injection":
         return None
-    meta = part_dump.get("metadata") or {}
-    return {
-        "msg_compact_id": str(part_dump.get("id") or ""),
-        "memory_event_id": str(meta.get("memory_event_id") or ""),
-    }
+    return {"compaction_id": record.compaction_id, "trigger": record.trigger}
 
 
 def _atom_content(
@@ -289,6 +285,57 @@ def build_sealed_part_atom(
     return content
 
 
+def build_retract_atom(
+    stub: Mapping[str, Any], part_ids: list[str], part_index: int
+) -> dict[str, Any]:
+    """A ``retract`` atom: the named parts of ``stub``'s message are never served.
+
+    Args:
+        stub: :func:`message_stub` of the message the parts belong to.
+        part_ids: The parts that must not be served.
+        part_index: The first retracted part's index (orders the atom in its group).
+    """
+
+    return {
+        "schema_version": PART_ATOM_SCHEMA_VERSION,
+        "envelope_authority": ENVELOPE_AUTHORITY_ATOM,
+        "atom_role": "retract",
+        "message_id": str(stub.get("id") or ""),
+        "part_id": "",
+        "part_index": part_index,
+        "created_at": str(stub.get("created_at") or ""),
+        "role": str(stub.get("role") or "assistant"),
+        "retracted_part_ids": list(part_ids),
+        "message_stub": dict(stub),
+        "part": None,
+    }
+
+
+def retracted_part_ids(atoms: list[dict[str, Any]]) -> set[str]:
+    """Every part id a ``retract`` atom in ``atoms`` names (a lane, or one message)."""
+
+    return {
+        str(pid)
+        for atom in atoms
+        if atom.get("atom_role") == "retract"
+        for pid in atom.get("retracted_part_ids") or []
+    }
+
+
+def fully_retracted(atoms: list[dict[str, Any]], retracted: set[str]) -> bool:
+    """Whether a message group is never served: every part it holds is retracted (a
+    compaction record whose fold failed), or it is only a retract marker.
+
+    ``retracted`` is lane-wide: a retract atom written after a message's envelope opens
+    its own group, so retraction is by part id, never by position.
+    """
+
+    parts = {str(a.get("part_id") or "") for a in atoms if a.get("part") is not None}
+    if not parts:
+        return all(a.get("atom_role") == "retract" for a in atoms)
+    return parts <= retracted
+
+
 def build_envelope_atom(message: Message) -> dict[str, Any]:
     """The trailing envelope atom: the authority for every message-level field."""
 
@@ -385,7 +432,9 @@ def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any
 # --------------------------------------------------------------------------- #
 
 
-def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
+def reproduce_message_wire(
+    atoms: list[dict[str, Any]], retracted: set[str] | None = None
+) -> dict[str, Any]:
     """Reconstruct ``Message.model_dump(exclude_none=True)`` from a message's atoms.
 
     The step-4 reproducibility gate (design §4.2): the reconstruction must equal the
@@ -397,6 +446,7 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
 
     Args:
         atoms: The ``content`` dicts of ONE message's atoms (any order).
+        retracted: Part ids retracted anywhere on the lane (never served).
 
     Returns:
         The reconstructed ``model_dump(exclude_none=True)`` dict.
@@ -406,7 +456,7 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
     """
     if not atoms:
         raise ValueError("reproduce_message_wire: no atoms for the message")
-    retracted: set[str] = set()
+    retracted = set(retracted or ())
     envelope_atom: dict[str, Any] | None = None
     latest_by_part: dict[str, dict[str, Any]] = {}
     for atom in atoms:  # lane order: the LAST atom of a part id wins (a reseal)

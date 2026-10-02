@@ -31,7 +31,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import dspy
 import httpx
 import pytest
 from dspy.dsp.utils.settings import main_thread_config
@@ -98,7 +97,7 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Deferred boot (no ``CLIO_LM_PROVIDER``) then PUT: the ambient default is set,
-    so a manual compaction (an ambient call) uses the bound LM and does NOT 503.
+    so an ambient read resolves the bound LM.
     """
     for key in _REMOVED_BIND_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -111,7 +110,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, arc: Any = None, **kwargs: Any) -> None:
-            # Keep the real injected ARC so the compaction route has live segments.
             self.arc = arc
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
@@ -119,20 +117,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
 
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     _install_stub_factories(monkeypatch)
-
-    # A summariser mirroring real dspy: no bound LM -> raise (caller returns "" ->
-    # 503); a bound LM -> a summary (200). This is what distinguishes the bug
-    # (ambient lm=None) from the fix (ambient lm=bound).
-    class _FakePredict:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            pass
-
-        def __call__(self, *, prior_context: str, lm: Any = None) -> Any:
-            if lm is None:
-                raise RuntimeError("no LM configured")
-            return SimpleNamespace(summary="COMPACT_OK")
-
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
 
     app = build_app(sessions_path=tmp_path / "s.json", arc=real_arc)
     with TestClient(app) as c:
@@ -153,15 +137,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
         # The admin bind installed the process default -> ambient reads resolve it.
         assert getattr(main_thread_config["lm"], "model", None) == "bound-model"
         assert _current_lm_model_id() == "bound-model"
-
-        # A manual compaction is an ambient call (no expert dspy.context). It must
-        # now find the bound LM and summarise, not 503 on lm=None.
-        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        real_arc.append_segment(sid, "agentA", "thought", {"text": "T0"}, step=0, token_count=5)
-        real_arc.append_segment(sid, "agentA", "observation", {"text": "O0"}, step=0, token_count=9)
-        r = c.post(f"/v1/sessions/{sid}/context/compact", params={"scope": "agentA"})
-        assert r.status_code == 200, r.text
-        assert "COMPACT_OK" in r.json()["render_text"]
 
 
 # --------------------------------------------------------------------------- #
