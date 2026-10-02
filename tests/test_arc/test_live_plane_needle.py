@@ -26,7 +26,7 @@ from dspy.lm15 import Request
 import clio_agent.gact.app as app
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.clio_react import _call_lm
-from clio_agent.gact.compaction import maybe_autocompact
+from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 from clio_agent.gact.types import Message, Part, Tokens
 
 from .conftest import live_plane_context, probe_live_context, response_text
@@ -203,7 +203,7 @@ def test_real_auto_compaction_on_alcf(arc):
             assert real_pt > 0, "ALCF prompt_tokens readback is 0 (token_counter fallback broken)"
             # window so the real prompt lands at ~90% — over the 0.85 default threshold
             ctx.set_react_context_window(int(real_pt / 0.90))
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
 
     after = arc.render_segments(SID, SCOPE)
     assert len(after) == 1 and after[0].kind == "summary", "did not collapse to one summary"

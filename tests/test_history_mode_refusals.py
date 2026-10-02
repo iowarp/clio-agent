@@ -19,7 +19,7 @@ from clio_agent.arc import history_mode
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
-from clio_agent.gact.compaction import maybe_autocompact
+from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
 from clio_agent.gact.session_store import _append_session_message
 from clio_agent.gact.types import Message, Part, Tokens
 from tests._scripted_engine import Reply, scripted_lm
@@ -60,7 +60,9 @@ def _run_turn(app: Any, sid: str, question: str) -> None:
     try:
         with dspy.context(lm=lm):
             ClioReAct("question -> answer", tools=[])(question=question)
-            maybe_autocompact()  # History mode has no compaction: never touches the plane
+            maybe_autocompact(
+                AutoCompactionGuard()
+            )  # History mode has no compaction: never touches the plane
     finally:
         for token in reversed(tokens):
             ctx.reset(token)

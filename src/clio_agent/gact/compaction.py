@@ -10,6 +10,9 @@ recallable byte-exact (``recall_context``).
 Both triggers run :func:`compact_session_context`: ``POST /v1/sessions/{sid}/compact``
 (``trigger="manual"``; the context panel passes ``?scope=``) and the threshold check
 the loop runs between ReAct steps (:func:`maybe_autocompact`, ``trigger="auto"``).
+An auto compaction that leaves the context over the threshold is not repeated in the
+same forward: the next ones are a typed skip with one ``notice``
+(:class:`AutoCompactionGuard`).
 
 Per compacted scope:
 
@@ -43,6 +46,7 @@ from clio_agent.gact.runtime.globals import _active_semantic_turn_id, _emit_sema
 from clio_agent.gact.summarization_record import (
     failure_notice_part,
     recall_line,
+    skipped_notice_part,
     summarization_part,
 )
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -51,9 +55,11 @@ from clio_agent.runtime.stream_audit import stream_audit
 __all__ = [
     "AUDIT_AUTO_FAILED",
     "AUDIT_AUTO_SKIPPED",
+    "SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION",
     "SKIP_NO_LIVE_CONTEXT",
     "SKIP_NOTHING_NEW",
     "AutoCompactionFailedError",
+    "AutoCompactionGuard",
     "CompactionError",
     "compact_session_context",
     "maybe_autocompact",
@@ -63,6 +69,15 @@ __all__ = [
 SKIP_NO_LIVE_CONTEXT = "no_live_context"
 SKIP_NOTHING_NEW = "nothing_new_since_last_compaction"
 SKIP_NO_TOKEN_COUNT = "no_token_count"
+#: Auto only: the last auto compaction of this forward left the context over the
+#: threshold, so another one would summarize little more than the summary again.
+SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION = "above_threshold_after_compaction"
+
+#: The plain-language ``notice`` of that skip, written once per forward.
+ABOVE_THRESHOLD_NOTICE = (
+    "Context is still near the limit after summarizing; continuing without "
+    "summarizing again this turn."
+)
 
 #: Audit reasons (``stream_audit`` stage names double as the reason).
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
@@ -504,17 +519,45 @@ def _remember(app: Any, sid: str, base: dict[str, Any], message_id: str, replace
 # ---------------------------------------------------------------------------
 
 
-def maybe_autocompact() -> None:
+@dataclass
+class AutoCompactionGuard:
+    """One ReAct forward's auto-compaction state (the loop owns one per forward).
+
+    After an auto compaction the next step's model call measures what is left (system
+    prompt, tools, summary, the question kept verbatim). When that is still over the
+    threshold, compacting again cannot get under it: every later step would summarize
+    the summary and restart a stateful provider's session. So the guard stops auto
+    compaction for the rest of the forward; manual compaction is unaffected.
+
+    Attributes:
+        compaction_id: The last auto compaction of this forward (``""``: none yet).
+        awaiting_measurement: That compaction's result is not measured yet (the next
+            step boundary reads the first model call made after it).
+        above_threshold: The measured context stayed over the threshold after it; the
+            forward does not auto-compact again.
+    """
+
+    compaction_id: str = ""
+    awaiting_measurement: bool = False
+    above_threshold: bool = False
+
+
+def maybe_autocompact(guard: AutoCompactionGuard) -> None:
     """Compact the running scope between ReAct steps when its context is too full.
 
-    The loop calls this at every step boundary. When the last measured prompt size
-    over the context window crosses the session's threshold, the running scope is
-    compacted with ``trigger="auto"`` (the same operation as a manual compact). A
-    failed compaction is NOT swallowed: it is audited (:data:`AUDIT_AUTO_FAILED`) and
-    raised as :class:`AutoCompactionFailedError`, so the turn fails typed with its
-    context unfolded. With no measured count yet in this binding, the previous turn's
-    durable per-scope usage stands in (subscription providers bind a fresh LM per
-    turn). History mode has no compaction; no active app is an audited skip.
+    The loop calls this at every step boundary with its forward's ``guard``. When the
+    last measured prompt size over the context window crosses the session's
+    threshold, the running scope is compacted with ``trigger="auto"`` (the same
+    operation as a manual compact). A failed compaction is NOT swallowed: it is
+    audited (:data:`AUDIT_AUTO_FAILED`) and raised as
+    :class:`AutoCompactionFailedError`, so the turn fails typed with its context
+    unfolded. With no measured count yet in this binding, the previous turn's durable
+    per-scope usage stands in (subscription providers bind a fresh LM per turn).
+    History mode has no compaction; no active app is an audited skip. When the first
+    measurement after an auto compaction is still over the threshold, every later
+    crossing in the forward is an audited skip
+    (:data:`SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION`) and the first one writes a
+    ``notice`` saying so.
     """
     from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
     from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
@@ -539,13 +582,59 @@ def maybe_autocompact() -> None:
     if not window or not last:
         stream_audit(AUDIT_AUTO_SKIPPED, reason=SKIP_NO_TOKEN_COUNT, session_id=session)
         return
-    if (last / window) < threshold:
+    over = (last / window) >= threshold
+    if guard.awaiting_measurement:
+        guard.awaiting_measurement = False
+        guard.above_threshold = over
+        if over:
+            _notice_above_threshold(app, session, scope, guard.compaction_id)
+    if not over:
+        return
+    if guard.above_threshold:
+        stream_audit(
+            AUDIT_AUTO_SKIPPED,
+            reason=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
+            session_id=session,
+            scope=scope,
+            prompt_tokens=last,
+            context_window=window,
+            threshold=threshold,
+            compaction_id=guard.compaction_id,
+        )
         return
     try:
-        compact_session_context(app, session, trigger="auto", scope=scope)
+        result = compact_session_context(app, session, trigger="auto", scope=scope)
     except CompactionError as exc:
         stream_audit(AUDIT_AUTO_FAILED, session_id=session, error=exc.error, message=exc.message)
         raise AutoCompactionFailedError(exc, session) from exc
+    if result["compacted"]:
+        guard.compaction_id = str(result["compactions"][-1]["compaction_id"])
+        guard.awaiting_measurement = True
+
+
+def _notice_above_threshold(app: Any, sid: str, scope: str, compaction_id: str) -> None:
+    """Record, once per forward, that auto compaction stops (a ``notice`` the model is
+    never told). A notice that cannot be written fails the turn typed."""
+    from clio_agent.gact.compaction_record import write_notice  # noqa: PLC0415
+
+    notice = skipped_notice_part(
+        ABOVE_THRESHOLD_NOTICE,
+        code=SKIP_ABOVE_THRESHOLD_AFTER_COMPACTION,
+        compaction_id=compaction_id,
+        agent_id=scope,
+    )
+    try:
+        write_notice(app, sid, notice)
+    except Exception as exc:  # noqa: BLE001 - raised typed: the skip must be visible
+        error = CompactionError(
+            500,
+            "compaction_skip_unrecorded",
+            f"auto compaction stopped but its notice could not be written: {exc!r}",
+            {"compaction_id": compaction_id, "scope": scope},
+            recoverable=False,
+        )
+        stream_audit(AUDIT_AUTO_FAILED, session_id=sid, error=error.error, message=error.message)
+        raise AutoCompactionFailedError(error, sid) from exc
 
 
 def _durable_prompt_tokens(metadata: Any, scope: str) -> int:

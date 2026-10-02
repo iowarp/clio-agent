@@ -89,7 +89,8 @@ def write_record(app: Any, sid: str, part: Part) -> PendingRecord:
 
 
 def write_notice(app: Any, sid: str, part: Part) -> tuple[str, str]:
-    """Record a failed compaction's ``notice`` where it happened; ``(message, part)`` ids.
+    """Record a compaction's ``notice`` (failed or skipped) where it happened;
+    ``(message, part)`` ids.
 
     Mid-turn it joins the open turn's assistant message (persisted with it, also when
     the turn then fails); between turns it is its own row, minted now. Raises whatever
@@ -119,7 +120,7 @@ def write_notice(app: Any, sid: str, part: Part) -> tuple[str, str]:
         parts=[part],
         tokens=Tokens(),
         stop_reason="end_turn",
-        metadata={"synthetic": "compaction_failed", "compaction_id": part.compaction_id},
+        metadata={"synthetic": part.source, "compaction_id": part.compaction_id},
     )
     _append_session_message(app, sid, message)
     app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))

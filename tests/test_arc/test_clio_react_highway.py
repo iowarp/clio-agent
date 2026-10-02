@@ -11,7 +11,7 @@ Sabotage tripwires:
 * remove a lifecycle emission (``_emit_react_step_event`` /
   ``_emit_expert_lifecycle_event`` / a ``StepRecorder._write``) →
   ``test_forward_writes_arc_and_emits_highway`` goes red;
-* remove the ``maybe_autocompact()`` call in ``_Loop._one_step`` →
+* remove the ``maybe_autocompact(...)`` call in ``_Loop._one_step`` →
   ``test_forward_fires_autocompact_trigger_each_step`` goes red.
 """
 
@@ -181,7 +181,7 @@ def test_forward_fires_autocompact_trigger_each_step(
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     fired = {"n": 0}
     monkeypatch.setattr(
-        compaction, "maybe_autocompact", lambda: fired.__setitem__("n", fired["n"] + 1)
+        compaction, "maybe_autocompact", lambda _guard: fired.__setitem__("n", fired["n"] + 1)
     )
 
     _run_in_plane(arc, _build_agent(), _two_step_lm())
