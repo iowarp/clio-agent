@@ -20,7 +20,7 @@ identity is written:
 * the transport keys of the bound provider (``lm.claude_code_transport`` /
   ``lm.codex_transport``); a previous provider's transport keys are removed.
 
-A removed key (:data:`clio_agent.config.REMOVED_CONFIG_KEYS`) still set anywhere is
+A removed key (:data:`clio_agent.removed_config_keys.REMOVED_CONFIG_KEYS`) still set anywhere is
 never rewritten around: the write is refused with the typed reason below and the
 plain-language detail naming what to delete.
 
@@ -111,7 +111,7 @@ def persist_lm_selection(cfg: Any, *, requested_api_base: str) -> SelectionPersi
     """
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-    from clio_agent.config import reject_removed_config_keys  # noqa: PLC0415
+    from clio_agent.removed_config_keys import reject_removed_config_keys  # noqa: PLC0415
 
     path = user_config_path()
     entries = selection_entries(cfg, requested_api_base=requested_api_base)

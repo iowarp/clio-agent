@@ -228,7 +228,8 @@ def test_table_query_knobs_are_configurable() -> None:
 
     assert module.table_query_max_rows() == 50_000
     assert module.table_query_max_source_bytes() == 256 * 1024 * 1024
-    assert module.table_query_timeout_s() == 10.0
+    assert module.table_query_no_progress_s() == 30.0
+    assert module.table_query_max_wait_s() == 180.0
     assert module.table_query_cache_entries() == 16
 
     set_config(
@@ -236,13 +237,15 @@ def test_table_query_knobs_are_configurable() -> None:
         {
             "table_query_max_rows": 40,
             "table_query_max_source_bytes": 1024,
-            "table_query_timeout_s": 2.5,
+            "table_query_no_progress_s": 2.5,
+            "table_query_max_wait_s": 60.0,
             "table_query_cache_entries": 0,
         },
     )
     assert module.table_query_max_rows() == 40
     assert module.table_query_max_source_bytes() == 1024
-    assert module.table_query_timeout_s() == 2.5
+    assert module.table_query_no_progress_s() == 2.5
+    assert module.table_query_max_wait_s() == 60.0
     assert module.table_query_cache_entries() == 0
     assert module._effective_limit(None) == 40
 
@@ -512,11 +515,33 @@ def test_a_removed_fixed_mcp_deadline_key_is_a_typed_error(
     monkeypatch: pytest.MonkeyPatch, key: str, env: str
 ) -> None:
     """The fixed MCP deadlines are gone (#1577): a leftover one is refused, never ignored."""
-    from clio_agent.config import reject_removed_config_keys
     from clio_agent.errors import RemovedConfigKeyError
+    from clio_agent.removed_config_keys import reject_removed_config_keys
 
     monkeypatch.setenv(env, "10")
     with pytest.raises(RemovedConfigKeyError) as err:
         reject_removed_config_keys()
     assert err.value.key == key
     assert "progress-based waits" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["env", "file"],
+)
+def test_the_removed_table_query_timeout_key_is_a_typed_error(
+    monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """The fixed table-query timeout is gone (#1577): a leftover one is refused, never ignored."""
+    from clio_agent.errors import RemovedConfigKeyError
+    from clio_agent.removed_config_keys import reject_removed_config_keys
+
+    if where == "env":
+        monkeypatch.setenv("CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S", "10")
+    else:
+        set_config("artifacts", {"table_query_timeout_s": 10.0})
+    with pytest.raises(RemovedConfigKeyError) as err:
+        reject_removed_config_keys()
+    assert err.value.key == "artifacts.table_query_timeout_s"
+    assert err.value.error_type == "config_key_removed"
+    assert "progress-based wait" in str(err.value)

@@ -446,38 +446,6 @@ def _resolve_argonne_api_key() -> str:
     return _credentials.resolve_argonne_token()
 
 
-#: Config keys clio no longer supports: (config-file key, env var, what was removed).
-#: A key here that is still set is a typed error, never ignored or remapped.
-REMOVED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
-    (
-        "lm.codex_variant",
-        "CLIO_CODEX_VARIANT",
-        "The Codex SDK path was removed (Codex now always connects directly)",
-    ),
-)
-
-
-def reject_removed_config_keys() -> None:
-    """Raise when a removed config key is still set in a config file or the environment.
-
-    Raises:
-        RemovedConfigKeyError: naming the removed feature, the key, and every
-            place it is set (each config file path / the environment variable).
-    """
-    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
-    from clio_agent.errors import RemovedConfigKeyError  # noqa: PLC0415
-    from clio_agent.tools.mcp_server_progress import REMOVED_DEADLINE_KEYS  # noqa: PLC0415
-
-    for key, env, removed in (*REMOVED_CONFIG_KEYS, *REMOVED_DEADLINE_KEYS):
-        locations = conf.store().where_set(key, env=env)
-        if locations:
-            raise RemovedConfigKeyError(
-                f"{removed}; delete {key} from {' and '.join(locations)}.",
-                key=key,
-                locations=locations,
-            )
-
-
 def load_config_from_env() -> LMProviderConfig:
     """Load LM boot configuration via ``conf`` (file → env → default).
 
@@ -511,9 +479,10 @@ def load_config_from_env() -> LMProviderConfig:
 
     Raises:
         ValueError: If cloud provider is selected without API key
-        RemovedConfigKeyError: If a removed key (``REMOVED_CONFIG_KEYS``) is still set
+        RemovedConfigKeyError: If a removed key (``removed_config_keys``) is still set
     """
     from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
+    from clio_agent.removed_config_keys import reject_removed_config_keys  # noqa: PLC0415
 
     reject_removed_config_keys()
     provider = conf.resolve(
