@@ -160,11 +160,21 @@ class _Conversation:
     sent_items: int  # input items the provider holds from what it was sent
     digest: str  # running sha256 over those items
     response_id: str
+    reply_calls: tuple[str, ...] = ()  # call ids of the function calls the provider replied
     opened_at: float = field(default_factory=time.monotonic)
     used_at: float = field(default_factory=time.monotonic)
 
     def expired(self, now: float) -> bool:
         return (now - self.opened_at) >= c.WS_MAX_AGE_S or (now - self.used_at) >= c.WS_IDLE_CLOSE_S
+
+
+def _call_ids(items: Any) -> tuple[str, ...]:
+    """The ``call_id`` of every ``function_call`` item, in order."""
+    return tuple(
+        str(item.get("call_id") or "")
+        for item in items
+        if isinstance(item, dict) and item.get("type") == "function_call"
+    )
 
 
 def continuation(live: _Conversation, request: Request, prepared: PreparedRequest) -> int | None:
@@ -173,7 +183,9 @@ def continuation(live: _Conversation, request: Request, prepared: PreparedReques
     ``request`` continues the kept conversation when the system prompt and tools are the
     same, its messages repeat the ``live.held`` sent ones plus the provider's own reply
     and then add only non-assistant messages, and its first ``live.sent_items`` input
-    items hash to what was sent. The reply's items follow; the new items are the rest.
+    items hash to what was sent. The reply's items follow -- carrying exactly the
+    function calls the provider replied, when it called any -- and the new items are
+    the rest.
     """
     messages = request.messages
     if prepared.system != live.system or prepared.tools != live.tools:
@@ -190,6 +202,10 @@ def continuation(live: _Conversation, request: Request, prepared: PreparedReques
         first_new += 1
     if first_new == live.sent_items or first_new == len(items):
         return None  # no reply items, or nothing new after them
+    if live.reply_calls and _call_ids(items[live.sent_items : first_new]) != live.reply_calls:
+        # The request's reply is not the provider's (a drafts pick replaced a reply that
+        # called draft_alternatives): those calls would stay unanswered on the backend.
+        return None
     if any(_from_assistant(item) for item in items[first_new:]):
         return None
     return first_new
@@ -287,7 +303,7 @@ class AsyncCodexDirectEngine:
         socket = live.socket if live is not None else await _connect(prepared.headers, key)
         _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
         try:
-            response_id = await _exchange(self.wire, request, socket, frame, out)
+            response_id, reply_calls = await _exchange(self.wire, request, socket, frame, out)
         except (_ContinuationLost, _ConnectionLost):
             # The backend no longer holds the previous response, or the connection
             # dropped (a service restart, an idle-closed socket) -- nothing was streamed:
@@ -295,7 +311,7 @@ class AsyncCodexDirectEngine:
             _close_soon(socket)
             socket = await _connect(prepared.headers, key)
             _audit(key, self.model, request, False, "session_evicted", len(items))
-            response_id = await _exchange(self.wire, request, socket, body, out)
+            response_id, reply_calls = await _exchange(self.wire, request, socket, body, out)
         if key is None:
             await socket.close()
             return
@@ -308,6 +324,7 @@ class AsyncCodexDirectEngine:
                 sent_items=len(items),
                 digest=prepared.digest_at(len(items)),
                 response_id=response_id,
+                reply_calls=reply_calls,
                 opened_at=live.opened_at if live is not None else time.monotonic(),
             )
 
@@ -534,8 +551,9 @@ async def _open_socket_within(ws_headers: dict[str, str], open_timeout: float) -
 
 async def _exchange(
     wire: Any, request: Request, socket: Any, frame: dict[str, Any], out: queue.SimpleQueue[Any]
-) -> str:
-    """Send one ``response.create`` frame; forward parsed events; return the response id.
+) -> tuple[str, tuple[str, ...]]:
+    """Send one ``response.create`` frame; forward parsed events; return the response id
+    and the call ids of the reply's function calls.
 
     Writes the same per-call audit rows as Claude Code (``provider.call_started``,
     the first streamed event, ``provider.call_usage`` with cached input).
@@ -568,10 +586,11 @@ async def _stream(
     call_id: str,
     call_index: int,
     streamed: list[bool],
-) -> str:
+) -> tuple[str, tuple[str, ...]]:
     """The body of :func:`_exchange`: send the frame and forward the reply's events."""
     first = True
     usage: Any = None
+    calls: list[str] = []
     await socket.send(json.dumps({"type": "response.create", **frame}))
     async for raw in socket:
         payload = json.loads(raw)
@@ -585,6 +604,8 @@ async def _stream(
             if is_usage_limit_text(message):
                 # The account's plan window is exhausted: terminal, never retried.
                 raise CodexPlanLimitError(message, code=_error_code(payload))
+        if kind == "response.output_item.done":
+            calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
         for event in wire.parse_stream_events(request, _WireEvent(event=kind, data=raw)):
             if first and event.type == "delta":
                 first = False
@@ -608,7 +629,8 @@ async def _stream(
                 output_chars=0,
             )
             response = payload.get("response") or {}
-            return str(response.get("id") or "")
+            calls.extend(c for c in _call_ids(response.get("output") or []) if c not in calls)
+            return str(response.get("id") or ""), tuple(calls)
     raise ServerError("codex direct: the WebSocket closed before the response completed")
 
 
