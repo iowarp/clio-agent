@@ -68,8 +68,9 @@ def test_capabilities_advertises_v0_2(client: TestClient) -> None:
     assert caps["x_clio_text_streaming"] == "best_effort_live"
     assert caps["x_clio_synthetic_posthoc_streaming"] is False
     fallback_reasons = caps["x_clio_stream_fallback_reasons"]
-    assert fallback_reasons["stream_completed_without_chunks"]["live_streaming"] is False
-    assert fallback_reasons["stream_setup_failed"]["recovery_actions"]
+    assert fallback_reasons["sync_execution_path"]["live_streaming"] is False
+    assert fallback_reasons["sync_execution_path"]["recovery_actions"]
+    assert fallback_reasons["native_model_inputs_dropped"]["live_streaming"] is True
     result_downgrade = fallback_reasons["mcp_result_downgraded_to_complete"]
     assert result_downgrade["category"] == "mcp_result_tolerance"
     assert result_downgrade["description"] == (

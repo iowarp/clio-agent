@@ -122,9 +122,3 @@ def test_custom_fraction_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     )
     rows = probe_cte_cold_tier_disk(env=env)
     assert rows[0].state is IntegrationState.DEGRADED
-
-
-def test_local_backend_no_row(tmp_path: Path) -> None:
-    env = _seed_cte(tmp_path, data_bytes=600_000)
-    env["CLIO_ARC_STORE"] = "local"
-    assert probe_cte_cold_tier_disk(env=env) == []

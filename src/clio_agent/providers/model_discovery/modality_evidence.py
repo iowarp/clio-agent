@@ -1,16 +1,11 @@
 """Typed provenance for a discovered model's input modalities.
 
-Modality capability must come from EVIDENCE, never fabrication. Two concrete
-fabrication routes were found and closed here:
+Modality capability must come from EVIDENCE, never fabrication. A concrete
+fabrication route was found and closed here: the ``claude_code`` alias probe
+stamped a hardcoded ``["text", "image", "pdf"]`` on every non-error reply, so a
+CLI that silently stripped the attachments still "proved" both modalities.
 
-* the official ``openai_codex`` SDK declares ``Model.input_modalities`` with a
-  schema default of ``["text", "image"]``, so a wire row that OMITS the field
-  hands back an image capability nobody reported;
-* the ``claude_code`` alias probe stamped a hardcoded ``["text", "image",
-  "pdf"]`` on every non-error reply, so a CLI that silently stripped the
-  attachments still "proved" both modalities.
-
-Both now record only what a provider actually said, and name the gap with a
+Discovery now records only what a provider actually said, and names the gap with a
 typed reason in the ``stream_fallback`` reason-catalog style: the code is the
 queryable fact, the sentence is what a human reads. The evidence rides on the
 discovered row (``capability_evidence``), so it is persisted onto the refresh
@@ -26,7 +21,6 @@ from typing import Any
 #: Where a modality claim came from. A source is not evidence on its own — it
 #: names WHICH surface was consulted, and the reason says what it yielded.
 MODALITY_SOURCES: dict[str, str] = {
-    "codex_sdk_input_modalities": ("the Codex Python SDK's model row (``Model.input_modalities``)"),
     "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
     "codex_direct_model_list": (
         "the Codex backend's live account model list (``GET /backend-api/codex/models``, "

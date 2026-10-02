@@ -24,15 +24,15 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "workflows", "goal", "scheduler"),
+        ("agents", "agent_tasks", "workflows", "goal", "scheduler", "variants"),
         "Child-agent concurrency, declared-workflow step liveness, goal judging and the cron "
         "scheduler.",
     ),
     (
         "GACT server",
-        ("gact", "a2ui", "autocompact", "permissions", "hooks"),
-        "The GACT HTTP/SSE server: ledgers, auth, hooks, A2UI payload bounds and context "
-        "auto-compaction.",
+        ("gact", "a2ui", "autocompact", "compaction", "permissions", "hooks", "transcript"),
+        "The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks, A2UI payload "
+        "bounds and context auto-compaction.",
     ),
     (
         "ARC memory",
@@ -104,6 +104,18 @@ KEY_NOTES: dict[str, str] = {
         "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
         "set true for an offline deployment."
     ),
+    "agents.react_extract.after_steps": (
+        "Model steps a ReAct loop must exceed before DSPy's extract may fill the outputs it did "
+        "not produce (a max_iters ending, or a signature's extra outputs after a direct answer)."
+    ),
+    "agents.react_extract.enabled": (
+        "Runs DSPy's extract after a long ReAct loop to fill outputs the loop did not produce; "
+        "never replaces the model's own answer. Set false for the strict one-call-per-step contract."
+    ),
+    "variants.max_n": (
+        "Most tries one BestOfN / Refine run may draft (draft_alternatives, a spawn strategy); "
+        "a larger request is capped to it. Each try is a full agent run, so it bounds the cost."
+    ),
     "arc.cache_capacity": (
         "Max entries in ARC's in-process LRU cache; raise to cut store re-reads on a low-RAM host, "
         "lower to shrink resident memory."
@@ -149,8 +161,8 @@ KEY_NOTES: dict[str, str] = {
         "for earlier warnings before the tier fills."
     ),
     "arc.cte.file_capacity": (
-        'Capacity string (e.g. "50GB") for clio-core\'s disk-backed file storage tier; raise if '
-        "the working set needs more durable disk space."
+        'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
+        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
@@ -188,17 +200,37 @@ KEY_NOTES: dict[str, str] = {
         "Message-part atoms held per on-disk chunk of a session's transcript atom lane before "
         "rolling; raise to cut chunk count, lower to bound re-encode cost."
     ),
+    "arc.search_chunk_atoms": (
+        "Atoms per append-only search-companion chunk of an agent scope before a new chunk "
+        "opens; raise to cut record count, lower to bound the text re-put per append."
+    ),
     "arc.server_conf": (
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."
     ),
+    "arc.liveness.max_wait_s": (
+        "Ceiling (seconds) on waiting for a clio-core answer while the daemon is visibly working "
+        "(its CPU or I/O advancing); a daemon making no progress is a stall well before this."
+    ),
+    "arc.liveness.stop_no_progress_s": (
+        "How long (seconds) a stopping clio-core daemon may make no progress (CPU and I/O "
+        "flat) before it is killed; keep it inside the desktop supervisor's 30 s window."
+    ),
+    "arc.namespace": (
+        "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
+        "bare tags. Set to keep two deployments on one clio-core apart."
+    ),
     "arc.store": (
-        'Selects the ARC persistence backend: "cte" (clio-core, default) or "local" (plain '
-        'files); use "local" for guaranteed on-disk durability.'
+        'The ARC store: "cte" (clio-core), the only store; any other value is a typed '
+        "configuration error."
     ),
     "arc.store_config": (
         'Path to the clio-core CTE config used when arc.store is "cte"; set to point ARC at a '
         "hand-authored multi-tier topology."
+    ),
+    "arc.ws_chunk_segments": (
+        "Working-set atoms held per on-disk chunk of an expert span's content lane before "
+        "rolling; an append re-puts only the active chunk, so lower bounds bytes per append."
     ),
     "artifacts.cas_budget_bytes": (
         "Byte budget for the content-addressed artifact store; over it, GC evicts unreachable "
@@ -268,17 +300,33 @@ KEY_NOTES: dict[str, str] = {
         "Processed (pre-page) query results the per-server cache keeps; lets paging through "
         "one large result reuse the same processed table instead of re-reading it per page."
     ),
-    "artifacts.table_query_timeout_s": (
-        "Wall-clock budget in seconds for one artifact table-query request; an overrun "
-        "answers a typed 504."
+    "artifacts.table_query_max_wait_s": (
+        "Ceiling (seconds) on waiting for an artifact table query whose thread is still "
+        "working; reaching it answers a typed 504 table_query_stalled (reason ceiling)."
+    ),
+    "artifacts.table_query_no_progress_s": (
+        "Seconds an artifact table query may go with no answer AND no CPU work on its own "
+        "thread before a typed 504 table_query_stalled; a query still working is waited for."
     ),
     "autocompact.pct": (
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
     ),
-    "debug.dump_unparseable": (
-        "Filesystem path to dump raw LM completions the adapter failed to parse; set when "
-        "diagnosing a model/adapter mismatch, else a no-op."
+    "compaction.prompt_file": (
+        "Markdown template the compaction summarizer gets ({transcript} required; {focus}, "
+        "{files} optional); unset uses the packaged default. Read at each compaction."
+    ),
+    "compaction.keep.head": (
+        "Whether a compaction keeps the current user question verbatim after the summary "
+        "(mid-turn); turn off to summarize it too."
+    ),
+    "compaction.keep.last_turns": (
+        "Whole earlier turns a compaction keeps verbatim after the summary (0 = none); raise "
+        "to keep recent turns exact at the cost of a larger context."
+    ),
+    "compaction.keep.last_steps": (
+        "ReAct steps of the latest turn a compaction keeps verbatim after the summary "
+        "(0 = none); raise to keep the newest steps exact."
     ),
     "debug.level": (
         'Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high" for '
@@ -450,6 +498,10 @@ KEY_NOTES: dict[str, str] = {
         "Per-session bound on buffered mid-turn wakes (child completions and user steers) before "
         "the oldest recoverable one is evicted; raise for very fan-out-heavy turns."
     ),
+    "gact.media_cache_bytes": (
+        "Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across context "
+        "reads, least recently used first out; lower to bound memory."
+    ),
     "gact.message_intents.max_acceptances_per_session": (
         "Per-session cap on retained message-acceptance records used for idempotent POST replay; "
         "raise for clients that retry over long windows, lower to shrink the intent store."
@@ -513,10 +565,6 @@ KEY_NOTES: dict[str, str] = {
         "when a child blueprint returns; raise for larger reports, lower to bound resumed "
         "parent context growth."
     ),
-    "limits.codex_sdk_progress_timeout_s": (
-        "Max silence (seconds) for one Codex SDK exchange/event, resetting on every progress event "
-        "rather than a fixed clock; raise for long turns."
-    ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
@@ -533,14 +581,6 @@ KEY_NOTES: dict[str, str] = {
         "When streaming, seconds a call may go without a new token before it's stalled; raise to "
         "tolerate slower generation, lower to catch it faster."
     ),
-    "limits.lm_parse_retry_attempts": (
-        "Overrides re-sample attempts after an unrecoverable structured-output parse failure; "
-        "reasoning models default to 2, others 0."
-    ),
-    "limits.lm_transient_backoff_s": (
-        "Seconds to wait before re-issuing an LM call after a transient provider failure; default "
-        "8s lets LM Studio JIT-reload a crashed model."
-    ),
     "limits.lm_transient_retries": (
         "Bounded retry count for a transient (non-parse) provider failure before giving up; raise "
         "on a flaky provider connection."
@@ -549,13 +589,10 @@ KEY_NOTES: dict[str, str] = {
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "
         "it's elided; raise for larger images."
     ),
-    "limits.mcp_reconnect_timeout_s": (
-        "Seconds bounding the connect+list-tools round-trip when reconnecting an MCP server; raise "
-        "for a slow-starting server."
-    ),
     "limits.model_tool_result_chars": (
-        "Character bound on the model-facing MCP tool-result projection (head/tail cut); distinct "
-        "from limits.tool_result_chars."
+        "Characters of a tool result shown to the model; a longer result is saved to the "
+        "session's tool-output folder and the agent gets this many head characters plus the "
+        "file path. Distinct from limits.tool_result_chars."
     ),
     "limits.plan_review_chars": (
         "Character bound on saved plan content embedded in an approval record; raise for "
@@ -612,11 +649,7 @@ KEY_NOTES: dict[str, str] = {
     ),
     "lm.codex_transport": (
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
-        "to force the automatic-fallback transport."
-    ),
-    "lm.codex_variant": (
-        'Selects which Codex transport a config binds: "direct" (default, CLIO sign-in) or '
-        '"sdk" (the local Codex app login).'
+        "to force the stateless HTTP transport."
     ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
@@ -626,10 +659,6 @@ KEY_NOTES: dict[str, str] = {
     "lm.defer_tiktoken": (
         "Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode; disable if "
         "something depends on eager tiktoken load at boot."
-    ),
-    "lm.disable_json_adapter_fallback": (
-        "Force-disables the JSON-adapter fallback for cloud providers that reject response_format; "
-        "set true if a provider 400s on it."
     ),
     "lm.guided_output": (
         "Switches to schema-constrained JSON output instead of the text ChatAdapter; enable "
@@ -650,14 +679,6 @@ KEY_NOTES: dict[str, str] = {
     "lm.model": (
         "Pins the exact model identifier to use; set when the provider default model isn't the one "
         "you want."
-    ),
-    "lm.planner_max_tokens": (
-        "Token cap for the lower-temperature planner/routing generations; raise if planner JSON "
-        "output gets truncated."
-    ),
-    "lm.planner_temperature": (
-        "Sampling temperature for deterministic action-planning calls (default 0.3, forced 0.0 for "
-        "local reasoning profiles); lower for determinism."
     ),
     "lm.presence_penalty": (
         "Sets the OpenAI-standard presence-penalty sampling parameter; tune for reasoning models "
@@ -1071,14 +1092,6 @@ KEY_NOTES: dict[str, str] = {
         'Deployment environment label ("dev" default) threaded into LM config; change to reflect '
         "staging/prod for environment-aware logging."
     ),
-    "runtime.live_streaming": (
-        "Streams the top-level GACT turn's answer live via dspy.streamify instead of blocking; "
-        "disable per-model if streaming responses break."
-    ),
-    "runtime.lm_token_liveness": (
-        "Streams expert LM calls token-by-token so each token refreshes the no-progress watchdog; "
-        "disable only if streaming plumbing misbehaves."
-    ),
     "sandbox.enabled": (
         "Whether tool-execution sandboxing/confinement is applied; disable only for trusted local "
         "dev where sandbox setup gets in the way."
@@ -1123,6 +1136,10 @@ KEY_NOTES: dict[str, str] = {
         "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "
         "alongside watcher_blueprint_id for a custom expert."
     ),
+    "tools.circuit_breaker.failure_limit": (
+        "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
+        "warned at the limit and told why a call was blocked); 0 turns the breaker off."
+    ),
     "tools.file_policy.allow_symlinks": (
         "Whether tool file reads/writes may traverse symlinks; set true only if a workflow "
         "legitimately relies on symlinked paths."
@@ -1138,10 +1155,6 @@ KEY_NOTES: dict[str, str] = {
     "tools.mcp.call_timeout_s": (
         "Runaway backstop seconds for one synchronous MCP tool call before it's abandoned; not the "
         "real per-tool clock -- raise only if tools hit it."
-    ),
-    "tools.mcp.cold_spawn_runaway_s": (
-        "Generous backstop seconds for one MCP namespace's discovery/connect attempt before it's "
-        "marked unreachable; raise for slow cold spawns."
     ),
     "tools.mcp.connect_mode": (
         'MCP protocol-era negotiation mode; "auto" probes modern then falls to legacy. Pin a '
@@ -1189,21 +1202,31 @@ KEY_NOTES: dict[str, str] = {
         "CSV allow-list of origins a url-mode elicitation may point to; add one to enable url "
         "elicitation for that server."
     ),
+    "tools.mcp.hold_while_waiting_s": (
+        "Seconds a session waiting on its user (a question or plan approval) keeps its MCP "
+        "servers from the idle reaper, so the answer resumes without starting them again."
+    ),
     "tools.mcp.input_required_max_rounds": (
         "Round cap on the modern-era InputRequiredResult retry loop for one tool call; raise for "
         "tools needing many follow-up inputs."
-    ),
-    "tools.mcp.launcher_cache_lock_timeout_s": (
-        "Generous runaway backstop while waiting on the shared uv-launcher cache lock; fires only "
-        "on a livelocked/unidentifiable holder."
     ),
     "tools.mcp.listing_ttl_h": (
         "Hours a cached MCP tool listing stays valid before a live relist is forced; lower to pick "
         "up upstream tool changes sooner."
     ),
+    "tools.mcp.max_wait_s": (
+        "Ceiling (seconds) on waiting for an MCP server that is still visibly starting (its own "
+        "process tree working): connect, listing, reconnect; also bounds one launcher-cache-lock "
+        "holder (plus one no-progress window)."
+    ),
     "tools.mcp.mount_retry_delays_s": (
         "Increasing waits (seconds, comma-separated) between an on-demand MCP mount's retry "
         "attempts; list length is the retry budget."
+    ),
+    "tools.mcp.no_progress_s": (
+        "Seconds an MCP connect or listing may go with no answer AND no work in the server's own "
+        "process tree before it fails typed; a server still working is waited for up to "
+        "tools.mcp.max_wait_s."
     ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
@@ -1213,9 +1236,10 @@ KEY_NOTES: dict[str, str] = {
         "Opts execution-path MCP clients into SEP-2549 server-hinted response caching; off by "
         "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
     ),
-    "tools.mcp.setup_timeout_s": (
-        "Seconds allowed for an MCP tool executor's startup handshake; raise for servers with slow "
-        "cold starts, lower to fail faster."
+    "tools.mcp.session_warmup": (
+        "Start a session's MCP servers (its blueprint's and any always-load service) in the "
+        "background when the session is created or a blueprint is activated, so the first "
+        "message does not wait for them; set false to start servers only when a turn needs them."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "
@@ -1268,6 +1292,11 @@ KEY_NOTES: dict[str, str] = {
     "trace.semantic_factory": (
         "Import path of a custom Python factory supplying the semantic-trace backend; set only to "
         "replace the built-in jsonl/flowcept providers."
+    ),
+    "transcript.file": (
+        "Keep the per-session messages/<sid>.json copy of every transcript next to clio-core's "
+        "atoms; set false to make clio-core the only transcript store (not allowed in History "
+        "mode, where the file is the only durable copy)."
     ),
     "workflows.step_inactivity_s": (
         "No-activity window (seconds) before a declared-workflow step's child is judged stalled; a "

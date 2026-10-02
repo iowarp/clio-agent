@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from clio_agent.lm.io_logging import _kvnorm_response_id
+from clio_agent.lm.call_trace import call_record
 from clio_agent.provenance_config import kvnorm_join_enabled
 from tests._config_layer import set_config
 
@@ -88,9 +88,12 @@ def test_payload_keys_are_mongo_safe() -> None:
     assert out == {"yr．doy": 1, "＄where": "x", "nested": {"Hght(m)": {"a．b": 2}}}
 
 
-def test_response_id_from_object_and_dict() -> None:
+def test_lm_call_record_carries_the_response_id_only_when_the_gate_is_on() -> None:
     resp = SimpleNamespace(id="chatcmpl-80fdc07ecb38f335-80b6501f")
-    assert _kvnorm_response_id(resp) == "chatcmpl-80fdc07ecb38f335-80b6501f"
-    assert _kvnorm_response_id({"id": "chatcmpl-x"}) == "chatcmpl-x"
-    assert _kvnorm_response_id({}) == ""
-    assert _kvnorm_response_id(None) == ""
+    assert "response_id" not in call_record("m", {}, resp, None)
+    set_config("provenance.kvnorm", True)
+    set_config("provenance.agentic.providers", ["flowcept"])
+    assert kvnorm_join_enabled() is True
+    record = call_record("m", {}, resp, None)
+    assert record["response_id"] == "chatcmpl-80fdc07ecb38f335-80b6501f"
+    assert call_record("m", {}, None, None)["response_id"] == ""

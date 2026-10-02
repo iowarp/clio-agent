@@ -20,8 +20,8 @@ from clio_agent.gact.todos import (
     TODO_RECITATION_MARKER,
     TodoError,
     build_write_todos_tool,
-    inject_todo_recitation,
     recorded_todos,
+    todo_recitation,
 )
 from clio_agent.gact.types import AgentDef
 
@@ -232,10 +232,10 @@ def test_recitation_appears_in_execution_mode(tmp_path: Path) -> None:
     tool = build_write_todos_tool(_AGENT)
     _run(app, sid, lambda: tool.func(todos=[{"content": "do the thing", "status": "in_progress"}]))
 
-    text = inject_todo_recitation(app, sid, app.state.sessions.get(sid), "USER TURN")
+    text = todo_recitation(app, sid, app.state.sessions.get(sid))
     assert TODO_RECITATION_MARKER in text
     assert "do the thing" in text
-    assert "USER TURN" in text
+    assert text.startswith(TODO_RECITATION_MARKER + "\n\n")
 
 
 def test_recitation_suppressed_in_plan_mode(tmp_path: Path) -> None:
@@ -248,15 +248,14 @@ def test_recitation_suppressed_in_plan_mode(tmp_path: Path) -> None:
     # Flip to plan mode with todos already recorded.
     app.state.sessions.update(sid, mode="plan")
 
-    text = inject_todo_recitation(app, sid, app.state.sessions.get(sid), "USER TURN")
-    assert TODO_RECITATION_MARKER not in text
-    assert text == "USER TURN"
+    text = todo_recitation(app, sid, app.state.sessions.get(sid))
+    assert text == ""
 
 
 def test_recitation_noop_when_no_todos(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     sid = _session(app, mode="edit")
-    assert inject_todo_recitation(app, sid, app.state.sessions.get(sid), "USER TURN") == "USER TURN"
+    assert todo_recitation(app, sid, app.state.sessions.get(sid)) == ""
 
 
 # ---- declared structured_content (P5 wire semantics) ------------------------------

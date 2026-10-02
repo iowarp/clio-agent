@@ -8,12 +8,19 @@ LiteLLM wheel stays exact.
 from __future__ import annotations
 
 import ast
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.24"
-EXPECTED_DSPY = "dspy==3.3.0b1"
+EXPECTED_VERSION = "0.9.5b1"
+#: The release the install docs name: the latest stable one. A beta changes the
+#: package version only; users opt into it explicitly.
+DOCUMENTED_VERSION = "0.9.4.24"
+EXPECTED_DSPY = "dspy==3.4.0"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
 EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.0.0b5"
@@ -32,13 +39,13 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
     expected_commands = {
         "install/install.sh": (
             "uv sync --extra argonne",
-            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
+            '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
             "RunNative uv @('sync')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
-        "install/clio": ('"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
+        "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
     }
     # The bundled-runtime builders root nothing themselves: they install
     # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
@@ -153,6 +160,8 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
     assert "config.version = tauriVersion" in bundles
     assert "`${maintenance[1]}+${maintenance[2]}`" in bundles
+    assert "`${beta[1]}-${beta[2]}`" in bundles
+    assert 'tauri_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in bundles
     assert "+patch.${maintenance[2]}" not in bundles
     assert "config.bundle.windows.wix.version = releaseVersion" in bundles
     assert 'base="${base//$tauri_version/$release_version}"' in bundles
@@ -195,7 +204,7 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "install/arc_smoke.py" in windows_builder
 
     arc_smoke = _text("install/arc_smoke.py")
-    assert "isinstance(store, ClioCoreStore)" in arc_smoke
+    assert "except ArcStoreUnavailableError" in arc_smoke  # typed: clio-core or exit 1
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
@@ -211,8 +220,8 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     assert "--with fastmcp==4.0.0b5" in workflow
     assert "--with fastmcp-slim==4.0.0b5" in workflow
     assert "--with fastmcp-tasks==4.0.0b5" in workflow
-    assert "assert dspy.__version__ == '3.3.0b1'" in workflow
-    assert "assert hasattr(dspy, 'ReActV2')" in workflow
+    assert "assert dspy.__version__ == '3.4.0'" in workflow
+    assert "assert hasattr(dspy, 'lm15')" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
@@ -221,7 +230,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     command = (
         f"uv tool install --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
         f"--with {EXPECTED_FASTMCP_SLIM} "
-        f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={EXPECTED_VERSION}"
+        f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={DOCUMENTED_VERSION}"
     )
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
@@ -232,7 +241,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        f"uv tool install --prerelease allow --with dspy==3.3.0b1 clio-agent=={EXPECTED_VERSION}"
+        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
     ) in _text("README.md")
 
 
@@ -450,3 +459,49 @@ def test_clio_brand_overlay_declares_the_updater() -> None:
     ]
     assert updater["pubkey"]
     assert updater["windows"]["installMode"] == "passive"
+
+
+def _verify_tag_step() -> str:
+    """Return the release workflow's tag-vs-version check script."""
+
+    workflow = yaml.safe_load(_text(".github/workflows/release.yml"))
+    for job in workflow["jobs"].values():
+        for step in job.get("steps", []):
+            if step.get("name") == "Verify tag matches package version":
+                return str(step["run"])
+    raise AssertionError("release.yml lost its tag-vs-version check")
+
+
+def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
+    """Run the real check script with ``uv version --short`` answering ``package_version``."""
+
+    bash = shutil.which("bash")
+    assert bash is not None, "the release check is a bash script"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    uv = bin_dir / "uv"
+    uv.write_text(f"#!/usr/bin/env bash\necho {package_version}\n", encoding="utf-8")
+    uv.chmod(0o755)
+    script = tmp_path / "check.sh"
+    script.write_text(_verify_tag_step(), encoding="utf-8", newline="\n")
+    env = {"PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin", "GITHUB_REF_NAME": tag}
+    return subprocess.run([bash, script.as_posix()], env=env, check=False).returncode
+
+
+def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: Path) -> None:
+    """vX.Y.Z-beta.N publishes the package version X.Y.ZbN; mismatches still fail."""
+
+    assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5b1") == 0
+    assert _run_tag_check(tmp_path, "v0.9.4.24", "0.9.4.24") == 0
+    assert _run_tag_check(tmp_path, "v0.9.5-beta.2", "0.9.5b1") != 0
+    assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5") != 0
+
+
+def test_a_beta_tag_never_moves_the_latest_container_image() -> None:
+    """ghcr `latest` follows stable tags only."""
+
+    docker = _text(".github/workflows/docker.yml")
+    assert (
+        "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') "
+        "&& !contains(github.ref_name, '-') }}"
+    ) in docker

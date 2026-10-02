@@ -9,6 +9,7 @@ from pathlib import Path
 from tests._test_runtime_isolation import (
     cleanup_test_runtime,
     create_test_runtime,
+    resolve_test_runtime_parent,
     stale_test_runtimes,
 )
 
@@ -91,7 +92,9 @@ def test_live_suite_runtime_is_not_system_temp() -> None:
     runtime = Path(os.environ["CLIO_TEST_RUNTIME_DIR"]).resolve()
     checkout = Path(__file__).resolve().parents[1]
 
-    expected_parent = checkout.parent / f".{checkout.name}.pytest-runtime"
+    # Beside the checkout by default; an explicit CLIO_TEST_RUNTIME_ROOT (a short
+    # path for Windows' MAX_PATH) moves it, and the suite must honor that.
+    expected_parent = resolve_test_runtime_parent(checkout, os.environ)
     assert runtime.is_relative_to(expected_parent)
     assert not runtime.is_relative_to(checkout)
     assert Path(os.environ["TEMP"]).resolve().is_relative_to(runtime)

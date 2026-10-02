@@ -86,6 +86,10 @@ def maybe_pause_for_user(
         },
     )
     assistant_message_id = persist_paused_transcript(state)
+    # Retire the paused turn's ledger BEFORE the question becomes answerable: an
+    # answer arriving right after the status event starts the resume turn, whose
+    # transcript a late settle here would close.
+    settle_turn_transcript(state)
     record_user_question(state.app, question)
     _emit_semantic_event(
         state.app,
@@ -154,7 +158,6 @@ def maybe_pause_for_user(
                 "stop_reason": "waiting_user",
             },
         )
-    settle_turn_transcript(state)
     return True
 
 

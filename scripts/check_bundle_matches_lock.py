@@ -91,11 +91,11 @@ LOCAL_PROJECTS = frozenset({"clio-agent", "web-mcp"})
 #: are listed by name in the check's output, never silently skipped.
 INTERPRETER_SEEDED = frozenset({"pip"})
 
-#: The ONLY user-updatable components: provider SDKs a runtime updates in place,
+#: The ONLY user-updatable components: provider components a runtime updates in place,
 #: past the lock, from the provider panel. MUST equal
 #: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
 #: test enforces this; this script is stdlib-only and cannot import it).
-USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex", "openai-codex-cli-bin", "claude-agent-sdk"})
+USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex-cli-bin", "claude-agent-sdk"})
 
 _RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
 

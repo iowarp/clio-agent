@@ -25,9 +25,8 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
-# Single source of truth for the reasoning-channel extractor: it already lives in
-# runtime.globals (where _active_lm_last_reasoning consumes it). Reuse it here
-# instead of carrying a second copy.
+# Single source of truth for the reasoning-channel extractor: it lives in
+# runtime.globals. Reuse it here instead of carrying a second copy.
 from clio_agent.gact.runtime.globals import _entry_reasoning_text
 from clio_agent.runtime import trace, turn_lm_ledger
 
@@ -86,9 +85,9 @@ def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
     """Return every LM instance the running agent might call —
-    ``dspy.settings.lm`` plus the agent's ``_planner_lm`` and any
+    ``dspy.settings.lm`` plus the agent's ``_main_lm`` and any
     expert-bound LMs. Lets the turn handler diff history across
-    all of them so planner + expert + chat token counts roll up."""
+    all of them so main + expert + chat token counts roll up."""
 
     lms: list[Any] = []
     try:
@@ -109,10 +108,10 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
             exc,
         )
     agent = getattr(getattr(app, "state", None), "agent", None)
-    # Include _main_lm: the agent's primary LM (planner + experts route through it
+    # Include _main_lm: the agent's primary LM (experts route through it
     # when it is not the global dspy.settings.lm). Missing it under-counts usage
     # AND drops the reasoning trace for the bulk of the turn. Keep the others.
-    for attr in ("_main_lm", "_planner_lm", "_expert_lm", "main_lm"):
+    for attr in ("_main_lm", "_expert_lm", "main_lm"):
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)
@@ -190,6 +189,11 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
             entry_cost_raw = entry.get("cost")
             if entry_cost_raw is None:
                 entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
+            if entry_cost_raw is None:
+                # An engine LM (Claude Code) reports its provider cost on the typed
+                # response; DSPy has no pricing provider for custom engines.
+                provider_data = getattr(entry.get("response"), "provider_data", None) or {}
+                entry_cost_raw = provider_data.get("cost_usd")
             entry_cost = float(entry_cost_raw or 0.0)
             if entry_cost_raw is not None:
                 cost_reported = True

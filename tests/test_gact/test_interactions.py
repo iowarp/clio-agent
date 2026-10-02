@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import dspy
-from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
@@ -18,7 +17,7 @@ from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_f
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.builders import _dynamic_agent_tools
-from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
 from clio_agent.gact.elicitation_bridge import (
@@ -33,6 +32,7 @@ from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
+from tests._scripted_engine import calls, scripted_lm
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
@@ -171,47 +171,44 @@ def test_ask_user_success_ends_react_turn_before_another_model_step(tmp_path) ->
     session = app.state.sessions.create(workspace_id="ws_default", title="ask")
     agent_def = AgentDef(id="asker", title="Asker", tools=["ask_user"])
     ask_tool = _dynamic_agent_tools(SimpleNamespace(), agent_def, {})[0]
-    react = retaining_reactv2_cls()(
+    react = ClioReAct(
         "question -> answer",
         tools=[ask_tool],
         max_iters=0,
     )
-    lm = DummyLM(
+    lm, engine = scripted_lm(
         [
-            {
-                "next_thought": "The requested study lacks a defined objective.",
-                "tool_calls": {
-                    "tool_calls": [
-                        {
-                            "name": "ask_user",
-                            "args": {
-                                "question": "What outcome should the simulation estimate?",
-                                "kind": "freeform",
-                            },
-                        }
-                    ]
-                },
-            },
-            {
-                "next_thought": "This second model step must never run.",
-                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "wrong"}}]},
-            },
+            calls(
+                (
+                    "ask_user",
+                    {
+                        "question": "What outcome should the simulation estimate?",
+                        "kind": "freeform",
+                    },
+                ),
+                text="The requested study lacks a defined objective.",
+            ),
+            calls(("submit", {"answer": "wrong"}), text="This second model step must never run."),
         ]
     )
     app_token = gact_context.set_app(app)
     session_token = gact_context.set_session_id(session.id)
     turn_token = gact_context.set_turn_id_token("turn_ask")
+    scope_token = gact_context.set_react_scope("asker")
+    react_session_token = gact_context.set_react_session(session.id)
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             prediction = react(question="Help me design a simulation study.")
     finally:
+        gact_context.reset(react_session_token)
+        gact_context.reset(scope_token)
         gact_context.reset(turn_token)
         gact_context.reset(session_token)
         gact_context.reset(app_token)
 
     assert prediction.termination_reason == "ask_user_yield"
     assert not getattr(prediction, "answer", "")
-    assert len(lm.history) == 1
+    assert len(engine.requests) == 1
     pending = app.state.sessions.get(session.id).metadata["pending_ask_user"]
     assert pending["question"] == "What outcome should the simulation estimate?"
     assert pending["surfaced"] is False

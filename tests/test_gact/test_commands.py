@@ -34,6 +34,12 @@ class _BrokenARC:
     def get_cache_stats(self) -> dict[str, object]:
         raise RuntimeError("ARC stats unavailable")
 
+    def set_highway_sink(self, _sink: object) -> None:
+        return None
+
+    def set_segment_op_logger(self, _logger: object) -> None:
+        return None
+
 
 @pytest.fixture()
 def client(tmp_path: Path) -> Iterator[TestClient]:

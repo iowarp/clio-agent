@@ -1,16 +1,15 @@
-"""PromptRecorder: capture the exact messages dspy sends to the LM.
+"""PromptRecorder: capture exactly what each LM call sends to the model.
 
 The acceptance contract for the live context plane is *observable at the LM
-boundary*: the message list dspy is about to send is the only ground truth for
-"what context reached the model". A ``dspy.BaseCallback`` ``on_lm_start`` hook
-sees ``inputs["messages"]`` — the literal ``list[dict]`` about to go on the wire —
-without subclassing or wrapping the LM, so it works against the real production
-LM (live ALCF runs) and a scripted ``DummyLM`` (unit tests) alike.
+boundary*: what an LM call is about to send is the only ground truth for "what
+context reached the model". A ``dspy.BaseCallback`` ``on_lm_start`` hook sees the
+call's inputs without subclassing or wrapping the LM, so it works against the real
+production LM (live runs) and a scripted LM (unit tests) alike.
 
-CRITICAL: the live plane *mutates* the message list between iterations, so the
-callback **deep-copies** the captured messages. Without a snapshot every recorded
-call would alias the final state and the byte-equality / prefix tests would be
-meaningless.
+The agent loop calls ``lm(Request)``: the typed ``dspy.lm15.Request`` is the input,
+and it is immutable, so it is kept as is. A DSPy module that still calls with
+OpenAI-style ``messages`` (``dspy.Predict`` behind an adapter) is recorded too;
+those lists are **deep-copied**, since a caller may mutate them after the call.
 """
 
 from __future__ import annotations
@@ -21,11 +20,10 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from dspy.lm15 import Request
 from dspy.utils.callback import BaseCallback
 
 logger = logging.getLogger(__name__)
-
-_FIELD_MARKER = "[[ ## "  # dspy ChatAdapter field header: "[[ ## name ## ]]"
 
 
 @dataclass(frozen=True)
@@ -34,81 +32,59 @@ class CapturedCall:
 
     call_id: str
     model: str
+    request: Request | None = None
     messages: list[dict[str, Any]] = field(default_factory=list)
-    prompt: str | None = None
-    kwargs: dict[str, Any] = field(default_factory=dict)
 
     def text(self) -> str:
-        """All message contents joined — for substring assertions over the wire."""
+        """Every text the call sends, joined -- for substring assertions over the wire."""
         parts: list[str] = []
+        if self.request is not None:
+            if self.request.system:
+                parts.append(str(self.request.system))
+            for message in self.request.messages:
+                parts.extend(_part_texts(message.parts))
         for m in self.messages:
             c = m.get("content")
             if isinstance(c, str):
                 parts.append(c)
             elif isinstance(c, list):  # multimodal content blocks
                 parts.extend(str(b.get("text", "")) for b in c if isinstance(b, dict))
-        if self.prompt:
-            parts.append(self.prompt)
         return "\n".join(parts)
 
-    def field_value(self, name: str) -> str | None:
-        """Extract a ChatAdapter-rendered field's content from this call's messages.
 
-        dspy renders fields as ``[[ ## name ## ]]\\n<value>`` until the next field
-        marker. Used to isolate the ``trajectory`` span for byte-equality without
-        the static system/signature framing defeating exact comparison. Returns the
-        field value (stripped) or ``None`` if absent.
-
-        Scans messages in REVERSE so the actual rendered *values* (in the last user
-        message) win over the field *template* in the system message
-        (``[[ ## name ## ]]\\n{name}``).
-
-        NOTE: only reliable for *leaf* fields. The react ``trajectory`` field's value
-        is itself a ChatAdapter-formatted string containing nested ``[[ ## ... ## ]]``
-        markers, so this truncates it. Use ``text()`` substring checks for
-        mutation-propagation and compare ``_format_trajectory`` outputs directly for
-        byte-equality of the trajectory.
-        """
-        header = f"{_FIELD_MARKER}{name} ## ]]"
-        for m in reversed(self.messages):
-            content = m.get("content")
-            if not isinstance(content, str) or header not in content:
-                continue
-            after = content.rsplit(header, 1)[1]
-            after = after.lstrip("\n")
-            nxt = after.find(_FIELD_MARKER)
-            return (after if nxt < 0 else after[:nxt]).rstrip("\n")
-        return None
+def _part_texts(parts: Any) -> list[str]:
+    texts: list[str] = []
+    for part in parts:
+        if getattr(part, "type", "") == "tool_result":
+            texts.extend(_part_texts(part.content))
+        elif isinstance(getattr(part, "text", None), str):
+            texts.append(part.text)
+    return texts
 
 
 class PromptRecorder(BaseCallback):
-    """Records the exact ``messages`` of every LM call (thread-safe, snapshotting)."""
+    """Records what every LM call sends (thread-safe, snapshotting)."""
 
     def __init__(self) -> None:
         self._calls: list[CapturedCall] = []
         self._lock = threading.Lock()
 
     def on_lm_start(self, call_id: str, instance: Any, inputs: dict[str, Any]) -> None:
+        prompt = inputs.get("prompt")
         msgs = inputs.get("messages")
         captured = CapturedCall(
             call_id=call_id,
             model=str(getattr(instance, "model", "") or ""),
-            # Deep-copy: the live plane mutates the list across iterations.
+            request=prompt if isinstance(prompt, Request) else None,
             messages=copy.deepcopy(msgs) if msgs is not None else [],
-            prompt=inputs.get("prompt"),
-            kwargs={
-                k: v
-                for k, v in inputs.items()
-                if k not in ("messages", "prompt") and not k.startswith("api_")
-            },
         )
         with self._lock:
             self._calls.append(captured)
         logger.debug(
-            "prompt_recorder: captured call=%s model=%s messages=%d",
+            "prompt_recorder: captured call=%s model=%s typed=%s",
             call_id,
             captured.model,
-            len(captured.messages),
+            captured.request is not None,
         )
 
     # ---- accessors -----------------------------------------------------

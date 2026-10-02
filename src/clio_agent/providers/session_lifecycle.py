@@ -52,11 +52,12 @@ away.
 
 Consumer #1 (this slice): claude_code's ``ClaudeStreamClientPool`` (see
 :meth:`clio_agent.providers.claude_code_sessions.ClaudeStreamClientPool.release_session_resources`).
-Consumer #2 (NOT implemented this slice — the seam must not preclude it): the
-codex CLI provider's persistent thread/session, today its own SDK-owned
-lifecycle with zero participation in any shared registry; wiring it in later
-is a follow-on, not a claude-only special case (#775 no privileged
-integrations).
+Codex direct registers nothing here: its kept WebSocket conversations
+belong to the per-forward stateful scope (ARC-op resets and scope-end release via
+:func:`clio_agent.providers.stateful_common.register_scope_registry`), not to a
+GACT session. A provider that holds per-session resources registers here the
+same way claude_code does -- not a claude-only special case (#775 no
+privileged integrations).
 
 Dispatch is best-effort per provider: one provider's release failure is
 logged with a typed, queryable reason (#775 no-silent-fallback — never a bare

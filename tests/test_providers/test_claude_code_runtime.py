@@ -61,13 +61,13 @@ def test_resolve_cli_path_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
     the call-count assertion below goes red."""
     pytest.importorskip("claude_agent_sdk")
     calls = {"n": 0}
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
-    def counting_run(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+    def counting_popen(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
         calls["n"] += 1
-        return real_run(*args, **kwargs)
+        return real_popen(*args, **kwargs)  # type: ignore[call-overload]
 
-    monkeypatch.setattr(subprocess, "run", counting_run)
+    monkeypatch.setattr(subprocess, "Popen", counting_popen)
     first = runtime.resolve_cli_path()
     count_after_first = calls["n"]
     assert count_after_first >= 1

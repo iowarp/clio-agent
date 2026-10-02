@@ -86,15 +86,15 @@ class HealthResponse(BaseModel):
     uptime_s: int
     overall_status: Optional[Literal["ready", "degraded", "unavailable"]] = None
     integrations: Optional[list[Integration]] = None
-    # #772: whether the tool-runtime hooks (permission gate + tool observer) are
-    # installed. ``False`` means the install *failed* — tools would run ungated/
-    # unobserved, the highest-severity silent fallback, now surfaced so operators
-    # can see the degraded gate (the error itself is captured in
-    # ``app.state.tool_hooks_install_error`` and logged as
-    # ``reason=tool_runtime_hooks_install_failed``). ``None`` means
-    # not-yet-determined: deferred agent init hasn't installed the hooks yet
-    # (or the agent itself failed to construct — see ``agent_init_error``).
+    # #772: whether the tool-runtime hooks (permission gate + tool observer) are installed.
+    # ``False`` means the install *failed* — tools would run ungated/unobserved, the
+    # highest-severity silent fallback, now surfaced so operators can see the degraded gate
+    # (the error is in ``app.state.tool_hooks_install_error``, logged as
+    # ``reason=tool_runtime_hooks_install_failed``). ``None`` means not-yet-determined:
+    # deferred agent init hasn't installed the hooks yet (or the agent failed to construct
+    # — see ``agent_init_error``).
     tool_hooks_installed: Optional[bool] = None
+    context_mode: Optional[Literal["clio_core", "history"]] = None  # history: no clio-core
 
 
 class BackendInfo(BaseModel):
@@ -275,7 +275,7 @@ class ContextStateResponse(BaseModel):
     categories: dict[str, int] = Field(default_factory=dict)
     segments: list[dict[str, Any]] = Field(default_factory=list)
     render_text: str = ""
-    render_keys: dict[str, Any] = Field(default_factory=dict)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ContextOpRequest(BaseModel):
@@ -649,7 +649,6 @@ class AgentDef(BaseModel):
     api_base: str = ""  # explicit endpoint override for this expert's provider
     credential_ref: str = ""  # KEY into a credential source (e.g. "openai:acctB"), never a secret
     transport: str = ""  # transport hint: Codex (websocket/sse) or Claude Code (sdk)
-    variant: str = ""  # multi-transport provider half: Codex "sdk" | "direct" (ModelRef.variant)
     parameters: dict[str, Any] = Field(default_factory=dict)
     module: dict[str, Any] = Field(default_factory=dict)
     signature: dict[str, Any] = Field(default_factory=dict)

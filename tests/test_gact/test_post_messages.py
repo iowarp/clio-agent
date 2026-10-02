@@ -13,6 +13,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Iterator
@@ -28,6 +29,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.sessions import SessionStore
 from tests._config_layer import set_config
+from tests._harness import emit_live_text, runner_module_builder
 from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -443,14 +445,11 @@ def test_post_message_dispatches_image_parts_to_image_aware_agent(tmp_path: Path
     }
     assert assistant["parts"][-1]["text"] == "image seen"
     assert fake_agent.calls == [("describe this image", sid)]
-    # #948 S4b: ``native_model_dispatch`` still reflects the HOST agent's declared
-    # vision capability (``_agent_accepts_images(app.state.agent)``), but the
-    # blueprint runtime executes a compiled DSPy module whose ``forward`` takes no
-    # ``images`` kwarg (``BlueprintExpertModule.forward``); native images are
-    # threaded to the model through the streaming/adapter layer, not handed to a
-    # host-agent ``forward(images=)``. That host-forward dispatch was a
-    # legacy-planner mechanism, so the host fake no longer observes the images.
-    assert fake_agent.image_calls == [[]]
+    # The turn hands the native images to the built module's ``forward(images=)``
+    # (the blueprint modules declare it); the host fake stands in for that module,
+    # so it receives the one decoded image exactly once.
+    assert len(fake_agent.image_calls) == 1
+    assert len(fake_agent.image_calls[0]) == 1
 
 
 def test_post_message_bumps_message_count_by_two(client: TestClient) -> None:
@@ -672,10 +671,27 @@ def test_post_message_agent_exception_populates_error_info(
         assert sess["status"] == "error"
 
 
-def test_non_streamed_provider_error_is_one_plain_line(tmp_path: Path) -> None:
-    """rel18 follow-up: a provider HTTP error on the non-streamed forward read
-    "agent.forward raised: litellm.NotFoundError: ...". It gets the same
-    one-line provider message as the streamed path."""
+def test_an_untyped_forward_failure_logs_its_traceback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Found live (opal, 2026-09-30): a PermissionError became ``agent_error`` with no
+    stack anywhere, so where it was raised could not be found. The envelope keeps its
+    short message; the log keeps the whole failure."""
+    from .conftest import complete_turn
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(raise_on_forward=True))
+    with TestClient(app) as c, caplog.at_level(logging.ERROR, logger="clio_agent.gact.turn"):
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        complete_turn(c, sid, "hi")
+    [record] = [r for r in caplog.records if r.name == "clio_agent.gact.turn" and r.exc_info]
+    assert "simulated agent failure" in str(record.exc_info[1])
+    assert sid in record.getMessage()
+
+
+def test_forward_provider_error_is_one_plain_line(tmp_path: Path) -> None:
+    """rel18 follow-up: a provider HTTP error raised by the forward read
+    "agent.forward raised: litellm.NotFoundError: ...". It is a typed
+    ``provider_error`` carrying the provider's own words on one line."""
     import dspy
     import litellm
 
@@ -698,7 +714,7 @@ def test_non_streamed_provider_error_is_one_plain_line(tmp_path: Path) -> None:
         assistant = complete_turn(c, sid, "hi")
 
     err = assistant["error_info"]
-    assert err["error"] == "agent_error"
+    assert err["error"] == "provider_error"
     # No active LM is configured in this app, so the label comes from the
     # provider the error itself names.
     assert err["message"] == "OpenRouter: No endpoints available (HTTP 404)"
@@ -811,7 +827,7 @@ def test_post_message_prediction_error_info_sets_error_turn(
         "planner selected a direct chat route"
     )
     assert assistant["metadata"]["stream_source"] == "batch"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
     assert assistant["metadata"]["stream_fallback"]["live_streaming"] is False
 
     completed = [ev for ev in app.state.bus._history.get(sid, []) if ev.type == "message.completed"]
@@ -821,7 +837,7 @@ def test_post_message_prediction_error_info_sets_error_turn(
     assert payload["stop_reason"] == "error"
     assert payload["error_info"]["error"] == "routing_error"
     assert payload["metadata"]["stream_source"] == "batch"
-    assert payload["metadata"]["stream_fallback"]["reason"] == "agent_not_streamable"
+    assert payload["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
     assert payload["metadata"]["stream_fallback"]["live_streaming"] is False
 
 
@@ -991,21 +1007,10 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
             routing_rationale="selected registered user agent",
         )
 
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> Any:
-        del enriched_text, emit_chunk, kwargs
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
-        return None
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_prompt_user_agent_module",
+        runner_module_builder(fake_prompt_agent),
+    )
 
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -1039,9 +1044,7 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
     assert routing_events[0].payload["payload"]["selected_agent"] == "reviewer"
     assert assistant["parts"][0]["text"] == "USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == (
-        "dynamic_prompt_stream_unavailable"
-    )
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
     assert assistant["metadata"]["agent_runtime"] == {
         "kind": "dynamic_agent",
         "agent_id": "reviewer",
@@ -1088,21 +1091,10 @@ def test_post_message_agent_override_executes_user_agent_for_one_turn(
             routing_rationale="per-turn agent override",
         )
 
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> Any:
-        del enriched_text, emit_chunk, kwargs
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
-        return None
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_prompt_user_agent_module",
+        runner_module_builder(fake_prompt_agent),
+    )
 
     agent = FakeClioAgent(answer="main agent should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -1242,28 +1234,23 @@ def test_post_message_prompt_user_agent_streams_live_when_available(
 ) -> None:
     from .conftest import complete_turn
 
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("streamed prompt user agent should not use sync runner")
-
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
+    def streaming_prompt_agent(
+        base_agent: Any, agent_def: Any, question: str, session_id: str
     ) -> Any:
-        del app, enriched_text, sid
-        assert kwargs["agent_override"] is not None
-        await emit_chunk("USER_")
-        await emit_chunk("AGENT_LIVE_OK")
+        del base_agent, question, session_id
+        assert agent_def.id == "reviewer"
+        emit_live_text("USER_")
+        emit_live_text("AGENT_LIVE_OK")
         return FakePrediction(
             answer="USER_AGENT_LIVE_OK",
             selected_expert="reviewer",
             routing_rationale="selected registered user agent",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_prompt_user_agent_module",
+        runner_module_builder(streaming_prompt_agent),
+    )
 
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -1311,7 +1298,6 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     from .conftest import complete_turn
 
     calls: list[tuple[str, str, str]] = []
-    tool_module = object()
 
     def fake_tool_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         from clio_agent.tools.execution import current_tool_runtime
@@ -1327,31 +1313,14 @@ def test_post_message_tool_user_agent_executes_registered_agent(
             routing_rationale="selected registered tool user agent",
         )
 
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("tool-declaring user agent should use the tool runner")
+    def fail_prompt_module(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("tool-declaring user agent should build the tool module")
 
-    def fake_tool_module(base_agent: Any, agent_def: Any) -> object:
-        assert agent_def.id == "tool_reviewer"
-        return tool_module
-
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> Any:
-        del enriched_text, emit_chunk
-        assert kwargs["agent_override"] is tool_module
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_tool_stream_unavailable")
-        return None
-
-    monkeypatch.setattr("clio_agent.gact.app._build_tool_user_agent_module", fake_tool_module)
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fake_tool_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_tool_user_agent_module",
+        runner_module_builder(fake_tool_agent),
+    )
+    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fail_prompt_module)
 
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -1394,7 +1363,7 @@ def test_post_message_tool_user_agent_executes_registered_agent(
     assert assistant["parts"][0]["tool_name"] == "fs_read_file"
     assert assistant["parts"][-1]["text"] == "TOOL_USER_AGENT_OK"
     assert assistant["metadata"]["stream_source"] == "batch"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == ("dynamic_tool_stream_unavailable")
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
     assert assistant["metadata"]["tools_called"][0]["name"] == "fs_read_file"
     assert assistant["metadata"]["tools_called"][0]["args"] == {"path": "README.md"}
     assert assistant["metadata"]["agent_runtime"] == {
@@ -1435,39 +1404,27 @@ def test_post_message_tool_user_agent_streams_live_when_available(
 ) -> None:
     from .conftest import complete_turn
 
-    tool_module = object()
-
-    def fake_tool_module(base_agent: Any, agent_def: Any) -> object:
-        assert agent_def.id == "tool_reviewer"
-        return tool_module
-
-    def fail_tool_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("streamed tool user agent should not use sync runner")
-
-    def fail_prompt_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("tool-declaring user agent should use the tool runner")
-
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
+    def streaming_tool_agent(
+        base_agent: Any, agent_def: Any, question: str, session_id: str
     ) -> Any:
-        del app, enriched_text, sid
-        assert kwargs["agent_override"] is tool_module
-        await emit_chunk("TOOL_")
-        await emit_chunk("USER_AGENT_LIVE_OK")
+        del base_agent, question, session_id
+        assert agent_def.id == "tool_reviewer"
+        emit_live_text("TOOL_")
+        emit_live_text("USER_AGENT_LIVE_OK")
         return FakePrediction(
             answer="TOOL_USER_AGENT_LIVE_OK",
             selected_expert="tool_reviewer",
             routing_rationale="selected registered tool user agent",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._build_tool_user_agent_module", fake_tool_module)
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fail_tool_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fail_prompt_agent)
+    def fail_prompt_module(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("tool-declaring user agent should build the tool module")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_tool_user_agent_module",
+        runner_module_builder(streaming_tool_agent),
+    )
+    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fail_prompt_module)
 
     agent = FakeClioAgent(answer="should not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)

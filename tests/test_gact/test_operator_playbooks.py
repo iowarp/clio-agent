@@ -36,7 +36,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.permission_gate import _policy_action_for_tool
 from clio_agent.gact.plan_mode import (
-    inject_plan_mode_reminder,
+    plan_mode_reminder,
     resolve_plan_exit_answer,
 )
 from clio_agent.gact.planning import (
@@ -223,13 +223,13 @@ def test_malformed_playbook_skill_rejected_on_invocation(tmp_path: Path) -> None
 def test_reminder_presents_playbook_skeleton(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
     record_playbook(app, sess.id, parse_playbook(_PLAYBOOK_JSON))
-    out = inject_plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id), _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
     assert "playbook" in out.lower()
     assert "1. Triage" in out
     assert "2. Fix" in out
     assert "gather evidence" in out  # per-step guidance surfaced
     assert "fs_read_file" in out  # per-step tools_allowed surfaced
-    assert out.endswith(_USER_TEXT)
+    assert _USER_TEXT not in out  # the reminder is its own block, no user text glued on
 
 
 def test_playbook_wins_over_variant_structure_hint(tmp_path: Path) -> None:
@@ -237,7 +237,7 @@ def test_playbook_wins_over_variant_structure_hint(tmp_path: Path) -> None:
     while the variant's extra plan sections still compose."""
     app, sess = _plan_session(tmp_path, variant=PLAN_VARIANT_WORKFLOW)
     record_playbook(app, sess.id, parse_playbook(_PLAYBOOK_JSON))
-    out = inject_plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id), _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
     # Playbook present; the workflow's generic "numbered implementation workflow" structure hint
     # is replaced by the skeleton.
     assert "1. Triage" in out
@@ -406,7 +406,7 @@ def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
     step = PlaybookStep(name="triage", tools_allowed=("fs_read_file",))
     record_playbook(app, sess.id, Playbook(name="ir", steps=(step,)))
     # inject once so the deterministic plan-file path is recorded.
-    inject_plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id), _USER_TEXT)
+    plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
     fresh = app.state.sessions.get(sess.id)
     plan_file = fresh.metadata["plan_file"]
 
@@ -447,7 +447,7 @@ def test_no_playbook_resolve_is_byte_identical() -> None:
 
 def test_no_playbook_reminder_is_unchanged(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
-    out = inject_plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id), _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
     assert "playbook" not in out.lower()
     assert recorded_playbook(app.state.sessions.get(sess.id)) is None
 

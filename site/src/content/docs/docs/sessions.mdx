@@ -1,0 +1,99 @@
+---
+title: Sessions and modes
+description: Start sessions in a workspace, pick an agent blueprint, set how much the agent may do on its own, and follow or stop a run.
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+
+A workspace is a folder on your computer that CLIO treats as one body of work. A session is one conversation with an agent inside a workspace. Files the agent reads and creates, and the evidence recorded for them, stay attached to the session that produced them.
+
+## Start a session
+
+<Steps>
+
+1. Choose the plus button at the top of the sidebar, labeled "Create or import", then choose **New session**.
+
+2. Give the session a name, choose its workspace, and choose an **Agent blueprint**. The default, "Standard agent", is a general-purpose agent with file and shell tools. A blueprint adds domain experts, tools, and instructions to the session.
+
+3. Choose **Create session**, then type your question in the composer.
+
+</Steps>
+
+To register a folder as a workspace, choose **New workspace** from the same menu. The same menu also imports a session and opens archived sessions.
+
+The agent blueprint is part of the session, so you can run different kinds of work side by side by starting sessions with different blueprints. To change what new sessions start with, open Settings and choose **New session defaults**. See [Agent blueprints](/docs/blueprints/) for what a blueprint contains and how to install more.
+
+## The composer controls
+
+Below the message box, a row of controls sets how the next message is handled.
+
+| Control | What it does |
+|---|---|
+| Model | Shows the provider and model in use, for example "Codex / Luna". Choose it to change the model for this session. |
+| Reasoning effort | Shown only when the selected model offers thinking levels, such as "Medium". |
+| Execution mode | Execute, Plan, or Deep research. |
+| Confirmation policy | Ask first, Workspace edits, AI review, SPOTTER review, or Bypass checks. |
+
+To set up a model, see [Connect a model](/docs/connect-a-model/).
+
+### Execution mode
+
+| Mode | What the interface says it does |
+|---|---|
+| Execute | Act on the request and make supported changes. |
+| Plan | Develop a concrete approach before changing anything. |
+| Deep research | Investigate broadly through specialists before proposing changes. |
+
+In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. Execute is the default.
+
+### Confirmation policy
+
+| Policy | What the interface says it does |
+|---|---|
+| Ask first | Pause before protected actions. |
+| Workspace edits | Make workspace edits without a separate confirmation. |
+| AI review | Continue when automated review accepts the action. |
+| SPOTTER review | Require the configured SPOTTER policy. |
+| Bypass checks | Do not stop for supported action checks. |
+
+"Ask first" is the cautious choice. What counts as a protected action, and the answers you can give when CLIO asks, are covered in [Permissions and sandbox](/docs/permissions/).
+
+<Aside type="caution">
+"Bypass checks" removes the pauses that let you review actions before they run. Use it only in a workspace where you are comfortable with that.
+</Aside>
+
+## When the agent asks you something
+
+An agent can pause and ask you a question instead of guessing. A banner above the composer reads "response needed" while a question is waiting. A question can be:
+
+- Free text, when the agent needs a detail only you know.
+- A choice from a list.
+- A confirmation, before something that you may want to review.
+- An interactive view, such as a map where you pick a station, or a form.
+
+Answer it, or choose **Cancel question** to dismiss it. Permission requests appear in the same place. The agent waits for you, and nothing continues until you respond.
+
+If a child agent asks, the question is attributed to that child so you can see who is asking.
+
+## Follow a run
+
+While the agent works, the transcript shows its steps as they happen: tool calls with their arguments and results, and the expert agents it has called on. Open the observability panel with the panel button at the top right of the session. It has four tabs:
+
+- Evidence: files read, changed files, and artifacts.
+- Timeline: every step in order.
+- Gantt: the main agent, child agents, and tool calls over time, with a "Background work" section for activity that continues outside the main thread.
+- Context: what is in the agent's working context.
+
+The status bar at the bottom of the window shows whether anything is running. See [Memory and evidence](/docs/memory-and-evidence/) for how to read each tab.
+
+Expert agents run as child sessions. Open one to see its own transcript, and use the back arrow in its header, labeled "Return to parent conversation", to return.
+
+You can add files to a message with **Add files**, or reference earlier work with **Add context**.
+
+## Steer or stop a run
+
+While the agent is working, a **Steer** button appears next to the composer. Type a message and choose it, and the message joins the active turn at the next safe boundary instead of waiting for it to finish.
+
+During a run the send button is labeled **Stop**. Choose it to cancel the current work.
+
+The session header also has actions to fork a session, compact its history, share it, and undo.

@@ -35,7 +35,7 @@ def _app(*, bearer_token: str | None = _TOKEN) -> FastAPI:
 def _reset_runtime_shutdown_latch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guarantee the process-global shutdown latch never leaks across tests.
 
-    Several tests below drive the REAL ``request_desktop_shutdown`` /
+    Several tests below drive the REAL ``request_managed_shutdown`` /
     ``prepare_runtime_shutdown`` path (not a mock), which mutates
     ``runtime_stop._runtime_shutdown_requested`` -- a process-global, not a
     per-app one. Capturing the value as monkeypatch's "original" here
@@ -117,7 +117,7 @@ def test_shutdown_route_accepts_bearer_and_requests_server_exit(monkeypatch) -> 
         )
         assert response.status_code == 202
         assert response.json() == {"status": "stopping", "exit_path": "should_exit"}
-        assert app.state.desktop_shutdown_requested is True
+        assert app.state.managed_shutdown_owner == "desktop"
 
         # The exit is scheduled via loop.call_later(0.1, ...), not immediate.
         assert server.should_exit is False
@@ -127,7 +127,53 @@ def test_shutdown_route_accepts_bearer_and_requests_server_exit(monkeypatch) -> 
     assert released == []
 
 
-# ---- desktop_lifecycle.request_desktop_shutdown: signal only, never release ----
+# ---- the serve-owned route: same bearer contract, its own owner gate ----
+
+
+def test_server_shutdown_route_hidden_unless_serve_managed(monkeypatch) -> None:
+    monkeypatch.delenv(lifecycle.SERVE_MANAGED_ENV, raising=False)
+    monkeypatch.setenv(lifecycle.DESKTOP_MANAGED_ENV, "1")
+
+    response = TestClient(_app()).post(
+        "/v1/server/shutdown", headers={"Authorization": f"Bearer {_TOKEN}"}
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong-token"}])
+def test_server_shutdown_route_refuses_a_missing_or_wrong_bearer(
+    monkeypatch, headers: dict[str, str]
+) -> None:
+    monkeypatch.setenv(lifecycle.SERVE_MANAGED_ENV, "1")
+    app = _app()
+
+    response = TestClient(app).post("/v1/server/shutdown", headers=headers)
+
+    assert response.status_code == 401
+    assert response.json()["error"]["error"] == "authentication_required"
+    assert getattr(app.state, "managed_shutdown_owner", None) is None
+
+
+def test_server_shutdown_route_accepts_the_bearer_and_records_the_owner(monkeypatch) -> None:
+    monkeypatch.setenv(lifecycle.SERVE_MANAGED_ENV, "1")
+
+    class StubServer:
+        should_exit = False
+
+    app = _app()
+    server = StubServer()
+    with TestClient(app) as client:
+        app.state.uvicorn_server = server
+        response = client.post("/v1/server/shutdown", headers={"Authorization": f"Bearer {_TOKEN}"})
+        assert response.status_code == 202
+        assert response.json() == {"status": "stopping", "exit_path": "should_exit"}
+        assert app.state.managed_shutdown_owner == "serve"
+        time.sleep(0.25)
+        assert server.should_exit is True
+
+
+# ---- desktop_lifecycle.request_managed_shutdown: signal only, never release ----
 
 
 async def test_request_desktop_shutdown_never_releases_runtime_client(monkeypatch) -> None:
@@ -143,10 +189,10 @@ async def test_request_desktop_shutdown_never_releases_runtime_client(monkeypatc
     app = FastAPI()
     app.state.uvicorn_server = StubServer()
 
-    outcome = desktop_lifecycle.request_desktop_shutdown(app)
+    outcome = desktop_lifecycle.request_managed_shutdown(app, "desktop")
 
     assert outcome.exit_path == "should_exit"
-    assert app.state.desktop_shutdown_requested is True
+    assert app.state.managed_shutdown_owner == "desktop"
     assert runtime_stop._runtime_shutdown_requested is True
     assert released == []
 
@@ -175,7 +221,7 @@ def test_lifespan_releases_runtime_after_turn_drain_for_desktop(tmp_path, monkey
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
 
     with TestClient(app):
-        app.state.desktop_shutdown_requested = True
+        app.state.managed_shutdown_owner = "desktop"
 
     assert order == ["drain", "release", "exit"]
 
@@ -196,7 +242,7 @@ def test_lifespan_releases_runtime_when_not_desktop(tmp_path, monkeypatch) -> No
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
 
     with TestClient(app):
-        pass  # desktop_shutdown_requested never set: a plain (non-desktop) boot
+        pass  # no managed shutdown requested: a plain (non-desktop) boot
 
     assert order == ["drain", "release"]
 

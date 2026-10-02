@@ -1,0 +1,97 @@
+---
+/** Ways to extend and govern CLIO, each linking to its guide. */
+import { Blocks, Plug, ShieldCheck, Webhook } from 'lucide-react';
+import { IconTile } from '@/components/reui/icon-tile';
+import SectionHeading from './SectionHeading.astro';
+
+const items = [
+	{
+		icon: Blocks,
+		title: 'Agent blueprints',
+		body: 'Install domain agents from the marketplace, or write your own in Markdown: instructions, experts, tools, and model defaults.',
+		href: '/docs/blueprints/',
+	},
+	{
+		icon: Plug,
+		title: 'Tools and MCP servers',
+		body: 'Add any MCP server with one line of configuration, per workspace or for every session.',
+		href: '/docs/mcp-servers/',
+	},
+	{
+		icon: ShieldCheck,
+		title: 'Permissions and sandbox',
+		body: 'Approve actions as they come, set rules per workspace, and optionally fence writes at the OS level.',
+		href: '/docs/permissions/',
+	},
+	{
+		icon: Webhook,
+		title: 'Hooks',
+		body: 'Run your own checks before and after tool calls. Hooks can tighten policy but never loosen it.',
+		href: '/docs/hooks/',
+	},
+];
+---
+
+<section class="extend not-content" aria-labelledby="extend">
+	<SectionHeading
+		id="extend"
+		label="Extend"
+		title="Shape it to"
+		emphasis="your science."
+		lede="CLIO's domain knowledge lives in blueprints and tools you can read, change, and share, and its safety rules stay under your control."
+	/>
+	<ul class="cards">
+		{
+			items.map(({ icon: Icon, title, body, href }) => (
+				<li>
+					<a href={href}>
+						<IconTile variant="soft">
+							<Icon />
+						</IconTile>
+						<h3>{title}</h3>
+						<p>{body}</p>
+					</a>
+				</li>
+			))
+		}
+	</ul>
+</section>
+
+<style>
+	.extend {
+		padding-block: clamp(4rem, 8vw, 6rem);
+		border-top: 1px solid var(--line);
+	}
+	.cards {
+		display: grid;
+		gap: 2rem 2.5rem;
+		margin: 2.5rem 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	@media (min-width: 48rem) {
+		.cards {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+	a {
+		display: grid;
+		gap: 0.75rem;
+		justify-items: start;
+		text-decoration: none;
+	}
+	h3 {
+		margin: 0.25rem 0 0;
+		font-size: 1.1rem;
+		font-weight: 600;
+		color: var(--ink);
+	}
+	a:hover h3 {
+		color: var(--accent);
+	}
+	p {
+		margin: 0;
+		line-height: 1.6;
+		color: var(--ink-soft);
+	}
+</style>

@@ -1,0 +1,81 @@
+---
+/** FAQ followed by the closing call to action. */
+import { ArrowRight } from 'lucide-react';
+import SectionHeading from './SectionHeading.astro';
+import Faq from './Faq';
+import HeroDownload from './HeroDownload';
+---
+
+<section class="faq not-content" aria-labelledby="questions">
+	<div class="faq-grid">
+		<SectionHeading id="questions" label="Questions" title="Common" emphasis="questions." />
+		<Faq client:visible />
+	</div>
+</section>
+
+<section class="closing not-content" aria-labelledby="try">
+	<h2 id="try">Try it on a question <em>you already know the answer to.</em></h2>
+	<p>It is the quickest way to judge how CLIO works, and where it needs your judgment.</p>
+	<div class="actions">
+		<HeroDownload client:visible />
+		<a class="secondary" href="/tutorials/">Browse the tutorials <ArrowRight aria-hidden="true" size={18} /></a>
+	</div>
+</section>
+
+<style>
+	.faq {
+		padding-block: clamp(4rem, 8vw, 6rem);
+		border-top: 1px solid var(--line);
+	}
+	.faq-grid {
+		display: grid;
+		gap: 2.5rem;
+	}
+	@media (min-width: 64rem) {
+		.faq-grid {
+			grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+			gap: 4rem;
+		}
+	}
+	.closing {
+		padding-block: clamp(4rem, 8vw, 6rem) 1rem;
+		border-top: 1px solid var(--line);
+	}
+	.closing h2 {
+		margin: 0;
+		max-width: 24ch;
+		font-family: var(--font-display);
+		font-weight: 400;
+		font-size: clamp(2rem, 4.5vw, 3.25rem);
+		line-height: 1.08;
+		color: var(--ink);
+	}
+	.closing h2 em {
+		color: var(--accent);
+	}
+	.closing p {
+		max-width: 36rem;
+		margin: 1.25rem 0 0;
+		font-size: 1.1rem;
+		color: var(--ink-soft);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 2rem;
+		align-items: flex-start;
+		margin-top: 2rem;
+	}
+	.secondary {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		height: 2.75rem;
+		color: var(--ink);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.secondary :global(svg) {
+		color: var(--accent);
+	}
+</style>

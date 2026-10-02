@@ -45,8 +45,20 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModelFacts,
     HandshakeReport,
 )
+from clio_agent.providers.handshake.unreachable import SERVER_NOT_ANSWERING
 
 logger = logging.getLogger(__name__)
+
+#: How much longer every HTTP bound is on the one retry after a handshake timed out.
+SLOW_RETRY_SCALE = 4.0
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether ``exc`` is an HTTP timeout (a slow server, not a missing one)."""
+    import httpx  # noqa: PLC0415
+
+    return isinstance(exc, httpx.TimeoutException)
+
 
 #: Endpoint dialects that serve Hugging Face weights under their repo id (or a
 #: link rule resolves one), so an ``org/name`` model key there is worth asking
@@ -152,7 +164,9 @@ class HandshakeContext:
 class ProviderHandshake(abc.ABC):
     """Abstract per-provider handshake. Subclass and implement the phase methods."""
 
-    #: per-phase HTTP timeouts (seconds); subclasses may override.
+    #: per-phase HTTP timeouts (seconds); subclasses may override. A handshake that times
+    #: out is retried once with every bound multiplied by :data:`SLOW_RETRY_SCALE`, so a
+    #: slow server is reported slow (``ConnectivityState.TIMEOUT``), never absent (#1577).
     timeout_connect: float = 4.0
     timeout_models: float = 8.0
     timeout_model_config: float = 8.0
@@ -165,9 +179,39 @@ class ProviderHandshake(abc.ABC):
         """Run the full phase sequence, never raising.
 
         Returns a :class:`HandshakeReport`; connectivity/auth failures short-circuit
-        with ``models=()`` and an actionable ``error``.
+        with ``models=()`` and an actionable ``error``. A run that timed out
+        (``server_not_answering``) is retried once with longer bounds; still timing out,
+        it is reported as ``ConnectivityState.TIMEOUT`` -- slow or unresponsive, which is
+        not the same as a server that is not running.
         """
+        report = await self._handshake_once(ctx, scale=1.0)
+        if report.error_code != SERVER_NOT_ANSWERING:
+            return report
+        logger.warning(
+            "handshake slow reason=handshake_timeout_retrying provider=%s api_base=%s scale=%g",
+            ctx.provider_id,
+            ctx.api_base,
+            SLOW_RETRY_SCALE,
+        )
+        retry = await self._handshake_once(ctx, scale=SLOW_RETRY_SCALE)
+        if retry.error_code != SERVER_NOT_ANSWERING:
+            return retry
+        error = (
+            f"{retry.error} It is slow or unresponsive (also retried with a "
+            f"{SLOW_RETRY_SCALE:g}x longer wait)."
+        )
+        logger.warning(
+            "handshake unresponsive reason=%s provider=%s api_base=%s",
+            SERVER_NOT_ANSWERING,
+            ctx.provider_id,
+            ctx.api_base,
+        )
+        return replace(retry, connectivity=ConnectivityState.TIMEOUT, error=error)
+
+    async def _handshake_once(self, ctx: HandshakeContext, *, scale: float) -> HandshakeReport:
+        """One pass of the phase sequence with every HTTP bound multiplied by ``scale``."""
         started = time.monotonic()
+        ctx.extra["timeout_scale"] = scale  # read by _open_client
         try:
             client = await self._open_client(ctx)
         except Exception as exc:  # client construction should not fail, but be safe  # noqa: BLE001 - surfaced in HandshakeReport.error
@@ -220,6 +264,7 @@ class ProviderHandshake(abc.ABC):
                     ConnectivityState.OK,
                     conn.auth,
                     error=f"model discovery failed: {describe_exception(exc)}",
+                    error_code=SERVER_NOT_ANSWERING if _is_timeout(exc) else "",
                     started=started,
                 )
             await self._record_endpoint_capabilities(client, ctx)
@@ -487,11 +532,13 @@ class ProviderHandshake(abc.ABC):
     async def _open_client(self, ctx: HandshakeContext) -> Any:
         import httpx  # noqa: PLC0415
 
+        scale = float(ctx.extra.get("timeout_scale", 1.0))
+
         timeout = httpx.Timeout(
-            connect=self.timeout_connect,
-            read=max(self.timeout_models, self.timeout_model_config),
-            write=self.timeout_connect,
-            pool=self.timeout_connect,
+            connect=self.timeout_connect * scale,
+            read=max(self.timeout_models, self.timeout_model_config) * scale,
+            write=self.timeout_connect * scale,
+            pool=self.timeout_connect * scale,
         )
         return httpx.AsyncClient(timeout=timeout, headers=self._client_headers(ctx))
 

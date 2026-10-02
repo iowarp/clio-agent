@@ -83,18 +83,17 @@ MCP_NAMESPACE_DISCOVERY_UNREACHABLE = "mcp_namespace_discovery_unreachable"
 #: on a background re-probe; its tools are now merged into the live catalog.
 MCP_NAMESPACE_DISCOVERY_HEALED = "mcp_namespace_discovery_healed"
 #: #1232 pt 3 / #1237 hotfix: a stdio MCP launcher (uv/uvx) waited for the
-#: dedicated launcher cache lock past its GENEROUS runaway backstop (default
-#: 10 minutes). #1237 owner ruling: this is never the normal path -- a lock
-#: held by a live process is waited out no matter how long the holder's
-#: legitimate work (a cold uv env build on a slow/NFS filesystem) takes; only
-#: a livelocked or unidentifiable holder ever reaches this bound. Feeds the
-#: same background re-probe as a discovery degrade.
+#: dedicated launcher cache lock while ONE holder kept it past the hold ceiling
+#: (tools.mcp.max_wait_s + tools.mcp.no_progress_s) with no hand-off. Never the
+#: normal path: every hand-off is progress and restarts the clock, so a queue of
+#: legitimate cold spawns is waited out however long it is. Feeds the same
+#: background re-probe as a discovery degrade.
 LAUNCHER_CACHE_LOCK_TIMEOUT = "launcher_cache_lock_timeout"
 #: #1237 hotfix: a launcher-cache lock's recorded holder PID was confirmed
 #: dead (the process that took the lock is gone), so the lock was an
 #: abandoned/stale artifact rather than real contention. It was broken
 #: (removed) so acquisition could proceed immediately -- never silently, and
-#: never left to block a live waiter for its full runaway backstop.
+#: never left to block a live waiter until the hold ceiling.
 LAUNCHER_CACHE_LOCK_STALE_BROKEN = "launcher_cache_lock_stale_broken"
 #: #1237 hotfix: a declared MCP namespace's server never mounted for a
 #: workspace's resident tool fleet (any degrade reason above). Recorded on
@@ -376,6 +375,22 @@ class ConfigError(ClioError):
 
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message, error_type="config_error", details=details)
+
+
+class RemovedConfigKeyError(ConfigError, ValueError):
+    """A config key that clio no longer supports is still set.
+
+    Raised instead of ignoring or remapping the key (fail over fallback): the
+    message names the removed feature and every place the key is set, so the
+    user knows exactly what to delete. Also a :class:`ValueError`, so every
+    existing invalid-configuration handler reports it the same way.
+    """
+
+    def __init__(self, message: str, *, key: str, locations: list[str]) -> None:
+        super().__init__(message, details={"key": key, "locations": list(locations)})
+        self.error_type = "config_key_removed"
+        self.key = key
+        self.locations = list(locations)
 
 
 class CancellationError(ClioError):

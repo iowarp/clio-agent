@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -49,21 +50,100 @@ class _Cte:
         return SimpleNamespace(GetTagId=lambda: f"id-{name}-{len(self.tag_calls)}")
 
 
+class _SlowFuture:
+    """Done after ``seconds`` of wall time (a slow daemon answering late)."""
+
+    def __init__(self, seconds: float, code: int = 0) -> None:
+        self.code = code
+        self.ready_at = time.monotonic() + seconds
+
+    def done(self) -> bool:
+        return time.monotonic() >= self.ready_at
+
+    def wait(self, max_sec: float = -1.0) -> int:
+        assert self.done(), "wait() on an unfinished Future can block forever"
+        return self.code
+
+
+def _daemon(monkeypatch: pytest.MonkeyPatch, read: Any) -> None:
+    """The daemon progress signal (no real daemon is attached in these unit tests)."""
+    from clio_agent.arc import daemon_progress
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", read)
+
+
+def _working() -> Any:
+    state = {"w": 0.0}
+
+    def read() -> float:
+        state["w"] += 1.0
+        return state["w"]
+
+    return read
+
+
 def test_await_future_polls_until_done() -> None:
     future = _Future(ready_after=3)
-    assert ops.await_future(future, op_name="put", timeout_s=5) is future
+    assert ops.await_future(future, op_name="put") is future
     assert future.polls == 4
 
 
-def test_await_future_gives_up_typed_at_its_bound() -> None:
-    with pytest.raises(ops.ClioCoreFutureTimeout, match="async put did not complete within 0.05s"):
-        ops.await_future(_Future(ready_after=10**9), op_name="put", timeout_s=0.05)
+def test_a_slow_future_with_a_working_daemon_is_waited_for_past_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No fixed 31 s: a write answering after several no-progress windows while the
+    daemon works completes.
+
+    **Sabotage:** a fixed ``stall_after_s + 1`` give-up bound -> ClioCoreFutureTimeout.
+    """
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
+    _daemon(monkeypatch, _working())
+    future = _SlowFuture(2.5)  # past two worker-side windows (0.1 s + the 1 s margin)
+    assert ops.await_future(future, op_name="put") is future
 
 
-def test_the_default_give_up_bound_is_past_the_stall_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
-    with pytest.raises(ops.ClioCoreFutureTimeout, match="within 1.05s"):
+def test_a_future_whose_daemon_made_no_progress_ends_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
+    _daemon(monkeypatch, lambda: 5.0)
+    with pytest.raises(ops.ClioCoreFutureTimeout) as info:
         ops.await_future(_Future(ready_after=10**9), op_name="put")
+    assert info.value.reason == "no_progress"
+    assert info.value.op_name == "put"
+    assert isinstance(info.value, TimeoutError)
+    assert not isinstance(info.value, RuntimeError)  # never read as a refusal
+
+
+def test_a_timed_out_put_is_neither_reissued_nor_recorded_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending PutBlob is not a refusal: the retry helper must not re-issue it (the
+    first may still land) nor record a lost write; the stall surfaces typed.
+
+    **Sabotage:** make ``ClioCoreFutureTimeout`` a ``RuntimeError`` again -> the retry
+    re-issues AsyncPutBlob and records a lost write.
+    """
+    from clio_agent.arc import clio_core_retry
+
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
+    monkeypatch.setenv("CLIO_ARC_CLIO_CORE_WRITE_RETRY_FIRST_DELAY_S", "0")
+    _daemon(monkeypatch, lambda: 5.0)
+    clio_core_retry._reset_put_write_health_for_tests()
+
+    class _HungClient(_Client):
+        def AsyncPutBlob(self, tag_id: Any, name: str, data: bytes, off: int = 0) -> _Future:  # noqa: N802
+            self.puts.append((tag_id, name, data))
+            return _Future(ready_after=10**9)
+
+    store = SimpleNamespace(_client=_HungClient(), _tag_ids=ops.TagIds(_Cte()))
+    with pytest.raises(ops.ClioCoreFutureTimeout):
+        ops.store_put(store, "records", "a", b"payload")
+    assert len(store._client.puts) == 1
+    with pytest.raises(ops.ClioCoreFutureTimeout):
+        ops.store_put_many(store, "records", [("b", b"1"), ("c", b"2")])
+    assert [name for _tag, name, _data in store._client.puts] == ["a", "b", "c"]
+    assert clio_core_retry.last_lost_put_write() is None
 
 
 def test_tag_ids_resolve_once_per_kind_until_cleared() -> None:

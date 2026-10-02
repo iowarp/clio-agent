@@ -615,10 +615,9 @@ def _start_check_turn_on_app_loop(
         _run()
         return
 
-    async def _call() -> None:
-        _run()
+    from clio_agent.gact.loop_handoff import call_on_loop  # noqa: PLC0415 - typed (#1577)
 
-    asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=30)
+    call_on_loop(loop, _run, op="spotter_check_turn")
 
 
 def _push_wake(app: "FastAPI", parent_session_id: str, task: "AgentTask", wake_text: str) -> None:

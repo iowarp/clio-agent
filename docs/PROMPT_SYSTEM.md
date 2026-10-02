@@ -379,6 +379,31 @@ helps debugging:
 - Model policy requested by the prompt profile.
 - Effective provider/model used.
 
+## The Compaction Summarizer Prompt
+
+When CLIO compacts an agent's context it asks an LM to summarize the steps the
+summary replaces. That prompt is a Markdown template file, read at every
+compaction (an edit applies without a restart):
+
+- Default: the packaged `src/clio_agent/prompt_packs/builtin/compaction.md`.
+- Your own: set `compaction.prompt_file` in `config.yaml`, or
+  `CLIO_COMPACTION_PROMPT_FILE`, to the path of your template.
+
+The template uses three placeholders:
+
+- `{transcript}` (required): the replaced steps, one line per message part.
+- `{focus}`: empty, or `
+
+Focus the summary on: <text>` when the user gave a focus.
+- `{files}`: empty, or the `--- attached session files ---` block.
+
+`{focus}` and `{files}` bring their own leading blank line, so put them right after
+your instructions. Any other `{...}` is an error; write a literal brace as `{{` or
+`}}`. A missing, unreadable or invalid file fails the compaction with the typed
+`compaction_prompt_invalid` error (shown in the transcript; nothing is compacted)
+and is a `misconfigured` `compaction_prompt` row in `clio-agent doctor` and
+`/v1/health`. CLIO never falls back to the default when your file is broken.
+
 ## Built-In Prompt Inventory
 
 The first implementation pass should inventory and assign stable prompt ids to

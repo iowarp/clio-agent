@@ -1,26 +1,10 @@
-"""Liveness-driven wait around the shared uvx/uv-run launcher cache (#1237 hotfix).
+"""Liveness-driven wait around the shared uvx/uv-run launcher cache.
 
-``mcp_config.py::transport_for`` isolates every clio-spawned ``uvx``/``uv run``
-stdio MCP launcher onto ONE dedicated cache dir
-(``mcp_config._mcp_uv_cache_dir``) so clio's spawns never race the
-developer's ambient uv cache. That isolation does not, by itself, stop
-clio's OWN concurrent cold-cache spawns from racing EACH OTHER on that
-shared dedicated dir — the exact failure ``transport_for``'s docstring
-already documents: concurrent cold-cache ``uvx`` spawns building the same
-ephemeral env archive can truncate ``pyvenv.cfg`` (astral-sh/uv#11694),
-dropping the proxy connection and failing every tool-declaring expert.
-
-Every stdio spawn onto the shared dedicated cache acquires a clio-owned file
-lock (``filelock.FileLock``) before starting. The ORIGINAL (#1232 pt 3)
-design raced that acquisition against a fixed ~15s deadline and failed FAST
-+ typed on expiry. Real-world usage (iowarp/clio-agent#1237, an NFS-backed
-home dir with concurrent cold spawns) proved that bound wrong: it raced a
-LEGITIMATE holder's genuine work (a cold uv env build on a slow filesystem)
-and dropped the server for the whole run with no retry, even though nothing
-was actually broken.
-
-Owner ruling (2026-08-20): **never race a deadline against a live holder.**
-This module now waits on REALITY signals instead of a clock:
+Every clio-spawned ``uvx``/``uv run`` stdio MCP launcher shares ONE dedicated cache dir
+(``mcp_config._mcp_uv_cache_dir``); concurrent cold-cache spawns building the same
+ephemeral env can truncate ``pyvenv.cfg`` (astral-sh/uv#11694). Every stdio spawn onto
+that cache therefore acquires a clio-owned file lock (``filelock.FileLock``) first, and
+the wait follows the holder, never a clock:
 
 * While the lock's recorded holder PID names a LIVE process, keep waiting —
   no matter how long, because that holder is doing the shared cold-spawn
@@ -29,9 +13,12 @@ This module now waits on REALITY signals instead of a clock:
 * When the recorded holder PID is confirmed DEAD, the lock is an abandoned
   artifact (a crash, or an NFS soft-lock the OS never actually enforced) —
   break it (typed, loud) and retry immediately.
-* A GENEROUS runaway backstop (default 10 minutes, :func:`launcher_cache_lock_timeout_s`)
-  exists ONLY to catch a livelocked holder or a wait this process could never
-  identify a holder for — never the normal path, and it fires typed and loud
+* Progress is the lock changing hands: every hand-off (a sibling finished its
+  spawn) restarts the clock, so a queue of cold spawns on a slow machine is
+  waited out however long it is. Only ONE holder keeping the lock past
+  :func:`launcher_cache_lock_hold_ceiling_s` -- longer than its own connect can
+  take (``tools.mcp.max_wait_s``, the connect ceiling, plus one
+  ``tools.mcp.no_progress_s`` window) -- is a wedged holder, typed and loud
   (:data:`clio_agent.errors.LAUNCHER_CACHE_LOCK_TIMEOUT`).
 """
 
@@ -41,6 +28,7 @@ import asyncio
 import logging
 import os
 import time
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager, suppress
 from pathlib import Path
@@ -51,56 +39,81 @@ from clio_agent.errors import LAUNCHER_CACHE_LOCK_STALE_BROKEN, LAUNCHER_CACHE_L
 
 logger = logging.getLogger(__name__)
 
-#: Generous runaway backstop, never a normal-path bound (#1237). The OLD
-#: default (15s) was a fail-fast contention bound; it is replaced by a value
-#: large enough that only a genuinely livelocked/unidentifiable wait ever
-#: hits it.
-_DEFAULT_RUNAWAY_S = 600.0
 _POLL_INTERVAL_S = 1.0
 _LOCK_FILENAME = ".clio-launcher.lock"
 _OWNER_SUFFIX = ".owner"
 
 
 class LauncherCacheLockTimeoutError(RuntimeError):
-    """The launcher-cache lock wait exceeded its generous runaway backstop.
+    """One holder kept the launcher-cache lock past the hold ceiling with no hand-off.
 
-    #1237: this is NEVER the normal path. A live holder is waited out
-    regardless of duration (see :func:`acquire_launcher_cache_lock`); this
-    only fires when the wait could not make forward progress by either
-    reality signal (a livelocked holder, or one this process could never
-    identify from the owner record) for the full backstop window.
+    #1237: never the normal path. Every hand-off of the lock is progress and restarts
+    the clock; this fires only for a holder (or an unidentifiable one) that kept it
+    longer than its own connect can take.
     """
 
-    def __init__(self, server_id: str, timeout_s: float) -> None:
+    def __init__(self, server_id: str, timeout_s: float, holder_pid: int | None = None) -> None:
         self.server_id = server_id
         self.timeout_s = timeout_s
+        self.holder_pid = holder_pid
         super().__init__(
-            f"MCP server {server_id!r}: launcher cache lock wait exceeded its "
-            f"{timeout_s:g}s runaway backstop (reason={LAUNCHER_CACHE_LOCK_TIMEOUT})"
+            f"MCP server {server_id!r}: the launcher cache lock was held by "
+            f"{'pid ' + str(holder_pid) if holder_pid is not None else 'an unidentified holder'} "
+            f"for {timeout_s:g}s with no hand-off (reason={LAUNCHER_CACHE_LOCK_TIMEOUT})"
         )
 
 
-def launcher_cache_lock_timeout_s() -> float:
-    """Generous runaway backstop (seconds) for the shared uv-launcher cache lock.
+def launcher_cache_lock_hold_ceiling_s() -> float:
+    """How long ONE holder may keep the lock before it is a wedged holder (seconds).
 
-    #1237: NOT a normal-path bound — see the module docstring. Same config
-    key/env var as the pre-#1237 fail-fast bound; the DEFAULT moved from 15s
-    to a generous 600s because the old value raced legitimate slow-but-alive
-    cold-spawn work on contended/NFS filesystems. An operator may still lower
-    it, but the fix means the default alone is sufficient (no override
-    required).
+    The holder's own connect is bounded by ``tools.mcp.max_wait_s`` (progress-based,
+    :mod:`clio_agent.tools.mcp_server_progress`); one ``tools.mcp.no_progress_s``
+    window on top lets it finish and release. Not a deadline on the waiter: every
+    hand-off restarts the clock.
     """
-
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return float(
-        conf.resolve(
-            "tools.mcp.launcher_cache_lock_timeout_s",
-            env="CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S",
-            default=_DEFAULT_RUNAWAY_S,
-            cast=conf.as_float,
-        )
+    from clio_agent.tools.mcp_server_progress import (  # noqa: PLC0415
+        mcp_max_wait_s,
+        mcp_no_progress_s,
     )
+
+    return mcp_max_wait_s() + mcp_no_progress_s()
+
+
+class _HolderClock:
+    """Times how long the CURRENT holder has kept the lock; a hand-off restarts it."""
+
+    def __init__(self, server_id: str, ceiling_s: float) -> None:
+        self._server_id = server_id
+        self._ceiling_s = ceiling_s
+        self._holder: str | None = None
+        self._since = time.monotonic()
+
+    def check(self, holder: str | None, holder_pid: int | None) -> None:
+        """Raise typed once one holder (``holder``: its record) kept the lock past the
+        ceiling; a new holder record is progress (the lock changed hands)."""
+        now = time.monotonic()
+        if holder != self._holder:
+            self._holder, self._since = holder, now
+            return
+        if now - self._since < self._ceiling_s:
+            return
+        logger.warning(
+            "launcher_cache_lock_runaway reason=%s server=%s hold_ceiling_s=%.1f holder_pid=%s",
+            LAUNCHER_CACHE_LOCK_TIMEOUT,
+            self._server_id,
+            self._ceiling_s,
+            holder_pid,
+        )
+        from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+        stream_audit(
+            "launcher_cache_lock_timeout",
+            reason=LAUNCHER_CACHE_LOCK_TIMEOUT,
+            server_id=self._server_id,
+            timeout_s=self._ceiling_s,
+            holder_pid=holder_pid,
+        )
+        raise LauncherCacheLockTimeoutError(self._server_id, self._ceiling_s, holder_pid)
 
 
 def _lock_path() -> Path:
@@ -124,25 +137,35 @@ def _owner_path(lock_path: Path) -> Path:
     return lock_path.with_name(lock_path.name + _OWNER_SUFFIX)
 
 
+def _read_owner_record(owner_path: Path) -> str | None:
+    """The raw holder record ``"<pid> <acquisition token>"`` (``None``: none/unreadable).
+
+    The token tells two holders in ONE process apart (sibling namespaces' cold spawns
+    in the same discovery pass), so a hand-off between them is seen as progress.
+    """
+
+    try:
+        return owner_path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def _read_owner_pid(owner_path: Path) -> int | None:
     """Best-effort read of the recorded holder PID (``None``: no/unreadable record)."""
 
+    record = _read_owner_record(owner_path)
     try:
-        text = owner_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    try:
-        return int(text)
+        return int(record.split()[0]) if record else None
     except ValueError:
         return None
 
 
 def _write_owner_pid(owner_path: Path, pid: int) -> None:
-    """Best-effort, near-atomic stamp of the current holder's PID (write-then-rename)."""
+    """Best-effort, near-atomic stamp of the current holder (write-then-rename)."""
 
     tmp_path = owner_path.with_name(f"{owner_path.name}.{pid}.tmp")
     try:
-        tmp_path.write_text(str(pid), encoding="utf-8")
+        tmp_path.write_text(f"{pid} {uuid.uuid4().hex}", encoding="utf-8")
         os.replace(tmp_path, owner_path)
     except OSError:
         with suppress(OSError):
@@ -207,11 +230,30 @@ def uses_shared_launcher_cache(spec: object) -> bool:
     of the shared dir, so it cannot race another spawn ON it.
     """
 
+    command = str(getattr(spec, "command", "") or "")
     return (
         getattr(spec, "transport", "") == "stdio"
-        and bool(getattr(spec, "command", ""))
+        and bool(command)
         and "UV_CACHE_DIR" not in (getattr(spec, "env", None) or {})
+        and _launcher_name(command) not in _SELF_ISOLATING_LAUNCHERS
     )
+
+
+# Launchers that run each server from their own locked environment on their own uv
+# cache (they set the child's ``UV_CACHE_DIR`` themselves), so their launches never
+# touch the shared cache this lock guards and may start concurrently. clio-kit:
+# ``_run_locked_local_server`` + ``environment_locks.EnvironmentInUseMarker``.
+_SELF_ISOLATING_LAUNCHERS = frozenset({"clio-kit"})
+
+
+def _launcher_name(command: str) -> str:
+    """The launcher's bare name: ``C:\\...\\clio-kit.EXE`` and ``/.../clio-kit`` -> ``clio-kit``."""
+
+    name = command.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 @contextmanager
@@ -225,15 +267,15 @@ def acquire_launcher_cache_lock(
     (see the module docstring). A holder whose recorded PID is confirmed
     dead names an abandoned lock: it is broken (typed, loud via
     :func:`_break_stale_lock`) and acquisition retries immediately.
-    ``timeout_s`` (default :func:`launcher_cache_lock_timeout_s`) is a
-    GENEROUS runaway backstop, not a normal-path bound.
+    ``timeout_s`` (default :func:`launcher_cache_lock_hold_ceiling_s`) bounds how
+    long ONE holder may keep the lock; every hand-off restarts it.
     """
 
-    bound = timeout_s if timeout_s is not None else launcher_cache_lock_timeout_s()
+    bound = timeout_s if timeout_s is not None else launcher_cache_lock_hold_ceiling_s()
     lock_path = _lock_path()
     owner_path = _owner_path(lock_path)
     lock = FileLock(str(lock_path), timeout=0)
-    deadline = time.monotonic() + bound
+    clock = _HolderClock(server_id, bound)
     logged_wait = False
     while True:
         try:
@@ -245,24 +287,7 @@ def acquire_launcher_cache_lock(
         if holder_pid is not None and not _pid_alive(holder_pid):
             _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
             continue
-        if time.monotonic() >= deadline:
-            logger.warning(
-                "launcher_cache_lock_runaway reason=%s server=%s timeout_s=%.1f holder_pid=%s",
-                LAUNCHER_CACHE_LOCK_TIMEOUT,
-                server_id,
-                bound,
-                holder_pid,
-            )
-            from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
-
-            stream_audit(
-                "launcher_cache_lock_timeout",
-                reason=LAUNCHER_CACHE_LOCK_TIMEOUT,
-                server_id=server_id,
-                timeout_s=bound,
-                holder_pid=holder_pid,
-            )
-            raise LauncherCacheLockTimeoutError(server_id, bound)
+        clock.check(_read_owner_record(owner_path), holder_pid)
         if not logged_wait:
             logger.info(
                 "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
@@ -304,17 +329,17 @@ async def aacquire_launcher_cache_lock(
     DIFFERENT thread than the one that acquired silently fails to free the
     underlying OS lock (found live: the orphaned lock then wedges every
     future waiter, who can never identify a holder PID once the owner
-    record is cleared, until the generous runaway backstop fires). Each
+    record is cleared, until the hold ceiling fires). Each
     call constructs a FRESH ``FileLock`` instance (never shared/reentrant
     across calls), so process-wide (non-thread-local) tracking is correct
     here regardless.
     """
 
-    bound = timeout_s if timeout_s is not None else launcher_cache_lock_timeout_s()
+    bound = timeout_s if timeout_s is not None else launcher_cache_lock_hold_ceiling_s()
     lock_path = _lock_path()
     owner_path = _owner_path(lock_path)
     lock = FileLock(str(lock_path), timeout=0, thread_local=False)
-    deadline = time.monotonic() + bound
+    clock = _HolderClock(server_id, bound)
     logged_wait = False
     while True:
         try:
@@ -326,24 +351,7 @@ async def aacquire_launcher_cache_lock(
         if holder_pid is not None and not _pid_alive(holder_pid):
             _break_stale_lock(lock_path, owner_path, server_id, holder_pid)
             continue
-        if time.monotonic() >= deadline:
-            logger.warning(
-                "launcher_cache_lock_runaway reason=%s server=%s timeout_s=%.1f holder_pid=%s",
-                LAUNCHER_CACHE_LOCK_TIMEOUT,
-                server_id,
-                bound,
-                holder_pid,
-            )
-            from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
-
-            stream_audit(
-                "launcher_cache_lock_timeout",
-                reason=LAUNCHER_CACHE_LOCK_TIMEOUT,
-                server_id=server_id,
-                timeout_s=bound,
-                holder_pid=holder_pid,
-            )
-            raise LauncherCacheLockTimeoutError(server_id, bound)
+        clock.check(_read_owner_record(owner_path), holder_pid)
         if not logged_wait:
             logger.info(
                 "launcher_cache_lock_waiting server=%s holder_pid=%s -- holder is alive, "
@@ -366,6 +374,6 @@ __all__ = [
     "LauncherCacheLockTimeoutError",
     "aacquire_launcher_cache_lock",
     "acquire_launcher_cache_lock",
-    "launcher_cache_lock_timeout_s",
+    "launcher_cache_lock_hold_ceiling_s",
     "uses_shared_launcher_cache",
 ]

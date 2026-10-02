@@ -27,7 +27,7 @@ SABOTAGE (recorded, run manually, NOT committed as a second test):
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Iterator
 
 import pytest
 
@@ -41,23 +41,16 @@ from tests.equivalence import corpus as C
 from tests.equivalence import normalizers as N
 
 
-@pytest.fixture(params=["local", "cte"])
-def arc(request: Any, tmp_path) -> Iterator[ARCMemory]:
-    """A fresh ARCMemory on BOTH backends (the ``cte`` leg skips without the binding)."""
+@pytest.fixture
+def arc() -> Iterator[ARCMemory]:
+    """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""
+    from clio_agent.arc.storage import make_arc_store
 
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        from clio_agent.arc.storage import make_arc_store
-
-        memory = ARCMemory(store=make_arc_store(backend="cte"))
+    memory = ARCMemory(store=make_arc_store(backend="cte"))
+    try:
+        yield memory
+    finally:
         memory.clear_all()
-        try:
-            yield memory
-        finally:
-            memory.clear_all()
-        return
-    yield ARCMemory(data_dir=str(tmp_path / "arc"))
 
 
 def test_reload_equals_live_over_corpus(arc: ARCMemory) -> None:

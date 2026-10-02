@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
@@ -12,7 +13,6 @@ from clio_agent.tools.mcp_task_routing import record_route_healed, resolve_names
 class AsyncNamespacePreparationMixin:
     """Add live namespace merging and persistent connection preparation."""
 
-    _call_lock: Any
     _client: Any
     _closed: bool
     _mcp_tools: dict[str, Any]
@@ -20,6 +20,7 @@ class AsyncNamespacePreparationMixin:
     _namespace_ctxs: dict[str, Any]
     _namespace_direct_routes: dict[str, bool]
     _namespace_heal_attempted: set[str]
+    _namespace_locks: dict[str, Any]
     _namespace_servers: Mapping[str, Any]
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
@@ -42,13 +43,12 @@ class AsyncNamespacePreparationMixin:
 
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
-        if self._client is None or self._call_lock is None:
+        if self._client is None:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
         proxy = self._namespace_servers.get(namespace)
         if proxy is None:
             raise ValueError(f"unknown MCP namespace {namespace!r}")
-        async with self._call_lock:
-            await self._namespace_client(namespace, proxy)
+        await self._namespace_client(namespace, proxy)
 
     def is_namespace_prepared(self, namespace: str) -> bool:
         """Return whether this executor owns a persistent namespace client."""
@@ -56,6 +56,16 @@ class AsyncNamespacePreparationMixin:
         return namespace in self._namespace_clients
 
     async def _namespace_client(self, namespace: str, proxy: Any) -> Any:
+        """Return this namespace's client, connecting / healing it under its own lock.
+
+        Concurrent calls to one namespace share one connect; calls to different
+        namespaces never wait on each other, and no lock is held across a call.
+        """
+        lock = self._namespace_locks.setdefault(namespace, asyncio.Lock())
+        async with lock:
+            return await self._namespace_client_locked(namespace, proxy)
+
+    async def _namespace_client_locked(self, namespace: str, proxy: Any) -> Any:
         """Return this namespace's persistent client, healing a stale proxy route.
 
         #1281 F2 (adversarial review): a namespace connected while capability
@@ -118,33 +128,38 @@ class SyncNamespacePreparationMixin:
 
     _async_executor: Any
     _closed: bool
-    _setup_timeout: float
+    _loop: asyncio.AbstractEventLoop
 
-    def _run_coroutine(self, coro: Any, *, timeout: float, action: str) -> Any:
-        raise NotImplementedError
+    def _run_while_server_works(self, coro: Any, *, action: str) -> Any:
+        """Run ``coro`` on the executor loop while the MCP server(s) it starts keep working.
+
+        No fixed deadline: a server still starting on a slow machine is waited for while
+        its own process tree works, up to ``tools.mcp.max_wait_s``; a whole
+        ``tools.mcp.no_progress_s`` window with no answer and no server work raises the
+        typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
+        """
+        from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+        waiting = wait_while_server_works(coro, op_name=action)
+        return asyncio.run_coroutine_threadsafe(waiting, self._loop).result()
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live async executor."""
 
         self._async_executor.merge_namespace_tools(namespace, tools)
 
-    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
+    def prepare_namespace(self, namespace: str) -> None:
         """Establish and cache a declared namespace's persistent connection.
 
-        ``timeout`` lets the session-readiness boundary widen successive cold
-        start attempts without mutating this executor's configured baseline.
-        Ordinary callers retain the configured setup timeout.
+        Progress-based (:meth:`_run_while_server_works`): a connect whose server is
+        still visibly starting is never cut off and restarted.
         """
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
-        effective_timeout = self._setup_timeout if timeout is None else timeout
-        if effective_timeout <= 0:
-            raise ValueError("namespace setup timeout must be positive")
-        self._run_coroutine(
+        self._run_while_server_works(
             self._async_executor.prepare_namespace(namespace),
-            timeout=effective_timeout,
-            action=f"MCP namespace {namespace!r} setup",
+            action=f"namespace {namespace!r} connect",
         )
 
     def is_namespace_prepared(self, namespace: str) -> bool:

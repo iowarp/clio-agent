@@ -30,7 +30,11 @@ Example:
 
 import os
 
-__version__ = "0.9.4.24"
+from clio_agent import _dspy_lazy_proxies
+
+_dspy_lazy_proxies.install()
+
+__version__ = "0.9.5b1"
 __author__ = "IOWarp Team"
 
 __all__ = [

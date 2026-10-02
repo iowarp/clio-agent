@@ -28,6 +28,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._harness import emit_live_text, install_scripted_module
+
 from .test_turn_transcript_equivalence import (
     _build,
     _complete_turn,
@@ -36,8 +38,8 @@ from .test_turn_transcript_equivalence import (
 )
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake (tests that monkeypatch
-# ``_try_streamed_forward`` are unaffected).
+# test's ``build_app(agent=...)`` host fake (the streamed tests install their own
+# scripted module, which streams through the LM token hooks).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -63,11 +65,10 @@ def test_streamed_answer_is_never_swapped_and_the_batch_copy_never_lands(
     swap the streamed part's text. Now the batch copy is dropped by op
     identity and the streamed part keeps its own cleaned buffer."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("The streamed ", None, "answer")
-        await emit_chunk("truth.", None, "answer")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("The streamed ", "", "answer")
+        emit_live_text("truth.", "", "answer")
         return _Pred(
             answer="A paraphrased batch restatement of the streamed truth.",
             selected_expert="code_expert",
@@ -76,7 +77,7 @@ def test_streamed_answer_is_never_swapped_and_the_batch_copy_never_lands(
             route_reason="planner selected code expert",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "noswap", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
@@ -104,17 +105,16 @@ def test_streamed_direct_response_is_not_repeated_as_a_batch_answer(
 ) -> None:
     """Tool-free ReAct prose is already the answer and persists exactly once."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Ready.", None, "next_thought")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Ready.", "", "next_thought")
         return _Pred(
             answer="Ready.",
             selected_expert="code_expert",
             termination_reason="direct_response",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "direct", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "direct"}).json()["id"]
@@ -339,12 +339,11 @@ def test_wrap_up_thinking_gated_by_streamed_reasoning_identity(
     the gate is the (responder, "reasoning") channel identity, not substring
     matching on prose."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Thinking it through. ", "code_expert", "reasoning")
-        await emit_chunk("Simple.", "code_expert", "reasoning")
-        await emit_chunk("Answer: 42.", "code_expert", "answer")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Thinking it through. ", "code_expert", "reasoning")
+        emit_live_text("Simple.", "code_expert", "reasoning")
+        emit_live_text("Answer: 42.", "code_expert", "answer")
         return _Pred(
             answer="Answer: 42.",
             reasoning="Thinking it through. Simple.",
@@ -354,7 +353,7 @@ def test_wrap_up_thinking_gated_by_streamed_reasoning_identity(
             route_reason="planner selected code expert",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "thinkgate", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "g"}).json()["id"]
@@ -384,18 +383,17 @@ def test_chat_path_streamed_reasoning_with_batch_only_answer_lands_once(
     the raw-buffer probe suppressed it regardless of open/closed state). The
     turn must persist AND stream exactly [text reasoning, text answer]."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Weighing the question. ", None, "reasoning")
-        await emit_chunk("It is simple.", None, "reasoning")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Weighing the question. ", "", "reasoning")
+        emit_live_text("It is simple.", "", "reasoning")
         return _Pred(
             answer="CHAT_BATCH_ONLY_ANSWER",
             reasoning="Weighing the question. It is simple.",
             selected_expert="",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "chatgate", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "c"}).json()["id"]
@@ -482,18 +480,17 @@ def test_chat_answer_streamed_reasoning_batch_wraps_in_arrival_order(
     rather than the reconciliation-era interleave where the batch thinking landed
     while the answer part was still open."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("The streamed ", None, "answer")
-        await emit_chunk("answer.", None, "answer")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("The streamed ", "", "answer")
+        emit_live_text("answer.", "", "answer")
         return _Pred(
             answer="The streamed answer.",
             reasoning="Deliberating in batch only.",
             selected_expert="",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "answeropen", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "a"}).json()["id"]

@@ -21,19 +21,14 @@ def message_text(message: Any) -> str:
 
 
 def final_assistant_message(messages: Any) -> Any | None:
-    """Return the newest model answer, excluding appended compaction checkpoints."""
+    """Return the newest model answer, excluding between-turns compaction rows."""
+    from clio_agent.gact.summarization_record import is_compaction_row  # noqa: PLC0415
 
     candidates = []
     for message in messages or []:
         metadata = getattr(message, "metadata", {}) or {}
-        parts = getattr(message, "parts", None) or []
-        is_checkpoint = any(
-            (part.get("type") if isinstance(part, dict) else getattr(part, "type", ""))
-            == "compaction"
-            for part in parts
-        )
         if getattr(message, "role", "") == "assistant" and not metadata.get("live"):
-            if not is_checkpoint:
+            if not is_compaction_row(message):
                 candidates.append(message)
     if not candidates:
         return None

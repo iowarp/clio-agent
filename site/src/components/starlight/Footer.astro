@@ -1,0 +1,179 @@
+---
+/**
+ * Page footer: Starlight's edit link, last-updated date, and pagination on
+ * docs pages, followed by the site-wide project footer on every page.
+ */
+import EditLink from '@astrojs/starlight/components/EditLink.astro';
+import LastUpdated from '@astrojs/starlight/components/LastUpdated.astro';
+import Pagination from '@astrojs/starlight/components/Pagination.astro';
+import { Image } from 'astro:assets';
+import mark from '../../assets/brand/clio-mark.png';
+import { release } from '../../lib/release';
+
+const isSplash = Astro.locals.starlightRoute.entry.data.template === 'splash';
+
+const columns = [
+	{
+		title: 'Product',
+		links: [
+			{ label: 'Download', href: '/#download' },
+			{ label: 'Docs', href: '/docs/' },
+			{ label: 'Tutorials', href: '/tutorials/' },
+			{ label: 'Release notes', href: release.notesUrl },
+		],
+	},
+	{
+		title: 'Source',
+		links: [
+			{ label: 'Agent runtime', href: 'https://github.com/iowarp/clio-agent' },
+			{ label: 'Workspace interface', href: 'https://github.com/iowarp/gact-tui' },
+			{ label: 'Blueprint marketplace', href: 'https://github.com/iowarp/clio-agent-marketplace' },
+			{ label: 'PyPI package', href: 'https://pypi.org/project/clio-agent/' },
+		],
+	},
+	{
+		title: 'Project',
+		links: [
+			{ label: 'IOWarp', href: 'https://iowarp.ai' },
+			{ label: 'Clio Coder', href: 'https://coder.iowarp.ai' },
+			{ label: 'Contributing', href: '/docs/contributing/' },
+			{ label: 'Report an issue', href: 'https://github.com/iowarp/clio-agent/issues' },
+		],
+	},
+];
+---
+
+{
+	!isSplash && (
+		<footer class="doc-footer sl-flex">
+			<div class="meta sl-flex">
+				<EditLink />
+				<LastUpdated />
+			</div>
+			<Pagination />
+		</footer>
+	)
+}
+
+<footer class="site-footer not-content">
+	<div class="brand">
+		<Image src={mark} alt="" width={36} height={36} />
+		<div>
+			<p class="name">CLIO</p>
+			<p class="by">
+				Built by the <a href="https://grc.iit.edu">Gnosis Research Center</a> at Illinois Tech, as part of IOWarp.
+			</p>
+		</div>
+	</div>
+	<div class="columns">
+		{
+			columns.map((col) => (
+				<div>
+					<p class="col-title">{col.title}</p>
+					<ul>
+						{col.links.map((l) => (
+							<li>
+								<a href={l.href}>{l.label}</a>
+							</li>
+						))}
+					</ul>
+				</div>
+			))
+		}
+	</div>
+	<p class="legal">
+		<span>CLIO {release.tag}</span>
+		<a href="https://github.com/iowarp/clio-agent/blob/main/LICENSE">BSD 3-Clause License</a>
+	</p>
+</footer>
+
+<style>
+	@layer starlight.core {
+		.doc-footer {
+			flex-direction: column;
+			gap: 1.5rem;
+		}
+		.meta {
+			gap: 0.75rem 3rem;
+			justify-content: space-between;
+			flex-wrap: wrap;
+			margin-top: 3rem;
+			font-size: var(--sl-text-sm);
+			color: var(--sl-color-gray-3);
+		}
+		.meta > :global(p:only-child) {
+			margin-inline-start: auto;
+		}
+	}
+
+	.site-footer {
+		margin-top: 4rem;
+		padding-top: 2.5rem;
+		border-top: 1px solid var(--line);
+		display: grid;
+		gap: 2rem;
+		grid-template-columns: 1fr;
+		font-size: var(--sl-text-sm);
+		color: var(--muted);
+	}
+	@media (min-width: 50rem) {
+		.site-footer {
+			grid-template-columns: minmax(16rem, 1fr) 2fr;
+		}
+	}
+	.brand {
+		display: flex;
+		gap: 0.85rem;
+		align-items: flex-start;
+	}
+	.brand img {
+		flex: none;
+	}
+	.brand p {
+		margin: 0;
+	}
+	.name {
+		font-family: var(--font-display);
+		font-size: 1.35rem;
+		color: var(--ink);
+		line-height: 1.1;
+	}
+	.by {
+		margin-top: 0.35rem !important;
+		max-width: 22rem;
+	}
+	.columns {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+		gap: 1.5rem;
+	}
+	.col-title {
+		margin: 0 0 0.6rem;
+		color: var(--ink);
+		font-weight: 500;
+	}
+	ul {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: grid;
+		gap: 0.45rem;
+	}
+	a {
+		color: var(--muted);
+		text-decoration: none;
+	}
+	a:hover {
+		color: var(--ink);
+	}
+	.legal {
+		grid-column: 1 / -1;
+		margin: 0;
+		padding-block: 1.25rem 0.5rem;
+		border-top: 1px solid var(--line);
+		font-size: var(--sl-text-xs);
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1.5rem;
+	}
+</style>

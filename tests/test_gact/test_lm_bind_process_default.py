@@ -31,7 +31,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import dspy
 import httpx
 import pytest
 from dspy.dsp.utils.settings import main_thread_config
@@ -70,7 +69,6 @@ class _RebindLMStub:
     def rebind_lms(self, cfg: Any) -> None:
         self._provider_config = cfg
         self._main_lm = _fake_lm(cfg)
-        self._planner_lm = _fake_lm(cfg)
         self._dspy_adapter = _fake_adapter(cfg)
 
 
@@ -83,7 +81,6 @@ def _install_stub_factories(monkeypatch: pytest.MonkeyPatch, *, create_lm: Any =
 
     monkeypatch.setattr("clio_agent.config.create_lm", create_lm or _fake_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", _fake_adapter)
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", _fake_lm)
 
     async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
         raise RuntimeError("handshake disabled in test")
@@ -100,7 +97,7 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Deferred boot (no ``CLIO_LM_PROVIDER``) then PUT: the ambient default is set,
-    so a manual compaction (an ambient call) uses the bound LM and does NOT 503.
+    so an ambient read resolves the bound LM.
     """
     for key in _REMOVED_BIND_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -113,7 +110,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, arc: Any = None, **kwargs: Any) -> None:
-            # Keep the real injected ARC so the compaction route has live segments.
             self.arc = arc
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:
@@ -121,20 +117,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
 
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     _install_stub_factories(monkeypatch)
-
-    # A summariser mirroring real dspy: no bound LM -> raise (caller returns "" ->
-    # 503); a bound LM -> a summary (200). This is what distinguishes the bug
-    # (ambient lm=None) from the fix (ambient lm=bound).
-    class _FakePredict:
-        def __init__(self, *a: Any, **k: Any) -> None:
-            pass
-
-        def __call__(self, *, prior_context: str, lm: Any = None) -> Any:
-            if lm is None:
-                raise RuntimeError("no LM configured")
-            return SimpleNamespace(summary="COMPACT_OK")
-
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
 
     app = build_app(sessions_path=tmp_path / "s.json", arc=real_arc)
     with TestClient(app) as c:
@@ -155,15 +137,6 @@ def test_deferred_boot_put_installs_process_default_for_ambient(
         # The admin bind installed the process default -> ambient reads resolve it.
         assert getattr(main_thread_config["lm"], "model", None) == "bound-model"
         assert _current_lm_model_id() == "bound-model"
-
-        # A manual compaction is an ambient call (no expert dspy.context). It must
-        # now find the bound LM and summarise, not 503 on lm=None.
-        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        real_arc.append_segment(sid, "agentA", "thought", {"text": "T0"}, step=0, token_count=5)
-        real_arc.append_segment(sid, "agentA", "observation", {"text": "O0"}, step=0, token_count=9)
-        r = c.post(f"/v1/sessions/{sid}/context/compact", params={"scope": "agentA"})
-        assert r.status_code == 200, r.text
-        assert "COMPACT_OK" in r.json()["render_text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -188,7 +161,6 @@ def test_rebind_refreshes_ambient_process_default(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="openai", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="openai"),
-        _planner_lm=SimpleNamespace(model="boot-model", provider="openai"),
         _dspy_adapter=SimpleNamespace(provider="openai"),
     )
     _install_stub_factories(monkeypatch)
@@ -247,7 +219,6 @@ def test_concurrent_cloud_binds_serialized_and_consistent(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="boot", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="boot"),
-        _planner_lm=SimpleNamespace(model="boot-model", provider="boot"),
         _dspy_adapter=SimpleNamespace(provider="boot"),
     )
 

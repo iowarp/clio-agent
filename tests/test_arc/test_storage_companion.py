@@ -24,7 +24,33 @@ from clio_agent.arc.companion_policy import (
 from clio_agent.arc.lane_chunking import chunk_for_append, chunk_scope
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import ClioCoreStore, LocalFSStore
+from clio_agent.arc.storage import ClioCoreStore
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
 
 
 class _RecordingCte:
@@ -136,9 +162,9 @@ def test_non_segment_kinds_are_untouched_by_the_policy() -> None:
 
 # --------------------------------------------------------------------------- #
 # #1339 review F4: the live-lane audit evidence -- one append re-puts ONLY the
-# active chunk record, never a sibling. Against a REAL LocalFSStore (not the
+# active chunk record, never a sibling. Against the REAL clio-core store (not the
 # recording fake above): the ``store.put`` audit row this test pins is emitted
-# from inside ``LocalFSStore.put`` / ``ClioCoreStore.put`` themselves, so a real
+# from inside ``ClioCoreStore.put`` itself, so a real
 # backend is the honest proof.
 # --------------------------------------------------------------------------- #
 
@@ -152,7 +178,7 @@ def test_variant_put_carries_no_store_put_audit_row(
     audit_path = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
 
-    LocalFSStore(str(tmp_path / "fs")).put("variants", "v1", b"x")
+    _clio_core(str(tmp_path / "fs")).put("variants", "v1", b"x")
 
     rows = audit_path.read_text().splitlines() if audit_path.exists() else []
     assert not any(json.loads(row)["stage"] == "store.put" for row in rows)
@@ -172,7 +198,7 @@ def test_one_append_on_a_full_three_chunk_lane_puts_only_the_active_chunk(
 
     sid = "sess-storage-audit"
     base = "_events/m"
-    ss = SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    ss = SegmentStore(_clio_core(str(tmp_path / "arc")))
     for _ in range(3):
         scope = chunk_for_append(ss, sid, base, capacity=1)
         ss.append(sid, scope, "message_part", {})

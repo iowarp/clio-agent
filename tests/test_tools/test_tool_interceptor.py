@@ -35,6 +35,8 @@ from clio_agent.tools.execution import (
 from clio_agent.tools.tool_hooks import InterceptDecision
 from tests.test_gact._hook_fixtures import make_command_dispatcher
 
+_SYNTHESIZED = "[clio: hook] A PreToolUse hook answered this call without running the tool."
+
 # Records every REAL tool invocation so a test can prove synthesize skipped it.
 _REAL_CALLS: list[dict[str, Any]] = []
 
@@ -87,7 +89,8 @@ def test_synthesize_skips_real_tool_and_fires_post_tool(tmp_path: Path) -> None:
     )
     result = _run(hooks, "echo", {"text": "hi"})
 
-    assert result == "CACHED:hi"
+    # The agent is told a hook answered in the tool's place (never a silent stand-in).
+    assert result == f"{_SYNTHESIZED}\n\nCACHED:hi"
     assert _REAL_CALLS == [], "synthesize must SKIP the real tool call (no double-run)"
     assert len(post_seen) == 1
     assert post_seen[0]["synthetic"] is True
@@ -105,7 +108,9 @@ def test_modify_runs_real_tool_with_mutated_input(tmp_path: Path) -> None:
     result = _run(hooks, "echo", {"text": "original"})
 
     assert _REAL_CALLS == [{"text": "MUTATED"}], "modify must run the real tool with new input"
-    assert result == "REAL:MUTATED"
+    # The agent is told its arguments were changed, and to what.
+    changed = "[clio: hook] A PreToolUse hook changed this call's arguments to "
+    assert result == f'{changed}{{"text": "MUTATED"}}.\n\nREAL:MUTATED'
 
 
 def test_no_decision_runs_real_tool_unchanged(tmp_path: Path) -> None:
@@ -245,7 +250,7 @@ def test_end_to_end_real_gate_stash_interceptor_skips_real_tool(tmp_path: Path) 
     finally:
         install_global_dispatcher(None)
 
-    assert result == "CACHED:real-gate"
+    assert result == f"{_SYNTHESIZED}\n\nCACHED:real-gate"
     assert _REAL_CALLS == [], (
         "the real gate's PreToolUse stash + the real interceptor's consume-once read "
         "must skip the real tool end to end"

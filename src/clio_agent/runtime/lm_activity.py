@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any
 
 from clio_agent import conf
@@ -84,22 +84,19 @@ def _active_lm_session() -> str:
 
 
 # --- Unified LM token highway (#693) -----------------------------------------
-# The single LM-stream tap (config.IOLoggingLM._clio_streamed_call) feeds the live
-# answer text to the SAME chat publisher (_emit_chunk) so a blueprint/expert call
-# running in an executor thread streams to the UI exactly like a chat turn — no
-# separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
+# The single LM-stream tap (``ClioReAct``'s streamed call on the persistent LM loop)
+# feeds the live answer text to the SAME chat publisher (_emit_chunk) so a
+# blueprint/expert call running in an executor thread streams to the UI exactly like
+# a chat turn — no separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
 # schedules the answer delta onto that loop. ContextVar so it's copied into the
 # executor that runs the expert (and is naturally absent off-turn = no-op).
-_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any, Any, Any] | None] = ContextVar(
+_LIVE_CHUNK_EMITTER: ContextVar[tuple[Any, Any, Any] | None] = ContextVar(
     "clio_live_chunk_emitter", default=None
 )
 
 
-def set_live_chunk_emitter(
-    loop: Any, emit_coro: Any, record_dedup: Any = None, discard_open: Any = None
-) -> None:
-    """Bind the turn's (event loop, async answer-chunk publisher, tap-dedup
-    recorder, retry-discard hook).
+def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) -> None:
+    """Bind the turn's (event loop, async answer-chunk publisher, tap-dedup recorder).
 
     ``record_dedup`` is the turn transcript's synchronous
     ``record_streamed_field_text`` (#732): the tap calls it IN-THREAD before
@@ -107,18 +104,29 @@ def set_live_chunk_emitter(
     thought-dedup gate reads a source with a real happens-before instead of
     racing the loop's asynchronous ledger append.
 
-    ``discard_open`` is the transcript's synchronous ``discard_open_text``
-    (D15): called by :func:`note_lm_retry_reset` from the SAME executor thread,
-    right before ``lm.io_logging.IOLoggingLM.__call__`` re-issues a call after a
-    transient provider failure, so the abandoned attempt's already-streamed
-    ``next_thought``/``answer`` text does not survive into the retry's fresh
-    stream of the SAME still-open transcript part. Optional (``None`` is a
-    no-op) so every caller that predates D15 keeps working unchanged.
-
     The binding is a ContextVar set in the turn's context: it is copied into the
     executor that runs the expert and dies with the turn's context — no explicit
     reset is needed (or provided)."""
-    _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup, discard_open))
+    _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
+
+
+def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any] | None] | None:
+    """Send this context's streamed deltas to ``emit_coro`` instead of the turn's lane.
+
+    A variant try streams into its own tab, never into the turn's answer: the coroutine
+    is scheduled on the turn's loop like the chat publisher. ``None`` off-turn (nothing
+    is bound, so nothing streams); otherwise the token to :func:`reset_live_chunks`.
+    """
+    bound = _LIVE_CHUNK_EMITTER.get()
+    if bound is None:
+        return None
+    return _LIVE_CHUNK_EMITTER.set((bound[0], emit_coro, None))
+
+
+def reset_live_chunks(token: Token[tuple[Any, Any, Any] | None] | None) -> None:
+    """Undo :func:`redirect_live_chunks` (a ``None`` token changed nothing)."""
+    if token is not None:
+        _LIVE_CHUNK_EMITTER.reset(token)
 
 
 def note_suppressed_extract_field(
@@ -126,9 +134,8 @@ def note_suppressed_extract_field(
 ) -> None:
     """Record a ``kind: react`` EXTRACT-field suppression reason (#878).
 
-    Shared by both visible-emit seams (this module's live tap and
-    ``streaming._emit_visible_chunk``) so the no-silent-fallback record is emitted
-    identically wherever a react ``reasoning``/``answer`` field is dropped.
+    Emitted by this module's live tap wherever a react ``reasoning``/``answer``
+    field is dropped, so the suppression is never silent.
     """
     stream_audit(
         "bridge.contract_field",
@@ -160,7 +167,7 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro, record_dedup, _discard_open = emitter
+    loop, emit_coro, record_dedup = emitter
     # Attribute this delta to the expert whose LM call produced it. The tap runs in
     # the executor thread where the expert's react scope contextvar is set, so the
     # author is known here; the chat publisher splits parts when it changes (WS3).
@@ -278,42 +285,6 @@ def note_lm_answer_delta(text: str, *, field: str = "answer") -> None:
         pass
 
 
-def note_lm_retry_reset() -> None:
-    """Discard the currently-open live-streamed transcript part before an LM retry.
-
-    D15 (duplicated narration on the wire): ``lm.io_logging.IOLoggingLM.__call__``
-    re-issues the SAME logical call after a TRANSIENT provider failure (a claude_code
-    SDK "transport failed mid-stream", a dropped connection, a timeout —
-    ``io_logging._is_transient_provider_error``). The re-issued call streams its
-    answer through a brand-new field extractor with no memory of the abandoned
-    attempt, but :meth:`clio_agent.gact.transcript.TurnTranscript.append_text_delta`
-    keeps re-using the currently open ``(agent_id, field)`` part across LM calls (the
-    correct behavior for a legitimate same-field continuation) — so the retry's fresh
-    text landed on top of the failed attempt's already-streamed text in the SAME
-    part instead of replacing it, producing an exact duplicate of the paragraph.
-
-    Called SYNCHRONOUSLY, in the SAME executor thread the tap already runs in — no
-    cross-thread scheduling needed, matching :func:`set_live_chunk_emitter`'s
-    ``record_dedup`` calling convention — right before the retry loop re-issues the
-    call, so the retry's first chunk opens a genuinely fresh part. A no-op off-turn,
-    when no emitter is bound, when the bound emitter predates D15 (``discard_open``
-    is ``None`` — every 3-arg :func:`set_live_chunk_emitter` caller), or when nothing
-    is currently open (the common case: most transient failures happen before any
-    field starts streaming). Never raises: a live-stream repair hook must not break
-    the retry it is trying to keep clean.
-    """
-    emitter = _LIVE_CHUNK_EMITTER.get()
-    if not emitter:
-        return
-    _loop, _emit_coro, _record_dedup, discard_open = emitter
-    if discard_open is None:
-        return
-    try:
-        discard_open()
-    except Exception:  # noqa: BLE001,S110 - best-effort; must never break the retry
-        pass
-
-
 def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
     """Stream provider-internal thinking/debug deltas as a collapsed thinking part.
 
@@ -327,7 +298,7 @@ def note_lm_provider_thinking_delta(text: str, *, provider: str = "") -> None:
     emitter = _LIVE_CHUNK_EMITTER.get()
     if not emitter:
         return
-    loop, emit_coro, _record_dedup, _discard_open = emitter
+    loop, emit_coro, _record_dedup = emitter
     agent_id = ""
     try:
         from clio_agent.gact.context import active_react_scope  # noqa: PLC0415
@@ -419,7 +390,8 @@ def _max_lm_call_seconds() -> float:
     return value if value > 0 else _DEFAULT_MAX_LM_CALL_S
 
 
-def _inter_token_idle_seconds() -> float:
+def inter_token_idle_seconds() -> float:
+    """``limits.lm_inter_token_idle_s``: the longest trusted gap between streamed tokens."""
     try:
         value = conf.resolve(
             "limits.lm_inter_token_idle_s",
@@ -435,7 +407,7 @@ def _inter_token_idle_seconds() -> float:
 def _emit_lm_call_started(call_id: Any, instance: Any, inputs: Any) -> None:
     """Emit a durable ``lm.call.started`` BEFORE the call returns.
 
-    The S4b ``lm.call`` capture (config.IOLoggingLM) logs in ``finally`` AFTER
+    The ``lm.call`` capture (``lm/call_trace.py``) records on ``on_lm_end``, AFTER
     the call returns, so a HUNG call (LM Studio stall) is never recorded -- a
     hole in the canonical trace. This start-marker carries the full request
     ``messages`` up front, so a stall shows up as a ``lm.call.started`` with no
@@ -536,7 +508,7 @@ def note_lm_activity_for(session_id: str) -> None:
     connect has produced ZERO tokens, so touching ``last`` would silently flip
     :func:`_bucket_in_flight` from the generous prefill/non-streaming ceiling
     (:func:`_max_lm_call_seconds`, ~1800s) to the much tighter inter-token-idle
-    window (:func:`_inter_token_idle_seconds`, ~120s) -- misclassifying "still
+    window (:func:`inter_token_idle_seconds`, ~120s) -- misclassifying "still
     queued, zero tokens" as "actively streaming a token" and silently
     shrinking the very ceiling the queue-wait is trying to keep the call under.
     ``queued_last`` instead REFRESHES the prefill-style ceiling on its own
@@ -594,7 +566,7 @@ def _bucket_in_flight(st: dict[str, float]) -> bool:
 
     | regime      | trigger                          | ceiling                        | refreshed by            |
     |-------------|-----------------------------------|---------------------------------|--------------------------|
-    | STREAMING   | ``last`` > ``started``            | ``_inter_token_idle_seconds()`` | ``note_lm_activity()``   |
+    | STREAMING   | ``last`` > ``started``            | ``inter_token_idle_seconds()`` | ``note_lm_activity()``   |
     | QUEUED      | ``last`` == ``started`` AND       | ``_max_lm_call_seconds()``      | ``note_lm_activity_for()``|
     |             | ``queued_last`` > 0               | (prefill ceiling, REFRESHED)    |                          |
     | NON-STREAMING| ``last`` == ``started`` AND      | ``_max_lm_call_seconds()``      | nothing (measured off    |
@@ -624,7 +596,7 @@ def _bucket_in_flight(st: dict[str, float]) -> bool:
         return False
     now = time.monotonic()
     if st["last"] > st["started"]:
-        return (now - st["last"]) < _inter_token_idle_seconds()
+        return (now - st["last"]) < inter_token_idle_seconds()
     if st.get("queued_last", 0.0) > 0.0:
         return (now - st["queued_last"]) < _max_lm_call_seconds()
     return (now - st["started"]) < _max_lm_call_seconds()

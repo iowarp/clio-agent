@@ -30,6 +30,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from tests._harness import emit_live_text, install_scripted_module
 from tests.turn_signals import wait_for_terminal_status
 
 from .test_turn_transcript_equivalence import (
@@ -55,12 +56,11 @@ def scenario_error_envelope_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, 
     def _boom(app: Any, sid: str, error_info: Any) -> Any:
         raise RuntimeError("simulated finalize failure")
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Partial ")
-        await emit_chunk("streamed ")
-        await emit_chunk("answer.")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Partial ")
+        emit_live_text("streamed ")
+        emit_live_text("answer.")
         return _Pred(
             answer="Partial streamed answer.",
             selected_expert="code_expert",
@@ -70,7 +70,7 @@ def scenario_error_envelope_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, 
         )
 
     monkeypatch.setattr("clio_agent.gact.app._enrich_cancellation_error_info", _boom)
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "errenvelope", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "e"}).json()["id"]

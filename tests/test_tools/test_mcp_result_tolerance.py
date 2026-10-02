@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,7 +14,7 @@ from fastmcp import FastMCP
 from mcp.shared.exceptions import MCPError
 from pydantic import BaseModel
 
-from clio_agent.tools.execution import SyncMCPToolExecutor
+from clio_agent.tools.execution import SyncMCPToolExecutor, tool_workspace_context
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
 from clio_agent.tools.mcp_results import call_tool_result_to_observer
 
@@ -311,12 +313,22 @@ def test_result_to_text_still_prefers_json_for_encodable_values() -> None:
     assert _result_to_text([{"a": 1}, {"b": 2}]) == json.dumps([{"a": 1}, {"b": 2}])
 
 
-def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() -> None:
+def _spilled_text(result: str) -> str:
+    """The full result the model lane spilled to its tool-output file."""
+
+    match = re.search(r"the full result is in `([^`]+)`", result)
+    assert match, result[:400]
+    return Path(match.group(1)).read_text(encoding="utf-8")
+
+
+def test_model_lane_bounds_a_tabular_result_with_head_and_spill_file(
+    tmp_path: Path,
+) -> None:
     """A huge tabular result cannot multiply across every later ReAct prompt."""
 
-    from clio_agent.tools.mcp_executor import (
-        MODEL_TOOL_RESULT_TRUNCATED_REASON,
-        _result_to_text,
+    from clio_agent.tools.mcp_executor import _result_to_text
+    from clio_agent.tools.mcp_result_projection import (
+        bounded_model_tool_result,
         model_tool_result_chars,
     )
 
@@ -326,26 +338,32 @@ def test_result_to_text_bounds_only_the_model_lane_with_typed_head_and_tail() ->
         "completion": {"output_file": "earthscope_stations_clean.csv"},
     }
 
-    text = _result_to_text(payload)
-    bounded = json.loads(text)
+    with tool_workspace_context(str(tmp_path)):
+        text = bounded_model_tool_result(_result_to_text(payload))
 
+    full = json.dumps(payload)
+    # ``_result_to_text`` itself returns the full text; the caller bounds it.
+    assert _result_to_text(payload) == full
     assert len(text) <= model_tool_result_chars()
-    assert bounded["_clio"]["reason"] == MODEL_TOOL_RESULT_TRUNCATED_REASON
-    assert bounded["_clio"]["original_chars"] > model_tool_result_chars()
-    assert '"rows": 1101' in bounded["head"]
-    assert "earthscope_stations_clean.csv" in bounded["tail"]
+    assert text.startswith(f"[clio: result_spilled] This result is {len(full):,} characters")
+    assert '"rows": 1101' in text
+    # The tail is not in the prompt; it is in the file, exactly as produced.
+    assert "earthscope_stations_clean.csv" not in text
+    assert _spilled_text(text) == full
 
 
-def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
-    """The head/tail slices are re-escaped by json.dumps AFTER being measured.
+def test_model_lane_bounds_a_quote_dense_tabular_result(tmp_path: Path) -> None:
+    """A quote-dense row-dict payload (the station/geocode shape) stays within the bound.
 
-    A row-dict payload (the station/geocode shape this bound was built for)
-    carries ~18% quote density, so 11,360 sliced chars gained ~2,000 escape
-    characters and the "bounded" result overran the declared cap. The low-quote
-    fixture above lands just under the threshold and cannot see it.
+    The old envelope re-escaped its slices and overran the cap on this shape; the
+    head is now raw text, so the bound holds and the file keeps the exact original.
     """
 
-    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+    from clio_agent.tools.mcp_executor import _result_to_text
+    from clio_agent.tools.mcp_result_projection import (
+        bounded_model_tool_result,
+        model_tool_result_chars,
+    )
 
     payload = {
         "summary": {"rows": 4000, "status": "success"},
@@ -356,36 +374,46 @@ def test_result_to_text_bounds_a_quote_dense_tabular_result() -> None:
         "completion": {"output_file": "earthscope_stations_clean.csv"},
     }
 
-    text = _result_to_text(payload)
-    bounded = json.loads(text)
+    with tool_workspace_context(str(tmp_path)):
+        text = bounded_model_tool_result(_result_to_text(payload))
 
     assert len(text) <= model_tool_result_chars()
-    # The stamped head/tail counts describe the slices actually returned.
-    assert bounded["_clio"]["head_chars"] == len(bounded["head"])
-    assert bounded["_clio"]["tail_chars"] == len(bounded["tail"])
-    assert bounded["_clio"]["original_chars"] == len(json.dumps(payload))
+    assert _spilled_text(text) == json.dumps(payload)
 
 
-def test_result_to_text_bounds_an_escape_dense_result() -> None:
-    """Control characters expand 6:1 (\\u0007), the worst escaping case."""
+def test_model_lane_bounds_an_escape_dense_result(tmp_path: Path) -> None:
+    """Control characters do not inflate the model-lane result past the bound."""
 
-    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+    from clio_agent.tools.mcp_executor import _result_to_text
+    from clio_agent.tools.mcp_result_projection import (
+        bounded_model_tool_result,
+        model_tool_result_chars,
+    )
 
-    text = _result_to_text("\x07" * 40_000)
+    source = "\x07" * 40_000
+    with tool_workspace_context(str(tmp_path)):
+        text = bounded_model_tool_result(_result_to_text(source))
 
     assert len(text) <= model_tool_result_chars()
-    assert len(json.loads(text)["head"]) > 0
+    assert text.split("\n\n", 1)[1]  # a non-empty head is shown
+    assert _spilled_text(text) == source
 
 
-def test_result_to_text_never_returns_more_than_it_was_given() -> None:
-    """Just over the cap at high escape density, truncation used to INFLATE."""
+def test_model_lane_never_returns_more_than_the_bound(tmp_path: Path) -> None:
+    """Just over the cap at high quote density, the result stays within the bound."""
 
-    from clio_agent.tools.mcp_executor import _result_to_text, model_tool_result_chars
+    from clio_agent.tools.mcp_executor import _result_to_text
+    from clio_agent.tools.mcp_result_projection import (
+        bounded_model_tool_result,
+        model_tool_result_chars,
+    )
 
     source = '"' * (model_tool_result_chars() + 1)
-    text = _result_to_text(source)
+    with tool_workspace_context(str(tmp_path)):
+        text = bounded_model_tool_result(_result_to_text(source))
 
     assert len(text) <= model_tool_result_chars()
+    assert _spilled_text(text) == source
 
 
 def test_result_to_text_leaves_small_string_results_verbatim() -> None:

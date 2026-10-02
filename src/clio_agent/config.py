@@ -194,11 +194,8 @@ class LMProviderConfig:
         api_key: API key
         temperature: Sampling temperature
         max_tokens: Maximum tokens per response
-        planner_temperature: Lower temperature for deterministic action planning
-        planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
-        codex_variant: Which codex transport this config binds: "sdk" or "direct" (default, S1b)
     """
 
     # ProviderKind (the dialect selector, not an identity -- Part 3): the
@@ -219,9 +216,6 @@ class LMProviderConfig:
     temperature: float | None = None
     # 0 omits the client output cap; positive values set an explicit cap.
     max_tokens: int = 0
-    planner_temperature: float = 0.3
-    planner_max_tokens: int | None = None
-    router_temperature: float | None = None
     # Sampling surface (None = omit -> the provider/model's own default; Qwen: never greedy),
     # sent only when the model accepts it (providers.capabilities.accepted_parameters).
     # context_length (0 = omit) is Ollama's num_ctx and a load setting on LM Studio.
@@ -235,7 +229,6 @@ class LMProviderConfig:
     context_length: int = 0
     environment: str = "dev"
     codex_transport: Literal["websocket", "sse"] = "websocket"
-    codex_variant: Literal["", "sdk", "direct"] = ""  # S1b; "" normalizes to "direct" below
     # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
     #   with a persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
@@ -296,9 +289,6 @@ class LMProviderConfig:
                 )
         else:
             raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
-        if self.router_temperature is not None:
-            self.planner_temperature = self.router_temperature
-        self.router_temperature = self.planner_temperature
         from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
         self.thinking_level = claude_code.shipped_default_thinking_level(
@@ -320,12 +310,8 @@ class LMProviderConfig:
                 _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
             )
         # Zero means no client output cap (#1323).
-        if self.max_tokens < 0 or (
-            self.planner_max_tokens is not None and self.planner_max_tokens < 0
-        ):
-            raise ValueError("max_tokens and planner_max_tokens must be non-negative")
-        if self.planner_max_tokens is None:
-            self.planner_max_tokens = self.max_tokens
+        if self.max_tokens < 0:
+            raise ValueError("max_tokens must be non-negative")
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
@@ -338,11 +324,6 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'websocket' or 'sse' (got {self.codex_transport!r})"
             )
-        if self.codex_variant not in {"", "sdk", "direct"}:
-            raise ValueError(
-                f"codex_variant must be 'sdk' or 'direct' (got {self.codex_variant!r})"
-            )
-        self.codex_variant = self.codex_variant or "direct"
         if self.claude_code_transport != "sdk":
             raise ValueError(
                 "claude_code_transport 'exec' was removed in the v0.8.0 cleanup — "
@@ -479,12 +460,9 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.api_base`` / CLIO_LM_API_BASE: Override API base URL
         ``lm.model`` / CLIO_LM_MODEL: Override model identifier
         ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
-        ``lm.planner_temperature`` / CLIO_LM_PLANNER_TEMPERATURE: planner temperature
-        ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
         ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: direct codex transport (websocket/sse)
-        ``lm.codex_variant`` / CLIO_CODEX_VARIANT: codex provider transport (sdk/direct)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``lm.context_window`` / CLIO_LM_CONTEXT_WINDOW: Override effective context window
             (tokens); 0 = auto-derive from handshake (default). Set to assert a larger
@@ -501,9 +479,12 @@ def load_config_from_env() -> LMProviderConfig:
 
     Raises:
         ValueError: If cloud provider is selected without API key
+        RemovedConfigKeyError: If a removed key (``removed_config_keys``) is still set
     """
     from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
+    from clio_agent.removed_config_keys import reject_removed_config_keys  # noqa: PLC0415
 
+    reject_removed_config_keys()
     provider = conf.resolve(
         "lm.provider", env="CLIO_LM_PROVIDER", default="lm_studio", cast=conf.as_str
     )
@@ -516,11 +497,6 @@ def load_config_from_env() -> LMProviderConfig:
     )
     codex_transport = (
         conf.resolve("lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str)
-        .strip()
-        .lower()
-    )
-    codex_variant = (
-        conf.resolve("lm.codex_variant", env="CLIO_CODEX_VARIANT", default="", cast=conf.as_str)
         .strip()
         .lower()
     )
@@ -553,15 +529,6 @@ def load_config_from_env() -> LMProviderConfig:
     temperature = conf.resolve(
         "lm.temperature", env="CLIO_LM_TEMPERATURE", default=None, cast=conf.as_float
     )
-    planner_temperature = conf.resolve(
-        "lm.planner_temperature",
-        env="CLIO_LM_PLANNER_TEMPERATURE",
-        default=None,
-        cast=conf.as_float,
-    )
-    planner_max_tokens = conf.resolve(
-        "lm.planner_max_tokens", env="CLIO_LM_PLANNER_MAX_TOKENS", default=None, cast=conf.as_int
-    )
     max_tokens = conf.resolve(
         "lm.max_tokens", env="CLIO_LM_MAX_TOKENS", default=None, cast=conf.as_int
     )
@@ -585,10 +552,6 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["api_key"] = api_key
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if planner_temperature is not None:
-        kwargs["planner_temperature"] = planner_temperature
-    if planner_max_tokens is not None:
-        kwargs["planner_max_tokens"] = planner_max_tokens
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if top_p is not None:
@@ -601,8 +564,6 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["presence_penalty"] = presence_penalty
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
-    if codex_variant:
-        kwargs["codex_variant"] = codex_variant
     if claude_code_transport:
         kwargs["claude_code_transport"] = claude_code_transport
     if thinking_level:
@@ -669,37 +630,19 @@ def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
 # ``config.<name>`` and the monkeypatch seams keep resolving); ``# noqa: E402,
 # F401`` marks the intentional after-code, imported-but-unused re-export.
 from clio_agent.lm.adapters import (
-    _coerce_constructor_repr_to_jsonable,  # noqa: E402, F401
     _ContextOverflowError,  # noqa: E402, F401
-    _dump_unparseable_completion,  # noqa: E402, F401
     _fix_guided_schema,  # noqa: E402, F401
     _guided_output_enabled,  # noqa: E402, F401
-    _lenient_chat_adapter_cls,  # noqa: E402, F401
-    _live_streaming_enabled,  # noqa: E402, F401
-    _parse_retry_attempts,  # noqa: E402, F401
-    _recover_malformed_structured_value,  # noqa: E402, F401
     _signature_strict_response_format,  # noqa: E402, F401
     _strict_guided_json_adapter_cls,  # noqa: E402, F401
-    _unwrap_self_named_envelope,  # noqa: E402, F401
     create_chat_adapter,  # noqa: E402, F401
 )
 from clio_agent.lm.factory import (
     _construct_lm,  # noqa: E402, F401
-    _ensure_provider_registered,  # noqa: E402, F401
     _is_argonne_sophia,  # noqa: E402, F401
     _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
     _resolve_model_name,  # noqa: E402, F401
     create_lm,  # noqa: E402, F401
-    create_planner_lm,  # noqa: E402, F401
-)
-from clio_agent.lm.io_logging import (
-    _TRANSIENT_PROVIDER_MARKERS,  # noqa: E402, F401
-    _io_logging_lm_cls,  # noqa: E402, F401
-    _is_transient_provider_error,  # noqa: E402, F401
-    _lm_transient_backoff_s,  # noqa: E402, F401
-    _lm_transient_retries,  # noqa: E402, F401
-    _StreamingPlumbingError,  # noqa: E402, F401
-    _token_liveness_enabled,  # noqa: E402, F401
 )
 from clio_agent.lm.request_builder import build_request_kwargs  # noqa: E402, F401
 from clio_agent.providers.lmstudio_discovery import (

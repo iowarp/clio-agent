@@ -271,6 +271,28 @@ def claude_sdk_installed(monkeypatch):
 
 
 @pytest.fixture
+def codex_test_login():
+    """Write a test Codex CLI login into this test's own ``$CODEX_HOME``.
+
+    Codex direct reads ``$CODEX_HOME/auth.json`` when CLIO holds no sign-in of its
+    own. Every test gets an empty home (``allow_pytest_tmp_path``), so a test that
+    builds the Codex wire declares the login it needs here -- never the developer's
+    real one (found 2026-10-01: the wire ignored ``CODEX_HOME`` and these tests
+    passed only on the real login).
+    """
+    import json as _json
+
+    home = Path(os.environ["CODEX_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    auth = home / "auth.json"
+    auth.write_text(
+        _json.dumps({"tokens": {"access_token": "test-codex-token", "account_id": "acct-test"}}),
+        encoding="utf-8",
+    )
+    return auth
+
+
+@pytest.fixture
 def globus_sdk_installed(monkeypatch):
     """Make ``find_spec("globus_sdk")`` succeed without the real SDK.
 
@@ -587,9 +609,8 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     - ``lm.model: ibm/granite-4-h-tiny`` — a pinned unit-test model that suppresses
       LM-Studio discovery via ``has_explicit_model_override`` (which reads the file
       layer).
-    - ``arc.store: local`` — the fast, isolated LocalFS backend (production defaults
-      to clio-core; the cte integration tests override via an explicit
-      ``backend="cte"`` arg, unaffected).
+    - ``arc.store: cte`` + ``arc.namespace`` — clio-core, the only store, on the
+      worker's private daemon; the test's own namespace isolates its records.
 
     Because the file wins over the env, a test that needs to override one of these
     knobs mutates the file layer (``tests._config_layer.set_config`` /
@@ -608,6 +629,22 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # pytest fixture rows found 2026-08-13). Point it at the same tree the XDG
     # layout resolves to so both resolution paths agree.
     monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
+    # Codex direct also signs in from the local Codex CLI login ($CODEX_HOME/auth.json):
+    # a unit test must never see the developer's real login, so each gets an empty home.
+    # A ``live`` test is the exception: it exists to call the real provider with the
+    # real login (found 2026-10-01: the live Codex discovery test could never pass).
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+    # Likewise the developer's ALCF (Globus) sign-in: a stored token made every
+    # provider probe a real auth.globus.org round trip (53 errors on a fresh worktree,
+    # hidden on an old one by a cached handshake). Each test gets empty token stores.
+    from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+    monkeypatch.setattr(argonne_auth, "TOKENS_PATH", str(tmp_path / "globus" / "tokens.json"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    for var in ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
 
     # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
     # value from it and DELETE the stale env var so the file is authoritative.
@@ -635,17 +672,24 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # blueprint is written on disk below; keep the network git bootstrap DISABLED.
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
+    layer: dict[str, object] = {
+        "agents": {"disable_default_registry_bootstrap": True},
+        # Unit tests start no MCP servers in the background (test_session_warmup
+        # covers the warm-up itself); a live test runs it as an operator would.
+        "tools": {
+            "file_policy": {"allowed_roots": allowed_roots},
+            "mcp": {"session_warmup": False},
+        },
+        "lm": {"model": "ibm/granite-4-h-tiny"},
+        # clio-core is the only store: every test runs ARC on this worker's private
+        # daemon, in its own namespace (cleared at teardown by clio_core_namespace).
+        "arc": {"store": "cte", "namespace": _test_arc_namespace(request)},
+    }
+    if request.node.get_closest_marker("live"):
+        del layer["lm"]  # a live test runs the model the operator configured (CLIO_LM_*)
+        layer["tools"] = {"file_policy": {"allowed_roots": allowed_roots}}
     config_dir.joinpath("config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "agents": {"disable_default_registry_bootstrap": True},
-                "tools": {"file_policy": {"allowed_roots": allowed_roots}},
-                "lm": {"model": "ibm/granite-4-h-tiny"},
-                "arc": {"store": "local"},
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+        yaml.safe_dump(layer, sort_keys=False), encoding="utf-8"
     )
     # The process-wide store caches its file layer; drop it so this test's
     # freshly-written user config.yaml (and XDG) take effect.
@@ -675,6 +719,115 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(_skills, "_skill_search_roots", _isolated_skill_roots)
+
+
+def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
+    """A clio-core namespace unique to this test (records never cross tests)."""
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha1(f"{os.getpid()}:{request.node.nodeid}".encode()).hexdigest()[:12]
+    return f"t-{digest}"
+
+
+@pytest.fixture(autouse=True)
+def no_history_mode_unless_marked(request):
+    """Fail any test that enters the loud History mode unless marked ``history_mode``."""
+    from tests._history_mode_guard import guard
+
+    with guard(request.node):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def keep_the_workers_clio_core_runtime(request, monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    """An app's lifespan shutdown must not stop this worker's shared clio-core daemon.
+
+    In production a process hosts ONE app, and its lifespan end releasing the runtime
+    client (the last client out stops the daemon) is right. A test worker hosts hundreds
+    of apps on ONE private daemon, so the first app to shut down took clio-core away
+    from every later test. The per-app release is a recorded no-op here; the session
+    fixture does the one real release at the end. Tests about the release itself patch
+    ``release_runtime_client`` themselves (their patch runs later and wins).
+    """
+    from clio_agent.arc import storage  # noqa: PLC0415
+
+    releases: list[tuple] = []
+    if request.node.get_closest_marker("real_runtime_release"):
+        return releases  # the test exercises the real release (with the stop patched)
+    monkeypatch.setattr(storage, "release_runtime_client", lambda *a, **k: releases.append(a))
+    return releases
+
+
+@pytest.fixture(autouse=True)
+def clio_core_namespace(request, allow_pytest_tmp_path, monkeypatch):
+    """Give each test's ARC its own clio-core namespace(s); clear them at teardown.
+
+    The test's namespace comes from the config layer. An ``ARCMemory(data_dir=X)`` built
+    without a store gets ``<test namespace>-<hash of X>``: the same directory reopens the
+    same records, different directories stay independent -- what a data dir meant on local
+    files. Every store the test builds is recorded and cleared at teardown through the
+    store itself: no construction, config read or file check, so nothing the test
+    patches (``Path.is_file``, conf, disk usage) can break the teardown.
+    """
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent.arc import memory as arc_memory  # noqa: PLC0415
+    from clio_agent.arc import storage  # noqa: PLC0415
+
+    base = _test_arc_namespace(request)
+    built: list[object] = []
+    real_make = storage.make_arc_store
+
+    def recording_make(*args, **kwargs):
+        store = real_make(*args, **kwargs)
+        built.append(store)
+        return store
+
+    def make_for_data_dir(*args, **kwargs):
+        # ARCMemory(data_dir=X) without a store: X names its own namespace.
+        if kwargs.get("namespace") is None and kwargs.get("data_dir") is not None:
+            digest = hashlib.sha1(str(Path(kwargs["data_dir"]).resolve()).encode()).hexdigest()
+            kwargs["namespace"] = f"{base}-{digest[:8]}"
+        return recording_make(*args, **kwargs)
+
+    monkeypatch.setattr(arc_memory, "make_arc_store", make_for_data_dir)
+    monkeypatch.setattr(storage, "make_arc_store", recording_make)
+    yield
+    cleared: set[str] = set()
+    for store in built:
+        namespace = getattr(store, "_namespace", None)
+        if namespace is None or namespace in cleared:
+            continue
+        cleared.add(namespace)
+        store.clear()
+
+
+@pytest.fixture
+def clio_core_plane():
+    """What a real turn gives the agent loop: an app holding a real ARC (this test's
+    clio-core namespace), a react scope and a session. The loop has no other context
+    store; a test running ``ClioReAct`` bare opts in with
+    ``pytestmark = pytest.mark.usefixtures("clio_core_plane")``.
+    """
+    import types  # noqa: PLC0415
+
+    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+    from clio_agent.gact.events import EventBus  # noqa: PLC0415
+
+    arc = ARCMemory(store=make_arc_store(backend="cte"))
+    app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc, bus=EventBus()))
+    tokens = [
+        gact_context.set_app(app),
+        gact_context.set_react_scope("agent"),
+        gact_context.set_react_session("sess-plane"),
+    ]
+    try:
+        yield app
+    finally:
+        for token in reversed(tokens):
+            gact_context.reset(token)
 
 
 def _path_under(path: Path, base: Path) -> bool:

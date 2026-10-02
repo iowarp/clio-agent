@@ -1,192 +1,79 @@
-"""Cross-backend PARITY: the ARC live context plane must behave IDENTICALLY on
-``LocalFSStore`` and the in-process ``ClioCoreStore``.
+"""clio-core PARITY: the live plane a process renders is exactly what clio-core holds.
 
-This is the release proof that swapping ARC's persistence backend to clio-core
-changed NOTHING observable about the live plane. For a battery of op sequences
-(append / insert / delete / summarize, mid-scope edits, multi-scope, multi-session,
-binary-hostile non-UTF-8 content, large content) we drive the SAME script through
-two real ``ARCMemory`` instances -- one ``backend="local"``, one ``backend="cte"`` --
-and assert the four observable read surfaces are byte/structure EQUAL:
+clio-core is the only ARC store. Each process keeps a write-through copy of the scopes
+it has touched, so the release proof is that a COLD ``ARCMemory`` -- a second instance
+reading only what clio-core stores -- renders every scope identically to the writer,
+on every observable read surface, for a battery of op sequences (append / insert /
+delete / summarize, mid-scope edits, multi-scope, multi-session, binary-hostile
+non-UTF-8 content, large content), for as-of-T reads, and for the real ``ClioReAct``
+loop:
 
-    * ``render_segments_keys``   (the dspy trajectory dict the ReAct loop reads)
+    * ``render_segments``        (ordered live segments -- id/kind/content)
     * ``render_segment_text``    (the flattened text -- byte-equality)
     * ``segment_tokens_by_kind`` (compaction attribution)
     * ``scan_scopes``            (cross-scope discovery)
 
-We also prove PERSISTENCE parity: a SECOND ``ARCMemory`` constructed over the same
-backend (cold in-memory state) renders identically -- for local because it re-reads
-the dir, for clio-core because the in-process runtime is shared-memory and survives the
-construction of a new client.
-
-clio-core cases are marked ``integration`` (need iowarp-core's in-process runtime). The
-real ``_RetainingReAct`` machinery is also exercised end-to-end against both backends
-so parity is asserted on the actual loop, not just the store API.
-
-Run (unit lane, local only):
-    uv run python -m pytest tests/test_arc/test_stress_backend_parity.py \
-        -o addopts="" -q -m "not integration"
-Run (full parity incl. clio-core):
-    CLIO_ALLOWED_ROOTS="/tmp:$PWD" uv run python -m pytest \
-        tests/test_arc/test_stress_backend_parity.py -o addopts="" -q
+Every test runs in its own clio-core namespace on the worker's private daemon (the
+harness clears it at teardown).
 """
 
 from __future__ import annotations
 
-import os
-import uuid
-import warnings
 from typing import Any, Callable
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.storage import ClioCoreStore, LocalFSStore, make_arc_store
+from clio_agent.arc.storage import ClioCoreStore, make_arc_store
+from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context, make_react_agent
 
 # ---------------------------------------------------------------------------
-# Backend construction helpers
+# clio-core ARCMemory helpers
 # ---------------------------------------------------------------------------
-
-# A process-unique session prefix so CTE's shared-memory (process-global, never
-# torn down between tests) never sees leftovers from a prior parity test. Each
-# test derives its own session ids off the test name on top of this.
-_RUN_TAG = f"parity_{os.getpid()}_{uuid.uuid4().hex[:8]}"
-
-
-def _local_arc(tmp_path, suffix: str = "a") -> ARCMemory:
-    """An ARCMemory on a LocalFSStore rooted in this test's tmp dir."""
-    store = make_arc_store(backend="local", data_dir=str(tmp_path / f"local_{suffix}"))
-    assert isinstance(store, LocalFSStore)
-    return ARCMemory(data_dir=str(tmp_path / f"arc_local_{suffix}"), store=store)
 
 
 def _clio_core_arc() -> ARCMemory:
-    """An ARCMemory on the real in-process ClioCoreStore.
-
-    Asserts we actually got clio-core (never a silent LocalFSStore fallback): a fallback
-    would make a "parity" assertion trivially pass while testing local-vs-local, so
-    we surface the degradation warning as a hard skip-reason instead.
-    """
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        try:
-            store = make_arc_store(backend="cte")
-        except RuntimeWarning as w:  # graceful-degradation fired -> not a real clio-core run
-            pytest.skip(f"clio-core backend unavailable, cannot prove parity: {w}")
-    if not isinstance(store, ClioCoreStore):
-        pytest.skip(f"expected ClioCoreStore, got {type(store).__name__}; cannot prove parity")
+    """An ARCMemory on the real ClioCoreStore in this test's own namespace."""
+    store = make_arc_store(backend="cte")
+    assert isinstance(store, ClioCoreStore)
     return ARCMemory(store=store)
 
 
-@pytest.fixture
-def clio_core_arc() -> ARCMemory:
-    """A fresh ARCMemory over clio-core, with its segment scopes cleaned up afterward.
-
-    CTE is shared-memory and process-global, so we cannot rely on tmp-dir isolation;
-    instead every test uses ``_RUN_TAG``-prefixed sessions and we clear them on exit
-    so reruns in the same process stay clean.
-    """
-    arc = _clio_core_arc()
-    yield arc
-    # Best-effort cleanup of just the segments this run wrote (don't nuke the whole
-    # shared runtime -- other integration tests may share the process).
-    try:
-        store = arc._store
-        for name, _ in list(store.scan("segments", prefix=_RUN_TAG)):
-            store.delete("segments", name)
-    except Exception:  # noqa: BLE001
-        pass
+def _structure(
+    arc: ARCMemory, sid: str, scope: str, *, as_of: int | None = None
+) -> list[tuple[str, int, Any]]:
+    """The ordered live render as ``(kind, step, content)`` per segment."""
+    return [(s.kind, s.step, s.content) for s in arc.render_segments(sid, scope, as_of=as_of)]
 
 
-def _sid(base: str) -> str:
-    """A process-unique session id for a test (keeps CTE shared-mem isolated)."""
-    return f"{_RUN_TAG}__{base}"
+def _with_ids(arc: ARCMemory, sid: str, scope: str) -> list[tuple[str, str, Any]]:
+    """The ordered live render as ``(id, kind, content)`` -- ids survive a cold reload."""
+    return [(s.id, s.kind, s.content) for s in arc.render_segments(sid, scope)]
 
 
-# ---------------------------------------------------------------------------
-# The observable-equality assertion -- the heart of the parity proof
-# ---------------------------------------------------------------------------
-
-
-def _observable(arc: ARCMemory, sessions_scopes: list[tuple[str, str]]) -> dict[str, Any]:
-    """Snapshot every observable read surface of the live plane for a set of
-    (session, scope) pairs, plus per-session scope discovery. Pure read; no mutation.
-    """
-    snap: dict[str, Any] = {"scopes": {}, "scope_views": {}}
-    seen_sessions: list[str] = []
-    for sid, _scope in sessions_scopes:
-        if sid not in seen_sessions:
-            seen_sessions.append(sid)
-    for sid in seen_sessions:
-        snap["scopes"][sid] = arc._segments.scan_scopes(sid)
-    for sid, scope in sessions_scopes:
-        snap["scope_views"][(sid, scope)] = {
-            "keys": arc.render_segments_keys(sid, scope),
-            "text": arc.render_segment_text(sid, scope),
-            "tokens": arc.segment_tokens_by_kind(sid, scope),
-        }
-    return snap
-
-
-def _assert_parity(
-    local: ARCMemory,
-    cte: ARCMemory,
-    sessions_scopes: list[tuple[str, str]],
-    *,
-    label: str,
-) -> None:
-    """Assert the live-plane read surfaces are EQUAL across the two backends.
-
-    Sessions differ (CTE shared-mem isolation), so we compare backend-agnostic
-    views: scan_scopes is compared as the suffix after each backend's own session
-    id; render keys/text/tokens are compared verbatim (segment ids never appear in
-    these surfaces, only content -- so they are session-id-independent).
-    """
-    lv = _observable(local, sessions_scopes["local"])
-    cv = _observable(cte, sessions_scopes["cte"])
-
-    # scan_scopes parity (per logical session, paired by position)
-    for (lsid, _), (csid, _) in zip(
-        _unique_sessions(sessions_scopes["local"]),
-        _unique_sessions(sessions_scopes["cte"]),
-        strict=True,
-    ):
-        assert lv["scopes"][lsid] == cv["scopes"][csid], (
-            f"[{label}] scan_scopes mismatch local={lv['scopes'][lsid]} cte={cv['scopes'][csid]}"
-        )
-
-    # render keys / text / tokens parity (paired by position)
-    for (lsid, lscope), (csid, cscope) in zip(
-        sessions_scopes["local"], sessions_scopes["cte"], strict=True
-    ):
-        lview = lv["scope_views"][(lsid, lscope)]
-        cview = cv["scope_views"][(csid, cscope)]
-        assert lscope == cscope, f"[{label}] scope pairing bug {lscope!r} vs {cscope!r}"
-        assert lview["keys"] == cview["keys"], (
-            f"[{label}] render_segments_keys mismatch scope={lscope}\n"
-            f"  local={lview['keys']!r}\n  cte  ={cview['keys']!r}"
-        )
-        assert lview["text"] == cview["text"], (
-            f"[{label}] render_segment_text mismatch scope={lscope}\n"
-            f"  local={lview['text']!r}\n  cte  ={cview['text']!r}"
-        )
-        assert lview["tokens"] == cview["tokens"], (
-            f"[{label}] segment_tokens_by_kind mismatch scope={lscope}\n"
-            f"  local={lview['tokens']!r}\n  cte  ={cview['tokens']!r}"
-        )
-
-
-def _unique_sessions(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    out: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for sid, scope in pairs:
-        if sid not in seen:
-            seen.add(sid)
-            out.append((sid, scope))
+def _unique_sessions(pairs: list[tuple[str, str]]) -> list[str]:
+    out: list[str] = []
+    for sid, _scope in pairs:
+        if sid not in out:
+            out.append(sid)
     return out
+
+
+def _assert_cold_matches(
+    writer: ARCMemory, cold: ARCMemory, pairs: list[tuple[str, str]], *, label: str
+) -> None:
+    """Every observable read surface of the cold instance equals the writer's."""
+    for sid, scope in pairs:
+        assert _with_ids(cold, sid, scope) == _with_ids(writer, sid, scope), (
+            f"[{label}] cold render diverged from the writer on scope {scope}"
+        )
+        assert cold.render_segment_text(sid, scope) == writer.render_segment_text(sid, scope)
+        assert cold.segment_tokens_by_kind(sid, scope) == writer.segment_tokens_by_kind(sid, scope)
+    for sid in _unique_sessions(pairs):
+        assert cold._segments.scan_scopes(sid) == writer._segments.scan_scopes(sid)
 
 
 # ---------------------------------------------------------------------------
@@ -245,10 +132,15 @@ def _script_delete(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     assert obs, "setup: DELETE_ME segment must exist"
     n = arc.delete_segments(sid, scope, [obs[0].id])
     assert n == 1
-    # deleting an already-tombstoned id is a no-op (must be identical both backends)
-    assert arc.delete_segments(sid, scope, [obs[0].id]) == 0
-    # deleting an unknown id is a no-op
-    assert arc.delete_segments(sid, scope, ["does-not-exist"]) == 0
+    # deleting an already-tombstoned or an unknown id fails typed, applying nothing
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
+    for stale in (obs[0].id, "does-not-exist"):
+        try:
+            arc.delete_segments(sid, scope, [stale])
+        except StaleSegmentIdError:
+            continue
+        raise AssertionError(f"delete of stale id {stale!r} did not fail typed")
     return [(sid, scope)]
 
 
@@ -293,7 +185,7 @@ def _script_multi_scope(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
 
 def _script_multi_session(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     # two distinct sessions sharing a scope name -- proves session isolation is
-    # backend-identical (scan_scopes is session-scoped on both).
+    # held in clio-core (scan_scopes is session-scoped).
     sid2 = sid + "__second"
     scope = "shared"
     arc.append_segment(sid, scope, "thought", {"text": "session-one"}, step=0)
@@ -307,7 +199,7 @@ def _script_binary_hostile(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
 
     This is the regression guard for CTE's base64 wrapping (GetBlob UTF-8-decodes):
     the msgpack payload that persists these segments contains non-UTF-8 bytes, and
-    must round-trip byte-identically so the render matches local exactly.
+    must round-trip byte-identically through clio-core.
     """
     scope = "agentBin"
     # raw non-UTF-8 bytes stored as a bytes value inside content (msgpack-native)
@@ -390,236 +282,82 @@ ALL_SCRIPTS: list[tuple[str, Script]] = [
 
 
 # ---------------------------------------------------------------------------
-# Parametrized parity battery (clio-core cases are @integration)
+# The battery: every script, then a cold ARCMemory over what clio-core holds
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
 @pytest.mark.parametrize("name,script", ALL_SCRIPTS, ids=[n for n, _ in ALL_SCRIPTS])
-def test_backend_parity_op_battery(tmp_path, clio_core_arc, name: str, script: Script) -> None:
-    """The same op script on LocalFSStore and ClioCoreStore yields identical live-plane
-    renders across every observable read surface."""
-    local = _local_arc(tmp_path)
-    lsid = _sid(f"{name}_local")
-    csid = _sid(f"{name}_cte")
+def test_cold_instance_renders_what_clio_core_holds(name: str, script: Script) -> None:
+    """The writer's live plane and a cold instance reading clio-core are identical."""
+    writer = _clio_core_arc()
+    pairs = script(writer, f"parity_{name}")
+    assert pairs, f"[{name}] script returned no scopes"
 
-    local_scopes = script(local, lsid)
-    clio_core_scopes = script(clio_core_arc, csid)
+    _assert_cold_matches(writer, _clio_core_arc(), pairs, label=name)
 
-    # the scripts touch the same scope NAMES on both, only the session id differs
-    assert [s for _, s in local_scopes] == [s for _, s in clio_core_scopes], (
-        f"[{name}] scripts must touch the same scope names on both backends"
+
+# ---------------------------------------------------------------------------
+# as-of-T reads (the temporal read surface) survive a cold read
+# ---------------------------------------------------------------------------
+
+
+def test_as_of_render_matches_on_a_cold_instance() -> None:
+    """as-of-T reads (pre-edit snapshots) reconstruct identically from clio-core:
+    logical_time and tombstones are recovered from the persisted segments."""
+    writer = _clio_core_arc()
+    sid, scope = "asof", "agentTime"
+    writer.append_segment(sid, scope, "thought", {"text": "t0"}, step=0)
+    writer.append_segment(sid, scope, "tool_call", {"name": "a", "args": {}}, step=0)
+    writer.append_segment(sid, scope, "observation", {"text": "o0"}, step=0)
+    snapshot = max(s.logical_time for s in writer.render_segments(sid, scope))
+    obs = [s for s in writer.render_segments(sid, scope) if s.content.get("text") == "o0"]
+    writer.delete_segments(sid, scope, [obs[0].id])
+    writer.append_segment(sid, scope, "thought", {"text": "t1"}, step=1)
+
+    cold = _clio_core_arc()
+    assert _structure(cold, sid, scope) == _structure(writer, sid, scope)
+    assert _structure(cold, sid, scope, as_of=snapshot) == _structure(
+        writer, sid, scope, as_of=snapshot
     )
-
-    _assert_parity(
-        local,
-        clio_core_arc,
-        {"local": local_scopes, "cte": clio_core_scopes},
-        label=name,
-    )
+    text = cold._segments.render_text(sid, scope, as_of=snapshot)
+    assert text == writer._segments.render_text(sid, scope, as_of=snapshot)
+    assert "o0" in text, "as-of-T must show the pre-delete obs"
 
 
 # ---------------------------------------------------------------------------
-# Persistence parity: a SECOND ARCMemory over the same backend sees the same render
+# The REAL ClioReAct loop writes a plane clio-core holds in full
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.integration
-@pytest.mark.parametrize("name,script", ALL_SCRIPTS, ids=[n for n, _ in ALL_SCRIPTS])
-def test_persistence_parity_second_arcmemory(
-    tmp_path, clio_core_arc, name: str, script: Script
-) -> None:
-    """Persistence is the other half of the proof: construct a SECOND ARCMemory over
-    the same backend (fresh in-memory segment plane) and confirm it renders the live
-    plane identically -- for local because it re-reads the dir, for clio-core because the
-    in-process runtime is shared-memory."""
-    # ---- LOCAL: write, then a cold ARCMemory over the same dir ----
-    local_dir = tmp_path / "persist_local"
-    store1 = LocalFSStore(str(local_dir))
-    local1 = ARCMemory(data_dir=str(tmp_path / "arc_p_local"), store=store1)
-    lsid = _sid(f"persist_{name}_local")
-    local_scopes = script(local1, lsid)
-    # second ARCMemory, brand-new LocalFSStore over the SAME directory (cold reload)
-    store2 = LocalFSStore(str(local_dir))
-    local2 = ARCMemory(data_dir=str(tmp_path / "arc_p_local2"), store=store2)
-
-    for sid, scope in local_scopes:
-        assert local2.render_segments_keys(sid, scope) == local1.render_segments_keys(sid, scope), (
-            f"[{name}] LOCAL persistence: second ARCMemory render diverged"
-        )
-        assert local2.render_segment_text(sid, scope) == local1.render_segment_text(sid, scope)
-        assert local2.segment_tokens_by_kind(sid, scope) == local1.segment_tokens_by_kind(
-            sid, scope
-        )
-    for sid in _unique_sessions(local_scopes):
-        assert local2._segments.scan_scopes(sid[0]) == local1._segments.scan_scopes(sid[0])
-
-    # ---- clio-core: write, then a second ARCMemory over a fresh ClioCoreStore client ----
-    csid = _sid(f"persist_{name}_cte")
-    clio_core_scopes = script(clio_core_arc, csid)
-    clio_core2 = _clio_core_arc()  # new client into the same in-process shared-memory runtime
-    try:
-        for sid, scope in clio_core_scopes:
-            assert clio_core2.render_segments_keys(
-                sid, scope
-            ) == clio_core_arc.render_segments_keys(sid, scope), (
-                f"[{name}] clio-core persistence: second ARCMemory render diverged"
-            )
-            assert clio_core2.render_segment_text(sid, scope) == clio_core_arc.render_segment_text(
-                sid, scope
-            )
-            assert clio_core2.segment_tokens_by_kind(
-                sid, scope
-            ) == clio_core_arc.segment_tokens_by_kind(sid, scope)
-        for sid in _unique_sessions(clio_core_scopes):
-            assert clio_core2._segments.scan_scopes(sid[0]) == clio_core_arc._segments.scan_scopes(
-                sid[0]
-            )
-
-        # And local persisted render == cte persisted render (the full cross-backend tie)
-        for (lsid_, lscope), (csid_, cscope) in zip(local_scopes, clio_core_scopes, strict=True):
-            assert local2.render_segments_keys(lsid_, lscope) == clio_core2.render_segments_keys(
-                csid_, cscope
-            ), f"[{name}] cross-backend persisted render mismatch on scope {lscope}"
-            assert local2.render_segment_text(lsid_, lscope) == clio_core2.render_segment_text(
-                csid_, cscope
-            )
-    finally:
-        # clean up clio_core2's view of what clio_core_arc wrote (clio_core_arc fixture also cleans,
-        # but clio_core2 wrote nothing new; nothing extra to drop here)
-        pass
-
-
-# ---------------------------------------------------------------------------
-# as-of-T parity (the temporal read surface)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.integration
-def test_as_of_render_parity(tmp_path, clio_core_arc) -> None:
-    """as-of-T reads (pre-edit snapshots) must reconstruct identically on both
-    backends. Logical_time is store-assigned and recovered from persisted segments,
-    so a divergence here would mean the clock or tombstone semantics differ."""
-    local = _local_arc(tmp_path)
-
-    def build(arc: ARCMemory, sid: str) -> tuple[str, int]:
-        scope = "agentTime"
-        arc.append_segment(sid, scope, "thought", {"text": "t0"}, step=0)
-        arc.append_segment(sid, scope, "tool_call", {"name": "a", "args": {}}, step=0)
-        arc.append_segment(sid, scope, "observation", {"text": "o0"}, step=0)
-        snapshot = max(s.logical_time for s in arc.render_segments(sid, scope))
-        # now mutate: delete the observation and append a new iteration
-        obs = [s for s in arc.render_segments(sid, scope) if s.content.get("text") == "o0"]
-        arc.delete_segments(sid, scope, [obs[0].id])
-        arc.append_segment(sid, scope, "thought", {"text": "t1"}, step=1)
-        return scope, snapshot
-
-    lsid, csid = _sid("asof_local"), _sid("asof_clio_core")
-    lscope, lsnap = build(local, lsid)
-    cscope, csnap = build(clio_core_arc, csid)
-
-    # current render parity
-    assert local.render_segments_keys(lsid, lscope) == clio_core_arc.render_segments_keys(
-        csid, cscope
-    )
-    # as-of-snapshot render parity: both must still show the pre-delete o0
-    lkeys = local._segments.render_keys(lsid, lscope, as_of=lsnap)
-    ckeys = clio_core_arc._segments.render_keys(csid, cscope, as_of=csnap)
-    assert lkeys == ckeys, f"as-of-T render mismatch local={lkeys} cte={ckeys}"
-    assert "o0" in str(lkeys) and "o0" in str(ckeys), "as-of-T must show the pre-delete obs"
-    # the snapshots are at the same logical position (3 appends => lt of last)
-    assert lsnap == csnap, (
-        f"logical_time snapshot diverged across backends: local={lsnap} cte={csnap}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# End-to-end parity through the REAL _RetainingReAct loop
-# ---------------------------------------------------------------------------
-
-
-def _scripted_lm() -> DummyLM:
-    """A 2-iteration ReAct script: search then submit.
-
-    Speaks the ReActV2 contract (``next_thought`` + typed ``tool_calls``) —
-    the SHIPPED default loop since #901; ``make_react_agent`` builds whatever
-    ``app._retaining_react_cls()`` resolves, and the old classic-contract
-    script (``next_tool_name``/``next_tool_args``) failed the V2 adapter parse
-    so the loop never ran its tool (#914).
-    """
-    return DummyLM(
+def _scripted_lm() -> dspy.LM:
+    """A 2-step ReAct script: search then submit (typed lm15 replies);
+    ``make_react_agent`` builds the real loop."""
+    lm, _ = scripted_lm(
         [
-            {
-                "next_thought": "search first",
-                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
-            },
-            {
-                "next_thought": "done",
-                "tool_calls": {
-                    "tool_calls": [{"name": "submit", "args": {"answer": "FINAL_ANSWER"}}]
-                },
-            },
-            {"reasoning": "because", "answer": "FINAL_ANSWER"},
+            calls(("search", {"q": "alpha"}), text="search first"),
+            calls(("submit", {"answer": "FINAL_ANSWER"}), text="done"),
         ]
     )
+    return lm
 
 
 def _run_real_loop(arc: ARCMemory, sid: str, scope: str) -> None:
-    """Drive the REAL _RetainingReAct loop so the live plane is written by the actual
+    """Drive the REAL ClioReAct loop so the live plane is written by the actual
     machinery (not direct append_segment calls)."""
     agent = make_react_agent()
     lm = _scripted_lm()
     with live_plane_context(arc, session=sid, scope=scope):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             agent(question="find alpha")
 
 
-@pytest.mark.integration
-def test_real_react_loop_parity(tmp_path, clio_core_arc) -> None:
-    """Drive the actual ``_RetainingReAct`` loop against both backends with the same
-    scripted LM; the trajectory it WROTE to the live plane must render identically.
+def test_real_react_loop_plane_is_what_clio_core_holds() -> None:
+    """Drive the actual ``ClioReAct`` loop with a scripted LM; the trajectory it wrote
+    renders identically from a cold instance reading clio-core."""
+    writer = _clio_core_arc()
+    sid, scope = "react", "agentA"
 
-    This proves parity on the real write path, including the loop's own
-    'reset prior segments at the start of forward' behavior.
-    """
-    local = _local_arc(tmp_path)
-    scope = "agentA"
-    lsid, csid = _sid("react_local"), _sid("react_clio_core")
+    _run_real_loop(writer, sid, scope)
 
-    _run_real_loop(local, lsid, scope)
-    _run_real_loop(clio_core_arc, csid, scope)
-
-    lkeys = local.render_segments_keys(lsid, scope)
-    ckeys = clio_core_arc.render_segments_keys(csid, scope)
-    assert lkeys == ckeys, (
-        f"real-loop render diverged across backends\n  local={lkeys}\n  cte  ={ckeys}"
-    )
-    assert local.render_segment_text(lsid, scope) == clio_core_arc.render_segment_text(csid, scope)
-    assert local.segment_tokens_by_kind(lsid, scope) == clio_core_arc.segment_tokens_by_kind(
-        csid, scope
-    )
-    # sanity: the loop actually produced the search observation on both
-    assert "SEARCH_RESULT" in str(lkeys)
-    assert "SEARCH_RESULT" in str(ckeys)
-
-
-# ---------------------------------------------------------------------------
-# A local-only smoke so the unit lane (-m "not integration") still asserts the
-# battery runs end-to-end on at least one backend (guards script correctness).
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name,script", ALL_SCRIPTS, ids=[n for n, _ in ALL_SCRIPTS])
-def test_local_battery_runs(tmp_path, name: str, script: Script) -> None:
-    """Every script executes cleanly on LocalFSStore and renders SOME stable view --
-    runs in the binding-free unit lane and guards the scripts themselves."""
-    local = _local_arc(tmp_path, suffix=name)
-    sid = _sid(f"local_only_{name}")
-    scopes = script(local, sid)
-    assert scopes, f"[{name}] script returned no scopes"
-    for s, scope in scopes:
-        # idempotent re-render is stable
-        assert local.render_segments_keys(s, scope) == local.render_segments_keys(s, scope)
-        # tokens_by_kind only counts live segments and is non-negative
-        toks = local.segment_tokens_by_kind(s, scope)
-        assert all(v >= 0 for v in toks.values())
+    assert "SEARCH_RESULT" in writer.render_segment_text(sid, scope)
+    _assert_cold_matches(writer, _clio_core_arc(), [(sid, scope)], label="react")

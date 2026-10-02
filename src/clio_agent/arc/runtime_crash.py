@@ -178,9 +178,38 @@ def watch_daemon_process(
 
 
 class DaemonSpawnFailed(RuntimeError):
-    """A spawned daemon crashed or never bound its RPC port (typed for the degrade row)."""
+    """A spawned daemon crashed or stopped progressing before it bound its RPC port."""
 
     degradation_reason = "clio_core_daemon_spawn_failed"
+
+
+class DaemonStillStarting(DaemonSpawnFailed):
+    """A spawned daemon was still visibly starting at the ``arc.liveness.max_wait_s`` ceiling.
+
+    Never killed: it is left to finish and the next attach adopts it.
+    """
+
+    degradation_reason = "clio_core_daemon_start_ceiling"
+
+
+def daemon_start_work(pid: int | None, log_path: Path) -> Callable[[], float | None]:
+    """The startup progress signal of a spawned daemon: its process tree's CPU + I/O work
+    plus its log's growth (MiB). ``None`` when there is no daemon process to measure."""
+    from clio_agent.runtime.progress import ProcessTreeWork  # noqa: PLC0415
+
+    tree = ProcessTreeWork(pid) if pid is not None else None
+
+    def sample() -> float | None:
+        work = tree.sample() if tree is not None else None
+        if work is None:
+            return None
+        try:
+            log_mib = log_path.stat().st_size / float(1 << 20)
+        except OSError:
+            log_mib = 0.0
+        return work + log_mib
+
+    return sample
 
 
 def wait_for_spawned_daemon(
@@ -188,39 +217,76 @@ def wait_for_spawned_daemon(
     *,
     alive: Callable[[int], bool],
     state_dir: Path,
-    timeout_s: float,
+    work: Callable[[], float | None],
+    no_progress_s: float,
+    ceiling_s: float | None = None,
     poll_s: float = 0.25,
 ) -> None:
-    """Wait until a just-spawned daemon binds ``port``; fail at once if it crashes first.
+    """Wait until a just-spawned daemon binds ``port`` while its startup makes progress.
 
-    The watcher (:func:`watch_daemon_process`) writes the crash record the moment the
-    daemon exits. Before this check the spawner kept polling the port for the full
-    timeout after the daemon was already gone (a start that died on a failed
-    shared-memory allocation cost 30 s and then reported only "never bound port").
-    Now the daemon's own exit status and last log line are the error.
+    No fixed deadline: a slow machine starts the daemon slowly, and a daemon still
+    working (``work`` advancing: its CPU/I/O, its log growing) is waited for. The
+    watcher (:func:`watch_daemon_process`) writes the crash record the moment the
+    daemon exits, so a crash fails at once with the daemon's own exit status and last
+    log line.
 
     Args:
         port: The RPC port the daemon must bind.
         alive: Liveness probe for ``port``.
         state_dir: The runtime state dir holding the crash record and log.
-        timeout_s: How long a healthy but slow start may take.
+        work: The startup progress signal (:func:`daemon_start_work`).
+        no_progress_s: A whole window this long with no progress is a failed start.
+        ceiling_s: Bound on waiting for a daemon still progressing
+            (``arc.liveness.max_wait_s`` when ``None``).
         poll_s: Poll interval.
 
     Raises:
-        DaemonSpawnFailed: The daemon crashed before binding, or never bound in time.
+        DaemonSpawnFailed: The daemon crashed, or made no progress for ``no_progress_s``.
+        DaemonStillStarting: The daemon was still progressing at the ceiling.
     """
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if alive(port):
-            return
-        record = read_crash_record(state_dir)
-        if record is not None:
-            raise DaemonSpawnFailed(
-                "spawned the clio-core runtime daemon but it exited before binding port "
-                f"{port}: {summarize_crash(record)}"
-            )
-        time.sleep(poll_s)
+    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
+        CEILING,
+        DONE,
+        wait_while_progressing,
+    )
+
+    crashed: list[dict[str, Any]] = []
+
+    def bound_within(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while True:
+            if alive(port):
+                return True
+            record = read_crash_record(state_dir)
+            if record is not None:
+                crashed.append(record)
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(poll_s)
+
+    outcome = wait_while_progressing(
+        bound_within,
+        slice_s=no_progress_s,
+        op_name="daemon_start",
+        work=work,
+        ceiling_s=ceiling_s,
+    )
+    if crashed:
+        raise DaemonSpawnFailed(
+            "spawned the clio-core runtime daemon but it exited before binding port "
+            f"{port}: {summarize_crash(crashed[0])}"
+        )
+    if outcome.reason == DONE:
+        return
+    log = state_dir / "clio-runtime.log"
+    if outcome.reason == CEILING:
+        raise DaemonStillStarting(
+            f"the clio-core runtime daemon is still starting after {outcome.waited_s:.0f}s "
+            f"(port {port} not bound yet; ceiling arc.liveness.max_wait_s); it is left "
+            f"running for the next attach to adopt; see {log}."
+        )
     raise DaemonSpawnFailed(
-        f"spawned the clio-core runtime daemon but it never bound port {port} within "
-        f"{timeout_s:.0f}s; see {state_dir / 'clio-runtime.log'}."
+        f"spawned the clio-core runtime daemon but it never bound port {port} and made no "
+        f"progress for {no_progress_s:g}s (wait={outcome.reason}); see {log}."
     )

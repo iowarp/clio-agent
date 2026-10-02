@@ -207,9 +207,9 @@ def _stop(loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
 def test_a_nested_asyncio_run_on_a_worker_thread_writes_fine(monkeypatch: Any) -> None:
     """The dropped-events regression: a PRIVATE loop is audited and ALLOWED.
 
-    ``lm/io_logging.py::_clio_streamed_call`` drives each provider call under its own
-    ``asyncio.run`` on an anyio worker and emits ``lm.call`` from inside it. Blocking
-    there blocks only that worker; refusing it lost the event.
+    The streamed LM path runs each provider call on a loop that is not the server's
+    (the persistent LM loop) and emits ``lm.call`` from inside it. Blocking there
+    blocks only that loop's thread; refusing it lost the event.
     """
 
     rows: list[tuple[str, dict[str, Any]]] = []

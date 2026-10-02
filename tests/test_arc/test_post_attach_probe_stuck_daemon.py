@@ -108,6 +108,13 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
     assert result["outcome"] == "typed_error", result
     assert result["stage_name"] == "post_attach_probe"
     assert result["reason"] == "clio_core_post_attach_probe_timeout"
-    assert f"did not answer within {_WINDOW_S:g}s" in result["message"]
+    # A gone daemon cannot be located (wait=daemon_pid_unresolved); a suspended one is
+    # found and makes no progress. Both typed, both within the window.
+    expected = (
+        "the daemon process could not be located"
+        if mode == "kill"
+        else f"made no progress for {_WINDOW_S:g}s"
+    )
+    assert expected in result["message"], result["message"]
     assert result["elapsed_s"] < _WINDOW_S + 2.0, result  # the bound, not a hang
     assert result["deregistered"] == [True]

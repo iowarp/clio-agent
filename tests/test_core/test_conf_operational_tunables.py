@@ -126,16 +126,14 @@ def test_a2ui_string_bound_is_configurable() -> None:
 class _StubExecutor:
     """Minimal live-executor surface the readiness boundary drives."""
 
-    def __init__(self, *, setup_timeout: float | None = None) -> None:
-        if setup_timeout is not None:
-            self._setup_timeout = setup_timeout
-        self.prepared_timeouts: list[float] = []
+    def __init__(self) -> None:
+        self.prepared: list[str] = []
 
     def merge_namespace_tools(self, namespace: str, tools: Any) -> None:
         return None
 
-    def prepare_namespace(self, namespace: str, timeout: float) -> None:
-        self.prepared_timeouts.append(timeout)
+    def prepare_namespace(self, namespace: str) -> None:
+        self.prepared.append(namespace)
 
 
 def test_mcp_mount_retry_delays_are_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,21 +162,15 @@ def test_mcp_mount_retry_delays_are_configurable(monkeypatch: pytest.MonkeyPatch
     assert attempts == 4
 
 
-def test_mcp_mount_setup_timeout_fallback_resolves_from_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An executor without ``_setup_timeout`` falls back to ``tools.mcp.setup_timeout_s``."""
+def test_mcp_no_progress_window_is_configurable() -> None:
+    """``tools.mcp.no_progress_s`` (replacing the fixed ``tools.mcp.setup_timeout_s``
+    ladder) is the window an MCP connect may go without an answer and without work."""
 
-    from clio_agent.gact.mcp_readiness import mount_namespace_for_session
-    from clio_agent.tools import mcp_discovery
+    from clio_agent.tools.mcp_server_progress import mcp_no_progress_s
 
-    set_config("tools", {"mcp": {"setup_timeout_s": 2.5}})
-    monkeypatch.setattr(mcp_discovery, "ensure_namespace", lambda namespace, spec: {})
-
-    executor = _StubExecutor()  # deliberately no _setup_timeout attribute
-    assert mount_namespace_for_session(executor, "ns", object()) == {}
-    # First attempt multiplier is 1.0, so the configured base surfaces verbatim.
-    assert executor.prepared_timeouts == [2.5]
+    assert mcp_no_progress_s() == 30.0
+    set_config("tools", {"mcp": {"no_progress_s": 45}})
+    assert mcp_no_progress_s() == 45.0
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +228,8 @@ def test_table_query_knobs_are_configurable() -> None:
 
     assert module.table_query_max_rows() == 50_000
     assert module.table_query_max_source_bytes() == 256 * 1024 * 1024
-    assert module.table_query_timeout_s() == 10.0
+    assert module.table_query_no_progress_s() == 30.0
+    assert module.table_query_max_wait_s() == 180.0
     assert module.table_query_cache_entries() == 16
 
     set_config(
@@ -244,13 +237,15 @@ def test_table_query_knobs_are_configurable() -> None:
         {
             "table_query_max_rows": 40,
             "table_query_max_source_bytes": 1024,
-            "table_query_timeout_s": 2.5,
+            "table_query_no_progress_s": 2.5,
+            "table_query_max_wait_s": 60.0,
             "table_query_cache_entries": 0,
         },
     )
     assert module.table_query_max_rows() == 40
     assert module.table_query_max_source_bytes() == 1024
-    assert module.table_query_timeout_s() == 2.5
+    assert module.table_query_no_progress_s() == 2.5
+    assert module.table_query_max_wait_s() == 60.0
     assert module.table_query_cache_entries() == 0
     assert module._effective_limit(None) == 40
 
@@ -356,9 +351,10 @@ async def test_cancellation_grace_is_configurable() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_model_tool_result_bound_is_configurable() -> None:
+def test_model_tool_result_bound_is_configurable(tmp_path: Path) -> None:
     """``limits.model_tool_result_chars`` bounds the MODEL lane, not the evidence lane."""
 
+    from clio_agent.tools.execution import tool_workspace_context
     from clio_agent.tools.mcp_result_projection import (
         bounded_model_tool_result,
         model_tool_result_chars,
@@ -367,9 +363,11 @@ def test_model_tool_result_bound_is_configurable() -> None:
     set_config("limits", {"model_tool_result_chars": 900})
     assert model_tool_result_chars() == 900
 
-    bounded = bounded_model_tool_result("x" * 5_000)
+    with tool_workspace_context(str(tmp_path)):
+        bounded = bounded_model_tool_result("x" * 5_000)
     assert len(bounded) <= 900
-    assert '"reason": "model_tool_result_oversize"' in bounded
+    assert bounded.startswith("[clio: result_spilled] This result is 5,000 characters")
+    assert "more than the 900 shown to you" in bounded
 
 
 def test_model_and_evidence_tool_result_bounds_are_independent() -> None:
@@ -502,3 +500,48 @@ def test_blueprint_too_large_message_is_derived_from_the_limit() -> None:
 
     expected_mib = _BLUEPRINT_TEXT_FILE_LIMIT_BYTES // (1024 * 1024)
     assert f"{expected_mib} MiB" in _too_large_message()
+
+
+@pytest.mark.parametrize(
+    ("key", "env"),
+    [
+        ("tools.mcp.setup_timeout_s", "CLIO_MCP_SETUP_TIMEOUT_S"),
+        ("tools.mcp.cold_spawn_runaway_s", "CLIO_MCP_COLD_SPAWN_RUNAWAY_S"),
+        ("tools.mcp.launcher_cache_lock_timeout_s", "CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S"),
+        ("limits.mcp_reconnect_timeout_s", "CLIO_GACT_MCP_RECONNECT_TIMEOUT_S"),
+    ],
+)
+def test_a_removed_fixed_mcp_deadline_key_is_a_typed_error(
+    monkeypatch: pytest.MonkeyPatch, key: str, env: str
+) -> None:
+    """The fixed MCP deadlines are gone (#1577): a leftover one is refused, never ignored."""
+    from clio_agent.errors import RemovedConfigKeyError
+    from clio_agent.removed_config_keys import reject_removed_config_keys
+
+    monkeypatch.setenv(env, "10")
+    with pytest.raises(RemovedConfigKeyError) as err:
+        reject_removed_config_keys()
+    assert err.value.key == key
+    assert "progress-based waits" in str(err.value)
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["env", "file"],
+)
+def test_the_removed_table_query_timeout_key_is_a_typed_error(
+    monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """The fixed table-query timeout is gone (#1577): a leftover one is refused, never ignored."""
+    from clio_agent.errors import RemovedConfigKeyError
+    from clio_agent.removed_config_keys import reject_removed_config_keys
+
+    if where == "env":
+        monkeypatch.setenv("CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S", "10")
+    else:
+        set_config("artifacts", {"table_query_timeout_s": 10.0})
+    with pytest.raises(RemovedConfigKeyError) as err:
+        reject_removed_config_keys()
+    assert err.value.key == "artifacts.table_query_timeout_s"
+    assert err.value.error_type == "config_key_removed"
+    assert "progress-based wait" in str(err.value)

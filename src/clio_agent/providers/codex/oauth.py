@@ -10,9 +10,10 @@ and the credential record it produces live in
 :mod:`clio_agent.providers.codex.login_flow` -- split out to keep this
 module under the file-size ratchet.
 
-No Codex CLI or Codex SDK is involved anywhere in this module: CLIO runs its
-own OAuth flow, direct from this process, and never reads or writes
-``~/.codex/auth.json`` (A.4).
+No Codex CLI is involved anywhere in this module: CLIO runs its own OAuth flow,
+direct from this process, and this module never reads or writes the CLI's
+``$CODEX_HOME/auth.json`` (the direct transport's CLI-login path is
+:func:`clio_agent.providers.codex.credentials.codex_cli_auth_path`).
 """
 
 from __future__ import annotations

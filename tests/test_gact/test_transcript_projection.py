@@ -38,7 +38,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -320,7 +319,7 @@ def test_restart_reconciliation_preserves_streamed_partial_from_the_atom_lane(
     )
     transcript.append_text_delta("main", "answer", "five dense stations near")
     transcript.close_open_text()
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     minter.close()  # never finalized: no envelope atom ever lands
 
     app.state.sessions.update(sid, status="running")
@@ -478,43 +477,6 @@ def test_delete_drops_atom_lane_leaves_arc_memory(tmp_path: Path) -> None:
         assert materialize_ledger(app, sid) in (None, [])
         # ARC memory is intact (gact_visible_transcript_only — sabotage-c).
         assert arc._segments.list_segments(sid, "agentX") == before
-
-
-def test_delete_finishes_when_unreachable_arc_cannot_drop_atom_lane(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A completed session delete is not reported as failed by orphan cleanup."""
-
-    from clio_agent.gact import transcript_projection
-
-    class _MessageStore:
-        def __init__(self) -> None:
-            self.deleted: list[str] = []
-
-        def delete_session(self, session_id: str) -> None:
-            self.deleted.append(session_id)
-
-    store = _MessageStore()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            messages={"sess_dead": []},
-            message_store=store,
-            metrics_counters=None,
-        )
-    )
-    monkeypatch.setattr(
-        transcript_projection,
-        "on_ledger_deleted",
-        lambda _app, _sid: (_ for _ in ()).throw(RuntimeError("GetBlob operation failed")),
-    )
-
-    with caplog.at_level("WARNING"):
-        _delete_session_messages(app, "sess_dead")
-
-    assert "sess_dead" not in app.state.messages
-    assert store.deleted == ["sess_dead"]
-    assert "GetBlob operation failed" in caplog.text
 
 
 # --------------------------------------------------------------------------- #

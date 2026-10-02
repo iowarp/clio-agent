@@ -200,6 +200,9 @@ class TurnState:
     # terminals emitted only at the commit-to-run seam (immediately before forward),
     # so a turn aborted after enrichment leaves them pending for the next turn.
     pending_notification_task_ids: list[str] = field(default_factory=list)
+    #: CLIO's own additions for this turn, ``(source, text)`` in order; the agent loop
+    #: records each as a message of its own ahead of the user message.
+    injections: list[tuple[str, str]] = field(default_factory=list)
     # #1334: the user message's deferred ARC transcript persist (staged on the accept
     # path with ``atoms_minted=True``); the turn's off-loop setup runs it FIRST, must-
     # succeed. ``None`` when the accept path minted inline (tests / legacy callers).

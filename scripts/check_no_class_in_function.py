@@ -49,7 +49,6 @@ RATCHET_BASELINE: dict[str, int] = {
     "src/clio_agent/gact/agents/builders.py": 3,
     "src/clio_agent/gact/app.py": 1,
     "src/clio_agent/lm/adapters.py": 2,
-    "src/clio_agent/lm/io_logging.py": 1,
     "src/clio_agent/providers/argonne_auth.py": 1,
     "src/clio_agent/runtime/lm_activity.py": 1,
 }

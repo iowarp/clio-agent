@@ -58,8 +58,8 @@ def reconstruct_arc_segments(
             yields the current live view.
 
     Returns:
-        Live Segments sorted by ``(order, logical_time)`` — i.e. render order, so
-        ``segments_to_keys`` over the result equals the live store's ``render_keys``.
+        Live Segments sorted by ``(order, logical_time)`` — i.e. render order, equal
+        to the live store's ``render`` for the same clock.
     """
     ops = [e for e in events if e.get("event_type") == ARC_OP_EVENT_TYPE]
     # logical_time is the causal order; fall back to 0 for any malformed payload.

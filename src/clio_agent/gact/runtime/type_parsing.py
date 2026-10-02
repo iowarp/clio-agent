@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
 
 _MODULE_VARIANTS = frozenset({"best_of_n", "refine"})
+_MODULE_JUDGES = frozenset({"lm", "user"})
 
 
 def _structured_output_enabled(value: Any) -> bool:
@@ -86,6 +87,8 @@ class VariantSpec:
     * ``reward_input_descs`` — per-input field descriptions (empty when declared as a
       bare list).
     * ``reward_target`` — the prediction field the judge scores (default ``answer``).
+    * ``judge`` — ``lm`` (the compiled reward judge scores every try) or ``user`` (the
+      turn yields the tries as a choice question and the user's pick selects).
     """
 
     variant: str
@@ -95,6 +98,7 @@ class VariantSpec:
     reward_inputs: tuple[str, ...]
     reward_input_descs: Mapping[str, str]
     reward_target: str
+    judge: str = "lm"
 
 
 def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> VariantSpec | None:
@@ -159,6 +163,12 @@ def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> Variant
             f"of field names or a name->description mapping, got {type(inputs_decl).__name__}"
         )
     target = str(reward.get("target") or "answer").strip() or "answer"
+    judge = str(module.get("judge") or "lm").strip().lower()
+    if judge not in _MODULE_JUDGES:
+        raise ValueError(
+            f"module.variant {variant!r} for {agent_id!r} has an unsupported judge {judge!r} "
+            f"(expected one of {sorted(_MODULE_JUDGES)})"
+        )
     return VariantSpec(
         variant=variant,
         n=n,
@@ -167,6 +177,7 @@ def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> Variant
         reward_inputs=tuple(inputs),
         reward_input_descs=input_descs,
         reward_target=target,
+        judge=judge,
     )
 
 

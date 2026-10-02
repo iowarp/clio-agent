@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from clio_agent.gact import session_warmup
 from clio_agent.gact.events import Event, _publish_transcript_event
 from clio_agent.gact.runtime.globals import _emit_semantic_event
 from clio_agent.gact.transcript_projection import final_message_embed
@@ -23,6 +24,8 @@ def persist_paused_transcript(state: "TurnState") -> str:
     # (barrier, remainder, then the ledger append through the gact.app seam).
     from clio_agent.gact.part_atom_minter import persist_finalized_message  # noqa: PLC0415
 
+    # The session waits on its user now: its servers stay up for the answer.
+    session_warmup.hold_session_fleet(state.app, state.sid)
     if not state.transcript.snapshot():
         return ""
     message_id = state.transcript.ensure_message()

@@ -50,6 +50,8 @@ from clio_agent.lm.hooked_lm import (
 )
 from tests.test_gact._hook_fixtures import command_run, write_hook_script
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 
 # --------------------------------------------------------------------------- #
 # Spy LMs — real dspy.BaseLM subclasses. No mocking of the call boundary.       #
@@ -578,3 +580,120 @@ def test_credentials_are_never_in_the_model_request(tmp_path: Path) -> None:
     # But the real call still received the credentials (the wrapper never strips them
     # from the outgoing call — only from the hook's VIEW).
     assert spy.calls == 1
+
+
+# --------------------------------------------------------------------------- #
+# The agent loop's typed ``lm(Request)`` call goes through the same hooks.     #
+# --------------------------------------------------------------------------- #
+def _typed_loop(lm: Any) -> Any:
+    from clio_agent.gact.agents.clio_react import ClioReAct
+
+    def search(query: str) -> str:
+        """Search."""
+        return f"results for {query}"
+
+    with dspy.context(lm=lm):
+        return ClioReAct("question -> answer", tools=[search])(question="what?")
+
+
+def test_typed_synthesize_answers_the_loop_without_the_real_lm(tmp_path: Path) -> None:
+    from tests._scripted_engine import scripted_lm
+
+    script = write_hook_script(
+        tmp_path,
+        "synth.py",
+        "import json,sys\n"
+        "req = json.load(sys.stdin)\n"
+        'print(json.dumps({"decision": "synthesize", "llm_response": ["CANNED"]}))\n',
+    )
+    _install([_command_row("bm-synth", "BeforeModel", script)])
+    real, engine = scripted_lm([])
+    pred = _typed_loop(wrap_lm_with_hooks(real))
+    assert (pred.answer, pred.termination_reason) == ("CANNED", "direct_response")
+    assert engine.requests == []
+
+
+def test_typed_request_patch_and_after_rewrite(tmp_path: Path) -> None:
+    from tests._scripted_engine import Reply, scripted_lm, wire
+
+    patch = write_hook_script(
+        tmp_path,
+        "patch.py",
+        "import json,sys\n"
+        "req = json.load(sys.stdin)\n"
+        'print(json.dumps({"decision": "modify", "request_patch": {"messages": '
+        '[{"role": "user", "content": "REDACTED"}], "params": {"temperature": 0.1}}}))\n',
+    )
+    rewrite = write_hook_script(
+        tmp_path,
+        "after.py",
+        "import json,sys\n"
+        "json.load(sys.stdin)\n"
+        'print(json.dumps({"llm_response": ["SANITISED"]}))\n',
+    )
+    _install(
+        [
+            _command_row("bm-patch", "BeforeModel", patch),
+            _command_row("am-rewrite", "AfterModel", rewrite),
+        ]
+    )
+    real, engine = scripted_lm([Reply(text="secret")])
+    pred = _typed_loop(wrap_lm_with_hooks(real))
+    [request] = engine.requests
+    assert wire(request) == [("user", [("text", "REDACTED")])]
+    assert request.config.temperature == 0.1
+    assert pred.answer == "SANITISED"
+
+
+def test_typed_deny_blocks_the_loops_call(tmp_path: Path) -> None:
+    from tests._scripted_engine import scripted_lm
+
+    script = write_hook_script(
+        tmp_path,
+        "deny.py",
+        "import json,sys\n"
+        "json.load(sys.stdin)\n"
+        'print(json.dumps({"decision": "deny", "reason": "no cloud models today"}))\n',
+    )
+    _install([_command_row("bm-deny", "BeforeModel", script)])
+    real, engine = scripted_lm([])
+    with pytest.raises(HookDeniedModelCall, match="no cloud models today"):
+        _typed_loop(wrap_lm_with_hooks(real))
+    assert engine.requests == []
+
+
+def test_model_hook_effects_are_shown_to_the_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook that patched the request or replaced the reply is recorded as an
+    injection -- the user sees that the harness changed what the model got."""
+    from clio_agent.gact import injection_parts
+    from tests._scripted_engine import Reply, scripted_lm
+
+    shown: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        injection_parts, "emit_injection", lambda source, text, **_: shown.append((source, text))
+    )
+    patch = write_hook_script(
+        tmp_path,
+        "patch.py",
+        "import json,sys\n"
+        "json.load(sys.stdin)\n"
+        'print(json.dumps({"decision": "modify", "request_patch": {"params": {"temperature": 0.1}}}))\n',
+    )
+    rewrite = write_hook_script(
+        tmp_path,
+        "after.py",
+        'import json,sys\njson.load(sys.stdin)\nprint(json.dumps({"llm_response": ["SANITISED"]}))\n',
+    )
+    _install(
+        [
+            _command_row("bm-patch", "BeforeModel", patch),
+            _command_row("am-rewrite", "AfterModel", rewrite),
+        ]
+    )
+    real, _engine = scripted_lm([Reply(text="secret")])
+    _typed_loop(wrap_lm_with_hooks(real))
+    assert [source for source, _ in shown] == ["hook", "hook"]
+    assert shown[0][1].startswith("[clio: hook] A BeforeModel hook changed this model call")
+    assert shown[1][1] == "[clio: hook] An AfterModel hook replaced the model's reply."

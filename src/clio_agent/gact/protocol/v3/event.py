@@ -10,6 +10,7 @@ from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
 from clio_agent.gact.protocol.v3.session import session_to_v3
+from clio_agent.gact.protocol.v3.variant import project_variant_event
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
 # per-attempt, so the Session record cannot carry them) and must ride the v3
@@ -103,9 +104,13 @@ def _message_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pro
     return _Projection("message.upserted", projected, str(projected["id"]))
 
 
-def _message_block_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+def _message_block_upsert(
+    event: Event, payload: dict[str, Any], session: Any
+) -> _Projection | None:
     del session
     part = _mapping(payload.get("part"))
+    if not part.get("id"):
+        return None  # a patch-only update: there is no block to project
     block = part_to_v3_block(part)
     projected = {"message_id": str(payload.get("message_id") or ""), "block": block}
     if part.get("type") == "expert_handoff":
@@ -360,7 +365,26 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     return _Projection("subagent.upserted", projected, entity_id)
 
 
+#: Highway events served to v3 as their own typed events (payload: the event's payload).
+_COMPACTION_EVENTS = frozenset({"compaction.started", "compaction.completed", "compaction.failed"})
+
+
+def _semantic_event(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
+    """A highway event served as its own typed v3 event, else ``None``.
+
+    A compaction's event becomes ``compaction.started|completed|failed``; a variant
+    run's tries and selection get their own frames (the try tabs). Every other semantic
+    event keeps its generic ``semantic.event`` envelope.
+    """
+    event_type = str(payload.get("event_type") or "")
+    if event_type not in _COMPACTION_EVENTS:
+        return project_variant_event(event, payload, session)
+    body = dict(_mapping(payload.get("payload")))
+    return _Projection(event_type, body, str(body.get("compaction_id") or "") or None)
+
+
 _EVENT_PROJECTORS: dict[str, _Projector] = {
+    "semantic.event": _semantic_event,
     "server.connected": _stream_live,
     "session.snapshot": _session_upsert,
     "session.status_changed": _session_upsert,

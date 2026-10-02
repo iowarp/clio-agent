@@ -1,13 +1,18 @@
-"""Search-index equivalence: the fold's ingest-time ``.search`` companion (§2.7).
+"""The working set's search companion (§2.7, Phase 11a), on clio-core.
 
-Under the fold, working-set content leaves the per-expert scope for the canonical
-``_events/w`` content lane — which would orphan the per-scope ``.search`` companion
-the scope-search surface (1.5) ranks over. The fold rewrites that companion at INGEST
-time from the folded live render, so ``search_segment_scopes`` ranks a scope
-identically whether the content was written the old way or folded. This test pins
-that equivalence — the same content, searched under fold OFF and fold ON, must return
-the same ``(scope, score)`` ranking — on BOTH backends, and after a mutation (so the
-companion is proven to refresh, not go stale).
+Content lives on the search-excluded ``_events/w`` lane, so the fold writes a search
+companion at ingest: append-only text chunks per logical scope (``_search/<scope>/<lt>``)
+covering EVERY atom ever written -- a deleted or compacted atom stays findable, and a
+hit says which of its atoms are no longer live (marked at query time from the view).
+
+clio-core's BM25 itself is unavailable while the iowarp-core wheels ship no indexer
+chimod (#905), so these tests read the companions clio-core holds directly and resolve
+a chunk the way a search hit is resolved (``FoldingSegmentStore.resolve_hit``); the
+search entry point is pinned to fail typed.
+
+Sabotage: making ``SearchCompanion.add`` skip retired-to-be atoms (or rewriting the
+chunk from the live view) turns ``test_a_compacted_atom_stays_findable_and_is_marked``
+red; dropping the ``is_retired`` marking turns the compacted assertion red.
 """
 
 from __future__ import annotations
@@ -16,79 +21,96 @@ import uuid
 
 import pytest
 
-from clio_agent.arc.memory import ARCMemory
+from clio_agent.arc.memory import ARCMemory, SearchUnavailableError
+from clio_agent.arc.search_companion import parse_search_scope
+from clio_agent.arc.storage import make_arc_store
+from clio_agent.arc.working_set_fold import FoldingSegmentStore
 
 
-@pytest.fixture(params=["local", "cte"])
-def make_arc(request, tmp_path):
-    """Factory for a fresh ARCMemory of a chosen fold-regime on the param backend."""
-    backend = request.param
-    created: list[ARCMemory] = []
-
-    def _make(fold: bool) -> ARCMemory:
-        if backend == "cte":
-            pytest.importorskip("clio_cte_core_ext")
-            from clio_agent.arc.storage import make_arc_store
-
-            arc = ARCMemory(store=make_arc_store(backend="cte"), working_set_fold=fold)
-        else:
-            sub = tmp_path / ("on" if fold else "off")
-            arc = ARCMemory(data_dir=str(sub), working_set_fold=fold)
-        created.append(arc)
-        return arc
-
-    try:
-        yield _make
-    finally:
-        for arc in created:
-            try:
-                arc.clear_all()
-            except Exception:  # noqa: BLE001 - teardown best-effort on the shared runtime
-                pass
-
-
-def _populate(arc: ARCMemory, session: str) -> None:
-    arc.append_segment(
-        session, "agentA", "observation", {"text": "alpha beta gamma the ocean tides rise"}, step=0
+@pytest.fixture
+def arc():
+    memory = ARCMemory(
+        store=make_arc_store(backend="cte", namespace=f"srch-{uuid.uuid4().hex[:8]}")
     )
+    yield memory
+    memory._store.clear()
+
+
+def _companions(arc: ARCMemory, session: str) -> dict[str, str]:
+    """``{companion record scope: its text}`` as clio-core holds them."""
+    store = arc._store
+    head = f"{session}__"
+    tag = store._cte.Tag(store.tag("segments"))
+    out: dict[str, str] = {}
+    for name in tag.GetContainedBlobs():
+        if not name.startswith(f"{head}_search~") or not name.endswith(".text"):
+            continue
+        size = tag.GetBlobSize(name)
+        raw = tag.GetBlob(name, size, 0)
+        stem = name[len(head) : -len(".text")]
+        out[FoldingSegmentStore.scope_of_record(stem)] = (
+            raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        )
+    return out
+
+
+def _find(arc: ARCMemory, session: str, word: str) -> list:
+    """Resolve every companion chunk whose text holds ``word`` (BM25's stand-in)."""
+    folding = arc._segments
+    assert isinstance(folding, FoldingSegmentStore)
+    return [
+        folding.resolve_hit(session, record_scope, 1.0)
+        for record_scope, text in _companions(arc, session).items()
+        if word in text
+    ]
+
+
+def test_every_atom_is_in_its_scopes_companion(arc: ARCMemory) -> None:
+    session = "srch_" + uuid.uuid4().hex[:12]
+    arc.append_segment(session, "agentA", "observation", {"text": "the ocean tides rise"}, step=0)
     arc.append_segment(session, "agentA", "thought", {"text": "the tide is coming in"}, step=0)
-    arc.append_segment(
-        session, "agentB", "observation", {"text": "quantum physics electrons spin state"}, step=0
-    )
+    arc.append_segment(session, "agentB", "observation", {"text": "electrons spin state"}, step=0)
+
+    companions = _companions(arc, session)
+    by_scope = {parse_search_scope(k)[0]: v for k, v in companions.items()}  # type: ignore[index]
+    assert by_scope == {
+        "agentA": "the ocean tides rise\nthe tide is coming in",
+        "agentB": "electrons spin state",
+    }
+    assert arc.list_segment_scopes(session) == ["agentA", "agentB"]  # never the chunks
 
 
-def test_search_ranking_identical_off_vs_on(make_arc) -> None:
-    """Same content, searched under both regimes, yields the same scope ranking."""
+def test_a_compacted_atom_stays_findable_and_is_marked(arc: ARCMemory) -> None:
     session = "srch_" + uuid.uuid4().hex[:12]
-    off = make_arc(False)
-    on = make_arc(True)
-    _populate(off, session)
-    _populate(on, session)
-    for query in ("ocean tides", "quantum electrons", "tide coming"):
-        r_off = off.search_segment_scopes(session, query, k=5)
-        r_on = on.search_segment_scopes(session, query, k=5)
-        assert r_off == r_on, f"search ranking diverged for {query!r}: off={r_off} on={r_on}"
+    gone = arc.append_segment(session, "agentA", "observation", {"text": "unicorn rainbow"})
+    kept = arc.append_segment(session, "agentA", "observation", {"text": "grey pavement"})
+    summary = arc.summarize_segments(session, "agentA", [gone.id, kept.id], {"text": "roads"})
+    later = arc.append_segment(session, "agentA", "observation", {"text": "unicorn again"})
+
+    [hit] = _find(arc, session, "unicorn rainbow")
+    marks = {a.atom_id: a.compacted for a in hit.atoms}
+    assert marks[gone.id] is True and marks[kept.id] is True
+    assert marks[summary.id] is False and marks[later.id] is False
+    assert hit.scope == "agentA"
+
+    # A restarted process (cold view from the anchor) marks it the same way.
+    cold = ARCMemory(store=arc._store)
+    [cold_hit] = _find(cold, session, "unicorn rainbow")
+    assert {a.atom_id: a.compacted for a in cold_hit.atoms} == marks
 
 
-def test_search_companion_refreshes_after_delete(make_arc) -> None:
-    """After a delete removes the only match, the fold's companion refreshes so the
-    scope no longer ranks for the deleted text — identically to the old write."""
+def test_a_deleted_atom_stays_findable_and_is_marked(arc: ARCMemory) -> None:
     session = "srch_" + uuid.uuid4().hex[:12]
-    off = make_arc(False)
-    on = make_arc(True)
-    for arc in (off, on):
-        arc.append_segment(
-            session, "agentA", "observation", {"text": "unicorn rainbow sparkle"}, step=0
-        )
-        arc.append_segment(
-            session, "agentA", "observation", {"text": "ordinary grey pavement"}, step=0
-        )
-        target = [
-            s
-            for s in arc.render_segments(session, "agentA")
-            if "unicorn" in s.content.get("text", "")
-        ][0]
-        arc.delete_segments(session, "agentA", [target.id])
-    r_off = off.search_segment_scopes(session, "unicorn rainbow", k=5)
-    r_on = on.search_segment_scopes(session, "unicorn rainbow", k=5)
-    assert r_off == r_on, f"post-delete search diverged: off={r_off} on={r_on}"
+    gone = arc.append_segment(session, "agentA", "observation", {"text": "unicorn rainbow"})
+    arc.append_segment(session, "agentA", "observation", {"text": "grey pavement"})
+    arc.delete_segments(session, "agentA", [gone.id])
+
+    [hit] = _find(arc, session, "unicorn")
+    assert {a.atom_id for a in hit.atoms if a.compacted} == {gone.id}
+
+
+def test_search_itself_is_typed_unavailable(arc: ARCMemory) -> None:
+    with pytest.raises(SearchUnavailableError):
+        arc.search_segment_scopes("s", "ocean", k=5)
+    with pytest.raises(SearchUnavailableError):
+        arc.search_context("s", "ocean", k=5)

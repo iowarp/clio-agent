@@ -4,8 +4,7 @@ Several leaf runtime helpers read the process-wide ``dspy.settings.lm`` to decid
 which model to meter, compact, or probe: token accounting
 (:mod:`clio_agent.gact.runtime.context_tokens`), usage rollup
 (:mod:`clio_agent.gact.usage`), reasoning capture
-(:mod:`clio_agent.gact.runtime.globals`), auto-compaction summarisation
-(:mod:`clio_agent.gact.agents.runtime`) and the model-id probe
+(:mod:`clio_agent.gact.runtime.globals`) and the model-id probe
 (:func:`clio_agent.gact.providers.config._current_lm_model_id`).
 
 During a turn that read resolves the *actively bound* expert/main LM, because

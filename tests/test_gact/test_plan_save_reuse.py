@@ -27,7 +27,7 @@ from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
     _plan_exit_options,
-    inject_plan_mode_reminder,
+    plan_mode_reminder,
     plan_mode_reminder_block,
     resolve_plan_exit_answer,
 )
@@ -386,12 +386,12 @@ def test_reminder_byte_identical_without_playbook(tmp_path: Path) -> None:
     plan_file.write_text("# t\n", encoding="utf-8")
     app.state.sessions.update(sess.id, metadata_patch={"plan_file": str(plan_file)})
 
-    got = inject_plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id), "hello")
+    got = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
     # The composed block equals the direct default composition (no playbook injected).
     expected_block = plan_mode_reminder_block(
         full=True, plan_file=str(plan_file), exists=True, playbook=None
     )
-    assert got.startswith(expected_block)
+    assert got == expected_block
 
 
 def test_record_plan_playbook_noop_without_ref(tmp_path: Path) -> None:

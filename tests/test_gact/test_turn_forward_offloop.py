@@ -118,32 +118,20 @@ def test_a_non_dspy_agent_that_only_exposes_forward_dynamically_still_resolves()
     assert _agent_accepts_images(_NoForward()) is False
 
 
-async def test_the_streamed_forwards_native_input_resolve_runs_off_the_loop(
+async def test_the_module_runs_native_input_resolve_off_the_loop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """#1334: ``_try_streamed_forward`` resolves the native-input kwargs on the executor.
+    """#1334: ``_run_module`` resolves the native-input kwargs on the executor.
 
     Defense in depth behind the root fix above: whatever the built module's introspection
     costs, it is not paid on the thread that serves REST/SSE. The spy records whether a
     loop was running on the thread that ran the resolve.
     """
 
-    import importlib
-
-    from clio_agent.gact import streaming as streaming_module
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-
-    def _passthrough(program: Any, **_options: Any) -> Any:
-        async def _run(**kwargs: Any) -> Any:
-            yield program.forward(**kwargs)
-
-        return _run
-
-    monkeypatch.setattr(streamify_module, "streamify", _passthrough)
+    from clio_agent.gact import turn_forward
 
     ran_on: list[tuple[str, bool]] = []
-    real_resolve = streaming_module.native_input_kwargs
+    real_resolve = turn_forward.native_input_kwargs
 
     def _spy(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -154,17 +142,25 @@ async def test_the_streamed_forwards_native_input_resolve_runs_off_the_loop(
         ran_on.append((threading.current_thread().name, on_loop))
         return real_resolve(*args, **kwargs)
 
-    monkeypatch.setattr(streaming_module, "native_input_kwargs", _spy)
+    monkeypatch.setattr(turn_forward, "native_input_kwargs", _spy)
 
     agent = _NativeInputAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-
-    async def emit_chunk(text: str) -> None:
-        del text
+    state = SimpleNamespace(
+        app=app,
+        sid="sid",
+        user_msg=SimpleNamespace(id="msg_user", metadata={}),
+        enriched_text="hello",
+        sess=SimpleNamespace(mode="edit", edit_mode="diff"),
+        native_images=[],
+        native_files=[],
+        injections=[],
+    )
 
     loop_thread = threading.current_thread().name
-    await streaming_module._try_streamed_forward(app, "hello", "sid", emit_chunk)
+    result = await turn_forward._run_module(state, agent, lambda: False)
 
+    assert result.answer == "ok"
     assert ran_on, "the native-input resolve never ran"
     assert all(not on_loop for _name, on_loop in ran_on), ran_on
     assert all(name != loop_thread for name, _on_loop in ran_on), ran_on

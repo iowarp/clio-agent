@@ -20,15 +20,20 @@ TURN_SIGNAL_BACKSTOP_S = 120.0
 TERMINAL_STATUSES = frozenset({"idle", "error", "cancelled"})
 
 
-def terminal_status_after(bus: Any, sid: str, after_event_id: int) -> str | None:
-    """Return the first terminal status ``sid`` published after ``after_event_id``, if any."""
+def terminal_status_after(
+    bus: Any,
+    sid: str,
+    after_event_id: int,
+    statuses: frozenset[str] = TERMINAL_STATUSES,
+) -> str | None:
+    """Return the first of ``statuses`` ``sid`` published after ``after_event_id``, if any."""
 
     for event in bus.session_events_since(sid, cursor=after_event_id + 1):
         status = (event.payload or {}).get("status")
         if (
             event.session_id == sid
             and event.type == "session.status_changed"
-            and status in TERMINAL_STATUSES
+            and status in statuses
         ):
             return str(status)
     return None
@@ -40,6 +45,7 @@ def wait_for_terminal_status(
     *,
     after_event_id: int,
     backstop_s: float = TURN_SIGNAL_BACKSTOP_S,
+    statuses: frozenset[str] = TERMINAL_STATUSES,
 ) -> str:
     """Block until ``sid`` publishes a terminal ``session.status_changed`` after a cursor.
 
@@ -55,6 +61,8 @@ def wait_for_terminal_status(
         after_event_id: Only events newer than this id count; take it before the
             action that starts or releases the turn (``bus.latest_event_id(sid)``).
         backstop_s: Hang detector; reaching it fails the test.
+        statuses: The statuses that end the wait (default: the terminal ones; a
+            paused turn waits for ``{"waiting_user"}``).
 
     Returns:
         The terminal status the event carried (``idle``, ``error`` or ``cancelled``).
@@ -67,7 +75,7 @@ def wait_for_terminal_status(
             # Cursor BEFORE the check: an event landing between the two makes the wait
             # below return at once instead of sleeping past it.
             cursor = bus.latest_session_event_id([sid])
-            status = terminal_status_after(bus, sid, after_event_id)
+            status = terminal_status_after(bus, sid, after_event_id, statuses)
             if status is not None:
                 found.append(status)
                 return

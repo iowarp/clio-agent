@@ -229,6 +229,7 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
             for key, value in {
                 "question_id": question.id,
                 "question_kind": question.kind,
+                "metadata": dict(question.metadata),  # e.g. a drafts question's ``variant``
                 "options": [option.model_dump() for option in question.options],
                 "allow_freeform": question.allow_freeform,
                 "answer_metadata": answer_metadata,

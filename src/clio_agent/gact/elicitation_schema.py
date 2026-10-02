@@ -673,16 +673,20 @@ def validate_elicitation_answer(
 
 
 def check_elicitation_answer(row: UserQuestion, req: Any) -> None:
-    """Raise a recoverable 422 if ``req`` is a schema-invalid elicitation answer.
+    """Raise a recoverable 422 if ``req`` is a schema-invalid elicitation answer, or an
+    answer to a drafts question that does not pick exactly one draft.
 
     Called by the shared answer route BEFORE the question is marked answered, so an
     invalid form answer re-prompts (question stays pending) instead of resolving the
     parked future with content the upstream server would reject (finding 7).
     """
 
-    message = validate_elicitation_answer(
+    from clio_agent.gact.agents.variant_drafts import variant_answer_problem  # noqa: PLC0415
+
+    selected = list(getattr(req, "selected_options", []) or [])
+    message = variant_answer_problem(row, selected) or validate_elicitation_answer(
         row,
-        selected_options=list(getattr(req, "selected_options", []) or []),
+        selected_options=selected,
         answer=str(getattr(req, "answer", "") or ""),
         answer_metadata=dict(getattr(req, "metadata", {}) or {}),
     )

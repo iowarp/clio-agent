@@ -1,0 +1,238 @@
+/*
+ * One stylesheet for every page: Starlight docs, the overview, and the
+ * shadcn/reui islands. Brand tokens are defined once per theme and then
+ * mapped onto Starlight's variables and onto shadcn's variables, so the
+ * docs chrome and the React components can never disagree about a color.
+ *
+ * The palette is the IOWarp/Clio identity shared with coder.iowarp.ai:
+ * black and warm ivory, cyan as the primary accent, copper used sparingly.
+ * Starlight sets data-theme="dark" | "light" on <html>; both the overview
+ * and the docs follow the same switch and the same saved preference.
+ */
+@layer base, starlight, theme, components, utilities;
+
+@import '@astrojs/starlight-tailwind';
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities);
+@import 'tw-animate-css';
+@import 'shadcn/tailwind.css';
+
+@import '@fontsource-variable/newsreader';
+@import '@fontsource-variable/newsreader/wght-italic.css';
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* ---------- Brand tokens ---------- */
+:root,
+:root[data-theme='dark'] {
+	--paper: #000000;
+	--paper-raised: #0d0d0c;
+	--paper-sunk: #151412;
+	--ink: #f0ece1;
+	--ink-soft: #d6cebf;
+	--muted: #a3998a;
+	--line: #23211d;
+	--line-control: #736a5f;
+	--accent: #00d4db;
+	--accent-soft: #052629;
+	--on-accent: #000000;
+	--copper: #ee852f;
+}
+
+:root[data-theme='light'] {
+	--paper: #f3eee4;
+	--paper-raised: #faf7f2;
+	--paper-sunk: #e9e2d5;
+	--ink: #1a1612;
+	--ink-soft: #3c342c;
+	--muted: #524a42;
+	--line: #d4cbbd;
+	--line-control: #756c5e;
+	--accent: #0a666c;
+	--accent-soft: #e3f2f3;
+	--on-accent: #faf7f2;
+	--copper: #9a4812;
+}
+
+:root {
+	--font-display: 'Newsreader Variable', 'Newsreader', Georgia, serif;
+	--font-body: 'IBM Plex Sans', system-ui, sans-serif;
+	--font-code: 'IBM Plex Mono', ui-monospace, monospace;
+	--radius: 0.5rem;
+	--motion-fast: 160ms;
+	--motion-base: 240ms;
+	--motion-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+	--destructive-foreground: var(--color-red-800);
+	--success: var(--color-emerald-500);
+	--success-foreground: var(--color-emerald-900);
+	--info: var(--color-violet-500);
+	--info-foreground: var(--color-violet-900);
+	--warning: var(--color-yellow-500);
+	--warning-foreground: var(--color-yellow-900);
+	--invert: var(--color-zinc-900);
+	--invert-foreground: var(--color-zinc-50);
+}
+
+/* ---------- Starlight mapping ---------- */
+:root,
+:root[data-theme='dark'],
+:root[data-theme='light'] {
+	--sl-font: var(--font-body);
+	--sl-font-mono: var(--font-code);
+	--sl-color-accent-low: var(--accent-soft);
+	--sl-color-accent: var(--accent);
+	--sl-color-accent-high: var(--accent);
+	--sl-color-white: var(--ink);
+	--sl-color-gray-1: var(--ink-soft);
+	--sl-color-gray-2: var(--ink-soft);
+	--sl-color-gray-3: var(--muted);
+	--sl-color-gray-4: var(--line-control);
+	--sl-color-gray-5: var(--line);
+	--sl-color-gray-6: var(--paper-raised);
+	--sl-color-gray-7: var(--paper-sunk);
+	--sl-color-black: var(--paper);
+	--sl-color-bg: var(--paper);
+	--sl-color-bg-nav: var(--paper);
+	--sl-color-bg-sidebar: var(--paper);
+	--sl-color-bg-inline-code: var(--paper-sunk);
+	--sl-color-hairline: var(--line);
+	--sl-color-hairline-light: var(--line);
+	--sl-color-hairline-shade: var(--line);
+	--sl-color-text-accent: var(--accent);
+	--sl-color-text-invert: var(--on-accent);
+}
+
+/* ---------- shadcn / reui mapping ---------- */
+:root {
+	--background: var(--paper);
+	--foreground: var(--ink);
+	--card: var(--paper-raised);
+	--card-foreground: var(--ink);
+	--popover: var(--paper-raised);
+	--popover-foreground: var(--ink);
+	--primary: var(--accent);
+	--primary-foreground: var(--on-accent);
+	--secondary: var(--paper-sunk);
+	--secondary-foreground: var(--ink);
+	--muted-foreground: var(--muted);
+	--destructive: #e5484d;
+	--border: var(--line);
+	--input: var(--line-control);
+	--ring: var(--accent);
+	--destructive-foreground: #e5484d;
+	--success: #30a46c;
+	--success-foreground: #30a46c;
+	--info: var(--accent);
+	--info-foreground: var(--accent);
+	--warning: var(--copper);
+	--warning-foreground: var(--copper);
+	--invert: var(--ink);
+	--invert-foreground: var(--paper);
+}
+
+@theme inline {
+	--font-sans: var(--font-body);
+	--font-mono: var(--font-code);
+	--font-display: var(--font-display);
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--paper-sunk);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent-soft);
+	--color-accent-foreground: var(--ink);
+	--color-destructive: var(--destructive);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-brand: var(--accent);
+	--color-copper: var(--copper);
+	--color-ink-soft: var(--ink-soft);
+	--color-line: var(--line);
+	--color-paper-raised: var(--paper-raised);
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--color-invert-foreground: var(--invert-foreground);
+	--color-invert: var(--invert);
+	--color-warning-foreground: var(--warning-foreground);
+	--color-warning: var(--warning);
+	--color-info-foreground: var(--info-foreground);
+	--color-info: var(--info);
+	--color-success-foreground: var(--success-foreground);
+	--color-success: var(--success);
+	--color-destructive-foreground: var(--destructive-foreground);
+}
+
+/* ---------- Typography ---------- */
+@layer components {
+	.sl-markdown-content :is(h1, h2, h3):not(:where(.not-content *)),
+	h1#_top,
+	.font-display {
+		font-family: var(--font-display);
+		font-weight: 500;
+		letter-spacing: -0.01em;
+	}
+}
+
+/* ---------- Overview page ---------- */
+/* Starlight marks the page that renders a hero; only the overview has one. */
+:root[data-has-hero] {
+	--sl-content-width: 76rem;
+}
+:root[data-has-hero] .content-panel {
+	padding-block: 0;
+}
+
+/* Links styled as buttons inside islands must not inherit prose underlines. */
+[data-slot='button'] {
+	text-decoration: none;
+}
+
+/* Wordmark in ink, as on coder.iowarp.ai; the mark carries the color. */
+.site-title {
+	color: var(--ink) !important;
+	font-family: var(--font-body);
+	letter-spacing: 0.02em;
+}
+
+/*
+ * The Starlight Tailwind setup omits Tailwind's preflight, which the shadcn
+ * and reui components assume. Restore the one part they depend on: unstyled
+ * buttons. It sits in the base layer, so Starlight's own buttons, styled in
+ * later layers, are unaffected.
+ */
+@layer base {
+	button {
+		background-color: transparent;
+		background-image: none;
+		border: 0 solid;
+		color: inherit;
+		font: inherit;
+		padding: 0;
+		cursor: pointer;
+	}
+}
+
+/* Sidebar current page: a quiet tint and an accent rule instead of a solid block. */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+	background-color: var(--accent-soft);
+	color: var(--ink);
+	font-weight: 600;
+	box-shadow: inset 2px 0 0 var(--accent);
+}

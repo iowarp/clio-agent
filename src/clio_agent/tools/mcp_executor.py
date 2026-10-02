@@ -31,9 +31,6 @@ from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol
 from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_result_projection import (
-    MODEL_TOOL_RESULT_TRUNCATED_REASON as MODEL_TOOL_RESULT_TRUNCATED_REASON,
-)
-from clio_agent.tools.mcp_result_projection import (
     bounded_model_tool_result as _bounded_model_tool_result,
 )
 from clio_agent.tools.mcp_result_projection import (
@@ -111,7 +108,6 @@ class _MCPCallOutcome:
 # server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
 # not from a hardcoded core table. Core ships no default overrides.
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
-REPEATED_TRANSIENT_FAILURE_LIMIT = 2
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
 
@@ -289,17 +285,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
         self._namespace_clients: dict[str, Any] = {}
         self._namespace_ctxs: dict[str, Any] = {}
-        # #1281 F5 (adversarial review): derive the direct-client factory
-        # registry straight off `server` (the gateway) at construction -- the
-        # ONE choke point EVERY executor build (create_async_tool_executor,
-        # SyncMCPToolExecutor's own inner build, any future direct
-        # construction) funnels through, so a construction site can never
-        # forget to stamp it (gact/relay_wiring.py's rebuild was exactly this
-        # miss). getattr-guarded: a non-gateway `server` (an in-process test
-        # double) simply carries no registry, matching today's proxy-only
-        # behavior. A merge caller joining a SECOND gateway's namespaces onto
-        # an EXISTING executor (fleet_blueprint_merge.merge_blueprint_namespaces)
-        # still mutates this dict in place afterward -- construction only seeds it.
+        # #1281 F5: derive the direct-client factory registry off `server` (the gateway)
+        # at construction -- the ONE choke point every executor build funnels through, so
+        # no construction site can forget to stamp it (gact/relay_wiring.py's rebuild once
+        # did). getattr-guarded: a non-gateway `server` (a test double) carries none. A
+        # merge caller (fleet_blueprint_merge.merge_blueprint_namespaces) joining a SECOND
+        # gateway's namespaces still mutates this dict in place; construction only seeds it.
         self._clio_namespace_direct_factories: dict[str, Any] = dict(
             getattr(server, "_clio_namespace_direct_factories", None) or {}
         )
@@ -324,7 +315,10 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._client: MCPClientProtocol | None = None
         self._preloaded_tools = dict(preloaded_tools) if preloaded_tools is not None else None
         self._mcp_tools: dict[str, Any] = {}
-        self._call_lock: asyncio.Lock | None = None
+        # One lock per namespace, held only while that namespace's client is
+        # resolved / connected / healed -- never across a tool call, so calls
+        # (a step's concurrent calls, parent + children) run in parallel.
+        self._namespace_locks: dict[str, asyncio.Lock] = {}
         self._started = False
         self._closed = False
         # #1201: per-server runtime record of the negotiated protocol era.
@@ -400,7 +394,6 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             if self._preloaded_tools is not None
             else {tool.name: tool for tool in tools or []}
         )
-        self._call_lock = asyncio.Lock()
         self._started = True
         return self
 
@@ -408,7 +401,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         """Call an MCP tool on the caller's event loop."""
 
         outcome = await self.call_tool_result(name, args)
-        return outcome.model_text
+        # Bounded here, in the caller's context (the spill lands in its workspace).
+        return _bounded_model_tool_result(outcome.model_text)
 
     async def call_tool_result(
         self,
@@ -421,70 +415,69 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         """Execute one call, optionally forwarding its correlated progress."""
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
-        if self._client is None or self._call_lock is None:
+        if self._client is None:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
 
-        async with self._call_lock:
-            prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
-            if prior_uncertain is not None:
-                raise UncertainMutatingToolOutcomeError(name, prior_uncertain, retry_blocked=True)
-            budget = self._timeout_budget_for_call(name, args)
-            timeout = budget.seconds
-            client, on_server_name, namespace = await self._route(name)
-            # #934: the namespace backend SPAWNS on its first forwarded call
-            # (proxy ctx-enter spawns nothing), so first-call success/failure
-            # is the spawn-diet learn/drop-plan signal.
-            first_call = namespace is not None and namespace not in self._connected_namespaces
-            # #1282 F3a: an EXPLICIT budget (timeout is not None) is bounded by an
-            # ACTIVITY-DRIVEN deadline (last_activity + timeout), never a flat
-            # wall clock over the whole call -- a transparently-driven task's
-            # full multi-poll drive, or a plain call's progress notifications,
-            # both reset it (run_with_activity_backstop's own docstring). An
-            # unbounded commitment (timeout is None, #1225 wait_for_terminal)
-            # needs no backstop at all, activity-driven or otherwise.
-            from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
-                MCPCallTimeoutBackstopError,
-                typed_call_timeout_error,
-            )
+        prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
+        if prior_uncertain is not None:
+            raise UncertainMutatingToolOutcomeError(name, prior_uncertain, retry_blocked=True)
+        budget = self._timeout_budget_for_call(name, args)
+        timeout = budget.seconds
+        client, on_server_name, namespace = await self._route(name)
+        # #934: the namespace backend SPAWNS on its first forwarded call
+        # (proxy ctx-enter spawns nothing), so first-call success/failure
+        # is the spawn-diet learn/drop-plan signal.
+        first_call = namespace is not None and namespace not in self._connected_namespaces
+        # #1282 F3a: an EXPLICIT budget (timeout is not None) is bounded by an
+        # ACTIVITY-DRIVEN deadline (last_activity + timeout), never a flat
+        # wall clock over the whole call -- a transparently-driven task's
+        # full multi-poll drive, or a plain call's progress notifications,
+        # both reset it (run_with_activity_backstop's own docstring). An
+        # unbounded commitment (timeout is None, #1225 wait_for_terminal)
+        # needs no backstop at all, activity-driven or otherwise.
+        from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
+            MCPCallTimeoutBackstopError,
+            typed_call_timeout_error,
+        )
 
-            try:
-                result = await call_tool_with_progress(
-                    client,
-                    on_server_name,
-                    args,
-                    timeout=timeout,
-                    progress_handler=progress_handler,
-                )
-            except TimeoutError as exc:
-                # Conservative: a first-call timeout may be tool latency, not
-                # spawn health — the dropped plan self-heals (declared respawn
-                # + relearn). Distinguishing connect-failure from post-connect
-                # errors needs an initialize-level signal (future refinement).
-                if first_call and namespace is not None:
-                    spawn_diet.spawn_failed(namespace)
-                assert timeout is not None, "unbounded wait never times out"
-                if not self._tool_timeout_is_retry_safe(name):
-                    raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
-                if isinstance(exc, MCPCallTimeoutBackstopError):
-                    # Already typed + surfaced by run_with_activity_backstop --
-                    # re-typing here would double-log/double-audit the SAME firing.
-                    raise
-                # Defense-in-depth: a TimeoutError from somewhere other than the
-                # activity backstop (e.g. an inner SDK-level read timeout) is
-                # still typed, never a bare TimeoutError reaching the caller.
-                raise typed_call_timeout_error(name, timeout) from exc
-            except Exception as exc:
-                if first_call and namespace is not None:
-                    spawn_diet.spawn_failed(namespace)
-                # #1114: the ONE shared boundary translation (MRTR exhaustion +
-                # protocol refusals) every direct call path applies.
-                typed_error = typed_mcp_call_error(exc, tool=name)
-                if typed_error is not None:
-                    raise typed_error from exc
-                raise
+        try:
+            result = await call_tool_with_progress(
+                client,
+                on_server_name,
+                args,
+                timeout=timeout,
+                progress_handler=progress_handler,
+            )
+        except TimeoutError as exc:
+            # Conservative: a first-call timeout may be tool latency, not
+            # spawn health — the dropped plan self-heals (declared respawn
+            # + relearn). Distinguishing connect-failure from post-connect
+            # errors needs an initialize-level signal (future refinement).
             if first_call and namespace is not None:
-                self._connected_namespaces.add(namespace)
-                spawn_diet.namespace_connected(namespace)
+                spawn_diet.spawn_failed(namespace)
+            assert timeout is not None, "unbounded wait never times out"
+            if not self._tool_timeout_is_retry_safe(name):
+                raise self.mark_uncertain_mutating_timeout(name, args, timeout) from exc
+            if isinstance(exc, MCPCallTimeoutBackstopError):
+                # Already typed + surfaced by run_with_activity_backstop --
+                # re-typing here would double-log/double-audit the SAME firing.
+                raise
+            # Defense-in-depth: a TimeoutError from somewhere other than the
+            # activity backstop (e.g. an inner SDK-level read timeout) is
+            # still typed, never a bare TimeoutError reaching the caller.
+            raise typed_call_timeout_error(name, timeout) from exc
+        except Exception as exc:
+            if first_call and namespace is not None:
+                spawn_diet.spawn_failed(namespace)
+            # #1114: the ONE shared boundary translation (MRTR exhaustion +
+            # protocol refusals) every direct call path applies.
+            typed_error = typed_mcp_call_error(exc, tool=name)
+            if typed_error is not None:
+                raise typed_error from exc
+            raise
+        if first_call and namespace is not None:
+            self._connected_namespaces.add(namespace)
+            spawn_diet.namespace_connected(namespace)
         return _MCPCallOutcome(
             model_text=_result_to_text(result),
             raw_result=result,
@@ -501,21 +494,20 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
 
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
-        if self._client is None or self._call_lock is None:
+        if self._client is None:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
         parsed_uri = urlsplit(uri)
         if not parsed_uri.scheme:
             raise ValueError("MCP resource URI must be absolute")
 
-        async with self._call_lock:
-            if namespace:
-                proxy = self._namespace_servers.get(namespace)
-                if proxy is None:
-                    raise ValueError(f"unknown MCP namespace {namespace!r}")
-                client = await self._namespace_client(namespace, proxy)
-            else:
-                client = self._client
-            return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
+        if namespace:
+            proxy = self._namespace_servers.get(namespace)
+            if proxy is None:
+                raise ValueError(f"unknown MCP namespace {namespace!r}")
+            client = await self._namespace_client(namespace, proxy)
+        else:
+            client = self._client
+        return await asyncio.wait_for(client.read_resource(uri), timeout=self._timeout)
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
         """Connect + cache a namespace-direct client, stamping its era (#1201).
@@ -698,13 +690,11 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         for namespace, ctx in list(self._namespace_ctxs.items()):
             try:
                 await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=5.0)
-            except Exception as exc:  # noqa: BLE001 - teardown continues; reason logged
-                logger.debug("Error closing namespace client %r: %s", namespace, exc)
+            except Exception as exc:  # noqa: BLE001 - teardown continues; typed reason logged
+                _log_close_failure(f"namespace client {namespace!r}", exc)
         self._namespace_ctxs.clear()
         self._namespace_clients.clear()
-        # #1281 F13 (adversarial review): clear the route/heal bookkeeping
-        # alongside the clients/ctxs it describes -- a closed executor must
-        # never be re-entered with stale per-namespace route state.
+        # #1281 F13: clear the route/heal bookkeeping with the clients/ctxs it describes.
         self._namespace_direct_routes.clear()
         self._namespace_heal_attempted.clear()
 
@@ -715,12 +705,18 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
                     self._client_ctx.__aexit__(None, None, None),
                     timeout=close_timeout,
                 )
-            except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
-                logger.debug("Error closing AsyncMCPToolExecutor client: %s", exc)
+            except Exception as exc:  # noqa: BLE001 - teardown continues; typed reason logged
+                _log_close_failure("executor client", exc)
 
         self._client = None
         self._client_ctx = None
-        self._call_lock = None
+        self._namespace_locks.clear()
+
+
+def _log_close_failure(what: str, exc: BaseException) -> None:
+    """A close that timed out or failed may leave its server running: WARN, typed (#1577)."""
+    reason = "mcp_close_timeout" if isinstance(exc, TimeoutError) else "mcp_close_failed"
+    logger.warning("MCP %s close failed reason=%s error=%r", what, reason, exc)
 
 
 #: Typed reason for the logged repr fallback when no real JSON mapping exists.
@@ -872,7 +868,7 @@ def _result_to_text(result: Any) -> str:
     """
     data = getattr(result, "data", result)
     if isinstance(data, str):
-        return _bounded_model_tool_result(data)
+        return data
     if data is None:
         content = getattr(result, "content", None)
         if (
@@ -884,11 +880,9 @@ def _result_to_text(result: Any) -> str:
                 piece for piece in (_content_block_model_text(block) for block in content) if piece
             )
             if placeholder:
-                return _bounded_model_tool_result(placeholder)
+                return placeholder
     try:
-        return _bounded_model_tool_result(
-            json.dumps(data, allow_nan=False, default=pydantic_json_default)
-        )
+        return json.dumps(data, allow_nan=False, default=pydantic_json_default)
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",
@@ -896,7 +890,7 @@ def _result_to_text(result: Any) -> str:
             type(data).__name__,
             exc,
         )
-        return _bounded_model_tool_result(str(data))
+        return str(data)
 
 
 def _active_session_mode() -> str:

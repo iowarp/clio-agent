@@ -43,23 +43,28 @@ class TableQueryError(Exception):
         self.details = details
 
 
-class TableQueryTimeout(TableQueryError):
-    """The query overran its CONFIGURED wall-clock backstop.
+class TableQueryStalled(TableQueryError):
+    """The query's worker thread stopped working while its client still waited.
 
-    Only the secondary guard (see :class:`TableQueryCancelled` for the
-    primary, client-driven one): a query whose own HTTP client is still
-    connected and waiting, but that has run longer than
-    ``artifacts.table_query_timeout_s``, is stopped here rather than left
-    unbounded -- a server-protection backstop, never a statement about how
-    much data is reachable (raise the config for a genuinely large query).
+    A query is waited for while the one thread running it keeps consuming CPU
+    (:mod:`clio_agent.runtime.progress`), so a large query on a slow
+    machine is never cut off by a fixed clock. ``reason`` is ``no_progress`` (a
+    whole ``artifacts.table_query_no_progress_s`` window without an answer and
+    without CPU work: the query is blocked) or ``ceiling`` (still working at
+    ``artifacts.table_query_max_wait_s``). The client disconnecting is the other
+    way a query stops (:class:`TableQueryCancelled`).
     """
 
-    def __init__(self, timeout_s: float) -> None:
+    def __init__(self, reason: str, waited_s: float, no_progress_s: float) -> None:
         super().__init__(
             504,
-            "table_query_timeout",
-            "table query exceeded its configured wall-clock backstop",
-            timeout_s=timeout_s,
+            "table_query_stalled",
+            "table query stopped making progress"
+            if reason == "no_progress"
+            else "table query was still working at its ceiling",
+            reason=reason,
+            waited_s=round(waited_s, 1),
+            no_progress_s=no_progress_s,
         )
 
 

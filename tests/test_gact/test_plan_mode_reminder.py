@@ -1,6 +1,6 @@
 """P1.2 #1064 — periodic plan-mode reminder attachment.
 
-Covers ``enrichment.inject_plan_mode_reminder``, the per-turn attachment that surfaces
+Covers ``plan_mode.plan_mode_reminder``, the per-turn attachment that surfaces
 plan mode to the model and survives compaction (a system-prompt-only reminder is lost
 once the prefix is compacted). Asserts:
 
@@ -8,7 +8,7 @@ once the prefix is compacted). Asserts:
   - a SPARSE one-liner within the suppression window;
   - a FULL re-inject on the turn immediately after a compaction;
   - a FULL re-inject once the suppression window elapses;
-  - edit/architect turns get NO attachment (text returned unchanged);
+  - edit/architect turns get NO attachment (an empty block);
   - the suppression counter lives on ``session.metadata`` — no new store.
 """
 
@@ -23,16 +23,17 @@ from clio_agent.gact.plan_mode import (
     _PLAN_FILE_METADATA_KEY,
     _PLAN_REMINDER_STATE_KEY,
     PLAN_MODE_REMINDER_MARKER,
-    inject_plan_mode_reminder,
     plan_file_exists,
+    plan_mode_reminder,
     recorded_plan_file,
 )
 
 # Single source of truth for the default full-reminder cadence (P1.6a #1068 deleted the
 # duplicate plan_mode._PLAN_REMINDER_FULL_INTERVAL; the composer reads guidance.full_interval).
 from clio_agent.gact.planning import _DEFAULT_FULL_INTERVAL
-from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
+from clio_agent.gact.summarization_record import summarization_part
+from clio_agent.gact.types import Message, Tokens
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -51,32 +52,43 @@ def _plan_session(tmp_path: Path, mode: str = "plan"):
 
 
 def _append_compaction(app, sid: str) -> None:
+    """A between-turns compaction record row (its summarization injection)."""
+    part = summarization_part(
+        "prior work summarized",
+        trigger="manual",
+        compaction_id="cmp_x",
+        derived_from=["a1"],
+        compacted_message_ids=["m1", "m2"],
+    )
     app.state.messages.setdefault(sid, []).append(
-        build_compact_summary_message(
+        Message(
+            id="msg_summary_x",
             session_id=sid,
-            turn_id="turn_x",
-            summary="prior work summarized",
-            event_id="evt_x",
-            compacted_message_ids=["m1", "m2"],
+            role="assistant",
+            created_at="2026-10-01T00:00:00+00:00",
+            updated_at="2026-10-01T00:00:00+00:00",
+            parts=[part],
+            tokens=Tokens(),
+            stop_reason="end_turn",
         )
     )
 
 
 def test_first_plan_turn_gets_full_reminder(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     assert PLAN_MODE_REMINDER_MARKER in out
     assert _FULL_ONLY in out
     assert str(plans_dir()) in out
     assert "call plan_exit" in out
-    # The original user text is preserved after the attachment.
-    assert out.endswith(_USER_TEXT)
+    # The block is the reminder alone; the user's text is never glued onto it.
+    assert _USER_TEXT not in out
 
 
 def test_second_plan_turn_is_sparse_within_window(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 1 -> full
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 2 -> sparse
+    plan_mode_reminder(app, sess.id, sess)  # turn 1 -> full
+    out = plan_mode_reminder(app, sess.id, sess)  # turn 2 -> sparse
     assert PLAN_MODE_REMINDER_MARKER in out
     assert _SPARSE_ONLY in out
     assert _FULL_ONLY not in out
@@ -86,12 +98,12 @@ def test_second_plan_turn_is_sparse_within_window(tmp_path: Path) -> None:
 
 def test_post_compaction_turn_reinjects_full(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 1 -> full
-    out_sparse = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 2 -> sparse
+    plan_mode_reminder(app, sess.id, sess)  # turn 1 -> full
+    out_sparse = plan_mode_reminder(app, sess.id, sess)  # turn 2 -> sparse
     assert _FULL_ONLY not in out_sparse
     # A compaction drops the earlier reminder from the model's view -> re-inject full.
     _append_compaction(app, sess.id)
-    out_full = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 3 -> full again
+    out_full = plan_mode_reminder(app, sess.id, sess)  # turn 3 -> full again
     assert _FULL_ONLY in out_full
 
 
@@ -99,7 +111,7 @@ def test_full_reinjects_once_window_elapses(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
     seen_full = []
     for _ in range(_DEFAULT_FULL_INTERVAL + 1):
-        out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+        out = plan_mode_reminder(app, sess.id, sess)
         seen_full.append(_FULL_ONLY in out)
     # Turn 1 full, then sparse until the window elapses at turn (interval+1).
     assert seen_full[0] is True
@@ -110,16 +122,15 @@ def test_full_reinjects_once_window_elapses(tmp_path: Path) -> None:
 @pytest.mark.parametrize("mode", ["edit", "architect"])
 def test_non_plan_mode_gets_no_attachment(tmp_path: Path, mode: str) -> None:
     app, sess = _plan_session(tmp_path, mode=mode)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
-    assert out == _USER_TEXT
-    assert PLAN_MODE_REMINDER_MARKER not in out
+    out = plan_mode_reminder(app, sess.id, sess)
+    assert out == ""
     # No suppression state is created for a non-plan session.
     assert _PLAN_REMINDER_STATE_KEY not in (sess.metadata or {})
 
 
 def test_suppression_state_lives_on_session_metadata(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
     fresh = app.state.sessions.get(sess.id)
     state = fresh.metadata[_PLAN_REMINDER_STATE_KEY]
     assert state["turn_index"] == 1
@@ -143,7 +154,7 @@ def test_plan_file_path_recorded_on_first_plan_turn(tmp_path: Path) -> None:
     """The deterministic plan-file path is computed and recorded on session.metadata."""
     app, sess = _plan_session(tmp_path)
     assert _PLAN_FILE_METADATA_KEY not in (sess.metadata or {})
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
 
     fresh = app.state.sessions.get(sess.id)
     plan_file = fresh.metadata[_PLAN_FILE_METADATA_KEY]
@@ -160,7 +171,7 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
     app, sess = _plan_session(tmp_path)
     workspace = tmp_path / "external-workspace"
     with tool_workspace_context(str(workspace)):
-        inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+        plan_mode_reminder(app, sess.id, sess)
         plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
         assert Path(plan_file).parent == (workspace / ".clio" / "plans").resolve()
         assert FileAccessPolicy.from_env().validate_write(plan_file) == Path(plan_file)
@@ -186,7 +197,7 @@ def test_plan_injection_resolves_and_creates_workspace_plan_dir_without_tool_con
     workspace = tmp_path / "external-workspace"
     app.state.workspaces.update(sess.workspace_id, root_path=str(workspace))
 
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
 
     plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
     expected = (workspace / ".clio" / "plans").resolve()
@@ -204,7 +215,7 @@ def test_first_plan_turn_creates_only_the_owned_plan_directory(
     app.state.workspaces.update(sess.workspace_id, root_path=str(owned_plans.parents[1]))
     assert not owned_plans.exists()
 
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
 
     plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
     assert owned_plans.is_dir()
@@ -215,10 +226,10 @@ def test_first_plan_turn_creates_only_the_owned_plan_directory(
 def test_plan_file_path_is_stable_across_turns(tmp_path: Path) -> None:
     """The recorded path does not change turn to turn (recorded once, re-read thereafter)."""
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
     first = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
     for _ in range(3):
-        inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+        plan_mode_reminder(app, sess.id, sess)
     later = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
     assert first == later
 
@@ -226,7 +237,7 @@ def test_plan_file_path_is_stable_across_turns(tmp_path: Path) -> None:
 def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
     """A write to the recorded plan path resolves ALLOW in plan mode (the @70 carve-out)."""
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
     plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
     # No persisted user policies — ALLOW must come purely from the built-in plan-file carve-out.
     action = resolve(
@@ -243,7 +254,7 @@ def test_recorded_plan_path_is_within_plan_acl_carveout(tmp_path: Path) -> None:
 def test_reminder_shows_create_guidance_when_file_absent(tmp_path: Path) -> None:
     """With no plan file on disk, the FULL reminder tells the model to CREATE it at the path."""
     app, sess = _plan_session(tmp_path)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
     assert _CREATE_ONLY in out
     assert _EDIT_ONLY not in out
@@ -255,7 +266,7 @@ def test_reminder_shows_edit_guidance_when_file_present(tmp_path: Path) -> None:
     """Once the plan file exists on disk, the FULL reminder switches to incremental-edit guidance."""
     app, sess = _plan_session(tmp_path)
     # Turn 1 computes + records the path (file not yet written).
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    plan_mode_reminder(app, sess.id, sess)
     plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
     # The MODEL writes the plan (simulated) -> existence flips.
     plan_file.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +274,7 @@ def test_reminder_shows_edit_guidance_when_file_present(tmp_path: Path) -> None:
     assert plan_file_exists(app.state.sessions.get(sess.id))
     # Force a FULL reminder (post-compaction) so the create/edit branch is visible.
     _append_compaction(app, sess.id)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     assert _FULL_ONLY in out
     assert _EDIT_ONLY in out
     assert _CREATE_ONLY not in out
@@ -272,7 +283,7 @@ def test_reminder_shows_edit_guidance_when_file_present(tmp_path: Path) -> None:
 def test_full_reminder_contains_ledger_structure_staleness_and_show_rules(tmp_path: Path) -> None:
     """The FULL reminder carries the epistemic ledger, structure hint, staleness + show rules."""
     app, sess = _plan_session(tmp_path)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+    out = plan_mode_reminder(app, sess.id, sess)
     assert _LEDGER_HEADERS in out
     assert _STRUCTURE_HINT in out
     assert _STALENESS in out
@@ -280,12 +291,15 @@ def test_full_reminder_contains_ledger_structure_staleness_and_show_rules(tmp_pa
 
 
 def test_full_reminder_distinguishes_plan_artifact_from_requested_target(tmp_path: Path) -> None:
-    """A short create-file request cannot be mistaken for the plan document itself."""
+    """A short create-file request cannot be mistaken for the plan document itself.
+
+    The reminder is a block of its own (the user's request is a separate message), so the
+    distinction must live in the reminder's wording alone.
+    """
 
     app, sess = _plan_session(tmp_path)
-    request = "Create probe.txt containing exactly QUALIFIED."
 
-    out = inject_plan_mode_reminder(app, sess.id, sess, request)
+    out = plan_mode_reminder(app, sess.id, sess)
 
     assert "The plan file is NOT the user's requested target" in out
     assert "Never copy the requested target contents alone into the plan file" in out
@@ -298,11 +312,10 @@ def test_full_reminder_distinguishes_plan_artifact_from_requested_target(tmp_pat
 def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:
     """The SPARSE reminder is a single line: no ledger/structure/staleness/show guidance."""
     app, sess = _plan_session(tmp_path)
-    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 1 -> full
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)  # turn 2 -> sparse
-    assert out.count("\n\n---\n\n") == 1
-    reminder = out.split("\n\n---\n\n", 1)[0]
-    assert "\n" not in reminder  # the sparse block itself is one line
+    plan_mode_reminder(app, sess.id, sess)  # turn 1 -> full
+    out = plan_mode_reminder(app, sess.id, sess)  # turn 2 -> sparse
+    assert PLAN_MODE_REMINDER_MARKER in out
+    assert "\n" not in out  # the sparse block itself is one line
     for absent in (_LEDGER_HEADERS, _STRUCTURE_HINT, _STALENESS, _SHOW_THE_PLAN):
         assert absent not in out
 
@@ -311,8 +324,8 @@ def test_sparse_reminder_stays_a_one_liner(tmp_path: Path) -> None:
 def test_non_plan_mode_records_no_plan_file(tmp_path: Path, mode: str) -> None:
     """edit/architect sessions get no plan reminder AND no recorded plan-file path."""
     app, sess = _plan_session(tmp_path, mode=mode)
-    out = inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
-    assert out == _USER_TEXT
+    out = plan_mode_reminder(app, sess.id, sess)
+    assert out == ""
     fresh = app.state.sessions.get(sess.id)
     assert _PLAN_FILE_METADATA_KEY not in (fresh.metadata or {})
     assert recorded_plan_file(fresh) is None

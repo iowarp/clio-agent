@@ -15,7 +15,7 @@ import sys
 import pytest
 
 from clio_agent.providers import dependencies
-from clio_agent.providers.claude_code_litellm import ClaudeCodeCLIUnavailableError
+from clio_agent.providers.claude_code_errors import ClaudeCodeCLIUnavailableError
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk
 
 
@@ -44,34 +44,20 @@ def test_require_sdk_raises_typed_error_not_importerror(monkeypatch: pytest.Monk
     assert isinstance(excinfo.value.__cause__, dependencies.ProviderDependencyInstallError)
 
 
-def test_selecting_sdk_transport_stream_yields_typed_error(
+def test_an_engine_call_yields_the_typed_error_not_an_importerror(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The streaming SDK seam surfaces the typed error, not an ImportError trace."""
+    """The engine's one SDK import seam surfaces the typed error before any send."""
 
     import asyncio
 
-    from clio_agent.providers import claude_code_litellm
+    from dspy.lm15 import Message, Request
+
+    from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine
 
     _force_sdk_absent(monkeypatch)
-
-    async def _drive() -> None:
-        stream = claude_code_litellm._astream_sdk(prompt="hi", model="claude-x")
-        await stream.__anext__()
+    request = Request(model="claude_code/claude-x", messages=(Message.user("hi"),))
 
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
-        asyncio.run(_drive())
-    assert "could not install Claude Code support" in str(excinfo.value)
-
-
-def test_run_sdk_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The blocking completion seam (S2: rides the same session pool the
-    streaming path uses) surfaces the typed error, not an ImportError trace."""
-
-    from clio_agent.providers.claude_code_blocking import _run_sdk
-
-    _force_sdk_absent(monkeypatch)
-
-    with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
-        _run_sdk(prompt="hi", model="claude-x", timeout=5.0, cwd=None)
+        asyncio.run(AsyncClaudeCodeEngine("claude-x").complete(request))
     assert "could not install Claude Code support" in str(excinfo.value)

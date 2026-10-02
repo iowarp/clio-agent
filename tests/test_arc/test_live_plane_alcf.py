@@ -2,8 +2,8 @@
 
 Gated by ``CLIO_RUN_LIVE=1`` (skipped otherwise). Runs the real retaining react loop
 loop against a live Argonne model and asserts the contract on REAL data: the loop
-writes its trajectory to ARC, the prompt is rebuilt from ARC (byte-equal to stock),
-and an out-of-band edit propagates. Uses the Argonne provider only — never LM Studio.
+writes its trajectory to ARC, the agent's context is folded from ARC, and an
+out-of-band edit propagates to the next context. Uses the Argonne provider only — never LM Studio.
 
 Env (set when CLIO_RUN_LIVE=1):
     CLIO_LM_PROVIDER=argonne
@@ -14,13 +14,14 @@ Env (set when CLIO_RUN_LIVE=1):
 
 from __future__ import annotations
 
+import json
 import os
 
 import dspy
 import pytest
 
 from clio_agent.arc.prompt_recorder import PromptRecorder
-from clio_agent.arc.segments import segments_to_keys
+from clio_agent.gact.context_view import context_messages
 
 from .conftest import live_plane_context, make_react_agent
 
@@ -33,6 +34,11 @@ pytestmark = [
 ]
 
 SID, SCOPE = "live-s1", "agentA"
+
+
+def _context(arc) -> str:
+    """The agent's folded context for the scope, serialized (what the next call sends)."""
+    return json.dumps(context_messages(arc.render_segments(SID, SCOPE)), ensure_ascii=False)
 
 
 def _live_lm():
@@ -55,7 +61,7 @@ def test_live_plane_on_real_alcf_inference(arc):
     rec = PromptRecorder()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter(), callbacks=[rec]):
+        with dspy.context(lm=lm, callbacks=[rec]):
             pred = agent(question="Use the lookup tool for 'mars', then answer with the fact.")
 
     # 1. Real inference produced an answer.
@@ -69,7 +75,7 @@ def test_live_plane_on_real_alcf_inference(arc):
 
     # 3. (v0.8.0) The classic single-string byte-equality died with the classic
     # loop; the V2 wire byte-equality is proven in
-    # tests/test_arc/test_reactv2_wire_byte_equality.py.
+    # tests/test_arc/test_clio_react_wire_byte_equality.py.
 
     # 4. The prompt was built FROM ARC — every captured react call's trajectory span
     #    is a prefix-consistent subset of the final ARC render (the loop fed itself
@@ -87,7 +93,7 @@ def test_live_mutation_propagates_on_real_data(arc):
 
     agent = make_react_agent(tools=[dspy.Tool(lookup)])
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             agent(question="Look up 'phobos' then answer with what you found.")
 
     live = arc.render_segments(SID, SCOPE)
@@ -98,10 +104,9 @@ def test_live_mutation_propagates_on_real_data(arc):
     victim = live[-1]
     victim_text = str(victim.content.get("text") or victim.content.get("name") or "")
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            before = agent._format_trajectory({})
-            arc.delete_segments(SID, SCOPE, [victim.id])
-            after = agent._format_trajectory({})
+        before = _context(arc)
+        arc.delete_segments(SID, SCOPE, [victim.id])
+        after = _context(arc)
     assert before != after
     if victim_text:
         assert victim_text in before
@@ -118,7 +123,7 @@ def test_live_summarize_propagates_on_real_data(arc):
 
     agent = make_react_agent(tools=[dspy.Tool(lookup)])
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             agent(question="Look up 'deimos' then answer with what you found.")
 
     live = arc.render_segments(SID, SCOPE)
@@ -126,11 +131,10 @@ def test_live_summarize_propagates_on_real_data(arc):
         pytest.skip("model produced no trajectory to summarize")
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            arc.summarize_segments(SID, SCOPE, [s.id for s in live], {"text": "REAL_RUN_SUMMARY"})
-            after = agent._format_trajectory({})
-    # the whole real trajectory is now just the summary on the wire
+        arc.summarize_segments(SID, SCOPE, [s.id for s in live], {"text": "REAL_RUN_SUMMARY"})
+        after = _context(arc)
+    # the whole real trajectory is now just the summary in the agent's context
     assert "REAL_RUN_SUMMARY" in after
-    assert segments_to_keys(arc.render_segments(SID, SCOPE)) == {
-        "observation_0": "REAL_RUN_SUMMARY"
-    }
+    assert [(s.kind, s.content.get("text")) for s in arc.render_segments(SID, SCOPE)] == [
+        ("summary", "REAL_RUN_SUMMARY")
+    ]
