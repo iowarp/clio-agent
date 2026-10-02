@@ -296,11 +296,6 @@ limits.lm_transient_retries: 2.0
 # (image/audio/resource) before it's elided; raise for larger images.
 limits.mcp_content_block_max_bytes: 524288
 
-# CLIO_GACT_MCP_RECONNECT_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/mcp.py
-# Seconds bounding the connect+list-tools round-trip when reconnecting an
-# MCP server; raise for a slow-starting server.
-limits.mcp_reconnect_timeout_s: 15.0
-
 # CLIO_MODEL_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/tools/mcp_result_projection.py
 # Characters of a tool result shown to the model; a longer result is saved
 # to the session's tool-output folder and the agent gets this many head
@@ -1180,11 +1175,6 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 # abandoned; not the real per-tool clock -- raise only if tools hit it.
 tools.mcp.call_timeout_s: 600.0
 
-# CLIO_MCP_COLD_SPAWN_RUNAWAY_S  (float)  <- src/clio_agent/tools/mcp_discovery.py
-# Generous backstop seconds for one MCP namespace's discovery/connect
-# attempt before it's marked unreachable; raise for slow cold spawns.
-tools.mcp.cold_spawn_runaway_s: 600.0
-
 # CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_connection_era.py
 # MCP protocol-era negotiation mode; "auto" probes modern then falls to
 # legacy. Pin a version or "legacy" for a misbehaving server.
@@ -1257,26 +1247,27 @@ tools.mcp.hold_while_waiting_s: 1800.0
 # call; raise for tools needing many follow-up inputs.
 # tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
 
-# CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S  (float)  <- src/clio_agent/tools/launcher_cache_lock.py
-# Generous runaway backstop while waiting on the shared uv-launcher cache
-# lock; fires only on a livelocked/unidentifiable holder.
-tools.mcp.launcher_cache_lock_timeout_s: 600.0
-
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 # Hours a cached MCP tool listing stays valid before a live relist is
 # forced; lower to pick up upstream tool changes sooner.
 tools.mcp.listing_ttl_h: 24.0
 
-# CLIO_MCP_MAX_WAIT_S  (float)  <- src/clio_agent/tools/mcp_probe_hardening.py
+# CLIO_MCP_MAX_WAIT_S  (float)  <- src/clio_agent/tools/mcp_server_progress.py
 # Ceiling (seconds) on waiting for an MCP server that is still visibly
-# starting (its process tree working); until then a slow start never spends
-# the probe retry budget.
+# starting (its own process tree working): connect, listing, reconnect; also
+# bounds one launcher-cache-lock holder (plus one no-progress window).
 tools.mcp.max_wait_s: 180.0
 
 # CLIO_MCP_MOUNT_RETRY_DELAYS_S  (list)  <- src/clio_agent/gact/mcp_readiness.py
 # Increasing waits (seconds, comma-separated) between an on-demand MCP
 # mount's retry attempts; list length is the retry budget.
 tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
+
+# CLIO_MCP_NO_PROGRESS_S  (float)  <- src/clio_agent/tools/mcp_server_progress.py
+# Seconds an MCP connect or listing may go with no answer AND no work in the
+# server's own process tree before it fails typed; a server still working is
+# waited for up to tools.mcp.max_wait_s.
+tools.mcp.no_progress_s: 30.0
 
 # CLIO_MCP_PROBE_TIMEOUT_RETRIES  (int)  <- src/clio_agent/tools/mcp_probe_hardening.py
 # Retries of the era-negotiation probe after a client-side timeout before
@@ -1295,11 +1286,6 @@ tools.mcp.response_cache_enabled: false
 # activated, so the first message does not wait for them; set false to start
 # servers only when a turn needs them.
 tools.mcp.session_warmup: true
-
-# CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/gact/mcp_readiness.py
-# Seconds allowed for an MCP tool executor's startup handshake; raise for
-# servers with slow cold starts, lower to fail faster.
-tools.mcp.setup_timeout_s: 10.0
 
 # CLIO_MCP_SPAWN_DIET  (bool)  <- src/clio_agent/tools/spawn_diet.py
 # Enables the learned direct-interpreter spawn shortcut for clio-kit servers

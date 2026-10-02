@@ -534,3 +534,37 @@ def test_zombie_store_second_op_fails_fast_then_probe_recovers(monkeypatch):
     finally:
         cte.heal()
         cte.release()
+
+
+def test_an_unlocatable_daemon_degrades_typed_unresolved_not_stalled(released, monkeypatch):
+    """No daemon process can be located, so its progress is unknown: the ladder ends
+    ``clio_core_daemon_pid_unresolved`` (quarantined, recovers via an RPC probe), never
+    a misattributed ``clio_core_rpc_stalled``.
+
+    Sabotage: map every unfinished wait to ``RPC_STALLED_REASON`` -> the reason assert fails.
+    """
+    from clio_agent.arc import daemon_progress
+    from clio_agent.arc.clio_core_liveness import DAEMON_PID_UNRESOLVED_REASON
+
+    def unresolved() -> float:
+        raise daemon_progress.DaemonPidUnresolved("no pidfile, no listener")
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", unresolved)
+    stall = _StallingCall(stall_attempts=99)
+    released.append(stall)
+    exhausted = {"reason": ""}
+    with pytest.raises(ClioCoreRuntimeLostError) as exc:
+        call_with_liveness(
+            stall,
+            op_name="get",
+            port=9413,
+            reconnect=lambda: None,
+            policy=_FAST,
+            on_exhausted=lambda r: exhausted.__setitem__("reason", r),
+            _sleep=_NO_SLEEP,
+        )
+    payload = format_error_response(exc.value)
+    assert payload["details"]["reason"] == DAEMON_PID_UNRESOLVED_REASON
+    assert payload["details"]["wait"] == "daemon_pid_unresolved"
+    assert exhausted["reason"] == DAEMON_PID_UNRESOLVED_REASON
+    assert "could not be located" in str(exc.value)

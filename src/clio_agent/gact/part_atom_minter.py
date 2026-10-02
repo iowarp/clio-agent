@@ -79,6 +79,20 @@ class MinterClosedError(ClioError):
         )
 
 
+class MinterDrainStalled(ClioError):
+    """The finalize barrier's drain stopped progressing with transcript jobs pending."""
+
+    reason = MINTER_DRAIN_TIMEOUT
+
+    def __init__(self, session_id: str, pending: int) -> None:
+        super().__init__(
+            f"the transcript minter of session {session_id} stopped progressing with "
+            f"{pending} job(s) pending; the turn's transcript is not complete",
+            error_type=self.reason,
+            details={"session_id": session_id, "pending": pending},
+        )
+
+
 class PartAtomMinter:
     """One FIFO consumer thread that persists transcript jobs for one turn."""
 
@@ -92,6 +106,7 @@ class PartAtomMinter:
         self._lock = threading.Lock()
         self._closed = False
         self._pending = 0
+        self._completed = 0  # jobs finished: the drain's progress signal
         self._idle = threading.Condition(self._lock)
         # #1337: part_id -> the dump that landed on the lane (insertion order = seal order).
         self._minted: dict[str, dict[str, Any]] = {}
@@ -207,6 +222,7 @@ class PartAtomMinter:
         while True:
             item = self._queue.get()
             if item is _STOP:
+                self._log_unrecovered()
                 return
             label, fn = item
             try:
@@ -234,6 +250,7 @@ class PartAtomMinter:
             finally:
                 with self._idle:
                     self._pending -= 1
+                    self._completed += 1
                     if self._pending == 0:
                         self._idle.notify_all()
 
@@ -252,28 +269,43 @@ class PartAtomMinter:
             order = self._minted_index
             return [self._minted[pid] for pid in sorted(self._minted, key=lambda p: order[p])]
 
-    def drain(self, timeout: float = 5.0) -> bool:
-        """Wait until every queued job ran. ``False`` on timeout (audited)."""
+    def drain(self, *, no_progress_s: float | None = None) -> bool:
+        """Wait until every queued job ran, while the ARC writes keep progressing.
 
-        with self._idle:
-            done = self._idle.wait_for(lambda: self._pending == 0, timeout=timeout)
-        if not done:
+        No fixed deadline: a job completing, or the clio-core daemon working while one
+        is in flight, is progress (``daemon_progress.drain_while_writes_progress``).
+        A whole ``no_progress_s`` window (``arc.liveness.stall_after_s`` when ``None``)
+        without progress, or the ``arc.liveness.max_wait_s`` ceiling, returns ``False``
+        (audited, typed ``transcript_minter_drain_timeout``).
+        """
+        from clio_agent.arc.daemon_progress import drain_while_writes_progress  # noqa: PLC0415
+
+        outcome = drain_while_writes_progress(
+            self._idle,
+            lambda: self._pending == 0,
+            lambda: self._completed,
+            op_name="transcript_minter_drain",
+            no_progress_s=no_progress_s,
+        )
+        if not outcome.done:
             stream_audit(
                 "transcript.minter_drain_timeout",
                 session_id=self.session_id,
                 turn_id=self.turn_id,
                 pending=self._pending,
                 reason=MINTER_DRAIN_TIMEOUT,
+                wait=outcome.reason,
             )
             logger.error(
-                "transcript minter drain timed out session=%s pending=%d (%s)",
+                "transcript minter drain stopped progressing session=%s pending=%d wait=%s (%s)",
                 self.session_id,
                 self._pending,
+                outcome.reason,
                 MINTER_DRAIN_TIMEOUT,
             )
-        return done
+        return outcome.done
 
-    def barrier(self, *, timeout: float = 5.0) -> None:
+    def barrier(self, *, no_progress_s: float | None = None) -> None:
         """Drain, then re-run every failed job inline; a job that fails again raises.
 
         Called on the finalize executor thread, right before the assistant message is
@@ -282,7 +314,8 @@ class PartAtomMinter:
         part fresh from the final message, which is the same atom.
         """
 
-        self.drain(timeout=timeout)
+        if not self.drain(no_progress_s=no_progress_s):
+            raise MinterDrainStalled(self.session_id, self._pending)
         with self._lock:
             failed = list(self._failures)
             self._failures.clear()
@@ -335,16 +368,26 @@ class PartAtomMinter:
 
         self._thread.join()
 
-    def close(self, *, timeout: float = 5.0) -> None:
-        """Stop accepting jobs, drain what is queued, stop the thread."""
+    def close(self, *, no_progress_s: float | None = None) -> None:
+        """Stop accepting jobs, drain what is queued, stop the thread.
+
+        The drain is progress-based (:meth:`drain`) so the session's next turn never
+        interleaves its atoms with this one's while the writes progress. A drain that
+        stopped progressing is audited there; the consumer (a daemon thread) still
+        finishes the queue on its own, behind the stop marker, and logs any unrecovered
+        job when it stops.
+        """
 
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-        self.drain(timeout=timeout)
+        drained = self.drain(no_progress_s=no_progress_s)
         self._queue.put(_STOP)
-        self._thread.join(timeout=timeout)
+        if drained:
+            self._thread.join()
+
+    def _log_unrecovered(self) -> None:
         with self._lock:
             leftover = list(self._failures)
         if leftover:

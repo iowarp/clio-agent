@@ -126,16 +126,14 @@ def test_a2ui_string_bound_is_configurable() -> None:
 class _StubExecutor:
     """Minimal live-executor surface the readiness boundary drives."""
 
-    def __init__(self, *, setup_timeout: float | None = None) -> None:
-        if setup_timeout is not None:
-            self._setup_timeout = setup_timeout
-        self.prepared_timeouts: list[float] = []
+    def __init__(self) -> None:
+        self.prepared: list[str] = []
 
     def merge_namespace_tools(self, namespace: str, tools: Any) -> None:
         return None
 
-    def prepare_namespace(self, namespace: str, timeout: float) -> None:
-        self.prepared_timeouts.append(timeout)
+    def prepare_namespace(self, namespace: str) -> None:
+        self.prepared.append(namespace)
 
 
 def test_mcp_mount_retry_delays_are_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,21 +162,15 @@ def test_mcp_mount_retry_delays_are_configurable(monkeypatch: pytest.MonkeyPatch
     assert attempts == 4
 
 
-def test_mcp_mount_setup_timeout_fallback_resolves_from_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An executor without ``_setup_timeout`` falls back to ``tools.mcp.setup_timeout_s``."""
+def test_mcp_no_progress_window_is_configurable() -> None:
+    """``tools.mcp.no_progress_s`` (replacing the fixed ``tools.mcp.setup_timeout_s``
+    ladder) is the window an MCP connect may go without an answer and without work."""
 
-    from clio_agent.gact.mcp_readiness import mount_namespace_for_session
-    from clio_agent.tools import mcp_discovery
+    from clio_agent.tools.mcp_server_progress import mcp_no_progress_s
 
-    set_config("tools", {"mcp": {"setup_timeout_s": 2.5}})
-    monkeypatch.setattr(mcp_discovery, "ensure_namespace", lambda namespace, spec: {})
-
-    executor = _StubExecutor()  # deliberately no _setup_timeout attribute
-    assert mount_namespace_for_session(executor, "ns", object()) == {}
-    # First attempt multiplier is 1.0, so the configured base surfaces verbatim.
-    assert executor.prepared_timeouts == [2.5]
+    assert mcp_no_progress_s() == 30.0
+    set_config("tools", {"mcp": {"no_progress_s": 45}})
+    assert mcp_no_progress_s() == 45.0
 
 
 # --------------------------------------------------------------------------- #
@@ -505,3 +497,26 @@ def test_blueprint_too_large_message_is_derived_from_the_limit() -> None:
 
     expected_mib = _BLUEPRINT_TEXT_FILE_LIMIT_BYTES // (1024 * 1024)
     assert f"{expected_mib} MiB" in _too_large_message()
+
+
+@pytest.mark.parametrize(
+    ("key", "env"),
+    [
+        ("tools.mcp.setup_timeout_s", "CLIO_MCP_SETUP_TIMEOUT_S"),
+        ("tools.mcp.cold_spawn_runaway_s", "CLIO_MCP_COLD_SPAWN_RUNAWAY_S"),
+        ("tools.mcp.launcher_cache_lock_timeout_s", "CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S"),
+        ("limits.mcp_reconnect_timeout_s", "CLIO_GACT_MCP_RECONNECT_TIMEOUT_S"),
+    ],
+)
+def test_a_removed_fixed_mcp_deadline_key_is_a_typed_error(
+    monkeypatch: pytest.MonkeyPatch, key: str, env: str
+) -> None:
+    """The fixed MCP deadlines are gone (#1577): a leftover one is refused, never ignored."""
+    from clio_agent.config import reject_removed_config_keys
+    from clio_agent.errors import RemovedConfigKeyError
+
+    monkeypatch.setenv(env, "10")
+    with pytest.raises(RemovedConfigKeyError) as err:
+        reject_removed_config_keys()
+    assert err.value.key == key
+    assert "progress-based waits" in str(err.value)

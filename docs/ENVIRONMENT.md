@@ -126,7 +126,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION` | `gact.message_intents.max_acceptances_per_session` | int | `200` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION` | `gact.message_intents.max_queued_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION` | `gact.message_intents.max_settled_steers_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |
-| `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
 | `CLIO_GACT_MEDIA_CACHE_BYTES` | `gact.media_cache_bytes` | int | `67108864` | `src/clio_agent/gact/agents/media_cache.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
 | `CLIO_GOAL_JUDGE_MODEL` | `goal.judge_model` | str | _(unset)_ | `src/clio_agent/gact/goal.py` |
@@ -181,7 +180,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_CACHE_TEMP_MAX_AGE_DAYS` | `tools.mcp_cache.temp_max_age_days` | float | `3.0` | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_CACHE_TEMP_ROOTS` | `tools.mcp_cache.temp_roots` | str | _(unset)_ | `src/clio_agent/runtime/disk_gc.py` |
 | `CLIO_MCP_CALL_TIMEOUT_S` | `tools.mcp.call_timeout_s` | float | `600.0` | `src/clio_agent/tools/execution.py` |
-| `CLIO_MCP_COLD_SPAWN_RUNAWAY_S` | `tools.mcp.cold_spawn_runaway_s` | float | `600.0` | `src/clio_agent/tools/mcp_discovery.py` |
 | `CLIO_MCP_CONNECT_MODE` | `tools.mcp.connect_mode` | str | `auto` | `src/clio_agent/tools/mcp_connection_era.py` |
 | `CLIO_MCP_CONTENT_BLOCK_MAX_BYTES` | `limits.mcp_content_block_max_bytes` | int | `524288` | `src/clio_agent/tools/mcp_results.py` |
 | `CLIO_MCP_DISCOVERY_CONCURRENCY` | `tools.mcp.discovery_concurrency` | int | `8` | `src/clio_agent/tools/mcp_discovery.py` |
@@ -195,14 +193,13 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS` | `tools.mcp.elicitation.url_trusted_origins` | list | `default` _(computed)_ | `src/clio_agent/gact/elicitation_bridge.py` |
 | `CLIO_MCP_HOLD_WHILE_WAITING_S` | `tools.mcp.hold_while_waiting_s` | float | `1800.0` | `src/clio_agent/gact/session_warmup.py` |
 | `CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS` | `tools.mcp.input_required_max_rounds` | int | `DEFAULT_INPUT_REQUIRED_MAX_ROUNDS` _(computed)_ | `src/clio_agent/tools/mcp_runtime.py` |
-| `CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S` | `tools.mcp.launcher_cache_lock_timeout_s` | float | `600.0` | `src/clio_agent/tools/launcher_cache_lock.py` |
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |
-| `CLIO_MCP_MAX_WAIT_S` | `tools.mcp.max_wait_s` | float | `180.0` | `src/clio_agent/tools/mcp_probe_hardening.py` |
+| `CLIO_MCP_MAX_WAIT_S` | `tools.mcp.max_wait_s` | float | `180.0` | `src/clio_agent/tools/mcp_server_progress.py` |
 | `CLIO_MCP_MOUNT_RETRY_DELAYS_S` | `tools.mcp.mount_retry_delays_s` | list | `0.5,1.5` | `src/clio_agent/gact/mcp_readiness.py` |
+| `CLIO_MCP_NO_PROGRESS_S` | `tools.mcp.no_progress_s` | float | `30.0` | `src/clio_agent/tools/mcp_server_progress.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_SESSION_WARMUP` | `tools.mcp.session_warmup` | bool | `true` | `src/clio_agent/gact/session_warmup.py` |
-| `CLIO_MCP_SETUP_TIMEOUT_S` | `tools.mcp.setup_timeout_s` | float | `10.0` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_SPAWN_DIET` | `tools.mcp.spawn_diet` | bool | `true` | `src/clio_agent/tools/spawn_diet.py` |
 | `CLIO_MCP_SPAWN_DIET_TTL_H` | `tools.mcp.spawn_diet_ttl_h` | float | `24.0` | `src/clio_agent/tools/spawn_diet.py` |
 | `CLIO_MCP_WORKSPACE_MAX_RESIDENT` | `tools.mcp.workspace_max_resident` | int | `2` | `src/clio_agent/tools/reaper.py` |

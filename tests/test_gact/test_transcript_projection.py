@@ -319,7 +319,7 @@ def test_restart_reconciliation_preserves_streamed_partial_from_the_atom_lane(
     )
     transcript.append_text_delta("main", "answer", "five dense stations near")
     transcript.close_open_text()
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     minter.close()  # never finalized: no envelope atom ever lands
 
     app.state.sessions.update(sid, status="running")

@@ -136,37 +136,6 @@ class TestStreamAuditEnabled:
         assert stream_audit_enabled() is True
 
 
-class TestMcpReconnectTimeout:
-    """``limits.mcp_reconnect_timeout_s`` / env (float, non-positive -> 15s)."""
-
-    def test_default(self, monkeypatch):
-        from clio_agent.gact.routes.mcp import _mcp_reconnect_timeout_s
-
-        monkeypatch.delenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", raising=False)
-        assert _mcp_reconnect_timeout_s() == 15.0
-
-    def test_env(self, monkeypatch):
-        from clio_agent.gact.routes.mcp import _mcp_reconnect_timeout_s
-
-        monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "30")
-        assert _mcp_reconnect_timeout_s() == 30.0
-
-    def test_nonpositive_and_garbage_fall_back(self, monkeypatch):
-        from clio_agent.gact.routes.mcp import _mcp_reconnect_timeout_s
-
-        monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "0")
-        assert _mcp_reconnect_timeout_s() == 15.0
-        monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "not-a-number")
-        assert _mcp_reconnect_timeout_s() == 15.0
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.gact.routes.mcp import _mcp_reconnect_timeout_s
-
-        monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "30")
-        _write_user_config(monkeypatch, tmp_path, "limits:\n  mcp_reconnect_timeout_s: 42\n")
-        assert _mcp_reconnect_timeout_s() == 42.0
-
-
 class TestTransientProviderRetryDelays:
     """``limits.transient_provider_retry_delays`` / env, ``as_csv``; the
     "false/off/none/disabled disables" contract is preserved."""

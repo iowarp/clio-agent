@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from clio_agent.arc import daemon_progress
-from clio_agent.tools import mcp_probe_hardening
+from clio_agent.tools import mcp_server_progress
 
 
 def test_the_clio_core_wait_ceiling_defaults_to_three_minutes(
@@ -24,4 +24,4 @@ def test_the_mcp_start_wait_ceiling_defaults_to_three_minutes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CLIO_MCP_MAX_WAIT_S", raising=False)
-    assert mcp_probe_hardening.mcp_max_wait_s() == 180.0
+    assert mcp_server_progress.mcp_max_wait_s() == 180.0

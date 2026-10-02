@@ -96,7 +96,6 @@ def test_candidate_kit_executes_and_persists_external_input_lineage(
             create_sync_tool_executor(
                 gateway,
                 timeout=90.0,
-                setup_timeout=90.0,
                 preloaded_tools=discovery.tools,
                 namespace_servers=namespace_proxies(gateway),
             ) as executor,

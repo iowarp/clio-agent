@@ -63,6 +63,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 )
 from clio_agent.arc.companion_policy import may_carry_companion
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
+from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
@@ -75,6 +76,7 @@ from clio_agent.arc.rpc_liveness import (
 )
 from clio_agent.arc.runtime_crash import (
     clear_crash_record,
+    daemon_start_work,
     wait_for_spawned_daemon,
     watch_daemon_process,
 )
@@ -175,9 +177,6 @@ class ARCStore(Protocol):
         to ``query_text``. Returns ``[(name, score)]`` best-first. Backends without a
         search index may return a degraded ranking (see ``supports_search``)."""
         ...
-
-
-_RUNTIME_START_TIMEOUT_S = 30.0
 
 
 @contextlib.contextmanager
@@ -399,12 +398,30 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             return daemon_version.resolve_effective_config(
                 state, config_path, on_failure=_deregister_client
             )
+        starting = pidfile_live_pid(_daemon_pidfile())
         with runtime_stop.kill_spawned_daemon_on_failure():
-            _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-            wait_for_spawned_daemon(
-                port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
-            )
-        return config_path
+            if starting is None:
+                _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+                _wait_for_daemon_start(port, state)
+                return config_path
+            # A daemon still starting (left running at a ceiling) is adopted, not doubled.
+            _wait_for_daemon_start(_resolve_runtime_port(running), state)
+        return daemon_version.resolve_effective_config(
+            state, config_path, on_failure=_deregister_client
+        )
+
+
+def _wait_for_daemon_start(port: int, state: Path) -> None:
+    """Wait (progress-based, typed) for the pidfile daemon to bind ``port``."""
+    from clio_agent.arc.daemon_progress import no_progress_window_s  # noqa: PLC0415 - cycle
+
+    wait_for_spawned_daemon(
+        port,
+        alive=_runtime_alive,
+        state_dir=state,
+        work=daemon_start_work(pidfile_live_pid(_daemon_pidfile()), state / "clio-runtime.log"),
+        no_progress_s=no_progress_window_s(),
+    )
 
 
 class ClioCoreStore:

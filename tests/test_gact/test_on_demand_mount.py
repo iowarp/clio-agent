@@ -42,8 +42,7 @@ class _FakeExecutor:
         del namespace
         self._mcp_tools.update(tools)
 
-    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
-        del timeout
+    def prepare_namespace(self, namespace: str) -> None:
         assert namespace in self._clio_namespace_specs
         self.prepared_namespaces.add(namespace)
 

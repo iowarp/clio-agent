@@ -521,49 +521,58 @@ def test_sync_mcp_tool_executor_closes_client_and_loop():
     assert not thread.is_alive()
 
 
-def test_sync_tool_executor_setup_timeout_uses_config_file(monkeypatch, tmp_path):
-    """Factory setup timeout resolves through config before env/default."""
-    monkeypatch.chdir(tmp_path)
-    config_dir = tmp_path / ".clio"
-    config_dir.mkdir()
-    (config_dir / "config.yaml").write_text(
-        "tools:\n  mcp:\n    setup_timeout_s: 42\n",
-        encoding="utf-8",
-    )
-    conf.reload()
-    fake_client = FakeClient()
-    executor = create_sync_tool_executor(
-        object(), timeout=1.0, client_factory=lambda _: fake_client
-    )
+_SLOW_SERVER = """\
+import sys, time
+end = time.monotonic() + float(sys.argv[1])
+while time.monotonic() < end:  # a cold start: working (CPU), not yet serving
+    pass
+from fastmcp import FastMCP
+mcp = FastMCP("slow")
+@mcp.tool
+def ping() -> str:
+    return "pong"
+mcp.run(show_banner=False)
+"""
 
+
+def test_sync_tool_executor_setup_waits_while_its_server_starts(monkeypatch, tmp_path):
+    """No fixed setup deadline (was ``tools.mcp.setup_timeout_s`` = 10 s): a real stdio
+    server that works for 3 s before serving outlasts a 1 s no-progress window and the
+    executor still starts.
+
+    **Sabotage:** bound the setup with ``future.result(timeout=window)`` -> TimeoutError.
+    """
+    import sys
+
+    from fastmcp.client.transports import StdioTransport
+
+    script = tmp_path / "slow_server.py"
+    script.write_text(_SLOW_SERVER, encoding="utf-8")
+    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "1")
+    executor = create_sync_tool_executor(
+        StdioTransport(sys.executable, [str(script), "3"]), timeout=30.0
+    )
     try:
-        assert executor._setup_timeout == 42.0
+        assert executor.get_tool_names() == ["ping"]
     finally:
         executor.close()
 
 
-def test_sync_tool_executor_explicit_setup_timeout_wins_over_config(monkeypatch, tmp_path):
-    """Callers can still override setup timeout directly."""
-    monkeypatch.chdir(tmp_path)
-    config_dir = tmp_path / ".clio"
-    config_dir.mkdir()
-    (config_dir / "config.yaml").write_text(
-        "tools:\n  mcp:\n    setup_timeout_s: 42\n",
-        encoding="utf-8",
-    )
-    conf.reload()
-    fake_client = FakeClient()
-    executor = create_sync_tool_executor(
-        object(),
-        timeout=1.0,
-        setup_timeout=3.0,
-        client_factory=lambda _: fake_client,
-    )
+def test_sync_tool_executor_setup_that_stops_progressing_fails_typed(monkeypatch):
+    """A setup with no answer and no server work for a whole window fails typed and the
+    executor is closed -- never an unbounded wait."""
+    import asyncio
 
-    try:
-        assert executor._setup_timeout == 3.0
-    finally:
-        executor.close()
+    from clio_agent.tools.mcp_server_progress import NoProgressTimeout
+
+    class _HungClient(FakeClient):
+        async def __aenter__(self):
+            await asyncio.sleep(60)
+            return self
+
+    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "0.3")
+    with pytest.raises(NoProgressTimeout):
+        create_sync_tool_executor(object(), timeout=1.0, client_factory=lambda _: _HungClient())
 
 
 def test_sync_mcp_tool_executor_timeout_cancels_tool_call():

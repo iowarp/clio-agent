@@ -188,10 +188,28 @@ def test_attach_hands_the_native_client_clios_bound(monkeypatch):
     assert clio_core_attach.attach_window_s() == 7.0
 
 
-def test_an_attach_that_runs_out_its_bound_is_typed_as_a_timeout(monkeypatch):
-    """A ``False`` after the whole bound: ``clio_core_client_attach_timeout``, deregistered."""
+def _daemon_work(monkeypatch, read) -> None:
+    """The daemon progress signal for a binding-free test (no real daemon is attached)."""
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", read)
+
+
+def _advancing():
+    state = {"w": 0.0}
+
+    def read() -> float:
+        state["w"] += 1.0
+        return state["w"]
+
+    return read
+
+
+def test_an_attach_whose_daemon_made_no_progress_is_typed_as_a_timeout(monkeypatch):
+    """A ``False`` after the whole window with the daemon flat: typed timeout, deregistered."""
     monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
     monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
+    _daemon_work(monkeypatch, lambda: 3.0)
     deregistered: list[bool] = []
 
     def _init(mode, flag):
@@ -204,9 +222,103 @@ def test_an_attach_that_runs_out_its_bound_is_typed_as_a_timeout(monkeypatch):
             cte, config_path="c.yaml", port=1, on_failure=lambda: deregistered.append(True)
         )
     assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_TIMEOUT
-    assert "no answer within 0.05s" in str(info.value)
+    assert "the daemon made no progress for 0.05s" in str(info.value)
     assert info.value.stage == "client_init"
     assert deregistered == [True]
+
+
+def test_a_slow_handshake_with_a_working_daemon_attaches_past_the_window(monkeypatch):
+    """A slow machine: two whole windows run out while the daemon works, the third answers.
+
+    **Sabotage:** fail on the first window that runs out (the old fixed bound) -> typed
+    timeout although the daemon was working the whole time.
+    """
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
+    _daemon_work(monkeypatch, _advancing())
+    calls: list[bool] = []
+
+    def _init(mode, flag):
+        time.sleep(0.06)
+        calls.append(True)
+        return len(calls) == 3
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    clio_core_attach.attach_native_client(
+        cte, config_path="c.yaml", port=1, on_failure=lambda: pytest.fail("attached")
+    )
+    assert len(calls) == 3
+
+
+def test_an_attach_against_an_unlocatable_daemon_names_it(monkeypatch):
+    from clio_agent.arc.daemon_progress import DaemonPidUnresolved  # noqa: PLC0415
+
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
+
+    def _unresolved() -> float:
+        raise DaemonPidUnresolved("none")
+
+    _daemon_work(monkeypatch, _unresolved)
+
+    def _init(mode, flag):
+        time.sleep(0.06)
+        return False
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.attach_native_client(
+            cte, config_path="c.yaml", port=1, on_failure=lambda: None
+        )
+    assert "wait=daemon_pid_unresolved" in str(info.value)
+
+
+def test_initialize_cte_against_a_stalled_daemon_fails_typed(monkeypatch):
+    """``initialize_cte`` is bounded like every other clio-core wait: a whole window with
+    no daemon progress is a typed ``clio_core_client_attach_timeout`` at its own stage.
+
+    **Sabotage:** call ``initialize_cte`` inline (unbounded) -> the test hangs.
+    """
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
+    _daemon_work(monkeypatch, lambda: 3.0)
+    release = __import__("threading").Event()
+    failures: list[bool] = []
+    cte = SimpleNamespace(
+        initialize_cte=lambda cfg, query: release.wait(30),
+        PoolQuery=SimpleNamespace(Dynamic=lambda: "dynamic"),
+    )
+    monkeypatch.setattr(clio_core_attach, "attach_native_client", lambda *a, **k: None)
+    started = time.monotonic()
+    try:
+        with pytest.raises(ClioCoreAttachError) as info:
+            clio_core_attach.attach_and_initialize(
+                cte,
+                config_path="c.yaml",
+                port=1,
+                settle_s=0.0,
+                on_failure=lambda: failures.append(True),
+            )
+    finally:
+        release.set()
+    assert time.monotonic() - started < 10.0
+    assert info.value.stage == "initialize_cte"
+    assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_TIMEOUT
+    assert failures == [True]
+
+
+def test_a_slow_initialize_cte_with_a_working_daemon_completes(monkeypatch):
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.1")
+    _daemon_work(monkeypatch, _advancing())
+    seen: list[str] = []
+    cte = SimpleNamespace(
+        initialize_cte=lambda cfg, query: (time.sleep(0.5), seen.append(cfg)),
+        PoolQuery=SimpleNamespace(Dynamic=lambda: "dynamic"),
+    )
+    monkeypatch.setattr(clio_core_attach, "attach_native_client", lambda *a, **k: None)
+    clio_core_attach.attach_and_initialize(
+        cte, config_path="c.yaml", port=1, settle_s=0.0, on_failure=lambda: pytest.fail("no")
+    )
+    assert seen == ["c.yaml"]
 
 
 def test_config_file_port_wins_over_core_port_override(monkeypatch, tmp_path):
@@ -312,7 +424,7 @@ def _stuck_daemon(monkeypatch) -> None:
     """
     from clio_agent.arc import daemon_progress  # noqa: PLC0415
 
-    monkeypatch.setattr(daemon_progress, "daemon_cpu_seconds", lambda: 1.0)
+    monkeypatch.setattr(daemon_progress, "daemon_work", lambda: 1.0)
 
 
 def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):

@@ -94,7 +94,7 @@ def test_force_close_listing_attempt_unblocks_a_hung_list_tools(
 
     def _run() -> None:
         try:
-            _list_declared_tools(spec, timeout_s=None, attempt_key=attempt_key)
+            _list_declared_tools(spec, attempt_key=attempt_key)
         except BaseException as exc:  # noqa: BLE001 - captured for the assertion below
             outcome["error"] = exc
 
@@ -147,7 +147,7 @@ def test_force_close_all_closes_every_registered_attempt(
     keys = [object(), object()]
     workers = [
         threading.Thread(
-            target=lambda s=spec, k=key: _list_declared_tools(s, timeout_s=None, attempt_key=k),
+            target=lambda s=spec, k=key: _list_declared_tools(s, attempt_key=k),
             daemon=True,
         )
         for spec, key in zip(specs.values(), keys, strict=True)
