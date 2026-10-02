@@ -31,6 +31,19 @@ def test_extracts_current_release_section() -> None:
     assert "\n## [" not in out.stdout
 
 
+def test_a_beta_is_found_by_its_tag_and_its_package_version() -> None:
+    """The tag (v0.9.5-beta.1) and the PEP 440 package version (0.9.5b1) name one section."""
+
+    by_tag = _run("v0.9.5-beta.1")
+    by_package = _run("0.9.5b1")
+    assert by_tag.returncode == 0, by_tag.stderr
+    assert by_package.returncode == 0, by_package.stderr
+    assert (
+        by_tag.stdout.split("**Full details:**")[0]
+        == by_package.stdout.split("**Full details:**")[0]
+    )
+
+
 def test_unknown_tag_exits_nonzero_and_prints_nothing() -> None:
     """A tag without a CHANGELOG section fails loudly (the workflow leaves the body alone)."""
     out = _run("v9.9.9")
