@@ -38,6 +38,23 @@ jobs:
         working-directory: site
     steps:
       - uses: actions/checkout@v4
+      # Build the public gallery from the production widget renderer. Keep this
+      # commit pinned so a docs deploy cannot silently change its UI behavior.
+      - uses: actions/checkout@v4
+        with:
+          repository: iowarp/gact-tui
+          ref: 604ae82cf03ce2f273f597f40ace4faf34b20b9f
+          path: gact-tui-checkout
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - run: pnpm install --frozen-lockfile
+        working-directory: gact-tui-checkout
+      - run: pnpm --filter @clio/workspace exec vite build
+        working-directory: gact-tui-checkout
+        env:
+          CLIO_GALLERY_STANDALONE: '1'
+      - run: node scripts/stage-widgets.mjs ../gact-tui-checkout/web/dist
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: site/package.json
