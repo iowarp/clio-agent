@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
+from clio_agent.arc.daemon_progress import drain_while_writes_progress
 from clio_agent.arc.index import BTreeIndex
 from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.live import (
@@ -243,6 +244,7 @@ class ARCMemory(SegmentPlane):
         # index. Guarded by a Condition (never held across ``_store``/``_lsm`` I/O nor
         # ``_lock``, so it introduces no new lock-ordering edge).
         self._inflight_inv: Dict[str, int] = {}
+        self._inflight_done = 0  # writes finished: the drain's progress signal
         self._inflight_cv = threading.Condition()
 
         # Performance tracking
@@ -886,30 +888,28 @@ class ARCMemory(SegmentPlane):
         """
         with self._inflight_cv:
             remaining = self._inflight_inv.get(session_id, 0) - 1
+            self._inflight_done += 1
             if remaining > 0:
                 self._inflight_inv[session_id] = remaining
             else:
                 self._inflight_inv.pop(session_id, None)
             self._inflight_cv.notify_all()
 
-    def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> int:
-        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804)."""
-        deadline = time.monotonic() + timeout
-        with self._inflight_cv:
-            while self._inflight_inv.get(session_id, 0) > 0:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    pending = self._inflight_inv.get(session_id, 0)
-                    logger.warning(
-                        "arc: release_session proceeding with %d in-flight invocation "
-                        "write(s) still pending session=%s reason=inflight_drain_timeout "
-                        "(index count may under-report a concurrent write; #804)",
-                        pending,
-                        session_id,
-                    )
-                    return pending
-                self._inflight_cv.wait(timeout=remaining)
-        return 0
+    def _drain_inflight_invocations(self, session_id: str, window_s: float | None = None) -> int:
+        """Block while ``session_id`` invocation writes are in flight AND progressing (a write finishing, or the daemon working: :func:`~clio_agent.arc.daemon_progress.drain_while_writes_progress`; no fixed deadline), then return the residual in-flight count -- 0 on a clean drain, ``>0`` only when they stopped progressing for a whole ``window_s`` (``arc.liveness.stall_after_s``) or hit ``arc.liveness.max_wait_s`` (typed reason ``inflight_drain_timeout``, logged). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` is not under-counted, and surfaces this as ``inflight_pending`` (#804)."""
+        cv, inflight, op = self._inflight_cv, self._inflight_inv, "inflight_drain"
+        settled = drain_while_writes_progress(
+            cv,
+            lambda: not inflight.get(session_id),
+            lambda: self._inflight_done,
+            op_name=op,
+            no_progress_s=window_s,
+        )
+        pending = 0 if settled.done else inflight.get(session_id, 0)
+        if pending:
+            msg = "arc: release_session proceeding with %d in-flight invocation write(s) session=%s reason=inflight_drain_timeout wait=%s (index count may under-report; #804)"
+            logger.warning(msg, pending, session_id, settled.reason)
+        return pending
 
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.

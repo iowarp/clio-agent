@@ -24,47 +24,88 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
 
 # ``Future.done()`` returns at once; the sleep between checks releases the GIL.
 _POLL_S = 0.01
-# How far past the stall bound a worker keeps polling before it gives up: the stall
-# watch has already abandoned it by then, so this only lets the worker thread end.
-_GIVE_UP_MARGIN_S = 1.0
+# How much later than the caller's stall watch this worker-side wait decides: the stall
+# watch (rpc_liveness) owns the typed ladder (reconnect, retry, quarantine), so on a
+# stall it must decide first; this wait only ends the abandoned worker, typed.
+_WATCH_FIRST_MARGIN_S = 1.0
 
 
-class ClioCoreFutureTimeout(RuntimeError):
-    """An async clio-core RPC did not complete before its worker gave up polling."""
+class ClioCoreFutureTimeout(TimeoutError):
+    """An async clio-core RPC stopped progressing before it completed.
+
+    A ``TimeoutError``, NOT a ``RuntimeError``: a pending RPC is not a refusal, so the
+    write retry (:func:`~clio_agent.arc.clio_core_retry.put_blob_with_retry`) never
+    re-issues a PutBlob that may still land nor records it as a lost write.
+
+    Attributes:
+        op_name: The RPC (``put`` / ``delete`` / ``health_probe``).
+        reason: The wait's typed outcome (``no_progress`` / ``ceiling`` /
+            ``daemon_pid_unresolved``; see :mod:`clio_agent.arc.daemon_progress`).
+        waited_s: Seconds waited.
+    """
+
+    def __init__(self, op_name: str, reason: str, waited_s: float) -> None:
+        self.op_name = op_name
+        self.reason = reason
+        self.waited_s = waited_s
+        super().__init__(
+            f"clio-core async {op_name} did not complete after {waited_s:.0f}s (reason={reason})"
+        )
 
 
-def await_future(future: Any, *, op_name: str, timeout_s: float | None = None) -> Any:
-    """Poll ``future`` until it completes; return it (done). GIL released between polls.
+def _polled(future: Any) -> Callable[[float], bool]:
+    """``done_within`` for a native Future: poll ``done()``, sleeping (GIL released)."""
+
+    def done_within(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while not future.done():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_POLL_S)
+        return True
+
+    return done_within
+
+
+def await_future(future: Any, *, op_name: str) -> Any:
+    """Wait for ``future`` while the daemon keeps working; return it (done).
+
+    No fixed deadline: a slow but working daemon is waited for (its CPU/I/O advancing;
+    :func:`~clio_agent.arc.daemon_progress.wait_while_progressing`) up to the
+    ``arc.liveness.max_wait_s`` ceiling. A whole ``arc.liveness.stall_after_s`` window
+    with no daemon progress, the ceiling, or a daemon that cannot be located ends the
+    wait typed -- each a margin later than the caller's stall watch, which owns the
+    typed ladder and so decides first.
 
     Args:
         future: A ``clio_cte_core_ext.Future``.
-        op_name: For the timeout message.
-        timeout_s: Give-up bound; defaults to the stall bound plus a margin, so the
-            caller's stall watch (which fires at the stall bound) always decides first.
+        op_name: For the typed error.
 
     Raises:
-        ClioCoreFutureTimeout: The future was still pending at the give-up bound.
+        ClioCoreFutureTimeout: The future stopped progressing before it completed.
     """
     if future.done():  # the common case: no bound to resolve (config reads are not free)
         return future
-    bound = (
-        timeout_s
-        if timeout_s is not None
-        else (resolve_liveness_policy().stall_after_s + _GIVE_UP_MARGIN_S)
+    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
+        max_wait_s,
+        wait_while_progressing,
     )
-    deadline = time.monotonic() + bound
-    while not future.done():
-        if time.monotonic() >= deadline:
-            raise ClioCoreFutureTimeout(
-                f"clio-core async {op_name} did not complete within {bound:g}s"
-            )
-        time.sleep(_POLL_S)
+
+    outcome = wait_while_progressing(
+        _polled(future),
+        slice_s=resolve_liveness_policy().stall_after_s + _WATCH_FIRST_MARGIN_S,
+        op_name=op_name,
+        ceiling_s=max_wait_s() + _WATCH_FIRST_MARGIN_S,
+    )
+    if not outcome.done:
+        raise ClioCoreFutureTimeout(op_name, outcome.reason, outcome.waited_s)
     return future
 
 
@@ -142,6 +183,10 @@ def store_put_many(
     before any is awaited, then each is awaited. A refused blob continues its own bounded
     retry (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
     that were lost (empty when all were written); every blob has completed by then.
+
+    Raises:
+        ClioCoreFutureTimeout: A put stopped progressing. It is NOT retried (the pending
+            PutBlob may still land) and not recorded as lost: the stall is typed.
     """
     from clio_agent.arc.clio_core_retry import (  # noqa: PLC0415
         note_put_success,

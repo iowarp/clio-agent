@@ -37,7 +37,11 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from clio_agent.arc.clio_core_liveness import RPC_STALLED_REASON, ClioCoreRuntimeLostError
+from clio_agent.arc.clio_core_liveness import (
+    DAEMON_PID_UNRESOLVED_REASON,
+    RPC_STALLED_REASON,
+    ClioCoreRuntimeLostError,
+)
 from clio_agent.arc.loop_guard import assert_store_write_off_loop, audit_store_read_on_loop
 
 # Store ops that WRITE: waited on from the loop thread they are a typed defect (#1334).
@@ -256,15 +260,17 @@ def _submit_stall_watch(make_call: Callable[[], Any]) -> Future:
 
 def _run_with_stall_watch(
     make_call: Callable[[], Any], stall_after_s: float
-) -> tuple[bool, Any, Optional[BaseException]]:
+) -> tuple[str, Any, Optional[BaseException]]:
     """Run ``make_call`` on a pooled daemon worker; watch for failure to progress.
 
-    Returns ``(completed, value, error)``. ``completed`` is False iff a whole
-    ``stall_after_s`` window passed with the daemon making no progress (a stall; see
-    :mod:`clio_agent.arc.daemon_progress`). A completed call reports its value or the
-    exception it raised (re-raised on the caller thread). A stalled worker is a daemon
-    thread and is ABANDONED (a native hung RPC cannot be interrupted from Python); the
-    pool bound (:data:`_STALL_WATCH_MAX_WORKERS`) caps the resulting leak.
+    Returns ``(outcome, value, error)``. ``outcome`` is the wait's typed reason (see
+    :mod:`clio_agent.arc.daemon_progress`): ``"done"`` when the call completed, else
+    ``"no_progress"`` (a whole ``stall_after_s`` window with the daemon making no
+    progress), ``"ceiling"`` or ``"daemon_pid_unresolved"``. A completed call reports
+    its value or the exception it raised (re-raised on the caller thread). An
+    unfinished worker is a daemon thread and is ABANDONED (a native hung RPC cannot be
+    interrupted from Python); the pool bound (:data:`_STALL_WATCH_MAX_WORKERS`) caps the
+    resulting leak.
     """
     from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
         future_done_within,
@@ -274,12 +280,20 @@ def _run_with_stall_watch(
     fut = _submit_stall_watch(make_call)
     # A stall is a whole window with the daemon making NO progress (gone, or its CPU time
     # flat); a slow but working daemon is waited for -- never a fixed wall-clock failure.
-    if not wait_while_progressing(future_done_within(fut), slice_s=stall_after_s, op_name="rpc"):
-        return False, None, None  # stalled: worker abandoned, still holds its pool slot
+    outcome = wait_while_progressing(future_done_within(fut), slice_s=stall_after_s, op_name="rpc")
+    if not outcome.done:
+        return outcome.reason, None, None  # worker abandoned, still holds its pool slot
     error = fut.exception()
     if error is not None:
-        return True, None, error
-    return True, fut.result(), None
+        return outcome.reason, None, error
+    return outcome.reason, fut.result(), None
+
+
+def _stall_reason(outcome: str) -> str:
+    """The quarantine reason for an unfinished wait: an unlocatable daemon is not a stall."""
+    from clio_agent.arc.daemon_progress import DAEMON_PID_UNRESOLVED  # noqa: PLC0415 - cycle
+
+    return DAEMON_PID_UNRESOLVED_REASON if outcome == DAEMON_PID_UNRESOLVED else RPC_STALLED_REASON
 
 
 def call_with_liveness(
@@ -318,17 +332,21 @@ def call_with_liveness(
     policy = policy or resolve_liveness_policy()
     backoff = policy.backoff_initial_s
     attempts = policy.retries + 1
+    reason = RPC_STALLED_REASON
+    outcome = ""
     for attempt in range(attempts):
-        completed, value, error = _run_with_stall_watch(make_call, policy.stall_after_s)
-        if completed:
+        outcome, value, error = _run_with_stall_watch(make_call, policy.stall_after_s)
+        if outcome == "done":
             if error is not None:
                 raise error
             return value
+        reason = _stall_reason(outcome)
         remaining = attempts - attempt - 1
         logger.warning(
-            "clio-core RPC produced no response: reason=%s op=%s attempt=%d/%d "
-            "stall_after_s=%s port=%s (peer appears to be a zombie); %s",
-            RPC_STALLED_REASON,
+            "clio-core RPC produced no response: reason=%s wait=%s op=%s attempt=%d/%d "
+            "stall_after_s=%s port=%s; %s",
+            reason,
+            outcome,
             op_name,
             attempt + 1,
             attempts,
@@ -342,15 +360,24 @@ def call_with_liveness(
         _sleep(backoff)
         backoff = min(backoff * _BACKOFF_FACTOR, policy.backoff_max_s)
     if on_exhausted is not None:
-        on_exhausted(RPC_STALLED_REASON)
+        on_exhausted(reason)
+    cause = (
+        "the daemon process could not be located, so its progress could not be measured"
+        if reason == DAEMON_PID_UNRESOLVED_REASON
+        else "the peer appears to be a zombie (accepting connections, runtime dead)"
+    )
     raise ClioCoreRuntimeLostError(
         f"clio-core RPC {op_name!r} produced no response within {policy.stall_after_s:g}s "
-        f"across {attempts} attempt(s) on 127.0.0.1:{port}; the peer appears to be a zombie "
-        "(accepting connections, runtime dead). The store is quarantined to avoid freezing "
-        "the caller (the event loop).",
-        reason=RPC_STALLED_REASON,
+        f"across {attempts} attempt(s) on 127.0.0.1:{port}; {cause}. The store is "
+        "quarantined to avoid freezing the caller (the event loop).",
+        reason=reason,
         port=port,
-        details={"op": op_name, "attempts": attempts, "stall_after_s": policy.stall_after_s},
+        details={
+            "op": op_name,
+            "attempts": attempts,
+            "stall_after_s": policy.stall_after_s,
+            "wait": outcome,
+        },
     )
 
 
@@ -427,13 +454,14 @@ def probe_rpc_health(
             exc,
         )
         return False
-    completed, _value, error = _run_with_stall_watch(make_probe_call, window)
-    if not completed:
+    outcome, _value, error = _run_with_stall_watch(make_probe_call, window)
+    if outcome != "done":
         logger.warning(
-            "clio-core RPC health probe: no response within %gs (reason=%s port=%s); the peer "
-            "still appears to be a zombie — store stays quarantined",
+            "clio-core RPC health probe: no response within %gs (reason=%s wait=%s port=%s); "
+            "store stays quarantined",
             window,
-            RPC_STALLED_REASON,
+            _stall_reason(outcome),
+            outcome,
             port,
         )
         return False

@@ -28,7 +28,8 @@ CLIO_CORE_NATIVE_CLIENT_EXIT = "clio_core_native_client_exit"
 # the #892 liveness/quarantine reasons so operators read one consistent language.
 ARC_INIT_DEGRADE_REASONS = (
     "clio_core_binding_absent",  # iowarp_core / clio_cte_core_ext not importable
-    "clio_core_daemon_spawn_failed",  # launcher missing or the daemon never bound its port
+    "clio_core_daemon_spawn_failed",  # launcher missing, or the daemon crashed or stalled at start
+    "clio_core_daemon_start_ceiling",  # still starting at the ceiling: left running, not killed
     CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
     CLIO_CORE_CLIENT_ATTACH_FAILED,  # daemon listening, native client handshake failed
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,  # the handshake got no answer within the bound

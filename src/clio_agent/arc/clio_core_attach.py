@@ -250,17 +250,19 @@ def attach_native_client(
     GIL for the whole wait, so the wait freezes the interpreter. Its length is the
     native ``CLIO_WAIT_SERVER`` (30 s when unset), which ignored CLIO's configuration: a
     daemon that died right after binding its port, or one alive but not answering, cost
-    30 s every time. The attach now exports CLIO's own bound
+    30 s every time. The attach now exports CLIO's own no-progress window
     (:func:`attach_window_s`, ``arc.liveness.stall_after_s``) as that wait, so the
-    native call itself returns within it.
+    native call itself returns within it, and runs it again while the daemon keeps
+    working (a slow machine, a daemon still starting), up to ``arc.liveness.max_wait_s``.
 
     CHECKED. The binding returns ``False`` after its wait expires; that used to be
     ignored, so the next native call (``initialize_cte``) re-ran the whole client init
     and waited a second time. Now a failed attach runs ``on_failure`` (client
     deregistration, so a process that never attached holds no vote in the shared
     daemon's last-one-out refcount) and raises :class:`ClioCoreAttachError` at once,
-    typed ``clio_core_client_attach_timeout`` when the whole bound ran out and
-    ``clio_core_client_attach_failed`` when the native client gave up sooner.
+    typed ``clio_core_client_attach_timeout`` when a whole window ran out with the daemon
+    making no progress (or at the ceiling) and ``clio_core_client_attach_failed`` when
+    the native client gave up sooner.
 
     NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
     startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
@@ -278,7 +280,7 @@ def attach_native_client(
     window = attach_window_s()
     preflight.remove_embedded_runtime_env(os.environ)
     check = preflight.preflight_native_client(
-        cte, config_path=config_path, timeout_s=preflight.preflight_window_s(window)
+        cte, config_path=config_path, no_progress_s=preflight.preflight_window_s(window)
     )
     if not check.returned:
         on_failure()
@@ -302,20 +304,79 @@ def attach_native_client(
         logger.error("%s reason=%s", error, reason)
         raise error
     os.environ[_NATIVE_WAIT_ENV] = f"{window:g}"  # one native client per process
-    started = time.monotonic()
-    if client_init(mode, False):
+    failure = _handshake_while_daemon_progresses(client_init, mode, window)
+    if failure is None:
         return
-    elapsed = time.monotonic() - started
     on_failure()
-    if elapsed >= window:
-        reason = CLIO_CORE_CLIENT_ATTACH_TIMEOUT
-        detail = f"the native client handshake got no answer within {window:g}s"
-    else:
-        reason = CLIO_CORE_CLIENT_ATTACH_FAILED
-        detail = f"the native client handshake failed after {elapsed:.1f}s"
+    reason, detail = failure
     error = ClioCoreAttachError(port=port, config_path=config_path, detail=detail, reason=reason)
     logger.error("%s reason=%s", error, reason)
     raise error
+
+
+def _handshake_while_daemon_progresses(
+    client_init: Callable[[object, bool], bool], mode: object, window: float
+) -> tuple[str, str] | None:
+    """Run the native handshake in ``window`` slices while the daemon keeps working.
+
+    ``clio_init`` holds the GIL for its whole wait, so nothing can watch it from inside
+    this process; it is bounded natively by ``window`` instead, and between slices the
+    daemon's own work decides: advancing -> a slow-but-working daemon, run the handshake
+    again (up to ``arc.liveness.max_wait_s``); flat, gone or unlocatable -> typed failure.
+
+    Returns:
+        ``None`` once attached, else ``(reason, detail)`` of the typed failure.
+    """
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415 - cycle
+
+    ceiling = daemon_progress.max_wait_s()
+    started = time.monotonic()
+
+    def _work() -> float | None:
+        return daemon_progress.daemon_work()
+
+    last: float | None
+    try:
+        last = _work()
+    except daemon_progress.DaemonPidUnresolved:
+        last = None
+    while True:
+        slice_started = time.monotonic()
+        if client_init(mode, False):
+            return None
+        now = time.monotonic()
+        if now - slice_started < window:
+            return (
+                CLIO_CORE_CLIENT_ATTACH_FAILED,
+                f"the native client handshake failed after {now - slice_started:.1f}s",
+            )
+        try:
+            work = _work()
+        except daemon_progress.DaemonPidUnresolved:
+            return (
+                CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+                f"the native client handshake got no answer within {window:g}s and the "
+                f"daemon process could not be located "
+                f"(wait={daemon_progress.DAEMON_PID_UNRESOLVED})",
+            )
+        if work is None or last is None or work - last < 0.01:
+            return (
+                CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+                f"the native client handshake got no answer and the daemon made no "
+                f"progress for {window:g}s",
+            )
+        if now - started >= ceiling:
+            return (
+                CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+                f"the native client handshake was still unanswered after {now - started:.0f}s "
+                f"although the daemon is working (ceiling arc.liveness.max_wait_s={ceiling:g})",
+            )
+        logger.info(
+            "clio-core handshake slow (%.0fs, daemon working: +%.2f); waiting again",
+            now - started,
+            work - last,
+        )
+        last = work
 
 
 def attach_window_s() -> float:
@@ -347,10 +408,51 @@ def attach_and_initialize(
     attach_native_client(cte, config_path=config_path, port=port, on_failure=on_failure)
     time.sleep(settle_s)  # let the client handshake settle
     try:
-        cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # type: ignore[attr-defined]
+        _initialize_cte_while_daemon_progresses(cte, config_path=config_path, port=port)
     except BaseException:
         on_failure()
         raise
+
+
+def _initialize_cte_while_daemon_progresses(cte: object, *, config_path: str, port: int) -> None:
+    """``initialize_cte`` on a worker thread, waited for while the daemon keeps working.
+
+    Bounded like every other clio-core wait: a whole :func:`attach_window_s` without an
+    answer and without daemon progress (or the ``arc.liveness.max_wait_s`` ceiling) is a
+    typed ``clio_core_client_attach_timeout`` at ``stage="initialize_cte"``; the worker
+    is a daemon thread and is abandoned. (A binding call that holds the GIL for its
+    whole wait delays the watch until it returns; the typed outcome is the same.)
+    """
+    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
+        future_done_within,
+        wait_while_progressing,
+    )
+    from clio_agent.arc.rpc_liveness import _submit_stall_watch  # noqa: PLC0415 - cycle
+
+    # The pooled daemon workers of the per-RPC stall watch: an abandoned call never
+    # blocks interpreter exit, and the pool bound caps the leak.
+    fut = _submit_stall_watch(
+        lambda: cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # type: ignore[attr-defined]
+    )
+    window = attach_window_s()
+    outcome = wait_while_progressing(
+        future_done_within(fut), slice_s=window, op_name="initialize_cte"
+    )
+    if outcome.done:
+        fut.result()  # re-raises the binding's own error
+        return
+    error = ClioCoreAttachError(
+        port=port,
+        config_path=config_path,
+        stage="initialize_cte",
+        detail=(
+            f"initialize_cte got no answer after {outcome.waited_s:.0f}s "
+            f"(wait={outcome.reason}, no-progress window {window:g}s)"
+        ),
+        reason=CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+    )
+    logger.error("%s reason=%s", error, CLIO_CORE_CLIENT_ATTACH_TIMEOUT)
+    raise error
 
 
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
@@ -393,13 +495,18 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
     reason = CLIO_CORE_CLIENT_ATTACH_FAILED
     # A slow but working daemon (first run on a laptop, a busy machine) is waited for;
     # only a window with no daemon progress, or the long ceiling, is a failure.
-    if wait_while_progressing(done_within, slice_s=window, op_name="post_attach_probe"):
+    outcome = wait_while_progressing(done_within, slice_s=window, op_name="post_attach_probe")
+    if outcome.done:
         code = future.wait(0)  # finished: returns its code at once
         if code == 0:
             return
         detail = f"the first RPC after the attach answered with return code {code}"
     else:
-        detail = f"the first RPC after the attach got no answer and the daemon made no progress for {window:g}s"
+        what = {
+            "no_progress": f"the daemon made no progress for {window:g}s",
+            "ceiling": f"the daemon was still working at the {outcome.waited_s:.0f}s ceiling",
+        }.get(outcome.reason, "the daemon process could not be located")
+        detail = f"the first RPC after the attach got no answer and {what} (wait={outcome.reason})"
         reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
     on_failure()
     error = ClioCoreAttachError(

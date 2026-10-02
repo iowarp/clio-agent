@@ -38,14 +38,16 @@ from dataclasses import dataclass
 from typing import Literal
 
 from clio_agent.arc.clio_core_liveness import _resolve_runtime_port, _runtime_alive
-from clio_agent.arc.runtime_crash import expect_daemon_exit
+from clio_agent.arc.runtime_crash import DaemonStillStarting, expect_daemon_exit
 from clio_agent.arc.runtime_spawn import _dynamic_library_env_var, _runtime_launcher_path
 
 logger = logging.getLogger(__name__)
 
 # The stop waits as long as the daemon keeps working (CPU or I/O advancing); a slice
-# this long with NO progress is a stall (see ``stop_runtime_daemon``).
-_RUNTIME_STOP_STALL_SECONDS = 3.0
+# this long with NO progress is a stall (see ``stop_runtime_daemon``). A long stretch --
+# a daemon flushing to a slow disk pauses between writes -- yet half of the desktop
+# supervisor's 30 s graceful-shutdown window, which this stop is one step inside.
+_RUNTIME_STOP_STALL_SECONDS = 15.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
 
 
@@ -129,21 +131,35 @@ def kill_daemon_pidfile() -> None:
         with contextlib.suppress(OSError):
             pidfile.unlink()
         return
-    try:
-        import psutil  # noqa: PLC0415
+    import psutil  # noqa: PLC0415
 
+    try:
         proc = psutil.Process(pid)
         proc.terminate()
         try:
             proc.wait(timeout=5.0)
         except psutil.TimeoutExpired:
             proc.kill()
-    except Exception:  # noqa: BLE001,S110 - already gone or inaccessible
-        pass
+    except psutil.NoSuchProcess:
+        logger.info("clio-core daemon pid=%d already exited before the pidfile kill", pid)
+    except psutil.Error as exc:
+        # Inaccessible (AccessDenied) or a kill that did not take: the daemon may still be
+        # running. Loud and typed; the pidfile is kept so the next stop can find it.
+        logger.error(
+            "clio-core daemon pidfile kill failed (reason=%s pid=%d error=%s: %s); the "
+            "daemon may still be running",
+            DAEMON_KILL_FAILED,
+            pid,
+            type(exc).__name__,
+            exc,
+        )
+        return
     with contextlib.suppress(OSError):
         pidfile.unlink()
 
 
+#: Typed reason for a pidfile kill that did not take (inaccessible or still alive).
+DAEMON_KILL_FAILED = "clio_core_daemon_kill_failed"
 #: Typed reasons for the two failed-startup cleanups (#1401, no silent fallback).
 FAILED_SPAWN_KILLED = "clio_core_failed_spawn_killed"
 FAILED_ATTACH_RELEASED = "clio_core_failed_attach_released"
@@ -161,6 +177,18 @@ def kill_spawned_daemon_on_failure() -> Iterator[None]:
     """
     try:
         yield
+    except DaemonStillStarting:
+        from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+        # Still progressing at the ceiling: never killed. Its pidfile stays, so the next
+        # attach adopts it once it binds; this process gives up only its own vote.
+        logger.warning(
+            "clio-core daemon still starting at the ceiling; left running for the next "
+            "attach (reason=%s)",
+            DaemonStillStarting.degradation_reason,
+        )
+        storage._deregister_client()
+        raise
     except BaseException:
         from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
 
@@ -303,9 +331,10 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                     work = process_work(daemon_pid) if daemon_pid is not None else None
                     if work is None or last_work is None or work - last_work < 0.01:
                         logger.warning(
-                            "clio-core daemon stop made no progress for %.0fs; killing it -- "
-                            "data not yet flushed may be lost",
+                            "clio-core daemon stop made no progress for %.0fs (wait=%s); "
+                            "killing it -- data not yet flushed may be lost",
                             now - window,
+                            "daemon_pid_unresolved" if daemon_pid is None else "no_progress",
                         )
                         path = "stall_kill"
                         break

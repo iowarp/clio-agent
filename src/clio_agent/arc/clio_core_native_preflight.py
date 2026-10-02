@@ -73,7 +73,7 @@ class NativePreflightResult:
 
     Attributes:
         returned: ``clio_init`` returned in the child (it did not end the process).
-        exit_code: The child's exit code (``None`` when it timed out).
+        exit_code: The child's exit code (``None`` when it stopped progressing).
         output: The tail of the child's combined stdout and stderr.
     """
 
@@ -86,27 +86,62 @@ class NativePreflightResult:
 Runner = Callable[[list[str], Mapping[str, str], float], tuple[int | None, str]]
 
 
-def _run_child(argv: list[str], env: Mapping[str, str], timeout_s: float) -> tuple[int | None, str]:
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-module source
-            argv,
-            env=dict(env),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            timeout=timeout_s,
+def _run_child(
+    argv: list[str], env: Mapping[str, str], no_progress_s: float
+) -> tuple[int | None, str]:
+    """Run the child while its process tree keeps working; ``(None, output)`` if it did not.
+
+    No fixed deadline: a slow interpreter start or library load on a slow machine is
+    waited for while the child's own CPU/I/O advances; a whole ``no_progress_s`` window
+    without progress, or the ``arc.liveness.max_wait_s`` ceiling, ends it (killed, and
+    reported by the caller as a typed attach failure -- never silently).
+    """
+    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
+        ProcessTreeWork,
+        wait_while_progressing,
+    )
+
+    proc = subprocess.Popen(  # noqa: S603 - fixed interpreter + in-module source
+        argv,
+        env=dict(env),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    chunks: list[str] = []
+    reader = threading.Thread(
+        target=lambda: chunks.append(proc.stdout.read() if proc.stdout else ""),
+        name="clio-native-preflight-output",
+        daemon=True,
+    )
+    reader.start()
+
+    def done_within(timeout: float) -> bool:
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    outcome = wait_while_progressing(
+        done_within,
+        slice_s=no_progress_s,
+        op_name="native_preflight",
+        work=ProcessTreeWork(proc.pid).sample,
+    )
+    if not outcome.done:
+        logger.error(
+            "clio-core native preflight child pid=%d unfinished after %.0fs (wait=%s); killing it",
+            proc.pid,
+            outcome.waited_s,
+            outcome.reason,
         )
-    except subprocess.TimeoutExpired as exc:
-        return None, _text(exc.stdout) + _text(exc.stderr)
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-
-
-def _text(value: str | bytes | None) -> str:
-    # TimeoutExpired carries whatever was captured, as bytes even with text=True.
-    if value is None:
-        return ""
-    return value if isinstance(value, str) else value.decode("utf-8", "replace")
+        proc.kill()
+        proc.wait()
+    reader.join()
+    return (proc.returncode if outcome.done else None), "".join(chunks)
 
 
 def remove_embedded_runtime_env(environ: "os._Environ[str] | dict[str, str]") -> dict[str, str]:
@@ -142,9 +177,9 @@ def reset_removed_embedded_runtime_env() -> None:
 
 
 def preflight_window_s(attach_window_s: float) -> float:
-    """The bound on the preflight child: the attach window, never below the default stall.
+    """The preflight child's no-progress window: the attach window, never below the default.
 
-    The child never waits on the daemon (``CLIO_WAIT_SERVER=0``), so its bound only
+    The child never waits on the daemon (``CLIO_WAIT_SERVER=0``), so the window only
     guards against a wedged interpreter or library load; a short attach window (a test,
     a tuned deployment) must not turn a slow interpreter start into a failed attach.
     """
@@ -164,7 +199,7 @@ def preflight_native_client(
     cte: object,
     *,
     config_path: str,
-    timeout_s: float,
+    no_progress_s: float,
     runner: Runner | None = None,
 ) -> NativePreflightResult:
     """Run ``cte``'s native client startup in a child process; report whether it returned.
@@ -177,8 +212,9 @@ def preflight_native_client(
     Args:
         cte: The native client module the attach is about to call.
         config_path: The config the real attach will use (``$CLIO_SERVER_CONF``).
-        timeout_s: Bound on the child (it does not wait for the daemon, so this only
-            covers interpreter start, the library load and the config parse).
+        no_progress_s: The child's no-progress window (it does not wait for the daemon,
+            so this covers interpreter start, the library load and the config parse);
+            a child still working is waited for up to ``arc.liveness.max_wait_s``.
         runner: Test seam for the child process.
 
     Returns:
@@ -194,7 +230,7 @@ def preflight_native_client(
     env["CLIO_WAIT_SERVER"] = "0"  # stop before contacting the daemon
     env.setdefault("CTP_LOG_LEVEL", "error")
     source = _CHILD_SOURCE.format(module=module)
-    code, output = (runner or _run_child)([sys.executable, "-c", source], env, timeout_s)
+    code, output = (runner or _run_child)([sys.executable, "-c", source], env, no_progress_s)
     returned = code == 0 and _DONE_MARKER in output
     tail = output.replace(_DONE_MARKER, "").strip()[-_OUTPUT_TAIL_CHARS:]
     return NativePreflightResult(returned=returned, exit_code=code, output=tail)

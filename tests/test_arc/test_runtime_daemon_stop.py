@@ -345,3 +345,43 @@ def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
     assert outcome == runtime_stop.StopOutcome(stopped=False, path="helper_failed_kill")
     assert killed == [True]
     assert any("exited with code 1" in record.getMessage() for record in caplog.records)
+
+
+def test_the_stop_waits_a_long_stretch_without_progress_before_a_kill() -> None:
+    """Not 3 s: a daemon flushing to a slow disk pauses between writes; the no-progress
+    stretch is long, yet inside the desktop supervisor's 30 s graceful window."""
+    assert 10.0 <= runtime_stop._RUNTIME_STOP_STALL_SECONDS < 30.0
+
+
+def test_a_pidfile_kill_that_fails_is_reported_and_keeps_the_pidfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A kill the OS refuses (AccessDenied) is loud and typed, never ``except: pass``; the
+    pidfile is kept so the next stop can still find the daemon.
+
+    **Sabotage:** restore ``except Exception: pass`` -> no error record, pidfile unlinked.
+    """
+    import subprocess
+
+    import psutil
+
+    daemon = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        pidfile = tmp_path / "daemon.pid"
+        ctime = psutil.Process(daemon.pid).create_time()
+        pidfile.write_text(f"{daemon.pid} {ctime!r}", encoding="utf-8")
+        monkeypatch.setattr(storage, "_daemon_pidfile", lambda: pidfile)
+
+        def denied(self: psutil.Process) -> None:
+            raise psutil.AccessDenied(self.pid)
+
+        monkeypatch.setattr(psutil.Process, "terminate", denied)
+        with caplog.at_level(logging.ERROR, logger=runtime_stop.logger.name):
+            runtime_stop.kill_daemon_pidfile()
+
+        assert runtime_stop.DAEMON_KILL_FAILED in caplog.text
+        assert pidfile.exists()
+        assert daemon.poll() is None
+    finally:
+        daemon.kill()
+        daemon.wait(timeout=10)

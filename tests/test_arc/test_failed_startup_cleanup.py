@@ -72,7 +72,7 @@ def test_daemon_that_never_binds_is_killed_and_unregistered(
 
     monkeypatch.setattr(storage, "_spawn_runtime_daemon", fake_spawn)
     monkeypatch.setattr(storage, "_runtime_alive", lambda _port: False)
-    monkeypatch.setattr(storage, "_RUNTIME_START_TIMEOUT_S", 0.3)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.5")  # it makes no progress
 
     with pytest.raises(DaemonSpawnFailed, match="never bound port 29999"):
         storage._ensure_runtime_daemon(object(), str(config), "error")
@@ -81,6 +81,64 @@ def test_daemon_that_never_binds_is_killed_and_unregistered(
     assert stand_in_daemon.returncode is not None
     assert str(os.getpid()) not in _registered_pids(private_state_dir)
     assert not storage._daemon_pidfile().exists()
+
+
+_STARTING = "import time\nend = time.monotonic() + 120\nwhile time.monotonic() < end:\n    pass\n"
+
+
+def test_a_daemon_still_starting_at_the_ceiling_is_left_running_and_adopted(
+    private_state_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Never kill a daemon still progressing: at the ceiling the start fails typed but
+    the daemon keeps running, and the next attach adopts it instead of spawning twice.
+
+    **Sabotage:** let ``kill_spawned_daemon_on_failure`` kill on ``DaemonStillStarting``
+    -> the busy stand-in is dead after the first attempt.
+    """
+    from clio_agent.arc.runtime_crash import DaemonStillStarting
+
+    config = tmp_path / "cte.yaml"
+    config.write_text("networking:\n  port: 29998\n", encoding="utf-8")
+    busy = subprocess.Popen(  # noqa: S603 - fixed interpreter, fixed argv
+        [sys.executable, "-c", _STARTING],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    spawns: list[int] = []
+    bound = {"now": False}
+    try:
+
+        def fake_spawn(_core: object, _cfg: str, _level: str) -> None:
+            spawns.append(busy.pid)
+            ctime = psutil.Process(busy.pid).create_time()
+            storage._daemon_pidfile().write_text(f"{busy.pid} {ctime!r}", encoding="utf-8")
+
+        monkeypatch.setattr(storage, "_spawn_runtime_daemon", fake_spawn)
+        monkeypatch.setattr(storage, "_runtime_alive", lambda _port: bound["now"])
+        monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.2")
+        monkeypatch.setenv("CLIO_ARC_LIVENESS_MAX_WAIT_S", "0.6")
+
+        with pytest.raises(DaemonStillStarting):
+            storage._ensure_runtime_daemon(object(), str(config), "error")
+        assert busy.poll() is None, "a daemon still starting must never be killed"
+        assert str(os.getpid()) not in _registered_pids(private_state_dir)
+        assert storage._daemon_pidfile().exists()
+
+        # The next attach finds it starting, waits, and adopts it once it binds.
+        monkeypatch.setattr(
+            storage.daemon_version,
+            "resolve_effective_config",
+            lambda _state, cfg, on_failure: cfg,
+        )
+        __import__("threading").Timer(0.5, lambda: bound.__setitem__("now", True)).start()
+        monkeypatch.setenv("CLIO_ARC_LIVENESS_MAX_WAIT_S", "30")
+        storage._ensure_runtime_daemon(object(), str(config), "error")
+        assert spawns == [busy.pid]  # adopted, never spawned a second time
+    finally:
+        busy.kill()
+        busy.wait(timeout=10)
+        storage._deregister_client()
 
 
 def test_spawn_that_raises_before_a_daemon_exists_still_unregisters(
