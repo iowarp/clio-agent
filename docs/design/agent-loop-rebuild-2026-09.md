@@ -1629,8 +1629,20 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
+**Evidence on the tip `1a6e047d` (CI run 36966592678, green):**
+- **The named Definition-of-done tests** are collected and unskipped, so they ran in that run (six shards, 0 failed):
+  - differential: `test_clio_react.py::test_differential_same_calls_results_and_outputs_as_stock_reactv2`;
+  - prefix stability: `test_context_projection.py::test_every_request_is_a_prefix_of_the_next_across_steps_and_turns` and `test_multiturn_prefix_cache.py::test_system_message_is_a_byte_prefix_across_turns`;
+  - UI vs agent: `test_injection_parts.py::test_every_clio_addition_the_agent_sees_is_shown_to_the_user`;
+  - fix recorded and told: `test_injection_parts.py::test_a_note_on_a_tool_call_is_shown_with_its_call` and `::test_the_executor_notes_what_it_tells_the_agent`.
+- **No dual paths:** `src` has 0 references to `instrumented_forward`, `_RetainingReActV2`, `reactv2_upstream`, `codex_sdk`, `openai_codex`, `codex://sdk`, `_PROMPT_RULES`, `stage_checkpoint`, `flush_staged_checkpoint` or `/context/compact`. `codex_variant` appears only in the validator that rejects it, typed.
+- **Deletions vs additions** (against develop, merged):
+  - whole branch +42,487 / −34,434;
+  - `src` +19,194 / −17,149.
+  - Neither meets deletions ≥ additions now. `src` met it until the 2026-10-02 work: the #1577 progress waits, variant closing, atomic transcript replace, typed delete cleanup, graceful shutdown and the thread-progress probe all added net code.
+
 **Owner decisions:**
-1. **Deletions ≥ additions:** the whole branch, or `src`? (`src` meets it.)
+1. **Deletions ≥ additions** (it no longer holds even for `src`, see above): accept the net growth from the new features, or look for genuinely dead code to remove?
 2. **OK to post the DSPy upstream issue** about the lazy `anyio` proxy (stanfordnlp/dspy)?
 3. **Release clio-schemas 0.5.2** (#18), then bump the clio-agent pin.
 4. **When to open the PRs `rework_agent` → develop.** The final verification runs on them.
