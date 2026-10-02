@@ -46,6 +46,7 @@ def _make_audit(
         _snapshot_children=lambda _root: dict(children),
         _is_descendant=lambda pid, root: pid in descendants,
         _is_dead=lambda pid, ctime: pid in dead,
+        _forensics=lambda pid: "",
     )
 
 

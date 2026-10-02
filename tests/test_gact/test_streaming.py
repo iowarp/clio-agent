@@ -335,6 +335,7 @@ def _turn_state(
     return SimpleNamespace(
         app=app,
         sid="sid",
+        user_msg=SimpleNamespace(id="msg_user", metadata={}),
         enriched_text=text,
         sess=SimpleNamespace(mode="edit", edit_mode="diff"),
         native_images=list(images or []),
