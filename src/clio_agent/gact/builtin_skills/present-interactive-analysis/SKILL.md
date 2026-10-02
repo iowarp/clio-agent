@@ -156,6 +156,10 @@ Views on one surface that read the same artifact share selected rows through
 the renderer's stable `__row` key. Give each linked view, including the table, the same `dataUri`; copying artifact rows into an inline table breaks that link. The user can click or box-select in a chart,
 map or table, see the corresponding rows highlighted, and use Reference this to
 carry the selected rows and active filters into the next message. When views
+compare the same observations, prefer one shared artifact even for a small set
+if clicking an item should identify it in the other views. Separate inline
+arrays do not link automatically; bind an explicit shared selection if they
+must stay inline, or present them as independent views. When views
 represent different datasets or need a conceptual selection (such as a station
 name shared across files), bind their `selection` props to the same data-model
 path under `/selection/` and set each component's `selectionField` to its
