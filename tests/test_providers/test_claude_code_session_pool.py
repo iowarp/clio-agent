@@ -34,8 +34,10 @@ def test_sync_and_async_calls_share_one_pooled_client(monkeypatch: pytest.Monkey
     sdk = fake.install(monkeypatch)
     request = Request(model="claude_code/haiku", messages=(Message.user("hi"),))
 
-    sync = ClaudeCodeEngine("haiku", cwd="/w", timeout=5.0).complete(request)
-    async_ = asyncio.run(AsyncClaudeCodeEngine("haiku", cwd="/w", timeout=5.0).complete(request))
+    sync = ClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0).complete(request)
+    async_ = asyncio.run(
+        AsyncClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0).complete(request)
+    )
 
     assert sync.message.parts == async_.message.parts
     # SABOTAGE: give the sync twin its own client -> 2 -> red.

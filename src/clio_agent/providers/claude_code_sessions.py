@@ -74,6 +74,7 @@ from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
+from clio_agent.providers.claude_code_expiry import connect_while_working, relay_with_idle_bound
 from clio_agent.providers.claude_code_idle_reaper import IdleSessionReaper
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
@@ -289,7 +290,6 @@ class _StreamClientEntry:
         on_construct: Any,
         *,
         gact_session_id: str,
-        timeout: float | None,
         abandon: "threading.Event | None",
         model: str | None,
         cwd: str | None,
@@ -311,20 +311,19 @@ class _StreamClientEntry:
             raise StreamAbandonedError
         self.stderr_ring.clear()  # a fresh subprocess starts with an empty ring
         try:
-            async with asyncio.timeout(timeout):
-                # ``model=None`` (an off-turn/bare connect) omits the field
-                # entirely so the CLI's own default governs.
-                options = build_sdk_options(
-                    model=model,
-                    cwd=cwd,
-                    stream=True,
-                    thinking=thinking,
-                    system_prompt=system_prompt,
-                    stderr=self.stderr_ring.append,
-                )
-                client = ClaudeSDKClient(options=options)
-                on_construct()
-                await client.connect()
+            # ``model=None`` (an off-turn/bare connect) omits the field
+            # entirely so the CLI's own default governs.
+            options = build_sdk_options(
+                model=model,
+                cwd=cwd,
+                stream=True,
+                thinking=thinking,
+                system_prompt=system_prompt,
+                stderr=self.stderr_ring.append,
+            )
+            client = ClaudeSDKClient(options=options)
+            on_construct()
+            await connect_while_working(client)  # progress-bounded, typed (#1577)
         except BaseException:
             if self._connect_slots is not None:
                 self._connect_slots.release()
@@ -341,7 +340,6 @@ class _StreamClientEntry:
         on_construct: Any,
         *,
         gact_session_id: str,
-        timeout: float | None,
         abandon: "threading.Event | None",
         model: str | None,
         cwd: str | None,
@@ -362,7 +360,6 @@ class _StreamClientEntry:
         await self._connect_locked(
             on_construct,
             gact_session_id=gact_session_id,
-            timeout=timeout,
             abandon=abandon,
             model=model,
             cwd=cwd,
@@ -377,7 +374,6 @@ class _StreamClientEntry:
         on_construct: Any,
         *,
         gact_session_id: str = "",
-        timeout: float | None = None,
         abandon: "threading.Event | None" = None,
         model: str | None = None,
         cwd: str | None = None,
@@ -421,7 +417,6 @@ class _StreamClientEntry:
                 await self._connect_locked(
                     on_construct,
                     gact_session_id=gact_session_id,
-                    timeout=timeout,
                     abandon=abandon,
                     model=model,
                     cwd=cwd,
@@ -433,7 +428,6 @@ class _StreamClientEntry:
                 await self._reconnect_locked(
                     on_construct,
                     gact_session_id=gact_session_id,
-                    timeout=timeout,
                     abandon=abandon,
                     model=model,
                     cwd=cwd,
@@ -496,7 +490,7 @@ class _StreamClientEntry:
         payload: str,
         native_blocks: list[dict[str, Any]],
         session_id: str,
-        timeout: float | None,
+        idle_timeout: float | None,
         on_construct: Any,
         model: str | None = None,
         cwd: str | None = None,
@@ -529,21 +523,23 @@ class _StreamClientEntry:
                 client = await self._ensure_client(
                     on_construct,
                     gact_session_id=gact_sid,
-                    timeout=timeout,
                     abandon=abandon,
                     model=model,
                     cwd=cwd,
                     thinking=thinking,
                     system_prompt=system_prompt,
                 )
-                async with asyncio.timeout(timeout):
-                    async with self._query_lock:
-                        query_input: Any = (
-                            sdk_prompt(payload, native_blocks) if native_blocks else payload
-                        )
-                        await client.query(query_input, session_id=session_id)
-                        async for msg in client.receive_response():
-                            chunks.put(("msg", msg))
+                async with self._query_lock:
+                    query_input: Any = (
+                        sdk_prompt(payload, native_blocks) if native_blocks else payload
+                    )
+                    await relay_with_idle_bound(
+                        client,
+                        query_input,
+                        session_id=session_id,
+                        idle_s=idle_timeout,
+                        put=lambda msg: chunks.put(("msg", msg)),
+                    )
                 clean = True
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop
                 chunks.put(("exc", exc))

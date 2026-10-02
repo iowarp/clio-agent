@@ -205,5 +205,5 @@ async def drive(request_: Request, **engine: Any) -> Response:
 
     model = request_.model.removeprefix("claude_code/")
     engine.setdefault("cwd", "/w")
-    engine.setdefault("timeout", 5.0)
+    engine.setdefault("idle_timeout_s", 5.0)
     return await AsyncClaudeCodeEngine(model, **engine).complete(request_)

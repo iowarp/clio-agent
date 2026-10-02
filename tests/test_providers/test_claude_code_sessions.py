@@ -225,8 +225,8 @@ def test_dspy_retries_a_dead_transport_on_a_fresh_client(monkeypatch: pytest.Mon
     sdk = _install_dying_sdk(monkeypatch)
     lm = dspy.LM(
         "claude_code/haiku",
-        engine=ClaudeCodeEngine("haiku", cwd="/w", timeout=5.0),
-        async_engine=AsyncClaudeCodeEngine("haiku", cwd="/w", timeout=5.0),
+        engine=ClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0),
+        async_engine=AsyncClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0),
         cache=False,
         num_retries=1,
     )
