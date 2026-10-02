@@ -1620,7 +1620,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - gact-tui: the e2e fixture lacked `/variant-runs` (an error toast covered the controls in the mobile screenshot). The Windows mobile baseline was stale.
 - **In flight:**
   - #1577 leftovers: a graceful authenticated `serve` stop; a progress-based table query (per-thread CPU); stale Codex-SDK docstrings. Branch `fix/1577-leftovers`.
-  - gact-tui: the version status spins forever outside the desktop app. Branch `fix/web-version-status`.
+- **Done (gact-tui #523):** in a browser, the version status shows the web build's own version and never calls the desktop updater; the desktop app is unchanged. The Windows baselines are regenerated; the Linux `workspace-desktop-dark` and `workspace-mobile-light-reduced` baselines need regenerating on CI (they pass within tolerance today).
 
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
@@ -1658,7 +1658,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 
 #### A. CI
 - **clio-agent:** `gh workflow run ci.yml --repo iowarp/clio-agent --ref rework_agent`. It runs Ubuntu only, Python 3.12/3.13 (last green tip `1f454adc`).
-- **gact-tui:** CI needs a PR into develop (open the final PR as a draft) plus `rework_agent:codex/rework-agent` for the e2e and visual jobs. Generate the Linux baseline `summarization-row-collapsed.png`.
+- **gact-tui:** CI needs a PR into develop (open the final PR as a draft) plus `rework_agent:codex/rework-agent` for the e2e and visual jobs. Generate the Linux baselines `summarization-row-collapsed.png`, `workspace-desktop-dark` and `workspace-mobile-light-reduced`.
 - **Gaps CI does not cover:**
   - Windows and macOS: the only Windows coverage is targeted local runs; macOS is untested (#1577 made the psutil probes macOS-safe on paper);
   - the optional claude-code extra.
