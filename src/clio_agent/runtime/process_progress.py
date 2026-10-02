@@ -167,8 +167,24 @@ def run_probe(
             wait = stretch
     finally:
         if proc.poll() is None:
-            proc.kill()
-            proc.communicate()
+            _kill_tree(proc)
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill an abandoned probe and its descendants (a ``.cmd`` shim's child holds the pipes)."""
+    import psutil  # noqa: PLC0415
+
+    try:
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except psutil.Error:
+        children = []
+    for child in children:
+        try:
+            child.kill()
+        except psutil.Error:
+            continue  # already gone
+    proc.kill()
+    proc.communicate()
 
 
 async def await_while_working(
