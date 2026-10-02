@@ -58,7 +58,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.arc.lane_chunking import drop_lane, lane_has_segments, lane_segments
+from clio_agent.arc.lane_chunking import lane_has_segments, lane_segments
+from clio_agent.arc.lane_generations import current_base, erase_lane, replace_lane
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
@@ -68,7 +69,11 @@ from clio_agent.gact.part_atoms import (
     reproduce_message_wire,
     retracted_part_ids,
 )
-from clio_agent.gact.transcript_file import file_transcript_enabled, materialize_from_atoms
+from clio_agent.gact.transcript_file import (
+    file_transcript_enabled,
+    materialize_from_atoms,
+    reload_resident_on_failure,
+)
 from clio_agent.gact.types import Message
 from clio_agent.gact.workflow_state.state_merge import (
     drop_state_merge_lane,
@@ -212,10 +217,11 @@ def assemble_session_messages(arc: Any, session_id: str) -> list[Message]:
     # envelope atom, the v1 ordinal boundary as the fallback) — see part_atoms.
     # #1339: the lane is a CHUNK FAMILY; ``lane_segments`` concatenates every present
     # chunk in append order, so chunking is invisible to this projection.
-    lane = [
-        seg.content
-        for seg in lane_segments(store, session_id, MESSAGE_PART_SCOPE, include_tombstoned=False)
-    ]
+    # The lane's CURRENT generation (``arc.lane_generations``): a whole-lane replace
+    # writes a new generation and switches to it in one put, so a read sees one whole
+    # generation, never a half-replaced lane.
+    base = current_base(store, session_id, MESSAGE_PART_SCOPE)
+    lane = [seg.content for seg in lane_segments(store, session_id, base, include_tombstoned=False)]
     retracted = retracted_part_ids(lane)  # a compaction record whose fold failed
     messages = [
         Message(**reproduce_message_wire(atoms, retracted))
@@ -238,7 +244,8 @@ def has_atoms(arc: Any, session_id: str) -> bool:
     whole lane.
     """
 
-    return lane_has_segments(arc._segments, session_id, MESSAGE_PART_SCOPE)
+    store = arc._segments
+    return lane_has_segments(store, session_id, current_base(store, session_id, MESSAGE_PART_SCOPE))
 
 
 # --------------------------------------------------------------------------- #
@@ -380,9 +387,8 @@ def _schedule_lane_mint(
 
     #1334: a rehydrate/repair happens INSIDE a read that may run on the loop thread
     (``GET /messages`` on an evicted, pre-atom, or divergent session), and the mint is
-    one store write per message plus, for a repair, a leading ``drop_lane`` of the
-    WHOLE chunk family (#1339; a bare ``drop_scope`` on chunk 1 alone would orphan
-    chunks 2..N). The
+    one store write per message -- for a repair, a whole-lane replace
+    (:func:`replace_atom_lane`: a new generation, then one pointer switch). The
     per-scope lane lock is held ONLY around this scheduling decision (acquire, decide,
     release) — never around the mint itself, which the off-loop worker below re-takes
     the SAME lock for. With a loop running on this thread the retained ledger is served
@@ -410,12 +416,9 @@ def _schedule_lane_mint(
         with worker_lock:
             try:
                 if repair:
-                    # #1339: erase the WHOLE chunk family, not just chunk 1 (a bare
-                    # drop_scope on chunk 1 alone would leave chunks 2..N orphaned,
-                    # and chunk_for_append's cursor validation would then start a
-                    # NEW chunk 1 while the stale chunks 2..N still read after it).
-                    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)
-                mint_atoms_from_ledger(arc, session_id, ledger)
+                    replace_atom_lane(arc, session_id, ledger)
+                else:
+                    mint_atoms_from_ledger(arc, session_id, ledger)
             finally:
                 _LANE_MINT_IN_FLIGHT.discard(session_id)
 
@@ -507,6 +510,8 @@ def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message
     Backs ``session_store._extend_session_messages`` (nanoagent sub-turn ledgers). Under
     the legacy regime this is a no-op (the messages-store copy is authoritative); under
     the atoms regime each message is minted so the assembled projection is complete.
+    With ``transcript.file`` off a failed mint drops the session's in-memory ledger,
+    so the next read serves exactly what clio-core holds.
     """
 
     if not messages:
@@ -514,54 +519,79 @@ def on_messages_extended(app: "FastAPI", session_id: str, messages: list[Message
     arc = _arc(app)
     if arc is None:
         return
+    with reload_resident_on_failure(app, session_id):
+        for message in messages:
+            try:
+                mint_message_part_atoms(arc, session_id, message)
+            except Exception as exc:  # noqa: BLE001 - atoms are the one copy under this regime
+                raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
+            record_state_merge_best_effort(arc, session_id, message)  # #737 S6
+
+
+def replace_atom_lane(arc: Any, session_id: str, messages: list[Message]) -> None:
+    """Replace the session's atom lane with EXACTLY ``messages``, atomically.
+
+    The ONE whole-lane replace of the transcript
+    (:func:`~clio_agent.arc.lane_generations.replace_lane`): the atoms are minted into
+    a new lane generation, the lane's pointer is switched to it in one put, then the
+    old generation is dropped. A failure before the switch leaves the previous
+    transcript intact. The ``state_merge`` op lane is re-materialised after the switch
+    (#737 S6, best-effort-but-loud as everywhere).
+
+    Raises:
+        LaneReplaceError: A stage of the replace failed (its ``committed`` names
+            which transcript readers now see).
+    """
+
+    def _mint_into(lane: str) -> None:
+        for message in messages:
+            try:
+                mint_message_part_atoms(arc, session_id, message, lane=lane)
+            except Exception as exc:  # noqa: BLE001 - re-raised typed, per message
+                raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
+
+    replace_lane(arc._segments, session_id, MESSAGE_PART_SCOPE, _mint_into)
+    drop_state_merge_lane(arc, session_id)
     for message in messages:
-        try:
-            mint_message_part_atoms(arc, session_id, message)
-        except Exception as exc:  # noqa: BLE001 - atoms are the one copy under this regime
-            raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
-        record_state_merge_best_effort(arc, session_id, message)  # #737 S6
+        record_state_merge_best_effort(arc, session_id, message)
 
 
 def on_ledger_replaced(app: "FastAPI", session_id: str, messages: list[Message]) -> None:
     """Replace-seam hook: re-materialize the atom lane to EXACTLY the new ledger.
 
-    Backs ``session_store._replace_session_messages`` — undo/rewind/fork/compact/import.
-    Under the atoms regime the ``_events/m`` lane is dropped and re-minted from the new
-    ledger, so the assembled projection matches the replaced list. This is the
-    ``transcript_delete``+re-append of design §2.5, scoped to the gact-visible transcript
-    projection ONLY: it touches the ``_events/m`` lane and NEVER the ARC working-set
-    scopes, so ``memory_scope:"gact_visible_transcript_only"`` holds by construction (the
-    sabotage-c guard). A no-op under the legacy regime.
+    Backs ``session_store._replace_session_messages`` -- undo/rewind/fork/compact/import --
+    through :func:`replace_atom_lane`, so the assembled projection matches the replaced
+    list or, on a failure, still the previous one. This is the ``transcript_delete`` +
+    re-append of design §2.5, scoped to the gact-visible transcript projection ONLY: it
+    touches the ``_events/m`` lane and NEVER the ARC working-set scopes, so
+    ``memory_scope:"gact_visible_transcript_only"`` holds by construction (the
+    sabotage-c guard). With ``transcript.file`` off a failure also drops the session's
+    in-memory ledger (already holding the new rows), so every later read serves the
+    transcript clio-core kept. A no-op without a canonical log.
     """
 
     arc = _arc(app)
     if arc is None:
         return
-    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)  # #1339: the whole chunk family
-    drop_state_merge_lane(arc, session_id)  # #737 S6: re-materialise the op lane too
-    for message in messages:
-        try:
-            mint_message_part_atoms(arc, session_id, message)
-        except Exception as exc:  # noqa: BLE001 - atoms are the one copy under this regime
-            raise TranscriptIngestError(session_id, getattr(message, "id", ""), exc) from exc
-        record_state_merge_best_effort(arc, session_id, message)  # #737 S6
+    with reload_resident_on_failure(app, session_id):
+        replace_atom_lane(arc, session_id, messages)
 
 
 def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
-    """Delete-seam hook: drop the session's atom lane (transcript projection erasure).
+    """Delete-seam hook: erase the session's atom lane (transcript projection erasure).
 
     Backs ``session_store._delete_session_messages`` (``DELETE /messages`` /
-    ``session.cleared`` / the ``DELETE /sessions`` cascade). Drops ONLY the
-    ``_events/m`` transcript lane; the ARC working-set scopes (ARC memory) are untouched
-    — the frozen ``gact_visible_transcript_only`` semantics (1.11, sabotage-c). Runs
-    under BOTH regimes so a legacy session that later flips is never left with a stale
-    lane; it is a cheap partition drop when no atoms exist.
+    ``session.cleared`` / the ``DELETE /sessions`` cascade). Erases ONLY the
+    ``_events/m`` transcript lane, as a replace with nothing
+    (:func:`~clio_agent.arc.lane_generations.erase_lane`: never a half-erased
+    transcript); the ARC working-set scopes (ARC memory) are untouched -- the frozen
+    ``gact_visible_transcript_only`` semantics (1.11, sabotage-c).
     """
 
     arc = _arc(app)
     if arc is None:
         return
-    drop_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)  # #1339: the whole chunk family
+    erase_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)
     drop_state_merge_lane(arc, session_id)  # #737 S6: erase the op lane with the transcript
 
 
@@ -606,4 +636,5 @@ __all__ = [
     "on_ledger_replaced",
     "on_message_appended",
     "on_messages_extended",
+    "replace_atom_lane",
 ]

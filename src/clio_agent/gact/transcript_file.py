@@ -21,10 +21,16 @@ file copy. It is resolved ONCE, at app build, by :func:`boot_transcript_store`:
     repair or backfill from a file. A busy lane is waited for off the loop, and is
     a typed retryable :class:`TranscriptNotReadyError` on a loop thread (never a
     blocked loop -- ``arc.loop_guard``, #1334);
-  - the restart reconciliation and the metrics seed read the atoms, at build when
-    the ARC is already bound, else right after the process ARC attaches
-    (:func:`on_process_arc_bound`); ``GET /v1/metrics`` is a typed retryable
-    error until then;
+  - the restart reconciliation, the metrics seed and the interaction time of a
+    session row older than ``last_interaction_at`` (its last atom message, else its
+    creation) read the atoms, at build when the ARC is already bound, else right
+    after the process ARC attaches (:func:`on_process_arc_bound`); ``GET
+    /v1/metrics`` is a typed retryable error until then;
+  - a whole-transcript replace (undo, rewind, fork, compact, import, clear) is
+    atomic: a new lane generation, then one pointer switch
+    (:mod:`clio_agent.arc.lane_generations`); when it fails the previous transcript
+    stays and the session's in-memory ledger is dropped
+    (:func:`reload_resident_on_failure`) so reads serve what clio-core kept;
   - an atom mint is the durable write: when it fails the message is taken back
     out of the in-memory ledger (:func:`forget_unminted_on_failure`) and the
     typed error propagates.
@@ -39,6 +45,7 @@ content down as files itself; until then it stays on by default.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -54,6 +61,8 @@ if TYPE_CHECKING:
 
     from clio_agent.gact.sessions import SessionStore
     from clio_agent.gact.types import Message
+
+logger = logging.getLogger(__name__)
 
 TRANSCRIPT_FILE_KEY = "transcript.file"
 TRANSCRIPT_FILE_ENV = "CLIO_TRANSCRIPT_FILE"
@@ -269,6 +278,52 @@ def forget_unminted_on_failure(
         raise
 
 
+@contextmanager
+def reload_resident_on_failure(app: "FastAPI", session_id: str) -> Iterator[None]:
+    """Wrap a durable transcript write; with the file off, a failure drops memory.
+
+    The replace / extend seams update the in-memory ledger before (or apart from) the
+    clio-core write. With no file copy the atoms are the only durable record, so when
+    that write fails the session's resident ledger is dropped and its metrics
+    re-seeded from what clio-core holds -- the next read serves the durable
+    transcript, never rows that were not stored. The write's error propagates
+    unchanged. With the file on this is a pass-through.
+    """
+
+    try:
+        yield
+    except BaseException as failure:
+        if not file_transcript_enabled(app):
+            _reload_resident(app, session_id, failure)
+        raise
+
+
+def _reload_resident(app: "FastAPI", session_id: str, failure: BaseException) -> None:
+    messages = app.state.messages
+    discard = getattr(messages, "discard", None)
+    if callable(discard):
+        discard(session_id)  # non-materializing: the next read assembles the atoms
+    else:
+        messages.pop(session_id, None)
+    counters = getattr(app.state, "metrics_counters", None)
+    if counters is None:
+        return
+    try:
+        durable = materialize_from_atoms(app, session_id) or []
+    except (ClioError, OSError, RuntimeError) as reseed_error:
+        # The write's own typed error is what the caller must see; the metrics
+        # re-seed failing too is named on it and logged, never dropped.
+        failure.add_note(f"metrics for session {session_id} not re-seeded: {reseed_error!r}")
+        logger.error(
+            "transcript metrics not re-seeded reason=transcript_metrics_reseed_failed "
+            "session=%s error=%r",
+            session_id,
+            reseed_error,
+        )
+        return
+    counters.set_session(session_id, durable)
+
+
 def _forget_in_memory(app: "FastAPI", session_id: str, message: "Message") -> None:
     messages = app.state.messages
     get_if_resident = getattr(messages, "get_if_resident", None)
@@ -302,10 +357,47 @@ def seeded_metrics_counters(app: "FastAPI") -> Any:
     return app.state.metrics_counters
 
 
-def _seed_metrics_from_atoms(app: "FastAPI") -> None:
+def _last_interaction(rows: list["Message"], created_at: str) -> str:
+    """When a legacy row was last used: its last message's time, else its creation."""
+
+    if not rows:
+        return created_at
+    last = rows[-1]
+    return str(last.updated_at or last.created_at or created_at)
+
+
+def _seed_from_atoms(app: "FastAPI") -> None:
+    """Metrics seed + legacy interaction times, from ONE atom read per session.
+
+    A session row persisted before ``last_interaction_at`` existed gets it from its
+    last atom message (``created_at`` when it has none) -- the file-off counterpart
+    of the ``messages/`` file mtime the file-on boot reads. ``messages/`` is never
+    touched.
+    """
+
     counters = app.state.metrics_counters
+    sessions = app.state.sessions
+    unknown = {row.id: row.created_at for row in sessions.sessions_without_interaction_time()}
+    times: dict[str, str] = {}
     for session_id in app.state.transcript_index.session_ids():
-        counters.set_session(session_id, materialize_from_atoms(app, session_id) or [])
+        rows = materialize_from_atoms(app, session_id) or []
+        counters.set_session(session_id, rows)
+        if session_id in unknown:
+            times[session_id] = _last_interaction(rows, unknown[session_id])
+    sessions.settle_interaction_times(times)
+
+
+def _settle_interaction_from_files(app: "FastAPI") -> None:
+    """File on: a legacy row's interaction time is its ``messages/`` file's mtime."""
+
+    store = app.state.message_store
+    sessions = app.state.sessions
+    sessions.settle_interaction_times(
+        {
+            row.id: store.modified_at(row.id) or row.created_at
+            for row in sessions.sessions_without_interaction_time()
+        }
+    )
 
 
 def _atom_boot(app: "FastAPI") -> None:
@@ -316,7 +408,7 @@ def _atom_boot(app: "FastAPI") -> None:
     )
 
     _reconcile_restart_interrupted_sessions(app)
-    _seed_metrics_from_atoms(app)
+    _seed_from_atoms(app)
     app.state.transcript_boot_ready.set()
 
 
@@ -349,10 +441,18 @@ def _refuse_history_mode(app: "FastAPI") -> None:
 
 
 def install_transcript_error_handler(app: "FastAPI") -> None:
-    """Serve :class:`TranscriptNotReadyError` as a retryable 503 GACT envelope."""
+    """Serve the transcript store's typed errors as GACT envelopes.
+
+    :class:`TranscriptNotReadyError` is a retryable 503. A failed whole-transcript
+    replace (:class:`~clio_agent.arc.lane_generations.LaneReplaceError`) is a
+    retryable 503 when the conversation is unchanged, and a non-retryable 500 when
+    the change landed but the old copy is still there (repeating it would apply it
+    twice); the message says which, in plain words.
+    """
 
     from fastapi.responses import JSONResponse  # noqa: PLC0415
 
+    from clio_agent.arc.lane_generations import LaneReplaceError  # noqa: PLC0415
     from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
 
     @app.exception_handler(TranscriptNotReadyError)
@@ -364,6 +464,30 @@ def install_transcript_error_handler(app: "FastAPI") -> None:
             status_code=503,
             content=ErrorEnvelope(error=info).model_dump(exclude_none=True),
             headers={"Retry-After": "1"},
+        )
+
+    @app.exception_handler(LaneReplaceError)
+    async def _transcript_replace_failed(_request: object, exc: LaneReplaceError) -> JSONResponse:
+        if exc.committed:
+            message = (
+                "The conversation was changed, but clio-core could not remove its "
+                "previous version yet; the next change removes it. Do not repeat the action."
+            )
+        else:
+            message = (
+                "The conversation could not be changed: clio-core did not store the new "
+                "version, so it is exactly as it was. Retry shortly."
+            )
+        info = ErrorInfo(
+            error=exc.error_type,
+            message=message,
+            details={**exc.details, "detail": exc.message},
+            recoverable=not exc.committed,
+        )
+        return JSONResponse(
+            status_code=500 if exc.committed else 503,
+            content=ErrorEnvelope(error=info).model_dump(exclude_none=True),
+            headers={} if exc.committed else {"Retry-After": "1"},
         )
 
 
@@ -407,6 +531,7 @@ def boot_transcript_store(app: "FastAPI", root: Path) -> None:
         # deletion/redeploy preserves transcripts.
         app.state.message_store = MessageStore(path=root / "messages")
         app.state.transcript_index = app.state.message_store
+        _settle_interaction_from_files(app)
         _reconcile_restart_interrupted_sessions(app)
     else:
         app.state.message_store = None
@@ -445,6 +570,7 @@ __all__ = [
     "load_durable_transcript",
     "materialize_from_atoms",
     "on_process_arc_bound",
+    "reload_resident_on_failure",
     "resolve_transcript_file",
     "seeded_metrics_counters",
 ]

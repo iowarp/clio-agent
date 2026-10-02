@@ -371,10 +371,12 @@ def test_a_record_write_failure_is_a_typed_500_and_folds_nothing(
 
     real_append = part_atoms.append_part_atom
 
-    def _refuse_records(store: Any, session_id: str, content: dict[str, Any]) -> Any:
+    def _refuse_records(
+        store: Any, session_id: str, content: dict[str, Any], *, lane: str | None = None
+    ) -> Any:
         if as_summarization(content.get("part") or {}) is not None:
             raise RuntimeError("simulated store failure")
-        return real_append(store, session_id, content)
+        return real_append(store, session_id, content, lane=lane)
 
     monkeypatch.setattr(part_atoms, "append_part_atom", _refuse_records)
     agent = _CapturingAgent(["a summary"])

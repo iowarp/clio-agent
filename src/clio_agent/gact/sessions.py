@@ -33,11 +33,12 @@ absent-optional fields per §3.2.
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -267,6 +268,10 @@ class SessionStore:
         self._path = path
         self._lock = threading.Lock()
         self._sessions: dict[str, Session] = {}
+        # Rows persisted before ``last_interaction_at`` existed: their interaction time
+        # lives with the transcript, so the transcript store's boot settles it
+        # (:meth:`settle_interaction_times`); until then the field reads "" (unknown).
+        self._interaction_unknown: set[str] = set()
         self._lifecycle_observer: Callable[[str, Session], None] | None = None
         self.task_store: Any | None = None
         if path is not None:
@@ -318,7 +323,7 @@ class SessionStore:
             try:
                 session = Session(**payload)
                 if not session.last_interaction_at:
-                    session.last_interaction_at = self._legacy_interaction_at(sid, session)
+                    self._interaction_unknown.add(sid)
                 self._sessions[sid] = session
             except TypeError:
                 # Schema drift (e.g. a field was renamed between
@@ -557,18 +562,37 @@ class SessionStore:
             self._flush()
             return sess
 
-    def _legacy_interaction_at(self, sid: str, session: Session) -> str:
-        """Recover old rows from the sibling message ledger's modification time."""
+    def sessions_without_interaction_time(self) -> "builtins.list[Session]":
+        """Loaded rows that predate ``last_interaction_at`` and still lack it.
 
-        if self._path is None:
-            return session.created_at
-        safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in sid)
-        ledger_path = self._path.parent / "messages" / f"{safe}.json"
-        try:
-            modified = ledger_path.stat().st_mtime
-        except OSError:
-            return session.created_at
-        return datetime.fromtimestamp(modified, tz=timezone.utc).isoformat()
+        The transcript store answers when each was last used (the ``messages/`` file's
+        mtime, or the last atom message with ``transcript.file`` off) and hands the
+        answers to :meth:`settle_interaction_times`.
+        """
+
+        with self._lock:
+            return [
+                self._sessions[sid]
+                for sid in sorted(self._interaction_unknown)
+                if sid in self._sessions and not self._sessions[sid].last_interaction_at
+            ]
+
+    def settle_interaction_times(self, times: Mapping[str, str]) -> None:
+        """Record recovered interaction times for rows that still lack one; flush once.
+
+        A row that gained a real interaction time meanwhile (a new message) keeps it.
+        """
+
+        with self._lock:
+            changed = False
+            for sid, when in times.items():
+                session = self._sessions.get(sid)
+                self._interaction_unknown.discard(sid)
+                if session is not None and not session.last_interaction_at and when:
+                    session.last_interaction_at = when
+                    changed = True
+            if changed:
+                self._flush()
 
     # ---- introspection hooks (for /v1/memory/stats + tests) ----------
 
