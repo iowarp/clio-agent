@@ -1637,68 +1637,120 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 6. **DSPy upstream issue** for the lazy `anyio` proxy: needs the owner's OK to post on stanfordnlp/dspy.
 7. **Whatever the next CI runs report:** fix on a branch off `rework_agent` and merge back by PR.
 
-### Final verification battery (run on the PR-ready `rework_agent`, right before the merge into develop)
+### Final verification (run on the PR-ready `rework_agent`, right before the merge into develop)
 
-Owner, 2026-10-02: implementation and bug fixing first. All testing and evaluation happens once, here, at the end. Codex can run this battery. If a step fails, the fix is implementation work: a branch off `rework_agent`, merged back by PR. Then re-run the failed step.
+**Owner, 2026-10-02:**
+- Implementation and bug fixing come first. All testing and evaluation happens once, here; Codex can run it.
+- Live verification is **targeted**. For each behaviour this branch changed, check live what the tests cannot reach: real providers, real clocks and slow machines, real model behaviour, real UI, other OSes. Scenario benchmarks only answer "faster, no regression".
+- A failed check is implementation work: a branch off `rework_agent`, merged back by PR, then that check re-runs.
 
 **Environment**
-- Worktrees live under `D:\Libraries\Documents\projects\opal-work\`.
-- The live harness is `opal-work\live\` (not a git repo). `live\bench\{bench.sh,suite.sh,common.py}` know the `rework` tree, which is `clio-agent-live`, and bind Codex direct. Update `clio-agent-live` to the tip: `git fetch && git checkout --detach origin/rework_agent && uv sync --all-extras --python 3.12`.
+- The live harness is `opal-work\live\` (not a git repo). Its `bench\{bench.sh,suite.sh,common.py}` map the `rework` tree to `clio-agent-live` and bind Codex direct. Update that worktree to the tip with `git checkout --detach origin/rework_agent && uv sync --all-extras --python 3.12`.
 - Codex direct signs in from `~/.codex/auth.json`, model `gpt-6-sol`.
-- Never run a full test suite alongside live legs. Kill any leftover `clio_run.exe` after a killed run.
+- Prompts are short and human (`[[realistic-test-prompts]]`). Each check names what to observe: transcript, SSE/v3 events, `/v1/sessions/{sid}/…` routes, clio-core records, stream audit, or the doctor.
 
-1. **CI**
-   - clio-agent: `gh workflow run ci.yml --repo iowarp/clio-agent --ref rework_agent`. It must be green (the last green tip was `1f454adc`, run 36959115221).
-   - gact-tui: its CI runs only on PRs into develop/main. Open the final PR (`rework_agent` → `develop`) as a draft to run it, and push `rework_agent:codex/rework-agent` for `apps.yml` (e2e and visual baselines on Linux).
-   - Generate the Linux baseline `summarization-row-collapsed.png` there.
-2. **Live suite** (Codex direct, a private clio-core daemon per leg): `bash live/bench/suite.sh rework <tag>`. Results go to `D:/t/bench/legs-rework-<tag>/`.
-   - **Scenarios** against the develop baselines in `D:/t/bench/baseline-{earthscope,deep,factorio,data,opal}-*`; compare with `live/bench/report.py`:
-     - earthscope-single-agent;
-     - deep-researcher;
-     - factorio-flat (evals);
-     - data-semantics;
-     - OPAL.
-   - **Legs:**
-     - `preflight`, `leg_c_synthetic_session` and `leg_goal_judge`: passed on `1f454adc` (36 s, 132 s, 74 s).
-     - `leg_compaction`: updated to the Phase 11b contract (#1586). Its checks are pure functions over saved evidence, and replaying the 1f454adc run passed 28 of 28. The live run must confirm: recall by compaction id on a natural prompt, and whole-row byte-equality across a restart.
-     - `leg_b_web_fetch`: needs `WEB_REMOTE_URL`, a local `clio-web-search` container.
-     - `leg_bd_stress`.
-     - Leg A (v1 fleet) and leg D (deep researcher), per `scripts/live_verification/RUNBOOK.md`.
-   - **Bar:** clearly faster than the develop baseline, with no quality regression (graders and checklists in each scenario).
-3. **Phase 9 live legs:**
-   - a blueprint with `best_of_n`;
-   - a blueprint with `refine`;
-   - a subagent spawned with a `strategy`;
-   - the email case with the user's pick in the web UI (also part of the browser gate).
-4. **OPAL exp67:** `live/drive.py`, with the base APPL-CORE pack (`marketplace-appl-core` `feat/appl-core-pack`, placeholder APPL skills). Use realistic prompts: "<exp67 path> what is this data?", "does the nickel hurt growth?", "show me the growth curves". Compare with `runs/exp67-first-contact` (2348 / 427 / 308 s), and check quality: the DBL_MAX sentinel, the ghost band columns, unflagged empty rows, the RGB2 scale, clipping.
-5. **The named Definition-of-done tests** pass in CI:
-   - the differential against stock ReActV2;
-   - prefix stability;
-   - UI vs agent projection;
-   - fix recorded and told.
-6. **Release gate: the 1k/10k context-view benchmark.**
-   - `scripts/bench_context_view.py --sizes 1000,10000 --out <json>` on `037e66ec` (before; a worktree at that commit) and on the tip (after).
-   - Bar: warm read and append flat from 1k to 10k; a cold read touches only the chunks after the anchor.
-   - At N=100 the smoke run already showed append p50 of 32.5 → 11.1 ms, and pre-compaction atoms scanned after a compaction of 62 → 0.
-7. **Release gate: the Chrome UI check (owner)** on the gact-tui `rework_agent` build against the clio-agent tip. Check:
+#### A. CI
+- **clio-agent:** `gh workflow run ci.yml --repo iowarp/clio-agent --ref rework_agent`. It runs Ubuntu only, Python 3.12/3.13 (last green tip `1f454adc`).
+- **gact-tui:** CI needs a PR into develop (open the final PR as a draft) plus `rework_agent:codex/rework-agent` for the e2e and visual jobs. Generate the Linux baseline `summarization-row-collapsed.png`.
+- **Gaps CI does not cover:**
+  - Windows and macOS: the only Windows coverage is targeted local runs; macOS is untested (#1577 made the psutil probes macOS-safe on paper);
+  - the optional claude-code extra.
+
+#### B. Targeted live checks, one per changed behaviour
+
+**1. The loop: ClioReAct on DSPy 3.4, every provider.** The engines changed for every provider, but tests use a scripted engine.
+- On each of Codex direct, Claude Code, OpenRouter, ALCF (Sophia or Metis) and LM Studio, run a two-turn chat with a tool call: "list the files here", then "open the biggest one".
+- Observe: tool calls parsed, the answer streamed, turn 2 sees turn 1 as real messages, no typed provider errors, thinking shown where the provider has it.
+- OpenRouter and ALCF have never been run live in this campaign.
+
+**2. Codex direct stateful continuation.**
+- In a long multi-step turn, the stream audit `provider.stateful` rows should show deltas after the first call, cached input tokens (`prompt_tokens_details.cached_tokens`) rising, and a typed `ops_reset` right after a compaction, not `prefix_mismatch`.
+- A missing `~/.codex/auth.json` gives a plain sign-in error.
+- `CODEX_HOME` pointing elsewhere is honoured.
+- A persisted `codex_variant` gives the typed "removed" error.
+
+**3. Concurrency and control.**
+- Concurrent tool calls in one step.
+- Cancel in the middle of a long tool call: the turn stops within about 3 s and the transcript says so.
+- A steer in the middle of a turn arrives at the next step boundary, in its own role.
+- `ask_user` pauses and the answer resumes.
+
+**4. Token counting and auto-compaction.**
+- Compare the usage ledger (input, cached, output per call and per turn) with the provider's own reported usage over a few turns.
+- Set the auto-compaction threshold low (the `compaction.*` config) and drive a session past x%. The trigger must fire from measured counts (estimated counts are ignored) between steps, never inside one.
+- Observe:
+  - a "Summarizing context" event with trigger auto;
+  - the summarization injection at that step;
+  - the next request = system + summary + the head question verbatim + new steps;
+  - Codex resets with `ops_reset`.
+
+**5. Manual compaction: the session menu, and the context panel's "Compact now" with a scope.**
+- Expect the same events and record; the record sits between turns.
+- After a restart, the transcript is byte-equal.
+- **Quality:** read the summary against the transcript. Does it keep paths, columns, numbers and open questions? Can the agent continue the task from it? Ask "what were we doing and what's next?" after the compaction.
+- **Prompt file:** point `compaction.prompt_file` at a custom template and confirm the summarizer received it. A broken file gives a typed failure, the notice and a doctor row, with nothing folded.
+- **Recall:** "pull up the original messages that summary replaced" → `recall_context` returns them byte-exact. Search reports "unavailable" while clio-core#905 stands.
+
+**6. BestOfN and Refine (Phase 9 validates the DSPy integration).**
+- Give the base agent's prompt a line saying to use `draft_alternatives` when a request has several good answers. Then ask: "write an email to Dana about the delayed shipment".
+- **best_of_n, user judge:** parallel tries show as live tabs; the pick question appears; picking one continues the conversation from that draft.
+- **refine:** a comment on a pick gives a next try that carries the advice, until it is accepted.
+- **LM judge:** BestOfN keeps the highest score, and the threshold stops early.
+- **Spawn a subagent with a `strategy`.**
+- **Supersede, cancel, expiry:** send a new message instead of picking (the run shows superseded, and a late pick gets a 409), cancel the question, and let a short-expiry question run out.
+- The preference record holds all of it (`/v1/sessions/{sid}/variant-runs`), and a reload shows the same tabs.
+
+**7. Context system (11a).**
+- Long sessions stay fast: the 1k/10k benchmark (gate below), plus a real 2-hour session that keeps responsiveness.
+- An **old session from develop** (stored before the index) opens: the one-time migration runs, and its transcript and context are intact.
+- **History mode:** with clio-core unavailable, the badge shows, the doctor reports DEGRADED, and compaction or context routes return 409. Nothing silent.
+
+**8. Transcript file switch.**
+- With `transcript.file: false`, run a full session with undo, rewind, fork, compact and import, then restart: everything is intact and `messages/` is never created.
+- A failed replace (kill the daemon in the middle of an undo) leaves the old transcript intact with a typed error.
+- A session delete that fails its clio-core erase returns a 503, the session is kept, and the retry finishes.
+
+**9. MCP client and slow machines (#1577).**
+- **Cold MCP start:** a fresh `uv` cache for a clio-kit server takes minutes. It must not fail while it is working, and a truly hung server fails typed at the no-progress window.
+- **Slow daemon start:** throttle the machine; the daemon is waited for, never killed while starting.
+- **Stop:** no orphan `clio_run` is left after a stop, including a suspended daemon.
+- **A Claude Code answer longer than 3 minutes** completes; it is bounded by inter-message idle only.
+- **Permission request timeout:** the model is told "timed out" and the UI card resolves.
+- **A slow upstream through the sandbox network chokepoint** is relayed in full.
+- **LM Studio:** a model that loads slowly, and the "already loaded" check.
+- **Provider probes** on a cold machine report "slow" rather than "not installed" or "signed out".
+
+**10. Fixes recorded and told (Phase 4), and injections.**
+- A malformed tool argument is repaired, a path is grounded, the circuit breaker trips: each firing appears in the UI as an injection and the model is told next to the result.
+- Plan reminder and todo injections are recorded once.
+
+**11. Subagents and delegation.** One deep-research run checks alternative execution modes, division of labour, and child results at the step boundary.
+
+#### C. Speed and regression only
+Run `bash live/bench/suite.sh rework <tag>` and compare with the develop baselines in `D:/t/bench/baseline-*` using `live/bench/report.py`. The scenarios are earthscope-single-agent, deep-researcher, factorio-flat (evals), data-semantics and OPAL exp67, the last via `live/drive.py` with the base APPL-CORE pack. The legs:
+- `preflight`, leg C and the goal judge passed on `1f454adc`.
+- `leg_compaction` is on the Phase 11b contract (#1586). Replaying the `1f454adc` evidence passed 28 of 28. The live run must confirm recall by compaction id and whole-row byte-equality.
+- Leg B needs `WEB_REMOTE_URL`, a local `clio-web-search` container.
+- Stress, plus legs A and D per `scripts/live_verification/RUNBOOK.md`.
+
+For OPAL, the quality checklist is: the DBL_MAX sentinel, the ghost band columns, unflagged empty rows, the RGB2 scale, clipping. The baseline is `runs/exp67-first-contact` (2348 / 427 / 308 s).
+
+#### D. Release gates (end only)
+1. **The 1k/10k context-view benchmark:** `scripts/bench_context_view.py --sizes 1000,10000` on `037e66ec` (before) and on the tip (after). Warm read and append must be flat from 1k to 10k, and a cold read must touch only the chunks after the anchor.
+2. **The Chrome UI check (owner):**
    - thinking streaming;
-   - concurrent tool calls;
+   - concurrent tools;
    - injections;
-   - compaction: the "Summarizing context" shimmer becomes the "Summarization" injection, and a failure becomes the notice;
+   - compaction (shimmer → Summarization injection; failure → notice);
    - fixes;
    - steer and cancel;
-   - variant tabs (pick, refine comment; closed runs show superseded, cancelled or expired);
+   - variant tabs (pick, refine, closed states);
    - the History-mode badge;
    - reload == live.
-8. **Marketplace:** run the APPL pack's lint and tests against the tip, then merge `clio-agent-marketplace` `feat/appl-core-pack` into `main`, at release.
-9. **Releases, owner:**
-   - clio-schemas 0.5.2 (iowarp/clio-schemas#18), then bump clio-agent's `clio-schemas` pin;
-   - then the two PRs `rework_agent` → `develop`.
-
-### Release gates (end only)
-- the Chrome-driven UI verification (owner);
-- the 1k/10k context-view benchmark, `037e66ec` vs the `rework_agent` tip;
-- then the PRs into `develop`, and the merge of marketplace `feat/appl-core-pack` into `main`.
+3. **Releases (owner):**
+   - clio-schemas 0.5.2 (iowarp/clio-schemas#18), then bump the clio-agent pin;
+   - the APPL pack's lint and tests against the tip, then merge marketplace `feat/appl-core-pack` into `main`;
+   - the two PRs `rework_agent` → `develop`.
 
 ## Definition of done
 
