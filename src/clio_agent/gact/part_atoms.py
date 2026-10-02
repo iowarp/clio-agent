@@ -64,6 +64,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.arc.lane_chunking import chunk_for_append, lane_segments
+from clio_agent.arc.lane_generations import current_base
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.gact.types import Message
@@ -581,40 +582,50 @@ def _append_segment_raw(
         return seg
 
 
-def append_part_atom(store: Any, session_id: str, content: dict[str, Any]) -> Segment:
+def append_part_atom(
+    store: Any, session_id: str, content: dict[str, Any], *, lane: str | None = None
+) -> Segment:
     """Append ONE atom ``content`` to the session's ``_events/m`` lane — THE atom writer
     seam (#1339): every mint path funnels through here, so it is the ONE place that
     resolves the lane's active chunk.
 
-    Reserves a slot in the active chunk (:func:`~clio_agent.arc.lane_chunking.chunk_for_append`,
+    The lane is written under its own scope lock, which a whole-lane replace
+    (:func:`~clio_agent.arc.lane_generations.replace_lane`) also holds, and lands in the
+    generation the lane's pointer names now (``lane=None``) -- or, for the replace's
+    own writer, in the new generation's base it was handed (``lane``). Reserves a slot
+    in that generation's active chunk (:func:`~clio_agent.arc.lane_chunking.chunk_for_append`,
     capacity :func:`_chunk_capacity`) and appends the atom there via the raw append
-    (§2.9). Used by the eager path (the per-turn minter seals one part at a time) and by
-    ``live_edge`` for its own explicit-scope sibling partition (unchunked, ``.../edge``).
+    (§2.9). Used by the eager path (the per-turn minter seals one part at a time), the
+    batch mints and the replace.
     """
 
-    scope = chunk_for_append(store, session_id, MESSAGE_PART_SCOPE, capacity=_chunk_capacity())
-    return _append_segment_raw(store, session_id, scope, MESSAGE_PART_KIND, content)
+    with store._lock_for(session_id, MESSAGE_PART_SCOPE):
+        base = lane if lane is not None else current_base(store, session_id, MESSAGE_PART_SCOPE)
+        scope = chunk_for_append(store, session_id, base, capacity=_chunk_capacity())
+        return _append_segment_raw(store, session_id, scope, MESSAGE_PART_KIND, content)
 
 
-def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list[Segment]:
+def mint_message_part_atoms(
+    arc: Any, session_id: str, message: Message, *, lane: str | None = None
+) -> list[Segment]:
     """Mint + durably append one message's ``message_part`` atoms to the canonical log.
 
     Builds the atoms (:func:`build_message_part_atoms`) and appends each through
-    :func:`append_part_atom` (the chunked writer seam). The atoms are written ALONGSIDE
-    the existing ``final_message`` / messages-store copy (dual-write); no reader
-    consumes them until S5.
+    :func:`append_part_atom` (the chunked writer seam), into the lane's current
+    generation or, from a whole-lane replace, into ``lane``.
 
     Args:
         arc: The process ARC memory (``ARCMemory``); its ``_segments`` store is used.
         session_id: Owning session.
         message: The persisted gact message to provision atoms for.
+        lane: The generation base a replace is writing (``None``: the current one).
 
     Returns:
         The appended segments (one per atom).
     """
     store = arc._segments
     return [
-        append_part_atom(store, session_id, content)
+        append_part_atom(store, session_id, content, lane=lane)
         for content in build_message_part_atoms(message)
     ]
 
@@ -622,7 +633,7 @@ def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list
 def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[str, Any]]]:
     """Read a session's persisted ``message_part`` atoms, grouped by ``message_id``.
 
-    Loads the ``_events/m`` lane — every present chunk, concatenated in append order
+    Loads the ``_events/m`` lane's current generation — every present chunk, concatenated in append order
     (:func:`~clio_agent.arc.lane_chunking.lane_segments`), re-reading from the store when
     the hot copy was evicted — the eviction+rehydration path the identity pin exercises —
     returning ``{message_id: [atom-content, ...]}`` with each group sorted into
@@ -637,7 +648,8 @@ def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[st
     """
     store = arc._segments
     groups: dict[str, list[dict[str, Any]]] = {}
-    for seg in lane_segments(store, session_id, MESSAGE_PART_SCOPE, include_tombstoned=True):
+    base = current_base(store, session_id, MESSAGE_PART_SCOPE)
+    for seg in lane_segments(store, session_id, base, include_tombstoned=True):
         content = seg.content
         groups.setdefault(str(content.get("message_id") or ""), []).append(content)
     for atoms in groups.values():

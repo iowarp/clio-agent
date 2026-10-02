@@ -95,6 +95,9 @@ SegmentKind = Literal[
     "variant_record",  # Phase 9: one snapshot of a BestOfN / Refine run (its tries, the
     # judge's scores or the user's pick, comment, advice) on the ``_events/v`` lane --
     # the run's state across a pause and its preference record (gact/agents/variant_records.py).
+    "lane_generation",  # the one-segment pointer naming a chunked lane's current
+    # generation (``<lane>/gen``, arc/lane_generations.py); never content, ignored by
+    # every reader but the lane's own.
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 

@@ -317,13 +317,14 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         store.delete_session(session_id)
     # #737 S5: drop the session's canonical atom lane (transcript projection erasure);
     # ARC memory is untouched (gact_visible_transcript_only). Cheap when no atoms exist.
+    from clio_agent.arc.lane_generations import LaneReplaceError  # noqa: PLC0415
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
         on_ledger_deleted,
     )
 
     try:
         on_ledger_deleted(app, session_id)
-    except RuntimeError as exc:
+    except (RuntimeError, LaneReplaceError) as exc:
         # The session row and durable message ledger are already deleted at this
         # point. A native ARC cleanup failure must not turn that completed delete
         # into a misleading HTTP 500 or make the caller retry a now-missing row.
