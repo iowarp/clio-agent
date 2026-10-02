@@ -25,6 +25,30 @@
 @import '@fontsource/ibm-plex-mono/400.css';
 @import '@fontsource/ibm-plex-mono/500.css';
 
+.widget-gallery-open {
+	display: inline-flex;
+	margin-block: 0.75rem 1rem;
+	font-weight: 600;
+}
+
+.widget-gallery-doc {
+	width: 100%;
+	margin-block: 1rem 2rem;
+}
+
+.sl-container:has(.widget-gallery-doc) {
+	max-width: none;
+}
+
+.widget-gallery-frame {
+	display: block;
+	width: 100%;
+	min-height: 650px;
+	border: 1px solid var(--line);
+	border-radius: 0.75rem;
+	background: var(--paper);
+}
+
 @custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
 
 /* ---------- Brand tokens ---------- */
