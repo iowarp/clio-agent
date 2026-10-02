@@ -1592,13 +1592,17 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - MCP connect, discovery, probe and reconnect use `wait_while_server_works`. New key `tools.mcp.no_progress_s`; the old timeout keys are removed and rejected typed.
   - Finalize drains are progress-based.
   - Left for #1112: the daemon's own watchdog in place of CPU+I/O.
-- **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
-  - Claude Code inter-message idle bound;
-  - no silent cut in `net_chokepoint`;
-  - a typed timeout in the permission gate;
-  - LM Studio checks;
-  - typed loop hand-offs;
-  - provider probes that tell slow from absent.
+- **Done (#1582): timeout semantics** (#1577, the rest).
+  - Claude Code is bounded by inter-message idle; the connect is progress-based.
+  - No silent cut in `net_chokepoint`.
+  - A typed `permission_request_timeout`, and the model is told.
+  - LM Studio checks and loads are typed.
+  - Typed loop hand-offs (`gact/loop_handoff.py`).
+  - Provider probes tell slow from absent (`runtime/process_progress.py`).
+  - Codex WebSocket ping set explicitly.
+  - Blueprint git steps are progress-based.
+  - Left, with reasons: the table query (no in-engine progress signal) and the detached-server stop on Windows (needs an authenticated shutdown route).
+- **Done (#1583): CI round three.** The fake turn states needed `user_msg`, and the hygiene audit's leak forensics is now injectable (a latent flake: a real process on the runner had the fake pid).
 
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
