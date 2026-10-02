@@ -21,7 +21,7 @@ from clio_agent.tools import launcher_cache_lock as lcl
 from clio_agent.tools.launcher_cache_lock import (
     LauncherCacheLockTimeoutError,
     acquire_launcher_cache_lock,
-    launcher_cache_lock_timeout_s,
+    launcher_cache_lock_hold_ceiling_s,
     uses_shared_launcher_cache,
 )
 from clio_agent.tools.mcp_config import MCPServerSpec
@@ -44,13 +44,46 @@ def _mp_hold_lock_until_killed(cache_dir: str, ready_evt: Any, server_id: str) -
             time.sleep(0.05)
 
 
-def test_default_timeout_is_a_positive_bound() -> None:
-    assert launcher_cache_lock_timeout_s() > 0
+def test_the_hold_ceiling_is_the_connect_ceiling_plus_one_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No flat 600 s: one holder may keep the lock as long as its own connect can take
+    (``tools.mcp.max_wait_s``) plus one ``tools.mcp.no_progress_s`` window."""
+    monkeypatch.delenv("CLIO_MCP_MAX_WAIT_S", raising=False)
+    monkeypatch.delenv("CLIO_MCP_NO_PROGRESS_S", raising=False)
+    assert launcher_cache_lock_hold_ceiling_s() == 210.0
+    monkeypatch.setenv("CLIO_MCP_MAX_WAIT_S", "100")
+    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "5")
+    assert launcher_cache_lock_hold_ceiling_s() == 105.0
 
 
-def test_timeout_config_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S", "42")
-    assert launcher_cache_lock_timeout_s() == 42.0
+def test_a_queue_of_holders_is_waited_out_past_the_hold_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every hand-off is progress: three sibling cold spawns in THIS process hold the
+    lock 0.4 s each (1.2 s in all); a waiter whose hold ceiling is 0.6 s still gets it.
+
+    **Sabotage:** time the whole wait (the old flat runaway deadline), or identify the
+    holder by pid alone (every in-process holder has the same pid) -> the waiter raises.
+    """
+    monkeypatch.setattr(lcl, "_POLL_INTERVAL_S", 0.05)
+    order: list[str] = []
+    first_held = threading.Event()
+
+    def _sibling_spawns() -> None:
+        for n in range(3):
+            with acquire_launcher_cache_lock(f"h{n}", timeout_s=30.0):
+                order.append(f"h{n}")
+                first_held.set()
+                time.sleep(0.4)
+
+    siblings = threading.Thread(target=_sibling_spawns)
+    siblings.start()
+    assert first_held.wait(5.0)
+    with acquire_launcher_cache_lock("waiter", timeout_s=0.6):
+        order.append("waiter")
+    siblings.join(timeout=10.0)
+    assert order.index("waiter") >= 2, order  # it waited through at least one hand-off
 
 
 def test_uses_shared_launcher_cache_true_for_plain_stdio_spec() -> None:

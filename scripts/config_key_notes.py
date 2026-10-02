@@ -581,10 +581,6 @@ KEY_NOTES: dict[str, str] = {
         "Byte cap on one MCP content block's decoded binary payload (image/audio/resource) before "
         "it's elided; raise for larger images."
     ),
-    "limits.mcp_reconnect_timeout_s": (
-        "Seconds bounding the connect+list-tools round-trip when reconnecting an MCP server; raise "
-        "for a slow-starting server."
-    ),
     "limits.model_tool_result_chars": (
         "Characters of a tool result shown to the model; a longer result is saved to the "
         "session's tool-output folder and the agent gets this many head characters plus the "
@@ -1152,10 +1148,6 @@ KEY_NOTES: dict[str, str] = {
         "Runaway backstop seconds for one synchronous MCP tool call before it's abandoned; not the "
         "real per-tool clock -- raise only if tools hit it."
     ),
-    "tools.mcp.cold_spawn_runaway_s": (
-        "Generous backstop seconds for one MCP namespace's discovery/connect attempt before it's "
-        "marked unreachable; raise for slow cold spawns."
-    ),
     "tools.mcp.connect_mode": (
         'MCP protocol-era negotiation mode; "auto" probes modern then falls to legacy. Pin a '
         'version or "legacy" for a misbehaving server.'
@@ -1210,21 +1202,23 @@ KEY_NOTES: dict[str, str] = {
         "Round cap on the modern-era InputRequiredResult retry loop for one tool call; raise for "
         "tools needing many follow-up inputs."
     ),
-    "tools.mcp.launcher_cache_lock_timeout_s": (
-        "Generous runaway backstop while waiting on the shared uv-launcher cache lock; fires only "
-        "on a livelocked/unidentifiable holder."
-    ),
     "tools.mcp.listing_ttl_h": (
         "Hours a cached MCP tool listing stays valid before a live relist is forced; lower to pick "
         "up upstream tool changes sooner."
     ),
     "tools.mcp.max_wait_s": (
-        "Ceiling (seconds) on waiting for an MCP server that is still visibly starting (its "
-        "process tree working); until then a slow start never spends the probe retry budget."
+        "Ceiling (seconds) on waiting for an MCP server that is still visibly starting (its own "
+        "process tree working): connect, listing, reconnect; also bounds one launcher-cache-lock "
+        "holder (plus one no-progress window)."
     ),
     "tools.mcp.mount_retry_delays_s": (
         "Increasing waits (seconds, comma-separated) between an on-demand MCP mount's retry "
         "attempts; list length is the retry budget."
+    ),
+    "tools.mcp.no_progress_s": (
+        "Seconds an MCP connect or listing may go with no answer AND no work in the server's own "
+        "process tree before it fails typed; a server still working is waited for up to "
+        "tools.mcp.max_wait_s."
     ),
     "tools.mcp.probe_timeout_retries": (
         "Retries of the era-negotiation probe after a client-side timeout before giving up; raise "
@@ -1238,10 +1232,6 @@ KEY_NOTES: dict[str, str] = {
         "Start a session's MCP servers (its blueprint's and any always-load service) in the "
         "background when the session is created or a blueprint is activated, so the first "
         "message does not wait for them; set false to start servers only when a turn needs them."
-    ),
-    "tools.mcp.setup_timeout_s": (
-        "Seconds allowed for an MCP tool executor's startup handshake; raise for servers with slow "
-        "cold starts, lower to fail faster."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "

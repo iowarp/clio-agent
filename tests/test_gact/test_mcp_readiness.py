@@ -14,21 +14,23 @@ from clio_agent.gact.events import EventBus
 
 
 class _Executor:
-    def __init__(self, *, fail_connect_once: bool = False) -> None:
+    def __init__(self, *, fail_connect_once: bool = False, stall: bool = False) -> None:
         self.fail_connect_once = fail_connect_once
+        self.stall = stall
         self.connect_attempts = 0
-        self.connect_timeouts: list[float | None] = []
         self.merged: dict[str, Any] = {}
-        self._setup_timeout = 10.0
 
     def merge_namespace_tools(self, namespace: str, tools: dict[str, Any]) -> None:
         del namespace
         self.merged.update(tools)
 
-    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
+    def prepare_namespace(self, namespace: str) -> None:
         assert namespace == "geo"
         self.connect_attempts += 1
-        self.connect_timeouts.append(timeout)
+        if self.stall:
+            from clio_agent.tools.mcp_server_progress import NoProgressTimeout
+
+            raise NoProgressTimeout("connect", "no_progress", 30.0, 30.0)
         if self.fail_connect_once and self.connect_attempts == 1:
             raise ConnectionRefusedError("private endpoint detail")
 
@@ -60,7 +62,6 @@ def test_mount_retries_persistent_connect_with_a_typed_reason(
 
     assert set(tools) == {"geo_geocode"}
     assert executor.connect_attempts == 2
-    assert executor.connect_timeouts == [10.0, 30.0]
     assert sleeps == [0.25]
     assert [(event["phase"], event["state"]) for event in events] == [
         ("launch", "running"),
@@ -130,6 +131,29 @@ def test_terminal_launcher_failure_raises_without_retrying(
         ("launch", "failed"),
     ]
     assert events[-1]["reason"] == "mcp_namespace_discovery_unreachable"
+
+
+def test_a_connect_that_stopped_progressing_is_not_restarted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connect already waited out its no-progress window (the server's own tree did
+    nothing); restarting it would only repeat that. Typed, terminal, one attempt.
+
+    **Sabotage:** treat ``NoProgressTimeout`` as retryable -> 3 connect attempts.
+    """
+    from clio_agent.tools.mcp_server_progress import NoProgressTimeout
+
+    executor = _Executor(stall=True)
+    monkeypatch.setattr(
+        "clio_agent.tools.mcp_discovery.ensure_namespace",
+        lambda namespace, spec: {"geo_geocode": SimpleNamespace(name="geo_geocode")},
+    )
+    monkeypatch.setattr(mcp_readiness, "_publish_dependency_state", lambda *a, **k: None)
+    with pytest.raises(NoProgressTimeout):
+        mcp_readiness.mount_namespace_for_session(
+            executor, "geo", SimpleNamespace(name="g"), retry_delays_s=(0.0, 0.0)
+        )
+    assert executor.connect_attempts == 1
 
 
 def test_namespace_title_preserves_known_acronyms() -> None:

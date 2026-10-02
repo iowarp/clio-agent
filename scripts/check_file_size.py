@@ -601,7 +601,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 970,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 947,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -956,7 +956,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1101,  # path hints moved to tools/path_hints.py
+    "src/clio_agent/tools/execution.py": 1081,  # path hints moved to tools/path_hints.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

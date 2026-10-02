@@ -16,7 +16,7 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
 * ``DELETE /v1/mcp/servers/{sid}`` -- uninstall a third-party server (gated by the
   shared direct-destructive-action permission guard).
 * ``POST /v1/mcp/servers/{sid}/reconnect`` -- re-probe a previously-installed
-  server's stored transport spec (timeout-bounded; non-destructive).
+  server's stored transport spec (progress-bounded; non-destructive).
 * ``GET /v1/mcp/servers/{sid}`` -- detail row for one server.
 * ``GET /v1/mcp/servers/{sid}/(tools|resources|prompts)`` and ``POST .../prompts/get``
   -- detail enumeration plus protocol prompt fetches (bundled via the in-process
@@ -75,30 +75,6 @@ from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-
-def _mcp_reconnect_timeout_s() -> float:
-    """Return the MCP reconnect/probe timeout in seconds.
-
-    Bounds the connect + ``list_tools`` round-trip in
-    ``POST /v1/mcp/servers/{sid}/reconnect`` so a hung MCP server cannot
-    block the route indefinitely. Defaults to 15s (a sensible ceiling for
-    a stdio spawn + first tool listing) and is overridable via
-    ``CLIO_GACT_MCP_RECONNECT_TIMEOUT_S``. A non-positive or unparseable
-    value falls back to the 15s default rather than disabling the guard."""
-
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    try:
-        value = conf.resolve(
-            "limits.mcp_reconnect_timeout_s",
-            env="CLIO_GACT_MCP_RECONNECT_TIMEOUT_S",
-            default=15.0,
-            cast=conf.as_float,
-        )
-    except (ValueError, TypeError):
-        return 15.0
-    return value if value > 0 else 15.0
 
 
 def _external_mcp_tool_annotations(info: Mapping[str, Any], tool_name: str) -> Any:
@@ -682,14 +658,15 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         except MCPTransportError as exc:
             raise _spec_invalid(f"MCP server {sid} cannot reconnect: {exc}") from exc
 
-        # Re-probe identically to install: open, list tools, close. The whole
-        # connect + list-tools round-trip is bounded by a timeout so a hung
-        # MCP server cannot hang the route.
-        reconnect_timeout = _mcp_reconnect_timeout_s()
+        # Re-probe identically to install: open, list tools, close. Progress-bounded: a
+        # server still starting is waited for while its own process tree works; one
+        # that stops progressing (or reaches tools.mcp.max_wait_s) cannot hang the route.
+        from clio_agent.tools.mcp_server_progress import wait_while_server_works
+
         tool_names: list[str] = []
         tool_annotations: dict[str, dict[str, Any] | None] = {}
         connect_error: Optional[str] = None
-        timed_out = False
+        timed_out: TimeoutError | None = None
 
         async def _probe() -> tuple[list[str], dict[str, dict[str, Any] | None]]:
             async with Client(transport) as client:
@@ -700,11 +677,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
 
         try:
-            tool_names, tool_annotations = await asyncio.wait_for(
-                _probe(), timeout=reconnect_timeout
+            tool_names, tool_annotations = await wait_while_server_works(
+                _probe(), op_name="reconnect"
             )
-        except (asyncio.TimeoutError, TimeoutError):
-            timed_out = True
+        except TimeoutError as exc:
+            timed_out = exc
         except Exception as exc:  # noqa: BLE001
             connect_error = repr(exc)
 
@@ -712,8 +689,8 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         # half-updated. Mark status="error" with a timeout message but preserve
         # the previously-known tool list (a hung probe tells us nothing new),
         # then surface the timeout to SSE clients and return a structured 504.
-        if timed_out:
-            timeout_msg = f"MCP server reconnect timed out after {reconnect_timeout:g}s"
+        if timed_out is not None:
+            timeout_msg = f"MCP server reconnect timed out: {timed_out}"
             info["status"] = "error"
             info["error"] = timeout_msg
             installed[sid] = info  # tools untouched: registry stays consistent
@@ -736,7 +713,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     error=ErrorInfo(
                         error="mcp_reconnect_timeout",
                         message=timeout_msg,
-                        details={"id": sid, "timeout_s": reconnect_timeout},
+                        details={"id": sid, "reason": getattr(timed_out, "reason", "")},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),

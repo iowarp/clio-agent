@@ -466,8 +466,9 @@ def reject_removed_config_keys() -> None:
     """
     from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
     from clio_agent.errors import RemovedConfigKeyError  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import REMOVED_DEADLINE_KEYS  # noqa: PLC0415
 
-    for key, env, removed in REMOVED_CONFIG_KEYS:
+    for key, env, removed in (*REMOVED_CONFIG_KEYS, *REMOVED_DEADLINE_KEYS):
         locations = conf.store().where_set(key, env=env)
         if locations:
             raise RemovedConfigKeyError(

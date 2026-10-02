@@ -128,33 +128,38 @@ class SyncNamespacePreparationMixin:
 
     _async_executor: Any
     _closed: bool
-    _setup_timeout: float
+    _loop: asyncio.AbstractEventLoop
 
-    def _run_coroutine(self, coro: Any, *, timeout: float, action: str) -> Any:
-        raise NotImplementedError
+    def _run_while_server_works(self, coro: Any, *, action: str) -> Any:
+        """Run ``coro`` on the executor loop while the MCP server(s) it starts keep working.
+
+        No fixed deadline: a server still starting on a slow machine is waited for while
+        its own process tree works, up to ``tools.mcp.max_wait_s``; a whole
+        ``tools.mcp.no_progress_s`` window with no answer and no server work raises the
+        typed :class:`~clio_agent.tools.mcp_server_progress.NoProgressTimeout`.
+        """
+        from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
+
+        waiting = wait_while_server_works(coro, op_name=action)
+        return asyncio.run_coroutine_threadsafe(waiting, self._loop).result()
 
     def merge_namespace_tools(self, namespace: str, tools: Mapping[str, Any]) -> None:
         """Merge freshly mounted definitions into the live async executor."""
 
         self._async_executor.merge_namespace_tools(namespace, tools)
 
-    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
+    def prepare_namespace(self, namespace: str) -> None:
         """Establish and cache a declared namespace's persistent connection.
 
-        ``timeout`` lets the session-readiness boundary widen successive cold
-        start attempts without mutating this executor's configured baseline.
-        Ordinary callers retain the configured setup timeout.
+        Progress-based (:meth:`_run_while_server_works`): a connect whose server is
+        still visibly starting is never cut off and restarted.
         """
 
         if self._closed:
             raise RuntimeError("SyncMCPToolExecutor is closed")
-        effective_timeout = self._setup_timeout if timeout is None else timeout
-        if effective_timeout <= 0:
-            raise ValueError("namespace setup timeout must be positive")
-        self._run_coroutine(
+        self._run_while_server_works(
             self._async_executor.prepare_namespace(namespace),
-            timeout=effective_timeout,
-            action=f"MCP namespace {namespace!r} setup",
+            action=f"namespace {namespace!r} connect",
         )
 
     def is_namespace_prepared(self, namespace: str) -> bool:

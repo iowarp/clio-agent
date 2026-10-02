@@ -42,8 +42,23 @@ TUI/HTTP surface aren't tracked here.
   `text`, `tokens` and, when judged, `score`; or `failed` with `error`); every variant
   event and `variant_selection` carries the run's `variants_id`. A variant try's
   streamed text goes to its `variant.try.delta` tab, no longer into the turn's answer.
+- MCP and clio-core waits are progress-based (#1577). An MCP connect, listing or
+  `POST /v1/mcp/servers/{sid}/reconnect` waits while the server's own process tree
+  works, up to `tools.mcp.max_wait_s` (180 s); a `tools.mcp.no_progress_s` window
+  (default 30 s) with no answer and no server work is a typed failure. The reconnect
+  route's `504 mcp_reconnect_timeout` carries `details.reason` (`no_progress` or
+  `ceiling`) in place of `details.timeout_s`. A clio-core daemon still starting, a slow
+  write, the native attach and `initialize_cte` are waited for while the daemon
+  progresses (`arc.liveness.max_wait_s`); a daemon that cannot be located is
+  `clio_core_daemon_pid_unresolved`, a daemon still starting at the ceiling is
+  `clio_core_daemon_start_ceiling` and is left running for the next attach.
 
 ### Removed
+
+- `tools.mcp.setup_timeout_s`, `tools.mcp.cold_spawn_runaway_s`,
+  `tools.mcp.launcher_cache_lock_timeout_s` and `limits.mcp_reconnect_timeout_s` (and
+  their `CLIO_*` variables): replaced by the progress-based waits above. A leftover one
+  is a typed `config_key_removed` error naming where it is set.
 
 - `POST /v1/sessions/{sid}/context/compact` (use `POST /v1/sessions/{sid}/compact?scope=`),
   the `session.compacted` event and the `compaction` part: new compactions never write

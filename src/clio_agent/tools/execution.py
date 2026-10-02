@@ -458,7 +458,6 @@ def create_sync_tool_executor(
     server: Any,
     *,
     timeout: float | None = None,
-    setup_timeout: float | None = None,
     tool_timeouts: Mapping[str, float] | None = None,
     client_factory: ClientFactory | None = None,
     preloaded_tools: Mapping[str, Any] | None = None,
@@ -479,20 +478,9 @@ def create_sync_tool_executor(
         if timeout is None
         else timeout
     )
-    effective_setup_timeout = (
-        conf.resolve(
-            "tools.mcp.setup_timeout_s",
-            env="CLIO_MCP_SETUP_TIMEOUT_S",
-            default=10.0,
-            cast=conf.as_float,
-        )
-        if setup_timeout is None
-        else setup_timeout
-    )
     return SyncMCPToolExecutor(
         server,
         timeout=effective_timeout,
-        setup_timeout=effective_setup_timeout,
         tool_timeouts=tool_timeouts,
         client_factory=client_factory,
         preloaded_tools=preloaded_tools,
@@ -513,7 +501,6 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         self,
         server: Any,
         timeout: float = 30.0,
-        setup_timeout: float = 10.0,
         tool_timeouts: Mapping[str, float] | None = None,
         client_factory: ClientFactory | None = None,
         permission_gate: PermissionGate | None = None,
@@ -524,12 +511,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
     ):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
-        if setup_timeout <= 0:
-            raise ValueError("setup_timeout must be positive")
         cleaned_tool_timeouts = _clean_tool_timeouts(tool_timeouts)
 
         self._timeout = timeout
-        self._setup_timeout = setup_timeout
         self._tool_timeouts = cleaned_tool_timeouts
         self._async_executor = AsyncMCPToolExecutor(
             server,
@@ -570,12 +554,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         )
         self._thread.start()
 
-        try:
-            self._run_coroutine(
-                self._async_executor.start(),
-                timeout=setup_timeout,
-                action="MCP executor setup",
-            )
+        try:  # progress-based: waits while the servers it starts keep working
+            self._run_while_server_works(self._async_executor.start(), action="executor setup")
         except TimeoutError:
             self.close()
             raise

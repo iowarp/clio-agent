@@ -56,9 +56,9 @@ class _FakeSession:
 @pytest.fixture(autouse=True)
 def _no_server_progress(monkeypatch: pytest.MonkeyPatch) -> None:
     """By default the server process tree does no work (deterministic budget tests)."""
-    from clio_agent.arc import daemon_progress
+    from clio_agent.tools import mcp_server_progress
 
-    monkeypatch.setattr(daemon_progress, "descendants_work", lambda: 0.0)
+    monkeypatch.setattr(mcp_server_progress, "server_work", lambda: 0.0)
 
 
 def _timeout() -> MCPError:
@@ -198,7 +198,7 @@ async def test_a_server_still_starting_is_waited_for_beyond_the_retry_budget(
 ) -> None:
     """A slow machine is not a failure: while the server's process tree keeps working
     (uv installing, Python importing), a probe timeout does not spend the budget."""
-    from clio_agent.arc import daemon_progress
+    from clio_agent.tools import mcp_server_progress
 
     work = {"w": 0.0}
 
@@ -206,7 +206,7 @@ async def test_a_server_still_starting_is_waited_for_beyond_the_retry_budget(
         work["w"] += 1.0
         return work["w"]
 
-    monkeypatch.setattr(daemon_progress, "descendants_work", advancing)
+    monkeypatch.setattr(mcp_server_progress, "server_work", advancing)
     session = _FakeSession([_timeout()] * 8 + [_good_discover()])  # 8 > the budget of 3
 
     await hardened_negotiate_auto(session)
@@ -217,8 +217,7 @@ async def test_a_server_still_starting_is_waited_for_beyond_the_retry_budget(
 
 @pytest.mark.asyncio
 async def test_even_a_working_server_stops_at_the_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.arc import daemon_progress
-    from clio_agent.tools import mcp_probe_hardening
+    from clio_agent.tools import mcp_server_progress
 
     work = {"w": 0.0}
 
@@ -226,8 +225,8 @@ async def test_even_a_working_server_stops_at_the_ceiling(monkeypatch: pytest.Mo
         work["w"] += 1.0
         return work["w"]
 
-    monkeypatch.setattr(daemon_progress, "descendants_work", advancing)
-    monkeypatch.setattr(mcp_probe_hardening, "mcp_max_wait_s", lambda: 0.0)
+    monkeypatch.setattr(mcp_server_progress, "server_work", advancing)
+    monkeypatch.setattr(mcp_server_progress, "mcp_max_wait_s", lambda: 0.0)
     session = _FakeSession([_timeout()] * 10)
 
     with pytest.raises(MCPError) as exc_info:
