@@ -23,6 +23,7 @@ The build reads the CLIO version from `../pyproject.toml`, so run it from inside
 | Path | What it holds |
 |---|---|
 | `src/content/docs/index.mdx` | The overview page. Its sections are components in `src/components/overview/`, and its copy is in `src/data/overview.ts`. |
+| `src/content/docs/docs/widgets.mdx` | The interactive Widgets page, backed by the production gact-tui gallery. |
 | `src/content/docs/docs/` | User docs. Add a page here, then list it in the `sidebar` in `astro.config.mjs`. |
 | `src/content/docs/tutorials/guides/` | Tutorials. They appear in the sidebar automatically. |
 | `src/assets/captures/` | Product captures used on the overview. |
@@ -33,6 +34,12 @@ The build reads the CLIO version from `../pyproject.toml`, so run it from inside
 | `src/components/ui/`, `src/components/reui/` | shadcn and reui components, added with `pnpm dlx shadcn@latest add`. Do not hand-roll a replacement for one of these. |
 
 Icons come from [Lucide](https://lucide.dev) (`lucide-react`). Do not draw your own SVG icons. The platform marks in `src/assets/platform-icons/` are vendored from Devicon; see the README in that folder.
+
+## Widget gallery
+
+The Widgets page embeds the standalone gallery from `gact-tui`. The Pages workflow checks out the pinned gact-tui commit, builds only its gallery entrypoint with `CLIO_GALLERY_STANDALONE=1`, and stages the result under `public/widgets/`. This generated directory is ignored by Git.
+
+For local review, build the gact-tui gallery and then run `node scripts/stage-widgets.mjs <path-to-gact-tui>/web/dist` from `site/` before `pnpm dev` or `pnpm build`. Update the workflow's pinned commit when a reviewed gallery change should appear on the public site.
 
 ## Add a tutorial
 

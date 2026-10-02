@@ -1,0 +1,42 @@
+<div class="widget-gallery-doc">
+	<iframe
+		class="widget-gallery-frame"
+		src="/widgets/widget-preview.html?embedded=1"
+		title="Interactive CLIO widget gallery"
+		loading="eager"
+		allow="clipboard-write"
+	></iframe>
+</div>
+
+<script>
+	const frame = document.querySelector<HTMLIFrameElement>('.widget-gallery-frame');
+	frame?.addEventListener('load', () => {
+		const page = frame.contentDocument;
+		if (!page) return;
+		const syncTheme = () => {
+			frame.contentWindow?.postMessage({
+				type: 'clio:gallery-theme',
+				theme: document.documentElement.dataset.theme === 'light' ? 'light' : 'dark',
+			}, window.location.origin);
+		};
+		new MutationObserver(syncTheme).observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['data-theme'],
+		});
+		syncTheme();
+		const content = page.getElementById('root');
+		const resize = () => {
+			frame.style.height = `${Math.max(
+				650,
+				page.documentElement.scrollHeight,
+				page.body.scrollHeight,
+				content?.scrollHeight ?? 0,
+			) + 4}px`;
+		};
+		const observer = new ResizeObserver(resize);
+		observer.observe(page.documentElement);
+		observer.observe(page.body);
+		if (content) observer.observe(content);
+		resize();
+	});
+</script>
