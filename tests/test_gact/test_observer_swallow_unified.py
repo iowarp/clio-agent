@@ -1,17 +1,14 @@
 """Slice 5 (#772): the hand-rolled observer swallows in ``routes/mcp.py`` and
 ``agents/builders.py`` are unified onto ``notify_tool_observer``.
 
-An observer that raises must never break the tool call, and — unlike the old
-bare ``except Exception: pass`` — the failure must be surfaced as a structured
-``reason=tool_observer_failed`` log line. These tests fail against the
-unfixed code (silent swallow, no log) and pass once both call sites route
-through ``notify_tool_observer``.
+The observer records the call in clio-core (the transcript and the UI read it
+from there). An observer that cannot record is NOT swallowed -- clio-core would
+no longer hold what the agent did -- so its failure reaches the caller typed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -111,7 +108,7 @@ def _patch_transport(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_builders_exploding_observer_does_not_break_tool_call(
+def test_builders_exploding_observer_fails_the_tool_call(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     import fastmcp
@@ -132,17 +129,11 @@ def test_builders_exploding_observer_does_not_break_tool_call(
     )
     info = {"name": "ext", "spec": {"transport": "stdio", "command": "x"}}
 
-    with caplog.at_level(logging.WARNING):
-        result = asyncio.run(
+    with pytest.raises(RuntimeError):
+        asyncio.run(
             builders._call_enabled_external_mcp_tool(app, "srv", info, "do_thing", {"a": 1})
         )
-
-    # The tool call still succeeds despite the observer blowing up on every phase.
-    assert result == "hello-from-tool"
-    # started + completed both attempted (observer saw both phases).
-    assert len(observer.calls) >= 2
-    # ...and each failure is surfaced, not swallowed.
-    assert "reason=tool_observer_failed" in caplog.text
+    assert observer.calls, "the observer was reached"
 
 
 def test_builders_observer_receives_structured_mcp_result(
@@ -190,7 +181,7 @@ def test_builders_observer_receives_structured_mcp_result(
 # --------------------------------------------------------------------------- #
 
 
-def test_mcp_route_exploding_observer_does_not_break_tool_call(
+def test_mcp_route_exploding_observer_fails_the_call_typed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:
     import fastmcp
@@ -208,16 +199,11 @@ def test_mcp_route_exploding_observer_does_not_break_tool_call(
     app.state.pending_permission_gate = lambda name, args: "allow"
     app.state.pending_tool_observer = observer
 
-    client = TestClient(app)
-    with caplog.at_level(logging.WARNING):
-        resp = client.post("/v1/mcp/servers/srv/call", json={"tool": "do_thing", "args": {"a": 1}})
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post("/v1/mcp/servers/srv/call", json={"tool": "do_thing", "args": {"a": 1}})
 
-    assert resp.status_code == 200, resp.text
-    payload = resp.json()
-    assert payload["tool"] == "do_thing"
-    assert payload["content"][0]["text"] == "hello-from-tool"
-    # The exploding observer's failures are surfaced, not silently swallowed.
-    assert "reason=tool_observer_failed" in caplog.text
+    assert resp.status_code == 500, resp.text
+    assert observer.calls, "the observer was reached"
 
 
 def test_mcp_route_observer_receives_structured_mcp_result(

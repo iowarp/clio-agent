@@ -197,22 +197,16 @@ def test_bare_resolve_imports_are_discovered_as_resolved_knobs() -> None:
     """``from clio_agent.conf import resolve`` call sites are conf knobs too.
 
     Regression: the walker only matched attribute calls (``conf.resolve``), so
-    the three config.py knobs resolved via a bare imported ``resolve(...)``
+    knobs resolved via a bare imported ``resolve(...)`` (``lm.policy.lm_retries``)
     were silently absent from both artifacts.
     """
     resolved, _ = _collect_root()
     by_env = {r.env: r for r in resolved}
-    for name in (
-        "CLIO_LM_TOKEN_LIVENESS",
-        "CLIO_LM_TRANSIENT_RETRIES",
-        "CLIO_LM_TRANSIENT_BACKOFF_S",
-    ):
-        assert name in by_env, f"{name} (bare resolve() call) missing from resolved knobs"
-    liveness = by_env["CLIO_LM_TOKEN_LIVENESS"]
-    # The bare-imported ``cast=as_bool`` must map to the bool label, not "str".
-    assert liveness.type_ == "bool"
-    assert liveness.default == "true"
-    assert liveness.key == "runtime.lm_token_liveness"
+    retries = by_env.get("CLIO_LM_TRANSIENT_RETRIES")
+    assert retries is not None, "CLIO_LM_TRANSIENT_RETRIES (bare resolve() call) missing"
+    # The bare-imported ``cast=as_float`` must map to the float label, not "str".
+    assert retries.type_ == "float"
+    assert retries.key == "limits.lm_transient_retries"
 
 
 def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
@@ -334,6 +328,8 @@ _RETIRED_ENV_SWITCHES = (
     "CLIO_TRANSCRIPT_PROJECTION",
     "CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
     "CLIO_LM_ROUTER_TEMPERATURE",
+    "CLIO_LM_PLANNER_TEMPERATURE",
+    "CLIO_LM_PLANNER_MAX_TOKENS",
 )
 
 

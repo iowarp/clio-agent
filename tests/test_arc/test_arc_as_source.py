@@ -26,7 +26,6 @@ from clio_agent.gact.semantic_events import (
     SemanticEvent,
     SemanticEventSink,
 )
-from tests._config_layer import set_config
 
 
 def _ev(event_type: str, *, sid: str = "s1", turn: str = "t1", **kw: Any) -> SemanticEvent:
@@ -161,13 +160,17 @@ def test_expert_scope_render_excludes_events(tmp_path):
     assert all(s.scope == "agentA" for s in ws)
     assert all(s.kind != "semantic_event" for s in ws)
 
-    # The trajectory projection (the model prompt) carries no reserved scope.
-    keys = arc.render_segments_keys("s1", "agentA")
-    assert keys == {"thought_0": "T0", "observation_0": "O0"}
+    # The expert scope's full render (the agent context's source) carries no reserved
+    # scope content either.
+    rendered = arc.render_segments("s1", "agentA")
+    assert [(s.kind, s.content.get("text")) for s in rendered] == [
+        ("thought", "T0"),
+        ("observation", "O0"),
+    ]
 
-    # And rendering the reserved scope's OWN keys yields nothing the prompt models
-    # (semantic_event is not in segments_to_keys' allowlist).
-    assert arc.render_segments_keys("s1", EVENTS_SCOPE) == {}
+    # And the reserved scope holds ONLY semantic_event atoms — none of the kinds the
+    # agent context models (thought / tool_call / observation / summary).
+    assert {s.kind for s in arc.render_segments("s1", EVENTS_SCOPE)} == {"semantic_event"}
 
 
 # --- (d) no highway sink: still persists + folds, returns {} ----------------
@@ -199,58 +202,55 @@ def test_record_with_empty_session_or_unset_type_is_noop(tmp_path):
 # --- (e) FAIL LOUD when no ARC is reachable (no silent sink.emit bypass) ------
 
 
-def test_emit_semantic_event_fails_loud_when_no_arc(monkeypatch):
-    """ARC is the SOURCE: when no ARC is reachable, ``_emit_semantic_event`` must RAISE
-    (fail loud) — it must NOT silently fall back to ``sink.emit``, which would feed the
-    trace/UI an event ARC never recorded (the hidden trace>ARC split). Guards the removal
-    of the silent fallback. Unlike the prior version (which only re-evaluated a now-stale
-    inline expression and never called the function), this exercises the REAL function."""
+def _arc_less_app(monkeypatch):
     import types
 
-    import pytest
-
-    import clio_agent.gact.app as app_mod
     import clio_agent.gact.runtime.globals as globals_mod  # #714: live owner of _PROCESS_ARC
 
     monkeypatch.setattr(globals_mod, "_PROCESS_ARC", None, raising=False)
+    emitted: list = []
+    sink = SemanticEventSink(bus=EventBus(), trace_backend=NoopSemanticTraceBackend())
+    real_emit = sink.emit
+    sink.emit = lambda e: (emitted.append(e), real_emit(e))[1]
     app = types.SimpleNamespace(
         state=types.SimpleNamespace(
-            semantic_event_sink=SemanticEventSink(
-                bus=EventBus(), trace_backend=NoopSemanticTraceBackend()
-            ),
+            semantic_event_sink=sink,
             arc=None,
             sessions={},
             semantic_trace_detail_level="semantic",
         )
     )
-    with pytest.raises(RuntimeError, match="ARC-as-source violated"):
+    return app, emitted
+
+
+def test_an_event_before_any_arc_builds_the_process_arc_and_is_recorded(monkeypatch):
+    """Found live: on a server whose clio-core attach had not finished, session.created
+    raised 'ARC-as-source violated' in an off-loop worker and was lost. The emitter now
+    obtains the process ARC through the one door (``server_boot.process_arc``) and records
+    the event there -- never dropped, never a bypass of ARC."""
+    import clio_agent.gact.app as app_mod
+
+    app, emitted = _arc_less_app(monkeypatch)
+
+    app_mod._emit_semantic_event(app, "s1", "turn.started")
+
+    assert app.state.arc is not None
+    assert emitted[-1].event_type == "turn.started"  # derived from ARC's record
+
+
+def test_an_event_before_any_arc_on_the_event_loop_fails_typed(monkeypatch):
+    """clio-core cannot be attached on the event loop: the emit fails loud, never a bypass."""
+    import asyncio
+
+    import pytest
+
+    import clio_agent.gact.app as app_mod
+
+    app, emitted = _arc_less_app(monkeypatch)
+
+    async def emit_on_loop() -> None:
         app_mod._emit_semantic_event(app, "s1", "turn.started")
 
-
-def test_release_drops_events_scope(tmp_path, monkeypatch):
-    """release_session erases the reserved _events scope (idle -> baseline).
-
-    The erase is gated on the durable trace keeping the full history (#762), so
-    this test enables the file backend; retention under the default "none"
-    backend is covered by test_events_log_retention.py."""
-    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    arc.set_highway_sink(lambda e: {})
-    arc.record_semantic_event(_turn_started())
-    assert arc.render_segments("s1", EVENTS_SCOPE)  # holds the persisted event
-
-    arc.release_session("s1")
-    assert arc.render_segments("s1", EVENTS_SCOPE) == []
-
-
-def test_flush_and_release_drops_events_scope(tmp_path, monkeypatch):
-    """flush_and_release erases the _events scope across all sessions (durable
-    trace enabled — the erase is gated on it keeping the full history, #762)."""
-    set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    arc.set_highway_sink(lambda e: {})
-    arc.record_semantic_event(_turn_started())
-    assert arc.render_segments("s1", EVENTS_SCOPE)
-
-    arc.flush_and_release()
-    assert arc.render_segments("s1", EVENTS_SCOPE) == []
+    with pytest.raises(RuntimeError, match="ARC-as-source"):
+        asyncio.run(emit_on_loop())
+    assert emitted == []

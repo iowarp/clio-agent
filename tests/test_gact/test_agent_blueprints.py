@@ -38,11 +38,9 @@ from clio_agent.gact.app import (
     _build_blueprint_dspy_module,
     _builtin_agents,
     _dynamic_agent_tools,
-    _extract_tools_called_from_trajectory,
     _gact_app_context,
     _gact_turn_timeout_s,
     _merge_tool_call_rows,
-    _prediction_structured_metadata,
     _prediction_workflow_state,
     _recording_blueprint_tool,
     _run_blueprint_dspy_agent,
@@ -55,6 +53,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.gact.types import AgentDef
+from tests._harness import runner_module_builder
 from tests._marketplace import MARKETPLACE_ROOT
 from tests.test_gact.conftest import complete_turn
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
@@ -1336,7 +1335,10 @@ def test_blueprint_module_passes_through_empty_answer(
         def __call__(self, **kwargs: Any) -> Any:
             return FakeProgram()(**kwargs)
 
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
+    )
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
@@ -1373,7 +1375,10 @@ def test_blueprint_module_passes_through_empty_answer_with_handoffs(
         def __call__(self, **kwargs: Any) -> Any:
             return FakeProgram()(**kwargs)
 
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
+    )
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
@@ -1391,46 +1396,6 @@ def test_blueprint_module_passes_through_empty_answer_with_handoffs(
     assert result.answer == ""
     assert len(result.expert_handoffs) == 1
     assert result.expert_handoffs[0]["agent_id"] == "reference"
-
-
-def test_extract_tools_called_from_indexed_react_trajectory() -> None:
-    rows = _extract_tools_called_from_trajectory(
-        {
-            "step_0_tool_name": "ndp_get_dataset_details",
-            "step_0_tool_args": {
-                "dataset_identifier": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "server": "global",
-            },
-            "step_0_observation": {
-                "resources": [
-                    {
-                        "name": "earthscope_converted_data.csv",
-                        "url": "https://example.test/earthscope_converted_data.csv",
-                    }
-                ]
-            },
-        }
-    )
-
-    assert rows == [
-        {
-            "name": "ndp_get_dataset_details",
-            "args": {
-                "dataset_identifier": "811f0bcc-99e5-455c-bcf6-7c63c2634f41",
-                "server": "global",
-            },
-            "result": {
-                "resources": [
-                    {
-                        "name": "earthscope_converted_data.csv",
-                        "url": "https://example.test/earthscope_converted_data.csv",
-                    }
-                ]
-            },
-            "ok": True,
-            "telemetry_source": "agent_trajectory",
-        }
-    ]
 
 
 def test_merge_tool_call_rows_deduplicates_matching_call_id_with_result_evidence() -> None:
@@ -1929,21 +1894,6 @@ def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     assert "provenance=model_geographic_prior" in combined
     assert "do not cite USGS, UNAVCO" in combined
     assert "Named source provenance is allowed only when a tool result" in combined
-
-
-def test_prediction_structured_metadata_omits_empty_values() -> None:
-    result = SimpleNamespace(
-        workflow_state={"acquisition": {"status": "staged"}},
-        evidence="evidence rows",
-        errors=None,
-        delegation='{"next":"root"}',
-    )
-
-    assert _prediction_structured_metadata(result) == {
-        "workflow_state": {"acquisition": {"status": "staged"}},
-        "evidence": "evidence rows",
-        "delegation": '{"next":"root"}',
-    }
 
 
 def test_prediction_workflow_state_read_structurally() -> None:
@@ -2916,9 +2866,6 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
     _write_data_root_blueprint(blueprint)
     calls: list[dict[str, str]] = []
 
-    async def no_stream(*args, **kwargs):
-        return None
-
     def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
         del base_agent, cancel_requested
         calls.append(
@@ -2938,8 +2885,10 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
             error_info=None,
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_blueprint_dspy_module",
+        runner_module_builder(fake_blueprint_runner),
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
@@ -3415,9 +3364,6 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     _write_data_root_blueprint(blueprint)
     calls: list[dict[str, str]] = []
 
-    async def no_stream(*args, **kwargs):
-        return None
-
     def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
         del base_agent, cancel_requested
         calls.append(
@@ -3437,8 +3383,10 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
             error_info=None,
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_blueprint_dspy_module",
+        runner_module_builder(fake_blueprint_runner),
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
@@ -3509,9 +3457,6 @@ def test_deep_research_execution_mode_applies_deep_researcher_over_base_blueprin
     _write_deep_research_blueprint(workspace / ".clio" / "agent-blueprints" / "deep-researcher")
     calls: list[dict[str, str]] = []
 
-    async def no_stream(*args, **kwargs):
-        return None
-
     def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
         del base_agent, cancel_requested
         calls.append(
@@ -3530,8 +3475,10 @@ def test_deep_research_execution_mode_applies_deep_researcher_over_base_blueprin
             error_info=None,
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_blueprint_dspy_module",
+        runner_module_builder(fake_blueprint_runner),
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
@@ -4051,7 +3998,8 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
 def test_root_agent_mounts_user_service_declared_always_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A connected global service is attached when a root session starts."""
+    """A global always-load service is attached when a root session starts: listed
+    for the model call, connected later (by the warm-up or its first call)."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
 
@@ -4076,11 +4024,14 @@ def test_root_agent_mounts_user_service_declared_always_load(
             return namespace in self.prepared
 
     executor = _Executor()
+    mounts: list[tuple[str, bool]] = []
 
-    def _mount(tool_executor: _Executor, namespace: str, spec: Any) -> dict[str, Any]:
+    def _mount(
+        tool_executor: _Executor, namespace: str, spec: Any, *, connect: bool = True
+    ) -> dict[str, Any]:
         del spec
         assert namespace == "web"
-        tool_executor.prepared.add(namespace)
+        mounts.append((namespace, connect))
         tool = _Tool("web_search")
         tool_executor.tools.append(tool)
         return {tool.name: tool}
@@ -4101,7 +4052,7 @@ def test_root_agent_mounts_user_service_declared_always_load(
         tools = _dynamic_agent_tools(base_agent, agent_def, {})
 
     assert [tool.name for tool in tools] == ["fs_read_file", "web_search"]
-    assert executor.prepared == {"web"}
+    assert mounts == [("web", False)]
 
 
 def test_dynamic_agent_tools_degrades_one_unprojected_tool_instead_of_bricking(

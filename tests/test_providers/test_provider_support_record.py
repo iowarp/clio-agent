@@ -47,21 +47,23 @@ def test_recording_an_install_writes_the_user_config_and_keeps_other_keys() -> N
 
 
 def test_component_floors_only_move_up_and_rerecording_does_not_rewrite() -> None:
-    support_record.record_support("codex", {"openai-codex": "0.158.0"})
-    support_record.record_support("codex", {"openai-codex": "0.157.1"})  # older: ignored
-    assert support_record.read_recorded_support().entries == {"codex": {"openai-codex": "0.158.0"}}
+    support_record.record_support("codex", {"openai-codex-cli-bin": "0.158.0"})
+    support_record.record_support("codex", {"openai-codex-cli-bin": "0.157.1"})  # older: ignored
+    assert support_record.read_recorded_support().entries == {
+        "codex": {"openai-codex-cli-bin": "0.158.0"}
+    }
 
-    support_record.record_support("codex", {"openai-codex": "0.160.2"})
+    support_record.record_support("codex", {"openai-codex-cli-bin": "0.160.2"})
     path = user_config_document.user_config_path()
     before = path.stat().st_mtime_ns
     content = path.read_text(encoding="utf-8")
-    support_record.record_support("codex", {"openai-codex": "0.160.2"})
+    support_record.record_support("codex", {"openai-codex-cli-bin": "0.160.2"})
     support_record.record_support("codex")
 
     assert path.read_text(encoding="utf-8") == content
     assert path.stat().st_mtime_ns == before
     assert _config()["providers"]["installed_support"] == {
-        "codex": {"versions": {"openai-codex": "0.160.2"}}
+        "codex": {"versions": {"openai-codex-cli-bin": "0.160.2"}}
     }
 
 

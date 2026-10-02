@@ -19,50 +19,13 @@ from __future__ import annotations
 PROVIDER_ID = "codex"
 PROVIDER_LABEL = "Codex"
 
-#: The LiteLLM-facing custom-provider key AND model-string prefix
-#: (``f"{LITELLM_PROVIDER}/cg-<model>"``, registered via
-#: ``providers._cli_provider.register_custom_provider`` in
-#: ``providers.codex.litellm_adapter``). Kept DELIBERATELY DISTINCT from
-#: ``PROVIDER_ID`` ("codex") even though "codex" itself is not a litellm
-#: native provider name (verified against the installed litellm build:
-#: ``"codex" in litellm.provider_list`` is False) -- this module was
-#: ORIGINALLY registered under "chatgpt" (matching the catalog id at the
-#: time), and litellm ships its own native "chatgpt" provider
-#: (``litellm/llms/chatgpt/`` -- a device-code OAuth client against
-#: auth.openai.com) that silently intercepted every turn before this
-#: module's handler ever ran, hanging on a real device-code prompt instead
-#: of reaching ``CodexCredentialStore``/the WS-SSE transport. Keeping the
-#: litellm wire name separate from the public catalog id is the permanent
-#: fix, not a one-off rename: it means a FUTURE catalog id can never
-#: collide with a litellm-native provider name either. Never register this
-#: module under ``PROVIDER_ID`` directly.
+#: The direct transport's model-string prefix (``codex_direct/<model>``) and the
+#: provider key capability lookups use. Kept DELIBERATELY DISTINCT from
+#: ``PROVIDER_ID`` ("codex"): LiteLLM ships a native "chatgpt"/device-code provider,
+#: and a transport name that collides with a LiteLLM-native one once silently
+#: intercepted every turn; a separate wire name can never collide again.
 LITELLM_PROVIDER = "codex_direct"
 
-#: The SDK transport's own LiteLLM-facing custom-provider key (S1b): the
-#: restored official ``openai_codex`` Python SDK, run against the user's OWN
-#: ``CODEX_HOME`` (never CLIO-copied credentials). Kept distinct from
-#: ``LITELLM_PROVIDER`` (the direct/HTTP transport) for the exact reason that
-#: one is kept distinct from ``PROVIDER_ID`` above -- two transports of the
-#: SAME catalog provider must resolve to two different litellm dialects so a
-#: selection can route to the right one end to end.
-LITELLM_PROVIDER_SDK = "codex_sdk"
-
-#: Transport ids for the ``codex`` provider's catalog row (owner requirement:
-#: offer the local SDK when installed+signed in, direct/OAuth otherwise, and
-#: report the provider READY when either is available).
-TRANSPORT_SDK = "sdk"
-TRANSPORT_DIRECT = "direct"
-TRANSPORT_LABELS: dict[str, str] = {
-    TRANSPORT_SDK: "Codex (local)",
-    TRANSPORT_DIRECT: "Direct",
-}
-#: Each transport's endpoint identity (a pseudo-scheme, never dialed). Capability
-#: DEPLOYMENT records are keyed by it, so one transport's facts for a shared model
-#: id (what the transport can carry, e.g. PDF input) never overwrite the other's.
-TRANSPORT_API_BASES: dict[str, str] = {
-    TRANSPORT_SDK: "codex://sdk",
-    TRANSPORT_DIRECT: "codex://direct",
-}
 
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
@@ -110,9 +73,8 @@ CODEX_WS_URL = "wss://chatgpt.com/backend-api/codex/responses"
 #: models come back.
 CODEX_MODELS_URL = f"{CODEX_BASE}/codex/models"
 #: The distribution whose version is the Codex client version CLIO presents to
-#: the backend on BOTH transports: the SDK's app-server sends its own runtime's
-#: version, and the Direct model list sends the same one, so the two halves are
-#: gated identically. Bumping the pin in pyproject.toml is the one knob.
+#: the backend's model list (which gates each model on ``minimal_client_version``).
+#: Bumping the pin in pyproject.toml is the one knob.
 CODEX_CLIENT_DISTRIBUTION = "openai-codex-cli-bin"
 ORIGINATOR = "clio"
 OPENAI_BETA_SSE = "responses=experimental"
@@ -129,7 +91,15 @@ REFRESH_MARGIN_MS = 5 * 60 * 1000
 # ---------------------------------------------------------------------------
 WS_IDLE_CLOSE_S = 5 * 60
 WS_MAX_AGE_S = 55 * 60
+#: The opening handshake's bound; a handshake that times out is retried once with
+#: WS_CONNECT_RETRY_TIMEOUT_S before it is reported "slow or unresponsive" (#1577).
 WS_CONNECT_TIMEOUT_S = 15.0
+WS_CONNECT_RETRY_TIMEOUT_S = 45.0
+#: Keepalive, explicit rather than websockets' implicit defaults: a ping every 20 s, and
+#: 60 s for its pong -- a busy event loop reads the pong late, and a keepalive miss
+#: closes a reply that is still streaming (1011).
+WS_PING_INTERVAL_S = 20.0
+WS_PING_TIMEOUT_S = 60.0
 
 # ---------------------------------------------------------------------------
 # Retry / error handling (A.7)
@@ -185,7 +155,6 @@ __all__ = [
     "DEVICE_VERIFY_URL",
     "JWT_AUTH_CLAIM",
     "LITELLM_PROVIDER",
-    "LITELLM_PROVIDER_SDK",
     "LOOPBACK_HOST",
     "LOOPBACK_PATH",
     "LOOPBACK_PORT",
@@ -207,10 +176,6 @@ __all__ = [
     "RETRY_MAX_DELAY_MS",
     "SCOPE",
     "TOKEN_URL",
-    "TRANSPORT_API_BASES",
-    "TRANSPORT_DIRECT",
-    "TRANSPORT_LABELS",
-    "TRANSPORT_SDK",
     "USAGE_LIMIT_MARKERS",
     "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE",
     "WS_CONNECT_TIMEOUT_S",

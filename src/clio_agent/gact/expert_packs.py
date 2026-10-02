@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.frontmatter import _parse_frontmatter
 from clio_agent.gact.runtime.type_parsing import parse_module_variant as _parse_module_variant
 from clio_agent.gact.types import AgentDef
 from clio_agent.gact.workflows import workflow_row_errors as _workflow_row_errors
@@ -530,78 +531,6 @@ def _expert_files(root: Path) -> list[Path]:
         [path for path in root.rglob("*.md") if path.is_file() and _included(path)],
         key=lambda path: str(path).lower(),
     )
-
-
-def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    end = -1
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            end = index
-            break
-    if end < 0:
-        return {}, text
-    frontmatter = "\n".join(lines[1:end])
-    body = "\n".join(lines[end + 1 :]).strip()
-    try:
-        import yaml  # noqa: PLC0415
-
-        parsed = yaml.safe_load(frontmatter) or {}
-        if isinstance(parsed, dict):
-            return {str(key): value for key, value in parsed.items()}, body
-    except Exception:  # noqa: BLE001,S110 - yaml unavailable/invalid; falls back to the line parser below
-        pass
-    meta: dict[str, Any] = {}
-    cur_key = ""
-    cur_map = ""
-    cur_map_list = ""
-    for raw in lines[1:end]:
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        stripped = raw.strip()
-        indent = len(raw) - len(raw.lstrip(" "))
-        if stripped.startswith("- "):
-            value = stripped[2:].strip().strip("\"'")
-            if cur_map and cur_map_list:
-                container = meta.setdefault(cur_map, {})
-                if isinstance(container, dict):
-                    items = container.setdefault(cur_map_list, [])
-                    if isinstance(items, list):
-                        items.append(value)
-            elif cur_key and isinstance(meta.get(cur_key), list):
-                meta[cur_key].append(value)
-            continue
-        if ":" not in raw:
-            continue
-        key, _, value = stripped.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if indent and cur_key:
-            if not isinstance(meta.get(cur_key), dict):
-                meta[cur_key] = {}
-            container = meta[cur_key]
-            if isinstance(container, dict):
-                if value:
-                    container[key] = value.strip("\"'")
-                    cur_map_list = ""
-                else:
-                    container[key] = []
-                    cur_map = cur_key
-                    cur_map_list = key
-            continue
-        cur_map = ""
-        cur_map_list = ""
-        if value:
-            meta[key] = value.strip("\"'")
-            cur_key = ""
-        else:
-            meta[key] = []
-            cur_key = key
-    return meta, body
 
 
 def _parse_yamlish(text: str) -> dict[str, Any]:

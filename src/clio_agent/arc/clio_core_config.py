@@ -56,6 +56,7 @@ from pathlib import Path
 
 import yaml
 
+from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
     migrate_legacy_runtime_state,
@@ -120,10 +121,8 @@ def runtime_state_dir() -> Path:
 
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
-# is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
-# are declared so the backend is ready for clio-core's cross-restart data recovery
-# when it lands upstream (today that recovery is WIP, so durability rides the file
-# trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
+# is the cold spill target, durable across daemon restarts (``restart``, the metadata log
+# and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
@@ -186,6 +185,7 @@ compose:
         bdev_type: "file"
         capacity_limit: "{file_capacity}"
         score: 1.0
+        persistence_level: "temporary"
     dpe:
       dpe_type: "max_bw"
     performance:
@@ -284,29 +284,27 @@ def _default_cte_dir() -> Path:
     return paths.user_data_dir() / "cte" / "hosts" / host_key()
 
 
-def _default_cte_file_capacity() -> str:
-    """Return the default clio-core CTE file-tier capacity.
-
-    The INTENDED semantic (owner ruling 2026-07-13, #906) is an UNBOUNDED
-    final layer — ``capacity_limit`` bounds intermediate tiers only, because a
-    final layer that fills makes writes fail (``PutBlob`` rc=13, proven live
-    on the #893 gate) instead of spilling. clio-core cannot express that yet:
-    ``core_config.cc`` rejects ``capacity_limit`` = 0 for non-ram tiers ("only
-    'ram' tier supports 0"), so the default stays a LARGE bound until upstream
-    supports an unbounded final layer. The boot check warns when the final
-    layer is too small to absorb even one full hot-tier spill.
+def _default_cte_file_capacity(target_dir: Path | None = None) -> str:
+    """The clio-core CTE file-tier capacity: an explicit ``arc.cte.file_capacity`` wins;
+    otherwise, when seeding into ``target_dir``, sized to fit that disk (a fixed 50 GB
+    failed a first run on a smaller disk -- see ``clio_core_file_capacity``). clio-core
+    cannot express an unbounded final layer yet (``capacity_limit`` 0 is ram-only, #906).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
 
-    return (
-        conf.resolve(
-            "arc.cte.file_capacity",
-            env="CLIO_ARC_CTE_FILE_CAPACITY",
-            default="50GB",
-            cast=conf.as_str,
-        ).strip()
-        or "50GB"
-    )
+    explicit = conf.resolve(
+        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
+    ).strip()
+    if explicit:
+        return explicit
+    return _fc.seeded_file_capacity(target_dir) if target_dir is not None else "50GB"
+
+
+def _seeded_capacity_fits(cfg: Path, capacity: str) -> None:
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
+
+    _fc.ensure_seeded_capacity_fits(cfg, capacity)
 
 
 def _default_cte_ram_capacity() -> str:
@@ -380,7 +378,10 @@ def default_cte_config_path() -> str:
         migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
-    if not cfg.is_file():
+    if cfg.is_file():
+        _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
+        _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
+    else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:
             raise ValueError(f"memory budget must be > 0, got {budget!r}")
@@ -389,7 +390,7 @@ def default_cte_config_path() -> str:
                 core_port=_default_cte_core_port(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
-                file_capacity=_default_cte_file_capacity(),
+                file_capacity=_default_cte_file_capacity(cte_dir),
                 ram_budget=budget,
                 metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
             ),

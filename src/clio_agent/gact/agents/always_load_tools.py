@@ -24,12 +24,15 @@ def attach_always_load_tools(
         for namespace, spec in declared_specs.items()
         if bool(getattr(spec, "always_load", False))
     }
-    prepared = getattr(tool_executor, "is_namespace_prepared", None)
-    for namespace in sorted(namespaces):
-        if callable(prepared) and prepared(namespace):
-            continue
+    listed = {
+        str(getattr(tool, "name", "") or "").partition("_")[0]
+        for tool in tool_executor.to_dspy_tools()
+    }
+    for namespace in sorted(namespaces - listed):
         try:
-            mount_namespace_for_session(tool_executor, namespace, declared_specs[namespace])
+            mount_namespace_for_session(
+                tool_executor, namespace, declared_specs[namespace], connect=False
+            )
         except Exception as exc:  # noqa: BLE001 - one optional service cannot brick the agent
             mount_failures[namespace] = mount_failure_reason(exc)
             logger.warning(

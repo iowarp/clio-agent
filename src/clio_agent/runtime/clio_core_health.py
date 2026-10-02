@@ -10,9 +10,7 @@ before the bounded default landed — is surfaced as a warning with the exact
 remediation, rather than silently rewritten (see
 :func:`clio_agent.arc.clio_core_config.default_cte_config_path`).
 
-The row is emitted only when the ARC backend is the clio-core backend (``CLIO_ARC_STORE`` is
-``cte`` or unset); for the explicit ``local`` backend the ram hot tier is irrelevant and
-no row is produced (mirrors :meth:`RuntimeProbe._arc_backend`).
+clio-core is the only ARC store, so the row is always emitted.
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase, attach_state_snapshot
 from clio_agent.arc.clio_core_config import (
     RamTierCap,
     cte_disk_warn_fraction,
@@ -29,11 +28,13 @@ from clio_agent.arc.clio_core_config import (
     effective_ram_cap,
     parse_capacity_bytes,
 )
+from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 if TYPE_CHECKING:
     from clio_agent.arc.clio_core_daemon import DaemonMemorySnapshot
+    from clio_agent.arc.history_mode import ContextMode
 
 _REMEDIATION = (
     "Set a bounded ram cap via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
@@ -54,8 +55,7 @@ def _cap_source(cap: RamTierCap) -> str:
 def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Report the effective clio-core CTE ram hot-tier cap as a doctor row.
 
-    Returns a single-row list when the ARC backend is clio-core, and an empty list for the
-    explicit ``local`` backend (the ram tier does not apply). The row is:
+    Returns a single-row list (clio-core is the only ARC store). The row is:
 
     * MISCONFIGURED when the config file declares an unparseable cap (fail-loud);
     * DEGRADED when a PRESENT ram data tier is ``0g`` (= 80% of system DRAM — the
@@ -74,9 +74,6 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     import os  # noqa: PLC0415 - default env without a module-level os handle
 
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     cap = effective_ram_cap(env=env)
     source = _cap_source(cap)
@@ -190,21 +187,86 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     ]
 
 
+def daemon_not_listening_row(
+    name: str, *, source: str, endpoint: str, details: dict[str, object], port: int, log_path: str
+) -> IntegrationStatus:
+    """The shared clio-core daemon is not listening: down only when that is a failure.
+
+    CLIO starts the daemon itself on first use (and the server at boot), so a daemon that
+    is not up yet is DEGRADED ``clio_core_starting`` -- a fresh server answered 503 before
+    its first agent build. It is UNAVAILABLE when this process's attach failed, when an
+    attached daemon is gone, or when the daemon left a crash record.
+    """
+    snap = attach_state_snapshot()
+    crash = read_crash_record(Path(log_path).parent)
+    lost = snap.phase in (ClioCoreAttachPhase.UNAVAILABLE, ClioCoreAttachPhase.ATTACHED)
+    if lost or crash is not None:
+        why = summarize_crash(crash) if crash is not None else (snap.error or snap.reason)
+        return IntegrationStatus(
+            name=name,
+            state=IntegrationState.UNAVAILABLE,
+            summary=f"The shared clio-core daemon is not listening on port {port}: {why}",
+            config_source=source,
+            next_action=f"Restart CLIO (it starts clio-core); see {log_path}.",
+            endpoint=endpoint,
+            fallback="none",
+            details=details,
+            required=True,
+        )
+    return IntegrationStatus(
+        name=name,
+        state=IntegrationState.DEGRADED,
+        summary=(
+            f"clio-core is not running yet on port {port}; CLIO starts it on first use "
+            "(or it is starting now)."
+        ),
+        config_source=source,
+        next_action="No action needed; this row turns ready once clio-core listens.",
+        endpoint=endpoint,
+        fallback="none",
+        details={**details, "reason": "clio_core_starting"},
+        required=True,
+    )
+
+
+def history_mode_row(
+    name: str, mode: "ContextMode", source: str, endpoint: str, details: dict[str, object]
+) -> IntegrationStatus:
+    """The ``arc`` / ``clio_core`` row in the loud History mode: DEGRADED (a working
+    server, never a 503; no daemon is expected), with the mode, its reason and the remedy."""
+    return IntegrationStatus(
+        name=name,
+        state=IntegrationState.DEGRADED,
+        summary=(
+            "clio-core is not installed on this platform, so CLIO runs in History mode: the "
+            "agent's context is held in memory only (nothing durable; context edits, "
+            "compaction and search are unavailable)."
+        ),
+        config_source=source,
+        next_action="Install a build of iowarp-core for this platform, then restart CLIO.",
+        endpoint=endpoint,
+        fallback="history",
+        details={**details, **mode.as_dict()},
+        required=True,
+    )
+
+
 def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationStatus]:
     """Surface this process's clio-core attach progress as the ``clio_core_attach`` row.
 
     ARC construction (connect-or-spawn + native attach) runs off the server's event
     loop, so ``/v1/health`` answers while it is still in flight; this row says where it
     is: ``starting`` (DEGRADED, never 503 by itself), ``attached`` (READY), or
-    ``unavailable`` with the typed init-degrade reason (DEGRADED; ARC is on LocalFS).
+    ``unavailable`` with the typed init reason (DEGRADED; the agent stays unready, typed).
     Process-local like the #892 gate registry: a separate doctor CLI reports nothing.
+    History mode attempts no attach (no row); the ``arc`` row reports it.
 
     Args:
         state: Optional injected :class:`~clio_agent.arc.clio_core_attach.ClioCoreAttachState`
             for testing; defaults to the live process record.
 
     Returns:
-        One row, or empty when no attach was attempted (idle, or LocalFS chosen).
+        One row, or empty when no attach was attempted (idle, or History mode).
     """
     from clio_agent.arc.clio_core_attach import (  # noqa: PLC0415 - keep import light
         ClioCoreAttachPhase,
@@ -218,7 +280,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
 
     live_snapshot = state is None
     snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
-    if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
+    if snap.phase is ClioCoreAttachPhase.IDLE:
         return []
     details = snap.to_details()
     removed = removed_embedded_runtime_env()
@@ -255,7 +317,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             config_source="runtime:clio_core_attach",
             next_action=next_action,
             endpoint=endpoint,
-            fallback="local" if snap.phase is ClioCoreAttachPhase.UNAVAILABLE else "none",
+            fallback="none",
             details=details,
             required=required,
         )
@@ -360,7 +422,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
                 config_source="runtime:clio_core_liveness_gate",
                 next_action=(
                     "Restart the shared clio-core daemon (clio start / clio_run start); "
-                    "the store reconnects on the next ARC op. Or set CLIO_ARC_STORE=local."
+                    "the store reconnects on the next ARC op."
                 ),
                 endpoint=None if port is None else f"127.0.0.1:{port}",
                 fallback="none",
@@ -417,58 +479,6 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
     ]
 
 
-def probe_clio_core_init_degradation(*, record: object | None = None) -> list[IntegrationStatus]:
-    """Surface an INIT-time degrade from the clio-core backend to LocalFS as a row (#897).
-
-    When ``make_arc_store`` cannot bring up the clio-core backend it degrades to
-    :class:`~clio_agent.arc.storage.LocalFSStore` *loudly* and records a typed
-    :class:`~clio_agent.arc.init_degradation.ArcInitDegradation` in a process-local
-    slot. This reads that slot (mirroring the #892 gate registry: meaningful only IN
-    the process that built the store — a separate doctor CLI holds none and reports
-    nothing) and emits a DEGRADED row naming the cause and stating that the
-    external-operator (clio-core) pathway is unavailable (#737).
-
-    Args:
-        record: Optional injected :class:`ArcInitDegradation` (or ``None``) for
-            testing; defaults to the live process-local record.
-
-    Returns:
-        A single DEGRADED row when a degrade was recorded this process, else empty.
-    """
-    if record is None:
-        from clio_agent.arc.init_degradation import arc_init_degradation_snapshot  # noqa: PLC0415
-
-        record = arc_init_degradation_snapshot()
-    if record is None:
-        return []
-
-    details = record.to_details()  # type: ignore[attr-defined]
-    reason = details["reason"]
-    selection = "explicit CLIO_ARC_STORE=cte" if details["was_explicit"] else "the default"
-    return [
-        IntegrationStatus(
-            name="clio_core_init",
-            state=IntegrationState.DEGRADED,
-            summary=(
-                "ARC degraded to LocalFSStore at init: the clio-core backend "
-                f"({selection}) is UNAVAILABLE — the external-operator (clio-core) "
-                f"pathway could not be brought up (reason={reason}: {details['error']}). "
-                "ARC is running on local files; the tiered clio-core backend is not active."
-            ),
-            config_source="runtime:arc_init_degradation",
-            next_action=(
-                "Fix the clio-core install/config to restore the tiered backend (run "
-                "clio doctor), or set CLIO_ARC_STORE=local to choose LocalFS "
-                "deliberately (no degrade row). clio-core is retried on the next boot."
-            ),
-            endpoint=str(details["config_path"]) if details["config_path"] else None,
-            fallback="local",
-            details=details,
-            required=True,
-        )
-    ]
-
-
 def probe_clio_core_daemon_memory(
     *,
     env: Mapping[str, str] | None = None,
@@ -487,8 +497,7 @@ def probe_clio_core_daemon_memory(
     * DEGRADED with ``clio_core_daemon_rss_critical`` when RSS is >= the critical
       threshold (default 4 GiB), naming the opt-in recycle policy in the remediation.
 
-    Emitted only for the clio-core ARC backend (``CLIO_ARC_STORE`` is ``cte`` or unset)
-    and only when a daemon is actually located (a down daemon is surfaced by the #892
+    Emitted only when a daemon is actually located (a down daemon is surfaced by the #892
     liveness row instead). The typed ``ok`` | ``elevated`` | ``critical`` status rides in
     ``details['daemon_mem_status']``; both non-ok statuses map to DEGRADED (the doctor
     state vocabulary has no separate elevated/critical rows).
@@ -507,9 +516,6 @@ def probe_clio_core_daemon_memory(
     from clio_agent.arc import clio_core_daemon  # noqa: PLC0415 - lazy: avoid load-time cycle
 
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     snap = (
         snapshot
@@ -624,12 +630,8 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
     before writes fail. Actual trimming is upstream (clio-core); this is the demand-side
     visibility clio-agent can ship today.
 
-    Emitted only for the clio-core backend (``CLIO_ARC_STORE`` ``cte`` or unset).
     """
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     cap = effective_ram_cap(env=env)
     if cap.final_tier_capacity is None:
@@ -737,8 +739,6 @@ def probe_clio_core_write_health(
         One required ``clio_core_write`` row, or an empty list.
     """
     env = env if env is not None else os.environ
-    if env.get("CLIO_ARC_STORE", "cte").strip().lower() != "cte":
-        return []
 
     from clio_agent.arc.clio_core_retry import last_lost_put_write  # noqa: PLC0415
 
@@ -781,7 +781,6 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     return [
         *probe_clio_core_attach(),
         *probe_clio_core_config_adoption(),
-        *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),

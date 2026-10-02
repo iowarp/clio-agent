@@ -34,8 +34,8 @@ regressions, but don't treat these as unresolved release blockers:
 
 `message.part.delta` events can come from two different sources:
 
-- `stream_source="live"`: text arrived through the live
-  `dspy.streamify` path.
+- `stream_source="live"`: text arrived live from the provider through
+  the LM token hooks (`runtime/lm_activity`).
 - `stream_source="batch"`: the backend already had the
   final assistant text before it could emit live provider-token deltas.
 
@@ -47,16 +47,13 @@ provider streamed live tokens. The complete audited reason catalog is
 available from `/v1/capabilities.capabilities.x_clio_stream_fallback_reasons`;
 unknown reasons are rejected so new downgrade paths cannot appear as
 unclassified fallback metadata.
-Known reasons include `agent_not_streamable` for non-DSPy test/runtime
-agents, `stream_setup_failed` for DSPy listener setup failures, and
-`stream_completed_without_chunks` when DSPy streaming produced a final
-prediction but no user-visible token chunks.
+Known reasons include `sync_execution_path` (the answer arrived as one batch
+part: no live answer delta this turn) and `native_model_inputs_dropped`.
 Registered user/skill agents, including tool-declaring agents backed by
-DSPy ReAct, attempt the live `dspy.streamify` path first and only label
-completed text as `batch` when streaming cannot start.
-If streaming starts executing the agent and fails before or after visible
-output, GACT surfaces a structured `provider_error` turn instead of
-rerunning the sync path and returning fabricated answer text.
+`ClioReAct`, stream live through the LM token hooks and only label
+completed text as `batch` when no live delta reached the answer.
+If the agent's provider call fails before or after visible output, GACT
+surfaces a structured `provider_error` turn; nothing re-runs the agent.
 
 The TUI should render both sources, but only `live` is evidence of real
 token arrival. Treat batch text as truthful fallback

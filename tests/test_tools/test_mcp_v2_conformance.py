@@ -34,7 +34,6 @@ import dspy
 import mcp_types
 import psutil
 import pytest
-from dspy.utils.dummies import DummyLM
 from fastmcp import Client
 from fastmcp.exceptions import MCPError, ToolError
 from fastmcp.server import create_proxy
@@ -91,6 +90,7 @@ from clio_agent.tools.mcp_task_routing import (
     resolve_and_build_direct_client,
     resolve_namespace_route,
 )
+from tests._scripted_engine import calls, scripted_lm
 
 from .mcp_exerciser import (
     EXERCISER_NAMESPACE,
@@ -780,6 +780,7 @@ def test_capability_demotion_guard_refuses_a_downgraded_false() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("clio_core_plane")
 def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     """#1275 failing-first repro: a task=required tool reached through a
     client that never declares the tasks extension (``_NoExtensionClient`` --
@@ -787,23 +788,23 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     proxy-routed declared server produces) refuses -32021 on EVERY call:
     never healable, never worth retrying.
 
-    Before the D1 fix, ``dspy.ReActV2._execute_tool_calls`` (upstream,
-    vendored) caught the typed refusal exactly like any transient tool error,
-    turned it into a text observation, and let the loop continue -- an LM
+    Before the D1 fix the loop caught the typed refusal exactly like any
+    transient tool error, turned it into a text observation, and let the loop
+    continue -- an LM
     that does not recognize the refusal as permanent can keep re-invoking the
     SAME doomed tool turn after turn (the #1275 hang: 15+ minutes of exactly
-    that, reproduced here with a ``DummyLM`` scripted to keep calling
+    that, reproduced here with a scripted LM engine to keep calling
     ``task_echo`` for five turns). Bounded by BEHAVIOR, not wall-clock (the
     slice spec's own instruction): the assertion is that the terminal typed
     outcome arrives on the FIRST tool call, not that some clock fires.
 
     Pre-fix this is RED: the tool is invoked all five scripted times (no
     exception ever reaches ``agent(...)``, which instead exhausts the
-    DummyLM's script forcing a submit). Post-fix it is GREEN: invoked exactly
+    scripted LM forcing a submit). Post-fix it is GREEN: invoked exactly
     once, and ``MCPMissingRequiredClientCapabilityError`` -- never a generic
     string the model could keep retrying -- propagates out of ``forward()``.
     """
-    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.tools.execution import _make_dspy_tool
 
     call_count = 0
@@ -837,19 +838,10 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     # Five scripted turns, each re-calling the SAME permanently-refusing tool
     # -- the #1275 shape (a model unaware the refusal can never succeed).
     # Only turn 1 may actually be consumed.
-    lm = DummyLM(
-        [
-            {
-                "next_thought": f"t{i}",
-                "tool_calls": {"tool_calls": [{"name": "task_echo", "args": {"payload": "x"}}]},
-            }
-            for i in range(5)
-        ]
-    )
+    lm, _ = scripted_lm([calls(("task_echo", {"payload": "x"}), text=f"t{i}") for i in range(5)])
 
-    cls = retaining_reactv2_cls()
-    agent = cls("question -> answer", tools=[tool], max_iters=5)
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    agent = ClioReAct("question -> answer", tools=[tool], max_iters=5)
+    with dspy.context(lm=lm):
         with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
             agent(question="ping")
 

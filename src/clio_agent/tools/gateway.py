@@ -725,9 +725,7 @@ def _list_tools_sync(gw: FastMCP) -> list[Any]:
     return _run_coro_sync(_list)
 
 
-def _list_declared_tools(
-    spec: MCPServerSpec, *, timeout_s: float | None = None, attempt_key: object | None = None
-) -> list[Any]:
+def _list_declared_tools(spec: MCPServerSpec, *, attempt_key: object | None = None) -> list[Any]:
     """List one declared server's BARE tools via a LISTING-OWNED transport.
 
     Exclusive ownership (finding 1): builds its OWN transport from the spec and
@@ -736,8 +734,9 @@ def _list_declared_tools(
     subprocesses), and fastmcp-4's loop-pinned kept-alive session never outlives
     this loop's close.
 
-    ``timeout_s``/``attempt_key`` (#1240, see ``tools.listing_attempts``) bound
-    every RPC and let an abandoning caller force-close this attempt, respectively.
+    No fixed deadline: waits while the server's own process tree works (typed
+    ``NoProgressTimeout`` otherwise; ``mcp_server_progress``). ``attempt_key`` (#1240,
+    ``tools.listing_attempts``) lets shutdown force-close it.
 
     #1281 (C1-S1): also the single choke point both live listing paths share,
     so the DEFINITIVE task-capability read (``mcp_task_routing.
@@ -753,10 +752,11 @@ def _list_declared_tools(
     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
         trace_dropped_x_mcp_header_tools,
     )
+    from clio_agent.tools.mcp_server_progress import wait_while_server_works  # noqa: PLC0415
     from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
-        client = Client(transport_for(spec), timeout=timeout_s, init_timeout=timeout_s)
+        client = Client(transport_for(spec))
         listing_attempts.register(attempt_key, asyncio.get_running_loop(), client)
         try:
             async with client:
@@ -771,7 +771,7 @@ def _list_declared_tools(
                 with suppress(Exception):
                     await disconnect()
 
-    return _run_coro_sync(_list)
+    return _run_coro_sync(lambda: wait_while_server_works(_list(), op_name=f"list {spec.name}"))
 
 
 def _namespace_of(tool_name: str) -> str:

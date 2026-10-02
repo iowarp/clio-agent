@@ -47,13 +47,9 @@ async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
         seen.extend(preset.id for preset in presets)
         return []
 
-    async def _sdk() -> None:
-        seen.append("codex_sdk")
-
     monkeypatch.setattr(md_refresh, "refresh_all", _refresh)
-    monkeypatch.setattr(md_refresh, "refresh_codex_sdk_transport", _sdk)
     await md_refresh.refresh_subscription_catalogs_at_startup()
-    assert seen == ["clio", "github", "codex", "codex_sdk"]
+    assert seen == ["clio", "github", "codex"]
 
 
 @pytest.fixture(autouse=True)
@@ -618,7 +614,7 @@ def test_resolve_cloud_api_key_never_borrows_a_same_kind_siblings_key(
 
 # --------------------------------------------------------------------------- #
 # discover_claude_code -- mocked at the maintained-catalog boundary
-# (refresh_claude_code_catalog) and the CLI sign-in boundary (subprocess.run).
+# (refresh_claude_code_catalog) and the CLI sign-in boundary (run_probe).
 # Per owner ruling, model existence/capabilities/defaults come ONLY from the
 # catalog; the CLI is consulted for exactly one thing: `auth status`.
 # --------------------------------------------------------------------------- #
@@ -646,7 +642,7 @@ def _catalog(*, default_model: str = "sonnet", default_model_reason: str = "") -
 
 
 def _fake_auth_status_run(*, logged_in: bool = True, stdout: str | None = None) -> Any:
-    """A fake ``subprocess.run`` for the ``auth status`` sign-in check."""
+    """A fake ``run_probe`` for the ``auth status`` sign-in check."""
 
     def _run(args: list[str], **kwargs: Any) -> Any:
         payload = (
@@ -666,7 +662,7 @@ def test_discover_claude_code_signed_in_reports_catalog_capabilities_and_default
 ) -> None:
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run())
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
@@ -691,7 +687,7 @@ def test_discover_claude_code_catalog_without_default_reports_typed_reason(
             default_model="", default_model_reason="the maintained catalog names no default model"
         ),
     )
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run())
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
@@ -746,7 +742,7 @@ def test_discover_claude_code_never_invokes_a_model_probe_only_auth_status(
             returncode=0,
         )
 
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+    monkeypatch.setattr(md_claude_code, "run_probe", _run)
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
@@ -759,7 +755,7 @@ def test_discover_claude_code_not_logged_in_is_typed_failure(
 ) -> None:
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run(logged_in=False))
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run(logged_in=False))
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
@@ -780,8 +776,8 @@ def test_discover_claude_code_auth_status_missing_logged_in_key_is_typed_failure
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
     monkeypatch.setattr(
-        md_claude_code.subprocess,
-        "run",
+        md_claude_code,
+        "run_probe",
         _fake_auth_status_run(stdout=json.dumps({"authMethod": "claude.ai"})),
     )
 
@@ -797,7 +793,7 @@ def test_discover_claude_code_auth_status_non_json_is_typed_failure(
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
     monkeypatch.setattr(
-        md_claude_code.subprocess, "run", _fake_auth_status_run(stdout="not json at all")
+        md_claude_code, "run_probe", _fake_auth_status_run(stdout="not json at all")
     )
 
     result = model_discovery.discover_claude_code(timeout=5.0)
@@ -806,23 +802,27 @@ def test_discover_claude_code_auth_status_non_json_is_typed_failure(
     assert "non-JSON" in (result.failed_reason or "")
 
 
-def test_discover_claude_code_auth_status_timeout_is_typed_failure(
+def test_discover_claude_code_unresponsive_auth_status_is_typed_not_signed_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import subprocess as real_subprocess
+    """#1577: a sign-in check that never answers is "slow or unresponsive", never
+    "not signed in"."""
+    from clio_agent.runtime.progress import ProbeUnresponsiveError
 
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
 
     def _run(args: list[str], **kwargs: Any) -> Any:
-        raise real_subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 5.0))
+        raise ProbeUnresponsiveError("claude auth status", 40.0, "no_progress")
 
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+    monkeypatch.setattr(md_claude_code, "run_probe", _run)
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
     assert result.discovered == []
-    assert "timed out" in (result.failed_reason or "")
+    reason = result.failed_reason or ""
+    assert reason.startswith(md_claude_code.AUTH_CHECK_UNRESPONSIVE)
+    assert "not signed in" not in reason
 
 
 def test_discover_claude_code_auth_status_oserror_is_typed_failure(
@@ -834,7 +834,7 @@ def test_discover_claude_code_auth_status_oserror_is_typed_failure(
     def _run(args: list[str], **kwargs: Any) -> Any:
         raise OSError("no such file or directory")
 
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+    monkeypatch.setattr(md_claude_code, "run_probe", _run)
 
     result = model_discovery.discover_claude_code(timeout=5.0)
 
@@ -862,7 +862,7 @@ def test_discover_claude_code_auth_status_failure_keeps_prior_overlay_untouched(
 
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run(logged_in=False))
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run(logged_in=False))
 
     result = model_discovery.discover_claude_code(timeout=5.0)
     assert result.discovered == []
@@ -882,7 +882,7 @@ def test_discover_claude_code_explicit_candidates_bypass_the_network_catalog(
     """Diagnostic callers can bypass the network catalog with an explicit id list;
     an id that bypassed the catalog carries no evidenced non-text capability."""
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run())
 
     def _boom() -> Any:
         raise AssertionError("must not fetch the network catalog when candidates is given")
@@ -1477,7 +1477,7 @@ def test_discover_claude_code_attaches_cli_effort_levels(monkeypatch: pytest.Mon
         claude_code_effort, "read_cli_model_catalog", lambda *_a, **_k: (cli_models, "")
     )
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
+    monkeypatch.setattr(md_claude_code, "run_probe", _fake_auth_status_run())
     ids = ("claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1")
     monkeypatch.setattr(
         md_claude_code,

@@ -76,14 +76,14 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe) -> None:
 
 
 def _ready_probe(tmp_path: Path, **overrides: Any) -> RuntimeProbe:
-    """A fully-ready probe (local ARC backend, models loaded, tools mounted)."""
+    """A fully-ready probe (clio-core installed + listening, models loaded, tools mounted)."""
 
     kwargs: dict[str, Any] = {
-        "env": {"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        "env": {"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         "http_get": lambda *a, **k: _FakeResponse({"data": [{"id": "granite"}]}),
         "gateway_lister": lambda: HDF5_CAPS + PARQUET_CAPS,
-        "module_checker": lambda name: name in {"h5py", "pyarrow.parquet"},
-        "port_checker": lambda port: False,
+        "module_checker": lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        "port_checker": lambda port: True,
         "clio_runtime_dir": tmp_path / "clio-home",
     }
     kwargs.update(overrides)
@@ -241,10 +241,9 @@ def test_health_returns_probe_engine_rows_not_hand_rolled(
     assert "sessions" not in rows
     assert "agent" not in rows
     assert "memory" not in rows
-    # The fixture selects the LOCAL ARC backend, which is DEGRADED by policy
-    # (underperforming fallback, owner ruling 2026-07-14) — never fully ready.
-    assert rows["arc"]["status"] == "degraded"
-    assert body["overall_status"] == "degraded"
+    # clio-core is installed and its daemon listening: ARC is ready. (The overall
+    # status also folds host rows such as the sandbox, which vary by machine.)
+    assert rows["arc"]["status"] == "ready"
     assert body["healthy"] is True
 
 
@@ -266,15 +265,18 @@ def test_widened_rows_carry_full_doctor_detail(
     assert fp["config_source"]
     assert fp["next_action"]
     arc = rows["arc"]
-    assert arc["endpoint"]  # local arc dir surfaces as endpoint
+    assert arc["endpoint"]  # the clio-core daemon address surfaces as endpoint
 
 
 def test_down_clio_core_daemon_turns_health_503(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """clio-core backend + installed pkg + daemon NOT listening -> arc red -> 503."""
+    """clio-core backend + installed pkg + a crashed daemon -> arc red -> 503."""
+    from clio_agent.arc.runtime_crash import crash_record_path
+
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
+    crash_record_path(clio_home).write_text('{"exit_code": 3221225477}', encoding="utf-8")
     probe = _ready_probe(
         tmp_path,
         env={"CLIO_ARC_STORE": "cte"},
@@ -290,6 +292,36 @@ def test_down_clio_core_daemon_turns_health_503(
     rows = _rows(body)
     assert rows["arc"]["status"] == "unavailable"
     assert rows["clio_core"]["status"] == "unavailable"
+
+
+def test_a_cold_server_before_clio_core_starts_is_degraded_not_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: a fresh server answered 503 until its first agent build started
+    clio-core. Not running yet (no failed attach, no crash) is DEGRADED, 200."""
+    from clio_agent.arc import clio_core_attach
+    from clio_agent.runtime import clio_core_health
+
+    idle = clio_core_attach.ClioCoreAttachState(
+        phase=clio_core_attach.ClioCoreAttachPhase.IDLE, reason="clio_core_not_started"
+    )
+    monkeypatch.setattr(clio_core_health, "attach_state_snapshot", lambda: idle)
+    clio_home = tmp_path / "clio-home"
+    clio_home.mkdir()
+    probe = _ready_probe(
+        tmp_path,
+        port_checker=lambda port: False,
+        clio_runtime_dir=clio_home,
+    )
+    resp = _health(build_app(sessions_path=tmp_path / "s.json"), monkeypatch, probe)
+    down = [
+        (r["name"], r.get("summary", "")[:140])
+        for r in resp.json()["integrations"]
+        if r["status"] == "unavailable"
+    ]
+    assert resp.status_code == 200, down
+    rows = _rows(resp.json())
+    assert rows["arc"]["status"] == rows["clio_core"]["status"] == "degraded"
 
 
 def test_unreachable_lm_dependency_turns_health_503(

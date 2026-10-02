@@ -114,6 +114,7 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     claude_sdk_installed: Any,
+    codex_test_login: Any,
 ) -> None:
     """A pristine-install claude_code bind must never touch LM Studio
     discovery -- the first-bind path must construct ``ClioAgent`` off the

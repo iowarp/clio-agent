@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact import context as ctx
 from clio_agent.gact.app import build_app
+from clio_agent.gact.summarization_record import summarization_part
 from clio_agent.gact.types import Message, Part, Tokens
 from clio_agent.gact.workspaces import Workspace
 
@@ -55,6 +57,14 @@ class FakeARC:
     def get_cache_stats(self) -> dict[str, Any]:
         return dict(self._stats)
 
+    # The op-logger the app wires on every ARC (a failure to wire now raises).
+    def set_segment_op_logger(self, _logger: Any) -> None:
+        return None
+
+    def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> list[str]:
+        # No agent context on this stats-only stub (a rewind rolls back nothing).
+        return []
+
     def set_highway_sink(self, sink: Any) -> None:
         # ARC-as-source: gact wires the highway-derive sink onto the arc via
         # _set_app_arc so a recorded event fans out to the trace/SSE/hooks.
@@ -86,10 +96,12 @@ class _StubAgent:
 class FakeAgent:
     def __init__(self) -> None:
         self.questions: list[str] = []
+        self.injections: list[dict[str, str]] = []
         self._provider_config = _StubProviderConfig()
 
     def forward(self, question: str, session_id: str) -> Any:
         self.questions.append(question)
+        self.injections.append(dict(ctx.turn_injections()))
         return type(
             "Pred",
             (),
@@ -231,14 +243,14 @@ def test_memory_stats_reports_retained_context_files_and_compaction_pressure(
             created_at="2026-05-27T00:00:00+00:00",
             updated_at="2026-05-27T00:00:00+00:00",
             parts=[
-                Part(
-                    id="part_compact",
-                    type="text",
-                    text="[compact summary]\n" + ("x" * 12000),
-                    metadata={"synthetic": "compact_summary"},
+                summarization_part(
+                    "x" * 12000,
+                    trigger="auto",
+                    compaction_id="cmp_1",
+                    derived_from=["a1"],
+                    compacted_message_ids=[],
                 )
             ],
-            metadata={"synthetic": "compact_summary"},
         )
     ]
     client_with_arc.app.state.context_files[sid] = {
@@ -633,10 +645,15 @@ def test_turn_can_opt_into_cross_session_memory_context(tmp_path: Path) -> None:
             },
         )
 
-        assert "## Explicit Memory Search Results" in agent.questions[0]
-        assert "Monday NDP work" in agent.questions[0]
-        assert "dataset alpha has pressure and temperature" in agent.questions[0]
+        # The search results are the turn's ``memory_search`` addition (recorded by the agent
+        # loop as its own message); the question carries only the user's text.
+        memory_block = agent.injections[0].get("memory_search", "")
+        assert memory_block.startswith("## Explicit Memory Search Results")
+        assert "Monday NDP work" in memory_block
+        assert "dataset alpha has pressure and temperature" in memory_block
+        assert "Based on recent work, draft next steps." not in memory_block
         assert "Based on recent work, draft next steps." in agent.questions[0]
+        assert "## Explicit Memory Search Results" not in agent.questions[0]
         assert assistant["metadata"]["memory_search"]["include_cross_session"] is True
         assert set(assistant["metadata"]["memory_search"]["searched_sessions"]) == {
             sid_prior,

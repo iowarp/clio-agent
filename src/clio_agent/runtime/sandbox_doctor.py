@@ -127,6 +127,9 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
     if resolved.reason in (sc.REASON_CODEX_NOT_INSTALLED, sc.REASON_CODEX_VERSION_UNSUPPORTED):
         # Codex backend floor: guide the operator to install/upgrade codex.
         next_action = "Install codex: npm install -g @openai/codex"
+    elif resolved.reason == sc.REASON_CODEX_VERSION_PROBE_UNRESPONSIVE:
+        # Installed but `codex --version` did not answer (slow host / hung CLI) (#1577).
+        next_action = "Codex is installed but did not answer `codex --version`; re-run the check."
     elif resolved.reason == sc.REASON_CODEX_WINDOWS_UNPROVISIONED:
         # Codex win32 backend: the dedicated sandbox accounts are not provisioned yet (#1026).
         next_action = "Run `clio sandbox setup` to provision the Codex Windows fence."

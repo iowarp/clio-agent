@@ -82,6 +82,10 @@ _DEFAULT_RUNTIME_PORT = 9413
 # gate's recovery can be REASON-AWARE without importing rpc_liveness (which imports this
 # module); rpc_liveness re-exports it.
 RPC_STALLED_REASON = "clio_core_rpc_stalled"
+# The ladder exhausted while the daemon process could not be located, so whether it was
+# progressing is unknown: not evidence of a stall. Recovers like a stall (a real RPC).
+DAEMON_PID_UNRESOLVED_REASON = "clio_core_daemon_pid_unresolved"
+_RPC_PROBE_RECOVERY_REASONS = frozenset({RPC_STALLED_REASON, DAEMON_PID_UNRESOLVED_REASON})
 
 # Recovery back-off TTL for an ``rpc_stalled`` quarantine. A zombie's RPC-level health
 # re-probe (:func:`clio_agent.arc.rpc_liveness.probe_rpc_health`) costs up to
@@ -218,7 +222,6 @@ class ClioCoreRuntimeLostError(ClioError):
             "recovery_actions": [
                 "restart_clio_core_daemon",
                 "run_clio_doctor",
-                "set_clio_arc_store_local",
                 "retry",
             ],
         }
@@ -351,7 +354,11 @@ class LivenessGate:
         An ``rpc_stalled`` re-probe is expensive (a real RPC that may hang up to the
         health-probe window), so it is spaced far wider than a socket-loss reconnect.
         """
-        return _RPC_STALLED_RECOVERY_TTL_S if self._reason == RPC_STALLED_REASON else self._ttl_s
+        return (
+            _RPC_STALLED_RECOVERY_TTL_S
+            if self._reason in _RPC_PROBE_RECOVERY_REASONS
+            else self._ttl_s
+        )
 
     def _attempt_recovery(
         self,
@@ -378,7 +385,7 @@ class LivenessGate:
                 port=self._port,
             )
         self._last_recovery_at = now
-        if self._reason == RPC_STALLED_REASON:
+        if self._reason in _RPC_PROBE_RECOVERY_REASONS:
             self._recover_from_rpc_stall(rpc_probe)
             return
         self._recover_via_reconnect(reconnect)

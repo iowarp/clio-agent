@@ -452,7 +452,7 @@ main() {
       if health; then say "stopping the running server first"; stop_server; fi
       if [[ -n "$uv_bin" ]]; then
         "$uv_bin" pip install --python "$CLIO_VENV/bin/python" -U clio-agent \
-          "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
+          "dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
           "fastmcp-tasks==4.0.0b5" \
           || { err "update failed"; return 1; }
       else

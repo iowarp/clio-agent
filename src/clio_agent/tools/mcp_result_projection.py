@@ -11,23 +11,22 @@ redirect the other. The raw evidence itself is never rewritten by either.
 
 from __future__ import annotations
 
-import json
+import logging
+import uuid
+from pathlib import Path
 
-MODEL_TOOL_RESULT_TRUNCATED_REASON = "model_tool_result_oversize"
+logger = logging.getLogger(__name__)
 
-#: Characters the truncation envelope reserves for its own JSON scaffolding
-#: (status/reason/counters plus the ``head``/``tail`` keys), so the preview
-#: budget is what is left of the resolved bound after the marker.
-_MARKER_BUDGET_CHARS = 640
+#: Typed reason logged when an oversize result could not be written to its file.
+MODEL_TOOL_RESULT_SPILL_FAILED_REASON = "model_tool_result_spill_failed"
 
 
 def model_tool_result_chars() -> int:
-    """Character bound on the MODEL-facing projection of one MCP tool result.
+    """Characters of one MCP tool result the model is shown before the rest goes to a file.
 
     Config: ``limits.model_tool_result_chars`` /
     ``CLIO_MODEL_TOOL_RESULT_CHARS`` (default 12000). Lower it to protect a
-    small context window from one verbose tool; raise it when a model has room
-    and truncation is costing the agent evidence it needs.
+    small context window from one verbose tool; raise it when a model has room.
     """
 
     from clio_agent import conf  # noqa: PLC0415
@@ -60,70 +59,56 @@ def transcript_tool_result_chars() -> int:
     )
 
 
-def _encode_bounded(text: str, head_chars: int, tail_chars: int) -> str:
-    """Encode one truncation envelope, stamping the ACTUAL slice lengths.
-
-    Args:
-        text: The complete result text being bounded.
-        head_chars: Characters to keep from the start.
-        tail_chars: Characters to keep from the end.
-
-    Returns:
-        The JSON-encoded envelope.
-    """
-
-    head = text[:head_chars]
-    tail = text[len(text) - tail_chars :] if tail_chars else ""
-    bounded = {
-        "_clio": {
-            "status": "truncated",
-            "reason": MODEL_TOOL_RESULT_TRUNCATED_REASON,
-            "original_chars": len(text),
-            "head_chars": len(head),
-            "tail_chars": len(tail),
-        },
-        "head": head,
-        "tail": tail,
-    }
-    return json.dumps(bounded, ensure_ascii=False)
-
-
 def bounded_model_tool_result(text: str) -> str:
-    """Bound model-facing text while leaving raw evidence unchanged.
+    """The model-facing text of one tool result: whole, or its head plus a file for the rest.
 
-    The slices are re-escaped by ``json.dumps`` after they are cut, and a quote-
-    or control-character-dense payload can grow by 2x-6x in that step. Slicing to
-    the budget and encoding once therefore does not bound anything: the budget is
-    spent on the pre-escape text. The envelope is instead measured AFTER encoding
-    and the preview shrunk until the encoded result fits.
-
-    Args:
-        text: The complete model-facing result text.
-
-    Returns:
-        ``text`` unchanged when it already fits, otherwise a typed truncation
-        envelope of at most :func:`model_tool_result_chars` characters.
+    The harness does not decide what the agent needs from a big result. Over
+    :func:`model_tool_result_chars`, the full result is written to the session's
+    tool-output folder (the shell tool's spill folder, removed with the session) and
+    the agent is told: how big it is, that the first characters follow, and where the
+    rest is for it to explore. The raw evidence itself is never rewritten.
     """
 
     max_chars = model_tool_result_chars()
     if len(text) <= max_chars:
         return text
-    # The marker budget is DERIVED from the resolved bound, never a second
-    # independent literal: a lowered bound shrinks the preview with it.
-    preview_budget = max_chars - _MARKER_BUDGET_CHARS
-    # Encoded length grows monotonically with the preview size, so binary-search
-    # the largest 75/25 preview whose ENCODED envelope still fits. An empty
-    # preview always fits (the envelope alone is ~160 characters), which makes
-    # the search total and keeps the loop bounded at ~log2(preview_budget) passes.
-    best = _encode_bounded(text, 0, 0)
-    low, high = 1, preview_budget
-    while low <= high:
-        preview = (low + high) // 2
-        head_chars = (preview * 3) // 4
-        encoded = _encode_bounded(text, head_chars, preview - head_chars)
-        if len(encoded) <= max_chars:
-            best = encoded
-            low = preview + 1
-        else:
-            high = preview - 1
-    return best
+    try:
+        path = _spill(text)
+        where = f"the full result is in `{path}` for you to explore (read it in parts or search it)"
+    except OSError as exc:
+        logger.warning(
+            "tool result spill failed reason=%s chars=%d error=%r",
+            MODEL_TOOL_RESULT_SPILL_FAILED_REASON,
+            len(text),
+            exc,
+        )
+        where = f"the full result could not be saved ({exc}), so the rest is not available"
+    note = (
+        f"[clio: result_spilled] This result is {len(text):,} characters, more than the "
+        f"{max_chars:,} shown to you. The first characters follow; {where}."
+    )
+    from clio_agent.tools import injections  # noqa: PLC0415
+
+    injections.note("result_spilled", note)
+    head = text[: max(0, max_chars - len(note) - 2)]
+    cut = head.rfind("\n")
+    if cut > len(head) // 2:
+        head = head[:cut]  # end on a whole line when one is near
+    return f"{note}\n\n{head}"
+
+
+def _spill(text: str) -> Path:
+    """Write ``text`` to the session's tool-output folder; return the file."""
+    from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_spill_store import (  # noqa: PLC0415
+        active_session_id,
+        spill_directory,
+    )
+
+    root = get_active_tool_workspace_root() or str(Path.cwd())
+    folder = spill_directory(root, session_id=active_session_id())
+    folder.mkdir(parents=True, exist_ok=True)
+    suffix = ".json" if text.lstrip()[:1] in ("{", "[") else ".txt"
+    path = folder / f"result-{uuid.uuid4().hex[:12]}{suffix}"
+    path.write_text(text, encoding="utf-8")
+    return path

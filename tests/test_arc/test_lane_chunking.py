@@ -7,7 +7,7 @@ never collide, the writer cursor recovers from a cold/invalidated state without 
 falling back to a body-downloading scan, and lifecycle erase drops the whole family
 (tolerating an anomalous hole) and forgets its cursor. These tests pin that contract
 directly against a real :class:`~clio_agent.arc.segments.SegmentStore` /
-:class:`~clio_agent.arc.storage.LocalFSStore`, independent of either lane's own
+the real clio-core store, independent of either lane's own
 higher-level tests.
 """
 
@@ -41,7 +41,33 @@ from clio_agent.arc.live import (
     is_events_scope,
 )
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import LocalFSStore
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 BASE_EVENTS = EVENTS_SCOPE  # "_events"
 BASE_ATOMS = f"{EVENTS_SCOPE}/m"  # "_events/m"
@@ -49,7 +75,7 @@ SID = "sess-lane"
 
 
 def _store(tmp_path: Any) -> SegmentStore:
-    return SegmentStore(LocalFSStore(str(tmp_path)))
+    return SegmentStore(_clio_core(str(tmp_path)))
 
 
 def _put(ss: SegmentStore, scope: str, n: int, *, sid: str = SID) -> None:

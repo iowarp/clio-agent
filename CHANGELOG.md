@@ -16,6 +16,126 @@ TUI/HTTP surface aren't tracked here.
   true}`) as the next turn's input. A `permission_id` that names no pending
   permission still gets a typed 404, never a silent reroute (#1549 #28).
 
+### Added
+
+- `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned
+  (hidden unless the process was started with `CLIO_SERVE_MANAGED=1`). It takes the
+  server's bearer in `Authorization` (loopback included; `401 authentication_required`
+  otherwise) and answers `202 {status: "stopping", exit_path}` like
+  `POST /v1/desktop/shutdown`. `serve.ensure_server` now starts the server with a
+  one-use `CLIO_AUTH_TOKEN`, so such a server also requires that bearer from
+  non-loopback peers (the token is in its owner-only credential record).
+- Compaction is visible: `compaction.started` / `compaction.completed` /
+  `compaction.failed` events (`session_id`, `compaction_id`, `scope`, `trigger`
+  `auto|manual`, `turn_id`; completed adds `message_id`, `part_id`,
+  `replaced_count`; failed adds `error {code, message}`, `message_id`, `part_id`),
+  served on the event stream and as typed v3 events.
+- A compaction is recorded as an `injection` part with `source: "summarization"`
+  (`text`, `trigger`, `compaction_id`; `metadata.derived_from`), mid-turn inside the
+  turn's assistant message, between turns as its own row. A failed one is a `notice`
+  part (`source: "compaction_failed"`, `text`, `code`, `compaction_id`, `trigger`) the
+  model is never told; v3 projects it as a `notice` block.
+- `POST /v1/sessions/{sid}/compact?scope=` compacts one agent scope; the response is
+  `{session_id, compacted, compactions: [...]}`.
+- The `recall_context` agent tool returns compacted steps byte-exact.
+- BestOfN / Refine on demand. The main agent has a `draft_alternatives(n, rubric,
+  strategy, judge)` tool: `best_of_n` tries run in parallel, each a real agent run on
+  its own clio-core scope (`<agent>#run<k>`); `refine` improves one draft at a time.
+  `n` is capped by `variants.max_n` (`CLIO_VARIANTS_MAX_N`, default 4). An `injection`
+  part (`source: variant_drafting`) tells the user drafts are being made.
+- A human judge (`judge: user`, also as a spawn `strategy` or blueprint `module.judge`):
+  the turn yields a `choice` question whose options are the drafts (`value`: the try's
+  scope id, `description`: its final text) and whose `metadata.variants_id` names the
+  run. Answer with `selected_options: [<draft id>]` (exactly one, else 422) and an
+  optional `answer` (the comment; for `refine` it becomes the next draft's advice).
+- GACT 0.3 frames for a run: `variant.try.upserted`, `variant.try.delta`,
+  `variant.selected` (from the `variant.try` / `variant.try.delta` / `variant.selected`
+  semantic events, all carrying `variants_id`); a try's other semantic events and
+  injection blocks carry `variants_id` / `try_index`.
+- A human-judged run that ends without a pick is a typed terminal state, recorded in
+  clio-core, never a generic `failed`: run `status` `superseded` (a new turn started
+  while the drafts question was pending: the user sent a new message instead),
+  `cancelled` (the question was dismissed) or `expired` (the pick's window ended), with
+  `closed_reason` `variant_pick_superseded|cancelled|expired`, `closed_at` and, when
+  superseded, `superseded_by_message_id` -- on `GET /v1/sessions/{sid}/variant-runs`
+  and on a new `variant.closed` event / v3 frame (entity `variants_id`; payload `status`,
+  `reason`, `question_id`, `closed_at`, `candidates: [{try_index, scope, text}]`,
+  `superseded_by_message_id`). A superseded question is `cancelled` with
+  `metadata.variant_resolution: "superseded"` and `metadata.superseded_by_message_id`;
+  a later answer to it is a 409 and nothing resumes. The session's `variant_pending`
+  pointer is cleared, and the next turn's agent gets an `injection`
+  (`source: variant_closed`) saying none of the drafts is in the conversation. The
+  preference record of a closed run keeps its candidates (`status`, no pick).
+- `draft_alternatives` takes `expiresInSeconds` (judge `user`; default none, as
+  `ask_user`): the pick's window. A `POST /messages` naming a drafts question in
+  `answers_question_id` is a 422 `drafts_question_needs_pick` (answer it with
+  `selected_options: [<draft id>]`).
+
+### Changed
+
+- `variant.try` is now emitted when a try starts (`running`) and ends (`completed` with
+  `text`, `tokens` and, when judged, `score`; or `failed` with `error`); every variant
+  event and `variant_selection` carries the run's `variants_id`. A variant try's
+  streamed text goes to its `variant.try.delta` tab, no longer into the turn's answer.
+- MCP and clio-core waits are progress-based (#1577). An MCP connect, listing or
+  `POST /v1/mcp/servers/{sid}/reconnect` waits while the server's own process tree
+  works, up to `tools.mcp.max_wait_s` (180 s); a `tools.mcp.no_progress_s` window
+  (default 30 s) with no answer and no server work is a typed failure. The reconnect
+  route's `504 mcp_reconnect_timeout` carries `details.reason` (`no_progress` or
+  `ceiling`) in place of `details.timeout_s`. A clio-core daemon still starting, a slow
+  write, the native attach and `initialize_cte` are waited for while the daemon
+  progresses (`arc.liveness.max_wait_s`); a daemon that cannot be located is
+  `clio_core_daemon_pid_unresolved`, a daemon still starting at the ceiling is
+  `clio_core_daemon_start_ceiling` and is left running for the next attach.
+- `POST /v1/artifacts/{id}/table-query` is progress-based (#1577): the query runs on
+  its own thread and is waited for while that thread consumes CPU, up to
+  `artifacts.table_query_max_wait_s` (180 s); a `artifacts.table_query_no_progress_s`
+  window (default 30 s) with no answer and no CPU work is a typed
+  `504 table_query_stalled` (`details.reason` `no_progress` or `ceiling`,
+  `details.waited_s`, `details.no_progress_s`), replacing `504 table_query_timeout`.
+  A client disconnect still cancels the query (`499 table_query_client_disconnected`).
+- `serve.stop_server` stops a server it spawned gracefully on every platform: it calls
+  `POST /v1/server/shutdown`, so the lifespan teardown runs (turn drain, clio-core client
+  release, flushes), and waits while the server's process tree progresses
+  (`arc.liveness.stop_no_progress_s` window, `arc.liveness.max_wait_s` ceiling). A server
+  that cannot be asked or stops progressing is killed and reported as `killed` with a
+  typed `kill_reason`; a stop no longer starts with terminate-then-kill. A stop that lands
+  during the boot clio-core attach waits for it, so the attached client is released.
+
+### Removed
+
+- `tools.mcp.setup_timeout_s`, `tools.mcp.cold_spawn_runaway_s`,
+  `tools.mcp.launcher_cache_lock_timeout_s` and `limits.mcp_reconnect_timeout_s` (and
+  their `CLIO_*` variables): replaced by the progress-based waits above. A leftover one
+  is a typed `config_key_removed` error naming where it is set.
+- `artifacts.table_query_timeout_s` (`CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`): replaced
+  by the progress-based table-query wait above. A leftover one is a typed
+  `config_key_removed` error.
+
+- `POST /v1/sessions/{sid}/context/compact` (use `POST /v1/sessions/{sid}/compact?scope=`),
+  the `session.compacted` event and the `compaction` part: new compactions never write
+  it, and a stored one is served as the summarization injection.
+- The Codex SDK transport. The `codex` provider's only transport is `direct`
+  (CLIO's own sign-in, else the Codex CLI login at `$CODEX_HOME/auth.json`):
+  the Codex catalog row has no `transports` list, its models carry no
+  `transport` tag and the row no `client` fact. A Codex `PUT /v1/providers/lm`
+  naming any `variant` (`direct` included) is a 422, and a Codex message model
+  reference naming one is a typed `400 model_transport_removed`. A leftover
+  `lm.codex_variant` / `CLIO_CODEX_VARIANT` is a typed `config_key_removed`
+  error naming where it is set; `providers.codex.stateful_capacity` and
+  `limits.codex_sdk_progress_timeout_s` are gone. The Codex user-updatable
+  component is the `openai-codex-cli-bin` runtime alone.
+- The `model_reply_unparseable` turn error (0.9.4.24): the agent loop reads the
+  model's reply typed, with no output-format parsing, so a reply with no tool call is
+  the answer, shown as written, and an unreadable text tool-call block goes back to
+  the model as a tool error it can correct.
+
+### Fixed
+
+- Without a CLIO sign-in, Codex direct reads the Codex CLI login from
+  `$CODEX_HOME/auth.json`; it read `~/.codex/auth.json` whatever `CODEX_HOME`
+  said.
+
 ## [0.9.4.24] — 2026-09-30
 
 ### Fixed

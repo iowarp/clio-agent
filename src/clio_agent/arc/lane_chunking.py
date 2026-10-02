@@ -383,6 +383,11 @@ def drop_lane(store: "SegmentStore", session_id: str, base: str) -> int:
     never occur — not a silent data-loss risk (nothing reachable is left unread; the
     orphan is unreachable dead weight, not a resurrection hazard).
 
+    Chunks are dropped HIGHEST FIRST, so an erase that fails partway (a refused store
+    delete) leaves a dense prefix -- never a hole -- and repeating it finds and drops
+    every remaining chunk. Dropping lowest first would open a hole at chunk 1 and a
+    retry would orphan any chunk past the look-ahead.
+
     Args:
         store: The session's segment store.
         session_id: Owning session.
@@ -392,9 +397,9 @@ def drop_lane(store: "SegmentStore", session_id: str, base: str) -> int:
         Total segments dropped across every erased chunk.
     """
     walk = _dense_walk(store, session_id, base)
-    dropped = sum(store.drop_scope(session_id, scope) for scope, _segs in walk)
+    dropped = 0
     first_absent = len(walk) + 1
-    for offset in range(_HOLE_LOOKAHEAD):
+    for offset in reversed(range(_HOLE_LOOKAHEAD)):
         index = first_absent + offset
         scope = chunk_scope(base, index)
         segs = store.list_segments(session_id, scope, include_tombstoned=True)
@@ -407,6 +412,7 @@ def drop_lane(store: "SegmentStore", session_id: str, base: str) -> int:
                 hole_index=first_absent,
             )
             dropped += store.drop_scope(session_id, scope)
+    dropped += sum(store.drop_scope(session_id, scope) for scope, _segs in reversed(walk))
     forget_cursor(store, session_id, base)
     return dropped
 

@@ -235,7 +235,6 @@ class UpdateEnvironment:
         download: Wheel downloader.
         verify_provider: The fresh-interpreter provider check, or ``None`` to
             skip it (only for environments without CLIO installed).
-        release_runtimes: Stops in-process runtimes holding the group's binaries.
         spec: Override of the provider's component group (tests).
         record_support: Records a finished update's versions as the floor the
             next runtime must keep (:func:`clio_agent.providers.support_record.
@@ -247,7 +246,6 @@ class UpdateEnvironment:
     run: Runner = run_command
     download: Callable[[WheelFile, Path], Path] = download_wheel
     verify_provider: Callable[[str, str], VerifyOutcome] | None = None
-    release_runtimes: Callable[[str], None] | None = None
     spec: ProviderComponents | None = None
     record_support: Callable[[str, dict[str, str]], object] | None = None
 
@@ -397,8 +395,6 @@ def _check(
             "component_no_installable_release", "no release is installable on this computer"
         )
     job.to_versions = targets
-    if env.release_runtimes is not None:
-        env.release_runtimes(spec.provider_kind)
     if os.name == "nt":
         result = env.run([env.python, "-c", _IN_USE_SCRIPT, json.dumps(list(spec.distributions))])
         in_use = json.loads(result.stdout or "[]") if result.returncode == 0 else []

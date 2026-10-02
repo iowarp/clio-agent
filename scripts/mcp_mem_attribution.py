@@ -18,7 +18,7 @@ Usage (the #921/#929 acceptance shape — 3 concurrent claude-haiku sessions):
         --sessions 3 --settle-s 180 --runs 3 --assert-budget
 
 The server is booted as a child of THIS process (claude_code/haiku + the real
-CTE substrate per the accepted gate config — never CLIO_ARC_STORE=local) and
+CTE substrate per the accepted gate config) and
 torn down on exit. Run it as ONE task: server and load share this process
 tree so external task eviction cannot split them.
 
@@ -552,8 +552,8 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         sampler = TreeSampler(listener_pid, extra_pids=extra)
 
         # Substrate verification (never trust the pins alone): the doctor must
-        # report the ARC row READY on the cte backend — a LOUD degrade to the
-        # local store (or an inherited config selecting it) fails the gate here.
+        # report the ARC row READY on the cte backend — anything else (clio-core
+        # unavailable or degraded) fails the gate here.
         # The CTE daemon spawns during AGENT construction (a background task
         # after the port binds), so poll until the arc row SETTLES rather than
         # judging the first snapshot; the doctor itself is also slow cold.
@@ -569,10 +569,10 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
             rows = [r for r in health.get("integrations", []) if r.get("name") == "arc"]
             arc = rows[0] if rows else {}
             storage_mode = str((arc.get("details") or {}).get("storage_mode") or "")
-            if storage_mode == "local" or arc.get("status") in {"ready", "degraded"}:
-                break  # settled (ready-cte, degraded-anything, or local) — judge it
+            if arc.get("status") in {"ready", "degraded", "unavailable"}:
+                break  # settled — judge it
             time.sleep(10)  # still constructing/spawning; keep polling
-        if arc.get("status") != "ready" or storage_mode == "local":
+        if arc.get("status") != "ready":
             print(
                 "FAIL: gate substrate is not healthy cte — arc row: "
                 f"status={arc.get('status')} storage_mode={storage_mode!r} "

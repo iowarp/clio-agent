@@ -44,13 +44,13 @@ SANCTIONED_FILES: frozenset[str] = frozenset(
     {
         "src/clio_agent/gact/agents/tool_instrumentation.py",
         "src/clio_agent/tools/execution.py",
-        # The ReActV2-internal ``submit`` extract tool (_make_submit_tool): loop
-        # MECHANISM, not a model-action tool. It never passes the assembly seam
-        # (the loop builds it internally), its wire representation is the typed
-        # extract itself (the streamed answer / return contract — a tool row
-        # would be a second representation of the same action), and internal
-        # loop names are already excluded from tools_called metadata.
-        "src/clio_agent/gact/agents/reactv2.py",
+        # ClioReAct's internal ``submit`` tool (_submit_tool): loop MECHANISM, not
+        # a model-action tool. It never passes the assembly seam (the loop builds
+        # it internally), its wire representation is the typed final output
+        # itself (the return contract -- a tool row would be a second
+        # representation of the same action), and internal loop names are
+        # already excluded from tools_called metadata.
+        "src/clio_agent/gact/agents/clio_react.py",
     }
 )
 

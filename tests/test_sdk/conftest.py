@@ -47,12 +47,40 @@ class StreamingASGITransport(httpx.BaseTransport):
             target=self._run_loop, name="sdk-test-asgi-loop", daemon=True
         )
         self._thread.start()
+        # The app's lifespan runs here, as under uvicorn: startup binds the turn
+        # runner to this loop, and shutdown (in close) drains in-flight turns --
+        # without it a turn still running at close was destroyed while pending.
+        self._lifespan_events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._lifespan_done: dict[str, threading.Event] = {
+            "startup": threading.Event(),
+            "shutdown": threading.Event(),
+        }
+        asyncio.run_coroutine_threadsafe(self._lifespan(), self._loop)
+        self._send_lifespan("startup")
+
+    async def _lifespan(self) -> None:
+        async def receive() -> dict[str, Any]:
+            return await self._lifespan_events.get()
+
+        async def send(message: dict[str, Any]) -> None:
+            kind = message["type"].split(".")[1]  # lifespan.startup.complete -> startup
+            self._lifespan_done[kind].set()
+
+        await self._app({"type": "lifespan", "asgi": {"version": "3.0"}}, receive, send)
+
+    def _send_lifespan(self, phase: str) -> None:
+        self._loop.call_soon_threadsafe(
+            self._lifespan_events.put_nowait, {"type": f"lifespan.{phase}"}
+        )
+        if not self._lifespan_done[phase].wait(60):
+            raise TimeoutError(f"ASGI lifespan {phase} did not complete within 60s")
 
     def _run_loop(self) -> None:
         asyncio.set_event_loop(self._loop)
         self._loop.run_forever()
 
     def close(self) -> None:
+        self._send_lifespan("shutdown")
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 

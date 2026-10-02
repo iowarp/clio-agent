@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 
 from clio_agent import conf
 from clio_agent.arc.cache import LRUCache
+from clio_agent.arc.daemon_progress import drain_while_writes_progress
 from clio_agent.arc.index import BTreeIndex
 from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.live import (
@@ -32,6 +33,8 @@ from clio_agent.arc.live import (
     build_event_content,
 )
 from clio_agent.arc.lsm import LSMTree
+from clio_agent.arc.memory_segments import SearchUnavailableError as SearchUnavailableError
+from clio_agent.arc.memory_segments import SegmentPlane
 from clio_agent.arc.schema import (
     Conversation,
     Invocation,
@@ -44,56 +47,33 @@ from clio_agent.arc.schema import (
     encode_invocation,
     encode_variant_record,
 )
-from clio_agent.arc.segments import OpLogger
 from clio_agent.arc.storage import ARCStore, make_arc_store
 from clio_agent.arc.working_set_fold import make_segment_store
 from clio_agent.runtime import trace
 
-# ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
-# is defined in ``arc.live`` (the observer that projects over it) and imported above so
-# the writer (this module) and the reader share one constant. The import re-exports it
-# as ``clio_agent.arc.memory.EVENTS_SCOPE`` for back-compat importers. It is its OWN
-# scope, so an expert/working-set render never sees it; combined with ``semantic_event``
-# not being a working-set kind nor part of the dspy trajectory projection, the persisted
-# log can never leak into a model prompt.
+# ``EVENTS_SCOPE`` (ARC's ONE persisted semantic-event log) is defined in ``arc.live``
+# and re-exported here. It is its OWN scope and ``semantic_event`` is not a working-set
+# kind, so the persisted log can never leak into a model prompt.
 
 # Event types NOT persisted as ``semantic_event`` segments.
-#   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
-#     that rides the highway only; persisting one segment apiece would bloat ARC for
+#   * ``lm.token.delta`` / ``variant.try.delta`` — the high-volume transient token streams
+#     that ride the highway only; persisting one segment apiece would bloat ARC for
 #     zero record value.
 # (``arc.op`` is NOT here: it is the DERIVED write-log of a segment mutation and no
 # longer enters ``record_semantic_event`` at all — the gact op-logger derives it
 # DIRECTLY to the durable trace + SSE bus. With no path back into ARC's record, the
 # old recursion (record -> op-logger -> arc.op -> record) cannot form, so neither the
 # skip entry nor the thread-local re-entrancy guard is needed.)
-_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta"})
+_EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "variant.try.delta"})
 
 logger = logging.getLogger(__name__)
 
 # Backend names that mean the durable semantic trace is DISABLED — the same set
 # :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
 # backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
-_DISABLED_TRACE_BACKENDS: frozenset[str] = frozenset({"", "none", "off", "disabled"})
 
 
-def _durable_trace_backend() -> str:
-    """Resolved durable semantic-trace backend name (``none`` when disabled).
-
-    Mirrors the decision :func:`clio_agent.gact.semantic_events.build_trace_backend`
-    makes, from the SAME config key (``trace.backend`` / env
-    ``CLIO_SEMANTIC_TRACE_BACKEND``, default ``none``), resolved here directly so
-    ``arc/`` stays free of any ``gact/`` import. The session-release paths gate the
-    destructive erase of the ``_events`` log on this: when the durable trace keeps
-    no copy, the log is the ONLY record of the session's events (#762).
-    """
-    # One ladder for both sides (arc stays gact-free): provenance_config owns
-    # the precedence + the Flowcept-is-not-permission-to-erase rule.
-    from clio_agent.provenance_config import durable_trace_backend_name  # noqa: PLC0415
-
-    return durable_trace_backend_name()
-
-
-class ARCMemory:
+class ARCMemory(SegmentPlane):
     """Adaptive Retrieval Cache - Main interface for memory operations.
 
     Provides cache-first storage and retrieval for conversations and
@@ -125,19 +105,16 @@ class ARCMemory:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
             store: Optional ARCStore for record persistence. When ``None`` the
-                backend is chosen by :func:`make_arc_store` — clio-core by
-                default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
-                store to override the factory (e.g. tests injecting a specific backend).
+                store is clio-core, from :func:`make_arc_store` (a typed error when it
+                cannot be brought up). Pass a store to inject one (tests).
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Persistence seam: every record kind is read/written through an
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
-        # (below) remains a separate high-throughput subsystem. The backend is
-        # chosen by the factory (default clio-core; LocalFS only on explicit
-        # CLIO_ARC_STORE=local), NOT hardcoded -- a hardcoded LocalFS here is what
-        # silently kept ARC off clio-core regardless of config.
+        # (below) remains a separate high-throughput subsystem. The store is clio-core,
+        # built by the factory.
         self._store: ARCStore = (
             store if store is not None else make_arc_store(data_dir=self.data_dir)
         )
@@ -267,6 +244,7 @@ class ARCMemory:
         # index. Guarded by a Condition (never held across ``_store``/``_lsm`` I/O nor
         # ``_lock``, so it introduces no new lock-ordering edge).
         self._inflight_inv: Dict[str, int] = {}
+        self._inflight_done = 0  # writes finished: the drain's progress signal
         self._inflight_cv = threading.Condition()
 
         # Performance tracking
@@ -784,18 +762,10 @@ class ARCMemory:
            that expected ``sink.emit(event)``'s return are unaffected; ``{}`` when
            no sink is wired.
 
-        Each step is guarded so an observability record can never break a turn.
+        clio-core is the record: a persist failure raises, and nothing is derived
+        from an event clio-core does not hold.
         """
-        try:
-            self.on_semantic_event(event)
-        except Exception as exc:  # noqa: BLE001 - never break a turn, but NEVER swallow silently
-            trace.event(
-                "ARC-EVENTS",
-                "FAILED to persist event etype=%r sid=%r: %r",
-                getattr(event, "event_type", ""),
-                getattr(event, "session_id", ""),
-                exc,
-            )
+        self.on_semantic_event(event)
         sink = self._highway_sink
         if sink is None:
             return {}
@@ -901,200 +871,6 @@ class ARCMemory:
         """Project the live fold of a session into per-expert Invocations."""
         return self._live.project_invocations(session_id)
 
-    # ---- Live context plane (the segment store the ReAct loop reads from) ----
-
-    def set_segment_op_logger(self, op_logger: "OpLogger | None") -> None:
-        """Inject the durable-Trace op logger into the segment store.
-
-        Called by the gact app once both the app handle and ARC exist, so each
-        applied context op is mirrored to the Trace. Keeps ``arc/`` free of any
-        ``gact/`` import.
-        """
-        self._segments.set_op_logger(op_logger)
-
-    def append_segment(
-        self,
-        session_id: str,
-        scope: str,
-        kind: str,
-        content: Dict[str, Any],
-        *,
-        step: int = -1,
-        trace_ref: str = "",
-        token_count: int = 0,
-        turn_id: str = "",
-        expert_span_id: str = "",
-        run_span_id: str = "",
-    ) -> Any:
-        """Append one segment to a scope's live context (append = insert at end).
-
-        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
-        trajectory-correlation span ids stamped on the new segment (default ``""``)."""
-        return self._segments.append(
-            session_id,
-            scope,
-            cast(SegmentKind, kind),
-            content,
-            step=step,
-            trace_ref=trace_ref,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-
-    def insert_segment(
-        self,
-        session_id: str,
-        scope: str,
-        position: int,
-        kind: str,
-        content: Dict[str, Any],
-        *,
-        step: int = -1,
-        trace_ref: str = "",
-        token_count: int = 0,
-        turn_id: str = "",
-        expert_span_id: str = "",
-        run_span_id: str = "",
-    ) -> Any:
-        """Insert one segment at a render position in a scope's live context.
-
-        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional
-        correlation span ids stamped on the new segment (default ``""``)."""
-        return self._segments.insert(
-            session_id,
-            scope,
-            position,
-            cast(SegmentKind, kind),
-            content,
-            step=step,
-            trace_ref=trace_ref,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-
-    def delete_segments(self, session_id: str, scope: str, ids: List[str]) -> int:
-        """Tombstone segments by id (skipped by render, kept for replay)."""
-        return self._segments.delete(session_id, scope, ids)
-
-    def summarize_segments(
-        self,
-        session_id: str,
-        scope: str,
-        ids: List[str],
-        summary_content: Dict[str, Any],
-        *,
-        trace_ref: str = "",
-        token_count: int = 0,
-        turn_id: str = "",
-        expert_span_id: str = "",
-        run_span_id: str = "",
-    ) -> Any:
-        """Replace a range of segments with one summary (= context-compaction over all).
-
-        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional correlation
-        span ids stamped on the summary segment (default ``""``)."""
-        return self._segments.summarize(
-            session_id,
-            scope,
-            ids,
-            summary_content,
-            trace_ref=trace_ref,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-
-    def replace_segment(
-        self,
-        session_id: str,
-        scope: str,
-        target_id: str,
-        content: Dict[str, Any],
-        *,
-        kind: Optional[str] = None,
-        trace_ref: str = "",
-        token_count: int = 0,
-        turn_id: str = "",
-        expert_span_id: str = "",
-        run_span_id: str = "",
-    ) -> Any:
-        """Replace a live segment's content in place (1:1 supersede at the same render
-        slot; the original is tombstoned + recoverable as-of-T).
-
-        ``kind`` defaults to the original's kind; the correlation span ids default to
-        the ORIGINAL's (a pure content edit stays in the same turn/expert/run). Returns
-        the new Segment, or ``None`` if ``target_id`` matched no live segment."""
-        return self._segments.replace(
-            session_id,
-            scope,
-            target_id,
-            content,
-            kind=cast(Optional[SegmentKind], kind),
-            trace_ref=trace_ref,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-
-    def apply_segment_op(self, op: str, session_id: str, scope: str, **kwargs: Any) -> Any:
-        """Stable dispatch over the five ops — the KV-backend swap seam."""
-        return self._segments.apply(op, session_id, scope, **kwargs)
-
-    def render_segments(self, session_id: str, scope: str, *, as_of: Optional[int] = None) -> Any:
-        """Ordered LIVE segments for a scope (the decisive read; as-of-T optional)."""
-        return self._segments.render(session_id, scope, as_of=as_of)
-
-    def render_working_set(
-        self, session_id: str, scope: str, *, as_of: Optional[int] = None
-    ) -> Any:
-        """Ordered LIVE WORKING-SET segments — the kinds the prompt + the compaction/
-        reset paths operate on (excludes ``answer`` / ``semantic_event``). The
-        target of the per-turn reset and auto-compaction, NOT a new prompt source; see
-        :meth:`SegmentStore.render_working_set`."""
-        return self._segments.render_working_set(session_id, scope, as_of=as_of)
-
-    def render_segments_keys(
-        self, session_id: str, scope: str, *, as_of: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """The live segments projected into dspy's trajectory dict (what the
-        ``_format_trajectory`` override reads)."""
-        return self._segments.render_keys(session_id, scope, as_of=as_of)
-
-    def render_segment_text(
-        self, session_id: str, scope: str, *, as_of: Optional[int] = None
-    ) -> str:
-        """The live segments flattened to text (inspection / byte-equality)."""
-        return self._segments.render_text(session_id, scope, as_of=as_of)
-
-    def segment_tokens_by_kind(self, session_id: str, scope: str) -> Dict[str, int]:
-        """Per-kind token attribution for a scope's live segments (compaction targeting)."""
-        return self._segments.tokens_by_kind(session_id, scope)
-
-    def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> List[str]:
-        """Scopes that have context in this session (for discovery / a scope picker)."""
-        return self._segments.scan_scopes(session_id, scope_prefix)
-
-    def search_segment_scopes(
-        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
-    ) -> List[Any]:
-        """Semantic discovery: rank a session's scopes by content relevance to
-        ``query_text`` — "which expert/scope knows about X" (BM25 on clio-core)."""
-        return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
-
-    def segment_search_is_semantic(self) -> bool:
-        """Whether scope search uses real BM25 (clio-core backend) vs the naive fallback."""
-        return self._segments.supports_search()
-
-    def segment_search_degradation_reason(self) -> str:
-        """Typed reason real search is degraded (#905), or ``""`` when fully available."""
-        return self._segments.search_degradation_reason()
-
     def _enter_inflight(self, session_id: str) -> None:
         """Register an in-flight invocation write for ``session_id`` (#804).
 
@@ -1112,30 +888,28 @@ class ARCMemory:
         """
         with self._inflight_cv:
             remaining = self._inflight_inv.get(session_id, 0) - 1
+            self._inflight_done += 1
             if remaining > 0:
                 self._inflight_inv[session_id] = remaining
             else:
                 self._inflight_inv.pop(session_id, None)
             self._inflight_cv.notify_all()
 
-    def _drain_inflight_invocations(self, session_id: str, timeout: float = 5.0) -> int:
-        """Block until no ``session_id`` invocation write is in flight, then return the residual in-flight count -- 0 on a clean drain, ``>0`` only on the ``timeout`` path (which logs a structured reason and proceeds, not a silent wait). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` (mid store-RPC, index insert not yet applied) is not under-counted, and surfaces this return as ``inflight_pending`` so a degraded release is visible in the return value, not only the log (no silent fallback; #804)."""
-        deadline = time.monotonic() + timeout
-        with self._inflight_cv:
-            while self._inflight_inv.get(session_id, 0) > 0:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    pending = self._inflight_inv.get(session_id, 0)
-                    logger.warning(
-                        "arc: release_session proceeding with %d in-flight invocation "
-                        "write(s) still pending session=%s reason=inflight_drain_timeout "
-                        "(index count may under-report a concurrent write; #804)",
-                        pending,
-                        session_id,
-                    )
-                    return pending
-                self._inflight_cv.wait(timeout=remaining)
-        return 0
+    def _drain_inflight_invocations(self, session_id: str, window_s: float | None = None) -> int:
+        """Block while ``session_id`` invocation writes are in flight AND progressing (a write finishing, or the daemon working: :func:`~clio_agent.arc.daemon_progress.drain_while_writes_progress`; no fixed deadline), then return the residual in-flight count -- 0 on a clean drain, ``>0`` only when they stopped progressing for a whole ``window_s`` (``arc.liveness.stall_after_s``) or hit ``arc.liveness.max_wait_s`` (typed reason ``inflight_drain_timeout``, logged). :meth:`release_session` drains before it counts/evicts the index so an in-flight ``store_invocation`` is not under-counted, and surfaces this as ``inflight_pending`` (#804)."""
+        cv, inflight, op = self._inflight_cv, self._inflight_inv, "inflight_drain"
+        settled = drain_while_writes_progress(
+            cv,
+            lambda: not inflight.get(session_id),
+            lambda: self._inflight_done,
+            op_name=op,
+            no_progress_s=window_s,
+        )
+        pending = 0 if settled.done else inflight.get(session_id, 0)
+        if pending:
+            msg = "arc: release_session proceeding with %d in-flight invocation write(s) session=%s reason=inflight_drain_timeout wait=%s (index count may under-report; #804)"
+            logger.warning(msg, pending, session_id, settled.reason)
+        return pending
 
     def release_session(self, session_id: str) -> Dict[str, int]:
         """Release a session's hot footprint from cache and indexes.
@@ -1175,41 +949,14 @@ class ARCMemory:
 
             evicted_index = self._inv_index.delete_session(session_id)
 
-        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks. The
-        # observer's release ERASES the reserved ``_events`` scope (the single persisted raw
-        # semantic-event stream it projects over) so an idle server returns to baseline --
-        # but ONLY when the durable trace actually keeps the full history. The trace backend
-        # defaults to "none" (opt-in), so erasing unconditionally destroyed the ONLY copy of
-        # the session event log (#762). When the trace is disabled the log is RETAINED; the
-        # segment release below still drops the hot in-memory copy (write-through, nothing
-        # lost), so the heap returns toward baseline either way. Both paths log their reason.
-        backend = _durable_trace_backend()
-        if backend in _DISABLED_TRACE_BACKENDS:
-            live = 0
-            logger.warning(
-                "arc: retained _events log session=%s reason=durable_trace_disabled "
-                "backend=%r (the log is the only copy; erase skipped, #762)",
-                session_id,
-                backend,
-            )
-        else:
-            live = self._live.release(session_id)
-            # The chunk family is gone; the write cursor (arc.lane_chunking) notices on
-            # its own next append -- the erase already discarded ``store._loaded`` for
-            # every dropped chunk, which is exactly the staleness signal it checks
-            # (retention keeps the cursor valid — same chunk continues).
-            logger.info(
-                "arc: erased _events log session=%s reason=durable_trace_enabled "
-                "backend=%r turns=%d (the durable trace keeps the full history)",
-                session_id,
-                backend,
-                live,
-            )
+        # Outside the lock: the SegmentStore has its own locks. Release drops only the
+        # hot in-memory copy (write-through): clio-core keeps the session's whole
+        # ``_events`` family -- its event log and transcript atoms -- whatever the trace
+        # backend. clio-core is the one context store; nothing else is trusted to hold it.
         segments = self._segments.release(session_id)
         return {
             "cache": evicted_cache,
             "index": evicted_index,
-            "live": live,
             "segments": segments,
             # 0 on a clean drain; >0 only when the in-flight drain timed out, so a caller detects an under-counted release without grepping logs (#804).
             "inflight_pending": inflight_pending,
@@ -1233,27 +980,8 @@ class ARCMemory:
         with self._lock:
             self._cache.clear()
             self._inv_index.clear()
-        # The observer's clear ERASES the reserved ``_events`` scope across every
-        # session (the single persisted semantic-event stream it projects over) —
-        # gated, like ``release_session``, on the durable trace actually retaining
-        # the full history. Under the default "none" backend the log is the ONLY
-        # copy and is retained (#762); ``SegmentStore.clear`` below only drops the
-        # in-memory copies (write-through store untouched), so the heap still
-        # returns to baseline. Both paths log their reason.
-        backend = _durable_trace_backend()
-        if backend in _DISABLED_TRACE_BACKENDS:
-            logger.warning(
-                "arc: retained _events log for all sessions reason=durable_trace_disabled "
-                "backend=%r (the log is the only copy; erase skipped, #762)",
-                backend,
-            )
-        else:
-            logger.info(
-                "arc: erased _events log for all sessions reason=durable_trace_enabled "
-                "backend=%r (the durable trace keeps the full history)",
-                backend,
-            )
-            self._live.clear()
+        # Drops only in-memory copies: clio-core keeps every session's ``_events``
+        # family (see ``release_session``).
         self._segments.clear()
 
     def clear_cache(self) -> None:

@@ -17,7 +17,6 @@ from clio_agent.gact.provenance.protocol import ProviderReceipt
 # this module's public surface is unchanged (#1247).
 from clio_agent.provenance_config import (  # noqa: F401 - re-exported public API
     configured_provider_names,
-    native_durable_provenance_enabled,
 )
 
 

@@ -367,6 +367,9 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
         updated = claim_question_transition(app, question.id, "expired")
         if updated is None:
             return
+        from clio_agent.gact.agents.variant_close import close_for_question  # noqa: PLC0415
+
+        close_for_question(app, updated)  # a drafts pick expires with its question
         forwarded = [
             row
             for row in app.state.user_questions.values()

@@ -743,7 +743,8 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
     whose child completed BEFORE the terminal-transition writeback existed keeps a
     ``delegate.started`` part stuck "running" forever — see
     :func:`clio_agent.gact.background_exit.sweep_stale_handoff_parts`). Requires
-    ``app.state.message_store`` to be set.
+    ``app.state.transcript_index`` to be set (the ``messages/`` store, or the session
+    registry with ``transcript.file`` off -- :mod:`clio_agent.gact.transcript_file`).
     """
 
     from clio_agent.gact.background_exit import (  # noqa: PLC0415 - avoid import cycle
@@ -754,7 +755,7 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
     )
 
     return ResidentLedgerSet(
-        app.state.message_store,
+        app.state.transcript_index,
         config=ResidentLedgerConfig.from_conf(),
         is_active=lambda sid: _session_is_active(app, sid),
         audit=lambda payload: _record_resident_audit(app, payload),

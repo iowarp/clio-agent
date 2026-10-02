@@ -39,24 +39,19 @@ classifiers = [
 dependencies = [
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
     # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
-    "dspy==3.3.0b1",
+    "dspy==3.4.0",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.102.1",
-    # The Codex provider has two transports (S1b): "direct" calls the Codex
-    # backend itself over HTTP/WebSocket (providers/codex/, no CLI/SDK), and
-    # "sdk" restores the official openai_codex Python SDK against the user's
-    # OWN CODEX_HOME (default ~/.codex) so the Codex runtime owns its own
-    # login/refresh -- CLIO never reads or writes auth.json.
+    # The Codex runtime. The Codex LM provider calls the Codex backend directly
+    # over HTTP/WebSocket (providers/codex/) and runs no CLI, but it presents
+    # this distribution's version as its model list's client_version, and the
+    # Windows shell sandbox (runtime/sandbox_codex.py) spawns the bundled codex
+    # binary as its enforcement rung.
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound. The backend gates new models by client version, so
     # runtimes update this in place past the lock from the provider panel, and
     # the provider-sdk-bump workflow moves the floor + lock weekly.
-    "openai-codex>=0.157.1",
-    # The bundled codex binary stays a DIRECT dependency because the Windows
-    # shell sandbox (runtime/sandbox_codex.py) spawns it as its enforcement
-    # rung -- unrelated to either LM provider transport. User-updatable in
-    # lockstep with openai-codex (which pins it exactly).
     "openai-codex-cli-bin>=0.157.1",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
@@ -283,6 +278,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
+    "real_runtime_release: the test exercises release_runtime_client itself (the harness no-op is skipped)",
+    "history_mode: the test may enter the loud DSPy History mode (every other test fails if it does)",
     "integration: marks tests requiring full-stack/external runtime behavior",
     "marketplace: reads shipped packs from the pinned external/clio-agent-marketplace submodule; FAILS (never skips) with the fix when the checkout is missing (tests/_marketplace.py)",
     "real_dependency_installer: exercises providers.dependencies' installer itself (subprocess stubbed); exempt from the suite-wide no-real-install guard",

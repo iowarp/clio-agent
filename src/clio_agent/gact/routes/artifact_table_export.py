@@ -184,9 +184,7 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
         # bytes are still being streamed, so an abandoned download stops
         # promptly instead of finishing unread work.
         cancel_event = threading.Event()
-        cancellation = QueryCancellation(
-            deadline=deadline, timeout_s=timeout_s, cancel_event=cancel_event
-        )
+        cancellation = QueryCancellation(cancel_event=cancel_event)
         watcher = asyncio.ensure_future(watch_for_disconnect(request, cancel_event))
         watcher.add_done_callback(report_watcher_failure)
 
@@ -223,9 +221,7 @@ def register_artifact_table_export_routes(app: FastAPI) -> None:
 
         # Keep one watcher throughout the transfer. ExportStreamingResponse
         # has no competing ASGI receive consumer.
-        transfer_cancellation = QueryCancellation(
-            deadline=float("inf"), timeout_s=timeout_s, cancel_event=cancel_event
-        )
+        transfer_cancellation = QueryCancellation(cancel_event=cancel_event)
 
         async def body_stream() -> AsyncIterator[bytes]:
             try:

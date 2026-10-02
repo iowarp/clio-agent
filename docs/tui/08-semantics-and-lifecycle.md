@@ -4,7 +4,8 @@
 
 ## Test surface at a glance
 
-- **test_core/** — agent loop, routing, errors, config, instrumentation, runner, API
+- **test_core/** — errors, config, instrumentation, runner
+- **test_gact/test_clio_react.py** — the agent loop (`ClioReAct`)
 - **test_gact/test_agent_blueprints.py** — registry bootstrap, Agent Blueprint parsing,
   DSPy module compilation, child expert tools, and native-expert removal guards
 - **test_tools/** — FastMCP gateway + HDF5 / Parquet servers end-to-end
@@ -16,56 +17,53 @@ Fixtures (`conftest.py:1-102`) create real files (HDF5 / Parquet) with determini
 
 ## Agent lifecycle
 
-### Construction
+### A turn
 
-```python
-from clio_agent import ClioAgent
-agent = ClioAgent(data_dir=str(tmp / "clio_test"), verbose=True)
-# internally: setup_dspy(), instantiate experts, register with registry,
-# wire ARC + LSM, load active variants (optimizer/variants), mount tools.
-```
+A turn is `POST /v1/sessions/{sid}/messages`. The turn engine (`gact/turn.py`,
+`gact/turn_forward.py`):
 
-(`test_agent.py:15-52`, `test_end_to_end.py:34-48`)
+1. resolves the session's agent -- the activated Agent Blueprint's root expert, or
+   the builtin `main` for a session with no blueprint (an explicit activation that
+   resolves nothing is a typed `no_resolvable_agent` failure, never a substitute);
+2. builds that expert's DSPy module by its declared `module.kind` (`react` experts
+   run `ClioReAct`, `gact/agents/clio_react.py`; `predict` / `chain_of_thought`
+   run the DSPy module of that name, optionally wrapped in a declared
+   `BestOfN` / `Refine` variant);
+3. runs the module's `forward` ONCE in the turn's forward executor;
+4. finalizes the assistant message (parts, tokens, cost, `stop_reason`).
 
-Shape after init:
+### The agent loop (`ClioReAct`)
 
-```python
-agent.action_planner                  # DSPy ChainOfThought on AgentActionSignature
-agent.chat_agent                      # DSPy Predict on ChatAgentSignature
-agent.registry                        # core runtime registry
-# GACT loads Agent Blueprint experts from the registry/marketplace store
-# and compiles them by module.kind at session runtime.
-agent.arc                             # ARCMemory
-```
+The agent's context is its scope's ARC live plane, and it spans turns: every earlier
+turn's user message, steps, tool results and answer are there as the messages they
+were (never a prose recap), and nothing is wiped between turns -- only a recorded op
+removes content (compaction summarizes it; undo / rewind roll it back to before the
+first rolled-back turn). A turn first records CLIO's additions (plan reminder, todos,
+replan suggestion, task notifications, memory hits) as user messages headed
+`[clio: <source>]` -- each source again only when its text changed -- then the user's
+message. An agent new to a conversation that already has turns is seeded once from
+the transcript and told so (`earlier_turns`).
 
-### Single turn (happy path)
+Each step: cancellation is checked; what arrived since the last step (a user steer, a
+finished child's result) is recorded as its own user message; the context is folded
+from the plane (`fold_steps`); one model call returns thinking, text and tool calls;
+the step's tool calls run **concurrently** (results in call order); the step is
+recorded (`react.step.completed`, ARC segments). Every note CLIO adds to a call's
+result -- a path hint, the circuit breaker, a spilled oversize result, a hook's
+effect -- is in the result the model reads and is shown to the user as an `injection`
+part with the exact text. The loop ends when the model calls no tool
+(the text is the answer, `termination_reason="direct_response"`), calls `submit`
+(typed outputs), calls `ask_user` / `plan_exit` (the turn yields to the user),
+or hits a declared `max_iters` / a parse error / the context window. Nothing
+calls the model after the loop (`docs/design/react-loop-completion-2026-09.md`).
+A terminal MCP protocol refusal escalates as a typed turn failure.
 
-```python
-result = agent.forward(question="Hello", session_id="conv_test")
-# or agent(question=..., session_id=...) via __call__
-```
+Delegation is the model's choice: a react expert with declared children spawns
+them as real child sessions through `spawn_agent_task` /
+`spawn_agents_parallel` and collects them with `wait_agent_tasks` /
+`observe_agent_tasks`.
 
-Returns `dspy.Prediction` with:
-
-- `answer: str`
-- `selected_expert: Literal["data","analysis","visualization","chat","none"]`
-- `session_id: str`
-- `duration_ms: float`
-- `arc_stats: dict` (cache hits/misses)
-- `error_info: dict | None`
-
-`agent.arc.get_conversation(session_id).messages` has `len == 2 * turn_count` (user + assistant).
-
-(`test_agent_dispatch.py:26-252`, `test_end_to_end.py:59-71`)
-
-### Multi-turn conversation semantics
-
-- Successive `forward()` calls with the same `session_id` **append** to the existing `Conversation`.
-- Context retrieval (`arc.get_session_context`) injects prior messages into the LM prompt at turn start.
-- **Context window**: Tier-1 (Main Agent) 2 K tokens, Tier-2 (Expert) 4 K tokens. Overflow → compaction (oldest first).
-- Routing decisions are persisted per turn; `Conversation.routing_decisions` grows to match turn count.
-
-(`test_end_to_end.py:202-215`, `test_context_compiler.py:24-109`)
+(`tests/test_gact/test_clio_react.py`, `tests/test_gact/test_agent_blueprints.py`)
 
 ### Cancellation
 
@@ -93,7 +91,7 @@ Tests: `tests/test_gact/test_cancellation.py`.
 
 Text streaming has explicit provenance:
 
-- `stream_source="live"` means the delta arrived through the live `dspy.streamify` path.
+- `stream_source="live"` means the delta arrived live from the provider through the LM token hooks (`runtime/lm_activity`).
 - `stream_source="batch"` means the backend already had the final answer before live provider-token deltas could be emitted.
 
 Batch fallback payloads include a structured `stream_fallback`
@@ -102,7 +100,7 @@ legacy `synthetic_posthoc=true`, and `live_streaming=false`. The audited
 reason catalog is advertised in `/v1/capabilities`; unknown reasons are
 rejected instead of becoming unclassified fallback metadata.
 
-Current limitation: the chat `answer` path can stream live when the upstream DSPy/LiteLLM path emits chunks. Expert outputs and paths that do not emit an `answer` stream are marked as `batch` and delivered as completed text parts, not fake deltas. Live stream execution failures surface as structured `provider_error` messages, not as hidden sync reruns; `details.partial_output` tells clients whether any live text was already emitted.
+Every model call in the loop streams its text and thinking live when the provider streams; a turn whose answer never produced a live delta is marked `batch` (`stream_fallback.reason="sync_execution_path"`) and delivered as a completed part, not fake deltas. A provider failure surfaces as a structured `provider_error`; nothing re-runs the agent. `details.partial_output` tells clients whether any live text was already emitted.
 
 Tests: `tests/test_gact/test_streaming.py`.
 
@@ -117,8 +115,8 @@ console script is now a deprecation shim). Use native GACT events
 ```
 ClioError (base)
  ├── ProviderError   — LM unavailable / timeout
- ├── RoutingError    — planner could not select or validate a safe action
- ├── ExpertError     — expert ReAct loop blew up
+ ├── RoutingError    — a routing/selection request could not be satisfied
+ ├── ExpertError     — an expert's loop failed
  ├── ToolError       — MCP tool call failed
  └── ConfigError     — env / config invalid
 ```
@@ -163,17 +161,18 @@ uses it before destructive mutations, not only after the fact.
 
 ### Failure surfacing
 
-CLIO does not use fallback value substitution for planner or provider failures.
+CLIO does not use fallback value substitution for agent or provider failures.
 Failed routes and failed LM calls surface as structured `error_info` with retry,
 reconfigure-provider, and exit recovery actions.
 
-- Planner route failure → structured `routing_error`, not a canned answer.
+- An agent that cannot be resolved → structured `no_resolvable_agent` /
+  `blueprint_root_disabled`, never a substitute agent.
 - Provider/LM failure → structured `provider_error`; CLIO must not hide
   an upstream/provider failure behind repeated, canned, or locally synthesized
   assistant text.
 - Tool failure → return `{"error": {...}}` dict, not raise (see [`../MCP_TOOL_INTEGRATION.md`](../MCP_TOOL_INTEGRATION.md)).
 
-(`test_errors.py`, `test_agent_dispatch.py`, `agent.py`)
+(`test_errors.py`, `tests/test_gact/test_stream_failures.py`)
 
 ## Storage & persistence semantics
 
@@ -225,27 +224,24 @@ arc.get_metrics("data")         # latest
 
 ## Routing semantics
 
-- `AgentActionSignature` returns a constrained JSON action. Valid action kinds are `tool`, `expert`, `answer`, and `none` for core CLIO planning.
-- GACT session agents may select registry-loaded Agent Blueprint experts instead of a native domain expert path. The active default blueprint currently exposes `main`, `data`, `analysis`, and `visualization` from `data-semantics`.
-- `answer` is the conversational/chat path. It produces normal assistant text without tool execution.
-- `none` means no valid action is available. A missing planner explanation surfaces as `routing_error`; CLIO must not replace it with a canned assistant response.
-- Session `routing_mode` overrides constrain the planner path: `chat` forces the conversational path, `experts` rejects direct `answer`/`none` routes, and `reasoning_only` asks the planner to prefer tool/expert reasoning over deterministic shortcuts.
-- Registry lookup by keyword remains available for discovery. Default/baseline agent provenance should identify the installed blueprint and registry commit.
+- There is no planner. The session's active expert runs its own loop; routing to
+  other experts is the model calling the spawn tools for its declared children.
+- Session `routing_mode` is recorded metadata only; no code path branches on it.
 
 ## Expert semantics
 
 - Agent Blueprint experts compile by declared `module.kind`, not by tool list.
-- Empty blueprint signatures default to `system_prompt`, `question`, and `answer`; structured outputs add evidence/artifacts/errors/delegation/handoff fields.
-- ReAct blueprint experts receive only their declared tools plus generated child-expert tools for declared children.
-- Parent/child delegation emits semantic events and returns compact child evidence to the parent.
+- Empty blueprint signatures default to `system_prompt`, `question`, and `answer`; structured outputs add their declared fields, which ride the `submit` tool.
+- ReAct blueprint experts receive their declared tools, the spawn tools for their declared children, `load_skill` when they have skills, and the auto-attached `create_artifact` / `plan_exit` / `write_todos`.
+- A child runs as a real child session; its result returns to the parent through `wait_agent_tasks`.
 - Native Python domain expert modules are not runtime-importable and must not be used as a fallback.
 
 ## Tool semantics
 
-- Tools validate paths **before** opening files (`test_hdf5_server.py:37-80`) — `file_policy` error surfaces as a structured dict, h5py is never touched.
-- Tools return error dicts, not raise exceptions (`test_hdf5_server.py:142-150`).
-- Tool namespacing is stable across FastMCP versions — `hdf5_*` prefix holds (`test_gateway.py:71-87`).
-- Exactly 8 tools today: 5 `hdf5_*` + 3 `parquet_*` (`test_gateway.py:96`).
+- Tools validate paths **before** opening files (`test_hdf5_server.py`) — a `file_policy` error surfaces as a structured dict.
+- Tools return error dicts, not raise exceptions; an exception a tool does raise becomes that call's error observation, and the loop continues.
+- Tool namespacing is stable: a declared MCP server `x` exposes `x_<tool>`.
+- Calls run concurrently, including calls to the same MCP server (no per-executor call lock).
 
 ## SIMBA optimiser (offline tuning)
 
@@ -274,42 +270,24 @@ result = runner.run(
 
 ## Copy-paste minimal end-to-end
 
-```python
-from clio_agent import ClioAgent
-
-agent = ClioAgent()                              # uses $HOME/.clio_agent by default
-result = agent(question="Hi", session_id="abc")
-print(result.answer)                             # final answer
-print(result.selected_expert)                    # "chat" | "data" | ...
-print(result.duration_ms)
-
-conv = agent.arc.get_conversation("abc")
-print(len(conv.messages))                        # 2 (user + assistant)
-
-agent.shutdown()                                 # flush ARC + close LSM
-```
-
-For a server-mode equivalent:
-
 ```bash
 $ clio-agent serve --host 127.0.0.1 --port 8100 &
-$ curl -s -X POST http://127.0.0.1:8100/v1/sessions/abc/messages \
-    -H 'Content-Type: application/json' \
-    -d '{"question":"Hi","session_id":"abc"}'
-# → {"answer":"...","selected_expert":"chat","session_id":"abc","duration_ms":...,"error_info":null}
+$ SID=$(curl -s -X POST http://127.0.0.1:8100/v1/sessions -H 'Content-Type: application/json' \
+    -d '{"title":"t"}' | jq -r .id)
+$ curl -s -X POST http://127.0.0.1:8100/v1/sessions/$SID/messages \
+    -H 'Content-Type: application/json' -d '{"parts":[{"type":"text","text":"Hi"}]}'
+$ curl -s http://127.0.0.1:8100/v1/sessions/$SID/messages   # newest first
 ```
 
 ## Integration-point summary
 
 | What TUI needs | Authoritative pin |
 |---|---|
-| Agent init | `test_agent.py:15-52` — `ClioAgent(data_dir?, verbose?)` |
-| Per-message call | `test_agent_dispatch.py:26-44` — `forward(question, session_id?) → Prediction(...)` |
-| Conversation | `test_end_to_end.py:59-71` — `arc.get_conversation(sid).messages` |
-| Streaming | `test_api.py:238-271` — SSE composed in FastAPI, not token-native |
+| Turn | `tests/test_gact/test_post_messages.py` — `POST /v1/sessions/{sid}/messages` |
+| Agent loop | `tests/test_gact/test_clio_react.py` — ClioReAct steps, concurrency, termination |
+| Streaming | `tests/test_gact/test_streaming.py` — live deltas via the LM token hooks |
 | Errors | `test_errors.py` — structured `to_dict()`, no traceback leak |
 | ARC memory | `test_memory_coverage.py:35-150` — Invocation + Metrics schemas pinned |
-| Context window | `test_context_compiler.py:24-109` — 2K (T1) / 4K (T2) budgets |
 | Tools | `test_hdf5_server.py:37-120` — file_policy validation BEFORE open, error dict on failure |
-| Registry | `test_registry.py` — 3 registry-backed experts plus planner-selected chat/none outcomes |
+| Registry | `test_registry.py` — registry-backed Agent Blueprint experts |
 | Variants | `test_runner.py:141-218` — SIMBA + stat-sig gating + VariantRecord in ARC |

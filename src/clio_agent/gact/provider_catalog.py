@@ -25,22 +25,14 @@ from clio_agent.providers.capabilities.accessor import get_effective_capabilitie
 from clio_agent.providers.capabilities.endpoint import dialect_for_provider
 from clio_agent.providers.capabilities.facts_wire import model_facts
 from clio_agent.providers.capabilities.records import (
-    DeploymentCapabilities,
-    Fact,
-    ModelCapabilities,
-    modalities_from_capabilities,
     role_for_task,
-    unknown,
 )
 from clio_agent.providers.capabilities.tags import capability_tags
 from clio_agent.providers.catalog import get_provider
-from clio_agent.providers.codex.constants import TRANSPORT_API_BASES, TRANSPORT_SDK
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
 from clio_agent.providers.handshake.model import (
     AuthState,
-    ConnectivityState,
     DiscoveredModel,
-    DiscoveredModelFacts,
 )
 from clio_agent.providers.identity import deployment_key
 
@@ -133,7 +125,7 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
 
-#: Codex SDK reasoning-effort vocabulary -> CLIO level, for reading a raw
+#: Codex reasoning-effort vocabulary -> CLIO level, for reading a raw
 #: discovered row's own ``default_reasoning_effort`` back into CLIO
 #: vocabulary in :func:`_reasoning_wire_block` (the catalog's ``reasoning.
 #: default`` field) -- the SAME table :mod:`.capabilities.dialects.codex`
@@ -155,7 +147,7 @@ def _reasoning_wire_block(
     ``default``/``default_source`` prefer a model's own shipped default
     (``profile.raw["shipped_default_effort"]`` -- data, e.g. claude_code's
     maintained catalog) over a provider-reported default
-    (``profile.raw["default_reasoning_effort"]`` -- codex's own SDK default,
+    (``profile.raw["default_reasoning_effort"]`` -- codex's own reported default,
     translated through its own vocabulary table), and are empty when neither
     applies or the value isn't among this model's own effective levels.
     """
@@ -424,289 +416,6 @@ async def _with_last_good(
     return served, model_discovery.last_good_staleness(last_good, report)
 
 
-#: Overlay key the SDK transport's discovery is recorded under. Deliberately
-#: NOT ``"codex"`` -- that key belongs to the direct transport's own catalog
-#: (``providers.codex.credentials``/``codex_catalog.py``) and must never be
-#: overwritten by the SDK's live probe result.
-_CODEX_SDK_OVERLAY_KEY = "codex_sdk"
-
-#: The SDK transport's own endpoint identity (``codex://sdk``). The direct
-#: transport is the preset's ``codex://direct``; keying the SDK's deployment
-#: records apart keeps one transport's facts from overwriting the other's for a
-#: shared model id.
-_CODEX_SDK_API_BASE = TRANSPORT_API_BASES[TRANSPORT_SDK]
-
-#: A reason prefix meaning "we simply have not asked yet" -- the least
-#: actionable of all possible unavailable reasons, so a transport that HAS
-#: been asked (and failed) is preferred when picking which reason to surface.
-_UNCHECKED_REASON_PREFIX = "codex_sdk_not_checked"
-
-
-async def _codex_sdk_transport_row(preset: LMProviderPreset, *, refresh: bool) -> dict[str, Any]:
-    """Build the ``sdk`` transport row.
-
-    The SDK probe (the SDK's live ``model/list``) is a real subprocess/JSON-RPC
-    round trip, so an ordinary passive catalog read (``GET
-    /v1/provider-catalog``, polled on every session load) serves the overlay's
-    recorded list -- the SAME TTL cache the direct transport uses -- and asks
-    the SDK again only on an explicit ``refresh`` (a "check this provider"
-    action, the startup bootstrap in ``refresh_subscription_catalogs_at_startup``)
-    or once the recorded ask is older than the TTL. A failed re-check keeps the
-    previous good list with a typed staleness reason rather than going blank.
-    """
-    from clio_agent.providers.codex import constants as codex_constants
-
-    now = _now_iso()
-    checked = True
-    wire: dict[str, Any] | None = None
-    if not refresh:
-        try:
-            wire = model_discovery.overlay_models_wire(
-                _CODEX_SDK_OVERLAY_KEY, _CODEX_SDK_OVERLAY_KEY
-            )
-        except model_discovery.OverlayMalformedError as exc:
-            logger.warning("codex sdk transport overlay read failed: %s", exc)
-        # The overlay is a TTL cache: once its last ask (success OR failure)
-        # is older than providers.model_catalog_ttl_s, this read asks again.
-        refresh = wire is not None and _sdk_recheck_due(wire)
-    if refresh:
-        from clio_agent.providers.codex.sdk_discovery import discover_codex_sdk_async
-
-        result = await discover_codex_sdk_async()
-        try:
-            model_discovery.record_refresh(result)
-        except model_discovery.OverlayMalformedError as exc:
-            logger.warning("codex sdk transport overlay write failed: %s", exc)
-        discovered = result.discovered
-        failed_reason = result.failed_reason or ""
-        evidence_generated_at = result.generated_at
-    else:
-        if wire is None:
-            # No overlay entry at all means "never asked", not "asked and
-            # empty" -- distinct from a real zero-model result, which
-            # _resolve_health's generic reason already explains correctly.
-            checked = False
-            discovered, failed_reason, evidence_generated_at = [], "", ""
-        else:
-            discovered = list(wire.get("models") or [])
-            evidence_generated_at = str(wire.get("generated_at") or "")
-            staleness = wire.get("staleness")
-            failed_reason = (
-                str(staleness.get("failed_reason") or "") if isinstance(staleness, dict) else ""
-            )
-    if checked:
-        health, failure = _resolve_health(
-            ok=not failed_reason,
-            models=discovered,
-            error=failed_reason,
-            error_code="",
-        )
-    else:
-        health, failure = (
-            "unavailable",
-            (f"{_UNCHECKED_REASON_PREFIX}: run an explicit provider check to ask the Codex SDK"),
-        )
-    _record_sdk_endpoint(preset.id)
-    profiles = tuple(
-        _record_sdk_model(preset.id, row, observed_at=evidence_generated_at or now)
-        for row in discovered
-        if isinstance(row, dict) and row.get("id")
-    )
-    sdk_report = HandshakeReport(
-        provider_id=preset.id,
-        provider_kind=preset.provider,
-        api_base=_CODEX_SDK_API_BASE,
-        connectivity=ConnectivityState.OK if health == "ready" else ConnectivityState.UNREACHABLE,
-        auth=AuthState.OK if health == "ready" else AuthState.MISSING,
-        error=failure or None,
-        models=profiles,
-        models_source=(
-            "live"
-            if refresh and health == "ready"
-            else "overlay"
-            if health == "ready"
-            else "unavailable"
-        ),
-        generated_at=now,
-        evidence_generated_at=evidence_generated_at or now,
-    )
-    models = [model_catalog_row(preset, sdk_report, profile) for profile in profiles]
-    for row in models:
-        row["transport"] = codex_constants.TRANSPORT_SDK
-    return {
-        "id": codex_constants.TRANSPORT_SDK,
-        "label": codex_constants.TRANSPORT_LABELS[codex_constants.TRANSPORT_SDK],
-        "health": health,
-        "reason": failure,
-        "models": models,
-    }
-
-
-def _sdk_recheck_due(wire: dict[str, Any]) -> bool:
-    """Whether the SDK overlay entry's most recent ask is older than the catalog TTL.
-
-    Measured from the LAST attempt (a failed ask records ``last_attempt_at``),
-    so an SDK that is not installed is re-asked once per TTL window, never on
-    every passive read.
-    """
-    ttl = model_discovery.overlay_staleness_ttl_s()
-    if ttl <= 0:
-        return False
-    raw_staleness = wire.get("staleness")
-    staleness: dict[str, Any] = raw_staleness if isinstance(raw_staleness, dict) else {}
-    stamps = [str(wire.get("generated_at") or ""), str(staleness.get("last_attempt_at") or "")]
-    parsed: list[datetime] = []
-    for stamp in stamps:
-        try:
-            moment = datetime.fromisoformat(stamp)
-        except ValueError:
-            continue
-        parsed.append(moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc))
-    if not parsed:
-        return True
-    return (datetime.now(timezone.utc) - max(parsed)).total_seconds() > ttl
-
-
-def _record_sdk_endpoint(provider_id: str) -> None:
-    """Record the SDK transport's endpoint record (the codex dialect's thinking control)."""
-    from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
-    from clio_agent.providers.codex.constants import LITELLM_PROVIDER_SDK  # noqa: PLC0415
-
-    invalidation.record_endpoint_capabilities(
-        capability_endpoint.build_endpoint_capabilities(
-            provider_id,
-            _CODEX_SDK_API_BASE,
-            "codex",
-            "",
-            custom_llm_provider=LITELLM_PROVIDER_SDK,
-        )
-    )
-
-
-def _sdk_model_key(model_id: str) -> str:
-    """The SDK transport's own capability model key for one model id."""
-    return f"{_CODEX_SDK_API_BASE}/{model_id}"
-
-
-def _record_sdk_model(
-    provider_id: str, row: dict[str, Any], *, observed_at: str
-) -> DiscoveredModel:
-    """Record one SDK-discovered model's facts and return its bare identity.
-
-    Each Codex transport is its own model list (owner ruling): the SDK and the
-    Direct backend can offer different models with different capabilities, so
-    the SDK row's facts are recorded under the SDK's OWN model key
-    (:func:`_sdk_model_key`) and endpoint (:data:`_CODEX_SDK_API_BASE`) -- they
-    never read or overwrite the Direct transport's record for the same model
-    id, and nothing from the Direct list (its context window, its PDF input) is
-    copied onto an SDK row. The row's ``capabilities`` list is the SDK's own
-    report of the model's input; with no list, modalities stay unknown. Its
-    reasoning efforts become the ``ThinkingSpec`` through the SAME codex dialect
-    mapping the direct transport's handshake uses.
-    """
-    from clio_agent.providers.capabilities.dialects import codex as codex_dialect  # noqa: PLC0415
-
-    model_id = str(row["id"])
-    capabilities = row.get("capabilities")
-    detail = "Codex SDK model/list capabilities"
-    model_key = _sdk_model_key(model_id)
-    key_fact = Fact(value=model_key, source="server_report", observed_at=observed_at, detail=detail)
-    facts = DiscoveredModelFacts(
-        discovered=DiscoveredModel(id=model_id, evidence_generated_at=observed_at, raw=dict(row)),
-        model=ModelCapabilities(
-            model_key=model_key,
-            input_modalities=(
-                Fact(
-                    value=modalities_from_capabilities(capabilities),
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail=detail,
-                )
-                if isinstance(capabilities, list) and capabilities
-                else unknown()
-            ),
-            thinking=codex_dialect.build_thinking_spec(row),
-        ),
-        deployment=DeploymentCapabilities(
-            provider_id=provider_id,
-            api_base=_CODEX_SDK_API_BASE,
-            model_id=model_id,
-            model_key=key_fact,
-        ),
-    )
-    invalidation.record_model_capabilities(facts.model)
-    invalidation.record_deployment_capabilities(facts.deployment)
-    return facts.discovered
-
-
-def _codex_direct_transport_row(
-    preset: LMProviderPreset,
-    *,
-    report: HandshakeReport,
-    models: tuple[DiscoveredModel, ...],
-    health: str,
-    failure: str,
-) -> dict[str, Any]:
-    """Build the ``direct`` transport row from the already-run generic handshake.
-
-    The direct transport IS what :func:`discover_provider`'s generic pipeline
-    (the backend's live model list asked with :class:`~clio_agent.providers.
-    codex.credentials.CodexCredentialStore`'s credential, cached through the
-    overlay) has always computed
-    for the ``codex`` provider -- this just relabels that result as one of the
-    two transports rather than the whole provider.
-    """
-    # Lazy: provider_auth -> provider_catalog_snapshot -> this module.
-    from clio_agent.gact.routes.provider_auth import supports_logout  # noqa: PLC0415
-    from clio_agent.providers.codex import constants as codex_constants
-
-    rows = [model_catalog_row(preset, report, model) for model in models]
-    for row in rows:
-        row["transport"] = codex_constants.TRANSPORT_DIRECT
-    return {
-        "id": codex_constants.TRANSPORT_DIRECT,
-        "label": codex_constants.TRANSPORT_LABELS[codex_constants.TRANSPORT_DIRECT],
-        "health": health,
-        "reason": failure,
-        # `logout` comes from the SAME registry POST .../auth {action: logout}
-        # dispatches on, so the client never infers "Sign out" on its own.
-        "auth": {"method": "oauth", "logout": supports_logout(preset.provider)},
-        "models": rows,
-    }
-
-
-#: Health rows are folded into ONE provider-level health with this precedence
-#: (owner requirement: "it is also green if any of them are available").
-_TRANSPORT_HEALTH_PRECEDENCE: tuple[str, ...] = ("ready", "needs_install", "unavailable")
-
-
-def _combine_transport_health(transports: list[dict[str, Any]]) -> tuple[str, str]:
-    """Fold per-transport health into the provider's overall ``(health, failure)``.
-
-    READY if ANY transport is ready. Otherwise the best remaining state (a
-    transport offering an install action outranks a plain failure), carrying
-    that transport's own reason so the row is never "unavailable" with an
-    unexplained empty ``failure`` -- preferring a transport that was actually
-    CHECKED over one that reports only "not checked yet" when both share a
-    health bucket.
-    """
-    by_health: dict[str, dict[str, Any]] = {}
-    for transport in transports:
-        health = str(transport.get("health"))
-        current = by_health.get(health)
-        if current is None:
-            by_health[health] = transport
-            continue
-        current_reason = str(current.get("reason") or "")
-        if current_reason.startswith(_UNCHECKED_REASON_PREFIX):
-            by_health[health] = transport
-    for health in _TRANSPORT_HEALTH_PRECEDENCE:
-        if health in by_health:
-            reason = "" if health == "ready" else str(by_health[health].get("reason") or "")
-            return health, reason
-    return "unavailable", "no codex transport reported a health state"
-
-
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -761,9 +470,9 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
-    if preset.provider in _CLI_CATALOG_KINDS:
-        # Which CLI the SDK transport runs, as a typed fact on the row (for
-        # Codex: the SDK half's binary; the Direct half runs none).
+    if preset.provider == "claude_code":
+        # Which CLI the SDK transport runs, as a typed fact on the row (Codex
+        # runs none: its one transport is direct).
         from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
             provider_client_fact,
         )
@@ -771,24 +480,6 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         payload["client"] = await asyncio.to_thread(
             provider_client_fact, preset.provider, refresh=refresh
         )
-    if preset.provider == "codex":
-        # Two transports of the SAME catalog entry (S1b): the direct/OAuth
-        # transport this pipeline already evidenced above, and the restored
-        # local SDK transport (probed live only on an explicit ``refresh``;
-        # a passive read serves its last recorded overlay entry). The
-        # provider is READY when EITHER is (owner requirement); duplicate
-        # model ids across the two transports are expected and each carries
-        # its own ``transport`` tag so a selection routes end to end.
-        direct_row = _codex_direct_transport_row(
-            preset, report=report, models=models, health=health, failure=failure
-        )
-        sdk_row = await _codex_sdk_transport_row(preset, refresh=refresh)
-        transports = [sdk_row, direct_row]
-        combined_health, combined_failure = _combine_transport_health(transports)
-        payload["transports"] = transports
-        payload["health"] = combined_health
-        payload["failure"] = combined_failure
-        payload["models"] = [*sdk_row["models"], *direct_row["models"]]
     return payload
 
 

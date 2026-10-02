@@ -1,20 +1,25 @@
 """Claude Agent SDK ``ClaudeAgentOptions`` construction for the bare-model transport.
 
 Owner module for the SDK-options glue used by the ``claude_code`` session pool
-(:mod:`clio_agent.providers.claude_code_sessions` — the ONE client path, S2
-B1: both the streaming and blocking entry points ride it) and the streaming
-path in :mod:`clio_agent.providers.claude_code_litellm`. Kept out of those
-files (#775 no-accretion) so the #895 thinking wiring and the S2 tuning pass
-(B4 ``system_prompt``, B11 ``env``, B12 ``cli_path``, B15 ``max_buffer_size``)
-do not regrow them.
+(:mod:`clio_agent.providers.claude_code_sessions`, the one client path the engine
+rides): the #895 thinking wiring and the S2 tuning (B4 ``system_prompt``, B11
+``env``, B12 ``cli_path``, B15 ``max_buffer_size``).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
-__all__ = ["build_sdk_options", "require_claude_agent_sdk", "thinking_key"]
+__all__ = ["build_sdk_options", "require_claude_agent_sdk", "system_prompt_file", "thinking_key"]
+
+#: A system prompt file unused this long is removed when another one is written.
+_PROMPT_FILE_TTL_S = 7 * 24 * 3600
 
 
 def require_claude_agent_sdk() -> Any:
@@ -32,8 +37,6 @@ def require_claude_agent_sdk() -> Any:
     except ImportError:
         from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
             CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        )
-        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
             ClaudeCodeCLIUnavailableError,
         )
         from clio_agent.providers.dependencies import (  # noqa: PLC0415
@@ -76,10 +79,11 @@ def build_sdk_options(
     ``ClaudeAgentOptions.effort``); ``None`` sends nothing so the CLI default governs.
 
     Args:
-        system_prompt: B4 -- CLIO's own system message as a plain string (never
-            the ``claude_code`` preset). ``None``/``""`` omits the field so the
-            CLI's own default (no persona injected, since ``setting_sources=[]``
-            already drops the built-in Claude Code preamble) applies.
+        system_prompt: B4 -- CLIO's own system message (never the ``claude_code``
+            preset), handed to the CLI as a file (:func:`system_prompt_file`).
+            ``None``/``""`` omits the field so the CLI's own default (no persona
+            injected, since ``setting_sources=[]`` already drops the built-in Claude
+            Code preamble) applies.
         stderr: B17 -- callback invoked with each stderr line the CLI subprocess
             writes (only piped by the SDK when this is set). ``None`` disables it.
     """
@@ -130,7 +134,7 @@ def build_sdk_options(
     if stream:
         kwargs["include_partial_messages"] = True
     if system_prompt:
-        kwargs["system_prompt"] = system_prompt
+        kwargs["system_prompt"] = {"type": "file", "path": str(system_prompt_file(system_prompt))}
     if stderr is not None:
         kwargs["stderr"] = stderr
     if thinking is not None:
@@ -143,3 +147,34 @@ def build_sdk_options(
         if effort is not None:
             kwargs["effort"] = effort
     return ClaudeAgentOptions(**kwargs)
+
+
+def system_prompt_file(text: str) -> Path:
+    """The file the Claude Code CLI reads ``text`` from (``--system-prompt-file``).
+
+    On the command line (``--system-prompt``) a clio system prompt with its tool rules
+    passes Windows' 32,767-character CreateProcess limit: the spawn fails with WinError
+    206, which the SDK reports as "Claude Code not found". The file is content-addressed
+    under the user cache dir (one file per distinct prompt, written once by an atomic
+    replace, its mtime refreshed on reuse); writing a new one removes files unused for
+    a week.
+    """
+    from clio_agent import paths  # noqa: PLC0415 - keep this module import-light
+
+    folder = paths.user_cache_dir() / "claude-code" / "system-prompts"
+    path = folder / f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:32]}.md"
+    if path.exists():
+        os.utime(path)
+        return path
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / f"{path.stem}.{os.getpid()}.{threading.get_ident()}.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+    cutoff = time.time() - _PROMPT_FILE_TTL_S
+    for old in folder.glob("*.md"):
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+        except FileNotFoundError:
+            continue  # removed by a concurrent writer
+    return path

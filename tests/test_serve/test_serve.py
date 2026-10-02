@@ -13,6 +13,8 @@ Two tiers:
 
 from __future__ import annotations
 
+import contextlib
+import json
 import socket
 import sys
 import time
@@ -372,4 +374,124 @@ def test_real_spawn_attach_stop_roundtrip():
             assert spawned_pid is not None
     finally:
         # Belt-and-suspenders: never strand a daemon even if an assertion above failed.
+        serve.stop_server(port=port)
+
+
+# --- real subprocess: graceful stop, hung-server kill, refused shutdown --------
+
+
+def _client_marker(pid: int):
+    """The clio-core client-registry entry a server holds while attached to clio-core."""
+    from clio_agent.arc.clio_core_config import runtime_state_dir
+
+    return runtime_state_dir() / "clio-runtime.clients" / str(pid)
+
+
+def _gone(pid: int) -> bool:
+    """The process exited (an unreaped POSIX zombie counts: it holds nothing)."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _server_log_tail(port: int) -> str:
+    from clio_agent.paths import user_data_dir
+
+    log = user_data_dir() / f"gact-server-{port}.log"
+    try:
+        return log.read_text(encoding="utf-8", errors="replace")[-4000:]
+    except OSError as exc:
+        return f"<no server log: {exc!r}>"
+
+
+def _wait_for(predicate, *, what: str, port: int, within_s: float = 120.0) -> None:
+    deadline = time.monotonic() + within_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.25)
+    raise AssertionError(
+        f"{what} did not happen within {within_s:.0f}s; server log:\n{_server_log_tail(port)}"
+    )
+
+
+@pytest.mark.integration
+def test_real_graceful_stop_runs_the_lifespan_release_and_refuses_strangers():
+    """``stop_server`` shuts a spawned server down through its authenticated route: the
+    lifespan teardown runs (the server's clio-core client registration is released,
+    which a kill never does), and a request without the server's bearer is refused."""
+    import httpx
+
+    from clio_agent.gact.server_credentials import credential_record_path
+
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        serve.ensure_server(port=port, timeout_s=120.0)
+        spawned = serve.last_action()
+        assert spawned is not None and spawned["reason"] == "spawned"
+        pid = spawned["pid"]
+        # The serving interpreter publishes its credential record (on Windows it is a
+        # descendant of the spawned console-script launcher); its clio-core client
+        # registration is keyed by that interpreter's pid.
+        record = credential_record_path(port)
+        _wait_for(record.exists, what="the server's credential record", port=port)
+        server_pid = json.loads(record.read_text(encoding="utf-8"))["pid"]
+        marker = _client_marker(server_pid)
+        _wait_for(marker.exists, what="the server's clio-core attach", port=port)
+
+        # Unauthenticated (no bearer / a wrong bearer) shutdown requests are refused,
+        # even from loopback, and the server keeps serving.
+        for headers in ({}, {"Authorization": "Bearer not-the-token"}):
+            refused = httpx.post(f"{base_url}/v1/server/shutdown", headers=headers, timeout=30)
+            assert refused.status_code == 401
+            assert refused.json()["error"]["error"] == "authentication_required"
+        assert serve._probe_health(base_url, timeout_s=10.0)
+
+        note = serve.stop_server(port=port)
+
+        assert note["reason"] == "stopped", note
+        assert note["pid"] == pid
+        assert _gone(pid) and _gone(server_pid)
+        assert not marker.exists(), "the lifespan release must deregister the clio-core client"
+        assert not serve._pidfile_path(port).exists()
+    finally:
+        serve.stop_server(port=port)
+
+
+@pytest.mark.integration
+def test_real_hung_server_is_killed_typed_after_the_no_progress_window():
+    """A server that cannot answer the shutdown request and does no work (suspended) is
+    killed after one no-progress window, reported as ``killed`` with its typed reason."""
+    import psutil
+
+    port = _free_port()
+    suspended: list[psutil.Process] = []
+    try:
+        serve.ensure_server(port=port, timeout_s=120.0)
+        spawned = serve.last_action()
+        assert spawned is not None and spawned["reason"] == "spawned"
+        pid = spawned["pid"]
+        server = psutil.Process(pid)
+        for member in [server, *server.children(recursive=True)]:
+            member.suspend()
+            suspended.append(member)
+
+        started = time.monotonic()
+        note = serve.stop_server(port=port, no_progress_s=2.0)
+        waited = time.monotonic() - started
+
+        assert note["reason"] == "killed", note
+        assert note["kill_reason"] == "shutdown_unanswered"
+        assert note["managed"] is True
+        assert waited < 60.0
+        _wait_for(lambda: _gone(pid), what="the killed server's exit", port=port, within_s=30)
+        assert not serve._pidfile_path(port).exists()
+    finally:
+        for member in suspended:
+            with contextlib.suppress(psutil.Error):
+                member.resume()
         serve.stop_server(port=port)

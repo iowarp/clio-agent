@@ -38,27 +38,61 @@ from dataclasses import dataclass
 from typing import Literal
 
 from clio_agent.arc.clio_core_liveness import _resolve_runtime_port, _runtime_alive
-from clio_agent.arc.runtime_crash import expect_daemon_exit
+from clio_agent.arc.runtime_crash import DaemonStillStarting, expect_daemon_exit
 from clio_agent.arc.runtime_spawn import _dynamic_library_env_var, _runtime_launcher_path
 
 logger = logging.getLogger(__name__)
 
-# A healthy local daemon normally releases its listening socket immediately.
-# Three seconds still gives the clean ``clio_run stop`` handshake substantial
-# room, while preventing a wedged helper from consuming a third of Desktop
-# Quit's native fallback window before the verified pidfile kill runs.
-_RUNTIME_STOP_STALL_SECONDS = 3.0
+# The stop waits as long as the daemon keeps working (CPU or I/O advancing); a slice
+# this long with NO progress is a stall (see ``stop_runtime_daemon``). A long stretch --
+# a daemon flushing to a slow disk pauses between writes -- yet half of the desktop
+# supervisor's 30 s graceful-shutdown window, which this stop is one step inside.
+# Configurable (``arc.liveness.stop_no_progress_s``), see :func:`stop_no_progress_s`.
+_DEFAULT_STOP_NO_PROGRESS_S = 15.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
 
-# "clio_run stop" reporting success (the helper process exiting) and the daemon's
-# listening socket actually closing are not perfectly atomic -- a genuine clean
-# stop can observe the helper exited a few polls before the port reads free. This
-# grace window (same poll cadence as the main loop) keeps that ordinary case from
-# being misclassified as helper_exit_kill (and hard-killed) on every run.
-_HELPER_EXIT_GRACE_SECONDS = 1.0
+
+def stop_no_progress_s() -> float:
+    """``arc.liveness.stop_no_progress_s`` / ``CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S`` (15 s).
+
+    How long a stopping daemon may make no progress (CPU or I/O flat) before it is
+    killed. A non-positive value keeps the default.
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    value = conf.resolve(
+        "arc.liveness.stop_no_progress_s",
+        env="CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S",
+        default=_DEFAULT_STOP_NO_PROGRESS_S,
+        cast=conf.as_float,
+    )
+    return value if value > 0 else _DEFAULT_STOP_NO_PROGRESS_S
+
+
+def _daemon_process_alive(pid: int | None, recorded_create_time: float | None) -> bool:
+    """Whether the pidfile daemon's process still runs (``False`` when it is unknown).
+
+    An exited child not yet reaped (a zombie) has stopped: it holds no port and does
+    no work.
+    """
+    if pid is None:
+        return False
+    import psutil  # noqa: PLC0415
+
+    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+    if not storage._pid_alive(pid, recorded_create_time):
+        return False
+    try:
+        return bool(psutil.Process(pid).status() != psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False  # exited between the two checks
+    except psutil.AccessDenied:
+        return True  # it exists (pid_alive said so); its state is just unreadable
+
 
 StopPath = Literal[
-    "clean_stop", "stall_kill", "helper_exit_kill", "launcher_missing_kill", "error_kill"
+    "clean_stop", "stall_kill", "helper_failed_kill", "launcher_missing_kill", "error_kill"
 ]
 
 
@@ -69,7 +103,7 @@ class StopOutcome:
     Attributes:
         stopped: Whether the clean ``clio_run stop`` handshake observed the
             runtime port free itself (no hard pidfile kill was needed).
-        path: Which of the five stop paths this attempt took -- a structured
+        path: Which of the stop paths this attempt took -- a structured
             reason for the trace/log, never a control-flow signal (every
             degraded path here already carries its own typed reason, #775
             no-silent-fallback).
@@ -137,21 +171,41 @@ def kill_daemon_pidfile() -> None:
         with contextlib.suppress(OSError):
             pidfile.unlink()
         return
-    try:
-        import psutil  # noqa: PLC0415
+    import psutil  # noqa: PLC0415
 
+    try:
         proc = psutil.Process(pid)
+        # POSIX: a suspended (SIGSTOP) daemon only acts on the SIGTERM once continued;
+        # left stopped it would cost the whole grace below before the SIGKILL. (Windows
+        # terminates a suspended process outright.)
+        suspended = os.name != "nt" and proc.status() == psutil.STATUS_STOPPED
         proc.terminate()
+        if suspended:
+            proc.resume()
         try:
             proc.wait(timeout=5.0)
         except psutil.TimeoutExpired:
             proc.kill()
-    except Exception:  # noqa: BLE001,S110 - already gone or inaccessible
-        pass
+    except psutil.NoSuchProcess:
+        logger.info("clio-core daemon pid=%d already exited before the pidfile kill", pid)
+    except psutil.Error as exc:
+        # Inaccessible (AccessDenied) or a kill that did not take: the daemon may still be
+        # running. Loud and typed; the pidfile is kept so the next stop can find it.
+        logger.error(
+            "clio-core daemon pidfile kill failed (reason=%s pid=%d error=%s: %s); the "
+            "daemon may still be running",
+            DAEMON_KILL_FAILED,
+            pid,
+            type(exc).__name__,
+            exc,
+        )
+        return
     with contextlib.suppress(OSError):
         pidfile.unlink()
 
 
+#: Typed reason for a pidfile kill that did not take (inaccessible or still alive).
+DAEMON_KILL_FAILED = "clio_core_daemon_kill_failed"
 #: Typed reasons for the two failed-startup cleanups (#1401, no silent fallback).
 FAILED_SPAWN_KILLED = "clio_core_failed_spawn_killed"
 FAILED_ATTACH_RELEASED = "clio_core_failed_attach_released"
@@ -169,6 +223,18 @@ def kill_spawned_daemon_on_failure() -> Iterator[None]:
     """
     try:
         yield
+    except DaemonStillStarting:
+        from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+        # Still progressing at the ceiling: never killed. Its pidfile stays, so the next
+        # attach adopts it once it binds; this process gives up only its own vote.
+        logger.warning(
+            "clio-core daemon still starting at the ceiling; left running for the next "
+            "attach (reason=%s)",
+            DaemonStillStarting.degradation_reason,
+        )
+        storage._deregister_client()
+        raise
     except BaseException:
         from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
 
@@ -240,9 +306,14 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
     stopped = False
     path: StopPath = "error_kill"
     try:
-        daemon_pid = int(storage._daemon_pidfile().read_text(encoding="utf-8").split()[0])
-    except (OSError, ValueError, IndexError):
-        daemon_pid = None
+        parts = storage._daemon_pidfile().read_text(encoding="utf-8").split()
+    except OSError:
+        parts = []  # no pidfile: the port alone tells the stop
+    daemon_pid = int(parts[0]) if parts and parts[0].isdigit() else None
+    recorded_create_time: float | None = None
+    if daemon_pid is not None and len(parts) > 1:
+        with contextlib.suppress(ValueError):
+            recorded_create_time = float(parts[1])
     if daemon_pid is not None:
         expect_daemon_exit(daemon_pid)
     try:
@@ -273,51 +344,75 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            stall_deadline = time.monotonic() + _RUNTIME_STOP_STALL_SECONDS
+            # Wait on the DAEMON, not a fixed deadline: a durable daemon flushes its data
+            # while stopping, which takes as long as the disk takes. The port freeing AND
+            # the daemon process exiting is a clean stop; the daemon still working (CPU or
+            # I/O advancing) keeps the wait going; a whole slice with no progress -- or
+            # the long ceiling -- is a stall, killed loudly (data not yet flushed may be
+            # lost), never silently.
+            #
+            # The port alone is not proof: a daemon that stopped running (suspended, or
+            # hung without accepting) leaves its listener's accept backlog to fill with
+            # the probes below, after which a probe times out exactly like a freed port.
+            # Taking that for a clean stop left the daemon running with its pidfile gone.
+            from clio_agent.arc.daemon_progress import max_wait_s  # noqa: PLC0415 - cycle
+            from clio_agent.runtime.progress import process_work  # noqa: PLC0415
+
+            ceiling = max_wait_s()
+            no_progress_s = stop_no_progress_s()
+            started = window = time.monotonic()
+            last_work = process_work(daemon_pid) if daemon_pid is not None else None
             while True:
-                helper_status = stop_process.poll()
-                runtime_is_alive = _runtime_alive(runtime_port)
-                if not runtime_is_alive:
+                if not _runtime_alive(runtime_port) and not _daemon_process_alive(
+                    daemon_pid, recorded_create_time
+                ):
                     stopped = True
                     path = "clean_stop"
-                    if helper_status is None:
-                        stop_process.terminate()
-                        try:
-                            stop_process.wait(timeout=1.0)
-                        except subprocess.TimeoutExpired:
-                            stop_process.kill()
-                            stop_process.wait(timeout=1.0)
                     break
-                if helper_status is not None:
-                    # The helper already exited; give the port a brief grace
-                    # window to actually free before conceding a hard kill.
-                    grace_deadline = time.monotonic() + _HELPER_EXIT_GRACE_SECONDS
-                    freed_during_grace = False
-                    while time.monotonic() < grace_deadline:
-                        if not _runtime_alive(runtime_port):
-                            freed_during_grace = True
-                            break
-                        time.sleep(_RUNTIME_STOP_POLL_SECONDS)
-                    if freed_during_grace:
-                        stopped = True
-                        path = "clean_stop"
-                    else:
-                        path = "helper_exit_kill"
-                    break
-                if time.monotonic() >= stall_deadline:
+                # The helper FAILING (non-zero exit: it could not load the config or
+                # reach the daemon) means the stop request was never delivered: the
+                # daemon is not stopping, so there is nothing to wait for. A helper
+                # exiting 0 delivered it, and the daemon may still be flushing.
+                helper_code = stop_process.poll()
+                if helper_code not in (None, 0):
                     logger.warning(
-                        "clean clio-core daemon stop stalled while runtime remained live; "
-                        "falling back to pidfile kill"
+                        "clio-core daemon stop request failed (reason=helper_failed "
+                        "clio_run stop exited with code %d while the daemon still holds "
+                        "port %d); killing it -- data not yet flushed may be lost",
+                        helper_code,
+                        runtime_port,
+                    )
+                    path = "helper_failed_kill"
+                    break
+                now = time.monotonic()
+                if now - window >= no_progress_s:
+                    work = process_work(daemon_pid) if daemon_pid is not None else None
+                    if work is None or last_work is None or work - last_work < 0.01:
+                        logger.warning(
+                            "clio-core daemon stop made no progress for %.0fs (wait=%s); "
+                            "killing it -- data not yet flushed may be lost",
+                            now - window,
+                            "daemon_pid_unresolved" if daemon_pid is None else "no_progress",
+                        )
+                        path = "stall_kill"
+                        break
+                    last_work, window = work, now
+                if now - started >= ceiling:
+                    logger.warning(
+                        "clio-core daemon still stopping after %.0fs (arc.liveness.max_wait_s); "
+                        "killing it -- data not yet flushed may be lost",
+                        now - started,
                     )
                     path = "stall_kill"
-                    stop_process.terminate()
-                    try:
-                        stop_process.wait(timeout=1.0)
-                    except subprocess.TimeoutExpired:
-                        stop_process.kill()
-                        stop_process.wait(timeout=1.0)
                     break
                 time.sleep(_RUNTIME_STOP_POLL_SECONDS)
+            if stop_process.poll() is None:
+                stop_process.terminate()
+                try:
+                    stop_process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    stop_process.kill()
+                    stop_process.wait(timeout=1.0)
     except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
         logger.warning(
             "clean clio-core daemon stop failed (reason=%s: %s); falling back to pidfile kill",

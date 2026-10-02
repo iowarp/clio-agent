@@ -1,7 +1,7 @@
 """Regression tests for iowarp/gact-tui#362 (server half): the thinking-discard
 trap.
 
-Two paths in ``TurnTranscript`` can make a streamed ``thinking`` part vanish
+``_close_open_text_locked`` must never make a streamed ``thinking`` part vanish
 without a trace loud enough to notice:
 
 (a) ``_close_open_text_locked`` drops any whitespace-only part after
@@ -13,12 +13,6 @@ without a trace loud enough to notice:
     ``transcript.dropped_empty_part`` stream_audit row (unchanged) already
     carried ``part_type``.
 
-(b) ``discard_open_text`` (the LM transient-retry boundary, D15) removes an
-    open part WITHOUT ever publishing it — this already emitted
-    ``transcript.discarded_retry_part`` with ``part_type``/``part_id``/
-    ``chunk_len`` before this issue; pinned here as a regression lock so a
-    future refactor cannot silently drop it.
-
 Sabotage notes accompany each key assertion.
 """
 
@@ -28,7 +22,6 @@ import logging
 from typing import Any
 
 from clio_agent.gact.transcript import TurnTranscript
-from clio_agent.gact.types import Part
 
 
 class RecordingPublisher:
@@ -115,69 +108,3 @@ def test_whitespace_only_thinking_drop_audit_row_carries_part_type(
     assert rows[0]["turn_id"] == "turn_thk"
     # Sabotage: drop the chars= kwarg -> KeyError / red (N2).
     assert rows[0]["chars"] == len("   ")
-
-
-# ---------------------------------------------------------------------------
-# (b) discard_open_text -- already emits transcript.discarded_retry_part
-# keyed by part type; pinned as a regression lock (gact-tui#362 asked for
-# this and it was already true -- kept as the regression pin).
-# ---------------------------------------------------------------------------
-
-
-def test_discard_open_text_audits_by_part_type_for_thinking(monkeypatch: Any) -> None:
-    audits: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.transcript.stream_audit",
-        lambda stage, **fields: audits.append((stage, fields)),
-    )
-    transcript, publisher = _make_transcript()
-    transcript.append_text_delta("main", "provider_thinking:openai", "half a thought")
-    part_id = transcript.current_stream_part_id
-    assert part_id is not None
-
-    discarded = transcript.discard_open_text()
-    assert discarded is True
-    # Never published as completed -- discard, not close (it never counted).
-    assert publisher.of_type("message.part.completed") == []
-
-    rows = [f for stage, f in audits if stage == "transcript.discarded_retry_part"]
-    # Sabotage: stop calling stream_audit in discard_open_text -> this list is
-    # empty -> red (the exact regression this issue guards against).
-    assert len(rows) == 1
-    assert rows[0]["part_type"] == "thinking"
-    assert rows[0]["part_id"] == part_id
-    assert rows[0]["chunk_len"] == len("half a thought")
-
-
-def test_discard_open_text_audits_by_part_type_for_text(monkeypatch: Any) -> None:
-    """Same lock for the plain ``text`` case (D15's original narration example),
-    keyed distinctly by ``part_type == "text"``."""
-
-    audits: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.transcript.stream_audit",
-        lambda stage, **fields: audits.append((stage, fields)),
-    )
-    transcript, _publisher = _make_transcript()
-    transcript.append_text_delta("main", "next_thought", "an abandoned attempt")
-    assert transcript.discard_open_text() is True
-
-    rows = [f for stage, f in audits if stage == "transcript.discarded_retry_part"]
-    assert len(rows) == 1
-    assert rows[0]["part_type"] == "text"
-    assert rows[0]["chunk_len"] == len("an abandoned attempt")
-
-
-def test_tool_part_whitespace_close_never_reaches_the_thinking_escalation() -> None:
-    """Sanity: the escalation branch only ever inspects the OPEN TEXT part being
-    closed -- appending an atomic tool_call part must not somehow trip it."""
-
-    transcript, publisher = _make_transcript()
-    transcript.append_text_delta("main", "provider_thinking:openai", "   ")
-    appended = transcript.append_part(
-        Part(id="", type="tool_call", agent_id="main", call_id="c1", tool_name="fs_read_file")
-    )
-    assert appended is not None
-    # The whitespace-only thinking part closed (and dropped) as a side effect of
-    # the tool part's boundary; the tool part itself lands normally.
-    assert [p.type for p in transcript.snapshot()] == ["tool_call"]

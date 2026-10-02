@@ -55,12 +55,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     )
     monkeypatch.setattr(pypi, "_python_version", lambda: "3.12.0")
     selection = client_binary.ClientSelection(
-        client_binary.ClientBinary("C:/npm/codex.exe", "0.157.1", "installed"),
-        "codex_installed_cli",
-        bundled=client_binary.ClientBinary("C:/site/codex.exe", "0.147.0", "bundled"),
+        client_binary.ClientBinary("C:/bin/claude.exe", "2.1.281", "installed"),
+        "claude_installed_newer",
+        bundled=client_binary.ClientBinary("C:/site/claude.exe", "2.1.276", "bundled"),
     )
+    real_provider_client = client_binary.provider_client
     monkeypatch.setattr(
-        client_binary, "provider_client", lambda kind: selection if kind == "codex" else None
+        client_binary,
+        "provider_client",
+        lambda kind: selection if kind == "claude_code" else real_provider_client(kind),
     )
     monkeypatch.setattr(routes, "UPDATER", updater.ComponentUpdater())
     app = FastAPI()
@@ -75,18 +78,18 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_components_report_update_available_and_the_client_in_use(client: TestClient) -> None:
+def test_codex_components_report_the_codex_runtime_and_no_cli_client(
+    client: TestClient,
+) -> None:
     body = client.get("/v1/providers/codex/components").json()
     assert body["provider_id"] == "codex"
     assert body["update_available"] is True
     assert body["target_version"] == "0.157.1"
     assert {c["distribution"]: c["installed_version"] for c in body["components"]} == {
-        "openai-codex": "0.147.0",
         "openai-codex-cli-bin": "0.147.0",
     }
-    assert body["client"]["source"] == "installed"
-    assert body["client"]["version"] == "0.157.1"
-    assert body["client"]["bundled_version"] == "0.147.0"
+    # The direct transport runs no CLI, so there is no client to report.
+    assert body["client"] is None
     assert body["update"] is None
 
 
@@ -95,6 +98,9 @@ def test_claude_code_components_on_windows_target_the_newest_windows_wheel(
 ) -> None:
     body = client.get("/v1/providers/claude_code/components").json()
     assert (body["update_available"], body["target_version"]) == (True, "0.2.159")
+    assert body["client"]["source"] == "installed"
+    assert body["client"]["version"] == "2.1.281"
+    assert body["client"]["bundled_version"] == "2.1.276"
 
 
 def test_a_provider_without_components_is_a_typed_405(client: TestClient) -> None:
@@ -118,8 +124,8 @@ def test_update_starts_returns_202_and_is_polled_to_done(
 
     def _perform(job: updater.UpdateJob, _env: updater.UpdateEnvironment) -> None:
         job.from_versions, job.to_versions = (
-            {"openai-codex": "0.147.0"},
-            {"openai-codex": "0.157.1"},
+            {"openai-codex-cli-bin": "0.147.0"},
+            {"openai-codex-cli-bin": "0.157.1"},
         )
         for stage in ("downloading", "installing", "verifying"):
             job.stage = stage  # type: ignore[assignment]
@@ -167,4 +173,3 @@ def test_live_environment_targets_this_runtime_with_the_real_provider_check() ->
     env = routes.live_update_environment()
     assert env.python == sys.executable
     assert env.verify_provider is updater.verify_provider_in_child
-    assert env.release_runtimes is routes.release_provider_runtimes

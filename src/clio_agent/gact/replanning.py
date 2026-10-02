@@ -23,7 +23,7 @@ prose/keywords, and never forces a mode change silently). Two surfaces:
   suggestion / is replanning). SCOPE: only sessions with an active execution playbook are monitored,
   so a plain session is a byte-identical no-op.
 
-* :func:`inject_replan_suggestion` — the per-turn-input attachment (the plan-mode-reminder /
+* :func:`replan_suggestion` — the per-turn-input attachment (the plan-mode-reminder /
   todo-recitation pattern). When the monitor has flagged a pending suggestion, this prepends a typed
   notice to the NEXT turn's input EXACTLY ONCE (it clears the flag), telling the model it may
   re-enter plan mode to replan — it is a SUGGESTION, not a mode flip. ``turn.py`` calls it from the
@@ -303,21 +303,20 @@ def _suggestion_block() -> str:
     )
 
 
-def inject_replan_suggestion(app: "FastAPI", sid: str, session: Any, enriched_text: str) -> str:
-    """Prepend a pending replanning suggestion to this turn's input EXACTLY ONCE (P1.6d #1068).
+def replan_suggestion(app: "FastAPI", sid: str, session: Any) -> str:
+    """A pending replanning suggestion as this turn's CLIO addition, EXACTLY ONCE (P1.6d #1068).
 
-    Returns ``enriched_text`` unchanged in plan mode (already planning) and when no suggestion is
-    pending — so a session the monitor never flagged is byte-identical. When a suggestion is pending
-    it clears the flag (inject-once) and prepends the typed notice, reusing the per-turn-input
-    reminder mechanism (never the system prompt) so it survives compaction. It is a SUGGESTION the
-    model acts on; it NEVER changes ``session.mode``.
+    Empty in plan mode (already planning) and when no suggestion is pending. When one is
+    pending it clears the flag (once) and returns the typed notice, which the agent loop
+    records as its own message (never the system prompt). It is a SUGGESTION the model
+    acts on; it NEVER changes ``session.mode``.
     """
 
     if str(getattr(session, "mode", "") or "") == "plan":
-        return enriched_text
+        return ""
     metadata = getattr(session, "metadata", None)
     pending = metadata.get(REPLAN_SUGGESTION_KEY) if isinstance(metadata, Mapping) else None
     if not isinstance(pending, Mapping) or not pending.get("pending"):
-        return enriched_text
+        return ""
     app.state.sessions.update(sid, metadata_patch={REPLAN_SUGGESTION_KEY: {}})
-    return _suggestion_block() + "\n\n---\n\n" + enriched_text
+    return _suggestion_block()

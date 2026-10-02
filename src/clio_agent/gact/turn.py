@@ -78,13 +78,8 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.skills import SkillNotDelegatableError
-from clio_agent.gact.stream_failures import agent_forward_error_info, streamed_turn_error_info
-from clio_agent.gact.streaming import (
-    _extract_tools_called,
-    _format_react_trajectory,
-    _pop_stream_fallback,
-    _StreamingOutputError,
-)
+from clio_agent.gact.stream_failures import forward_error_info
+from clio_agent.gact.streaming import _extract_tools_called, _pop_stream_fallback
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
@@ -256,9 +251,8 @@ async def _run_turn_in_background(
             "running",
             metadata_patch={"executed_user_message_id": state.user_msg.id},
         )
-    # iowarp/clio-agent#6: try real per-token streaming via dspy.streamify when the LM supports it;
-    # fall back to the synchronous executor path otherwise. Streaming produces message.part.delta
-    # events as chunks arrive — without it the text part lands as one big delta after forward.
+    # iowarp/clio-agent#6: per-token streaming rides the LM token hooks while the module
+    # runs; message.part.delta events land as chunks arrive.
     #
     # #767 PR2: the TurnTranscript ledger owns the streamed-part state machine (lazy message mint,
     # per-(agent, field) part open/close, per-part buffers, whole-buffer clean at close, the runtime
@@ -277,10 +271,7 @@ async def _run_turn_in_background(
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
-    # IN-PLACE mutations. ``forward_turn`` reconstructs the same
-    # ``partial(emit_chunk, state)`` for its streamed-forward sites, so both the
-    # executor rail and the streamed forward resolve the generating agent
-    # identically.
+    # IN-PLACE mutations.
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
     # blueprint/expert LM call streamed in an executor thread feeds the SAME
@@ -332,8 +323,13 @@ async def _run_turn_in_background(
         # turn will forward with the enriched input. Consume the staged observe-later
         # notifications once AND emit each delegation terminal (shared once-gate with
         # wait/check) into this turn's already-open transcript.
-        consume_pending_agent_task_notifications(
-            state.app, state.sid, state.pending_notification_task_ids
+        # Consuming records into clio-core (store writes): on the turn executor, never
+        # the event loop (a write there is refused and the turn failed).
+        await _run_turn_setup_off_loop(
+            state,
+            lambda: consume_pending_agent_task_notifications(
+                state.app, state.sid, state.pending_notification_task_ids
+            ),
         )
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
@@ -412,16 +408,9 @@ async def _run_turn_in_background(
         # circuits (HDF5/Parquet/fs experts that bypass ReAct) still
         # report tools_called on the assistant message metadata.
         state.tools_called = _drain_observed_tool_calls(state.tools_called)
-        # iowarp/clio-agent#17 — surface DSPy reasoning as a
-        # `thinking` Part. ChainOfThought predictions expose
-        # ``.reasoning`` (single string); ReAct exposes
-        # ``.trajectory`` (step-by-step trace). Fall back to the
-        # generic `_trace` Prediction wraps either of them in.
-        state.thinking_text = (
-            getattr(state.pred, "reasoning", "")
-            or _format_react_trajectory(getattr(state.pred, "trajectory", None))
-            or ""
-        )
+        # iowarp/clio-agent#17 — a ChainOfThought prediction's ``.reasoning``
+        # becomes the turn's `thinking` Part.
+        state.thinking_text = str(getattr(state.pred, "reasoning", "") or "")
         # cost + token rollup — mutate
         # state.turn_tokens / state.turn_cost from the prediction
         # or the per-turn LM history slice (see turn_usage.py).
@@ -490,11 +479,6 @@ async def _run_turn_in_background(
         state.tools_called = []
     except asyncio.CancelledError:
         settle_asyncio_cancellation(state)
-    except _StreamingOutputError as exc:
-        partial_answer = state.transcript.raw_streamed_text()
-        state.error_info = streamed_turn_error_info(state, exc, partial_answer)
-        state.answer_text = partial_answer
-        state.tools_called = []
     except _TurnTimedOut as exc:
         partial_answer = state.transcript.raw_streamed_text()
         partial_output = bool(partial_answer)
@@ -647,7 +631,9 @@ async def _run_turn_in_background(
         state.answer_text = ""
         state.tools_called = []
     except Exception as exc:  # noqa: BLE001
-        state.error_info = agent_forward_error_info(state, exc)
+        # The envelope is short; the log keeps the whole failure, stack included.
+        logger.exception("turn forward failed session=%s", state.sid)
+        state.error_info = forward_error_info(state, exc, state.transcript.raw_streamed_text())
 
     # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived

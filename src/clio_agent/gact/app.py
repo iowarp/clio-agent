@@ -120,10 +120,8 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _ACTIVE_GACT_TURN_ID,
     _PROCESS_ARC,
     ARC_OP_EVENT_TYPE,
-    _active_lm_last_reasoning,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
-    _BlueprintTerminalWorkflowState,
     _build_semantic_event,
     _cancelled_error_info,
     _coerce_error_info,
@@ -145,7 +143,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _new_part_id,
     _new_question_id,
     _not_implemented,
-    _process_arc,
     _resolve_tool_session,
     _semantic_trace_id,
     _session_agent_id,
@@ -198,18 +195,15 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _context_file_access_error,
     _context_file_turn_provenance,
     _enrich_with_context_files,
-    _enrich_with_requested_memory_search,
     _estimate_context_tokens,
     _finalize_context_frame,
     _memory_search_request_from_message,
     _message_text_for_frame,
     _record_context_frame,
+    _requested_memory_search,
 )
-from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
-from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
-    _compile_session_conversation_history,
     _delete_session_context_files,
     _delete_session_messages,
     _extend_session_messages,
@@ -303,7 +297,7 @@ from clio_agent.gact._params import (  # noqa: E402,F401
 )
 from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
-# gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
+# gact/agents/builders.py -- expert/blueprint runtime engine;
 # the kept turn-handler dispatch wrappers below reach the builders through these.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
@@ -361,11 +355,6 @@ from clio_agent.gact.agents.runners import (  # noqa: E402
     _run_prompt_user_agent,
     _run_tool_user_agent,
 )
-from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
-    _prediction_structured_metadata,
-    _retaining_react_cls,
-    _summarize_segments_llm,
-)
 from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
@@ -385,7 +374,6 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
 from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
-    _extract_tools_called_from_trajectory,
     _is_bounded_tool_result,
     _propose_edit_diffs_from_pred,
     _tool_result_is_error,
@@ -552,7 +540,7 @@ from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
 # Transcript-memory search primitives (query normalization, excerpting, the
 # scope-controlled ranked search) + the shared message-excerpt projection moved
 # to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
-# (_enrich_with_requested_memory_search / _compile_session_conversation_history)
+# (_requested_memory_search)
 # and the memory routes (routes/memory.py) share one implementation. Re-exported
 # here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
 from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401
@@ -694,7 +682,6 @@ from clio_agent.gact.expert_packs import (
     validate_expert_hierarchy,
 )
 from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_and_notify_spotter
-from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
     _guard_direct_destructive_action,
@@ -703,42 +690,19 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
-from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.skills import SkillNotDelegatableError
 
-# Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
-# gact/streaming.py: signature-compatible agent invocation, the DSPy streamify
-# pump + structured fallback ledger, stream-listener binding + streamability
-# gating, chunk/text extraction, and prediction rendering (trajectory / tools /
-# signature docstring). Re-exported here so existing
-# ``from clio_agent.gact.app import <name>`` callers + test seams stay green; in
-# particular the turn path + agents/builders import these via this module, and
-# ``_try_streamed_forward_compat`` resolves ``_try_streamed_forward`` back
-# through this re-export so the ``monkeypatch.setattr(
-# "clio_agent.gact.app._try_streamed_forward", ...)`` test seam keeps working.
+# Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
+# re-exported for ``from clio_agent.gact.app import <name>`` callers.
 from clio_agent.gact.streaming import (  # noqa: E402,F401
-    _REASONING_HEARTBEAT_S,
-    _agent_streaming_unsupported_reason,
-    _append_stream_listener,
-    _build_stream_listeners,
-    _chunk_reasoning_text,
-    _chunk_text,
-    _config_is_reasoning_model,
-    _describe_stream_exc,
     _extract_tools_called,
-    _format_react_trajectory,
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
     _record_stream_fallback,
-    _run_dynamic_agent_compat,
     _signature_prompt,
     _stream_fallback_payload,
     _stream_fallback_reasons,
-    _stream_response_prefix,
-    _StreamingOutputError,
-    _try_streamed_forward,
-    _try_streamed_forward_compat,
 )
 
 # gact/tool_observer.py -- tool-observer + live-assistant transcript cluster.
@@ -764,6 +728,7 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import TurnTranscriptRegistry
+from clio_agent.gact.transcript_file import boot_transcript_store
 from clio_agent.gact.types import (
     AgentDef,
     ErrorEnvelope,
@@ -843,8 +808,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
     # off-loop). The direct Codex provider owns one durable credential file,
-    # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
-    # provider's IsolatedCodexHome there is nothing here for it to reap.
+    # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
@@ -1030,7 +994,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         )
         # Drop the boot env-handoff (design §9 step 9): hand the ONE boot config to
         # ClioAgent instead of letting it read the environment a SECOND time. The
-        # main agent binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off
+        # main agent binds ``_main_lm`` / ``_dspy_adapter`` off
         # this exact config (credential included — the boot/default config is the
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
@@ -1107,15 +1071,12 @@ from clio_agent.gact.scheduler_runtime import (  # noqa: E402,F401 - re-exported
 
 
 class ARCLike(Protocol):
-    """Structural interface for the ARC reference /v1/memory/stats
-    pulls from. Real ``ARCMemory`` matches it; tests pass a fake.
+    """The ARC the app wires (highway sink, op logger) and /v1/memory/stats reads
+    (``get_cache_stats``: hits / misses / hit_rate / capacity). ``ARCMemory`` matches it."""
 
-    ``get_cache_stats`` returns a dict with ``hits`` / ``misses`` /
-    ``hit_rate`` / ``capacity`` (see ``ARCMemory.get_cache_stats``).
-    """
-
-    def get_cache_stats(self) -> dict[str, Any]:  # pragma: no cover
-        ...
+    def get_cache_stats(self) -> dict[str, Any]: ...  # pragma: no cover
+    def set_highway_sink(self, sink: Any) -> None: ...  # pragma: no cover
+    def set_segment_op_logger(self, logger: Any) -> None: ...  # pragma: no cover
 
 
 def build_app(
@@ -1233,22 +1194,9 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # Durable per-session message log (POST /messages writes, GET /messages reads);
-    # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
-    app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
-    # #1334 F2: placeholder for the reconciliation's _replace_session_messages write.
-    app.state.messages = {}
-    _reconcile_restart_interrupted_sessions(app)
-    # #770 C3: bounded eviction-audit trail (init before the resident set).
-    init_retention_state(app)
-    # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-
-    # DISCARD walk so the metrics wire stays byte-identical across a restart WITHOUT
-    # pinning every transcript in RAM.
-    app.state.metrics_counters = MetricsCounters()
-    seed_metrics_counters(app.state.message_store, app.state.metrics_counters)
-    # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
-    # boots empty (index only), materializes lazily. See gact.resident_ledgers.
-    app.state.messages = build_resident_ledger_set(app)
+    # Transcript store (the ``transcript.file`` switch, resolved once): the messages/
+    # file copy + its index, restart reconciliation, metrics seed, resident set.
+    boot_transcript_store(app, session_store_path.parent)
     composer_runtime.initialize_composer_state(app, session_store_path)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the

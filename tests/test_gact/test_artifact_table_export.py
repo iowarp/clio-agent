@@ -365,16 +365,14 @@ def test_export_stream_stops_once_cancelled(env: _Env) -> None:
 
     already_cancelled = threading.Event()
     already_cancelled.set()
-    cancellation = engine.QueryCancellation(
-        deadline=time.monotonic() + 60, timeout_s=60, cancel_event=already_cancelled
-    )
+    cancellation = engine.QueryCancellation(cancel_event=already_cancelled)
     result = table_export.resolve_export_table(
         source,
         "csv",
         TableQueryRequest(columns=["sensor", "value"]),
         scope="current",
         max_rows=1_000_000,
-        cancellation=engine.QueryCancellation(deadline=time.monotonic() + 60, timeout_s=60),
+        cancellation=engine.QueryCancellation(),
     )
 
     with pytest.raises(engine.TableQueryCancelled):

@@ -23,9 +23,10 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact import context_reference_retry
+from clio_agent.gact import context_reference_retry, session_warmup
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.compaction import CompactionError, compact_session_context
+from clio_agent.gact.context_rollback import follow_rollback
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
@@ -129,10 +130,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if "model" in supplied:
             model = req.model.model_dump(exclude_none=True) if req.model else None
         elif defaults.provider_id or defaults.model_id:
-            model = {
-                "provider_id": defaults.provider_id,
-                "model_id": defaults.model_id,
-            }
+            model = {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
         else:
             model = None
         sess = app.state.sessions.create(
@@ -154,6 +152,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Session creation inherits territory and emits no fabricated grant (#979.2).
         sync_watcher_for_mode(app, sess)
         bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
+        # Start the session's servers now, not on its first message.
+        session_warmup.start_session_warmup(app, sess.id, trigger="session_created")
         return project_for_request(
             request,
             v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),
@@ -297,6 +297,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
+        await run_off_loop(deps.delete_session_messages, app, sid)  # clio-core first: 503 keeps it
         existed = app.state.sessions.delete(sid)
         if not existed:
             raise HTTPException(
@@ -310,7 +311,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        await run_off_loop(deps.delete_session_messages, app, sid)
         deps.delete_session_context_files(app, sid)
         await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
@@ -404,6 +404,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         replacement_messages = preserve_a2ui(sid, kept_messages, deleted_messages, operation)
         await run_off_loop(deps.replace_session_messages, app, sid, replacement_messages)
+        # The agents' context follows the ledger: rolled-back turns leave it too.
+        await run_off_loop(follow_rollback, app, sid, deleted_messages, replacement_messages)
         deleted_ids = [m.id for m in deleted_messages]
         updated = app.state.sessions.update(
             sid,
@@ -448,10 +450,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
-        # Optional free-form body: malformed/``null`` is treated as ``{}`` (a
-        # structured ``request_body_unparseable`` trace reason), but a
-        # valid-JSON non-object payload keeps its pre-#772 422 -- undo is
-        # destructive and must not proceed on a wrong-shaped coerced body.
+        # Malformed/``null`` body is ``{}`` (traced); a non-object JSON payload is a
+        # 422 -- undo is destructive and must not proceed on a coerced body.
         try:
             body = await json_body(
                 request, route="POST /v1/sessions/{sid}/undo", non_object="raise"
@@ -510,11 +510,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
-        # A malformed body is treated as ``{}`` (unchanged behavior, now with a
-        # structured ``request_body_unparseable`` reason in the trace), but a
-        # valid-JSON non-object payload -- including ``null``, which rewind's
-        # pre-#772 guard never coerced -- keeps its 422: rewind is destructive
-        # and must not proceed on a wrong-shaped body coerced to defaults.
+        # A malformed body is ``{}`` (traced); a non-object JSON payload, ``null``
+        # included, is a 422 -- rewind is destructive and must not proceed on a
+        # wrong-shaped body coerced to defaults.
         try:
             body = await json_body(
                 request,
@@ -642,16 +640,16 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/sessions/{sid}/compact ----------------------------------
 
     @app.post("/v1/sessions/{sid}/compact")
-    async def compact_session(sid: str, request: Request) -> dict[str, Any]:
-        """Append one evidence-preserving checkpoint (#1339). One operation, two
-        triggers -- see :func:`clio_agent.gact.compaction.compact_session_context`;
-        this route is the manual trigger."""
-
+    async def compact_session(sid: str, request: Request, scope: str = "") -> dict[str, Any]:
+        """Compact the session's context NOW: the manual trigger (the panel too, with
+        ``?scope=``) of the ONE operation, :func:`~clio_agent.gact.compaction.
+        compact_session_context`; no ``scope`` compacts every agent scope."""
         body = await json_body(request, route="POST /v1/sessions/{sid}/compact")
         focus = (body.get("focus") or "").strip()
+        compact = compact_session_context
         try:
             return await run_off_loop(
-                lambda: compact_session_context(app, sid, trigger="manual", focus=focus)
+                lambda: compact(app, sid, trigger="manual", focus=focus, scope=scope)
             )
         except CompactionError as exc:
             raise HTTPException(status_code=exc.status, detail=exc.envelope()) from exc
@@ -941,7 +939,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         row = claim_question_transition(app, question_id, "cancelled") or row
         # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
+        if not await resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,

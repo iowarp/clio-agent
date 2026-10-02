@@ -90,7 +90,7 @@ Clients post the message, then consume `/events`. Live text deltas include `stre
 
 | `stream_source` | Meaning |
 |---|---|
-| `live` | delta arrived through the live `dspy.streamify` path |
+| `live` | delta arrived live from the provider through the LM token hooks (`runtime/lm_activity`) |
 | `batch` | final answer was already available before live provider-token deltas could be emitted |
 
 Batch fallback payloads include a structured `stream_fallback`

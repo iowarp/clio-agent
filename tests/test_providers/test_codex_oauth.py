@@ -343,9 +343,15 @@ def test_openai_wire_names_are_pinned() -> None:
     """
     import inspect
 
-    from clio_agent.providers.codex import oauth, transport_sse, transport_ws
+    from dspy.lm15 import Message, OpenAICodexLM, Request
+
+    from clio_agent.providers.codex import oauth
 
     assert c.JWT_AUTH_CLAIM == "https://api.openai.com/auth"
     assert '"chatgpt_account_id"' in inspect.getsource(oauth)
-    assert '"chatgpt-account-id"' in inspect.getsource(transport_sse)
-    assert '"chatgpt-account-id"' in inspect.getsource(transport_ws)
+    # The direct engine's requests are built by lm15 from clio's credential: the
+    # account rides OpenAI's own header name.
+    wire = OpenAICodexLM(api_key="token", account_id="acct-1")
+    request = Request(model="gpt-5.5", messages=(Message.user("hi"),))
+    headers = dict(wire.build_request(request, stream=True).headers)
+    assert headers["chatgpt-account-id"] == "acct-1"

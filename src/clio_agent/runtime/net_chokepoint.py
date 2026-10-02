@@ -65,7 +65,9 @@ MECHANISM_ENV_COOPERATIVE = "env-cooperative"
 _LOOPBACK = "127.0.0.1"
 #: Bounded relay buffer; bidirectional pump copies in these chunks.
 _RELAY_CHUNK = 64 * 1024
-#: Socket timeout on the initial CONNECT line read (a stalled client never wedges a thread).
+#: Socket timeout on the initial CONNECT line read and the upstream dial (a stalled client
+#: never wedges a thread). NOT kept for the tunnel: once both ends are up the pump waits on
+#: the peers, so a slow upstream answer is relayed, never cut at this bound (#1577).
 _CONNECT_READ_TIMEOUT_S = 30.0
 #: Bound on live per-child channels (leak guard). A confined MCP fleet is small, so this is
 #: generous. Over the cap a new child falls back to the SHARED listener (child_id="" —
@@ -324,12 +326,13 @@ class Chokepoint:
                     client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                     return
                 upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+                upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
                 self._record_open(child_id, host, port, upstream, "connect")
                 client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
                 client.settimeout(None)
                 self._track(client)
                 self._track(upstream)
-                self._pump(client, upstream)
+                self._pump(client, upstream, host)
                 return
             forward = _parse_absolute_form(header)
             if forward is None:
@@ -343,12 +346,13 @@ class Chokepoint:
                 client.sendall(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 return
             upstream = socket.create_connection((host, port), timeout=_CONNECT_READ_TIMEOUT_S)
+            upstream.settimeout(None)  # the dial is bounded; the tunnel waits on the peers
             self._record_open(child_id, host, port, upstream, "http", method)
             upstream.sendall(origin_head)
             client.settimeout(None)
             self._track(client)
             self._track(upstream)
-            self._pump(client, upstream)
+            self._pump(client, upstream, host)
         except (OSError, ValueError):
             try:
                 client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
@@ -470,12 +474,30 @@ class Chokepoint:
             data += chunk
         return data
 
-    def _pump(self, a: socket.socket, b: socket.socket) -> None:
-        """Bidirectionally copy bytes between two sockets until either closes."""
-        t = threading.Thread(target=_copy, args=(a, b), daemon=True)
+    def _pump(self, a: socket.socket, b: socket.socket, host: str = "") -> None:
+        """Copy bytes both ways between client ``a`` and upstream ``b`` until either closes.
+
+        The upstream->client direction (the response) runs here to its end; the
+        client->upstream direction gets a short grace after it and is then closed, logged,
+        if the client is still sending once the upstream has finished.
+        """
+        closing = threading.Event()
+
+        def _closed_here() -> bool:
+            return closing.is_set() or self._stopping.is_set()
+
+        t = threading.Thread(
+            target=_copy, args=(a, b, "client->upstream", host, _closed_here), daemon=True
+        )
         t.start()
-        _copy(b, a)
+        _copy(b, a, "upstream->client", host, _closed_here)
         t.join(timeout=1.0)
+        if t.is_alive():
+            logger.info(
+                "net tunnel closing reason=tunnel_closed_after_upstream_eof host=%s",
+                host,
+            )
+        closing.set()
 
     def _track(self, sock: socket.socket) -> None:
         with self._conns_lock:
@@ -509,15 +531,40 @@ class Chokepoint:
             channel.thread.join(timeout=1.0)
 
 
-def _copy(src: socket.socket, dst: socket.socket) -> None:
+def _copy(
+    src: socket.socket,
+    dst: socket.socket,
+    direction: str = "",
+    host: str = "",
+    closed_here: Callable[[], bool] = lambda: False,
+) -> None:
+    """Relay ``src`` -> ``dst`` until end of stream; a transport error is logged, never swallowed.
+
+    An error caused by this chokepoint closing the tunnel itself (``closed_here``: the
+    pump's own teardown or :meth:`Chokepoint.stop`) is expected and logged at debug; any
+    other is a tunnel cut short mid-flight and is a WARNING with a typed reason, so a
+    truncated response is never silent.
+    """
     try:
         while True:
             chunk = src.recv(_RELAY_CHUNK)
             if not chunk:
                 break
             dst.sendall(chunk)
-    except OSError:
-        pass
+    except OSError as exc:
+        if closed_here():
+            logger.debug(
+                "net tunnel relay ended reason=tunnel_closed_locally direction=%s host=%s",
+                direction,
+                host,
+            )
+        else:
+            logger.warning(
+                "net tunnel cut reason=tunnel_transport_error direction=%s host=%s error=%r",
+                direction,
+                host,
+                exc,
+            )
     finally:
         try:
             dst.shutdown(socket.SHUT_WR)

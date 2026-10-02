@@ -40,7 +40,7 @@ joined only `text|thinking|error` parts, so the summary (carried in `part.summar
 visible_transcript` regardless of whether compaction had actually dropped it from the
 model's view.
 
-Automatic compaction (`reactv2._RetainingReActV2._maybe_autocompact`) was a wholly
+Automatic compaction (then in the ReActV2 subclass; now `ClioReAct`'s step boundary) was a wholly
 separate mechanism: it folded the ARC working set via `arc.summarize_segments` and
 emitted no transcript row, no semantic event, no SSE — a session compacted only
 automatically had no visible record that compaction had ever happened.
@@ -102,16 +102,16 @@ call.
 
 | | Manual (`trigger="manual"`) | Auto (`trigger="auto"`) |
 |---|---|---|
-| Entry point | `routes/sessions.py::compact_session` — ~15-line delegation, `await run_off_loop(lambda: compact_session_context(...))` | `gact/compaction.py::maybe_autocompact()`, called from `reactv2._RetainingReActV2._maybe_autocompact` (a 3-line delegation) |
-| Runs on | The route's off-loop executor thread | Inside `instrumented_forward`, the turn's own thread |
-| Can fold the ARC working set? | No — `_fold_arc_working_set` reads the CALLING THREAD's contextvars via `reactv2_events._arc_scope()`, and the off-loop executor thread carries no react scope even mid-turn | Yes, when a scope is live |
+| Entry point | `routes/sessions.py::compact_session` — ~15-line delegation, `await run_off_loop(lambda: compact_session_context(...))` | `gact/compaction.py::maybe_autocompact()`, called at every `ClioReAct` step boundary |
+| Runs on | The route's off-loop executor thread | Inside `ClioReAct`'s forward, the turn's own thread |
+| Can fold the ARC working set? | No — `_fold_arc_working_set` reads the CALLING THREAD's contextvars via `clio_react_record.arc_scope()`, and the off-loop executor thread carries no react scope even mid-turn | Yes, when a scope is live |
 | `arc_status` it reports | Always `no_active_scope` (unless ARC is unconfigured) | `not_configured` \| `no_active_scope` \| `working_set_too_small` \| `folded` |
 | Focus text | Optional, from the request body | None (`focus=""`) |
 | Failure handling | Raises `CompactionError`, turned into the matching HTTP status | Caught, audited `compaction.auto_failed`, swallowed — auto-compaction is a proactive optimization, never a hard turn dependency |
 
 `arc_status` (`ARC_STATUSES` in `compaction.py`) is a typed description of ARC
 working-set-fold reality, never a fabricated "stored": ARC's live plane only has scope
-*inside* a turn (the per-turn reset in `reactv2_events.instrumented_forward`), so a
+*inside* a turn (the per-turn reset at the start of `ClioReAct`'s forward), so a
 manual compact issued between turns — the common case — correctly reports
 `no_active_scope`. `_fold_arc_working_set` itself can raise (it calls
 `arc.summarize_segments`, a real store RPC); the caller does not hide that — see

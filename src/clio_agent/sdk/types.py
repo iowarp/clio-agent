@@ -257,10 +257,21 @@ class Part(_WireModel):
     rationale: str = ""
     execution_path: str = ""
 
-    # compaction (SPEC §4.5): a model-context checkpoint; history is retained,
-    # nothing is deleted (#1339). ``summary`` is the client-facing prose, ``auto``
-    # flags a policy-triggered compaction, and ``compacted_message_ids`` lists
-    # the rows this checkpoint stands in for in the model context.
+    # injection: harness data the agent was given. ``source`` names it; a compaction's
+    # record is ``source="summarization"`` (``text`` = the summary the model got) with
+    # ``trigger`` ("auto" | "manual") and ``compaction_id`` (pairs it with the
+    # ``compaction.*`` events).
+    source: str = ""
+    trigger: str = ""
+    compaction_id: str = ""
+    # notice: a UI/provenance record the model was never told -- ``source`` (e.g.
+    # "compaction_failed"), ``text`` (plain language), ``code`` (the typed error), plus
+    # ``trigger`` / ``compaction_id`` for a failed compaction.
+    code: str = ""
+
+    # A stored ``compaction`` part (written before the summarization record replaced
+    # it): read only. ``summary`` is its prose, ``auto`` a policy trigger,
+    # ``compacted_message_ids`` the rows it stood in for.
     summary: str = ""
     auto: bool = False
     compacted_message_ids: list[str] = Field(default_factory=list)
