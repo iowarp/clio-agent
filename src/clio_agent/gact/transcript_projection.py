@@ -60,6 +60,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.arc.lane_chunking import lane_has_segments, lane_segments
 from clio_agent.arc.lane_generations import current_base, erase_lane, replace_lane
+from clio_agent.errors import ClioError
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
@@ -70,6 +71,7 @@ from clio_agent.gact.part_atoms import (
     retracted_part_ids,
 )
 from clio_agent.gact.transcript_file import (
+    TranscriptEraseError,
     file_transcript_enabled,
     materialize_from_atoms,
     reload_resident_on_failure,
@@ -586,13 +588,24 @@ def on_ledger_deleted(app: "FastAPI", session_id: str) -> None:
     (:func:`~clio_agent.arc.lane_generations.erase_lane`: never a half-erased
     transcript); the ARC working-set scopes (ARC memory) are untouched -- the frozen
     ``gact_visible_transcript_only`` semantics (1.11, sabotage-c).
+
+    Runs BEFORE the caller removes anything else. Every step is idempotent, so a
+    failure is raised typed and a retry finishes the erase; with ``transcript.file``
+    off a failure also drops the in-memory ledger so reads serve what clio-core kept.
+
+    Raises:
+        TranscriptEraseError: clio-core did not finish the erase.
     """
 
     arc = _arc(app)
     if arc is None:
         return
-    erase_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)
-    drop_state_merge_lane(arc, session_id)  # #737 S6: erase the op lane with the transcript
+    try:
+        with reload_resident_on_failure(app, session_id):
+            erase_lane(arc._segments, session_id, MESSAGE_PART_SCOPE)
+            drop_state_merge_lane(arc, session_id)  # #737 S6: the op lane goes with it
+    except (ClioError, OSError, RuntimeError) as exc:
+        raise TranscriptEraseError(session_id, exc) from exc
 
 
 # --------------------------------------------------------------------------- #
