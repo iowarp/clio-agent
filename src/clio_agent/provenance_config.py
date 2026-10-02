@@ -89,33 +89,3 @@ def kvnorm_join_enabled() -> bool:
     ):
         return False
     return "flowcept" in configured_provider_names()
-
-
-def native_durable_provenance_enabled() -> bool:
-    """Whether ARC may release its event log after native persistence."""
-
-    names = configured_provider_names()
-    return "jsonl" in names or "factory" in names
-
-
-def durable_trace_backend_name() -> str:
-    """ARC's durable-trace decision, mirroring the provider ladder above.
-
-    ``"file"`` when a configured provider keeps a replayable NATIVE copy
-    (Flowcept alone is not permission to erase ARC history), ``"none"`` when
-    providers are explicitly configured without one, the verbatim legacy
-    backend name when only legacy settings exist, else the default
-    (``"file"``, matching the ``["jsonl"]`` provider default).
-    """
-
-    providers_file = conf.store().file_value("provenance.agentic.providers")
-    providers_env = os.environ.get("CLIO_PROVENANCE_PROVIDERS", "").strip()
-    if providers_file is not conf.UNSET or providers_env:
-        raw = providers_file if providers_file is not conf.UNSET else providers_env
-        names = {name.strip().lower() for name in conf.as_csv(raw)}
-        return "file" if names.intersection(_NATIVE_DURABLE) else "none"
-    legacy_file = conf.store().file_value("trace.backend")
-    legacy_env = os.environ.get("CLIO_SEMANTIC_TRACE_BACKEND", "").strip()
-    if legacy_file is not conf.UNSET or legacy_env:
-        return str(legacy_file if legacy_file is not conf.UNSET else legacy_env).strip().lower()
-    return "file"

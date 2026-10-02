@@ -87,6 +87,16 @@ def prepare_question_answer(
             question_id=question_id,
             status=question.status,
         )
+    if (question.metadata or {}).get("variants_id"):
+        # A drafts pick names one draft (selected_options), which a message cannot
+        # carry: it is answered through the answer route, the message text its comment.
+        raise _refuse(
+            422,
+            "drafts_question_needs_pick",
+            "Pick one of the drafts to answer this question; a comment can go with it.",
+            session_id=sid,
+            question_id=question_id,
+        )
     return QuestionAnswerMessage(
         question_id=question.id,
         model_text_prefix=f"[Answer to agent question]\nQuestion: {question.prompt}\nAnswer:\n",

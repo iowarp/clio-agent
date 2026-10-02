@@ -161,6 +161,16 @@ _DEFAULT_HINTS: dict[str, str] = {
         "its definition artifact (an unchanged definition dedups, never "
         "double-applies the surface)"
     ),
+    "a2ui_chart_spec_rejected": (
+        "fix the spec per this refusal's detail (byte size, view count, "
+        "nesting depth, or an allowed key), or use a preset (preset plus "
+        "the matching *Field/xType properties) instead of an inline spec"
+    ),
+    "a2ui_chart_preset_invalid": (
+        "pass this preset's required fields, named in this refusal's "
+        "detail, as the component's own *Field/xType/selectionParam "
+        "properties, or use an inline spec instead"
+    ),
 }
 
 #: Every refusal reason the producer package can emit through :func:`refusal`
@@ -195,6 +205,8 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_components_path_unresolved",
         "a2ui_components_path_invalid",
         "a2ui_definition_artifact_failed",
+        "a2ui_chart_spec_rejected",
+        "a2ui_chart_preset_invalid",
     }
 )
 

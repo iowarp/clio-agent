@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,9 +18,16 @@ def write_working_copy(path: Path, payload: bytes) -> None:
 
     if len(payload) > _MAX_EDITOR_SAVE_BYTES:
         raise ValueError("editor save exceeds the configured size limit")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_bytes(payload)
-    os.replace(temporary, path)
+    # A short sibling name: a long one (name + uuid) pushed deep workspace paths past
+    # the Windows 260-character limit. Same directory, so the replace stays atomic.
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(payload)
+        os.replace(name, path)
+    except BaseException:
+        Path(name).unlink(missing_ok=True)
+        raise
 
 
 def exact_http_origin(left: str, right: str) -> bool:

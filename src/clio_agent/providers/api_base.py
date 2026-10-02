@@ -53,7 +53,7 @@ def normalize(api_base: str) -> str:
       ``/v1`` path (no trailing slash) both stay exactly as given.
 
     A value with no ``scheme://host`` shape (a bare host, or an SDK identity
-    marker like ``codex://sdk``) has nothing safe to canonicalize beyond the
+    marker like ``codex://direct``) has nothing safe to canonicalize beyond the
     trailing slash, so only that is stripped. Callers that need a key rather
     than a display string should always route ``api_base`` through this
     before pairing it with a ``provider_id``.

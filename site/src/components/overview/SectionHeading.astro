@@ -1,0 +1,61 @@
+---
+/**
+ * Heading block for an overview section: a numbered copper label, a serif
+ * title whose last words are set in the accent italic, and an optional lede.
+ */
+interface Props {
+	id: string;
+	number?: string;
+	label: string;
+	title: string;
+	emphasis: string;
+	lede?: string;
+}
+const { id, number, label, title, emphasis, lede } = Astro.props;
+---
+
+<header class="section-heading">
+	<p class="label">
+		{number && <span class="number">{number}</span>}
+		<span>{label}</span>
+	</p>
+	<h2 id={id}>{title} <em>{emphasis}</em></h2>
+	{lede && <p class="lede">{lede}</p>}
+</header>
+
+<style>
+	.label {
+		display: flex;
+		gap: 0.75rem;
+		margin: 0 0 1rem;
+		font-family: var(--font-code);
+		font-size: var(--sl-text-xs);
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--copper);
+	}
+	.number {
+		color: var(--muted);
+	}
+	h2 {
+		margin: 0;
+		max-width: 22ch;
+		font-family: var(--font-display);
+		font-weight: 400;
+		font-size: clamp(2rem, 4vw, 3rem);
+		line-height: 1.08;
+		letter-spacing: -0.015em;
+		color: var(--ink);
+		scroll-margin-top: calc(var(--sl-nav-height) + 2rem);
+	}
+	h2 em {
+		color: var(--accent);
+	}
+	.lede {
+		max-width: 40rem;
+		margin: 1rem 0 0;
+		font-size: 1.1rem;
+		line-height: 1.6;
+		color: var(--ink-soft);
+	}
+</style>

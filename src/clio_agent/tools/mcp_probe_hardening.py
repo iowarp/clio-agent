@@ -134,6 +134,8 @@ def _resolve_global_timeout_retries() -> int:
 async def hardened_negotiate_auto(session: Any) -> None:
     """``negotiate_auto`` with the timeout-is-not-evidence correction (see module doc)."""
 
+    import time  # noqa: PLC0415
+
     import mcp_types as types  # noqa: PLC0415
     from mcp.client._probe import _parse_supported  # noqa: PLC0415
     from mcp.shared.exceptions import MCPError  # noqa: PLC0415
@@ -145,9 +147,16 @@ async def hardened_negotiate_auto(session: Any) -> None:
     )
     from pydantic import ValidationError  # noqa: PLC0415
 
+    from clio_agent.tools.mcp_server_progress import (  # noqa: PLC0415
+        mcp_max_wait_s,
+        server_work,
+    )
+
     version = LATEST_MODERN_VERSION
     mutual_retry_used = False
     timeout_retries_left = resolve_timeout_retries()
+    started = time.monotonic()
+    last_work = server_work()
 
     while True:
         try:
@@ -157,6 +166,26 @@ async def hardened_negotiate_auto(session: Any) -> None:
                 # THE correction: latency is not version information. Retry the
                 # same probe — the slow-starting server is warming and the era
                 # may already be locked modern server-side. Typed log per retry.
+                # A server still starting (ITS OWN process tree doing work: uv
+                # installing, Python importing) is waited for without spending the
+                # budget -- a slow machine is not a failure -- up to the long ceiling.
+                # Outside a server-progress wait there is no tree: the budget decides.
+                work = server_work()
+                waited = time.monotonic() - started
+                if (
+                    work is not None
+                    and (last_work is None or work - last_work >= 0.01)
+                    and waited < mcp_max_wait_s()
+                ):
+                    last_work = work
+                    logger.info(
+                        "mcp_probe_server_busy reason=discover_timed_out_server_working "
+                        "version=%s waited_s=%.0f",
+                        version,
+                        waited,
+                    )
+                    continue
+                last_work = work
                 if timeout_retries_left > 0:
                     timeout_retries_left -= 1
                     logger.warning(

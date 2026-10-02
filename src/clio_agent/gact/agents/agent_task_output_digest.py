@@ -39,7 +39,7 @@ import json
 from typing import Any
 
 #: Typed reason on the digest envelope's ``_clio.reason`` (mirrors
-#: ``mcp_result_projection.MODEL_TOOL_RESULT_TRUNCATED_REASON``'s naming).
+#: the ``<lane>_oversize`` reason naming).
 AGENT_TASK_OUTPUT_OVERSIZE_REASON = "agent_task_output_oversize"
 
 #: The fetch tool a digest envelope's ``fetch_full_output.tool`` points at

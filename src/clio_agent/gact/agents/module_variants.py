@@ -29,17 +29,24 @@ onto ``builders.py``):
    calls resolve against this module's on-disk source — ``Refine`` composes with any
    inner kind, ``react`` included.
 
-Observability: every try emits a structured ``variant.try`` / ``variant.reward`` log
-carrying the run index and score; the winning try's index + score are stamped, typed
-and additive, onto the returned ``Prediction`` as ``variant_selection`` (CHANGELOG'd).
-No silent retries — a reward parse failure logs a typed ``variant.reward.parse_failed``
-and scores ``0.0`` rather than crashing the attempt.
+Observability: every call is one recorded run (:mod:`variant_records`, a stable
+``variants_id``): each try's start and end (text, score, tokens) is a ``variant.try``
+event and the selection a ``variant.selected`` event (:mod:`variant_events`); each try
+runs in its own tab context (its scope, its stream, its token count). The winning try's
+index + score are stamped, typed and additive, onto the returned ``Prediction`` as
+``variant_selection``. No silent retries — a reward parse failure logs a typed
+``variant.reward.parse_failed`` and scores ``0.0`` rather than crashing the attempt.
+
+A ``judge: user`` declaration is not a DSPy loop at all: it pauses the turn on the
+user's choice, so it is wrapped in
+:class:`~clio_agent.gact.agents.variant_drafts.UserJudgedVariant` instead.
 """
 
 from __future__ import annotations
 
 import contextvars
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -47,9 +54,13 @@ import dspy
 from dspy.predict.predict import Prediction
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents import variant_lines
+from clio_agent.gact.agents.variant_events import emit_selected, emit_try, try_context
+from clio_agent.gact.agents.variant_records import TryRecord, VariantRun, save_run
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
     _blueprint_module_variant,
+    parse_module_variant,
 )
 
 if TYPE_CHECKING:
@@ -85,6 +96,18 @@ class _VariantRunLedger:
     # inner module) and lets the outer wrapper re-raise it typed instead of
     # wrapping it in the generic :class:`VariantTotalFailure` envelope.
     terminal_refusal: Exception | None = None
+    # Per-try forked segment ids (``variant_lines.fork_try``): the winner's line is
+    # what it added after them.
+    forks: dict[int, list[str] | None] = field(default_factory=dict)
+    # Each scored try's prediction, and whether clio writes Refine's advice between tries
+    # (a ``react`` inner: DSPy's hint_ advice cannot reach ClioReAct).
+    answers: dict[int, Any] = field(default_factory=dict)
+    advise: bool = False
+    threshold: float | None = None
+    # The recorded run (``None`` for a bare forward outside a variant call) and the
+    # segment the tries fork before (``draft_alternatives``: the turn's own head).
+    run: VariantRun | None = None
+    fork_cut: str = ""
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
@@ -167,8 +190,8 @@ class _RunKeyedModule(dspy.Module):
     :class:`_VariantRunLedger` and sets :func:`clio_agent.gact.context.set_react_run`
     for the duration of the inner call — so the ARC live-plane + transcript-tap KEYS
     partition per try (via ``run_keyed_scope``) while attribution stays on the bare
-    agent id. Being a real ``dspy.Module``, it forwards ``get_lm`` / ``set_lm`` /
-    ``named_predictors`` through to ``self.inner`` (DSPy recurses into sub-modules), so
+    agent id. It forwards ``get_lm`` / ``set_lm`` to ``self.inner`` (the agent loop keeps
+    its own module LM, which DSPy's leaf-predictor recursion does not see), so
     ``dspy.BestOfN``/``Refine`` drive the inner exactly as if unwrapped."""
 
     def __init__(self, inner: dspy.Module, *, agent_id: str, variant: str) -> None:
@@ -176,6 +199,14 @@ class _RunKeyedModule(dspy.Module):
         self.inner = inner
         self._clio_agent_id = agent_id
         self._clio_variant = variant
+
+    def get_lm(self) -> Any:
+        """The inner program's LM (``None``: the context's LM is used)."""
+        return self.inner.get_lm()
+
+    def set_lm(self, lm: Any) -> None:
+        """Bind the inner program to ``lm`` (a variant's per-rollout copy)."""
+        self.inner.set_lm(lm)
 
     def forward(self, **kwargs: Any) -> Any:
         ledger = _LEDGER.get()
@@ -189,33 +220,66 @@ class _RunKeyedModule(dspy.Module):
             # selection loop stays untouched, matching the class docstring),
             # but each remaining iteration is a free, instant re-raise.
             raise ledger.terminal_refusal
-        run_index = ledger.next_index if ledger is not None else 0
-        if ledger is not None:
-            ledger.current_index = run_index
-            ledger.next_index += 1
-        token = _ctx.set_react_run(run_index)
-        logger.info(
-            "variant.try agent=%s variant=%s run_index=%d",
-            self._clio_agent_id,
-            self._clio_variant,
-            run_index,
-        )
+        if ledger is None or ledger.run is None:
+            token = _ctx.set_react_run(0)  # a bare forward: one try, keyed like one
+            try:
+                return self.inner(**kwargs)
+            finally:
+                _ctx.reset(token)
+        run_index = ledger.next_index
+        ledger.current_index = run_index
+        ledger.next_index += 1
+        run = ledger.run
+        record = TryRecord(try_index=run_index, scope=variant_lines.try_scope(run_index))
+        run.add_try(record)
+        _record_try(run, record)
         try:
-            return self.inner(**kwargs)
+            with try_context(run, record):
+                record.prefix_ids = variant_lines.fork_try(run_index, cut_id=ledger.fork_cut)
+                ledger.forks[run_index] = record.prefix_ids
+                if ledger.advise and run_index > 0:
+                    record.advice = self._advise(ledger, run_index, kwargs)
+                pred = self.inner(**kwargs)
         except Exception as exc:  # noqa: BLE001 - record the REAL error the engine only prints
             # The engine (`dspy.BestOfN`/`Refine`) catches + PRINTS each failed try and
             # discards the exception; capture it on the ledger so a total failure can carry
             # the real root cause into the typed turn-ladder error (#953). Re-raise so the
             # engine's own selection loop is unchanged.
-            if ledger is not None:
-                ledger.errors.append((run_index, f"{type(exc).__name__}: {exc}"))
-                from clio_agent.errors import MCPProtocolError  # noqa: PLC0415
+            ledger.errors.append((run_index, f"{type(exc).__name__}: {exc}"))
+            from clio_agent.errors import MCPProtocolError  # noqa: PLC0415
 
-                if ledger.terminal_refusal is None and isinstance(exc, MCPProtocolError):
-                    ledger.terminal_refusal = exc
+            if ledger.terminal_refusal is None and isinstance(exc, MCPProtocolError):
+                ledger.terminal_refusal = exc
+            record.status, record.error = "failed", f"{type(exc).__name__}: {exc}"
+            _record_try(run, record)
             raise
-        finally:
-            _ctx.reset(token)
+        record.status, record.text = "completed", str(getattr(pred, "answer", "") or "")
+        _record_try(run, record)
+        return pred
+
+    def _advise(self, ledger: _VariantRunLedger, run_index: int, kwargs: dict) -> str:
+        """Write Refine's advice for this try from the previous one, onto its scope."""
+        from clio_agent.gact.agents import variant_advice  # noqa: PLC0415
+
+        previous = run_index - 1
+        score = dict(ledger.scores).get(previous, 0.0)
+        answer = str(getattr(ledger.answers.get(previous), "answer", "") or "")
+        advice = variant_advice.advise(
+            self.get_lm() or dspy.settings.lm,
+            task=kwargs,
+            attempt=variant_lines.try_steps(previous),
+            answer=answer,
+            score=score,
+            threshold=ledger.threshold,
+        )
+        variant_lines.record_advice(run_index, advice, variant_advice.ADVICE_SOURCE)
+        return advice
+
+
+def _record_try(run: VariantRun, record: TryRecord) -> None:
+    """Record a try's state change on clio-core and put it on the highway."""
+    save_run(_ctx.active_app(), run)
+    emit_try(run, record)
 
 
 class _RunScopedVariantMixin:
@@ -230,13 +294,50 @@ class _RunScopedVariantMixin:
 
     _clio_variant: str = ""
     _clio_agent_id: str = ""
+    # Set by the caller that builds the variant: where the run comes from, its rubric,
+    # the segment its tries fork before, and whether the winner's line is committed
+    # here (``draft_alternatives`` commits it after the turn's own step is recorded).
+    _clio_origin: str = "module_variant"
+    _clio_rubric: str = ""
+    _clio_fork_cut: str = ""
+    _clio_commit: bool = True
+    _clio_n_requested: int = 0
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        judge = self.reward_fn  # type: ignore[has-type]
+
+        def recorded_reward(call_kwargs: dict, pred: Prediction) -> float:
+            """Score a try and record it: selection never depends on the reward fn."""
+            score = float(judge(call_kwargs, pred))
+            ledger = _LEDGER.get()
+            if ledger is not None:
+                ledger.scores.append((ledger.current_index, score))
+                ledger.answers[ledger.current_index] = pred
+                if ledger.run is not None:
+                    record = ledger.run.try_at(ledger.current_index)
+                    record.score = score
+                    _record_try(ledger.run, record)
+            return score
+
+        self.reward_fn = recorded_reward
 
     def forward(self, **kwargs: Any) -> Any:
+        from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
         ledger = _VariantRunLedger()
+        inner = getattr(getattr(self, "module", None), "inner", None)
+        ledger.advise = isinstance(self, dspy.Refine) and isinstance(inner, ClioReAct)
+        ledger.threshold = getattr(self, "threshold", None)
+        ledger.fork_cut = self._clio_fork_cut
+        ledger.run = _new_run(self, ledger.threshold)
+        # Refine over ClioReAct: DSPy's BestOfN loop, with clio's advice between tries
+        # (DSPy's own feedback call cannot reach the loop and only costs a call).
+        engine = dspy.BestOfN.forward if ledger.advise else super().forward  # type: ignore[misc]
         token = _LEDGER.set(ledger)
         try:
             try:
-                pred = super().forward(**kwargs)  # type: ignore[misc]
+                pred = engine(self, **kwargs) if ledger.advise else engine(**kwargs)
             except Exception as engine_exc:  # noqa: BLE001
                 if ledger.terminal_refusal is not None:
                     # #1282 F7: a deterministic MCP protocol refusal must reach
@@ -244,18 +345,20 @@ class _RunScopedVariantMixin:
                     # VariantTotalFailure envelope, which would (a) lose the
                     # typed reason/protocol_data D1/D2 carry and (b) stop the
                     # SAME refusal from being recognized/escalated one layer up
-                    # by reactv2.py's own chokepoint if a variant is ever
-                    # nested inside another tool-calling loop.
+                    # by ClioReAct if a variant is ever nested inside another
+                    # tool-calling loop.
                     raise ledger.terminal_refusal from engine_exc
                 # dspy raises the last try's exception on TOTAL failure only for n>=3
                 # (fail_count off-by-one). Normalize to the typed total-failure so the
                 # outcome is identical for every N and the root cause reaches the trace.
+                _fail_run(ledger)
                 raise _total_variant_failure(
                     self._clio_agent_id, self._clio_variant, ledger, engine_exc
                 ) from engine_exc
         finally:
             _LEDGER.reset(token)
         if pred is None:
+            _fail_run(ledger)
             if ledger.terminal_refusal is not None:
                 # #1282 F7: same rule on the n<=2 (best_pred=None) path.
                 raise ledger.terminal_refusal
@@ -263,7 +366,42 @@ class _RunScopedVariantMixin:
             # selected). ALWAYS a typed turn-ladder failure — never swallowed to None.
             raise _total_variant_failure(self._clio_agent_id, self._clio_variant, ledger, None)
         _stamp_variant_selection(pred, self._clio_variant, self._clio_agent_id, ledger)
+        if ledger.scores and self._clio_commit:
+            winning_index = max(ledger.scores, key=lambda pair: pair[1])[0]
+            forked = ledger.forks.get(winning_index)
+            if forked is not None:
+                variant_lines.record_winner(winning_index, forked)
         return pred
+
+
+def _new_run(variant: _RunScopedVariantMixin, threshold: float | None) -> VariantRun:
+    """Open the recorded run for one variant call."""
+    from clio_agent.gact.agents.variant_drafts import new_variants_id  # noqa: PLC0415
+
+    n = int(getattr(variant, "N", 0) or 0)
+    run = VariantRun(
+        variants_id=new_variants_id(),
+        session_id=_ctx.active_react_session(),
+        agent_id=variant._clio_agent_id,
+        turn_id=_ctx.active_turn_id(),
+        origin=variant._clio_origin,
+        strategy=variant._clio_variant,
+        judge="lm",
+        n=n,
+        n_requested=variant._clio_n_requested or n,
+        rubric=variant._clio_rubric,
+        threshold=threshold,
+        base_cut_id=variant._clio_fork_cut,
+    )
+    save_run(_ctx.active_app(), run)
+    return run
+
+
+def _fail_run(ledger: _VariantRunLedger) -> None:
+    """Record that every try of the run failed."""
+    if ledger.run is not None:
+        ledger.run.status = "failed"
+        save_run(_ctx.active_app(), ledger.run)
 
 
 class _RunScopedBestOfN(_RunScopedVariantMixin, dspy.BestOfN):
@@ -295,18 +433,13 @@ def _stamp_variant_selection(
         "winning_score": winning_score,
         "scores": [{"run_index": idx, "score": score} for idx, score in ledger.scores],
     }
-    try:
-        pred.variant_selection = selection
-    except Exception:  # noqa: BLE001 - never let observability metadata break a turn
-        logger.warning("variant.selection.stamp_failed agent=%s variant=%s", agent_id, variant)
-    logger.info(
-        "variant.selected agent=%s variant=%s winning_index=%d winning_score=%.3f tries=%d",
-        agent_id,
-        variant,
-        winning_index,
-        winning_score,
-        ledger.next_index,
-    )
+    run = ledger.run
+    if run is not None:
+        selection["variants_id"] = run.variants_id
+        run.selected_index, run.status = winning_index, "selected"
+        save_run(_ctx.active_app(), run)
+        emit_selected(run)
+    pred.variant_selection = selection
 
 
 def _clamp_score(raw: Any) -> float:
@@ -369,7 +502,7 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
             judged = dspy.Predict(signature)(**judge_inputs)
             score = _clamp_score(getattr(judged, "score", None))
         except Exception as exc:  # noqa: BLE001 - typed 0.0 degrade, never a crash
-            from clio_agent.lm.io_logging import LMOutputTruncatedError  # noqa: PLC0415
+            from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
 
             if isinstance(exc, LMOutputTruncatedError):
                 raise
@@ -380,12 +513,69 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
                 exc,
             )
             score = 0.0
-        if ledger is not None:
-            ledger.scores.append((run_index, score))
         logger.info("variant.reward agent=%s run_index=%d score=%.3f", agent_id, run_index, score)
         return score
 
     return scored_reward
+
+
+def strategy_module(strategy: Any, *, agent_id: str) -> dict[str, Any]:
+    """A spawn's ``strategy`` as the blueprint ``module`` variant it stands for, validated.
+
+    ``{variant, n, rubric, threshold, judge}``: ``rubric`` is what makes a try good (the
+    LM judge's instructions; shown to the user with a human judge). ``judge`` is ``lm``
+    (default) or ``user`` (the child pauses on a choice question, forwarded to the user).
+    ``n`` is capped at ``variants.max_n``; the request is kept as ``n_requested``.
+    Raises ``ValueError`` with the same messages a blueprint declaration gets.
+    """
+    from clio_agent.gact.agents.variant_drafts import capped_n  # noqa: PLC0415
+
+    if not isinstance(strategy, Mapping):
+        raise ValueError(f"strategy for {agent_id!r} must be a mapping, got {strategy!r}")
+    rubric = str(strategy.get("rubric") or "").strip()
+    if not rubric:
+        raise ValueError(f"strategy for {agent_id!r} requires a rubric (what makes a try good)")
+    module = {
+        "variant": strategy.get("variant"),
+        "n": strategy.get("n"),
+        "threshold": strategy.get("threshold", 1.0),
+        "judge": strategy.get("judge") or "lm",
+        "reward": {"instructions": rubric},
+    }
+    spec = parse_module_variant(module, agent_id=agent_id)
+    assert spec is not None  # a strategy always names its variant (validated above)
+    module["n_requested"] = spec.n
+    module["n"] = capped_n(spec.n)
+    return module
+
+
+def spawn_scope_with_strategy(
+    scope: Mapping[str, Any] | None, strategy: Any, *, agent_id: str
+) -> dict[str, Any] | None:
+    """The child session's scope metadata, carrying a validated spawn ``strategy``.
+
+    An invalid strategy is a typed refused spawn (``invalid_strategy``): no child exists.
+    """
+    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
+
+    if not strategy:
+        return None if scope is None else dict(scope)
+    try:
+        module = strategy_module(strategy, agent_id=agent_id)
+    except ValueError as exc:
+        raise SpawnError(str(exc), reason="invalid_strategy") from exc
+    return {**dict(scope or {}), "variant_strategy": module}
+
+
+def with_session_strategy(agent_def: "AgentDef") -> "AgentDef":
+    """``agent_def`` with the active session's spawn strategy as its module variant."""
+    sessions = getattr(getattr(_ctx.active_app(), "state", None), "sessions", None)
+    row = sessions.get(_ctx.active_session_id()) if sessions is not None else None
+    strategy = (getattr(row, "metadata", None) or {}).get("variant_strategy")
+    if not strategy:
+        return agent_def
+    module = {**dict(agent_def.module or {}), **dict(strategy)}
+    return agent_def.model_copy(update={"module": module})
 
 
 def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Module:
@@ -402,6 +592,10 @@ def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Modul
     if spec is None:
         return inner
     agent_id = str(getattr(agent_def, "id", "") or "")
+    if spec.judge == "user":
+        from clio_agent.gact.agents.variant_drafts import UserJudgedVariant  # noqa: PLC0415
+
+        return UserJudgedVariant(inner, spec, agent_id=agent_id)
     reward_fn = compile_reward_fn(spec, agent_id=agent_id)
     keyed = _RunKeyedModule(inner, agent_id=agent_id, variant=spec.variant)
     cls = _RunScopedBestOfN if spec.variant == "best_of_n" else _RunScopedRefine
@@ -413,4 +607,5 @@ def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Modul
     )
     wrapped._clio_variant = spec.variant
     wrapped._clio_agent_id = agent_id
+    wrapped._clio_rubric = spec.reward_instructions
     return wrapped

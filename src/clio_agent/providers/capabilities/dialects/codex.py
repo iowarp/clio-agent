@@ -1,15 +1,14 @@
 """Codex ``ThinkingSpec`` sourcing (model-capabilities brief Part 7 follow-up).
 
-Codex is a Python SDK session, not an HTTP dialect with a JSON request body --
-but its own catalog (the official SDK's ``Model`` rows, read by
-:mod:`clio_agent.providers.model_discovery.codex`) is REQUIRED to report
-``supportedReasoningEfforts``/``defaultReasoningEffort`` per model, so this is
+Codex's own catalog (the backend's account model list, read by
+:mod:`clio_agent.providers.model_discovery.codex`) reports the supported and
+default reasoning efforts per model, so this is
 real per-model account truth, not a guess. This module only translates that
 already-discovered data (dict rows, no I/O) into a
 :class:`~clio_agent.providers.capabilities.records.ThinkingSpec`; the actual
 read lives in ``model_discovery.codex``.
 
-``_CODEX_TO_LEVEL`` is dialect (transport) vocabulary -- the SDK's own effort
+``_CODEX_TO_LEVEL`` is dialect (transport) vocabulary -- Codex's own effort
 naming convention, applying identically to every codex model -- never a
 per-model fact, so it is allowed here per the ground rules.
 """
@@ -34,9 +33,9 @@ CODEX_TO_LEVEL: dict[str, str] = {
     "ultra": "ultra",
 }
 
-#: The inverse mapping (a CLIO level -> the SDK's own wire spelling), used to
+#: The inverse mapping (a CLIO level -> Codex's own wire spelling), used to
 #: fill ``ThinkingSpec.effort_by_level`` so the request builder never has to
-#: know the SDK's vocabulary itself.
+#: know Codex's vocabulary itself.
 LEVEL_TO_CODEX: dict[str, str] = {level: codex for codex, level in CODEX_TO_LEVEL.items()}
 
 
@@ -47,7 +46,7 @@ def _now_iso() -> str:
 def build_thinking_spec(raw: dict[str, Any]) -> Fact[ThinkingSpec]:
     """Build the ``ThinkingSpec`` fact from one discovered/overlay codex row.
 
-    ``raw`` carries ``supported_reasoning_efforts`` (a list of the SDK's own
+    ``raw`` carries ``supported_reasoning_efforts`` (a list of Codex's own
     effort strings) and ``default_reasoning_effort``, attached by
     :mod:`clio_agent.providers.model_discovery.codex` at discovery time and
     forwarded verbatim through the refresh overlay
@@ -67,7 +66,7 @@ def build_thinking_spec(raw: dict[str, Any]) -> Fact[ThinkingSpec]:
         ThinkingSpec(mechanism="effort_levels", levels=levels, effort_by_level=effort_by_level),
         "server_report",
         _now_iso(),
-        "codex SDK Model.supportedReasoningEfforts",
+        "codex model list supported_reasoning_efforts",
     )
 
 

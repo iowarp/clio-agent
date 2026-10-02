@@ -184,8 +184,12 @@ def claim_question_transition(
     selected_options: Sequence[str] | None = None,
     answer_metadata: Mapping[str, Any] | None = None,
     answered_by: str = "",
+    metadata_patch: Mapping[str, Any] | None = None,
 ) -> UserQuestion | None:
     """Atomically transition a PENDING question to ``new_status`` (first-wins).
+
+    ``metadata_patch`` is merged into the question's ``metadata`` in the same
+    transition (why it ended, e.g. a drafts question a new turn superseded).
 
     The single serialization point for every terminalization. Returns the updated row
     when THIS caller made the ``pending`` -> ``new_status`` transition; ``None`` when
@@ -214,6 +218,8 @@ def claim_question_transition(
             update["answer_metadata"] = dict(answer_metadata or {})
             if answered_by:
                 update["answered_by"] = answered_by
+        if metadata_patch:
+            update["metadata"] = {**row.metadata, **metadata_patch}
         updated = row.model_copy(update=update)
         record_user_question(app, updated)
     # The ONE serialization point is also the one place the armed expiry timer is

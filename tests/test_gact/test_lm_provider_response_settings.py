@@ -89,13 +89,14 @@ def test_catalog_row_serves_only_accepted_parameters(
 class _StubAgent:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.arc = SimpleNamespace(
-            get_cache_stats=lambda: {"hits": 0, "misses": 0, "hit_rate": 0.0, "capacity": 10}
+            set_highway_sink=lambda _f: None,
+            set_segment_op_logger=lambda _f: None,
+            get_cache_stats=lambda: {"hits": 0, "misses": 0, "hit_rate": 0.0, "capacity": 10},
         )
 
     def rebind_lms(self, cfg: Any) -> None:
         self._provider_config = cfg
         self._main_lm = SimpleNamespace(model=cfg.model, provider=cfg.provider, history=[])
-        self._planner_lm = self._main_lm
         self._dspy_adapter = None
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:

@@ -51,25 +51,6 @@ def test_chain_of_thought_reasoning_becomes_thinking_part(
     assert "hdf5_list_datasets" in thinking["text"]
 
 
-def test_react_trajectory_dict_becomes_thinking_part(tmp_path: Path) -> None:
-    from .conftest import complete_turn
-
-    pred = _Pred(
-        trajectory={
-            "step_0_thought": "first probe the schema",
-            "step_0_tool_name": "hdf5_list_datasets",
-            "step_1_thought": "now read /sim/temperature",
-            "step_1_tool_name": "hdf5_analyze_dataset",
-        }
-    )
-    with _client(tmp_path, pred) as c:
-        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        a = complete_turn(c, sid, "analyze")
-    thinking = next(p for p in a["parts"] if p["type"] == "thinking")
-    assert "first probe the schema" in thinking["text"]
-    assert "hdf5_analyze_dataset" in thinking["text"]
-
-
 def test_no_reasoning_skips_thinking_part(tmp_path: Path) -> None:
     from .conftest import complete_turn
 

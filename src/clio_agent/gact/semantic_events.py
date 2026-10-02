@@ -9,10 +9,7 @@ live SSE, durable trace logging, and user hooks.
 
 from __future__ import annotations
 
-import json
 import logging
-import queue
-import threading
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -65,12 +62,22 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 # See the four ReAct atoms:
 #   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
 #                    (carried on expert.response.completed for CoT orchestrators)
-#   b) tool call   } react.step.completed (thought + tool_name + tool_args
-#   c) tool result }                       + observation), for ReAct leaves
+#   b) tool calls   } react.step.completed (thought + tool_calls: every call of the
+#   c) tool results }                       step with its observation), for ReAct leaves
 #   d) extract     = expert.extract.completed (output + structured workflow_state)
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "react.step.completed",
+        # A compaction: the "Summarizing context" row, then its record (or failure).
+        "compaction.started",
+        "compaction.completed",
+        "compaction.failed",
+        # A BestOfN / Refine run: each try (started / ended), its live stream, then the
+        # selection with the scores or the user's pick -- or its close without one.
+        "variant.try",
+        "variant.try.delta",
+        "variant.selected",
+        "variant.closed",
         # Routing decisions are OBSERVABILITY events (the prototype's timeline
         # "routing_decision" rows), never transcript parts (clean-wire rule).
         "routing.decision",
@@ -517,7 +524,7 @@ def trace_line_from_events_content(
 # --- lm.token.delta: the live token stream on the highway (#693) --------------
 # The single LM-stream tap emits ``lm.token.delta`` events so the live token
 # stream rides the SAME highway as every other semantic event (one capture, N
-# projections) instead of being read ad-hoc by streamify + the watchdog drain.
+# projections) instead of being read ad-hoc by the watchdog drain.
 
 LM_TOKEN_DELTA = "lm.token.delta"
 
@@ -563,103 +570,6 @@ class NoopSemanticTraceBackend:
 
     def emit(self, event: SemanticEvent) -> None:
         return
-
-
-# ONE process-global writer thread drains ALL FileSemanticTraceBackend instances.
-# Why global + started at backend CONSTRUCTION (not per-emit): starting a thread
-# from the event-loop thread DURING a turn cancels the turn task under the
-# anyio/TestClient portal; constructing the backend happens at build_app (off the
-# turn loop), so the thread is created safely once. A single shared thread also
-# avoids one-thread-per-app (the trace is on by default) blowing up under tests.
-_TRACE_WRITE_QUEUE: "queue.Queue[tuple[Path, SemanticEvent] | None]" = queue.Queue()
-_TRACE_WRITER_THREAD: threading.Thread | None = None
-_TRACE_WRITER_LOCK = threading.Lock()
-
-
-def _trace_writer_loop() -> None:
-    while True:
-        item = _TRACE_WRITE_QUEUE.get()
-        try:
-            if item is None:  # wake/no-op; the shared writer is never stopped
-                continue
-            path, event = item
-            try:
-                # Serialize HERE (off the turn loop): json.dumps of a full event
-                # (reasoning + tool results) is non-trivial CPU; doing it on the
-                # caller's event-loop thread destabilizes turns under the portal.
-                line = json.dumps(event.to_dict("full"), sort_keys=True)
-                path.parent.mkdir(parents=True, exist_ok=True)
-                with path.open("a", encoding="utf-8") as f:
-                    f.write(line)
-                    f.write("\n")
-            except Exception as exc:  # noqa: BLE001 - a write error must not kill the writer
-                from clio_agent.runtime import trace  # noqa: PLC0415
-
-                trace.event("TRACE-WRITE", "durable trace write failed (event dropped): %r", exc)
-        finally:
-            _TRACE_WRITE_QUEUE.task_done()
-
-
-def _ensure_trace_writer() -> None:
-    """Start the shared writer once, OFF the turn event loop (backend init time)."""
-    global _TRACE_WRITER_THREAD  # noqa: PLW0603
-    if _TRACE_WRITER_THREAD is not None:
-        return
-    with _TRACE_WRITER_LOCK:
-        if _TRACE_WRITER_THREAD is None:
-            thread = threading.Thread(
-                target=_trace_writer_loop, name="SemanticTraceWriter", daemon=True
-            )
-            thread.start()
-            _TRACE_WRITER_THREAD = thread
-
-
-class FileSemanticTraceBackend:
-    """Append semantic events as JSONL, written OFF the calling thread.
-
-    If ``path`` is a directory, events are split into
-    ``<session_id>.semantic.jsonl`` files. If it is a file path, all
-    events append to that file.
-
-    ``emit`` serializes the FULL event on the caller (cheap CPU) then enqueues to
-    the shared writer thread, so the turn event loop is never blocked by file I/O
-    (the trace is ON by default). ``flush`` blocks until the queue drains
-    (tests/readers); ``close`` drains too (the shared daemon writer lives for the
-    process). The durable trace always captures the FULL event; redaction/capping
-    is a per-consumer projection applied elsewhere, never here.
-    """
-
-    name = "file"
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        _ensure_trace_writer()
-
-    # A configured path is a single JSONL file ONLY when it carries a recognised
-    # trace-file extension; otherwise it is a directory of per-session files.
-    # Plain ``Path.suffix`` truthiness misfires on directory paths that contain
-    # dots -- e.g. a model-named grind dir ".../trace_..._qwopus3.5-9b-v3_sandiego"
-    # whose ``.suffix`` is ".5-9b-v3_sandiego" -- which made the writer try to open
-    # a directory as a file and silently drop every event (empty trace).
-    _FILE_SUFFIXES = frozenset({".jsonl", ".json", ".ndjson", ".log"})
-
-    def _path_for(self, event: SemanticEvent) -> Path:
-        if self.path.suffix.lower() in self._FILE_SUFFIXES:
-            return self.path
-        return self.path / f"{event.session_id}.semantic.jsonl"
-
-    def emit(self, event: SemanticEvent) -> None:
-        # Near-zero work on the caller (which may be the turn's event-loop thread):
-        # just resolve the path + enqueue. Serialization + I/O happen in the writer.
-        _TRACE_WRITE_QUEUE.put((self._path_for(event), event))
-
-    def flush(self) -> None:
-        """Block until all enqueued events have been written (tests/readers)."""
-        _TRACE_WRITE_QUEUE.join()
-
-    def close(self) -> None:
-        """Drain pending writes (the shared daemon writer lives for the process)."""
-        _TRACE_WRITE_QUEUE.join()
 
 
 def build_trace_backend(default_root: Path) -> SemanticTraceBackend:

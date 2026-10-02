@@ -5,7 +5,7 @@ Owner module for HOW the ``plan_workflow`` / ``plan_small`` enter_mode VARIANTS
 mode and record a ``plan_variant`` tag on ``session.metadata`` (:data:`PLAN_VARIANT_METADATA_KEY`);
 before P1.6a the tag was consumed NOWHERE, so the variants changed nothing. This module is that
 consumer: it maps a recorded tag to a :class:`PlanVariantGuidance` — the variant-specific pieces the
-plan-mode reminder composer (:func:`clio_agent.gact.plan_mode.inject_plan_mode_reminder`) plugs into
+plan-mode reminder composer (:func:`clio_agent.gact.plan_mode.plan_mode_reminder`) plugs into
 the per-turn plan-mode reminder.
 
 Three postures:
@@ -43,7 +43,7 @@ PLAN_VARIANT_SMALL = "small"
 
 #: Default full-reminder cadence (turns between full re-injects) — the SINGLE source of truth for
 #: the variant-less plan session's cadence, carried verbatim by :data:`DEFAULT_PLAN_VARIANT_GUIDANCE`
-#: and consumed by ``plan_mode.inject_plan_mode_reminder`` via ``guidance.full_interval`` (there is
+#: and consumed by ``plan_mode.plan_mode_reminder`` via ``guidance.full_interval`` (there is
 #: no peer constant to keep in agreement).
 _DEFAULT_FULL_INTERVAL = 10
 

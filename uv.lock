@@ -500,7 +500,7 @@ wheels = [
 
 [[package]]
 name = "clio-agent"
-version = "0.9.4.23"
+version = "0.9.4.24"
 source = { editable = "." }
 dependencies = [
     { name = "clio-schemas" },
@@ -519,7 +519,6 @@ dependencies = [
     { name = "msgspec" },
     { name = "numpy" },
     { name = "odfpy" },
-    { name = "openai-codex" },
     { name = "openai-codex-cli-bin" },
     { name = "openpyxl" },
     { name = "packaging" },
@@ -612,7 +611,7 @@ requires-dist = [
     { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
     { name = "clio-schemas", specifier = "==0.5.1" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
-    { name = "dspy", specifier = "==3.3.0b1" },
+    { name = "dspy", specifier = "==3.4.0" },
     { name = "fastapi", specifier = ">=0.140" },
     { name = "fastmcp", specifier = "==4.0.0b5" },
     { name = "fastmcp-tasks", specifier = "==4.0.0b5" },
@@ -632,7 +631,6 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "numpy", marker = "extra == 'optimizers'", specifier = ">=1.24.0" },
     { name = "odfpy", specifier = ">=1.4.1,<2" },
-    { name = "openai-codex", specifier = ">=0.157.1" },
     { name = "openai-codex-cli-bin", specifier = ">=0.157.1" },
     { name = "openpyxl", specifier = ">=3.1.5,<4" },
     { name = "packaging", specifier = ">=24.0" },
@@ -1049,7 +1047,7 @@ wheels = [
 
 [[package]]
 name = "dspy"
-version = "3.3.0b1"
+version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1067,9 +1065,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/c5/a0f7fce02ca671c0763bd11a6ce3c2aa3f0f6eac1c36a4ca2395b9e78ecb/dspy-3.3.0b1.tar.gz", hash = "sha256:dd24e554f46015406f8c94489d6a5865f3daae73d739e86725139f5f448d71bb", size = 322305, upload-time = "2026-05-28T01:09:05.255Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/1b/5b1964b0f1299aaca2b98300d73d972046ab70edb53c47674d6ace3c1bf1/dspy-3.4.0.tar.gz", hash = "sha256:4dea089c6bd1f8d314e1095e7f64b4b4ff64bb8a09549efee026c0a609f08c16", size = 887770, upload-time = "2026-09-25T04:04:25.439Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/6c/27fdddb63d8f9fdb2cfe6528e1bb1a85e892979e1256bce349ff6a26bf5b/dspy-3.3.0b1-py3-none-any.whl", hash = "sha256:1e6e34c9ed8e748ec216d0d64e35506c53a4c86adac2f846f957546c05a93871", size = 377844, upload-time = "2026-05-28T01:09:04.021Z" },
+    { url = "https://files.pythonhosted.org/packages/17/96/31628d4231b5dd7edbe9eaf5c975d1055f4b79b337062a1f957dca6dd931/dspy-3.4.0-py3-none-any.whl", hash = "sha256:36de329ecdaf18e31977e26c61b587caa470a34f574f2fe6cb7f4c82bcbf97cc", size = 987510, upload-time = "2026-09-25T04:04:23.915Z" },
 ]
 
 [[package]]
@@ -1451,11 +1449,11 @@ wheels = [
 
 [[package]]
 name = "gepa"
-version = "0.1.1"
+version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e4/62/10f5a8f24c075e3b64f952be73ba8e15f0055584bbcdf9ce48d754a36679/gepa-0.1.1.tar.gz", hash = "sha256:643fda01c23de4c9f01306e01305dd69facc29bcb34ad59e4cd07e6621d34aa1", size = 272251, upload-time = "2026-03-16T10:17:53.131Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/95/56/925779e5690971f1b022f7d107caf015c33ec09560261273ec137e23a8f2/gepa-0.1.4.tar.gz", hash = "sha256:6dd153a676ae5481764860d19286a9c0e8ddb5ef70d7f13044faf24978bdb6b8", size = 351343, upload-time = "2026-07-15T14:53:59.929Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/b7/8c72dedbb950d88a6f64588fcbc590d2a21e2b9f19b36aa6c5016c54ec75/gepa-0.1.1-py3-none-any.whl", hash = "sha256:71ead7c591eafcc727b83509cdc4182f20264800a6ddf8520d61419daeb47466", size = 244246, upload-time = "2026-03-16T10:17:51.922Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/77/5b3a281cfd9caaa9e68349b434cf27f1ca448003ee0067a1ae2184dc52d1/gepa-0.1.4-py3-none-any.whl", hash = "sha256:12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f1a3c353f532", size = 290167, upload-time = "2026-07-15T14:53:58.422Z" },
 ]
 
 [[package]]
@@ -2756,20 +2754,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/78/60/d4219875289b11d2c2f7da93c36283da224a2e55865ed865ab64e0ce9217/openai-2.45.0.tar.gz", hash = "sha256:10d34ca9c5643bce775852fddbfc172505cb1d4de1ccd101696c3ecff358765d", size = 1109653, upload-time = "2026-07-09T18:02:44.091Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/b0/2291689e3ec4723fbf5bbf3b54afcd7b160f9ddc98ca7aedfd0132af5677/openai-2.45.0-py3-none-any.whl", hash = "sha256:5df105f5f8c9b711fcb9d06d2d3888cebc82506db216484c14a4e53cdf651777", size = 1629470, upload-time = "2026-07-09T18:02:42.21Z" },
-]
-
-[[package]]
-name = "openai-codex"
-version = "0.157.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "openai-codex-cli-bin" },
-    { name = "packaging" },
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/b5/b50b061d575bd76fa616fcfb2b5e732bccf816d0429e68bd47636dc16511/openai_codex-0.157.1.tar.gz", hash = "sha256:7c371c3be7722ffe36b9e8d823c05e3339a86b2f13403cc08fc2eaccf658d480", size = 89397, upload-time = "2026-09-26T01:14:34.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/9e/8620c10d9d76d21920162e81fa2d1bee9fbf55a3e66a7d9ba6d1f95a11d4/openai_codex-0.157.1-py3-none-any.whl", hash = "sha256:73a5051f9d68ab0c3e350e217664c2e46bb5aa10bfb3232144688bf600d65fbc", size = 97538, upload-time = "2026-09-26T01:14:33.348Z" },
 ]
 
 [[package]]

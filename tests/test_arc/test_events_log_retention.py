@@ -55,25 +55,13 @@ class TestTraceDisabledRetainsEventsLog:
         set_config("provenance.agentic.providers", [])
         arc = _arc_with_one_event(tmp_path)
 
-        result = arc.release_session("s1")
+        arc.release_session("s1")
 
         # The only copy of the event log SURVIVES the release (#762)...
         segs = arc.render_segments("s1", EVENTS_SCOPE)
         assert len(segs) == 1
         assert segs[0].content["event_type"] == "turn.started"
         # ...and nothing was erased from the live projection's substrate.
-        assert result["live"] == 0
-
-    def test_release_session_logs_retention_reason(
-        self, tmp_path, monkeypatch, hermetic_conf, caplog
-    ):
-        set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
-        arc = _arc_with_one_event(tmp_path)
-
-        with caplog.at_level("WARNING", logger="clio_agent.arc.memory"):
-            arc.release_session("s1")
-
-        assert any("reason=durable_trace_disabled" in r.message for r in caplog.records)
 
     def test_flush_and_release_retains_events_log(self, tmp_path, monkeypatch, hermetic_conf):
         set_config("provenance.agentic.providers", [])
@@ -88,23 +76,6 @@ class TestTraceDisabledRetainsEventsLog:
 
 class TestTraceEnabledStillErases:
     """With a durable file trace enabled, the historical erase behavior runs."""
-
-    def test_release_session_erases_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-        arc = _arc_with_one_event(tmp_path)
-
-        result = arc.release_session("s1")
-
-        assert arc.render_segments("s1", EVENTS_SCOPE) == []
-        assert result["live"] == 1  # one turn erased (historical contract)
-
-    def test_flush_and_release_erases_events_log(self, tmp_path, monkeypatch, hermetic_conf):
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-        arc = _arc_with_one_event(tmp_path)
-
-        arc.flush_and_release()
-
-        assert arc.render_segments("s1", EVENTS_SCOPE) == []
 
 
 def _multi_turn(sid: str = "s1", n: int = 5) -> list[SemanticEvent]:
@@ -141,31 +112,7 @@ class TestRetentionSpansTheWholeChunkFamily:
         arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
         set_config("provenance.agentic.providers", [])
 
-        result = arc.release_session("s1")
+        arc.release_session("s1")
 
         # Every chunk of the only copy survives (#762) and nothing was erased.
         assert arc._live.events_scopes("s1") == ["_events", "_events/2", "_events/3"]
-        assert result["live"] == 0
-
-    def test_release_erases_all_chunks_when_trace_enabled(
-        self, tmp_path, monkeypatch, hermetic_conf
-    ):
-        arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-
-        arc.release_session("s1")
-
-        # The WHOLE family is gone (not just chunk 1).
-        assert arc._live.events_scopes("s1") == []
-        for scope in ("_events", "_events/2", "_events/3"):
-            assert arc.render_segments("s1", scope) == []
-
-    def test_flush_and_release_erases_all_chunks_when_trace_enabled(
-        self, tmp_path, monkeypatch, hermetic_conf
-    ):
-        arc = self._arc_with_three_chunks(tmp_path, monkeypatch)
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-
-        arc.flush_and_release()
-
-        assert arc._live.events_scopes("s1") == []

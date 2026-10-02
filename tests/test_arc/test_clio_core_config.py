@@ -155,7 +155,8 @@ def test_generator_respects_env_ram_cap(monkeypatch, tmp_path):
 
 
 def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
-    """An existing cte.yaml (even a stale 0g one) is left byte-for-byte untouched."""
+    """An existing cte.yaml keeps every user value (even a stale 0g cap); the only change
+    is the durability line, without which clio-core keeps nothing across a restart."""
     monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
     monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
     cte_dir = tmp_path / "cte"
@@ -167,7 +168,8 @@ def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
 
     clio_core_config.default_cte_config_path()
     # Not regenerated: the user's explicit (even if unbounded) value survives.
-    assert (cte_dir / "cte.yaml").read_text(encoding="utf-8") == stale
+    upgraded = (cte_dir / "cte.yaml").read_text(encoding="utf-8")
+    assert upgraded.replace('        persistence_level: "temporary"\n', "") == stale
     assert _ram_tier_cap((cte_dir / "cte.yaml").read_text(encoding="utf-8")) == "0g"
 
 

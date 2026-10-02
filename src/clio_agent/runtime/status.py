@@ -229,11 +229,9 @@ class RuntimeProbe:
         api_error: str | None = None,
         include_process_census: bool = True,
     ) -> RuntimeReport:
-        """Collect all currently supported integration statuses.
-
-        ``include_process_census=False`` skips the expensive live process-census rows
-        (a ~10s cold psutil walk) for callers serving the census from a background cache.
-        """
+        """Collect all currently supported integration statuses (``include_process_census=False``
+        skips the ~10s cold psutil census rows for callers serving them from a cache)."""
+        from clio_agent.compaction_prompt import probe_compaction_prompt  # noqa: PLC0415
         from clio_agent.runtime import sandbox_conformance as _sconf  # noqa: PLC0415
         from clio_agent.runtime.clio_core_health import probe_clio_core_health  # noqa: PLC0415
         from clio_agent.runtime.mcp_launcher import (  # noqa: PLC0415
@@ -257,6 +255,7 @@ class RuntimeProbe:
             *probe_mcp_yaml_declarations(env=self.env, discovered=True),  # ... this reuses
             probe_sandbox(),
             _sconf.probe_sandbox_conformance(),
+            probe_compaction_prompt(),
             *probe_process_tree(include_live_census=include_process_census),
         ]
         return RuntimeReport(integrations=integrations)
@@ -355,7 +354,7 @@ class RuntimeProbe:
             probe_cli_transport,
         )
 
-        # Transport-aware probe (#899): SDK pseudo-schemes (codex://sdk, claude-code://sdk) have no
+        # Transport-aware probe (#899): pseudo-schemes (codex://direct, claude-code://sdk) have no
         # HTTP /models endpoint — an HTTP GET yields "No connection adapters were found" and
         # reports the provider UNAVAILABLE while turns run fine. Probe the local CLI the transport
         # spawns instead of HTTP-GETting a pseudo-scheme.
@@ -597,67 +596,45 @@ class RuntimeProbe:
     def probe_arc(self) -> IntegrationStatus:
         """Probe the ARC persistence backend that is actually selected.
 
-        clio-core (the default backend) is probed for real: pip ``iowarp_core``
-        presence plus shared-daemon liveness — a broken clio-core install goes red
-        instead of green-on-a-hardcoded-'local' (#800). The explicit local
-        backend keeps the directory writability check.
+        clio-core is the only store: pip ``iowarp_core`` presence plus shared-daemon
+        liveness -- a broken clio-core install goes red (#800).
         """
         backend, source = self._arc_backend()
-        if backend == "local":
-            return self._probe_arc_local(source)
         if backend == "cte":
             return self._probe_arc_clio_core(source)
         return IntegrationStatus(
             name="arc",
             state=IntegrationState.MISCONFIGURED,
-            summary=f"Unknown CLIO_ARC_STORE {backend!r}; expected 'cte' or 'local'.",
+            summary=f"Unknown CLIO_ARC_STORE {backend!r}; the only ARC store is clio-core ('cte').",
             config_source=source,
-            next_action="Set CLIO_ARC_STORE to 'cte' or 'local'.",
+            next_action="Unset CLIO_ARC_STORE (clio-core is the only store).",
             fallback="none",
             details={"reason": "unknown_arc_backend", "configured_backend": backend},
             required=True,
         )
 
     def _probe_arc_clio_core(self, source: str) -> IntegrationStatus:
-        """Probe the clio-core backend (pip runtime + shared daemon)."""
+        """Probe the clio-core backend (pip runtime + shared daemon); without the binding
+        this process runs in the loud History mode, a DEGRADED row (never a 503)."""
+        from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
+        from clio_agent.runtime.clio_core_health import (  # noqa: PLC0415
+            daemon_not_listening_row,
+            history_mode_row,
+        )
+
         runtime = self._probe_clio_core_runtime()
         details = {"storage_mode": "cte", **runtime.to_details()}
         endpoint = f"127.0.0.1:{runtime.port}"
-        if not runtime.installed:
-            return IntegrationStatus(
-                name="arc",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "ARC is configured for the clio-core backend but the "
-                    "iowarp_core pip package is not installed."
-                ),
-                config_source=source,
-                next_action=(
-                    "Install the iowarp-core pip package, or set CLIO_ARC_STORE=local "
-                    "to deliberately use the LocalFS backend."
-                ),
-                endpoint=endpoint,
-                fallback="none",
-                details=details,
-                required=True,
-            )
+        if (mode := history_mode.resolve()).is_history:
+            return history_mode_row("arc", mode, source, endpoint, details)
         if not runtime.daemon_alive:
-            return IntegrationStatus(
-                name="arc",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "ARC is configured for the clio-core backend but the shared "
-                    f"clio-core daemon is not listening on port {runtime.port}."
-                ),
-                config_source=source,
-                next_action=(
-                    "Start the shared clio-core daemon (clio start / clio_run start) "
-                    f"or set CLIO_ARC_STORE=local; see {runtime.log_path}."
-                ),
+            return daemon_not_listening_row(
+                "arc",
+                source=source,
                 endpoint=endpoint,
-                fallback="none",
                 details=details,
-                required=True,
+                port=runtime.port,
+                log_path=str(runtime.log_path),
             )
         # 905: "semantic-search" is real only once the indexer chimod is composed
         # (currently never -- absent from every published 2.2.1 wheel binary).
@@ -673,8 +650,8 @@ class RuntimeProbe:
         else:
             issue = clio_core_config.UPSTREAM_INDEXER_ISSUE
             summary += (
-                f" Semantic (BM25) scope search is degraded to zero hits -- the clio_cte_indexer "
-                f"chimod is not composed (clio-core#905: {issue})."
+                f" Semantic (BM25) scope search is unavailable (typed search_unavailable) -- the "
+                f"clio_cte_indexer chimod is not composed (clio-core#905: {issue})."
             )
             details = {**details, "reason": clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT}
             details["upstream"] = issue
@@ -717,50 +694,6 @@ class RuntimeProbe:
             "runtime.api_base", env="CLIO_API_BASE", default="", cast=conf.as_str
         ).strip()
         return endpoint, self._source_label("runtime.api_base", "CLIO_API_BASE", "")
-
-    def _probe_arc_local(self, backend_source: str) -> IntegrationStatus:
-        """Probe local ARC persistence path readiness (explicit local backend)."""
-        base_dir, dir_source = self._data_dir()
-        arc_dir = base_dir / "arc"
-        source = f"{backend_source}; {dir_source}"
-        try:
-            arc_dir.mkdir(parents=True, exist_ok=True)
-            probe_file = arc_dir / ".doctor_probe"
-            probe_file.write_text("ok", encoding="utf-8")
-            probe_file.unlink(missing_ok=True)
-        except Exception as exc:  # noqa: BLE001 - surfaced in IntegrationStatus (degraded doctor row)
-            return IntegrationStatus(
-                name="arc",
-                state=IntegrationState.UNAVAILABLE,
-                summary=f"ARC local persistence is not writable: {exc}",
-                config_source=source,
-                next_action="Set CLIO_DATA_DIR to a writable directory.",
-                endpoint=str(arc_dir),
-                fallback="none",
-                capabilities=["local-persistence"],
-                details={
-                    "storage_mode": "local",
-                    "reason": "arc_dir_not_writable",
-                    "error": str(exc),
-                },
-                required=True,
-            )
-
-        return IntegrationStatus(
-            name="arc",
-            state=IntegrationState.DEGRADED,
-            summary=(
-                "DEGRADED TO LOCAL BACKEND: underperforming fallback store with "
-                "limited support for clio-agent semantics (unit tests only)."
-            ),
-            config_source=source,
-            next_action="Set CLIO_ARC_STORE=cte (or unset it) for the real clio-core substrate.",
-            endpoint=str(arc_dir),
-            fallback="local",
-            capabilities=["conversations", "invocations", "metrics", "variants"],
-            details={"storage_mode": "local", "reason": "local_backend_underperforming"},
-            required=True,
-        )
 
     def probe_gateway(self) -> IntegrationStatus:
         """Probe FastMCP gateway tool discovery."""
@@ -1031,63 +964,31 @@ class RuntimeProbe:
         docker/quickstart YAML): it probed a deployment shape that no longer exists, so it stayed
         green while the real runtime was broken. The production runtime is the pip ``iowarp_core``
         package plus the shared ``clio_run`` daemon — the same reality :meth:`probe_arc` gates on
-        for the clio-core backend (one shared helper, no duplication). The row is required exactly
-        when the ARC backend is ``cte``.
+        (one shared helper, no duplication). clio-core is the only store, so the row is always
+        required.
         """
+        from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
+        from clio_agent.runtime.clio_core_health import (  # noqa: PLC0415
+            daemon_not_listening_row,
+            history_mode_row,
+        )
+
         backend, backend_source = self._arc_backend()
-        required = backend == "cte"
         runtime = self._probe_clio_core_runtime()
         source = f"pip:iowarp_core; {backend_source}"
         endpoint = f"127.0.0.1:{runtime.port}"
         details = {"arc_backend": backend, **runtime.to_details()}
-
-        if not runtime.installed:
-            if not required:
-                return IntegrationStatus(
-                    name="clio_core",
-                    state=IntegrationState.SKIPPED,
-                    summary=(
-                        "clio-core runtime (pip iowarp_core) is not installed; the ARC "
-                        f"backend is {backend!r} so it is not required."
-                    ),
-                    config_source=source,
-                    next_action=(
-                        "Install the iowarp-core pip package and set CLIO_ARC_STORE=cte "
-                        "to enable the clio-core runtime."
-                    ),
-                    details=details,
-                    required=False,
-                )
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "clio-core runtime is required (ARC backend 'cte') but the "
-                    "iowarp_core pip package is not installed."
-                ),
-                config_source=source,
-                next_action=("Install the iowarp-core pip package, or set CLIO_ARC_STORE=local."),
-                endpoint=endpoint,
-                details=details,
-                required=True,
-            )
+        if (mode := history_mode.resolve()).is_history:
+            return history_mode_row("clio_core", mode, source, endpoint, details)
 
         if not runtime.daemon_alive:
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "iowarp_core is installed but the shared clio-core daemon is not "
-                    f"listening on port {runtime.port}."
-                ),
-                config_source=source,
-                next_action=(
-                    "Start the shared clio-core daemon (clio start / clio_run start); "
-                    f"see {runtime.log_path}."
-                ),
+            return daemon_not_listening_row(
+                "clio_core",
+                source=source,
                 endpoint=endpoint,
                 details=details,
-                required=required,
+                port=runtime.port,
+                log_path=str(runtime.log_path),
             )
 
         return IntegrationStatus(
@@ -1102,7 +1003,7 @@ class RuntimeProbe:
             endpoint=endpoint,
             capabilities=["pip-runtime", "shared-daemon"],
             details=details,
-            required=required,
+            required=True,
         )
 
     def _load_lm_config(self) -> tuple[LMProviderConfig, str]:

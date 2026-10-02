@@ -1,0 +1,88 @@
+---
+title: Uninstall
+description: Remove CLIO from your machine, and find the few things it leaves behind.
+---
+
+import { Aside, CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
+
+## Remove the command-line install
+
+```sh
+clio uninstall
+```
+
+This stops the backend, removes the `clio` command, and deletes the install folder (the backend, interfaces, web bundle, and logs). It lists what it will remove and asks `Proceed? [y/N]`. Your configuration and sessions are kept.
+
+| Option | Effect |
+|---|---|
+| `--yes` or `-y` | Skip the confirmation prompt. On Windows, use `-Yes`. |
+| `--purge` | Also delete CLIO's configuration and session folders (see the caution below). On Windows, use `-Purge`. |
+
+<Tabs syncKey="os">
+<TabItem label="macOS and Linux">
+
+```sh
+clio uninstall --purge --yes
+```
+
+</TabItem>
+<TabItem label="Windows">
+
+```powershell
+clio uninstall -Purge -Yes
+```
+
+</TabItem>
+</Tabs>
+
+If you installed with a custom `CLIO_PREFIX` or `CLIO_BIN_DIR`, set the same values before uninstalling.
+
+### If the clio command is not found
+
+Run the uninstall script from the install folder.
+
+<Tabs syncKey="os">
+<TabItem label="macOS and Linux">
+
+```sh
+~/.local/share/clio/uninstall.sh
+```
+
+It accepts the same `--yes` and `--purge` options.
+
+</TabItem>
+<TabItem label="Windows">
+
+```powershell
+& "$env:LOCALAPPDATA\clio\uninstall.ps1"
+```
+
+It accepts the same `-Yes` and `-Purge` options.
+
+</TabItem>
+</Tabs>
+
+## What stays behind
+
+<Aside type="caution">
+`--purge` removes `~/.config/clio-agent` and `~/.config/gact`. On macOS and Windows, CLIO's real configuration folder is somewhere else, so `--purge` does not delete it. Delete it by hand if you want it gone.
+</Aside>
+
+Delete these yourself if you want a completely clean machine:
+
+- **Your user configuration folder** on macOS and Windows, which holds sessions, saved API keys, installed blueprints, and settings:
+  - macOS: `~/Library/Application Support/clio-agent`
+  - Windows: `%LOCALAPPDATA%\clio-agent`
+  - If you set `CLIO_USER_DIR`, delete that folder.
+- **Cache and data folders** that CLIO keeps beside the configuration folder, such as `~/.cache/clio-agent` and `~/.local/share/clio-agent` on Linux, and `~/Library/Caches/clio-agent` on macOS. The cache is safe to delete.
+- **Workspace `.clio` folders.** Each workspace you used has one in its root, with that workspace's sessions and settings. Uninstall never touches them.
+- **clio-kit**, the tool launcher the install script added through uv. Remove it with `uv tool uninstall clio-kit`.
+- **The desktop app.** Uninstall it the usual way for your system, such as Apps and features on Windows, dragging it out of Applications on macOS, or your package manager on Linux. It is separate from the command-line install.
+- **uv, Python, and Node.js.** CLIO does not remove tools you installed yourself, including the optional `@openai/codex` package used by the sandbox.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Install" description="Install CLIO again." href="/docs/install/" />
+  <LinkCard title="Troubleshooting" description="Try fixing a problem before you remove anything." href="/docs/troubleshooting/" />
+</CardGrid>

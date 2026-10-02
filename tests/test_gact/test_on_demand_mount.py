@@ -16,6 +16,9 @@ from clio_agent.gact.agents.builders import _resolve_declared_tools_with_on_dema
 from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.tools.mcp_config import MCPServerSpec
 
+#: Hang detector for the overlap wait, never a timing budget.
+_OVERLAP_BACKSTOP_S = 30.0
+
 
 class _FakeTool:
     def __init__(self, name: str) -> None:
@@ -39,8 +42,7 @@ class _FakeExecutor:
         del namespace
         self._mcp_tools.update(tools)
 
-    def prepare_namespace(self, namespace: str, *, timeout: float | None = None) -> None:
-        del timeout
+    def prepare_namespace(self, namespace: str) -> None:
         assert namespace in self._clio_namespace_specs
         self.prepared_namespaces.add(namespace)
 
@@ -53,6 +55,77 @@ def _spec(name: str) -> MCPServerSpec:
 
 
 class TestOnDemandMount:
+    def test_a_listed_namespace_needs_no_connection_before_the_first_model_call(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Owner, 2026-09-30: the first turn waits on nothing it does not need. The
+        request is built from the listing; a server connects when a call needs it."""
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo")}, preloaded={"geo_geocode": _FakeTool("g")}
+        )
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_discovery.ensure_namespace",
+            lambda ns, spec: pytest.fail("a listed namespace is not listed again"),
+        )
+
+        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
+            executor, ["geo_geocode"]
+        )
+
+        assert "geo_geocode" in available
+        assert mount_failures == {}
+        assert executor.prepared_namespaces == set()
+
+    def test_a_cold_namespace_is_listed_not_connected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        executor = _FakeExecutor(declared_specs={"geo": _spec("geo")}, preloaded={})
+        monkeypatch.setattr(
+            "clio_agent.tools.mcp_discovery.ensure_namespace",
+            lambda ns, spec: {"geo_geocode": _FakeTool("geo_geocode")},
+        )
+
+        available, _ = _resolve_declared_tools_with_on_demand_mount(executor, ["geo_geocode"])
+
+        assert "geo_geocode" in available
+        assert executor.prepared_namespaces == set()
+
+    def test_cold_namespaces_are_listed_at_the_same_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both cold servers start at once: each listing is still in flight when the
+        other begins. Proven by overlap, not by a wall-clock sum a loaded runner skews."""
+        import threading
+
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo"), "ndp": _spec("ndp")}, preloaded={}
+        )
+        lock = threading.Lock()
+        in_flight: list[str] = []
+        both_in_flight = threading.Event()
+        overlapped: list[str] = []
+
+        def slow_listing(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+            del spec
+            with lock:
+                in_flight.append(namespace)
+                if len(in_flight) == 2:
+                    both_in_flight.set()
+            # A server's start-up, which lasts until the other listing has begun. The
+            # bound is only a hang detector: a serial listing never sees the other.
+            if both_in_flight.wait(timeout=_OVERLAP_BACKSTOP_S):
+                overlapped.append(namespace)
+            return {f"{namespace}_x": _FakeTool(f"{namespace}_x")}
+
+        monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", slow_listing)
+        available, failures = _resolve_declared_tools_with_on_demand_mount(
+            executor, ["geo_x", "ndp_x"]
+        )
+
+        assert {"geo_x", "ndp_x"} <= set(available)
+        assert failures == {}
+        assert sorted(overlapped) == ["geo", "ndp"], f"listed one after another: {in_flight}"
+
     def test_declared_but_unmounted_tool_is_mounted_on_demand(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -128,28 +201,6 @@ class TestOnDemandMount:
         assert "geo_geocode" not in available
         assert mount_failures["geo"]
         assert attempts == [1]
-
-    def test_cached_listing_still_prepares_the_workspace_connection(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        executor = _FakeExecutor(
-            declared_specs={"geo": _spec("geo")},
-            preloaded={"geo_geocode": _FakeTool("geo_geocode")},
-        )
-        calls: list[str] = []
-        monkeypatch.setattr(
-            "clio_agent.tools.mcp_discovery.ensure_namespace",
-            lambda ns, spec: calls.append(ns) or {},
-        )
-
-        available, mount_failures = _resolve_declared_tools_with_on_demand_mount(
-            executor, ["geo_geocode"]
-        )
-
-        assert calls == ["geo"], "a listing cache hit is not a persistent workspace connection"
-        assert executor.prepared_namespaces == {"geo"}
-        assert "geo_geocode" in available
-        assert mount_failures == {}
 
     def test_prepared_tool_never_retriggers_mount(self, monkeypatch: pytest.MonkeyPatch) -> None:
         executor = _FakeExecutor(

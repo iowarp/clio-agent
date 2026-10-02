@@ -49,7 +49,7 @@ def _make_hanging_client():
 
     Simulates a hung MCP server: the connection opens fine but the first
     ``list_tools`` round-trip blocks forever, exercising the reconnect
-    route's ``asyncio.wait_for`` timeout guard (gap-523).
+    route's progress guard (gap-523, #1577): no server work -> typed 504.
     """
 
     class _HangingClient:
@@ -249,8 +249,8 @@ def test_reconnect_timeout_returns_504_and_keeps_registry_intact(
     blanked)."""
 
     sid = _seed_server(client, tools=["known_tool"])
-    # Tiny timeout so the hanging probe is cut short immediately.
-    monkeypatch.setenv("CLIO_GACT_MCP_RECONNECT_TIMEOUT_S", "0.2")
+    # A short no-progress window: the hung probe spawned no server that works.
+    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "0.2")
     monkeypatch.setattr("fastmcp.Client", _make_hanging_client())
 
     resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
@@ -258,7 +258,7 @@ def test_reconnect_timeout_returns_504_and_keeps_registry_intact(
     assert resp.status_code == 504, resp.text
     body = resp.json()
     assert body["error"]["error"] == "mcp_reconnect_timeout"
-    assert body["error"]["details"]["timeout_s"] == pytest.approx(0.2)
+    assert body["error"]["details"]["reason"] == "no_progress"
 
     # Registry row left in a coherent error state — NOT half-updated.
     row = client.app.state.external_mcp_servers[sid]
@@ -276,3 +276,40 @@ def test_reconnect_timeout_returns_504_and_keeps_registry_intact(
     assert errors[0].payload["status"] == "error"
     # No success event was emitted on the timeout path.
     assert not any(e.type == "mcp.server.reconnected" for e in history)
+
+
+_SLOW_SERVER = """\
+import sys, time
+end = time.monotonic() + float(sys.argv[1])
+while time.monotonic() < end:  # a cold start: working (CPU), not yet serving
+    pass
+from fastmcp import FastMCP
+mcp = FastMCP("slow")
+@mcp.tool
+def ping() -> str:
+    return "pong"
+mcp.run(show_banner=False)
+"""
+
+
+def test_reconnect_waits_for_a_server_still_starting(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """No flat 15 s: a real stdio server working for 3 s before it serves outlasts a 1 s
+    no-progress window and the reconnect still lands it.
+
+    **Sabotage:** ``asyncio.wait_for(_probe(), timeout=window)`` -> 504 at 1 s.
+    """
+    import sys
+
+    script = tmp_path / "slow_server.py"
+    script.write_text(_SLOW_SERVER, encoding="utf-8")
+    monkeypatch.setenv("CLIO_MCP_NO_PROGRESS_S", "1")
+    sid = _seed_server_with_spec(
+        client, {"transport": "stdio", "command": sys.executable, "args": [str(script), "3"]}
+    )
+
+    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tools"] == ["ping"]

@@ -1,132 +1,80 @@
-"""Pooled claude_code SDK streaming transport (#891, post delta-strip).
+"""Pooled claude_code SDK transport under the Claude Code engine.
 
-These pin the surviving contract on the *real* objects — the streaming client
-pool and the live ``_astream_sdk`` path with a fake SDK client that records every
-``query(prompt, session_id)``:
+These pin the pool contract on the *real* objects -- the streaming client pool and
+the engine -- with a fake SDK client that records every ``query(prompt, session_id)``:
 
-(a) the pooled client is constructed + connected ONCE across N calls (the
-    measured connect-reuse win);
-(b) every call sends its FULL prompt under a FRESH ``session_id`` — the per-call
-    conversation boundary that makes cross-call/cross-expert context bleed
-    impossible (server-side content-prefix caching supplies cache_read, proven
-    live: 12K→184K across a turn);
-(c) S2 (B1): the pool key is the ACTIVE GACT session, not a kill-switch —
-    distinct sessions never share a connection;
+(a) the pooled client is constructed + connected ONCE across N calls;
+(b) outside an agent loop every call sends its FULL transcript under a FRESH
+    ``session_id`` (no kept conversation to continue -- one expert's stream can never
+    land in another's conversation);
+(c) S2 (B1): the pool key is the ACTIVE GACT session -- distinct sessions never share
+    a connection;
 (d) the pooled client survives separate ``asyncio.run()`` caller loops (BLOCKER);
 (e) an abnormal end drops the poisoned client (BLOCKER);
-(f) a mid-stream SDK/CLI death becomes a TYPED, audited, transient error the LM
-    retry layer re-issues (the #891 live-crash fix) — never an opaque turn kill.
+(f) a mid-stream SDK/CLI death becomes a TYPED, audited, retryable ``dspy.lm15``
+    server error carrying the CLI's stderr tail -- DSPy re-issues it on a fresh
+    connection instead of the turn dying on an opaque error.
 
-The deleted delta/session-registry layer is history (module docstring tells it);
-these tests intentionally contain no session-continuation pins.
-
-Each load-bearing pin carries an inline SABOTAGE note: the exact change that makes
-it go red, proving the assertion is not vacuous.
+Each load-bearing pin carries an inline SABOTAGE note: the exact change that makes it
+go red, proving the assertion is not vacuous.
 """
 
 from __future__ import annotations
 
-from types import ModuleType
+import asyncio
 from typing import Any
 
+import dspy
 import pytest
+from dspy.lm15 import Message, ServerError
 
-from clio_agent.providers import claude_code_litellm, claude_code_sessions
+from clio_agent.providers import claude_code_engine, claude_code_sessions
+from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+from tests import _fake_claude_sdk as fake
 
 
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Any:
-    """Every test starts and ends with an empty streaming client pool."""
+    """Every test starts and ends with an empty client pool and conversation registry."""
     _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
     yield
     _reset_sessions_for_tests()
-
-
-# --------------------------------------------------------------------------- #
-# Fake SDK: connected clients record their queries, plus construction counters
-# so connect-reuse is directly observable.
-# --------------------------------------------------------------------------- #
-def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    state: dict[str, Any] = {"constructed": 0, "connected": 0, "clients": []}
-
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        def __init__(self) -> None:
-            self.content = [FakeTextBlock("Answer")]
-            self.usage = {"input_tokens": 2, "output_tokens": 3}
-            self.stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        usage = {"input_tokens": 2, "output_tokens": 3}
-        stop_reason = "end_turn"
-        result = "Answer"
-        is_error = False
-
-    class FakeClaudeAgentOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClaudeSDKClient:
-        def __init__(self, options: FakeClaudeAgentOptions) -> None:
-            state["constructed"] += 1
-            self.options = options
-            self.queries: list[tuple[str, str]] = []
-            state["clients"].append(self)
-
-        async def connect(self) -> None:
-            state["connected"] += 1
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            self.queries.append((prompt, session_id))
-
-        async def receive_response(self) -> Any:
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Ans"}}
-            )
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "wer"}}
-            )
-            yield FakeAssistantMessage()
-            yield FakeResultMessage()
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    import sys  # noqa: PLC0415
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    return state
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
 
 
 async def _drain(prompt: str) -> None:
-    """Run one streaming call to completion (discarding chunks)."""
-    async for _ in claude_code_litellm._astream_sdk(
-        prompt=prompt,
-        model="haiku",
-        timeout=5.0,
-        cwd="/w",
-    ):
-        pass
+    """Run one engine call to completion."""
+    await fake.drive(fake.request(Message.user(prompt)))
 
 
-def _all_queries(state: dict[str, Any]) -> list[tuple[str, str]]:
-    """Flatten every (payload, session_id) recorded across all fake clients."""
-    return [q for client in state["clients"] for q in client.queries]
+class _SdkError(Exception):
+    """Stands in for ``claude_agent_sdk.ClaudeSDKError`` (the process-death base)."""
+
+
+def _install_dying_sdk(monkeypatch: pytest.MonkeyPatch, *, stderr_line: str = "") -> fake.FakeSDK:
+    """A fake SDK whose FIRST query dies mid-stream with an SDK error; later ones answer."""
+    sdk = fake.install(
+        monkeypatch,
+        script=[[fake.text("X"), _SdkError("Command failed with exit code 1")]],
+    )
+    import sys  # noqa: PLC0415
+
+    module = sys.modules["claude_agent_sdk"]
+    module.ClaudeSDKError = _SdkError  # type: ignore[attr-defined]
+    if stderr_line:
+        base = module.ClaudeSDKClient  # type: ignore[attr-defined]
+
+        class _StderrClient(base):  # type: ignore[misc, valid-type]
+            async def connect(self) -> None:
+                await super().connect()
+                callback = self.options.kwargs.get("stderr")
+                if callback is not None:
+                    callback(stderr_line)
+
+        module.ClaudeSDKClient = _StderrClient  # type: ignore[attr-defined]
+    return sdk
 
 
 # --------------------------------------------------------------------------- #
@@ -145,286 +93,113 @@ def test_transport_failure_payload_is_typed_and_rejects_unknown_reasons() -> Non
 
 
 # --------------------------------------------------------------------------- #
-# Live streaming-path pins (real _astream_sdk + fake SDK client).
+# Live pins (real engine + pool + fake SDK client).
 # --------------------------------------------------------------------------- #
-async def test_stream_client_constructed_once_across_calls(monkeypatch) -> None:
-    """(a) live: N calls construct + connect the pooled client exactly once."""
-    state = _install_fake_sdk(monkeypatch)
+async def test_stream_client_constructed_once_across_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """(a) N calls construct + connect the pooled client exactly once."""
+    sdk = fake.install(monkeypatch)
     for i in range(4):
         await _drain("HEADER-STABLE-PREFIX" + "\nstep" * i)
 
-    assert state["constructed"] == 1  # SABOTAGE: build a fresh client per call -> 4 -> red
-    assert state["connected"] == 1  # connect reused, not paid per call
+    assert sdk.constructed == 1  # SABOTAGE: build a fresh client per call -> 4 -> red
+    assert sdk.connected == 1  # connect reused, not paid per call
 
 
-async def test_stream_each_call_sends_full_prompt_under_fresh_session_id(monkeypatch) -> None:
-    """(b) live: every call is its own SDK conversation — the FULL prompt under a
-    FRESH session_id. Reusing a session_id while sending full prompts would stack
-    duplicated context into one conversation (the reason the dead delta layer
-    reset instead of continuing); distinct ids also mean one expert's stream can
-    never land in another's conversation."""
-    state = _install_fake_sdk(monkeypatch)
+async def test_outside_a_loop_each_call_is_a_full_send_under_a_fresh_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(b) With no agent loop there is no kept conversation: each call is its own SDK
+    conversation -- the FULL transcript under a FRESH session_id."""
+    sdk = fake.install(monkeypatch)
     await _drain("SHARED-HEADER-PREFIX\nalice-step0")
     await _drain("SHARED-HEADER-PREFIX\nalice-step0\nalice-step1")
     await _drain("SHARED-HEADER-PREFIX\nbob-step0")
 
-    queries = _all_queries(state)
+    queries = sdk.queries()
     assert [p for p, _ in queries] == [
-        "SHARED-HEADER-PREFIX\nalice-step0",
-        "SHARED-HEADER-PREFIX\nalice-step0\nalice-step1",  # SABOTAGE: send a suffix delta -> red
-        "SHARED-HEADER-PREFIX\nbob-step0",
+        "[user]\nSHARED-HEADER-PREFIX\nalice-step0",
+        "[user]\nSHARED-HEADER-PREFIX\nalice-step0\nalice-step1",
+        "[user]\nSHARED-HEADER-PREFIX\nbob-step0",
     ]
-    sids = [sid for _, sid in queries]
-    # SABOTAGE: reuse one session_id across calls (stable-session continuation) -> red.
-    assert len(set(sids)) == 3
-    # And still ONE pooled client served all three conversations.
-    assert state["constructed"] == 1
+    # SABOTAGE: reuse one session_id across calls outside a loop -> red.
+    assert len({sid for _, sid in queries}) == 3
+    assert sdk.constructed == 1  # and still ONE pooled client served all three
 
 
-async def test_stream_two_gact_sessions_get_distinct_clients(monkeypatch) -> None:
-    """(c) S2 B1: the pool key is the ACTIVE GACT session, not a kill-switch.
-
-    Two calls made under distinct GACT session contexts each get their OWN
-    pooled client (never sharing one connection) — while two calls under NO
-    GACT session context (the off-turn fallback, matching this test file's
-    other calls, which run with no session bound) share one.
-    """
+async def test_stream_two_gact_sessions_get_distinct_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(c) S2 B1: the pool key is the ACTIVE GACT session."""
     from clio_agent.gact import context as gact_context
 
-    state = _install_fake_sdk(monkeypatch)
-    token = gact_context.set_session_id("sess-alice")
-    try:
-        await _drain("HEADER-STABLE-PREFIX\nstep0")
-    finally:
-        gact_context.reset(token)
-    token = gact_context.set_session_id("sess-bob")
-    try:
-        await _drain("HEADER-STABLE-PREFIX\nstep0")
-    finally:
-        gact_context.reset(token)
+    sdk = fake.install(monkeypatch)
+    for session in ("sess-alice", "sess-bob"):
+        token = gact_context.set_session_id(session)
+        try:
+            await _drain("HEADER-STABLE-PREFIX\nstep0")
+        finally:
+            gact_context.reset(token)
 
-    # SABOTAGE: key by something other than the active GACT session -> both
-    # calls share one client -> 1 -> red.
-    assert state["constructed"] == 2
+    # SABOTAGE: key by something other than the active GACT session -> 1 -> red.
+    assert sdk.constructed == 2
 
 
 # --------------------------------------------------------------------------- #
-# BLOCKER pin: the pooled streaming client must survive the per-call
-# ``asyncio.run()`` loops the token-liveness driver spins up. A loop-strict fake
-# (the real SDK's behaviour: transports bind to the connecting loop) makes call 2
-# go red if the client is cached without loop affinity on the caller's loop.
+# BLOCKER pin: the pooled client must survive separate ``asyncio.run()`` loops (the
+# loop's synchronous calls each run their own). A loop-strict fake (the real SDK's
+# behaviour: transports bind to the connecting loop) makes call 2 go red if the
+# client is cached on the caller's loop.
 # --------------------------------------------------------------------------- #
-def _install_loop_strict_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Fake SDK whose client records its connect loop and REFUSES to be driven from
-    any other (or a closed) loop — reproducing the real subprocess-transport hazard."""
-    import asyncio as _asyncio  # noqa: PLC0415
+def test_pooled_client_survives_separate_asyncio_run_loops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sdk = fake.install(monkeypatch)
+    import sys  # noqa: PLC0415
 
-    state: dict[str, Any] = {"constructed": 0}
+    module = sys.modules["claude_agent_sdk"]
+    base = module.ClaudeSDKClient  # type: ignore[attr-defined]
 
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        content = [FakeTextBlock("Answer")]
-        usage = {"input_tokens": 2, "output_tokens": 3}
-        stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        usage = {"input_tokens": 2, "output_tokens": 3}
-        stop_reason = "end_turn"
-        result = "Answer"
-        is_error = False
-
-    class FakeOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClient:
-        def __init__(self, options: FakeOptions) -> None:
-            state["constructed"] += 1
-            self._loop: Any = None
-
+    class _LoopStrictClient(base):  # type: ignore[misc, valid-type]
         async def connect(self) -> None:
-            self._loop = _asyncio.get_running_loop()
+            self._loop = asyncio.get_running_loop()
+            await super().connect()
 
-        async def disconnect(self) -> None:
-            return None
-
-        def _check_loop(self) -> None:
-            running = _asyncio.get_running_loop()
+        async def query(self, prompt: Any, session_id: str = "default") -> None:
+            running = asyncio.get_running_loop()
             if self._loop is not running or self._loop.is_closed():
                 raise RuntimeError("Event loop is closed")
+            await super().query(prompt, session_id)
 
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            self._check_loop()
+    module.ClaudeSDKClient = _LoopStrictClient  # type: ignore[attr-defined]
 
-        async def receive_response(self) -> Any:
-            self._check_loop()
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Ans"}}
-            )
-            yield FakeResultMessage()
+    asyncio.run(_drain("HEADER-STABLE-PREFIX\nstep0"))
+    # SABOTAGE: cache the client on the CALLER loop -> call 2 runs against a closed
+    # loop -> RuntimeError('Event loop is closed') -> red.
+    asyncio.run(_drain("HEADER-STABLE-PREFIX\nstep0\nstep1"))
 
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeOptions
-    fake_sdk.ClaudeSDKClient = FakeClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    import sys  # noqa: PLC0415
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    return state
-
-
-def test_pooled_client_survives_separate_asyncio_run_loops(monkeypatch) -> None:
-    """(d, BLOCKER) The live driver runs EVERY expert LM call under its own
-    ``asyncio.run()``. The pooled client must therefore live on a stable loop, not
-    the caller's — otherwise call 2 hits 'Event loop is closed' and the feature
-    silently degrades to per-call transport."""
-    import asyncio as _asyncio  # noqa: PLC0415
-
-    state = _install_loop_strict_fake_sdk(monkeypatch)
-
-    # Two SEPARATE asyncio.run() invocations — exactly io_logging._clio_streamed_call.
-    _asyncio.run(_drain("HEADER-STABLE-PREFIX\nstep0"))
-    # SABOTAGE: cache the client on the CALLER loop (old ensure_connected) -> call 2
-    # runs against a closed loop -> RuntimeError('Event loop is closed') -> red.
-    _asyncio.run(_drain("HEADER-STABLE-PREFIX\nstep0\nstep1"))
-
-    assert state["constructed"] == 1  # one connect, reused across both run() loops
+    assert sdk.constructed == 1  # one connect, reused across both run() loops
 
 
 # --------------------------------------------------------------------------- #
-# BLOCKER pin: a mid-cycle abnormal end must DROP the pooled client so its
-# leftover response can never bleed into the next (possibly different-expert) call.
+# BLOCKER pin: a mid-cycle abnormal end must DROP the pooled client so its leftover
+# response can never bleed into the next (possibly different-expert) call.
 # --------------------------------------------------------------------------- #
-async def test_pooled_client_reset_on_abnormal_end(monkeypatch) -> None:
-    """(e) A transport error mid-receive evicts the pooled client; the next call
-    reconnects on a FRESH client rather than reusing the poisoned connection."""
-    state: dict[str, Any] = {"constructed": 0, "clients": []}
+async def test_pooled_client_reset_on_abnormal_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk = fake.install(monkeypatch, script=[[fake.text("X"), RuntimeError("transport boom")]])
 
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        content = [FakeTextBlock("Answer")]
-        usage = {"input_tokens": 1, "output_tokens": 1}
-        stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        usage = {"input_tokens": 1, "output_tokens": 1}
-        stop_reason = "end_turn"
-        result = "Answer"
-        is_error = False
-
-    class FakeOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClient:
-        def __init__(self, options: FakeOptions) -> None:
-            state["constructed"] += 1
-            self.index = len(state["clients"])
-            state["clients"].append(self)
-
-        async def connect(self) -> None:
-            return None
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> Any:
-            if self.index == 0:  # first client: fail mid-stream
-                yield FakeStreamEvent(
-                    {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "X"}}
-                )
-                raise RuntimeError("transport boom")
-            yield FakeResultMessage()
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeOptions
-    fake_sdk.ClaudeSDKClient = FakeClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    import sys  # noqa: PLC0415
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-    with pytest.raises(RuntimeError):  # transport error propagates to the repair loop
+    with pytest.raises(RuntimeError, match="transport boom"):
         await _drain("HEADER-STABLE-PREFIX\nstep0")
     # SABOTAGE: skip _areset_client on abnormal end -> call 2 reuses client 0 -> red.
     await _drain("HEADER-STABLE-PREFIX\nstep0\nstep1")
-    assert state["constructed"] == 2  # poisoned client dropped, a fresh one connected
+    assert sdk.constructed == 2  # poisoned client dropped, a fresh one connected
 
 
-async def test_midstream_sdk_death_becomes_typed_transient_error(monkeypatch) -> None:
-    """(f, #891 live-crash) A pooled CLI subprocess death mid-stream surfaces as a
-    SDK ``ClaudeSDKError``; the provider must translate it to a TYPED, audited
-    transient ``ClaudeCodeExecError`` the LM retry layer recognises — not fail the
-    turn on an opaque ``Command failed with exit code 1`` the classifier ignores."""
-    from clio_agent.lm.io_logging import _is_transient_provider_error  # noqa: PLC0415
-
-    class FakeSdkError(Exception):
-        """Stands in for claude_agent_sdk.ClaudeSDKError (ProcessError base)."""
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClient:
-        def __init__(self, options: FakeOptions) -> None:
-            return None
-
-        async def connect(self) -> None:
-            return None
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> Any:
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "X"}}
-            )
-            raise FakeSdkError("Command failed with exit code 1")
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = type("AssistantMessage", (), {})
-    fake_sdk.ClaudeAgentOptions = FakeOptions
-    fake_sdk.ClaudeSDKClient = FakeClient
-    fake_sdk.ResultMessage = type("ResultMessage", (), {})
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = type("TextBlock", (), {})
-    fake_sdk.ClaudeSDKError = FakeSdkError  # the transport-death base the fix keys on
-    import sys  # noqa: PLC0415
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-    # Capture the audit half (no silent fallback): the death must emit a typed
-    # provider.transport_error row carrying the send_failed catalog payload.
+async def test_midstream_sdk_death_becomes_a_typed_retryable_server_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(f, #891 live-crash) A pooled CLI subprocess death mid-stream (an SDK
+    ``ClaudeSDKError``) is translated to a typed, audited ``dspy.lm15.ServerError``."""
+    _install_dying_sdk(monkeypatch)
     rows: list[dict[str, Any]] = []
     monkeypatch.setattr(claude_code_sessions, "stream_audit_enabled", lambda: True)
     monkeypatch.setattr(
@@ -433,73 +208,47 @@ async def test_midstream_sdk_death_becomes_typed_transient_error(monkeypatch) ->
         lambda event, **fields: rows.append({"event": event, **fields}),
     )
 
-    with pytest.raises(claude_code_litellm.ClaudeCodeExecError) as excinfo:
+    with pytest.raises(ServerError) as excinfo:
         await _drain("HEADER-STABLE-PREFIX\nstep0")
-    # SABOTAGE: drop the `except transient_transport_error_types()` arm -> the raw
-    # FakeSdkError propagates (not a ClaudeCodeExecError) and this pin goes red.
+    # SABOTAGE: drop the engine's `except transient_transport_error_types()` arm -> the
+    # raw SDK error propagates (not a ServerError) and this pin goes red.
     assert claude_code_sessions.TRANSIENT_TRANSPORT_MARKER in str(excinfo.value)
-    # The LM retry layer must classify it transient (so the call re-issues on a
-    # fresh connection instead of failing the turn).
-    assert _is_transient_provider_error(excinfo.value)
-    # And the structured reason reached the audit highway.
     error_rows = [r for r in rows if r["event"] == "provider.transport_error"]
     assert error_rows and error_rows[-1]["reason"] == "send_failed"
     assert error_rows[-1]["category"] == "session_transport_error"
 
 
-async def test_midstream_death_attaches_the_stderr_tail_to_the_crash_error(monkeypatch) -> None:
-    """(B17) The dead client's stderr ring rides the raised crash error, so the
-    CLI's own diagnostic output reaches the user/trace, not just the bare
-    Python exception text.
+def test_dspy_retries_a_dead_transport_on_a_fresh_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The retryable type is load-bearing: DSPy re-issues the call, which reconnects."""
+    from dspy.lm15 import Request
 
-    SABOTAGE: stop passing ``stderr_tail=entry.stderr_ring.tail()`` at the
-    ``transient_transport_error_message`` call site -> the CLI's own stderr
-    line never appears in the raised message -> this goes red.
+    sdk = _install_dying_sdk(monkeypatch)
+    lm = dspy.LM(
+        "claude_code/haiku",
+        engine=ClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0),
+        async_engine=AsyncClaudeCodeEngine("haiku", cwd="/w", idle_timeout_s=5.0),
+        cache=False,
+        num_retries=1,
+    )
+    response = lm(Request(model=lm.model, messages=(Message.user("hi"),)))
+
+    assert response.message.parts[0].text == "Answer"
+    assert sdk.constructed == 2  # the dead client was dropped, the retry reconnected
+
+
+async def test_midstream_death_attaches_the_stderr_tail_to_the_crash_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(B17) The dead client's stderr ring rides the raised error, so the CLI's own
+    diagnostic output reaches the user/trace.
+
+    SABOTAGE: stop passing ``stderr_tail=entry.stderr_ring.tail()`` at the engine's
+    ``transient_transport_error_message`` call -> this goes red.
     """
-    import sys
+    _install_dying_sdk(
+        monkeypatch, stderr_line="fatal: authentication expired, please re-run `claude login`\n"
+    )
 
-    class FakeSdkError(Exception):
-        pass
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-            self.stderr = kwargs.get("stderr")
-
-    class FakeClient:
-        def __init__(self, options: FakeOptions) -> None:
-            self._stderr_cb = options.stderr
-
-        async def connect(self) -> None:
-            if self._stderr_cb is not None:
-                self._stderr_cb("fatal: authentication expired, please re-run `claude login`\n")
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> Any:
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "X"}}
-            )
-            raise FakeSdkError("Command failed with exit code 1")
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = type("AssistantMessage", (), {})
-    fake_sdk.ClaudeAgentOptions = FakeOptions
-    fake_sdk.ClaudeSDKClient = FakeClient
-    fake_sdk.ResultMessage = type("ResultMessage", (), {})
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = type("TextBlock", (), {})
-    fake_sdk.ClaudeSDKError = FakeSdkError
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-    with pytest.raises(claude_code_litellm.ClaudeCodeExecError) as excinfo:
+    with pytest.raises(ServerError) as excinfo:
         await _drain("HEADER-STABLE-PREFIX\nstep0")
     assert "authentication expired" in str(excinfo.value)

@@ -17,8 +17,8 @@ contention shapes and asserts the invariants a RELEASE depends on:
       correctly-ordered live view (never a half-applied summarize/delete).
     * EXACT COUNTS — final live/tombstoned counts equal what the recorded ops imply.
 
-All tests use the REAL :class:`SegmentStore` over a REAL :class:`LocalFSStore`
-(fast disk backend) and the REAL :class:`ARCMemory` pass-throughs — no mocking of
+All tests use the REAL :class:`SegmentStore` over the REAL clio-core store (the
+test's own namespace on the worker's private daemon) and the REAL :class:`ARCMemory` pass-throughs — no mocking of
 src code. Determinism of *thread scheduling* is not assumed; the assertions are
 invariants that must hold under ANY interleaving, so a flake here is a real bug.
 """
@@ -33,13 +33,23 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import decode_segments
-from clio_agent.arc.segments import SegmentStore, segments_to_keys
-from clio_agent.arc.storage import LocalFSStore
+from clio_agent.arc.segment_ids import StaleSegmentIdError
+from clio_agent.arc.segments import SegmentStore
+from clio_agent.arc.storage import ARCStore, make_arc_store
 
 # #735 flake-hunt: ARC concurrency invariants run under xdist load x3.
 pytestmark = pytest.mark.concurrency
 
 SID = "stress-sess"
+
+
+def _cte_backend() -> ARCStore:
+    """The real clio-core store in this test's own namespace (the harness clears it).
+
+    Its tags are brand new, so the concurrent writers below also exercise the first-use
+    tag creation (``TagIds.get`` resolves under its lock).
+    """
+    return make_arc_store(backend="cte")
 
 
 # --------------------------------------------------------------------------- #
@@ -48,8 +58,8 @@ SID = "stress-sess"
 
 
 def _fresh_store(tmp_path) -> SegmentStore:
-    """A SegmentStore over a fresh LocalFSStore (no op_logger)."""
-    return SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    """A SegmentStore over the clio-core store (no op_logger)."""
+    return SegmentStore(_cte_backend())
 
 
 def _logging_store(tmp_path) -> tuple[SegmentStore, list[dict], threading.Lock]:
@@ -70,11 +80,11 @@ def _logging_store(tmp_path) -> tuple[SegmentStore, list[dict], threading.Lock]:
             logged.append({"event_id": event_id, "op": op, "scope": scope, **kw})
         return {"event_id": event_id}
 
-    return SegmentStore(LocalFSStore(str(tmp_path / "arc")), op_logger=op_logger), logged, guard
+    return SegmentStore(_cte_backend(), op_logger=op_logger), logged, guard
 
 
-def _all_persisted_segments(store: LocalFSStore, session_id: str, scope: str):
-    """Decode the persisted record for (session_id, scope) straight off disk —
+def _all_persisted_segments(store: ARCStore, session_id: str, scope: str):
+    """Decode the persisted record for (session_id, scope) straight from clio-core —
     bypassing the store's in-memory copy to prove durability / no torn writes."""
     name = SegmentStore._record_name(session_id, scope)
     raw = store.get("segments", name)
@@ -94,9 +104,9 @@ def _assert_render_ordering(live) -> None:
     "tombstoned" on those same objects after ``render`` returns. ``render`` upheld
     its contract (it returned the segments live AT THE CALL, under the lock); a
     later out-of-lock ``status`` read is a reader-side TOCTOU, not a store fault.
-    Production reads (``render_keys``->``segments_to_keys``) only touch immutable
-    fields (``kind``/``content``/``order``), so this distinction is faithful to how
-    the live plane is actually consumed.
+    Production reads (``render_text`` / the agent-context fold over ``render``) only
+    touch immutable fields (``kind``/``content``/``order``), so this distinction is
+    faithful to how the live plane is actually consumed.
     """
     keys = [(s.order, s.logical_time) for s in live]
     assert keys == sorted(keys), "render not sorted by (order, logical_time)"
@@ -196,9 +206,8 @@ def test_concurrent_append_different_scopes_isolated(tmp_path):
         # every segment belongs to its own scope (no tag bleed)
         assert all(s.scope == scope for s in live)
         assert all(s.content["text"].startswith(f"{scope}:") for s in live)
-        # render-position dict is gapless 0..per_scope-1 thoughts
-        keys = segments_to_keys(live)
-        assert list(keys.keys()) == [f"thought_{i}" for i in range(per_scope)]
+        # the scope renders exactly its per_scope thoughts, nothing else
+        assert [s.kind for s in live] == ["thought"] * per_scope
         seen_lts.extend(s.logical_time for s in live)
         _assert_render_well_formed(live)
 
@@ -216,7 +225,7 @@ def test_concurrent_append_different_scopes_isolated(tmp_path):
 
 def test_interleaved_ops_count_accounting(tmp_path):
     """Mixed writers (appenders) + mutators (deleters, summarizers) + readers
-    (render / render_keys) on ONE scope. Reads must never observe corruption,
+    (render / render_text) on ONE scope. Reads must never observe corruption,
     and the final ledger must balance exactly:
 
         live_now == total_created - total_tombstoned
@@ -232,6 +241,11 @@ def test_interleaved_ops_count_accounting(tmp_path):
     stop = threading.Event()
     # The op log (written under the store's RLock) is the single source of truth
     # for the count ledger, so the workers stay thin — no test-side accumulators.
+    # The deleter and summarizer pick their ids from a render taken OUTSIDE the lock,
+    # so one can name an id the other just tombstoned. The store re-checks the ids
+    # under the lock and rejects the whole op typed (StaleSegmentIdError, nothing
+    # applied): losing that race is a valid outcome, recorded here and checked below.
+    stale: list[StaleSegmentIdError] = []
 
     def appender(tid: int) -> None:
         for i in range(per_appender):
@@ -242,7 +256,10 @@ def test_interleaved_ops_count_accounting(tmp_path):
             live = ss.render(SID, scope)
             if len(live) >= 4:
                 victim = live[len(live) // 2]
-                ss.delete(SID, scope, [victim.id])
+                try:
+                    ss.delete(SID, scope, [victim.id])
+                except StaleSegmentIdError as lost_race:
+                    stale.append(lost_race)
 
     def summarizer() -> None:
         while not stop.is_set():
@@ -250,18 +267,26 @@ def test_interleaved_ops_count_accounting(tmp_path):
             if len(live) >= 6:
                 # summarize the oldest 3 live segments into one summary segment
                 victims = live[:3]
-                ss.summarize(SID, scope, [v.id for v in victims], {"text": "SUMMARY"})
+                try:
+                    ss.summarize(SID, scope, [v.id for v in victims], {"text": "SUMMARY"})
+                except StaleSegmentIdError as lost_race:
+                    stale.append(lost_race)
+
+    appended = {f"a{t}-{i}" for t in range(n_appenders) for i in range(per_appender)}
 
     def reader() -> None:
         while not stop.is_set():
             live = ss.render(SID, scope)
             # concurrency-safe checks only (immutable fields) — writers are live
             _assert_render_ordering(live)
-            # render_keys must always be a coherent gapless dspy dict — this is the
-            # PRODUCTION read path (_format_trajectory), so a torn/half-applied op
-            # would show up here as an index gap.
-            keys = ss.render_keys(SID, scope)
-            _assert_keys_gapless(keys)
+            # render_text is one flattened line per live segment, taken under the
+            # lock: a torn/half-applied op would surface as a foreign line or as an
+            # appended segment rendered twice.
+            text = ss.render_text(SID, scope)
+            lines = text.split("\n") if text else []
+            assert all(line == "SUMMARY" or line in appended for line in lines), lines
+            originals = [line for line in lines if line != "SUMMARY"]
+            assert len(originals) == len(set(originals)), "segment rendered twice"
 
     futures = []
     with ThreadPoolExecutor(max_workers=n_appenders + 4) as ex:
@@ -307,6 +332,11 @@ def test_interleaved_ops_count_accounting(tmp_path):
     # tombstoned count on the actual segments matches the log
     tombstoned_now = sum(1 for s in all_segs if s.status == "tombstoned")
     assert tombstoned_now == tombstoned_from_log
+    # A rejected op lost a real race: every id it named as stale was written and then
+    # tombstoned by the op that won (never an id the store did not know).
+    tombstoned_ids = {s.id for s in all_segs if s.status == "tombstoned"}
+    for lost_race in stale:
+        assert set(lost_race.details["missing"]) <= tombstoned_ids, lost_race
 
     # all originally-appended texts are accounted for (live OR tombstoned), never lost
     appended_texts = {s.content.get("text") for s in all_segs if s.kind == "thought"}
@@ -349,29 +379,15 @@ def test_interleaved_ops_count_accounting(tmp_path):
     _assert_render_well_formed(live)
 
 
-def _assert_keys_gapless(keys: dict) -> None:
-    """The dspy trajectory dict must have contiguous iteration indices 0..k with
-    no gap (stock dspy never has index holes; render recomputes positions)."""
-    import re
-
-    idxs = set()
-    for k in keys:
-        m = re.match(r"(?:thought|tool_name|tool_args|observation)_(\d+)$", k)
-        if m:
-            idxs.add(int(m.group(1)))
-    if idxs:
-        assert idxs == set(range(max(idxs) + 1)), f"gap in trajectory indices: {sorted(idxs)}"
-
-
 # --------------------------------------------------------------------------- #
 # 4. Concurrent delete of the SAME ids: tombstoned-exactly-once accounting
 # --------------------------------------------------------------------------- #
 
 
 def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
-    """Many threads race to delete the SAME set of ids. delete() only tombstones
-    LIVE segments, so across all threads each id is tombstoned exactly once and
-    the returned counts must sum to exactly the number of ids."""
+    """Many threads race to delete the SAME set of ids. The live check runs under the
+    scope lock: exactly one delete applies (each id tombstoned once) and every other
+    racer fails typed (its ids are no longer live), never a silent partial delete."""
     ss = _fresh_store(tmp_path)
     scope = "agentA/del"
     n = 200
@@ -383,10 +399,15 @@ def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
     def worker() -> int:
         barrier.wait()
         # every thread tries to delete every id
-        return ss.delete(SID, scope, ids)
+        try:
+            return ss.delete(SID, scope, ids)
+        except StaleSegmentIdError:
+            return 0
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
         counts = [f.result() for f in [ex.submit(worker) for _ in range(n_threads)]]
+
+    assert sorted(counts)[-2:] == [0, n], "exactly one racing delete applies"
 
     # total tombstones across all racing deletes == n (each id exactly once)
     assert sum(counts) == n, f"double-tombstone or lost delete: sum={sum(counts)} != {n}"
@@ -407,10 +428,10 @@ def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
 
 def test_concurrent_writes_then_cold_reload_matches(tmp_path):
     """After a concurrent write storm, a brand-new SegmentStore over the SAME
-    backend dir (cold reload) must reproduce the exact live render — proving the
+    clio-core namespace (cold reload) must reproduce the exact live render — proving the
     write-through persistence survived every interleaving with no torn record and
     the recovered clock continues past the persisted max."""
-    backend = LocalFSStore(str(tmp_path / "arc"))
+    backend = _cte_backend()
     ss = SegmentStore(backend)
     scope = "agentA/persist"
     n_threads, per_thread = 10, 30
@@ -423,16 +444,16 @@ def test_concurrent_writes_then_cold_reload_matches(tmp_path):
         list(ex.map(worker, range(n_threads)))
 
     total = n_threads * per_thread
-    before_keys = ss.render_keys(SID, scope)
+    before = [(s.id, s.kind, s.content) for s in ss.render(SID, scope)]
     before_texts = {s.content["text"] for s in ss.render(SID, scope)}
     assert len(before_texts) == total
 
-    # cold reload over the SAME directory
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    # cold reload over the SAME clio-core namespace
+    reloaded = SegmentStore(_cte_backend())
     after = reloaded.render(SID, scope)
     assert len(after) == total, "cold reload lost segments (torn persist under concurrency)"
     assert {s.content["text"] for s in after} == before_texts
-    assert reloaded.render_keys(SID, scope) == before_keys
+    assert [(s.id, s.kind, s.content) for s in after] == before
 
     # recovered clock continues strictly past the persisted maximum
     max_lt = max(s.logical_time for s in after)
@@ -474,8 +495,10 @@ def test_arcmemory_passthrough_concurrency(tmp_path):
             f"{scope}: expected {per_scope - 1} live after one delete, got {len(live)}"
         )
         assert all(s.scope == scope for s in live)
-        keys = arc.render_segments_keys(SID, scope)
-        _assert_keys_gapless(keys)
+        # the one delete took the scope's FIRST segment; the rest render in order
+        assert arc.render_segment_text(SID, scope).split("\n") == [
+            f"{scope}#{i}" for i in range(1, per_scope)
+        ]
         # tokens_by_kind pass-through must agree with the live count (all thoughts)
         toks = arc.segment_tokens_by_kind(SID, scope)
         assert set(toks) <= {"thought"}

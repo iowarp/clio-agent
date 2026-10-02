@@ -202,6 +202,11 @@ class _MemoryStore:
     ) -> None:
         self._data[(kind, name)] = data
 
+    def put_many(self, kind: str, records: Any) -> None:
+        """Put each record (an in-process dict cannot refuse one)."""
+        for record in records:
+            self.put(kind, record.name, record.data, search_text=record.search_text)
+
     def get(self, kind: str, name: str) -> Optional[bytes]:
         return self._data.get((kind, name))
 
@@ -304,21 +309,6 @@ class LiveRuntimeContext:
         return sorted(scopes, key=events_chunk_index)
 
     # ---- lifecycle -----------------------------------------------------
-
-    def release(self, session_id: str) -> int:
-        """Drop a session's live turns (erase the whole ``_events`` chunk family).
-        Returns the number of turns released (NOT segments), matching the historical
-        contract."""
-        turn_count = len(self._turns(session_id))
-        for scope in self.events_scopes(session_id):
-            self._segments.drop_scope(session_id, scope)
-        return turn_count
-
-    def clear(self) -> None:
-        """Erase the ``_events`` log (every chunk of every session) — idle -> baseline."""
-        for session_id in self._event_session_ids():
-            for scope in self.events_scopes(session_id):
-                self._segments.drop_scope(session_id, scope)
 
     def _event_session_ids(self) -> list[str]:
         """Every session that currently holds an ``_events`` record (so ``clear`` can

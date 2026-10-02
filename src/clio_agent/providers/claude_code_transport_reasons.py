@@ -23,7 +23,7 @@ TRANSPORT_FAILURE_REASONS: dict[str, dict[str, Any]] = {
         "description": (
             "A query on the pooled Claude CLI connection failed mid-flight (the "
             "subprocess died or the stream broke). The poisoned client is dropped and "
-            "the failure surfaces as a typed transient error so the LM retry layer "
+            "the failure surfaces as a typed transient error so DSPy's retry "
             "re-issues the call on a fresh connection."
         ),
     },

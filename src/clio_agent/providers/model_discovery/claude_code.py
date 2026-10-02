@@ -41,9 +41,11 @@ from clio_agent.providers.model_discovery.overlay import (
     ProviderDiscoveryResult,
     attach_context_limits,
 )
+from clio_agent.runtime.progress import ProbeUnresponsiveError, run_probe
 
-#: Seconds the ``<binary> auth status`` sign-in check may run before it is
-#: abandoned as inconclusive.
+#: Seconds the ``<binary> auth status`` sign-in check may run before it is waited
+#: for only while the CLI keeps working (``runtime.progress.run_probe``); a check that
+#: stops working is reported slow/unresponsive, never signed out (#1577).
 #:
 #: Configuration, not a compiled-in constant: a slow host, or a Claude Code CLI
 #: cold-starting its own credential check, is a property of the operator's
@@ -58,6 +60,11 @@ CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S: float = conf.resolve(
     default=20.0,
     cast=conf.as_float,
 )
+
+
+#: ``failed_reason`` code of a sign-in check that did not answer: installed, but slow or
+#: unresponsive -- NOT signed out.
+AUTH_CHECK_UNRESPONSIVE = "claude_code_auth_check_unresponsive"
 
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
@@ -88,7 +95,8 @@ def _auth_status(binary: str, *, timeout: float) -> tuple[bool, str]:
 
     Never raises. This is the ONLY sign-in signal this module trusts:
     ``signed_in`` is True exactly when the CLI's own JSON reply sets
-    ``loggedIn: true``. Every other outcome -- a timeout, a launch failure,
+    ``loggedIn: true``. Every other outcome -- an unresponsive check
+    (:data:`AUTH_CHECK_UNRESPONSIVE`, never a sign-out), a launch failure,
     non-JSON output, or ``loggedIn`` false/absent -- is a typed
     ``failed_reason`` with ``signed_in=False``. This function makes NO claim
     about which models exist or what they can do; that is the catalog's job.
@@ -98,16 +106,13 @@ def _auth_status(binary: str, *, timeout: float) -> tuple[bool, str]:
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, no user-controlled input
-            args,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            **kwargs,
+        proc = run_probe(args, op="claude auth status", first_wait_s=timeout, **kwargs)
+    except ProbeUnresponsiveError as exc:
+        return False, (
+            f"{AUTH_CHECK_UNRESPONSIVE}: Claude Code is installed but its sign-in check did "
+            f"not answer within {exc.waited_s:.0f}s (slow or unresponsive); this is not a "
+            "sign-out. Check the provider again."
         )
-    except subprocess.TimeoutExpired:
-        return False, f"Claude Code auth status check timed out after {timeout}s"
     except OSError as exc:
         return False, f"Claude Code auth status check failed to launch: {exc}"
     try:
@@ -161,7 +166,7 @@ def discover_claude_code(
     ruling CLIO does not manufacture one via per-model probing: the maintained
     GitHub catalog (:mod:`.claude_code_catalog`) is the single source of model
     ids, their input-modality capabilities, and the account default -- the same
-    trust model as Codex's SDK-reported catalog. This function's only live
+    trust model as Codex's backend-reported catalog. This function's only live
     check is whether Claude Code is installed and signed in on this machine
     (:func:`_resolve_claude_binary` + one ``auth status`` call); a transient
     catalog or CLI failure returns a typed failure and never promotes a cached

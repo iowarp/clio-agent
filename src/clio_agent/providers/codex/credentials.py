@@ -1,8 +1,10 @@
 """Durable Codex OAuth credential store (A.4).
 
-One credential per machine (mirrors the previous single ``~/.codex/auth.json``
-model, except CLIO owns this file end to end and never reads or writes
-``~/.codex/auth.json``). Persistence reuses
+One credential per machine, owned by CLIO end to end. CLIO never WRITES the Codex
+CLI's ``$CODEX_HOME/auth.json`` (default ``~/.codex``); without a CLIO sign-in the
+direct transport authenticates with that CLI login instead, read (and refreshed under
+the CLI's own lock) by lm15 -- :func:`codex_cli_auth_path` is the one place the path
+is resolved, so ``CODEX_HOME`` is honoured everywhere. Persistence reuses
 :class:`clio_agent.tools.atomic_json_store.AtomicJsonFileStore` (0600, atomic
 write-before-use) rather than duplicating that dance.
 
@@ -15,6 +17,8 @@ ever reach a log line.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -147,3 +151,58 @@ class CodexCredentialStore:
         """Force a refresh after the backend rejected the current access token with a 401."""
 
         return self.get_valid_credential(force_refresh=True)
+
+
+# --------------------------------------------------------------------------- #
+# The direct transport's sign-in: CLIO's own, else the local Codex CLI login     #
+# --------------------------------------------------------------------------- #
+def codex_cli_auth_path() -> Path:
+    """The Codex CLI's login file (``$CODEX_HOME/auth.json``, default ``~/.codex``)."""
+    home = os.environ.get("CODEX_HOME") or str(Path.home() / ".codex")
+    return Path(home) / "auth.json"
+
+
+def codex_cli_signed_in() -> bool:
+    """Whether the local Codex CLI login carries an access token and an account id."""
+    try:
+        tokens = json.loads(codex_cli_auth_path().read_text(encoding="utf-8")).get("tokens") or {}
+    except (OSError, ValueError):
+        return False
+    return bool(tokens.get("access_token") and tokens.get("account_id"))
+
+
+def direct_signed_in(store: CodexCredentialStore | None = None) -> bool:
+    """Whether Codex direct can authenticate: CLIO's own sign-in, else the Codex CLI login."""
+    return (store or CodexCredentialStore()).is_signed_in() or codex_cli_signed_in()
+
+
+def direct_auth_headers(store: CodexCredentialStore | None = None) -> dict[str, str]:
+    """``Authorization`` and ``chatgpt-account-id`` for a Codex backend request.
+
+    CLIO's own sign-in is refreshed here; the Codex CLI login is read and refreshed by
+    lm15 (which writes it back under the CLI's own lock) -- CLIO never rotates the CLI's
+    refresh token itself.
+
+    Raises:
+        CodexCredentialMissingError: neither sign-in exists.
+    """
+    store = store or CodexCredentialStore()
+    if store.is_signed_in():
+        credential = store.get_valid_credential()
+        return {
+            "Authorization": f"Bearer {credential.access_token}",
+            "chatgpt-account-id": credential.account_id,
+        }
+    if not codex_cli_signed_in():
+        raise CodexCredentialMissingError()
+    from dspy.lm15 import Message, OpenAICodexLM, Request
+
+    wire = OpenAICodexLM.from_codex_cli(auth_path=codex_cli_auth_path())
+    headers = dict(
+        wire.build_request(
+            Request(model="gpt-5.5", messages=(Message.user("."),)), stream=True
+        ).headers
+    )
+    return {
+        k: v for k, v in headers.items() if k.lower() in {"authorization", "chatgpt-account-id"}
+    }

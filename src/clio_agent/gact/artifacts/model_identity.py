@@ -20,8 +20,7 @@ This module carries the SAME registry truth into the two model-facing places:
   into the structured result as an ``artifacts`` list;
 * **the turn's produced ``workflow_state``** — :func:`annotate_workflow_state_artifacts`
   stamps ``artifact_id`` / ``artifact_uri`` beside the path a section already
-  carries, so the next turn (which reads the prior state through
-  ``clio_prior_workflow_state``) can reuse the registered artifact instead of
+  carries, so a later turn can reuse the registered artifact instead of
   re-staging it.
 
 Raw truth only. Every entry is a registry-resolved :class:`ArtifactVersion` reached
@@ -263,7 +262,7 @@ def merge_artifact_identity(model_text: str, entries: list[dict[str, str]]) -> s
     (``create_artifact``) is returned untouched: the tool's own declaration wins.
     Any other shape (a bare string, a list, unparseable text) keeps its bytes and
     gains one trailing ``[artifacts]`` note — the same visible-annotation idiom the
-    boundary's ``[path-repair]`` note already uses, so the fact is never invisible.
+    boundary's ``[clio: path_hint]`` note already uses, so the fact is never invisible.
     """
 
     if not entries or not isinstance(model_text, str):

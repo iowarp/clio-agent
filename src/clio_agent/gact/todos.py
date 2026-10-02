@@ -17,13 +17,13 @@ atomically is ambiguous.
 **Reject ambiguous parallel writes (no silent merge).** clio runs parallel subagents and a
 single ReAct step can emit parallel tool calls; two ``write_todos`` calls in the SAME step are
 ambiguous (which whole-list wins?), so the second is a typed error rather than a silent
-last-writer-wins merge. "Same step" is keyed on the active turn + ReAct step (the trajectory
-step index when available, else the step thought), and the check-and-set is serialized under a
+last-writer-wins merge. "Same step" is keyed on the active turn + ReAct step (the loop's step
+span, else the step thought), and the check-and-set is serialized under a
 module lock so truly-concurrent calls in one step cannot both pass.
 
 **Recitation (Manus).** During execution the current checklist is re-injected compactly into
-the model's turn input each turn (:func:`inject_todo_recitation`), reusing the reminder pattern
-(``plan_mode.inject_plan_mode_reminder`` / ``enrichment.inject_pending_agent_task_notifications``)
+the model's turn input each turn (:func:`todo_recitation`), reusing the reminder pattern
+(``plan_mode.plan_mode_reminder`` / ``enrichment.pending_task_notifications``)
 so it survives compaction and fights lost-in-the-middle. It is NEVER recited in plan mode.
 """
 
@@ -107,18 +107,13 @@ def _normalize_todos(todos: Any) -> list[dict[str, str]]:
 def _current_step_key(sid: str) -> str:
     """Return an identity for the CURRENT ReAct step (for the same-step parallel-write guard).
 
-    Prefers the trajectory step index (monotonic per step, robust to identical thoughts); falls
-    back to the step thought when no trajectory is installed (e.g. a direct call). Includes the
-    turn id so a new turn always starts a fresh step namespace.
+    The loop's step span (unique per step, shared by the step's concurrent tool calls);
+    the step thought when no step span is set (a direct call). Includes the turn id so a
+    new turn always starts a fresh step namespace.
     """
 
     turn_id = _ctx.active_turn_id() or ""
-    traj = _ctx.active_trajectory()
-    if isinstance(traj, Mapping):
-        step_idx = sum(1 for k in traj if isinstance(k, str) and k.startswith("thought_"))
-        marker = f"traj{step_idx}"
-    else:
-        marker = _ctx.active_step_thought() or ""
+    marker = _ctx.active_parent_span_id() or _ctx.active_step_thought() or ""
     return f"{sid}#{turn_id}#{marker}"
 
 
@@ -301,20 +296,17 @@ def _render_checklist(todos: list[dict[str, str]]) -> str:
     )
 
 
-def inject_todo_recitation(app: "FastAPI", sid: str, session: Any, enriched_text: str) -> str:
-    """Prepend the current todo checklist to this turn's input during EXECUTION (Manus recitation).
+def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
+    """The current todo checklist as this turn's CLIO addition during EXECUTION (recitation).
 
-    Returns ``enriched_text`` unchanged in PLAN mode (the checklist is never recited while
-    planning) and when no todos are recorded. Otherwise it prepends a compact, marked block so
-    the list stays in the model's recent context and survives compaction — reusing the same
-    per-turn-input reminder mechanism as the plan-mode reminder (never the system prompt).
+    Empty in PLAN mode (the checklist is never recited while planning) and when no todos
+    are recorded. Otherwise a compact, marked block; the agent loop records it as its own
+    message, again only when the list changed (never the system prompt).
     """
 
     if str(getattr(session, "mode", "") or "") == "plan":
-        return enriched_text
+        return ""
     todos = recorded_todos(session)
     if not todos:
-        return enriched_text
-    return (
-        TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos) + "\n\n---\n\n" + enriched_text
-    )
+        return ""
+    return TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos)

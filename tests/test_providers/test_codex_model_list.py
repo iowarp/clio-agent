@@ -1,4 +1,4 @@
-"""Codex live model lists: the Direct backend list and the SDK ``model/list``.
+"""The Codex live model list: the Direct backend list.
 
 Recorded responses (``fixtures/codex/``) were captured live on 2026-09-26:
 
@@ -7,16 +7,11 @@ Recorded responses (``fixtures/codex/``) were captured live on 2026-09-26:
   fields CLIO reads plus the gating field). ``0.147.0`` (the old pinned runtime)
   gets no ``gpt-6-*`` rows; ``0.157.1`` does -- the backend gates each model on
   ``minimal_client_version``.
-* ``sdk_model_list_0.157.1.json`` -- the openai-codex 0.157.1 SDK's
-  ``AsyncCodex.models()`` (the app-server ``model/list`` RPC), dumped by alias
-  with only the fields the wire carried.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any
@@ -26,7 +21,7 @@ import pytest
 
 from clio_agent.providers import model_discovery
 from clio_agent.providers.codex import constants as c
-from clio_agent.providers.codex import model_list, sdk_discovery
+from clio_agent.providers.codex import model_list
 from clio_agent.providers.codex.errors import CodexRefreshFailedError
 from clio_agent.providers.codex.login_flow import CodexCredential
 from clio_agent.providers.codex.model_list import (
@@ -158,7 +153,7 @@ def test_fetch_sends_the_cli_request_shape_with_clios_credential() -> None:
     request = seen[0]
     assert str(request.url).split("?")[0] == c.CODEX_MODELS_URL
     assert c.CODEX_MODELS_URL == "https://chatgpt.com/backend-api/codex/models"
-    # The same Codex version the SDK half's runtime presents.
+    # The version of the Codex runtime CLIO ships.
     installed = metadata.version("openai-codex-cli-bin")
     assert request.url.params["client_version"] == installed == listing.client_version
     assert request.headers["authorization"] == "Bearer tok-1"
@@ -300,69 +295,3 @@ def test_failed_refresh_keeps_last_good_list_with_typed_staleness(
     assert served is not None
     assert [row["id"] for row in served["models"]] == _VISIBLE_0157
     assert served["staleness"]["reason"] == "overlay_refresh_failed"
-
-
-def test_sdk_recheck_is_due_only_after_the_ttl_from_the_last_ask(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from clio_agent.gact.provider_catalog import _sdk_recheck_due
-
-    monkeypatch.setenv("CLIO_MODEL_CATALOG_TTL_S", "3600")
-    now = datetime.now(timezone.utc)
-    fresh = {"generated_at": (now - timedelta(minutes=5)).isoformat()}
-    old = {"generated_at": (now - timedelta(hours=2)).isoformat()}
-    # A recent FAILED ask resets the clock: a missing SDK is not re-asked per read.
-    failed_recently = {
-        "generated_at": (now - timedelta(hours=2)).isoformat(),
-        "staleness": {"last_attempt_at": (now - timedelta(minutes=1)).isoformat()},
-    }
-    assert _sdk_recheck_due(fresh) is False
-    assert _sdk_recheck_due(old) is True
-    assert _sdk_recheck_due(failed_recently) is False
-    assert _sdk_recheck_due({"generated_at": "garbage"}) is True
-    monkeypatch.setenv("CLIO_MODEL_CATALOG_TTL_S", "0")
-    assert _sdk_recheck_due(old) is False
-
-
-# --------------------------------------------------------------------------- #
-# SDK: the recorded model/list response
-# --------------------------------------------------------------------------- #
-
-
-class _RecordedSdk:
-    """The ``AsyncCodex`` boundary replaying the recorded ``model/list`` response."""
-
-    def __call__(self, *_a: object, **_k: object) -> "_RecordedSdk":
-        return self
-
-    async def __aenter__(self) -> "_RecordedSdk":
-        return self
-
-    async def __aexit__(self, *_a: object) -> bool:
-        return False
-
-    async def account(self) -> Any:
-        return type("Account", (), {"account": object()})()
-
-    async def models(self) -> Any:
-        from openai_codex.generated.v2_all import ModelListResponse
-
-        return ModelListResponse.model_validate(_recorded("sdk_model_list_0.157.1.json"))
-
-
-def test_sdk_recorded_model_list_is_labelled_and_lists_gpt_6(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(sdk_discovery, "AsyncCodex", _RecordedSdk())
-
-    result = asyncio.run(sdk_discovery.discover_codex_sdk_async())
-
-    assert result.failed_reason is None
-    assert result.provider == "codex_sdk"
-    assert result.source == model_discovery.CODEX_SDK_SOURCE == "codex_sdk_model_list"
-    assert [row["id"] for row in result.discovered] == _VISIBLE_0157
-    assert result.default_model == "gpt-6-astra"
-    sol = next(row for row in result.discovered if row["id"] == "gpt-6-sol")
-    # The SDK carries no file input: its rows never claim PDF.
-    assert sol["capabilities"] == ["text", "image"]
-    assert sol["supported_reasoning_efforts"][-1] == "ultra"

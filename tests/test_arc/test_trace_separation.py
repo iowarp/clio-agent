@@ -9,11 +9,50 @@ the summary's provenance. The capturing op_logger here mirrors the event shape
 
 from __future__ import annotations
 
+import pytest
+
 from clio_agent.arc.replay import reconstruct_arc_segments
-from clio_agent.arc.segments import SegmentStore, segments_to_keys
-from clio_agent.arc.storage import LocalFSStore
+from clio_agent.arc.schema import segment_text
+from clio_agent.arc.segments import SegmentStore
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 SID, SCOPE = "s1", "agentA/expertB"
+
+
+def _proj(segs):
+    """A precise, id-bearing projection of an ordered segment list (render order)."""
+    return [(s.id, s.kind, s.content) for s in segs]
+
+
+def _text(segs) -> str:
+    """Segments flattened exactly as ``SegmentStore.render_text`` does."""
+    return "\n".join(segment_text(s) for s in segs)
 
 
 def _make_logger(events_out: list[dict]):
@@ -57,7 +96,7 @@ def _make_logger(events_out: list[dict]):
 
 def _store(tmp_path):
     events: list[dict] = []
-    ss = SegmentStore(LocalFSStore(str(tmp_path)), op_logger=_make_logger(events))
+    ss = SegmentStore(_clio_core(str(tmp_path)), op_logger=_make_logger(events))
     return ss, events
 
 
@@ -90,9 +129,9 @@ def test_replay_reconstructs_the_live_view(tmp_path):
     live = ss.render(SID, SCOPE)
     replayed = reconstruct_arc_segments(events)
     # The replayed render is byte-identical to the live render.
-    assert segments_to_keys(replayed) == segments_to_keys(live)
-    assert "SUMMARY1" in str(segments_to_keys(replayed))
-    assert "obs0" not in str(segments_to_keys(replayed))
+    assert _proj(replayed) == _proj(live)
+    assert "SUMMARY1" in _text(replayed)
+    assert "obs0" not in _text(replayed)
 
 
 def test_replay_trace_ref_matches_live(tmp_path):
@@ -109,12 +148,14 @@ def test_trace_retains_originals_after_compaction(tmp_path):
     live_ids = [s.id for s in ss.render(SID, SCOPE)]
     ss.summarize(SID, SCOPE, live_ids, {"text": "COMPACTED"})
     # Live view is just the summary...
-    assert segments_to_keys(ss.render(SID, SCOPE)) == {"observation_0": "COMPACTED"}
+    assert [(s.kind, s.content) for s in ss.render(SID, SCOPE)] == [
+        ("summary", {"text": "COMPACTED"})
+    ]
     # ...but the Trace still carries the originals (replay before the summarize lt)
     summarize_ev = next(e for e in events if e["payload"]["op"] == "summarize")
     before_lt = summarize_ev["payload"]["logical_time"] - 1
     pre = reconstruct_arc_segments(events, as_of_logical_time=before_lt)
-    assert "ORIG_T" in str(segments_to_keys(pre)) and "ORIG_O" in str(segments_to_keys(pre))
+    assert "ORIG_T" in _text(pre) and "ORIG_O" in _text(pre)
     # And the summary records provenance.
     assert set(summarize_ev["payload"]["derived_from"]) == set(live_ids)
 
@@ -124,5 +165,5 @@ def test_replay_scope_filter(tmp_path):
     ss.append(SID, "agentA/x", "thought", {"text": "in-x"})
     ss.append(SID, "agentB/y", "thought", {"text": "in-y"})
     agent_a = reconstruct_arc_segments(events, scope_filter="agentA/")
-    assert "in-x" in str(segments_to_keys(agent_a))
-    assert "in-y" not in str(segments_to_keys(agent_a))
+    assert "in-x" in _text(agent_a)
+    assert "in-y" not in _text(agent_a)

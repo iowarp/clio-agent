@@ -186,14 +186,10 @@ def test_routes_that_touch_the_ledger_never_write_from_the_loop(tmp_path: Path, 
 def test_compact_folds_the_arc_working_set_off_the_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1339: compaction is now ONE operation whose ARC fold
-    (``compaction._fold_arc_working_set``) runs the SAME ``arc.summarize_segments``
-    store RPC the old conversation-record mirror used to run inline. Between turns
-    there is no active react scope (the parametrized sweep above already proves that
-    leg: ``arc_status == "no_active_scope"``, no store RPC at all) -- to prove the RPC
-    itself is off-loop this test fixes the scope compaction resolves (a real ARC,
-    ``_arc_scope`` monkeypatched to point at it, mirroring turn-scoped resolution)
-    with >=2 live segments so the fold actually runs end-to-end.
+    """Compaction's ARC fold (``compaction._fold``) is the ``arc.summarize_segments``
+    store RPC: it must run off the loop. The scope compaction resolves is fixed
+    (``clio_react_record.arc_scope`` monkeypatched to a real ARC, mirroring turn-scoped
+    resolution) with >=2 live segments so the fold runs end-to-end.
     """
 
     reset_guard_hits()
@@ -219,17 +215,22 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
     with TestClient(app) as client:
         sid = _create_session(client)
         complete_turn(client, sid, "first")
-        arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
-        arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+        # one coherent step, as the recorder writes it: calls answered by call id
+        arc.append_segment(sid, scope, "thought", {"text": "working"})
+        for i, text in enumerate(("first live segment", "second live segment")):
+            call = {"id": f"call_{i}", "name": "t", "args": {}}
+            arc.append_segment(sid, scope, "tool_call", call)
+            obs = {"call_id": f"call_{i}", "text": text, "is_error": False}
+            arc.append_segment(sid, scope, "observation", obs)
 
-        import clio_agent.gact.agents.reactv2_events as reactv2_events
+        import clio_agent.gact.agents.clio_react_record as clio_react_record
 
-        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
 
         response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert response.status_code == 200, response.text
-        events = app.state.memory_events[sid]
-        assert events[-1]["arc_status"] == "folded", events[-1]
+        [done] = response.json()["compactions"]
+        assert (done["scope"], done["replaced_count"]) == (scope, 5)
     assert on_loop == [False], f"the ARC fold ran on the loop: {on_loop}"
     assert _write_hits() == []
 
@@ -277,3 +278,42 @@ def test_a_turn_cancelled_before_its_prologue_still_persists_the_user_message(
         atoms = load_message_part_atoms(app.state.arc, sid)
     assert user_id in atoms, f"the cancelled turn dropped its user message's atoms: {atoms.keys()}"
     assert _write_hits() == [], "the orphan flush must run off the loop"
+
+
+def test_a_blueprint_install_reason_recorded_on_the_loop_is_written_off_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live (exp67 benchmark, 2026-10-01): discovery on the loop recorded
+    ``default_registry_migration_busy`` and its semantic event's store write was refused
+    (``LoopThreadStoreWrite``) -- the reason was lost. It is written off the loop."""
+
+    import clio_agent.gact.runtime.globals as runtime_globals
+    from clio_agent.gact.agent_blueprint_refresh import record_blueprint_install_reason
+
+    real_emit = runtime_globals._emit_semantic_event
+    written = threading.Event()
+    threads: list[str] = []
+
+    def _spy_emit(app: Any, sid: str, event_type: str, **kw: Any) -> dict[str, Any]:
+        result = real_emit(app, sid, event_type, **kw)
+        if event_type == "blueprint.install.reason":
+            threads.append(threading.current_thread().name)
+            written.set()
+        return result
+
+    monkeypatch.setattr(runtime_globals, "_emit_semantic_event", _spy_emit)
+    reset_guard_hits()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent())
+    with TestClient(app):
+        loop = app.state.mcp_app_loop
+
+        async def _record_on_the_loop() -> str:
+            record_blueprint_install_reason("probe_reason", app=app, session_id="")
+            return threading.current_thread().name
+
+        loop_thread = asyncio.run_coroutine_threadsafe(_record_on_the_loop(), loop).result(
+            timeout=10
+        )
+        assert written.wait(timeout=10), "the install reason's event never landed"
+    assert threads and loop_thread not in threads, threads
+    assert _write_hits() == []

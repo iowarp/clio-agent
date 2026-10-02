@@ -8,7 +8,8 @@ from typing import Any
 
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ProviderReceipt
-from clio_agent.gact.semantic_events import FileSemanticTraceBackend, SemanticEvent
+from clio_agent.gact.semantic_events import SemanticEvent
+from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
 
 class JsonlProvenanceProvider:

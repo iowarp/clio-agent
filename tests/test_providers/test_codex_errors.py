@@ -97,21 +97,13 @@ def test_litellm_wrapped_codex_plan_limit_still_recovers_the_clean_sentence() ->
     assert "Traceback" not in message
 
 
-def test_litellm_wrapped_codex_plan_limit_is_never_classified_transient() -> None:
-    """SABOTAGE (regression, #1529): same misclassification risk as Claude
-    Code's -- MidStreamFallbackError/APIConnectionError are transient markers
-    on their own."""
-    from clio_agent.lm.io_logging import _is_transient_provider_error
+def test_a_codex_plan_limit_is_never_retried_by_dspy() -> None:
+    """SABOTAGE (regression, #1529): a plan-limit hit is terminal. DSPy 3.4 owns
+    retries and re-issues only its own retryable error types; the typed error is not
+    one, whatever its text says."""
+    from dspy.utils.exceptions import is_retryable_lm_error
 
-    clean = str(CodexPlanLimitError("usage limit reached", status_code=429))
-    mangled = RuntimeError(
-        f"litellm.MidStreamFallbackError: litellm.APIConnectionError: {clean}\n"
-        "Traceback (most recent call last):\n"
-        "    raise\n"
-        f"clio_agent.providers.codex.errors.CodexPlanLimitError: {clean}\n"
-    )
-
-    assert _is_transient_provider_error(mangled) is False
+    assert not is_retryable_lm_error(CodexPlanLimitError("usage limit reached", status_code=429))
 
 
 class TestRetryAfterParsing:

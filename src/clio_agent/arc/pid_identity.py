@@ -9,6 +9,11 @@ monkeypatch seams are unchanged.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def proc_create_time(pid: int) -> float | None:
     """Process creation time (epoch seconds) via psutil, or None if no such process.
@@ -42,3 +47,18 @@ def pid_alive(pid: int, recorded_create_time: float | None) -> bool:
         return True  # creation time wasn't captured; bare existence is enough
     current = proc_create_time(pid)
     return current is not None and abs(current - recorded_create_time) < 1.0
+
+
+def pidfile_live_pid(pidfile: "Path") -> int | None:
+    """The live process a ``<pid> <create_time>`` pidfile names, or ``None``.
+
+    ``None`` for a missing/unreadable/malformed pidfile and for a recorded process that
+    exited (or whose PID was reused), so a caller never acts on a stale record.
+    """
+    try:
+        parts = pidfile.read_text(encoding="utf-8").split()
+        pid = int(parts[0])
+        recorded = float(parts[1]) if len(parts) > 1 and parts[1] else None
+    except (OSError, ValueError, IndexError):
+        return None
+    return pid if pid_alive(pid, recorded) else None

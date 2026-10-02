@@ -19,98 +19,103 @@ from typing import Any
 import dspy
 import pytest
 from dspy.dsp.utils.settings import main_thread_config
-from dspy.utils import DummyLM
 
 from clio_agent.config import LMProviderConfig, create_lm
-from clio_agent.gact.agents import reactv2
+from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
 from clio_agent.lm import hooked_lm as hooked_lm_mod
-from clio_agent.lm.io_logging import LMOutputTruncatedError
-from tests.test_gact.test_reactv2_repair import _build, _WsSig
+from clio_agent.lm.policy import LMOutputTruncatedError
+from tests._scripted_engine import calls, scripted_lm
 from tests.turn_signals import wait_for_terminal_status
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "clio_core_plane")
 
 
-def _non_submit_response() -> dict[str, Any]:
-    """A DummyLM turn that calls a non-submit tool (forces a repair re-ask).
+class _WsSig(dspy.Signature):
+    """Two required outputs; omitting either is a real submit rejection."""
 
-    Reactv2_repair.py dropped its own copy of this helper (#901 S4 cleanup,
-    88e3d07a) once it no longer needed it; this file still does, so it is kept
-    local here rather than reintroduced as shared dead weight there.
-    """
-    return {
-        "next_thought": "t",
-        "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "x"}}]},
-    }
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+    workflow_state: dict[str, Any] = dspy.OutputField()
+
+
+def _search(q: str) -> str:
+    """Search."""
+    return f"result:{q}"
+
+
+def _build(max_iters: int) -> ClioReAct:
+    return ClioReAct(_WsSig, tools=[dspy.Tool(_search, name="search")], max_iters=max_iters)
 
 
 def test_multi_turn_tool_loop_keeps_session_model_and_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The session's bound LM identity survives a normal multi-turn tool loop.
+    """The session's bound LM serves every step, never a conflicting boot default.
 
-    Replaces ``test_forced_submit_repair_keeps_session_model_and_endpoint``
-    (#1331): the out-of-loop ``CLIO_SUBMIT_REPAIR_ATTEMPTS`` forced-submit-repair
-    mechanism this test used to drive has no implementation in ``src/`` anymore
-    -- the base stack dropped that repair loop, and #1331 adopts the removal
-    ("malformed/empty output routes through the typed turn-level ladder").
-    What is still real: a multi-turn ReAct loop (non-submit tool calls, then a
-    submit) must keep using the SESSION's bound model/endpoint even with a
-    conflicting boot-default LM installed on the main thread -- so this fixture
-    is kept, just driven through the ordinary in-loop iteration budget
-    (``max_iters``) instead of a separate repair-attempt budget.
+    A multi-step loop (non-submit tool calls, then a submit) runs with a boot-default
+    LM installed on the main thread: every ``Request`` goes to the session LM's engine
+    and names the session model; the boot LM is never called.
     """
-    wrong = DummyLM([])
-    wrong.model = "openai/Qwen/Qwen2.5-0.5B-Instruct"
+    wrong, wrong_engine = scripted_lm([])
     monkeypatch.setitem(main_thread_config, "lm", wrong)
-    session = DummyLM(
+    session, engine = scripted_lm(
         [
-            _non_submit_response(),
-            _non_submit_response(),
-            {
-                "next_thought": "repaired",
-                "tool_calls": {
-                    "tool_calls": [
-                        {
-                            "name": "submit",
-                            "args": {"answer": "FIXED", "workflow_state": {"ok": True}},
-                        }
-                    ]
-                },
-            },
+            calls(("search", {"q": "x"})),
+            calls(("search", {"q": "y"})),
+            calls(("submit", {"answer": "FIXED", "workflow_state": {"ok": True}})),
         ]
     )
-    session.model = "openai/granite-4.2-30b"
-    session.kwargs["api_base"] = "http://localhost:8000/v1"
-    agent = _build(_WsSig, max_iters=3)
-    with dspy.context(lm=session, adapter=dspy.ChatAdapter()):
-        result = agent(question="report")
+    with dspy.context(lm=session):
+        result = _build(max_iters=3)(question="report")
     assert result.answer == "FIXED"
-    assert len(session.history) == 3
-    assert not wrong.history
-    assert session.model == "openai/granite-4.2-30b"
-    assert session.kwargs["api_base"] == "http://localhost:8000/v1"
+    assert len(engine.requests) == 3
+    assert {r.model for r in engine.requests} == {session.model}
+    assert wrong_engine.requests == []
+
+
+def _chat_reply(index: int, call: dict[str, Any], *, stream: bool) -> tuple[str, bytes]:
+    """One OpenAI Chat Completions reply carrying a single native tool call.
+
+    ``(content_type, body)``: an SSE chunk stream when the request asked to stream
+    (the loop streams every call), else one JSON completion.
+    """
+    tool_call = {
+        "id": f"call_{index}",
+        "type": "function",
+        "function": {"name": call["name"], "arguments": json.dumps(call["args"])},
+    }
+    usage = {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4}
+    head = {"id": f"repair-{index}", "created": 0, "model": "session-model"}
+    if not stream:
+        message = {"role": "assistant", "content": None, "tool_calls": [tool_call]}
+        choice = {"index": 0, "message": message, "finish_reason": "tool_calls"}
+        body = {**head, "object": "chat.completion", "choices": [choice], "usage": usage}
+        return "application/json", json.dumps(body).encode()
+    chunk = {**head, "object": "chat.completion.chunk"}
+    delta = {"role": "assistant", "tool_calls": [{"index": 0, **tool_call}]}
+    events = [
+        {**chunk, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+        {**chunk, "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        {**chunk, "choices": [], "usage": usage},
+    ]
+    sse = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+    return "text/event-stream", sse.encode()
 
 
 def test_real_http_submit_schema_retry_stays_on_session_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Drive a rejected-then-valid submit through DSPy and the typed submit ladder.
+    """A rejected-then-valid submit over a real HTTP endpoint stays on the session LM.
 
-    Replaces ``test_real_http_retained_history_repair_stays_on_session_endpoint``
-    (#1331): that test drove the same three-turn shape (search, a submit missing a
-    required field, then a fixed submit) through the ``CLIO_SUBMIT_REPAIR_ATTEMPTS``
-    out-of-loop repair mechanism, which has no implementation in ``src/``. The
-    fixture still exercises a real path -- a submit call missing a required
-    structured field is rejected IN-LOOP with the typed
-    ``REACT_SUBMIT_INVALID_OUTPUT`` reason (``reactv2._execute_tool_calls``) and
-    the model gets to retry within the same session -- so it is kept, driven
-    through the ordinary in-loop iteration budget, with an explicit capture of
-    the typed reason proving the rejection routed through that ladder rather
-    than being silently patched.
+    Three native tool-call replies (search, a submit missing a required field, a fixed
+    submit) from a local OpenAI-compatible server: the missing field is rejected
+    IN-LOOP with the typed ``REACT_SUBMIT_INVALID_OUTPUT`` reason, the rejection goes
+    back to the model as an error tool result, and every request names the session
+    model and carries the tools natively.
     """
     reasons: list[str] = []
 
@@ -120,37 +125,20 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
     monkeypatch.setattr("clio_agent.runtime.stream_audit.stream_audit", _sink)
     requests: list[dict[str, Any]] = []
     replies = [
-        "[[ ## next_thought ## ]]\nsearch\n\n[[ ## tool_calls ## ]]\n"
-        '{"tool_calls":[{"name":"search","args":{"q":"x"}}]}\n\n[[ ## completed ## ]]',
-        "[[ ## next_thought ## ]]\nbad submit\n\n[[ ## tool_calls ## ]]\n"
-        '{"tool_calls":[{"name":"submit","args":{"answer":"MISSING"}}]}\n\n[[ ## completed ## ]]',
-        "[[ ## next_thought ## ]]\nfixed\n\n[[ ## tool_calls ## ]]\n"
-        '{"tool_calls":[{"name":"submit","args":{"answer":"FIXED",'
-        '"workflow_state":{"ok":true}}}]}\n\n[[ ## completed ## ]]',
+        {"name": "search", "args": {"q": "x"}},
+        {"name": "submit", "args": {"answer": "MISSING"}},
+        {"name": "submit", "args": {"answer": "FIXED", "workflow_state": {"ok": True}}},
     ]
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
-            content = replies[len(requests) - 1]
-            body = json.dumps(
-                {
-                    "id": f"repair-{len(requests)}",
-                    "object": "chat.completion",
-                    "created": 0,
-                    "model": "session-model",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": {"role": "assistant", "content": content},
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": {"prompt_tokens": 2, "completion_tokens": 2, "total_tokens": 4},
-                }
-            ).encode()
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(request)
+            content_type, body = _chat_reply(
+                len(requests), replies[len(requests) - 1], stream=bool(request.get("stream"))
+            )
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -158,9 +146,7 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
         def log_message(self, format: str, *args: Any) -> None:
             pass
 
-    monkeypatch.setattr("clio_agent.lm.io_logging._token_liveness_enabled", lambda: False)
-    wrong = DummyLM([])
-    wrong.model = "openai/boot-model"
+    wrong, wrong_engine = scripted_lm([])
     monkeypatch.setitem(main_thread_config, "lm", wrong)
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -168,16 +154,22 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
         endpoint = f"http://127.0.0.1:{server.server_port}/v1"
         lm = create_lm(LMProviderConfig(provider="vllm", model="session-model", api_base=endpoint))
         try:
-            with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-                result = _build(_WsSig, max_iters=3)(question="report")
+            with dspy.context(lm=lm):
+                result = _build(max_iters=3)(question="report")
         finally:
             server.shutdown()
             worker.join(timeout=5)
     assert result.answer == "FIXED"
     assert len(requests) == 3
     assert all(request["model"] == "session-model" for request in requests)
-    assert not wrong.history
-    assert reactv2.REACT_SUBMIT_INVALID_OUTPUT in reasons
+    assert all(
+        {t["function"]["name"] for t in request["tools"]} == {"search", "submit"}
+        for request in requests
+    )
+    rejection = [m for m in requests[2]["messages"] if m["role"] == "tool"][-1]
+    assert "Missing required final output field(s): workflow_state" in str(rejection["content"])
+    assert wrong_engine.requests == []
+    assert clio_react.REACT_SUBMIT_INVALID_OUTPUT in reasons
 
 
 def test_output_truncation_is_visible_terminal_state(tmp_path: Path) -> None:

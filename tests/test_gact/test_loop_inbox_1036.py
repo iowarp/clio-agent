@@ -120,7 +120,7 @@ def test_mid_turn_post_returns_202_persists_steer_no_second_turn(tmp_path: Path)
         # It is buffered for the running turn's next boundary / idle re-drive.
         assert inbox_for(app, sid).peek_nonempty()
 
-        # Simulate the mid-turn tool boundary: the running turn drains its inbox and
+        # Simulate the step boundary: the running turn drains its inbox and
         # settles the already-persisted steer AT consumption (turn keeps its slot).
         with _active_turn(app, sid):
             drain_active_session_inbox(app)
@@ -174,9 +174,11 @@ def test_steer_persisted_exactly_once_on_midturn_drain(tmp_path: Path) -> None:
         assert response.status_code == 202
         steer_id = response.json()["message_id"]
         with _active_turn(app, sid):
-            block = drain_active_session_inbox(app)
+            arrivals = drain_active_session_inbox(app)
 
-        assert USER_STEER_MARKER in block
+        assert [source for source, _ in arrivals] == ["steer"]
+        assert USER_STEER_MARKER in arrivals[0][1]
+        assert "drain me" in arrivals[0][1]
         by_id = {m["id"]: m for m in _user_msgs(client, sid)}
         assert steer_id in by_id, "the accepted steer identity was lost"
         assert by_id[steer_id]["metadata"].get("pending_steer") is False
@@ -234,10 +236,12 @@ def test_drain_surfaces_steer_block_no_consume_no_terminal(tmp_path: Path) -> No
         monkey.setattr(agent_tasks, "consume_notification", _boom_consume)
         try:
             with _active_turn(app, sid):
-                block = drain_active_session_inbox(app)
+                arrivals = drain_active_session_inbox(app)
         finally:
             monkey.undo()
 
+    assert [source for source, _ in arrivals] == ["steer"], "a steer must not ride task_results"
+    block = arrivals[0][1]
     assert USER_STEER_MARKER in block
     assert "please pivot to LA" in block
     assert PENDING_TASK_NOTIFICATION_MARKER not in block, "a steer must not ride the task marker"
@@ -257,7 +261,7 @@ def test_drain_empty_steer_text_surfaces_nothing(tmp_path: Path) -> None:
         sid = app.state.sessions.create(workspace_id="ws_default", title="p").id
         inbox_for(app, sid).put(InboxEvent(kind="user_message", task_id="", text="   "))
         with _active_turn(app, sid):
-            assert drain_active_session_inbox(app) == ""
+            assert drain_active_session_inbox(app) == []
 
 
 # --------------------------------------------------------------------------- #

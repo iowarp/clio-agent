@@ -289,7 +289,7 @@ def test_merge_annotates_a_non_object_result_without_losing_its_bytes() -> None:
     merged = merge_artifact_identity("plain tool text", entries)
 
     # A non-JSON-object result keeps its bytes verbatim and gains ONE visible note
-    # (the boundary's own ``[path-repair]`` idiom) — never a silent drop.
+    # (the boundary's own ``[clio: path_hint]`` idiom) — never a silent drop.
     # Sabotage: return model_text unchanged for the non-object shape -> red.
     assert merged.startswith("plain tool text\n[artifacts] ")
     assert json.loads(merged.split("[artifacts] ", 1)[1]) == {ARTIFACTS_RESULT_KEY: entries}

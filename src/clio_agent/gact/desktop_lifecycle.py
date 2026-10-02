@@ -1,16 +1,18 @@
-"""Desktop-facing lifecycle seams for the GACT server process.
+"""Owner-facing lifecycle seams for the GACT server process.
 
 Split out of ``gact/app.py`` (file-size ratchet, #775/#774) -- this module
-owns the small handful of steps that only matter because a desktop
-supervisor process (not a bare terminal) is driving uvicorn's lifetime:
+owns the small handful of steps that only matter because an owning process
+(the desktop supervisor, or ``clio_agent.serve`` for a server it spawned)
+rather than a bare terminal is driving uvicorn's lifetime:
 
 * :func:`serve_foreground` -- the non-reload branch of ``run_server``. It
-  stamps ``app.state.uvicorn_server`` so the authenticated desktop lifecycle
-  route can set ``should_exit`` for a cross-platform graceful stop (raising
+  stamps ``app.state.uvicorn_server`` so the authenticated lifecycle routes
+  can set ``should_exit`` for a cross-platform graceful stop (raising
   SIGINT from a request callback is unreliable on Windows).
-* :func:`request_desktop_shutdown` -- what the authenticated
-  ``POST /v1/desktop/shutdown`` route (``gact/routes/lifecycle.py``) calls
-  once the caller's bearer token has been verified. It only SIGNALS shutdown
+* :func:`request_managed_shutdown` -- what the authenticated
+  ``POST /v1/desktop/shutdown`` and ``POST /v1/server/shutdown`` routes
+  (``gact/routes/lifecycle.py``) call once the caller's bearer token has
+  been verified. It only SIGNALS shutdown
   (latches the runtime against late reacquisition, wakes blocked provider
   discovery, and schedules uvicorn's exit) -- it never releases the shared
   clio-core runtime itself. Releasing from the request/response cycle risked
@@ -53,17 +55,17 @@ _SHUTDOWN_SIGNAL_DELAY_SECONDS = 0.1
 # Rust supervisor's 30s GRACEFUL_SHUTDOWN_STALL force-kills the process,
 # leaking the shared clio-core daemon. Budget arithmetic against that 30s
 # window: 0.1s call_later delay + this 3s connection grace + the turn drain
-# (bounded by cooperative cancellation, not this) + the 3s clean-stop loop
-# (arc/runtime_stop.py::_RUNTIME_STOP_STALL_SECONDS) + agent-task executor
+# (bounded by cooperative cancellation, not this) + the clean-stop loop's 15s
+# no-progress stretch (arc.liveness.stop_no_progress_s) + agent-task executor
 # joins must all land under 30s; 3s leaves ample headroom for the rest.
 _DESKTOP_GRACEFUL_TIMEOUT_S = 3  # uvicorn types this as int | None
 
 
 @dataclass(frozen=True)
 class ShutdownRequestOutcome:
-    """How :func:`request_desktop_shutdown` expects this process to exit.
+    """How :func:`request_managed_shutdown` expects this process to exit.
 
-    Reported back over HTTP so the desktop supervisor's own logs corroborate
+    Reported back over HTTP so the owner's own logs corroborate
     which path the server took, without it having to infer that from timing.
     """
 
@@ -76,7 +78,7 @@ def _request_server_exit(server: "uvicorn.Server | None") -> None:
     Takes the ALREADY-RESOLVED server (resolved once by the caller at signal
     time), not ``app.state``, so the callback can never re-read
     ``uvicorn_server`` as something different from what
-    :func:`request_desktop_shutdown` already decided and reported back over
+    :func:`request_managed_shutdown` already decided and reported back over
     HTTP as ``exit_path``.
     """
 
@@ -84,17 +86,23 @@ def _request_server_exit(server: "uvicorn.Server | None") -> None:
         server.should_exit = True
         return
     logger.warning(
-        "desktop shutdown could not set uvicorn should_exit "
+        "managed shutdown could not set uvicorn should_exit "
         "(reason=uvicorn_server_unavailable); falling back to SIGINT"
     )
     signal.raise_signal(signal.SIGINT)
 
 
-def request_desktop_shutdown(app: "FastAPI") -> ShutdownRequestOutcome:
-    """Signal a desktop-managed shutdown; never release the shared runtime.
+#: Who asked this server to shut down: the desktop supervisor, or
+#: ``clio_agent.serve`` stopping a server it spawned.
+ShutdownOwner = Literal["desktop", "serve"]
 
-    Called by the authenticated ``POST /v1/desktop/shutdown`` route once the
-    caller's bearer token is verified. Three signals, in order: latch the
+
+def request_managed_shutdown(app: "FastAPI", owner: ShutdownOwner) -> ShutdownRequestOutcome:
+    """Signal an owner-requested shutdown; never release the shared runtime.
+
+    Called by the authenticated ``POST /v1/desktop/shutdown`` (desktop) or
+    ``POST /v1/server/shutdown`` (``clio_agent.serve``) route once the caller's
+    bearer token is verified. Three signals, in order: latch the
     runtime against late reacquisition (synchronous, so it closes the race
     immediately), wake any blocked LM Studio discovery retry so it cannot add
     its window to Desktop Quit, then ask uvicorn to exit after this response
@@ -108,7 +116,9 @@ def request_desktop_shutdown(app: "FastAPI") -> ShutdownRequestOutcome:
     :func:`release_runtime_after_drain`).
 
     Args:
-        app: The FastAPI app instance driving this desktop-managed process.
+        app: The FastAPI app instance driving this owner-managed process.
+        owner: Who requested the shutdown (kept on ``app.state`` for the
+            lifespan's final exit and its log lines).
 
     Returns:
         The exit path this process is expected to take, for the route's
@@ -119,7 +129,7 @@ def request_desktop_shutdown(app: "FastAPI") -> ShutdownRequestOutcome:
         request_discovery_shutdown,
     )
 
-    app.state.desktop_shutdown_requested = True
+    app.state.managed_shutdown_owner = owner
     # This synchronous flag write closes late-reacquisition races immediately;
     # the potentially slower last-client daemon stop stays off the event loop
     # (it happens later, in release_runtime_after_drain).
@@ -219,7 +229,7 @@ async def release_runtime_after_drain(
     skipping this cleanup and leaking clio-core).
 
     A normal ``clio stop`` sends SIGTERM rather than calling the desktop-only
-    shutdown route. Gating this release on ``desktop_shutdown_requested`` left
+    shutdown route. Gating this release on an owner-requested shutdown left
     that ordinary path's clio-core daemon and client marker behind. The lifespan
     has the same safe boundary for both paths: requests have stopped and the turn
     drain immediately before this call has settled all work that could reacquire
@@ -239,6 +249,15 @@ async def release_runtime_after_drain(
         ``"released"`` after the idempotent runtime-client release has run, or
         ``"not_owned"`` when this app never acquired a CTE-backed ARC.
     """
+    # A stop that lands while the boot clio-core attach is still running (it runs on a
+    # worker thread and cannot be cancelled) must not read "not owned": the attach may
+    # already have registered this process as a client. Let it finish -- it waits only
+    # while the daemon progresses, and the shutdown latch refuses any attach that has
+    # not registered yet -- so a registered client is always released here.
+    boot: asyncio.Task[object] | None = getattr(app.state, "arc_boot_task", None)
+    if boot is not None and not boot.done():
+        logger.info("runtime.release_after_drain waiting=boot_attach")
+        await asyncio.wait({boot})
     if not _app_owns_runtime_client(app):
         logger.info("runtime.release_after_drain outcome=not_owned")
         return "not_owned"
@@ -247,8 +266,8 @@ async def release_runtime_after_drain(
 
     await asyncio.to_thread(release_runtime_client)
     logger.info(
-        "runtime.release_after_drain outcome=released desktop_requested=%s",
-        bool(getattr(app.state, "desktop_shutdown_requested", False)),
+        "runtime.release_after_drain outcome=released owner=%s",
+        getattr(app.state, "managed_shutdown_owner", None),
     )
     return "released"
 
@@ -264,8 +283,8 @@ async def finalize_desktop_shutdown(app: "FastAPI", agent: object) -> None:
     terminate_process_after_cleanup(app)
 
 
-def terminate_process_after_cleanup(app: "FastAPI") -> Literal["not_desktop"]:
-    """Exit a desktop-managed server after its explicit cleanup has completed.
+def terminate_process_after_cleanup(app: "FastAPI") -> Literal["not_managed"]:
+    """Exit an owner-stopped server after its explicit cleanup has completed.
 
     ``asyncio.run`` waits for default-executor workers during normal interpreter
     shutdown. A provider call already abandoned by the turn drain can therefore
@@ -274,12 +293,15 @@ def terminate_process_after_cleanup(app: "FastAPI") -> Literal["not_desktop"]:
     The desktop lifespan explicitly closes every owned resource before calling
     this seam, so bypass the redundant executor/atexit wait at that point only.
 
-    Non-desktop servers keep normal interpreter shutdown semantics.
+    The same holds for a server ``clio_agent.serve`` stops through its
+    shutdown route: its owner waits for the process to exit. A server stopped
+    any other way keeps normal interpreter shutdown semantics.
     """
-    if not getattr(app.state, "desktop_shutdown_requested", False):
-        return "not_desktop"
+    owner = getattr(app.state, "managed_shutdown_owner", None)
+    if owner is None:
+        return "not_managed"
 
-    logger.info("desktop.shutdown_complete outcome=exit")
+    logger.info("managed.shutdown_complete owner=%s outcome=exit", owner)
     logging.shutdown()
     for stream in (sys.stdout, sys.stderr):
         try:

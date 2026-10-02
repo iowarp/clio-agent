@@ -1,0 +1,62 @@
+---
+title: Give CLIO a new tool with an MCP server
+description: Connect a local MCP server, check its tools, use it in a session, and then declare the same server in an mcp.yaml file.
+sidebar:
+  label: Add an MCP server
+draft: true
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+MCP servers give agents new tools. This tutorial connects the open-source filesystem MCP server for a folder, uses it from a session, and then shows the same connection as a file. You need Node.js, because the server is started with `npx`.
+
+<Steps>
+
+1. Open the MCP settings.
+
+   Open Settings and choose **MCP tools**. The **Connected MCP services** list shows the built-in services and any you have added.
+
+2. Connect the server.
+
+   Choose **Connect MCP**. Give the service a short lowercase name such as `files`. Set **Connection type** to **Local command**. Enter `npx` as the **Executable**, and these lines as **Arguments**, with the last one set to a folder you want to share:
+
+   ```text
+   -y
+   @modelcontextprotocol/server-filesystem
+   /path/to/a/folder
+   ```
+
+   Choose **Connect MCP**. CLIO checks that the server responds before it makes the tools available.
+
+3. Look at its tools.
+
+   Open the new service in the list. Its tools, resources, and prompts are listed on separate tabs.
+
+4. Use it.
+
+   Start a session and ask for something only the new tool can do, such as "Using the files tools, list the folder I shared." The first call starts the server. If CLIO asks to allow the tool, choose **Allow once**. See [Permissions and sandbox](/docs/permissions/).
+
+5. Declare it in a file instead.
+
+   The same server as a workspace file:
+
+   ```yaml title=".clio/mcp.yaml"
+   mcp_servers:
+     files: npx -y @modelcontextprotocol/server-filesystem /path/to/a/folder
+   ```
+
+   See [Tools and MCP servers](/docs/mcp-servers/) for the mapping form, environment variables, and where files are read from.
+
+6. Disconnect it.
+
+   From the service's actions in the **MCP tools** list, choose **Disconnect**.
+
+</Steps>
+
+:::note[Captures needed]
+- The **MCP tools** page with the **Connect MCP** button.
+- The **Connect an MCP service** dialog filled in for the local command.
+- The service detail dialog with its **Tools** tab.
+- A session transcript showing the tool call and its result.
+- The permission request for the tool call.
+:::

@@ -103,7 +103,7 @@ The dependency truth is `pyproject.toml`, not this list. As of 0.7.x the core is
 
 ```python
 # Engine + tools
-"dspy>=3.3.0b1"              # intentional beta; uv installs need --prerelease allow
+"dspy==3.4.0"              # stable; the agent loop is built on its lm15 Request/engine API
 "fastmcp>=3.2.4"
 
 # GACT server (shipped product surface, not optional)

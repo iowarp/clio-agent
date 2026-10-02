@@ -1,10 +1,11 @@
-"""The provider request trace keeps the request SHAPE, minus the bytes.
+"""A Claude Code request is recorded by SHAPE, never by its attachment bytes.
 
-The multimodal change deleted the ``messages`` record from both Claude Code
-entry points rather than redacting it, so the trace stopped showing how many
-parts a request carried, in what order, of what media type -- exactly what a
-multimodal dispatch bug looks like. The record is back, with attachment
-payloads replaced by a typed marker naming the size it stood in for.
+The per-call record is the ``lm.call`` trace (:func:`clio_agent.lm.call_trace.call_record`):
+it keeps how many parts a request carried, in what order, of what media type -- what
+a multimodal dispatch bug looks like -- while images and documents are recorded as
+their kind and media type only. On the wire, the engine sends attachments as native
+content blocks beside the text (a streaming-input message), and the text query never
+carries their base64 payload.
 """
 
 from __future__ import annotations
@@ -12,122 +13,85 @@ from __future__ import annotations
 import base64
 import json
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
+from dspy.lm15 import DocumentPart, ImagePart, Message, Request, TextPart
 
-from clio_agent.providers import claude_code_litellm
-from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM
-from clio_agent.providers.claude_code_multimodal import (
-    REDACTED_ATTACHMENT_DATA,
-    redact_message_attachments,
-)
+from clio_agent.lm.call_trace import call_record
+from clio_agent.providers import claude_code_engine
+from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+from tests import _fake_claude_sdk as fake
 
-_IMAGE_B64 = base64.b64encode(b"png-bytes-here").decode("ascii")
+_IMAGE_B64 = base64.b64encode(b"\x89PNG-bytes").decode("ascii")
+_PDF_B64 = base64.b64encode(b"%PDF-1.4 body").decode("ascii")
 
 
-def test_redaction_preserves_structure_and_names_the_elided_size() -> None:
-    messages = [
+@pytest.fixture(autouse=True)
+def _clean_pool() -> Any:
+    _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    yield
+    _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
+
+
+def _multimodal_request() -> Request:
+    return Request(
+        model="claude_code/sonnet",
+        messages=(
+            Message(
+                role="user",
+                parts=(
+                    TextPart(text="read these"),
+                    ImagePart(data=_IMAGE_B64, media_type="image/png"),
+                    DocumentPart(data=_PDF_B64, media_type="application/pdf"),
+                ),
+            ),
+        ),
+    )
+
+
+def test_the_call_record_keeps_the_shape_and_drops_the_bytes() -> None:
+    record = call_record("claude_code/sonnet", {"prompt": _multimodal_request()}, None, None)
+
+    assert record["messages"] == [
         {
             "role": "user",
-            "content": [
-                {"type": "text", "text": "compare these"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_IMAGE_B64}"}},
-                {
-                    "type": "file",
-                    "file": {
-                        "file_data": "data:application/pdf;base64,cGRmLWJ5dGVz",
-                        "filename": "paper.pdf",
-                    },
-                },
+            "parts": [
+                {"type": "text", "text": "read these"},
+                {"type": "image", "media_type": "image/png"},
+                {"type": "document", "media_type": "application/pdf"},
             ],
         }
     ]
-
-    redacted = redact_message_attachments(messages)
-
-    # Structure: same message, same three parts, same order, same types.
-    parts = redacted[0]["content"]
-    assert [part["type"] for part in parts] == ["text", "image_url", "file"]
-    assert parts[0]["text"] == "compare these"
-    assert parts[2]["file"]["filename"] == "paper.pdf"
-    # Payloads: replaced by a typed marker carrying the source byte count.
-    assert parts[1]["image_url"]["url"] == REDACTED_ATTACHMENT_DATA.format(
-        length=len(b"png-bytes-here")
-    )
-    assert "redacted" in parts[2]["file"]["file_data"]
-    # And no attachment bytes survive anywhere in the record.
-    assert _IMAGE_B64 not in json.dumps(redacted)
-    assert "cGRmLWJ5dGVz" not in json.dumps(redacted)
+    serialized = json.dumps(record)
+    assert _IMAGE_B64 not in serialized
+    assert _PDF_B64 not in serialized
 
 
-def test_redaction_leaves_a_text_only_request_untouched() -> None:
-    messages = [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]
-    assert redact_message_attachments(messages) == messages
+def test_a_text_only_request_is_recorded_as_is() -> None:
+    request = Request(model="claude_code/sonnet", messages=(Message.user("hi"),))
+    record = call_record("claude_code/sonnet", {"prompt": request}, None, None)
+    assert record["messages"] == [{"role": "user", "parts": [{"type": "text", "text": "hi"}]}]
 
 
-def test_a_remote_url_is_not_mistaken_for_an_elided_payload() -> None:
-    messages = [
-        {
-            "role": "user",
-            "content": [{"type": "image_url", "image_url": {"url": "https://a/b.png"}}],
-        }
-    ]
-    assert redact_message_attachments(messages)[0]["content"][0]["image_url"]["url"] == (
-        "https://a/b.png"
-    )
-
-
-@pytest.mark.parametrize("native_blocks_present", [True, False])
-def test_the_sdk_seam_passes_native_blocks_either_way(
-    monkeypatch: pytest.MonkeyPatch, native_blocks_present: bool
+@pytest.mark.parametrize("with_attachments", [False, True])
+async def test_attachments_ride_as_native_blocks_never_in_the_query_text(
+    monkeypatch: pytest.MonkeyPatch, with_attachments: bool
 ) -> None:
-    """One choice for the seam: every call site passes native_blocks, empty or not.
+    sdk = fake.install(monkeypatch)
+    request = _multimodal_request() if with_attachments else fake.request()
+    await fake.drive(request)
 
-    The completion path used to pass it conditionally while every other call site
-    passed it unconditionally, so the EMPTY case exercised a different signature
-    from the non-empty one -- and only the non-empty one had a test.
-    """
-
-    seen: dict[str, Any] = {}
-
-    def _fake_sdk(
-        *,
-        prompt: str,
-        native_blocks: list[dict[str, Any]],
-        model: str,
-        timeout: float,
-        cwd: str | None,
-        thinking: Any,
-        system_prompt: str | None = None,
-        call_index: int = 0,
-    ) -> tuple[str, dict[str, int]]:
-        seen["native_blocks"] = native_blocks
-        seen["prompt"] = prompt
-        return "answered", {"input_tokens": 1, "output_tokens": 1}
-
-    monkeypatch.setattr(claude_code_litellm, "_run_sdk", _fake_sdk)
-    content: list[dict[str, Any]] = [{"type": "text", "text": "read it"}]
-    if native_blocks_present:
-        content.append(
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_IMAGE_B64}"}}
-        )
-
-    ClaudeCodeLLM().completion(
-        model="claude_code/sonnet",
-        messages=[{"role": "user", "content": content}],
-        api_base="",
-        custom_prompt_dict={},
-        model_response=MagicMock(),
-        print_verbose=None,
-        encoding=None,
-        api_key=None,
-        logging_obj=None,
-        optional_params={"claude_code_transport": "sdk"},
-    )
-
-    # The keyword is ALWAYS supplied -- the fake's signature makes it required,
-    # so a conditional caller would raise here on the empty case.
-    assert "native_blocks" in seen
-    assert len(seen["native_blocks"]) == (1 if native_blocks_present else 0)
-    assert _IMAGE_B64 not in seen["prompt"]
+    [(sent, _session)] = sdk.queries()
+    if not with_attachments:
+        assert sent == "[user]\nhello"  # a plain string query: no blocks to carry
+        return
+    [message] = sent  # one streaming-input user message
+    content = message["message"]["content"]
+    assert [block["type"] for block in content] == ["image", "document", "text"]
+    assert content[0]["source"]["data"] == _IMAGE_B64
+    assert content[1]["source"]["media_type"] == "application/pdf"
+    text = content[2]["text"]
+    assert _IMAGE_B64 not in text and _PDF_B64 not in text
+    assert "(image 1 attached)" in text and "(document 2 attached)" in text

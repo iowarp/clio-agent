@@ -1,0 +1,115 @@
+---
+title: Permissions and sandbox
+description: How CLIO decides what an agent may do, how to answer permission requests and write rules, and how the optional OS sandbox enforces file boundaries.
+---
+
+import { Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+CLIO checks what an agent is about to do before it does it. Reading is always allowed. Anything else, such as writing a file, running a command, or reaching the network, goes through a decision order that ends with you.
+
+## The decision order
+
+For each action that is not a read, CLIO decides in this order:
+
+1. Mode. In Plan and Deep research, tools that write are refused. Plan mode may still write plan files in Markdown. No rule can override this.
+2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
+3. A prompt to you, if nothing above settled it.
+
+Reads skip all of this. A tool counts as a read when it is marked read-only, either by the MCP server that provides it or by CLIO's own tool catalog. A tool that is read-only in practice but not marked as such is treated as a write and asks first.
+
+For the modes, see [Sessions and modes](/docs/sessions/).
+
+## Answer a permission request
+
+When an agent needs your decision, the session shows a request that describes the action, with these answers:
+
+| Answer | Effect |
+|---|---|
+| Allow once | Lets this one action run. |
+| Deny | Refuses this action. |
+| Allow for session | Allows matching actions for the rest of this session. |
+| Allow for workspace | Allows matching actions in this workspace from now on. |
+
+If nobody answers within 10 minutes, the request is denied. A request from an agent that has no session to ask is denied at once. A denial is reported back to the agent, so it can try another approach or ask you.
+
+The **Confirmation policy** control in the composer changes how often CLIO pauses. See [Sessions and modes](/docs/sessions/).
+
+## Write rules
+
+Open Settings and choose **Permissions** to see your access rules and add new ones with **New rule**. A rule has:
+
+- What it applies to, such as a tool name pattern or a file location pattern.
+- A decision: allow, deny, or ask.
+- A scope: a workspace or a session.
+- A priority.
+
+A higher priority wins. At the same priority, the more restrictive decision wins. Saving replaces the whole rule set in one step, and an invalid rule leaves the existing rules unchanged, so a typo cannot silently drop a rule.
+
+The same rules are available over the HTTP API at `GET` and `PUT /v1/policies`.
+
+## File access
+
+File tools can only reach certain folders. By default these are:
+
+- The workspace root.
+- The directory CLIO was started in.
+- The operating system's temporary directory.
+
+A path outside them fails with `outside_allowed_roots`, and the agent sees that reason. To change the list, set `CLIO_ALLOWED_ROOTS` or the configuration key `tools.file_policy.allowed_roots`. Two more settings apply:
+
+- `CLIO_MAX_FILE_SIZE_BYTES` limits the size of files the tools handle.
+- `CLIO_ALLOW_SYMLINKS` is off by default. Set it to true to follow symbolic links.
+
+## The OS sandbox
+
+The rules above work at the tool boundary. An agent can also start programs, and a program can write anywhere your account can. The sandbox closes that gap. It confines every process the agent starts to the same folders, so a write outside them is refused by the operating system itself.
+
+The sandbox uses the OS sandbox built into the [Codex CLI](https://www.npmjs.com/package/@openai/codex). Install it with npm:
+
+```sh
+npm install -g @openai/codex
+```
+
+On Linux, if Codex is not available, CLIO falls back to the kernel's Landlock file-system fence where the kernel supports it.
+
+<Tabs syncKey="os">
+  <TabItem label="macOS and Linux">
+
+Once Codex is installed, the sandbox turns on automatically for each process. Check it with:
+
+```sh
+clio sandbox status
+```
+
+  </TabItem>
+  <TabItem label="Windows">
+
+Windows needs one setup step. It asks for administrator approval once, and running it again changes nothing.
+
+```powershell
+clio sandbox setup
+clio sandbox status
+```
+
+  </TabItem>
+</Tabs>
+
+`clio sandbox status` reports which mechanism is active, the reason if it is not, and the next action to take. Without the sandbox, CLIO still applies the tool-level rules, and it says so: an out-of-bounds write by a program the agent started can succeed, and it is recorded as a gap in the provenance record rather than hidden. Hosts such as shared login nodes often run in this mode.
+
+When a sandboxed process is stopped from writing outside its folders, the denial is recorded with the process, the path, and the time. The agent is given a way to ask for access, and you decide.
+
+<Aside type="note">
+The sandbox and the permission rules are two layers. The rules produce clear errors for the agent on every platform. The sandbox enforces the boundary below them where it is available.
+</Aside>
+
+## Network access
+
+Programs the agent starts connect to the network through one recording proxy. By default, access is allowed and every connection is recorded in the provenance record, so you can see which domains a run contacted.
+
+You can turn on deny mode for a workspace. In deny mode, a connection to a domain is refused until you grant it, and the first connection to a new domain raises a permission request.
+
+Programs reach the proxy through the standard proxy settings CLIO gives them. A program that opens its own network connections can go around it, and the record says so for each connection rather than claiming more than it enforced.
+
+## Hooks
+
+If you need checks that rules cannot express, such as scanning tool input for secrets, see [Hooks](/docs/hooks/).

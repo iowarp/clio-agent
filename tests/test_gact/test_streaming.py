@@ -1,12 +1,16 @@
-"""text parts stream via message.part.delta events."""
+"""Turn text delivery: live deltas through the LM token hooks, batch parts otherwise.
+
+The turn builds the agent module and runs it ONCE in its forward executor
+(``turn_forward._run_module``). Live text reaches the transcript through the LM
+token hooks (``clio_agent.runtime.lm_activity``); an answer that arrives only as
+the prediction lands as one batch part stamped ``sync_execution_path``.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
-import importlib
-import json
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,25 +23,40 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
     _build_prompt_user_agent_module,
-    _build_stream_listeners,
     _dynamic_agent_lm_config,
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
     _record_stream_fallback,
     _stream_fallback_reason_capabilities,
-    _StreamingOutputError,
-    _try_streamed_forward,
     build_app,
 )
+from clio_agent.gact.turn_forward import _run_module
 from clio_agent.gact.types import AgentDef
 from clio_agent.providers.claude_code_errors import CLAUDE_CODE_INSTALL_FAILED_MESSAGE
 from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from tests._config_layer import set_config
+from tests._harness import emit_live_text, install_scripted_module
 
 # #948 S4b: turns that POST through the engine now run the default blueprint react
 # ``main``; route that root to each test's ``build_app(agent=...)`` host fake.
-# (Tests that call ``_try_streamed_forward`` directly are unaffected by this.)
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+
+@pytest.fixture(autouse=True)
+def _claude_code_support_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the Claude Code support install off PyPI.
+
+    The SDK is absent from the test venv, so a claude_code turn's auth reprobe
+    starts a background model discovery whose support install would look the
+    release up on PyPI -- sometimes after the test ended, as a network error.
+    """
+    from clio_agent.providers import dependencies  # noqa: PLC0415
+
+    def fail_install(**kwargs: Any) -> bool:
+        del kwargs
+        raise dependencies.ProviderDependencyInstallError("offline")
+
+    monkeypatch.setattr(dependencies, "ensure_claude_code_support", fail_install)
 
 
 @dataclass
@@ -48,63 +67,55 @@ class _Pred:
 
 
 class _Agent:
-    def __init__(self, answer):
-        self._answer = answer
-
-    def forward(self, question: str, session_id: str):
-        return _Pred(answer=self._answer)
-
-
-class _DspyAgent(dspy.Module):
     def __init__(self, answer: str) -> None:
-        super().__init__()
         self._answer = answer
-        self.calls: list[tuple[str, str]] = []
 
-    def forward(
-        self,
-        question: str,
-        session_id: str,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del session_mode, session_edit_mode
-        self.calls.append((question, session_id))
+    def forward(self, question: str, session_id: str) -> _Pred:
         return _Pred(answer=self._answer)
 
 
-class _ExpertStreamingAgent(dspy.Module):
-    # Declares the native-input parameters, because the streaming test below
-    # asserts an image REACHES this forward. A module that does not declare them
-    # never receives them (see the _DevelopEraAgent tests) -- asserting the kwarg
-    # on a forward that cannot accept it only ever proved the fabrication.
-    def __init__(self) -> None:
-        super().__init__()
-        self.chat_agent = object()
-        self.answer_synthesizer = object()
+class _ProviderAgent(_Agent):
+    """A host agent configured for one provider (the turn records it as the route)."""
 
-    def forward(
+    def __init__(self, provider_id: str, provider: str) -> None:
+        super().__init__("never returned")
+        self._provider_config = SimpleNamespace(provider_id=provider_id, provider=provider)
+
+
+class _Script:
+    """A built module's forward: optional live deltas, then a result or a raise.
+
+    Records every call so a test can assert the module ran exactly once.
+    """
+
+    def __init__(
         self,
-        question: str,
-        session_id: str,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-        images: list[Any] | None = None,
-        files: list[Any] | None = None,
-    ) -> _Pred:
-        del question, session_id, session_mode, session_edit_mode, images, files
-        return _Pred(answer="sync fallback should not run")
+        chunks: list[tuple[str, str, str]] | None = None,
+        *,
+        result: Any = None,
+        error: BaseException | None = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.chunks = list(chunks or [])
+        self.result = result
+        self.error = error
+        self.delay_s = delay_s
+        self.calls: list[dict[str, Any]] = []
 
-
-class _FakeStreamListener:
-    def __init__(self, signature_field_name: str, predict: Any) -> None:
-        self.signature_field_name = signature_field_name
-        self.predict = predict
+    def __call__(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        for text, agent_id, field in self.chunks:
+            emit_live_text(text, agent_id, field)
+        if self.delay_s:
+            time.sleep(self.delay_s)
+        if self.error is not None:
+            raise self.error
+        return self.result
 
 
 @pytest.fixture()
 def app_client(tmp_path: Path):
-    answer = "X" * 200  # 200 chars -> 4 chunks at 64-char window.
+    answer = "X" * 200
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(answer))
     # Keep one app-lifetime portal for the fixture. Constructing TestClient
     # without entering it gives each request a transient portal; a turn that
@@ -122,9 +133,7 @@ def enter_client() -> Iterator[Callable[[Any], TestClient]]:
     still running, so the turn task — created on that transient portal's loop —
     is cancelled when the portal tears down the instant the POST response
     lands. The turn then settles truthfully as ``cancelled`` and every
-    assertion about its real outcome (``error``, streamed parts, the recorded
-    agent call) fails. Under coverage the turn is slow enough that the portal
-    wins essentially always, which is how this family went red on CI.
+    assertion about its real outcome fails.
 
     Entering the client keeps ONE app-lifetime portal (and runs the lifespan,
     so ``turn_runner.bind_loop`` anchors turns to the app loop), letting a turn
@@ -143,11 +152,10 @@ def enter_client() -> Iterator[Callable[[Any], TestClient]]:
 def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 30.0) -> None:
     """Wait on the owned turn task without polling or changing turn semantics.
 
-    30s for the same reason ``conftest.complete_turn`` uses it: every turn now
-    builds and runs a real blueprint module, and a tighter bound was calibrated
-    against the deleted legacy fake dispatch -- it flakes on slow 2-core CI
-    runners under coverage. The wait returns the instant the task settles, so
-    the bound only ever fires on a genuine hang.
+    30s for the same reason ``conftest.complete_turn`` uses it: every turn builds
+    and runs a blueprint module, and slow 2-core CI runners under coverage need
+    the margin. The wait returns the instant the task settles, so the bound only
+    ever fires on a genuine hang.
     """
 
     task = app.state.in_flight_turns.get(sid)
@@ -162,6 +170,20 @@ def _wait_for_turn_settlement(app: Any, sid: str, timeout: float = 30.0) -> None
     app.state.turn_runner.call_soon_threadsafe(_observe)
     assert settled.wait(timeout), "background turn did not settle before event assertions"
     assert not app.state.turn_runner.busy(sid)
+
+
+def _run_turn(client: TestClient, app: Any, text: str = "stream me") -> str:
+    """Create a session, post one message and wait for its turn to settle."""
+
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    client.post(f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]})
+    _wait_for_turn_settlement(app, sid)
+    return sid
+
+
+def _last_assistant(client: TestClient, sid: str) -> dict[str, Any]:
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    return [m for m in messages if m["role"] == "assistant"][-1]
 
 
 def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> None:
@@ -179,12 +201,7 @@ def _assert_structured_stream_fallback(payload: dict[str, Any], reason: str) -> 
 
 def test_batch_text_is_delivered_without_deltas(app_client) -> None:
     app, client, answer = app_client
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app)
 
     history = app.state.bus._history.get(sid, [])
     added = [
@@ -194,45 +211,31 @@ def test_batch_text_is_delivered_without_deltas(app_client) -> None:
     completed = [e for e in history if e.type == "message.part.completed"]
     message_completed = [e for e in history if e.type == "message.completed"]
 
-    # Post-hoc text arrives as a completed part rather than synthetic
-    # chunks. Only real live provider output should use delta events.
+    # An answer that arrives only on the prediction lands as one completed part,
+    # never as synthetic chunks: only real live provider output uses deltas.
     assert len(added) == 1
     assert added[0].payload["part"]["text"] == answer
     assert added[0].payload["part"]["metadata"]["stream_source"] == "batch"
-    _assert_structured_stream_fallback(added[0].payload["part"]["metadata"], "agent_not_streamable")
+    _assert_structured_stream_fallback(added[0].payload["part"]["metadata"], "sync_execution_path")
     assert deltas == []
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "batch"
-    _assert_structured_stream_fallback(completed[0].payload, "agent_not_streamable")
+    _assert_structured_stream_fallback(completed[0].payload, "sync_execution_path")
     assert completed[0].payload["final_text"] == answer
     _assert_structured_stream_fallback(
-        message_completed[-1].payload["metadata"], "agent_not_streamable"
+        message_completed[-1].payload["metadata"], "sync_execution_path"
     )
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
-    text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
+    text_parts = [p for p in _last_assistant(client, sid)["parts"] if p["type"] == "text"]
     assert text_parts[-1]["metadata"]["stream_source"] == "batch"
-    _assert_structured_stream_fallback(text_parts[-1]["metadata"], "agent_not_streamable")
+    _assert_structured_stream_fallback(text_parts[-1]["metadata"], "sync_execution_path")
 
 
 def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path) -> None:
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_DspyAgent("fallback"))
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     catalog = _stream_fallback_reason_capabilities()
 
     assert {
-        "stream_disabled_guided_output",
-        "stream_disabled_live_streaming",
-        "streaming_dependency_unavailable",
-        "agent_not_available",
-        "agent_not_streamable",
-        "stream_setup_failed",
-        "stream_failed_before_output",
-        "stream_no_prediction",
-        "stream_completed_without_chunks",
-        "provider_streaming_unsupported",
         "sync_execution_path",
-        "dynamic_prompt_stream_unavailable",
-        "dynamic_tool_stream_unavailable",
         "mcp_result_downgraded_to_complete",
         "mcp_capability_refused",
         "mcp_protocol_refused",
@@ -263,73 +266,11 @@ def test_stream_fallback_reasons_are_audited_and_reject_unknowns(tmp_path: Path)
         _record_stream_fallback(app, "sid", "unclassified_silent_downgrade")
 
 
-def test_sync_execution_default_fallback_is_structured(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
-) -> None:
-    async def returns_none_without_reason(*args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        return None
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", returns_none_without_reason)
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("sync answer"))
-    client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    history = app.state.bus._history.get(sid, [])
-    deltas = [e for e in history if e.type == "message.part.delta"]
-    completed_messages = [e for e in history if e.type == "message.completed"]
-
-    assert deltas == []
-    _assert_structured_stream_fallback(
-        completed_messages[-1].payload["metadata"], "sync_execution_path"
-    )
-
-
-async def test_streamify_setup_failure_returns_none_for_sync_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    def fail_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise ValueError(
-            "Signature field answer is not unique in the program, cannot "
-            "automatically determine which predictor to use for streaming."
-        )
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fail_streamify)
-    agent = _DspyAgent("fallback answer")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    result = await _try_streamed_forward(app, "stream setup fails", "sid", emit_chunk)
-
-    assert result is None
-    assert chunks == []
-    assert agent.calls == []
-    fallback = _pop_stream_fallback(app, "sid")
-    assert fallback["reason"] == "stream_setup_failed"
-    assert fallback["synthetic_posthoc"] is True
-    assert fallback["live_streaming"] is False
-    assert fallback["recovery_actions"]
-    assert "ValueError" in fallback["message"]
-
-
 class _DevelopEraAgent(dspy.Module):
     """The full pre-multimodal forward contract: every mode kwarg, no ``images``.
 
     This is the shape every module built before the native-input parameters
-    landed still has -- including ``BlueprintExpertModule.forward``, the module
-    the blueprint runtime actually executes. It must stream cleanly on an
-    IMAGELESS turn.
+    landed still has. It must run cleanly on an IMAGELESS turn.
     """
 
     def __init__(self, answer: str) -> None:
@@ -344,7 +285,7 @@ class _DevelopEraAgent(dspy.Module):
         session_mode: str = "chat",
         session_edit_mode: str = "diff",
         cancel_requested: Any | None = None,
-    ) -> _Pred:
+    ) -> dspy.Prediction:
         self.calls.append(
             {
                 "question": question,
@@ -354,7 +295,7 @@ class _DevelopEraAgent(dspy.Module):
                 "cancel_requested": cancel_requested,
             }
         )
-        return _Pred(answer=self._answer)
+        return dspy.Prediction(answer=self._answer)
 
 
 class _NativeInputAgent(dspy.Module):
@@ -373,7 +314,7 @@ class _NativeInputAgent(dspy.Module):
         images: list[Any] | None = None,
         files: list[Any] | None = None,
         cancel_requested: Any | None = None,
-    ) -> _Pred:
+    ) -> dspy.Prediction:
         del session_mode, session_edit_mode, cancel_requested
         self.calls.append(
             {
@@ -383,93 +324,73 @@ class _NativeInputAgent(dspy.Module):
                 "files": list(files or []),
             }
         )
-        return _Pred(answer="saw them")
+        return dspy.Prediction(answer="saw them")
 
 
-def _install_passthrough_streamify(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace ``streamify`` with a faithful, non-threaded pass-through.
+def _turn_state(
+    app: Any, text: str, *, images: list[Any] | None = None, files: list[Any] | None = None
+) -> SimpleNamespace:
+    """The slice of ``TurnState`` that ``_run_module`` reads."""
 
-    DSPy's real ``streamify`` calls the wrapped program with EXACTLY the kwargs the
-    pump hands it -- which is why an injected ``images=[]`` reached a forward that
-    never declared it and raised ``TypeError``. This stand-in preserves that one
-    load-bearing property while dropping the anyio task-group/worker-thread
-    machinery, so the kwarg contract is asserted deterministically rather than
-    through a live streaming runtime.
-    """
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-
-    def _passthrough(program: Any, **_options: Any) -> Any:
-        async def _run(**kwargs: Any):
-            pred = program.forward(**kwargs)
-            yield dspy.Prediction(answer=pred.answer)
-
-        return _run
-
-    monkeypatch.setattr(streamify_module, "streamify", _passthrough)
+    return SimpleNamespace(
+        app=app,
+        sid="sid",
+        user_msg=SimpleNamespace(id="msg_user", metadata={}),
+        enriched_text=text,
+        sess=SimpleNamespace(mode="edit", edit_mode="diff"),
+        native_images=list(images or []),
+        native_files=list(files or []),
+        injections=[],
+    )
 
 
-async def test_imageless_turn_streams_on_an_agent_without_an_images_parameter(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def _never_cancelled() -> bool:
+    return False
+
+
+async def test_imageless_turn_runs_an_agent_without_an_images_parameter(tmp_path: Path) -> None:
     """No ``images=[]`` is injected into a forward that never declared it.
 
-    Injecting it unconditionally raised ``TypeError`` on EVERY rung of the compat
-    ladder (all three carried the same ``stream_input``), so an ordinary text turn
-    on a pre-multimodal module failed as a streaming error instead of streaming.
+    Injecting it unconditionally raised ``TypeError``, so an ordinary text turn
+    on a pre-multimodal module failed instead of answering.
     """
 
-    _install_passthrough_streamify(monkeypatch)
     agent = _DevelopEraAgent("develop era answer")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
 
-    async def emit_chunk(text: str) -> None:
-        del text
+    result = await _run_module(_turn_state(app, "no attachments here"), agent, _never_cancelled)
 
-    result = await _try_streamed_forward(app, "no attachments here", "sid", emit_chunk)
-
-    # The module ran with its own contract intact -- no TypeError, no fabricated
-    # kwarg, and the mode flags it DOES declare still arrived.
+    # The module ran ONCE with its own contract intact -- no TypeError, no
+    # fabricated kwarg, and the mode flags it DOES declare arrived.
     assert agent.calls == [
         {
             "question": "no attachments here",
             "session_id": "sid",
             "session_mode": "edit",
             "session_edit_mode": "diff",
-            "cancel_requested": None,
+            "cancel_requested": _never_cancelled,
         }
     ]
-    assert result is not None
     assert result.answer == "develop era answer"
     # An imageless turn dropped nothing, so nothing is recorded as degraded.
     assert _pop_stream_fallback_notes(app, "sid") == []
 
 
 async def test_images_on_an_agent_without_an_images_parameter_are_typed_not_silent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     """A real attachment that cannot be delivered is a typed reason, not a drop."""
 
-    _install_passthrough_streamify(monkeypatch)
     agent = _DevelopEraAgent("answered without seeing the image")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    state = _turn_state(app, "describe the attachment", images=[object()], files=[object()])
 
-    async def emit_chunk(text: str) -> None:
-        del text
+    result = await _run_module(state, agent, _never_cancelled)
 
-    result = await _try_streamed_forward(
-        app,
-        "describe the attachment",
-        "sid",
-        emit_chunk,
-        images=[object()],
-        files=[object()],
-    )
-
-    assert result is not None
-    # A NOTE, not the single delivery slot: the turn still streamed, and a later
-    # delivery-path reason (here stream_completed_without_chunks) must not be able
-    # to overwrite the record that an attachment never reached the model.
+    assert result.answer == "answered without seeing the image"
+    assert len(agent.calls) == 1
+    # A NOTE, not the single delivery slot: a later delivery-path reason must not
+    # be able to overwrite the record that an attachment never reached the model.
     notes = _pop_stream_fallback_notes(app, "sid")
     assert [note["reason"] for note in notes] == ["native_model_inputs_dropped"]
     assert notes[0]["live_streaming"] is True
@@ -507,21 +428,17 @@ def test_degradation_note_ledger_is_bounded_by_configuration() -> None:
     assert [note["message"] for note in stream_fallback_notes(app)["sid"]] == ["drop last"]
 
 
-async def test_native_inputs_reach_an_agent_that_declares_them(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_native_inputs_reach_an_agent_that_declares_them(tmp_path: Path) -> None:
     """The gate must not become a blanket refusal: a capable forward still gets them."""
 
-    _install_passthrough_streamify(monkeypatch)
     agent = _NativeInputAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     first, second, only_file = object(), object(), object()
 
-    async def emit_chunk(text: str) -> None:
-        del text
-
-    await _try_streamed_forward(
-        app, "look", "sid", emit_chunk, images=[first, second], files=[only_file]
+    await _run_module(
+        _turn_state(app, "look", images=[first, second], files=[only_file]),
+        agent,
+        _never_cancelled,
     )
 
     assert agent.calls == [
@@ -535,47 +452,26 @@ async def test_native_inputs_reach_an_agent_that_declares_them(
     assert _pop_stream_fallback_notes(app, "sid") == []
 
 
-def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
-    """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
-    SSE endpoint that streams at the provider AND through LiteLLM (verified with a
-    live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
-    bypassed the streamify pump for every ALCF run. The direct Codex provider is
-    also a real streaming transport."""
+async def test_a_module_that_raises_is_run_once_and_the_error_propagates(tmp_path: Path) -> None:
+    """The one-path engine never re-runs a module: its failure is the turn's failure."""
 
-    from clio_agent.gact.app import _agent_streaming_unsupported_reason
+    calls = {"n": 0}
 
-    def _agent(provider: str) -> SimpleNamespace:
-        return SimpleNamespace(_provider_config=SimpleNamespace(provider=provider))
+    class _Raising:
+        def __call__(self, **kwargs: Any) -> Any:
+            del kwargs
+            calls["n"] += 1
+            raise TypeError("internal boom")
 
-    # Argonne (bare kind + both preset ids) must now attempt streaming.
-    for provider in ("argonne", "argonne_metis", "argonne_sophia"):
-        assert _agent_streaming_unsupported_reason(_agent(provider)) == "", provider
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("unused"))
 
-    # Claude Code always streams (sdk is the only transport since v0.8.0).
-    assert _agent_streaming_unsupported_reason(_agent("claude_code")) == ""
-    assert (
-        _agent_streaming_unsupported_reason(
-            SimpleNamespace(
-                _provider_config=SimpleNamespace(
-                    provider="claude_code",
-                    claude_code_transport="sdk",
-                )
-            )
-        )
-        == ""
-    )
-
-    # The direct Codex provider emits text/reasoning notifications and must
-    # use the stream pump.
-    assert _agent_streaming_unsupported_reason(_agent("codex")) == ""
+    with pytest.raises(TypeError, match="internal boom"):
+        await _run_module(_turn_state(app, "hi"), _Raising(), _never_cancelled)
+    assert calls["n"] == 1
 
 
-@pytest.mark.asyncio
-async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
-    tmp_path: Path,
-) -> None:
+def test_dynamic_agent_module_carries_codex_provider_config() -> None:
     from clio_agent.config import LMProviderConfig
-    from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
@@ -597,7 +493,6 @@ async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
     )
     assert module._provider_config.provider == "codex"
     assert module._provider_config.codex_transport == "websocket"
-    assert _agent_streaming_unsupported_reason(module) == ""
 
 
 def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
@@ -628,251 +523,22 @@ def test_dynamic_agent_lm_config_preserves_claude_code_transport() -> None:
     assert cfg.claude_code_transport == "sdk"
 
 
-def test_build_stream_listeners_binds_known_predictors_explicitly() -> None:
-    agent = _ExpertStreamingAgent()
-
-    listeners = _build_stream_listeners(agent, _FakeStreamListener)
-
-    assert [listener.signature_field_name for listener in listeners] == [
-        "answer",
-        "answer",
-    ]
-    assert all(listener.predict is not None for listener in listeners)
-    assert listeners[0].predict is agent.chat_agent
-    assert listeners[1].predict is agent.answer_synthesizer
-
-
-async def test_expert_stream_responses_emit_live_field_chunks(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from dspy.streaming.messages import StreamResponse
-
-    audit_path = tmp_path / "stream-audit.jsonl"
-    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_path))
-    captured: dict[str, Any] = {}
-
-    def fake_streamify(program: Any, **kwargs: Any) -> Any:
-        captured["program"] = program
-        captured.update(kwargs)
-
-        async def fake_streamed(*args: Any, **kwargs: Any) -> Any:
-            del args
-            captured["forward_kwargs"] = kwargs
-            yield StreamResponse(
-                predict_name="data_expert.agent",
-                signature_field_name="analysis",
-                chunk="Analysis",
-                is_last_chunk=False,
-            )
-            yield StreamResponse(
-                predict_name="data_expert.agent",
-                signature_field_name="recommendations",
-                chunk="Do this",
-                is_last_chunk=False,
-            )
-            yield dspy.Prediction(
-                answer="Analysis\n\nRecommendations:\nDo this",
-                selected_expert="data_expert",
-                routing_rationale="",
-            )
-
-        return fake_streamed
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _ExpertStreamingAgent()
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    result = await _try_streamed_forward(
-        app,
-        "stream expert",
-        "sid",
-        emit_chunk,
-        session_mode="experts",
-        images=["native-image"],
-    )
-
-    assert result is not None
-    assert result.answer == "Analysis\n\nRecommendations:\nDo this"
-    assert chunks == ["Analysis", "\n\nRecommendations:\n", "Do this"]
-    assert captured["program"] is agent
-    assert captured["is_async_program"] is False
-    assert captured["forward_kwargs"]["images"] == ["native-image"]
-    listeners = captured["stream_listeners"]
-    assert all(listener.predict is not None for listener in listeners)
-    assert {listener.signature_field_name for listener in listeners} == {"answer"}
-    audit_rows = [
-        json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines() if line
-    ]
-    raw_events = [row for row in audit_rows if row["stage"] == "provider.raw_event"]
-    assert [row["provider"] for row in raw_events] == [
-        "dspy_streamify",
-        "dspy_streamify",
-        "dspy_streamify",
-    ]
-    assert {row["session_id"] for row in raw_events} == {"sid"}
-    assert [row["source_channel"] for row in raw_events] == [
-        "contract_delta",
-        "contract_delta",
-        "final_prediction",
-    ]
-    assert [row["signature_field_name"] for row in raw_events[:2]] == [
-        "analysis",
-        "recommendations",
-    ]
-
-
-async def test_raw_generic_provider_reasoning_reaches_thinking_bridge(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from clio_agent.runtime import lm_activity
-
-    async def fake_streamed(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        yield {"choices": [{"delta": {"reasoning": "native thought"}}]}
-        yield dspy.Prediction(answer="done")
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fake_streamed
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    observed: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        lm_activity,
-        "note_lm_provider_thinking_delta",
-        lambda text, *, provider="": observed.append((provider, text)),
-    )
-    agent = _DspyAgent("sync fallback should not run")
-    agent._provider_config = SimpleNamespace(provider_id="vllm", provider="openai")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-
-    result = await _try_streamed_forward(app, "reasoning", "sid", lambda _text: None)
-
-    assert result is not None
-    assert result.answer == "done"
-    assert observed == [("vllm", "native thought")]
-
-
-async def test_stream_failure_after_delta_raises_instead_of_sync_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    async def fail_after_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        yield "partial "
-        raise RuntimeError("stream transport lost")
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_after_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    with pytest.raises(_StreamingOutputError, match="stream transport lost"):
-        await _try_streamed_forward(app, "stream breaks", "sid", emit_chunk)
-
-    assert chunks == ["partial "]
-    assert agent.calls == []
-
-
-async def test_stream_failure_before_delta_raises_instead_of_sync_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise RuntimeError("planner/provider failed before output")
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    with pytest.raises(_StreamingOutputError, match="planner/provider failed"):
-        await _try_streamed_forward(app, "stream breaks before output", "sid", emit_chunk)
-
-    assert chunks == []
-    assert agent.calls == []
-
-
-async def test_stream_without_final_prediction_after_delta_raises(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    async def stream_without_prediction(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        yield "partial "
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return stream_without_prediction
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    chunks: list[str] = []
-
-    async def emit_chunk(text: str) -> None:
-        chunks.append(text)
-
-    with pytest.raises(_StreamingOutputError, match="without a final prediction"):
-        await _try_streamed_forward(app, "stream ends oddly", "sid", emit_chunk)
-
-    assert chunks == ["partial "]
-    assert agent.calls == []
-
-
-def test_mid_stream_failure_surfaces_error_without_sync_rerun(
+def test_mid_stream_failure_keeps_the_streamed_text_and_runs_once(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fail_after_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        yield "partial "
-        raise RuntimeError("stream transport lost")
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_after_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    script = _Script([("partial ", "", "answer")], error=RuntimeError("stream transport lost"))
+    install_scripted_module(monkeypatch, script)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("unused"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _run_turn(client, app)
 
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
-    assert agent.calls == []
+    assistant = _last_assistant(client, sid)
+    assert len(script.calls) == 1
     assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "provider_error"
-    assert "stream transport lost" in assistant["error_info"]["message"]
+    assert assistant["error_info"]["error"] == "agent_error"
+    assert assistant["error_info"]["message"] == "agent.forward raised: stream transport lost"
+    assert assistant["error_info"]["details"]["original_error"] == "RuntimeError"
+    assert assistant["error_info"]["details"]["partial_output"] is True
     assert assistant["parts"][0]["text"] == "partial "
 
     history = app.state.bus._history.get(sid, [])
@@ -884,39 +550,22 @@ def test_mid_stream_failure_surfaces_error_without_sync_rerun(
     completed_messages = [e for e in history if e.type == "message.completed"]
     assert completed_parts[-1].payload["final_text"] == "partial "
     assert completed_messages[-1].payload["stop_reason"] == "error"
-    assert completed_messages[-1].payload["error_info"]["error"] == "provider_error"
+    assert completed_messages[-1].payload["error_info"]["error"] == "agent_error"
 
 
-def test_pre_stream_failure_surfaces_error_without_sync_rerun(
+def test_failure_before_any_output_is_a_typed_error_with_no_parts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise RuntimeError("planner/provider failed before output")
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    script = _Script(error=RuntimeError("planner/provider failed before output"))
+    install_scripted_module(monkeypatch, script)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("unused"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _run_turn(client, app)
 
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
-    assert agent.calls == []
+    assistant = _last_assistant(client, sid)
+    assert len(script.calls) == 1
     assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "provider_error"
+    assert assistant["error_info"]["error"] == "agent_error"
     assert "planner/provider failed" in assistant["error_info"]["message"]
     assert assistant["parts"] == []
 
@@ -924,67 +573,43 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     deltas = [e for e in history if e.type == "message.part.delta"]
     completed_messages = [e for e in history if e.type == "message.completed"]
     assert deltas == []
-    assert completed_messages[-1].payload["stop_reason"] == "error"
-    assert completed_messages[-1].payload["error_info"]["details"]["partial_output"] is False
-    assert completed_messages[-1].payload["error_info"]["details"]["stream_source"] == "batch"
-    assert completed_messages[-1].payload["metadata"]["stream_source"] == "batch"
-    _assert_structured_stream_fallback(
-        completed_messages[-1].payload["metadata"], "stream_failed_before_output"
-    )
-    assert (
-        "RuntimeError" in completed_messages[-1].payload["metadata"]["stream_fallback"]["message"]
-    )
+    payload = completed_messages[-1].payload
+    assert payload["stop_reason"] == "error"
+    assert payload["error_info"]["details"]["partial_output"] is False
+    assert payload["error_info"]["details"]["original_error"] == "RuntimeError"
+    assert payload["metadata"]["stream_source"] == "batch"
+    _assert_structured_stream_fallback(payload["metadata"], "sync_execution_path")
 
 
 def test_codex_missing_auth_surfaces_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise ExceptionGroup(
-            "provider stream failed",
-            [
-                RuntimeError(
-                    "[codex-gpt-5.5] unexpected status 401 Unauthorized: "
-                    "access token rejected, "
-                    "url: https://chatgpt.com/backend-api/codex/responses"
-                )
-            ],
-        )
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    # The message names a CLI provider, so that provider must be the one configured.
-    agent = _DspyAgent("sync fallback should not run")
-    agent._provider_config = SimpleNamespace(provider_id="codex", provider="codex")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            error=RuntimeError(
+                "[codex-gpt-5.5] unexpected status 401 Unauthorized: "
+                "access token rejected, "
+                "url: https://chatgpt.com/backend-api/codex/responses"
+            )
+        ),
     )
-    _wait_for_turn_settlement(app, sid)
+    # The message names a CLI provider, so that provider must be the one configured.
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_ProviderAgent("codex", "codex"))
+    client = enter_client(app)
+    sid = _run_turn(client, app)
 
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [message for message in messages if message["role"] == "assistant"][-1]
-    assert assistant["error_info"]["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
-    assert "live streaming failed" not in assistant["error_info"]["message"]
-    assert "chatgpt.com" not in assistant["error_info"]["message"]
+    error = _last_assistant(client, sid)["error_info"]
+    assert error["error"] == "provider_error"
+    assert error["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert "chatgpt.com" not in error["message"]
 
 
 def test_provider_http_error_surfaces_one_plain_line(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    """rel18: OpenRouter's 404 reached the user as a truncated
-    "live streaming failed before emitting output: ExceptionGroup[...]". The
-    user gets the provider's own words on one line; the trace keeps the rest."""
+    """rel18: OpenRouter's 404 must reach the user in the provider's own words on
+    one line, not wrapped in the transport's exception text."""
     import litellm
 
     raw = litellm.NotFoundError(
@@ -996,76 +621,34 @@ def test_provider_http_error_surfaces_one_plain_line(
         llm_provider="openrouter",
     )
     provider_error = dspy.LM("openrouter/openrouter/free", api_key="t")._wrap_litellm_exception(raw)
-
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise ExceptionGroup("unhandled errors in a TaskGroup", [provider_error])
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    agent._provider_config = SimpleNamespace(provider_id="openrouter", provider="openai")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    install_scripted_module(monkeypatch, _Script(error=provider_error))
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_ProviderAgent("openrouter", "openai"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _run_turn(client, app)
 
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [message for message in messages if message["role"] == "assistant"][-1]
-    assert assistant["error_info"]["message"] == (
-        "OpenRouter: No endpoints available for openrouter/free (HTTP 404)"
-    )
-    history = app.state.bus._history.get(sid, [])
-    completed = [e for e in history if e.type == "message.completed"][-1]
-    _assert_structured_stream_fallback(completed.payload["metadata"], "stream_failed_before_output")
-    assert "LMUnsupportedModelError" in completed.payload["metadata"]["stream_fallback"]["message"]
+    error = _last_assistant(client, sid)["error_info"]
+    assert error["error"] == "provider_error"
+    assert error["message"] == "OpenRouter: No endpoints available for openrouter/free (HTTP 404)"
+    assert error["details"]["original_error"] == type(provider_error).__name__
 
 
 def test_claude_code_missing_sdk_surfaces_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise ExceptionGroup(
-            "provider stream failed",
-            [ModuleNotFoundError("No module named 'claude_agent_sdk'")],
-        )
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    # The message names a CLI provider, so that provider must be the one configured.
-    agent = _DspyAgent("sync fallback should not run")
-    agent._provider_config = SimpleNamespace(provider_id="claude_code", provider="claude_code")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
+    install_scripted_module(
+        monkeypatch, _Script(error=ModuleNotFoundError("No module named 'claude_agent_sdk'"))
     )
-    _wait_for_turn_settlement(app, sid)
+    # The message names a CLI provider, so that provider must be the one configured.
+    app = build_app(
+        sessions_path=tmp_path / "s.json", agent=_ProviderAgent("claude_code", "claude_code")
+    )
+    client = enter_client(app)
+    sid = _run_turn(client, app)
 
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [message for message in messages if message["role"] == "assistant"][-1]
-    assert assistant["error_info"]["message"] == CLAUDE_CODE_INSTALL_FAILED_MESSAGE
-    assert "live streaming failed" not in assistant["error_info"]["message"]
-    assert "Traceback" not in assistant["error_info"]["message"]
+    error = _last_assistant(client, sid)["error_info"]
+    assert error["error"] == "provider_error"
+    assert error["message"] == CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+    assert "Traceback" not in error["message"]
 
 
 def test_claude_code_signed_out_surfaces_one_line_and_the_sign_in_provider(
@@ -1090,90 +673,45 @@ def test_claude_code_signed_out_surfaces_one_line_and_the_sign_in_provider(
         "[cc-claude-sonnet-5] litellm.MidStreamFallbackError: "
         f"litellm.APIConnectionError: {signed_out}\nTraceback (most recent call last): ..."
     )
-
-    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        raise ExceptionGroup("unhandled errors in a TaskGroup", [wrapped])
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_before_chunk
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    agent._provider_config = SimpleNamespace(provider_id="claude_code", provider="claude_code")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "Hello"}]},
+    install_scripted_module(monkeypatch, _Script(error=wrapped))
+    app = build_app(
+        sessions_path=tmp_path / "s.json", agent=_ProviderAgent("claude_code", "claude_code")
     )
-    _wait_for_turn_settlement(app, sid)
+    client = enter_client(app)
+    sid = _run_turn(client, app, "Hello")
 
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [message for message in messages if message["role"] == "assistant"][-1]
-    error = assistant["error_info"]
+    error = _last_assistant(client, sid)["error_info"]
     assert error["error"] == "provider_error"
     assert error["message"] == CLAUDE_CODE_SIGNED_OUT_MESSAGE
     assert error["details"]["reason"] == "provider_auth_required"
     assert error["details"]["provider_id"] == "claude_code"
     assert error["details"]["provider_label"] == "Claude Code"
-    history = app.state.bus._history.get(sid, [])
-    completed = [e for e in history if e.type == "message.completed"][-1]
-    _assert_structured_stream_fallback(completed.payload["metadata"], "stream_failed_before_output")
 
 
 def test_a_turn_that_outlives_the_post_still_settles_with_its_real_outcome(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    """Lifecycle pin for the whole streamed-failure family above.
+    """Lifecycle pin for the failed-turn family above.
 
-    Those tests only ever settled correctly because the turn happened to finish
-    inside ``POST /messages``. This one makes the turn GENUINELY outlive the POST
-    (a real await before the stream fails) so the outcome no longer depends on
-    machine speed or coverage instrumentation: an entered client keeps one
-    app-lifetime portal, the turn survives, and it settles on its real
-    ``provider_error`` outcome.
+    The module blocks past the POST response before it fails, so the outcome no
+    longer depends on machine speed: an entered client keeps one app-lifetime
+    portal, the turn survives, and it settles on its real error.
 
     SABOTAGE: build the client as a bare ``TestClient(app)`` instead of via
     ``enter_client`` -> each request gets a transient portal whose teardown
-    cancels the still-running turn -> stop_reason comes back ``cancelled`` and
-    ``error_info`` is the cancellation envelope -> this goes red.
+    cancels the still-running turn -> stop_reason comes back ``cancelled``.
     """
 
-    async def fail_after_awaiting(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        # Outlive the POST response by a margin no scheduler jitter closes.
-        await asyncio.sleep(0.3)
-        raise RuntimeError("planner/provider failed before output")
-        yield "unreachable"
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return fail_after_awaiting
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    agent = _DspyAgent("sync fallback should not run")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    script = _Script(error=RuntimeError("planner/provider failed before output"), delay_s=0.3)
+    install_scripted_module(monkeypatch, script)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("unused"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _run_turn(client, app)
 
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
+    assistant = _last_assistant(client, sid)
     assert assistant["stop_reason"] == "error"
-    assert assistant["error_info"]["error"] == "provider_error"
-    assert agent.calls == []  # and still no silent sync rerun
+    assert assistant["error_info"]["error"] == "agent_error"
+    assert len(script.calls) == 1  # and never a second run
 
 
 def test_non_text_parts_skip_deltas(tmp_path: Path) -> None:
@@ -1213,30 +751,18 @@ def test_non_text_parts_skip_deltas(tmp_path: Path) -> None:
 def test_live_streamed_deltas_are_marked_live(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
-        await emit_chunk("Hel")
-        await emit_chunk("lo")
-        return _Pred(answer="Hello", selected_expert="", routing_rationale="")
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            [("Hel", "", "answer"), ("lo", "", "answer")],
+            result=_Pred(answer="Hello", selected_expert="", routing_rationale=""),
+        ),
+    )
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     set_config("trace.path", str(tmp_path / "semantic_traces"))
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app)
 
     history = app.state.bus._history.get(sid, [])
     added = [e for e in history if e.type == "message.part.added"]
@@ -1272,9 +798,7 @@ def test_live_streamed_deltas_are_marked_live(
     assert len(completed) == 1
     assert completed[0].payload["stream_source"] == "live"
     assert message_completed[-1].payload["metadata"]["stream_source"] == "live"
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
-    text_parts = [p for p in assistant["parts"] if p["type"] == "text"]
+    text_parts = [p for p in _last_assistant(client, sid)["parts"] if p["type"] == "text"]
     assert text_parts[-1]["metadata"]["stream_source"] == "live"
     assert "stream_fallback" not in text_parts[-1]["metadata"]
 
@@ -1282,30 +806,20 @@ def test_live_streamed_deltas_are_marked_live(
 def test_live_streamed_contract_fields_emit_message_part_deltas(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
-        await emit_chunk("thinking ", "main", "reasoning")
-        await emit_chunk("next ", "main", "next_thought")
-        await emit_chunk("answer", "main", "answer")
-        return _Pred(answer="answer", selected_expert="", routing_rationale="")
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            [
+                ("thinking ", "main", "reasoning"),
+                ("next ", "main", "next_thought"),
+                ("answer", "main", "answer"),
+            ],
+            result=_Pred(answer="answer", selected_expert="", routing_rationale=""),
+        ),
+    )
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app)
 
     history = app.state.bus._history.get(sid, [])
     transcript_events = [e for e in history if e.type.startswith("turn.")]
@@ -1332,28 +846,16 @@ def test_live_streamed_contract_fields_emit_message_part_deltas(
 def test_provider_aux_streams_as_thinking_part(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
-        await emit_chunk("raw provider thought", "main", "provider_thinking:claude_code_sdk")
-        return _Pred(answer="done", selected_expert="", routing_rationale="")
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            [("raw provider thought", "main", "provider_thinking:claude_code_sdk")],
+            result=_Pred(answer="done", selected_expert="", routing_rationale=""),
+        ),
+    )
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app)
 
     history = app.state.bus._history.get(sid, [])
 
@@ -1433,28 +935,16 @@ def test_live_streamed_events_carry_turn_id(
     """#711 on the live path: lazily-created streamed assistant message + its deltas/
     completed events all correlate to the originating user turn."""
 
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
-        await emit_chunk("Hel")
-        await emit_chunk("lo")
-        return _Pred(answer="Hello", selected_expert="", routing_rationale="")
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            [("Hel", "", "answer"), ("lo", "", "answer")],
+            result=_Pred(answer="Hello", selected_expert="", routing_rationale=""),
+        ),
+    )
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app)
 
     history = app.state.bus._history.get(sid, [])
     turn_id = _turn_id_of(history)
@@ -1472,53 +962,6 @@ def test_live_streamed_events_carry_turn_id(
     assert all(e.payload["turn_id"] == turn_id for e in asst_created)
 
 
-def test_streamify_final_prediction_without_chunks_has_specific_fallback(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
-) -> None:
-    async def prediction_only_stream(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        yield dspy.Prediction(answer="complete answer", selected_expert="", routing_rationale="")
-
-    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
-        del args, kwargs
-        return prediction_only_stream
-
-    streamify_module = importlib.import_module("dspy.streaming.streamify")
-    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_DspyAgent("fallback"))
-    client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "stream me"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
-
-    history = app.state.bus._history.get(sid, [])
-    deltas = [e for e in history if e.type == "message.part.delta"]
-    added = [
-        e for e in history if e.type == "message.part.added" and e.payload["part"]["type"] == "text"
-    ]
-    completed_parts = [
-        e for e in history if e.type == "message.part.completed" and e.payload["stream_source"]
-    ]
-    completed_messages = [e for e in history if e.type == "message.completed"]
-
-    assert deltas == []
-    assert added[-1].payload["part"]["text"] == "complete answer"
-    assert added[-1].payload["part"]["metadata"]["stream_source"] == "batch"
-    _assert_structured_stream_fallback(
-        added[-1].payload["part"]["metadata"], "stream_completed_without_chunks"
-    )
-    assert completed_parts[-1].payload["stream_source"] == "batch"
-    assert completed_parts[-1].payload["final_text"] == "complete answer"
-    assert completed_messages[-1].payload["metadata"]["stream_source"] == "batch"
-    _assert_structured_stream_fallback(
-        completed_messages[-1].payload["metadata"], "stream_completed_without_chunks"
-    )
-
-
 def test_streamed_visible_answer_survives_to_wire_verbatim(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
@@ -1529,45 +972,31 @@ def test_streamed_visible_answer_survives_to_wire_verbatim(
     instant any prose scrub returns to the streamed-text path."""
 
     # The chunks split the "workflow_state shows ..." sentence across a boundary:
-    # the old per-chunk/whole-text cleaner distinction is gone, so the persisted
-    # part is simply the concatenation, verbatim.
+    # the persisted part is simply the concatenation, verbatim.
     sub_chunks = [
         "I identified MTA1 as the nearest ranked station. ",
         "The typed workflow_state shows ",
         "station_catalog is complete. Coverage exists in the region.",
     ]
     verbatim = "".join(sub_chunks)
-
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _Pred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
-        for chunk in sub_chunks:
-            await emit_chunk(chunk, "data", "answer")
-        # Agent change → closes the "data" answer part (stored verbatim).
-        await emit_chunk("Final orchestrator answer.", "main", "answer")
-        return _Pred(answer="Final orchestrator answer.", selected_expert="", routing_rationale="")
-
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(
+        monkeypatch,
+        _Script(
+            [(chunk, "data", "answer") for chunk in sub_chunks]
+            # Agent change -> closes the "data" answer part (stored verbatim).
+            + [("Final orchestrator answer.", "main", "answer")],
+            result=_Pred(
+                answer="Final orchestrator answer.", selected_expert="", routing_rationale=""
+            ),
+        ),
+    )
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "go"}]},
-    )
-    _wait_for_turn_settlement(app, sid)
+    sid = _run_turn(client, app, "go")
 
-    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assistant = [m for m in messages if m["role"] == "assistant"][-1]
     data_parts = [
         p
-        for p in assistant["parts"]
+        for p in _last_assistant(client, sid)["parts"]
         if p["type"] == "text" and p.get("agent_id") == "data" and (p["text"] or "").strip()
     ]
     assert data_parts, "expected the sub-agent (data) streamed answer part"
@@ -1601,25 +1030,18 @@ def test_streamed_field_buffer_cleared_at_turn_end_and_turn_scoped(
 
     calls = {"n": 0}
 
-    async def fake_streamed_forward(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        session_mode: str = "chat",
-        session_edit_mode: str = "diff",
-    ) -> _ReasoningPred:
-        del app, enriched_text, sid, session_mode, session_edit_mode
+    def script(**kwargs: Any) -> _ReasoningPred:
+        del kwargs
         calls["n"] += 1
         if calls["n"] == 1:
             # Turn 1: the reasoning channel streams live -> recorded in the buffer.
-            await emit_chunk(repeated, "main", "reasoning")
-            await emit_chunk("turn one answer", "main", "answer")
+            emit_live_text(repeated, "main", "reasoning")
+            emit_live_text("turn one answer", "main", "answer")
             return _ReasoningPred(answer="turn one answer")
         # Turn 2: nothing streams; the finalize reasoning repeats turn 1's phrasing.
         return _ReasoningPred(answer="turn two answer", reasoning=repeated)
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, script)
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent("fallback"))
     client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]

@@ -94,21 +94,22 @@ def _probe_codex_direct(
     source: str,
     auth_mode: str,
 ) -> IntegrationStatus:
-    """Probe the direct Codex provider: a signed-in credential is its only local dependency.
+    """Probe the direct Codex provider: a usable sign-in is its only local dependency.
 
-    Unlike the deleted Codex SDK provider, there is no CLI binary, no SDK
-    package, and no ``auth.json`` to check -- the provider talks HTTP/WebSocket
-    directly, so the sole readiness signal is whether CLIO holds a valid,
-    signed-in credential (:mod:`clio_agent.providers.codex.credentials`).
+    There is no CLI binary or SDK package to check -- the provider talks
+    HTTP/WebSocket directly. The readiness signal is
+    :func:`~clio_agent.providers.codex.credentials.direct_signed_in`: CLIO's own
+    sign-in, else the Codex CLI login at ``$CODEX_HOME/auth.json`` (default
+    ``~/.codex``).
     """
-    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
 
     details: dict[str, Any] = {
         "provider": "codex",
         "model": config.model,
         "transport": config.codex_transport,
     }
-    if not CodexCredentialStore().is_signed_in():
+    if not direct_signed_in():
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,

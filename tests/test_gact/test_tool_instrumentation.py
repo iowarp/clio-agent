@@ -174,7 +174,8 @@ def test_declared_structured_content_never_leaks_when_observer_raises() -> None:
             return f"did {task}"
 
         (tool,) = instrument_tools([_bare_tool(leaking_tool, "leaking_tool_a")])
-        assert tool(task="t1") == "did t1"
+        with pytest.raises(RuntimeError, match="observer blew up"):
+            tool(task="t1")  # an observer that cannot record fails the call
         # Without the fix this is the leaked payload; the wrapper's own
         # finally-pop must have already consumed it.
         assert pop_declared_structured_content() is None
@@ -507,7 +508,9 @@ def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Pat
 # --------------------------------------------------------------------------- #
 
 
-def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path) -> None:
+def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
     create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
@@ -607,10 +610,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             "delete_a2ui_surface": {"surface_id": "test-surface"},
             # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
             # (this harness's agent_def has no parent_id, so it qualifies).
-            # Scans configured providers only (is_provider_configured) and each
-            # probe is deadline-bounded, so this stays fast/offline in CI; it
-            # may raise (e.g. no providers configured) -- the invariant under
-            # test holds regardless.
+            # Its discovery is stubbed below: a stored sign-in (e.g. Argonne)
+            # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
             # Bounded workspace-resource reads, auto-attached to every react
             # expert. Called against a missing resource id on purpose: each
@@ -625,12 +626,18 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # the wait loop ever touches the processing task record — fast,
             # deterministic, and offline, like the rest of this table.
             "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0},
+            # Reads back compacted context; called with neither query nor ids on
+            # purpose: a typed refusal, and the tool_call part must land anyway.
+            "recall_context": {},
             "memory_search_sessions": {"query": "missing"},
             "memory_read_session_summary": {"target_session_id": sid},
             "memory_read_context_frame": {
                 "target_session_id": sid,
                 "frame_id": "missing",
             },
+            # Phase 9 (tier-1 MAIN only): outside an agent loop it refuses typed
+            # (draft_alternatives_refused); the tool_call part lands either way.
+            "draft_alternatives": {"n": 2, "rubric": "short"},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
@@ -638,6 +645,9 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
         )
 
         exercised: list[str] = []
+        monkeypatch.setattr(
+            "clio_agent.providers.model_discovery.refresh.refresh_all_sync", lambda: []
+        )
         with _gact_app_context(app), _tool_session_context(sid):
             for name, kwargs in calls.items():
                 try:

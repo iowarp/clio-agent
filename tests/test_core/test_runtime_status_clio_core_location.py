@@ -176,16 +176,17 @@ def test_read_daemon_pid_tolerates_missing_and_malformed_pidfiles(
 
 
 def test_the_backend_follows_the_config_file_before_the_env(tmp_path: Path) -> None:
-    """``arc.store: local`` in the config file is what the store builds, env notwithstanding."""
-    store = _store(tmp_path, "arc:\n  store: local\n", env={"CLIO_ARC_STORE": "cte"})
+    """``arc.store`` in the config file is what the store builds, env notwithstanding;
+    clio-core is always required."""
+    store = _store(tmp_path, "arc:\n  store: cte\n", env={"CLIO_ARC_STORE": "other"})
     probe = _probe(
-        tmp_path, store, set(), env={"CLIO_ARC_STORE": "cte"}, clio_runtime_dir=tmp_path / "s"
+        tmp_path, store, set(), env={"CLIO_ARC_STORE": "other"}, clio_runtime_dir=tmp_path / "s"
     )
 
     status = probe.probe_clio_core()
 
-    assert status.details["arc_backend"] == "local"
-    assert status.required is False
+    assert status.details["arc_backend"] == "cte"
+    assert status.required is True
     assert "config:arc.store" in (status.config_source or "")
 
 

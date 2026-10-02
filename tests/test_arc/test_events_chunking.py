@@ -24,7 +24,7 @@ import msgspec
 import pytest
 
 from clio_agent import conf
-from clio_agent.arc.live import events_chunk_scope, is_events_scope
+from clio_agent.arc.live import events_chunk_scope
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
 
@@ -230,29 +230,20 @@ def test_append_amplification_is_o_chunk(
 # --------------------------------------------------------------------------- #
 
 
-def test_events_family_never_in_search_scopes(
-    arc: ARCMemory, request: pytest.FixtureRequest
-) -> None:
+def test_events_family_never_gets_a_search_companion(arc: ARCMemory) -> None:
+    """The ``_events`` family never writes a search companion (the log must never
+    pollute scope search), while an ordinary expert scope does. Read directly from
+    clio-core: its search itself is unavailable (#905)."""
     for e in _events(6):
         arc.record_semantic_event(e)
-    # A normal expert scope DOES get indexed, so search has a legitimate hit to return.
     arc.append_segment(SID, "agentA", "observation", {"text": "alpha beta question answer"})
 
-    # Even a query built from the event log's own words must never surface an _events
-    # chunk (its search companion is deliberately never written).
-    hits = arc.search_segment_scopes(SID, "question answer reasoned alpha")
-    returned = [scope for scope, _ in hits]
-    assert all(not is_events_scope(s) for s in returned), returned
-    if request.node.callspec.id == "cte":
-        # Today's real behavior (clio-core#905): the indexer chimod's binary is absent
-        # from every published 2.2.1 wheel, so this leg's search is honestly reported
-        # degraded (never a silent "semantic" empty result) and returns zero hits --
-        # "agentA" cannot appear, but that must never be misread as an _events leak.
-        assert arc.segment_search_is_semantic() is False
-        assert returned == []
-        return
-    # The legitimate expert scope is still discoverable (search itself works).
-    assert "agentA" in returned
+    store = arc._store
+    tag = store._cte.Tag(store.tag("segments"))
+    companions = {n for n in tag.GetContainedBlobs() if n.endswith(".text")}
+    events_companions = [n for n in companions if "_events" in n]
+    assert events_companions == []
+    assert any("agentA" in n for n in companions)
 
 
 # --------------------------------------------------------------------------- #

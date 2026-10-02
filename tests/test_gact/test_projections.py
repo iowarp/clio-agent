@@ -7,7 +7,6 @@ stub, plus the finalized default that the durable file backend is now on.
 
 import pytest
 
-from clio_agent.gact import semantic_events as se
 from clio_agent.gact.semantic_events import (
     SemanticEvent,
     build_trace_backend,
@@ -16,6 +15,7 @@ from clio_agent.gact.semantic_events import (
     project_history,
     project_sse,
 )
+from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
 
 def _handoff_event():
@@ -170,7 +170,7 @@ def test_file_backend_dotted_directory_writes_per_session(tmp_path):
     # opened a directory as a file and silently dropped every event (empty trace).
     dotted_dir = tmp_path / "trace_lm_studio-qwopus3.5-9b-v3_sandiego_5"
     dotted_dir.mkdir()
-    backend = se.FileSemanticTraceBackend(dotted_dir)
+    backend = FileSemanticTraceBackend(dotted_dir)
     event = SemanticEvent(
         event_type="probe.test",
         session_id="sessABC",
@@ -190,7 +190,7 @@ def test_file_backend_dotted_directory_writes_per_session(tmp_path):
 
 def test_file_backend_explicit_jsonl_path_is_single_file(tmp_path):
     target = tmp_path / "all.jsonl"
-    backend = se.FileSemanticTraceBackend(target)
+    backend = FileSemanticTraceBackend(target)
     event = SemanticEvent(
         event_type="probe.test",
         session_id="s1",

@@ -12,8 +12,7 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
   enrichment persisted at refresh time (#1211 review D4).
 * :mod:`.codex` — the Codex Direct transport's LIVE account model list (the
   backend's ``GET /backend-api/codex/models``, asked with CLIO's own Codex
-  credential; see :func:`discover_codex`). The SDK transport's live list is
-  :mod:`clio_agent.providers.codex.sdk_discovery` (the SDK's ``model/list``).
+  credential, else the Codex CLI login; see :func:`discover_codex`).
 * :mod:`.claude_code_catalog` — the maintained GitHub catalog document
   (:data:`~clio_agent.providers.model_discovery.claude_code_catalog.CLAUDE_CODE_CATALOG_URL`):
   the single source of Claude Code model ids, per-model input-modality
@@ -31,7 +30,7 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
   refresh action (#1211 review R2/R3) and the ``refresh_provider_models`` agent
   tool (#1211 review R6, expert-pool-primary doctrine).
 
-At service startup and on explicit checks, Codex refreshes through its SDK and
+At service startup and on explicit checks, Codex refreshes through its backend model list and
 Claude Code refreshes through the maintained GitHub catalog plus one CLI
 sign-in check. ``GET /v1/providers/{id}/models``
 (:mod:`clio_agent.gact.routes.providers`) reads that verified state without
@@ -73,7 +72,6 @@ from clio_agent.providers.model_discovery.modality_evidence import (
 )
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
-    CODEX_SDK_SOURCE,
     CODEX_SOURCE,
     HTTP_SOURCE,
     OVERLAY_STALENESS_REASONS,
@@ -99,7 +97,6 @@ from clio_agent.providers.model_discovery.refresh import (
 )
 
 __all__ = [
-    "CODEX_SDK_SOURCE",
     "CODEX_SOURCE",
     "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",

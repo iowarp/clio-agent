@@ -4,10 +4,9 @@ Why this exists (found live 2026-09-03, leg C2): the leg scripts boot their
 gact ``run_server`` from the ambient shell env, so ARC resolves the USER-level
 CTE config (``AppData/Local/clio-agent/cte/cte.yaml``) — whose 50GB file-tier
 allocation cannot preflight on this box (27.5GB free on C:, no pre-allocated
-``storage.bin``). The server then degrades LOUDLY to ``LocalFSStore``
-(``clio_core_file_capacity_unavailable``) — typed and surfaced exactly as
-designed, but a live GATE must hold the real CTE daemon (owner doctrine:
-ARC-local is unit-test-only, never gate evidence).
+``storage.bin``), so the server refuses to start with a typed
+``ArcStoreUnavailableError`` (``clio_core_file_capacity_unavailable``). A private
+daemon with a bounded file tier lets the leg run on the real clio-core.
 
 The pytest real-case suite is immune because ``tests/conftest.py`` builds a
 session-private real daemon via :mod:`tests._cte_isolation` (512MB file tier,
@@ -18,8 +17,7 @@ wrapper reuses that exact machinery for the standalone leg scripts:
    (``CLIO_RUNTIME_STATE_DIR``/``CLIO_ARC_STORE_CONFIG``/``CLIO_SERVER_CONF``/
    ``CLIO_CORE_PORT``/``USER``) in THIS process's env,
 2. eagerly spawn+attach the private daemon and **hard-fail (exit 2) if it does
-   not come up** — the wrapper's whole point is that the leg never runs
-   degraded,
+   not come up** (the typed ``ArcStoreUnavailableError`` is printed),
 3. exec the leg command as a child (it inherits the env, so the gact
    ``run_server`` subprocess composes the same private tiers),
 4. deterministically release this process's client, then reap the daemon.
@@ -44,6 +42,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))  # tests.* is an importable package from the repo root
 
+from clio_agent.arc.init_degradation import ArcStoreUnavailableError  # noqa: E402
 from tests._cte_isolation import (  # noqa: E402
     cte_isolation_available,
     eagerly_attach_private_daemon,
@@ -61,7 +60,7 @@ def main(argv: list[str]) -> int:
     if not cte_isolation_available():
         print(
             "FATAL: clio-core CTE bindings/launcher unavailable on this box; "
-            "a real-CTE gate run is impossible (do NOT fall back to ARC-local).",
+            "a real-CTE gate run is impossible.",
             file=sys.stderr,
         )
         return 2
@@ -73,12 +72,13 @@ def main(argv: list[str]) -> int:
     print(f"[private-cte] root={root} port={isolation.port} user={os.environ['USER']}")
 
     try:
-        if not eagerly_attach_private_daemon():
-            print(
-                "FATAL: private clio-core daemon did not come up (see the ARC "
-                "init-degradation log above); refusing to run the leg degraded.",
-                file=sys.stderr,
-            )
+        try:
+            attached = eagerly_attach_private_daemon()
+        except ArcStoreUnavailableError as exc:
+            print(f"FATAL: private clio-core daemon did not come up: {exc}", file=sys.stderr)
+            return 2
+        if not attached:
+            print("FATAL: private clio-core daemon did not come up.", file=sys.stderr)
             return 2
         print("[private-cte] real clio-core backend attached; launching leg")
         child = [sys.executable, *argv]

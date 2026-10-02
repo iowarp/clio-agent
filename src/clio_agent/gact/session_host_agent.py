@@ -59,18 +59,18 @@ def _selected_ref(app: "FastAPI", sid: str, req: "PostMessageRequest") -> "Model
 
 
 def _host_config(ref: "ModelRef") -> "LMProviderConfig":
-    """The provider config the host is built with: exactly the selected reference."""
+    """The provider config the host is built with: exactly the selected reference.
+
+    Raises:
+        ValueError: the reference names a removed transport (plain-language message).
+    """
 
     from clio_agent.config import LMProviderConfig  # noqa: PLC0415
-    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+    from clio_agent.gact.providers.config import removed_transport_message  # noqa: PLC0415
 
-    preset = get_provider(ref.provider_id)
-    variant = ref.variant.strip() if preset is not None and preset.provider_kind == "codex" else ""
-    return LMProviderConfig(
-        provider_id=ref.provider_id,
-        model=ref.model_id,
-        codex_variant=variant,  # type: ignore[arg-type]  # LMProviderConfig validates
-    )
+    if refusal := removed_transport_message(ref):
+        raise ValueError(refusal)
+    return LMProviderConfig(provider_id=ref.provider_id, model=ref.model_id)
 
 
 def _lock(app: "FastAPI") -> asyncio.Lock:
@@ -143,9 +143,8 @@ async def ensure_host_agent(app: "FastAPI", sid: str, req: "PostMessageRequest")
         _publish(app, agent)
         logger.info(
             "session host agent built reason=session_model_selection session=%s "
-            "provider=%s model=%s variant=%s",
+            "provider=%s model=%s",
             sid,
             ref.provider_id,
             ref.model_id,
-            ref.variant,
         )

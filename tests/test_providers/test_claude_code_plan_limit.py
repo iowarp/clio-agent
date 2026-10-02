@@ -74,15 +74,14 @@ def test_result_success_is_not_a_plan_limit() -> None:
 
 
 def test_plan_limit_error_message_is_never_classified_transient() -> None:
-    """The error must never contain one of lm.io_logging's transient markers --
-    a plan-limit hit is terminal for this window, not worth an immediate retry."""
-    from clio_agent.lm.io_logging import _is_transient_provider_error
+    """DSPy must never retry it: a plan-limit hit is terminal for this window."""
+    from dspy.utils.exceptions import is_retryable_lm_error
 
     err = plan_limit_from_result(
         _result_message(is_error=True, api_error_status=PLAN_LIMIT_HTTP_STATUS, result="")
     )
     assert err is not None
-    assert _is_transient_provider_error(err) is False
+    assert not is_retryable_lm_error(err)
 
 
 def test_rate_limit_event_message_names_the_model() -> None:
@@ -160,15 +159,25 @@ def test_claude_code_plan_limit_message_recovers_the_clean_sentence() -> None:
     assert "MidStreamFallbackError" not in message
 
 
-def test_litellm_wrapped_plan_limit_is_never_classified_transient() -> None:
-    """SABOTAGE (regression, #1529): once LiteLLM re-wraps a plan-limit hit as
-    ``MidStreamFallbackError``/``APIConnectionError``, BOTH class names are
-    themselves ``lm.io_logging`` transient markers -- so the LM retry layer
-    silently retried a terminal plan-limit failure (with backoff) exactly like
-    a crashed local model, which is why the failure was reported to keep
-    resurfacing after the user had already switched providers."""
-    from clio_agent.lm.io_logging import _is_transient_provider_error
+def test_an_engine_raised_plan_limit_is_never_retried_by_dspy() -> None:
+    """#1529 on the DSPy 3.4 engine: the engine raises the typed error bare; DSPy's
+    managed-call boundary maps an unclassified engine failure to ``LMUnexpectedError``,
+    which it never retries (message text cannot make it retryable), and the plan-limit
+    marker is still found on the wrapped error."""
+    from dspy.clients.errors import error_boundary
+    from dspy.utils.exceptions import is_retryable_lm_error
 
-    group, _clean = _litellm_wrapped_plan_limit()
-
-    assert _is_transient_provider_error(group.exceptions[0]) is False
+    err = plan_limit_from_result(
+        _result_message(is_error=True, api_error_status=PLAN_LIMIT_HTTP_STATUS, result=""),
+        model="claude-sonnet-5",
+    )
+    assert err is not None
+    try:
+        with error_boundary("claude_code/claude-sonnet-5", provider="claude_code", unexpected=True):
+            raise err
+    except Exception as wrapped:  # noqa: BLE001 - the boundary's mapped error
+        assert not is_retryable_lm_error(wrapped)
+        assert contains_claude_code_plan_limit(wrapped) is True
+        assert claude_code_plan_limit_message(wrapped) == str(err)
+    else:
+        raise AssertionError("the boundary did not re-raise")

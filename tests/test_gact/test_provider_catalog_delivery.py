@@ -215,11 +215,11 @@ def test_reasoning_default_prefers_the_clio_shipped_effort_over_the_provider_def
 
 
 def test_reasoning_default_falls_back_to_the_codex_reported_effort() -> None:
-    """With no shipped default, codex's own SDK default (translated through
+    """With no shipped default, codex's own reported default (translated through
     its own vocabulary table) is used, tagged 'provider'."""
     _seed(
         "codex_acct",
-        "codex://sdk",
+        "codex://direct",
         "gpt-5.6-sol",
         is_reasoning=True,
         reasoning_control="reasoning_effort",
@@ -240,14 +240,14 @@ def test_reasoning_default_falls_back_to_the_codex_reported_effort() -> None:
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         models=(profile,),
     )
     preset = LMProviderPreset(
         id="codex_acct",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="",
     )
     reasoning = model_catalog_row(preset, report, profile)["reasoning"]
@@ -341,13 +341,13 @@ def test_live_codex_catalog_advertises_its_typed_image_input() -> None:
         api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
-    _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
+    _seed("codex", "codex://direct", "gpt-5.6-luna", capabilities=("text", "image"))
     report = HandshakeReport(
         provider_id="codex",
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         models_source="live",
         generated_at="2026-09-02T12:00:00+00:00",
         models=(DiscoveredModel(id="gpt-5.6-luna"),),
@@ -373,9 +373,6 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     refreshed: list[str] = []
 
     def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
-        # Only the DIRECT transport's own catalog key ("codex") is ever
-        # populated here -- the SDK transport (S1b) has its own "codex_sdk"
-        # overlay key, deliberately never checked/refreshed in this test.
         return (
             {"models": [{"id": "gpt-5.6-luna"}]}
             if overlay_ready and provider_id == "codex"
@@ -409,6 +406,12 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     assert refreshed == ["codex"]
     assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
     assert provider["health"] == "ready"
+    # Codex models sit on the provider row like any other provider's: no
+    # ``transports`` list, no per-model ``transport`` tag, and no CLI ``client``
+    # fact (the direct transport runs no binary).
+    assert "transports" not in provider
+    assert all("transport" not in model for model in provider["models"])
+    assert "client" not in provider
 
 
 def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failure(
@@ -573,13 +576,13 @@ def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
         api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
-    _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
+    _seed("codex", "codex://direct", "gpt-5.6-luna", capabilities=("text", "image"))
     report = HandshakeReport(
         provider_id="codex",
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         models_source="overlay",
         generated_at="2026-09-03T09:00:00+00:00",
         evidence_generated_at="2026-01-02T03:04:05+00:00",
@@ -615,7 +618,7 @@ def test_static_catalog_rows_are_never_evidence() -> None:
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         models_source="static",
         generated_at="2026-09-03T09:00:00+00:00",
         models=(DiscoveredModel(id="gpt-5.5"),),
@@ -771,8 +774,6 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
 
     def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
         if provider_id != "codex":
-            # The SDK transport's own "codex_sdk" overlay key (S1b) --
-            # deliberately never populated in this test.
             return None
         entry: dict[str, object] = {"models": [{"id": "gpt-5.6-luna"}]}
         if stale:
@@ -827,13 +828,11 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
     staleness = {
         "reason": "overlay_refresh_failed",
         "description": "the most recent refresh failed",
-        "failed_reason": "SDK transport closed",
+        "failed_reason": "codex_direct_transport_error",
     }
 
     def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
         if provider_id != "codex":
-            # The SDK transport's own "codex_sdk" overlay key (S1b) --
-            # deliberately never populated in this test.
             return None
         return {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness}
 
@@ -843,7 +842,7 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
         del presets, only_configured
-        return [{"provider": "codex", "failed_reason": "SDK transport closed"}]
+        return [{"provider": "codex", "failed_reason": "codex_direct_transport_error"}]
 
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return HandshakeReport(

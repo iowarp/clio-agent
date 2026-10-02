@@ -9,9 +9,9 @@ start and 3.1 s at finalize per turn, and the judge freeze of #1333 was the same
 with an LM call.
 
 WHICH loop is running matters, and that is the #1334 follow-up (live evidence, two legs):
-the streamed LM path drives each provider call under its OWN ``asyncio.run`` loop on an
-anyio worker thread (``lm/io_logging.py::_clio_streamed_call``), and the ``lm.call``
-capture emits its semantic event from inside that private loop. A write there blocks only
+the streamed LM path drives each provider call on a loop that is not the server's
+(the persistent LM loop, ``lm/engines/lm_loop.py``), and the ``lm.call`` capture
+(``lm/call_trace.py``) emits its semantic event from inside that loop. A write there blocks only
 that one worker — the server keeps answering — but a guard keyed on "any running loop"
 refused it, and ``arc.memory.record_semantic_event`` catches the raise, so NINE semantic
 events per run were DROPPED: worse than the stall the guard replaced. The guard therefore
@@ -158,7 +158,7 @@ def on_server_loop() -> bool:
     """Whether THIS thread is currently running a registered (non-draining) server loop.
 
     The predicate for sync code that cannot await and must hand a store write to
-    ``gact.off_loop`` instead (``lm/io_logging.py``'s ``lm.call`` capture).
+    ``gact.off_loop`` instead (``lm/call_trace.py``'s ``lm.call`` capture).
     """
 
     loop = _running_loop_here()

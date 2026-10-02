@@ -81,7 +81,6 @@ HARDCODED | _MAX_LIVE_TOOL_OUTPUT_CHARS | gact/tool_progress.py:10 | - | live to
 HARDCODED | _REASONING_HEARTBEAT_S | gact/streaming.py:433 | - | reasoning SSE heartbeat 1.0s, raw
 HARDCODED | _MAX_WORKFLOW_SCHEMA_LEDGER_ENTRIES | gact/streaming.py:210 | - | workflow-schema ledger cap 64, raw
 HARDCODED | DEFAULT_MAX_CONCURRENT_AGENT_TASKS | gact/turn_spawn_executor.py:16 | - | fallback default 3 for agent_tasks.max_concurrent; the resolve default at line 28 uses it but the module const is also referenced raw (used 4x)
-HARDCODED | DEFAULT_TURN_TIMEOUT_S | providers/codex_stream.py:64 | - | codex turn timeout 180s, raw function default (limits.codex_sdk_progress_timeout_s IS resolved but this turn-timeout is separate)
 HARDCODED | DEFAULT_MCP_TIMEOUT_S | providers/handshake/mcp.py:33 | - | handshake MCP probe timeout 20s, raw
 HARDCODED | DEFAULT_TTL_S (handshake cache) | providers/handshake/cache.py:16 | - | handshake result cache TTL 30s, raw
 HARDCODED | DEFAULT_TTL_S (models_dev) / _FETCH_TIMEOUT_S | providers/handshake/sources/models_dev.py:40,43 | - | models.dev catalog TTL 24h / fetch timeout 6s, raw

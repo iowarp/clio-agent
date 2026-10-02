@@ -1,7 +1,7 @@
 """
 Tests for multi-provider LM configuration.
 
-Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
+Tests LMProviderConfig, load_config_from_env, and create_lm.
 """
 
 from pathlib import Path
@@ -14,10 +14,21 @@ from clio_agent import conf
 from clio_agent.config import (
     LMProviderConfig,
     create_lm,
-    create_planner_lm,
     load_config_from_env,
 )
 from tests.env_isolation import isolated_environ
+
+
+@pytest.fixture
+def _codex_test_wire(monkeypatch):
+    """The Codex direct engine on a static test credential (no sign-in, no network)."""
+    from dspy.lm15 import OpenAICodexLM
+
+    from clio_agent.providers.codex import direct_engine
+
+    monkeypatch.setattr(
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="test", account_id="acct")
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -104,61 +115,22 @@ class TestLMProviderConfig:
         config = LMProviderConfig()
         assert config.temperature is None
 
-    def test_default_planner_temperature(self):
-        """Default planner temperature should be 0.3."""
-        config = LMProviderConfig()
-        assert config.planner_temperature == 0.3
-        assert config.router_temperature == 0.3
-
-    def test_router_temperature_alias(self):
-        """Legacy router_temperature constructor arg should still configure the planner."""
-        config = LMProviderConfig(router_temperature=0.2)
-        assert config.planner_temperature == 0.2
-        assert config.router_temperature == 0.2
-
     def test_default_max_tokens(self):
         """Default max_tokens leaves the output budget to the provider (#1323)."""
         config = LMProviderConfig()
         assert config.max_tokens == 0
-        assert config.planner_max_tokens == 0
 
     def test_qwopus_profile_keeps_exact_inherited_cap(self):
         # model-capabilities brief 9.1: the qwen-name heuristic
         # (_uses_local_reasoning_model_profile / _apply_model_profile_defaults)
-        # that used to force planner_temperature/router_temperature to 0.0 for a
-        # "qwopus"-named model is deleted -- no per-model-name matching in code.
-        # planner_temperature keeps its own explicit default (0.3) regardless of
-        # the model name; only the inherited max_tokens cap is asserted here.
+        # is deleted -- no per-model-name matching in code, so the explicit
+        # max_tokens cap is kept exactly regardless of the model name.
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
             max_tokens=1024,
         )
         assert config.max_tokens == 1024
-        assert config.planner_temperature == 0.3
-        assert config.router_temperature == 0.3
-        assert config.planner_max_tokens == 1024
-
-    def test_qwopus_profile_respects_exact_explicit_planner_cap(self):
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="qwopus3.5-9b-v3",
-            max_tokens=1024,
-            planner_temperature=0.2,
-            planner_max_tokens=2048,
-        )
-        assert config.planner_temperature == 0.2
-        assert config.planner_max_tokens == 2048
-
-    def test_qwopus_profile_respects_explicit_planner_cap_above_floor(self):
-        """Explicit planner caps above the local reasoning floor should win."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="qwopus3.5-9b-v3",
-            max_tokens=1024,
-            planner_max_tokens=8192,
-        )
-        assert config.planner_max_tokens == 8192
 
     def test_default_environment(self):
         """Default environment should be 'dev'."""
@@ -299,40 +271,6 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.max_tokens == 8192
 
-    def test_env_planner_max_tokens_override(self):
-        """CLIO_LM_PLANNER_MAX_TOKENS should override planner max tokens."""
-        env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.max_tokens == 0
-            assert config.planner_max_tokens == 2048
-
-    def test_env_qwopus_profile_without_manual_planner_tuning(self):
-        """No per-model-name planner profile any more (brief 9.1) -- planner_temperature
-        keeps its own explicit default regardless of the configured model's name."""
-        env = {
-            "CLIO_LM_PROVIDER": "lm_studio",
-            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
-            "CLIO_LM_MAX_TOKENS": "1024",
-        }
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.planner_temperature == 0.3
-            assert config.planner_max_tokens == 1024
-
-    def test_env_qwopus_profile_preserves_small_manual_planner_cap(self):
-        """Explicit positive planner caps are sent exactly."""
-        env = {
-            "CLIO_LM_PROVIDER": "lm_studio",
-            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
-            "CLIO_LM_MAX_TOKENS": "8192",
-            "CLIO_LM_PLANNER_MAX_TOKENS": "1024",
-        }
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.max_tokens == 8192
-            assert config.planner_max_tokens == 1024
-
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
         env = {"CLIO_ENVIRONMENT": "production"}
@@ -451,18 +389,6 @@ class TestLoadConfigFileLayerWins:
         self._write_user_config("runtime:\n  environment: production\n")
         config = load_config_from_env()
         assert config.environment == "production"
-
-    def test_router_temperature_legacy_env_alias_is_retired(self, monkeypatch):
-        # SABOTAGE twin (#985 move 1): the CLIO_LM_ROUTER_TEMPERATURE env alias was a
-        # pure fall-through to the migrated lm.planner_temperature and is now deleted.
-        # Setting it must be INERT — planner_temperature falls to its normal default,
-        # never 0.42, so the retired alias can never silently re-acquire a reader.
-        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
-        monkeypatch.setenv("CLIO_LM_MODEL", "plain/model")  # avoid a profile override
-        monkeypatch.delenv("CLIO_LM_PLANNER_TEMPERATURE", raising=False)
-        monkeypatch.setenv("CLIO_LM_ROUTER_TEMPERATURE", "0.42")
-        config = load_config_from_env()
-        assert config.planner_temperature == 0.3
 
     def test_api_key_stays_env_only(self, monkeypatch):
         # A config file must NOT be able to supply the secret API key.
@@ -596,46 +522,54 @@ class TestCreateLM:
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
-    def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
-        """Codex should keep user-facing model ids clean and mark internally.
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_direct_runs_on_the_websocket_engine(self):
+        """Codex direct is an engine LM (kept WebSocket) with a clean model id.
 
-        The litellm-facing prefix is "codex_direct" (never bare "codex" --
-        litellm ships its own native "codex" provider; see
+        The model-string prefix is "codex_direct" (never bare "codex" -- see
         providers.codex.constants.LITELLM_PROVIDER).
         """
+        from clio_agent.providers.codex.direct_engine import CodexDirectEngine
+
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "websocket"
+        assert lm.model == "codex_direct/gpt-5.5"
+        assert isinstance(lm._engine_spec, CodexDirectEngine)
+        assert lm._engine_spec.http is False
 
+    @pytest.mark.usefixtures("_codex_test_wire")
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
-        config = LMProviderConfig(provider="codex", model="codex_direct/cg-gpt-5.5")
-        lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
+        for persisted in ("codex_direct/gpt-5.5", "codex_direct/cg-gpt-5.5"):
+            lm = create_lm(LMProviderConfig(provider="codex", model=persisted))
+            assert lm.model == "codex_direct/gpt-5.5"
 
+    @pytest.mark.usefixtures("_codex_test_wire")
     def test_codex_legacy_prefix_is_stripped_defensively(self):
-        """A config persisted before the litellm-prefix rename (bare 'codex/')
-        still resolves to the current 'codex_direct/' wire prefix, never doubled."""
+        """A config persisted before the prefix rename (bare 'codex/', the old 'cg-'
+        marker) still resolves to the current 'codex_direct/' prefix, never doubled."""
         config = LMProviderConfig(provider="codex", model="codex/cg-gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
+        assert lm.model == "codex_direct/gpt-5.5"
 
-    def test_codex_transport_passes_litellm_kwarg(self):
-        """The codex transport should flow into dspy.LM kwargs."""
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_sse_transport_selects_the_engines_http_mode(self):
+        """codex_transport="sse" (a proxy that blocks WebSocket upgrades) is the
+        engine's explicit stateless HTTP mode, never an LM kwarg."""
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
             codex_transport="sse",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sse"
+        assert lm._engine_spec.http is True
+        assert "codex_transport" not in lm.kwargs
 
-    def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_thinking_level_passes_the_reasoning_effort(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM
-        kwargs as codex_reasoning_effort — the same optional_params lane
-        codex_transport already proves reaches the CustomLLM. off → codex's
-        explicit 'none' (never omit-and-inherit-ambient)."""
+        kwargs as reasoning_effort, which the loop's request config carries as
+        Config.reasoning (lm15 sends it as the Responses reasoning effort)."""
         from clio_agent.providers.capabilities import invalidation
         from clio_agent.providers.capabilities.records import (
             DeploymentCapabilities,
@@ -676,13 +610,13 @@ class TestCreateLM:
 
         config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
         lm = create_lm(config)
-        assert lm.kwargs["codex_reasoning_effort"] == "high"
+        assert lm.kwargs["reasoning_effort"] == "high"
 
         # This model does not list "none": the backend refuses an unlisted
         # effort, so off sends nothing (the model's own default effort).
         config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
         lm_off = create_lm(config_off)
-        assert "codex_reasoning_effort" not in lm_off.kwargs
+        assert "reasoning_effort" not in lm_off.kwargs
 
         # Unset level on a model with NO linked evidence yet (no handshake has
         # run for this identity) → no effort kwarg at all, never a guess
@@ -690,20 +624,23 @@ class TestCreateLM:
         # is known yet" case, covered with its own, unseeded model id.
         config_default = LMProviderConfig(provider="codex", model="gpt-5.5-unseeded")
         lm_default = create_lm(config_default)
-        assert "codex_reasoning_effort" not in lm_default.kwargs
+        assert "reasoning_effort" not in lm_default.kwargs
 
-    def test_claude_code_uses_custom_provider_prefix(self):
-        """Claude Code should keep user-facing model ids clean and mark internally."""
+    def test_claude_code_runs_on_the_engine(self):
+        """Claude Code is an engine LM (no LiteLLM route) with a clean model id."""
+        from clio_agent.providers.claude_code_engine import ClaudeCodeEngine
+
         config = LMProviderConfig(provider="claude_code", model="sonnet")
         lm = create_lm(config)
-        assert lm.model == "claude_code/cc-sonnet"
-        assert lm.kwargs["claude_code_transport"] == "sdk"  # sdk is the default
+        assert lm.model == "claude_code/sonnet"
+        assert isinstance(lm._engine_spec, ClaudeCodeEngine)
+        assert not any(k.startswith("claude_code_") for k in lm.kwargs)
 
     def test_claude_code_model_marker_is_not_doubled(self):
         """Claude Code should accept already-prefixed config values idempotently."""
         config = LMProviderConfig(provider="claude_code", model="claude_code/cc-sonnet")
         lm = create_lm(config)
-        assert lm.model == "claude_code/cc-sonnet"
+        assert lm.model == "claude_code/sonnet"
 
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""
@@ -712,49 +649,6 @@ class TestCreateLM:
             config = LMProviderConfig(provider=provider, model=model)
             lm = create_lm(config)
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
-
-
-class TestCreatePlannerLM:
-    """Test create_planner_lm function."""
-
-    def test_returns_dspy_lm(self):
-        """create_planner_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
-        lm = create_planner_lm(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_uses_planner_temperature(self):
-        """Planner LM should use planner_temperature, not temperature."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="loaded-model",
-            temperature=1.0,
-            planner_temperature=0.3,
-        )
-        lm = create_planner_lm(config)
-        # The temperature is set on the LM kwargs
-        assert lm.kwargs.get("temperature") == 0.3
-
-    def test_uses_planner_max_tokens(self):
-        """Planner LM should use planner_max_tokens, not answer max_tokens."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="loaded-model",
-            max_tokens=1024,
-            planner_max_tokens=4096,
-        )
-        lm = create_planner_lm(config)
-        assert lm.kwargs.get("max_tokens") == 4096
-
-    def test_custom_planner_temperature(self):
-        """Planner LM should respect custom planner_temperature."""
-        config = LMProviderConfig(
-            provider="ollama",
-            model="llama3.2",
-            planner_temperature=0.1,
-        )
-        lm = create_planner_lm(config)
-        assert lm.kwargs.get("temperature") == 0.1
 
 
 class TestSetupDspy:
@@ -813,27 +707,6 @@ class TestSetupDspy:
 
         adapter = mock_configure.call_args.kwargs["adapter"]
         assert adapter.use_json_adapter_fallback is False
-
-    def test_setup_cloud_openai_keeps_json_fallback(self):
-        """Real OpenAI API should retain DSPy's JSON adapter fallback."""
-        from clio_agent.config import setup_dspy
-
-        env = {
-            "CLIO_LM_PROVIDER": "openai",
-            "CLIO_LM_API_KEY": "sk-test",
-            # model-capabilities brief 9.1: no compiled-in suggested model any
-            # more, so an explicit model is required to construct an LM.
-            "CLIO_LM_MODEL": "gpt-4o-mini",
-        }
-        with isolated_environ(env):
-            # config.py imports dspy lazily via _dspy() — patch the
-            # underlying dspy.configure directly rather than the
-            # (no-longer-existent) module-level alias.
-            with patch("dspy.configure") as mock_configure:
-                setup_dspy(verbose=False)
-
-        adapter = mock_configure.call_args.kwargs["adapter"]
-        assert adapter.use_json_adapter_fallback is True
 
 
 class TestListLmStudioModels:

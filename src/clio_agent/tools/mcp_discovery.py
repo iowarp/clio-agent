@@ -2,18 +2,19 @@
 
 ``tools.gateway.list_tool_definitions`` lists every declared namespace
 SERIALLY with no per-namespace bound: a namespace that never answers burns
-its full retry budget (``tools.mcp.probe_timeout_retries`` x
-``tools.mcp.setup_timeout_s``) before the NEXT namespace even starts, and
+its full retry budget (``tools.mcp.probe_timeout_retries`` x the connect
+timeout) before the NEXT namespace even starts, and
 "agent ready" (``ClioAgent.__init__``) waits for the whole pass. Three dead
 namespaces therefore turned into minutes of boot (owner-observed, #1232).
 
 This module is the fix: :func:`discover_declared_tools_bounded` lists every
 declared namespace CONCURRENTLY (a bounded thread pool — #942's peak-RSS
 concern is a real tradeoff, not dismissed; concurrency is capped rather than
-unbounded), each with its OWN per-namespace deadline, so one dead/slow
-namespace can never inflate another's cost. A namespace that misses its
-deadline is an immediate typed degrade (``MCP_NAMESPACE_DISCOVERY_TIMEOUT`` /
-``MCP_NAMESPACE_DISCOVERY_UNREACHABLE``) — never a raise, never a block.
+unbounded), each waited for while ITS OWN server process tree works (no fixed
+deadline; :mod:`clio_agent.tools.mcp_server_progress`), so one dead/slow namespace
+can never inflate another's cost. A namespace that stops progressing is a typed
+degrade (``MCP_NAMESPACE_DISCOVERY_TIMEOUT`` / ``MCP_NAMESPACE_DISCOVERY_UNREACHABLE``)
+— never a raise, never a block.
 
 :class:`NamespaceDiscoveryHealer` is the background half: a daemon thread
 that re-attempts every degraded namespace on a fixed interval and, on
@@ -29,7 +30,6 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,18 +49,18 @@ def _classify_degrade_reason(exc: BaseException) -> str:
     """Typed reason for one namespace's failed discovery attempt (#1232 pt 3/4)."""
 
     from clio_agent.tools.launcher_cache_lock import LauncherCacheLockTimeoutError  # noqa: PLC0415
+    from clio_agent.tools.mcp_server_progress import NoProgressTimeout  # noqa: PLC0415
 
     if isinstance(exc, LauncherCacheLockTimeoutError):
         return LAUNCHER_CACHE_LOCK_TIMEOUT
+    if isinstance(exc, NoProgressTimeout):
+        return MCP_NAMESPACE_DISCOVERY_TIMEOUT
     return MCP_NAMESPACE_DISCOVERY_UNREACHABLE
 
 
 _DEFAULT_CONCURRENCY = 8
 _DEFAULT_HEAL_TICK_S = 20.0
 _POLL_INTERVAL_S = 0.1
-#: #1237 hotfix: generous runaway backstop for one namespace's discovery
-#: attempt, NOT a normal-path bound -- see _namespace_attempt_timeout_s.
-_DEFAULT_COLD_SPAWN_RUNAWAY_S = 600.0
 
 
 def discovery_concurrency() -> int:
@@ -93,37 +93,6 @@ def discovery_heal_interval_s() -> float:
     )
 
 
-def _namespace_attempt_timeout_s(namespace: str) -> float:
-    """Generous runaway backstop for ONE namespace's discovery attempt (#1237).
-
-    Owner ruling (2026-08-20): this is NOT a normal-path cutoff, and is not
-    meant to be the DECIDER for a slow-but-alive spawn/handshake either --
-    see ``mcp_probe_hardening`` (the per-exchange, bounded-attempt-count
-    machinery for the negotiate/initialize round trip) and
-    ``launcher_cache_lock`` (holder-liveness for the shared-cache lock) for
-    the real per-phase instruments. This flat value is the LAST-RESORT
-    catcher for a phase this module cannot otherwise attribute (a hung
-    stdio child process mid-handshake with no typed signal from the SDK) --
-    a REAL failure (missing executable, immediate crash, connection
-    refused, a genuine handshake error) raises from ``_list_one_namespace``
-    promptly via those per-phase instruments and is never subject to this
-    bound. ``namespace`` is accepted for a future per-server override but is
-    unused by the flat default today.
-    """
-
-    del namespace
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return float(
-        conf.resolve(
-            "tools.mcp.cold_spawn_runaway_s",
-            env="CLIO_MCP_COLD_SPAWN_RUNAWAY_S",
-            default=_DEFAULT_COLD_SPAWN_RUNAWAY_S,
-            cast=conf.as_float,
-        )
-    )
-
-
 def _list_one_namespace(
     namespace: str, spec: MCPServerSpec, attempt_key: object | None = None
 ) -> dict[str, Any]:
@@ -143,18 +112,11 @@ def _list_one_namespace(
     the whole connect — and raises typed on a wedged lock instead of
     stalling this namespace (and, pre-#1232-pt-2, every namespace after it).
 
-    #1240 (the child-process-leak fix): ``_namespace_attempt_timeout_s`` —
-    already the generous runaway backstop for how long a CALLER waits on this
-    attempt — is now ALSO forwarded as the connect/list bound itself
-    (``_list_declared_tools``'s ``timeout_s``). Before this, the attempt's
-    OWN connect+list call had no bound at all (the SDK's per-request timeout
-    defaults to ``None`` end to end, and ``mcp_probe_hardening`` only bounds
-    the era-negotiation probe, not ``list_tools``/legacy ``initialize``), so
-    an abandoned caller left this call running — and its spawned stdio child
-    alive — indefinitely. ``attempt_key``, when given, additionally lets an
-    abandoning caller force-close this specific attempt's transport via
-    ``listing_attempts.force_close_listing_attempt`` instead of just waiting
-    out the (now merely a backstop) timeout.
+    The connect + listing itself waits while the server's own process tree works and
+    raises the typed ``NoProgressTimeout`` once it stops progressing (or at
+    ``tools.mcp.max_wait_s``) -- see ``gateway._list_declared_tools``. ``attempt_key``
+    (#1240) lets shutdown force-close this specific attempt's transport via
+    ``listing_attempts``.
     """
 
     from clio_agent.tools import (
@@ -175,15 +137,12 @@ def _list_one_namespace(
         # record_task_capability inside load_listing itself.
         listed = listing_cache.load_listing(namespace, spec.command, tuple(spec.args), spec.env)
     if listed is None:
-        timeout_s = _namespace_attempt_timeout_s(namespace)
         with probe_server_context(namespace, timeout_retries=spec.probe_timeout_retries):
             if uses_shared_launcher_cache(spec):
                 with acquire_launcher_cache_lock(namespace):
-                    listed = _list_declared_tools(
-                        spec, timeout_s=timeout_s, attempt_key=attempt_key
-                    )
+                    listed = _list_declared_tools(spec, attempt_key=attempt_key)
             else:
-                listed = _list_declared_tools(spec, timeout_s=timeout_s, attempt_key=attempt_key)
+                listed = _list_declared_tools(spec, attempt_key=attempt_key)
         if cacheable:
             # #1281 F3: persist the capability THIS live listing just
             # recorded so the NEXT cache hit can replay it.
@@ -216,25 +175,16 @@ class DiscoveryPass:
 def discover_declared_tools_bounded(
     specs: Mapping[str, MCPServerSpec], *, concurrency: int | None = None
 ) -> DiscoveryPass:
-    """List every declared namespace CONCURRENTLY, each bounded by its own deadline.
+    """List every declared namespace CONCURRENTLY, each bounded by its own progress.
 
-    Never raises and never blocks past the SLOWEST namespace's own deadline —
-    a dead namespace's cost never compounds onto a sibling's (#1232 pt 2). A
-    namespace whose future is still running when its deadline passes is
-    dropped from the wait (typed-degraded) and its underlying attempt is
-    force-closed (#1240): its OWN connect+list call is itself bounded now
-    (``_list_one_namespace`` forwards the same deadline to ``_list_declared_tools``
-    as a real per-request timeout), so this is belt-and-suspenders — closing
-    the transport the MOMENT the pass gives up, rather than waiting out
-    whatever is left of that inner bound, and freeing the spawned child (and
-    the launcher-cache lock, if held) immediately. The worker THREAD itself
-    still is not forcibly killed (Python threads are not cancellable); once
-    its now-bounded call raises, it exits on its own and its result is
-    discarded, or the process that owns ``specs`` picks the namespace up again
-    via :class:`NamespaceDiscoveryHealer`.
+    Never raises, and a dead namespace's cost never compounds onto a sibling's
+    (#1232 pt 2). No fixed deadline: each namespace's attempt waits while ITS OWN
+    server works and ends typed once it stops progressing (``NoProgressTimeout`` ->
+    ``MCP_NAMESPACE_DISCOVERY_TIMEOUT``) or at ``tools.mcp.max_wait_s``; the launcher
+    cache lock is likewise progress-bounded. A slow first start on a slow machine is
+    therefore listed, never cut off; a degraded namespace is picked up again by
+    :class:`NamespaceDiscoveryHealer`.
     """
-
-    from clio_agent.tools.listing_attempts import force_close_listing_attempt  # noqa: PLC0415
 
     result = DiscoveryPass()
     if not specs:
@@ -245,7 +195,6 @@ def discover_declared_tools_bounded(
         thread_name_prefix="clio-mcp-discovery",
     )
     try:
-        now = time.monotonic()
         # attempt_key is a fresh sentinel per namespace, NEVER the namespace
         # name itself: a healer re-probe of the SAME namespace can be in
         # flight concurrently with the stale initial-pass attempt it is
@@ -255,48 +204,27 @@ def discover_declared_tools_bounded(
             pool.submit(_list_one_namespace, namespace, spec, attempt_keys[namespace]): namespace
             for namespace, spec in specs.items()
         }
-        deadlines = {
-            namespace: now + _namespace_attempt_timeout_s(namespace) for namespace in specs
-        }
         while pending:
             done, _not_done = concurrent.futures.wait(
                 list(pending.keys()),
                 timeout=_POLL_INTERVAL_S,
                 return_when=concurrent.futures.FIRST_COMPLETED,
             )
-            now = time.monotonic()
-            for future in list(pending.keys()):
-                namespace = pending[future]
-                if future in done:
-                    del pending[future]
-                    try:
-                        result.tools.update(future.result())
-                    except Exception as exc:  # noqa: BLE001 - typed degrade, never sink the pass
-                        reason = _classify_degrade_reason(exc)
-                        result.degraded[namespace] = reason
-                        logger.warning(
-                            "mcp_namespace_discovery_degraded namespace=%s reason=%s error=%s",
-                            namespace,
-                            reason,
-                            exc,
-                        )
-                    continue
-                if now >= deadlines[namespace]:
-                    del pending[future]
-                    result.degraded[namespace] = MCP_NAMESPACE_DISCOVERY_TIMEOUT
+            for future in done:
+                namespace = pending.pop(future)
+                try:
+                    result.tools.update(future.result())
+                except Exception as exc:  # noqa: BLE001 - typed degrade, never sink the pass
+                    reason = _classify_degrade_reason(exc)
+                    result.degraded[namespace] = reason
                     logger.warning(
-                        "mcp_namespace_discovery_degraded namespace=%s reason=%s deadline_s=%.1f",
+                        "mcp_namespace_discovery_degraded namespace=%s reason=%s error=%s",
                         namespace,
-                        MCP_NAMESPACE_DISCOVERY_TIMEOUT,
-                        _namespace_attempt_timeout_s(namespace),
+                        reason,
+                        exc,
                     )
-                    force_close_listing_attempt(attempt_keys[namespace])
         return result
     finally:
-        # wait=False: an abandoned (timed-out) namespace's thread is left to
-        # finish/die on its own (now bounded either by the force-close above
-        # or, failing that, by its own connect/list timeout) rather than
-        # blocking pass teardown on it.
         pool.shutdown(wait=False)
 
 
@@ -472,10 +400,9 @@ def ensure_namespace(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
     ``ensure_namespace`` starts a completely fresh attempt (owner ruling
     2026-08-20: "even a genuinely terminal cause is re-attempted on the next
     call" -- no standing "this server is broken" fact is ever recorded here).
-    Waiting inside the one owning attempt is liveness-driven (the launcher-
-    cache lock's holder-liveness wait, the per-exchange bounded-attempt
-    machinery in ``mcp_probe_hardening``, and only as a last resort the
-    generous runaway backstop) -- never a bounded retry ladder.
+    Waiting inside the one owning attempt is progress-driven (the launcher-
+    cache lock's hand-off clock and the server-progress wait of
+    ``mcp_server_progress``) -- never a bounded retry ladder.
 
     Raises whatever ``_list_one_namespace`` raises (a real, typed failure —
     e.g. a missing launcher executable) so the caller (builders.py's expert-

@@ -167,6 +167,36 @@ async def test_release_runtime_after_drain_preserves_unowned_runtime(monkeypatch
     assert released == []
 
 
+@pytest.mark.asyncio
+async def test_release_runtime_after_drain_waits_for_an_in_flight_boot_attach(
+    monkeypatch,
+) -> None:
+    """A stop that lands mid-attach waits for the attach, then releases its client:
+    reading "not owned" there would leave a registered clio-core client behind."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.arc.storage import ClioCoreStore
+
+    app = FastAPI()
+    released: list[bool] = []
+    monkeypatch.setattr(
+        "clio_agent.arc.storage.release_runtime_client",
+        lambda: released.append(True),
+    )
+
+    async def attach() -> None:
+        await asyncio.sleep(0.2)
+        app.state.arc = SimpleNamespace(_store=object.__new__(ClioCoreStore))
+
+    app.state.arc_boot_task = asyncio.get_running_loop().create_task(attach())
+
+    result = await desktop_lifecycle.release_runtime_after_drain(app)
+
+    assert result == "released"
+    assert released == [True]
+
+
 def test_app_owns_runtime_client_only_for_cte_backed_arc() -> None:
     """Ownership follows the app's actual store, not a process-global attachment."""
 
@@ -182,14 +212,14 @@ def test_app_owns_runtime_client_only_for_cte_backed_arc() -> None:
     assert desktop_lifecycle._app_owns_runtime_client(app) is True
 
 
-def test_terminate_process_after_cleanup_is_desktop_only(monkeypatch) -> None:
+def test_terminate_process_after_cleanup_only_for_an_owner_stop(monkeypatch) -> None:
     app = FastAPI()
     exits: list[int] = []
     monkeypatch.setattr(desktop_lifecycle.os, "_exit", exits.append)
 
-    assert desktop_lifecycle.terminate_process_after_cleanup(app) == "not_desktop"
+    assert desktop_lifecycle.terminate_process_after_cleanup(app) == "not_managed"
     assert exits == []
 
-    app.state.desktop_shutdown_requested = True
+    app.state.managed_shutdown_owner = "desktop"
     desktop_lifecycle.terminate_process_after_cleanup(app)
     assert exits == [0]

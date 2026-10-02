@@ -242,8 +242,8 @@ PROVIDERS: tuple[Provider, ...] = (
         id="codex",
         label="Codex",
         description=(
-            "Signs in with your Codex account and calls the Codex backend "
-            "directly from CLIO's own process -- no Codex CLI, no Codex SDK. "
+            "Calls the Codex backend directly from CLIO's own process, signed in "
+            "with your Codex account (CLIO's own sign-in, else the Codex CLI login). "
             "Usage counts against your Codex plan limits."
         ),
         provider_kind="codex",
