@@ -1643,6 +1643,13 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
     - PASS: B1-B9 targeted checks (details in the report); legs preflight, C, compaction 84/84, goal judge; D1 bench (warm read and append flat 1k -> 10k, cold read scans 0 pre-anchor atoms; 10k run 864 s -> 128 s).
     - Scenarios vs develop baseline: earthscope 275/397 s, factorio 142/1818 s, deep 1276/2538 s, opal 894/1611 s; data re-measured on the final tip.
     - Owner items: `opal-work/MORNING-DECISIONS.md` (Chrome UI check; schemas #18 and marketplace #83; Codex drop after visible output needs a DSPy stream reset; CI timing flakes).
+  - **Status at 10:15 CDT (2026-10-02): the PRs to main are open, not merged.**
+    - **iowarp/clio-agent#1604** (develop -> main, v0.9.4.24) and **iowarp/gact-tui#526** (develop -> main): CI green, mergeable. Develop CI green on `846abcd7`.
+    - **iowarp/clio-schemas#18** (0.5.2) and **iowarp/clio-agent-marketplace#83**: CI green, mergeable; these repos have no develop.
+    - Data scenario on `846abcd7`: 485 s vs 430 s baseline (the plot turn took more steps; all turns `end_turn`). Its stream audit showed the ReAct side calls (the post-answer extract) sharing the agent's Codex conversation key, forcing a full resend on the next main call (`prefix_mismatch`). **#1603** (`fix/codex-side-call-key`) runs side calls under their own key; its CI rerun of a known timing flake (`test_store_ops_stalled_daemon[put]`) is in progress. Once merged into develop it is part of #1604.
+    - **Release order (owner):** merge gact-tui#526 and tag; bump clio-agent's `external/gact-tui` pin to that tag; merge marketplace#83 and schemas#18, release 0.5.2 and bump the `clio-schemas` pin; merge clio-agent#1604.
+    - **Left for the owner:** the Chrome UI check (release gate); the merges above; filing the clio-core `PutBlob` shrink issue; a DSPy stream-reset proposal for drops after visible output.
+    - **Superseded PRs to close after the release:** the phase PRs #1538 (this doc, after its final commit), #1540-#1545, which #1593 merged into develop.
 
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
