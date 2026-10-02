@@ -47,6 +47,17 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   fields for labels or colour when useful; the map draws the actual shapes.
   A custom projected chart remains available when its encodings or layers
   are the point of the analysis.
+- Time-ordered positions such as hurricane or vessel tracks → a map with
+  `dataUri`, latitude/longitude/label fields, `trackField` for the path ID,
+  and `orderField` for an ISO-8601 time or numeric sequence. The renderer joins each path and
+  keeps its observations selectable.
+  When an archive contains many tracks, show a meaningful period or named
+  subset that people can compare. Keep the full archive as an artifact;
+  simply taking the first rows can leave paths incomplete. State the period
+  shown and check that the final answer matches the rendered slice.
+  Spot-check a few parsed coordinates against the source before registering
+  a track dataset; repeated or swapped columns can look plausible in a CSV
+  while placing the paths in the wrong location.
 - A registered 3D model or simulation mesh → an orbitable mesh viewport.
   It accepts common model formats; use its `format` field when the bytes are
   ambiguous, and `materialUri` for an OBJ's registered MTL companion.
@@ -70,6 +81,7 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   of inlined rows. Let the server-side query filter, aggregate or downsample it
   (for example, a bounded number of points per entity) instead of trimming the
   data yourself.
+
 - A single observed value → one metric component per value.
 - A requested illustration, photograph, or generated schematic the person
   should inspect alongside data → an Image in the same surface. Register the
@@ -113,6 +125,32 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   component, never repurposing a generic text block for it.
 - A durable export (an image, a report) the user did not ask to view inline → a
   registered artifact reference, not an inlined image.
+
+### How to set up filters
+
+Choose filters for the scientific question, not for the component type. Inspect
+the available fields, their units and values, and the range or number of
+distinct values in the displayed slice. Ask what a reader would narrow to
+isolate a phenomenon, compare cohorts, or check an outlier. Usually a few
+interpretable dimensions are enough. A row ID or nearly unique label is rarely
+a useful filter; a coordinate, measurement, or time field may be useful when
+the question calls for a spatial, numeric, or temporal range. Choose time
+precision that matches the data and question: years for a multi-year archive
+and dates for a shorter span. If the question needs a sub-day cutoff, apply
+that exact interval in `dataQuery.filter` and show the observation timestamps.
+
+Keep chosen fields in the registered artifact and the view's projected
+`dataQuery.columns`. On a referenced map, set `filterFields` to the real columns
+worth narrowing; the viewer creates the controls and applies them to the map
+and `Reference this`. If omitted, it exposes its default map fields. Use
+`dataUri` when a map needs filters on measured columns, even for a small
+dataset: inline points do not carry arbitrary measurements. A chart exposes
+native filters for encoded fields; a table exposes them for displayed columns.
+Include a field in an encoding or table column list when readers need it
+visible there. Do not add filter buttons or actions to the component spec.
+Use `dataQuery.filter` for the initial scientific slice, and leave subsequent
+exploration to the viewer. Confirm that the visible rows, counts, and
+`Reference this` payload describe the same filtered subset.
 
 ## Composing surfaces
 

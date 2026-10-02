@@ -32,6 +32,9 @@ def build_update_a2ui_components_tool() -> Any:
         Load ``a2ui-catalog-<slug>`` for guidance; inspect one schema at
         ``catalog.json#/components/<ExactComponentId>``. The renderer owns
         pan, zoom, selection, export, and Reference this controls.
+        For trajectory maps, revise the data reference or track/order fields;
+        the renderer draws the paths from the resulting rows. Revise
+        ``filterFields`` when the useful exploration dimensions change.
         """
 
         resolved = _common.active_app_and_session()

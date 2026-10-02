@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: iowarp/gact-tui
-          ref: 928dc02fd1940003abbdeda0819d02e36415e8b8
+          ref: 738784568b77407f0d7541a138714a353dc83f54
           path: gact-tui-checkout
       - uses: pnpm/action-setup@v4
         with:
