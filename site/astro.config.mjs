@@ -51,7 +51,7 @@ export default defineConfig({
 					label: 'Use CLIO',
 					items: [
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
-						{ label: 'Widgets', slug: 'docs/widgets' },
+						{ label: 'Widget gallery', slug: 'docs/widgets' },
 						{ label: 'Agent blueprints', slug: 'docs/blueprints' },
 						{ label: 'Tools and MCP servers', slug: 'docs/mcp-servers' },
 						{ label: 'Permissions and sandbox', slug: 'docs/permissions' },
