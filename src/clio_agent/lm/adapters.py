@@ -302,7 +302,7 @@ def _strict_guided_json_adapter_cls() -> Any:
 
 
 _CHAT_ADAPTER_CLS: Any = None
-_COMPLETED_MARKER_VARIANT = re.compile(r"(?m)^([ \t]*)\[\[ ## completed ##\]\]([ \t]*)$")
+_COMPLETED_MARKER_VARIANT = re.compile(r"(?m)^([ \t]*)\[\[ ## completed(?: ##)? ?\]\]([ \t]*)$")
 
 
 def _chat_adapter_cls() -> Any:
@@ -316,7 +316,7 @@ def _chat_adapter_cls() -> Any:
         """``ChatAdapter`` with context checks and tolerant end-marker spacing."""
 
         def parse(self, signature: Any, completion: str) -> dict[str, Any]:
-            """Accept Codex's spacing variant of DSPy's final field marker.
+            """Accept Codex's spacing and missing-delimiter variants of DSPy's final marker.
 
             The marker is protocol framing, not field content. Keep every typed
             field and DSPy's normal validation unchanged.
