@@ -1618,8 +1618,19 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 - **Done: the latest develop merged into both `rework_agent` branches** (clio-agent #1587, gact-tui #522). Merges only, and the final PRs into develop are conflict-free.
   - develop #1547 (`model_reply_unparseable`) handled an adapter parse failure that the new loop cannot have. Per the accepted ReAct-loop completion contract (2026-09-05), an empty no-call reply stays a direct response, not a typed error.
   - gact-tui: the e2e fixture lacked `/variant-runs` (an error toast covered the controls in the mobile screenshot). The Windows mobile baseline was stale.
-- **In flight:**
-  - #1577 leftovers: a graceful authenticated `serve` stop; a progress-based table query (per-thread CPU); stale Codex-SDK docstrings. Branch `fix/1577-leftovers`.
+- **Done (#1588): the last #1577 code items.**
+  - A graceful `serve` stop through the authenticated `POST /v1/server/shutdown` (the desktop bearer token), killed only after no progress, with a typed `kill_reason`. Also fixed: the client leaked when a stop landed during the boot attach.
+  - The table query is progress-based on its own thread's CPU (`artifacts.table_query_no_progress_s` / `max_wait_s`; the old timeout key is removed and rejected typed). The macOS per-thread path is untested.
+  - The stale Codex SDK docstrings are fixed.
+  - Only section 1 of #1577 remains, waiting on clio-core#1112.
+
+**Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
+
+**Owner decisions:**
+1. **Deletions ≥ additions:** the whole branch, or `src`? (`src` meets it.)
+2. **OK to post the DSPy upstream issue** about the lazy `anyio` proxy (stanfordnlp/dspy)?
+3. **Release clio-schemas 0.5.2** (#18), then bump the clio-agent pin.
+4. **When to open the PRs `rework_agent` → develop.** The final verification runs on them.
 - **Done (gact-tui #523):** in a browser, the version status shows the web build's own version and never calls the desktop updater; the desktop app is unchanged. The Windows baselines are regenerated; the Linux `workspace-desktop-dark` and `workspace-mobile-light-reduced` baselines need regenerating on CI (they pass within tolerance today).
 
 ### Issues filed
