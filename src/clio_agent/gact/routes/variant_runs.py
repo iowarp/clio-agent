@@ -6,7 +6,9 @@ steps folded from the try's segments (what it saw and did: its task or advice,
 thinking, text, tool calls and results). So a client renders the variant tabs after a
 reload exactly as it saw them live. ``anchor_message_id`` is the assistant message of
 the turn a run (or a try) ran in, where the client places the block (``""`` while that
-turn has no assistant message yet).
+turn has no assistant message yet). A human-judged run that ended without a pick has
+``status`` ``superseded`` / ``cancelled`` / ``expired``, its typed ``closed_reason``,
+``closed_at`` and (superseded) ``superseded_by_message_id``.
 """
 
 from __future__ import annotations
@@ -125,6 +127,9 @@ def _run_wire(plane: Any, run: VariantRun, anchors: Mapping[str, str]) -> dict[s
         "pick": run.pick,
         "comment": run.comment,
         "selected_index": run.selected_index,
+        "closed_reason": run.closed_reason,
+        "closed_at": run.closed_at,
+        "superseded_by_message_id": run.superseded_by_message_id,
         "tries": tries,
     }
 

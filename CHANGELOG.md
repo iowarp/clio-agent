@@ -35,6 +35,24 @@ TUI/HTTP surface aren't tracked here.
   `variant.selected` (from the `variant.try` / `variant.try.delta` / `variant.selected`
   semantic events, all carrying `variants_id`); a try's other semantic events and
   injection blocks carry `variants_id` / `try_index`.
+- A human-judged run that ends without a pick is a typed terminal state, recorded in
+  clio-core, never a generic `failed`: run `status` `superseded` (a new turn started
+  while the drafts question was pending: the user sent a new message instead),
+  `cancelled` (the question was dismissed) or `expired` (the pick's window ended), with
+  `closed_reason` `variant_pick_superseded|cancelled|expired`, `closed_at` and, when
+  superseded, `superseded_by_message_id` -- on `GET /v1/sessions/{sid}/variant-runs`
+  and on a new `variant.closed` event / v3 frame (entity `variants_id`; payload `status`,
+  `reason`, `question_id`, `closed_at`, `candidates: [{try_index, scope, text}]`,
+  `superseded_by_message_id`). A superseded question is `cancelled` with
+  `metadata.variant_resolution: "superseded"` and `metadata.superseded_by_message_id`;
+  a later answer to it is a 409 and nothing resumes. The session's `variant_pending`
+  pointer is cleared, and the next turn's agent gets an `injection`
+  (`source: variant_closed`) saying none of the drafts is in the conversation. The
+  preference record of a closed run keeps its candidates (`status`, no pick).
+- `draft_alternatives` takes `expiresInSeconds` (judge `user`; default none, as
+  `ask_user`): the pick's window. A `POST /messages` naming a drafts question in
+  `answers_question_id` is a 422 `drafts_question_needs_pick` (answer it with
+  `selected_options: [<draft id>]`).
 
 ### Changed
 

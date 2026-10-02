@@ -102,7 +102,11 @@ def relay_forwarded_cancel(
     if not child_qid and not task_id:
         return False
     if child_qid:
-        claim_question_transition(app, child_qid, "cancelled")  # atomic, no-op if resolved
+        child = claim_question_transition(app, child_qid, "cancelled")  # no-op if resolved
+        if child is not None:
+            from clio_agent.gact.agents.variant_close import close_after_question  # noqa: PLC0415
+
+            close_after_question(app, child)  # a child's drafts pick closes with it
     if task_id:
         from clio_agent.gact.child_forward import fail_forwarded_child_task  # noqa: PLC0415
 
@@ -110,14 +114,20 @@ def relay_forwarded_cancel(
     return True
 
 
-def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
+async def resolve_cancelled_question(app: Any, question: UserQuestion) -> bool:
     """Resolve a cancelled question that is an elicitation or a forwarded mirror.
 
     Shared cancel route: an in-flight elicitation wakes its parked call (typed cancel);
     a forwarded mirror relays the cancel to the child + fails the task. Returns ``True``
-    when handled (route skips the idle transition), ``False`` for an ordinary ask.
+    when handled (route skips the idle transition), ``False`` for an ordinary ask. A
+    drafts question's run is closed ``cancelled`` first (clio-core, off the loop).
     """
 
+    if (question.metadata or {}).get("variants_id"):
+        from clio_agent.gact.agents.variant_close import close_for_question  # noqa: PLC0415
+        from clio_agent.gact.off_loop import run_off_loop  # noqa: PLC0415
+
+        await run_off_loop(close_for_question, app, question)
     if resolve_elicitation(app, question):
         return True
     if (

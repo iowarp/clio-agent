@@ -22,6 +22,7 @@ from typing import Any, Literal
 from clio_agent.errors import ClioError
 
 __all__ = [
+    "CLOSED_STATUSES",
     "VARIANT_RECORD_KIND",
     "VARIANT_RECORD_SCOPE",
     "PreferenceCandidate",
@@ -40,7 +41,20 @@ VARIANT_RECORD_SCOPE = "_events/v"
 VARIANT_RECORD_KIND = "variant_record"
 SCHEMA = "clio.variant_run.v1"
 
-RunStatus = Literal["running", "awaiting_pick", "answered", "selected", "failed"]
+RunStatus = Literal[
+    "running",
+    "awaiting_pick",
+    "answered",
+    "selected",
+    "failed",
+    "superseded",
+    "cancelled",
+    "expired",
+]
+#: How a human-judged run ends without a pick (:mod:`variant_close`): a new turn
+#: started before the pick (``superseded``), the question was dismissed
+#: (``cancelled``), or its deadline passed (``expired``).
+CLOSED_STATUSES: frozenset[str] = frozenset({"superseded", "cancelled", "expired"})
 TryStatus = Literal["running", "completed", "failed"]
 
 
@@ -116,6 +130,13 @@ class VariantRun:
     # draft_alternatives: the first segment of the turn on the base scope; the
     # selected line replaces everything from it on.
     base_cut_id: str = ""
+    # A run closed without a pick (status in CLOSED_STATUSES): the typed reason, when,
+    # and -- superseded -- the user message whose turn moved the conversation on.
+    closed_reason: str = ""
+    closed_at: str = ""
+    superseded_by_message_id: str = ""
+    # judge user: the pick's window the agent asked for, in seconds (0: none).
+    pick_expires_in_s: int = 0
 
     def add_try(self, record: TryRecord) -> None:
         """Add a try, keeping :attr:`tries` in try order.
@@ -163,7 +184,12 @@ class PreferenceCandidate:
 
 @dataclass(frozen=True)
 class PreferenceRecord:
-    """A finished run: the candidates, the judge's verdict and the user's words."""
+    """A finished run: the candidates, the judge's verdict and the user's words.
+
+    ``status`` is ``selected``, or how a human-judged run closed without a pick
+    (``superseded`` / ``cancelled`` / ``expired``): then ``pick`` and
+    ``selected_index`` are ``None`` and the candidates are still recorded.
+    """
 
     variants_id: str
     session_id: str
@@ -179,7 +205,9 @@ class PreferenceRecord:
     pick: int | None
     comment: str
     advice: tuple[str, ...]
-    selected_index: int
+    selected_index: int | None
+    status: str = "selected"
+    closed_reason: str = ""
 
 
 def _plane(app: Any) -> Any:
@@ -228,10 +256,14 @@ def load_run(app: Any, session_id: str, variants_id: str) -> VariantRun:
 
 
 def preference_records(app: Any, session_id: str) -> list[PreferenceRecord]:
-    """Every finished run of ``session_id`` as a typed preference record, oldest first."""
+    """Every finished run of ``session_id`` as a typed preference record, oldest first.
+
+    Finished: selected, or closed without a pick (its candidates, no pick).
+    """
     records: list[PreferenceRecord] = []
     for run in latest_runs(app, session_id).values():
-        if run.status != "selected" or run.selected_index is None:
+        selected = run.status == "selected" and run.selected_index is not None
+        if not selected and run.status not in CLOSED_STATUSES:
             continue
         records.append(
             PreferenceRecord(
@@ -264,6 +296,8 @@ def preference_records(app: Any, session_id: str) -> list[PreferenceRecord]:
                 comment=run.comment,
                 advice=tuple(t.advice for t in run.tries if t.advice),
                 selected_index=run.selected_index,
+                status=run.status,
+                closed_reason=run.closed_reason,
             )
         )
     return records

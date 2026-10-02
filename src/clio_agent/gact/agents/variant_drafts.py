@@ -27,6 +27,8 @@ final texts); the run's state is in clio-core and the session row points at it, 
 answer -- even after a restart -- resumes it at the agent's next forward
 (:func:`resume_pending`). The selected try's line then continues the conversation:
 this turn's own steps on the base scope are retired and the try's line is appended.
+A run that ends without a pick -- a new turn first, a dismissed or expired question --
+is closed as such (:mod:`variant_close`).
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from clio_agent import conf
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import variant_lines
+from clio_agent.gact.agents.variant_close import PENDING_META, close_for_question, latest_question
 from clio_agent.gact.agents.variant_events import emit_selected, emit_try, try_context
 from clio_agent.gact.agents.variant_records import TryRecord, VariantRun, load_run, save_run
 
@@ -62,8 +65,6 @@ __all__ = [
 ]
 
 DRAFT_TOOL = "draft_alternatives"
-#: Session metadata: the human-judged run waiting on this session's user.
-PENDING_META = "variant_pending"
 DRAFTING_SOURCE = "variant_drafting"
 ADVICE_SOURCE = "variant_advice"
 DEFAULT_MAX_N = 4
@@ -354,7 +355,10 @@ def _drafting_note(run: VariantRun) -> str:
 def _pause(app: Any, run: VariantRun) -> None:
     """Yield the drafts to the user as a ``choice`` question (surfaced after the turn)."""
     from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
-    from clio_agent.gact.ask_user_tool import PENDING_ASK_USER_META  # noqa: PLC0415
+    from clio_agent.gact.ask_user_tool import (  # noqa: PLC0415
+        PENDING_ASK_USER_META,
+        ask_user_expires_at,
+    )
     from clio_agent.gact.permission_delivery import attended_session_id  # noqa: PLC0415
 
     candidates = [t for t in run.tries if t.status == "completed"]
@@ -381,7 +385,8 @@ def _pause(app: Any, run: VariantRun) -> None:
         ],
         "allow_freeform": True,
         "reason": f"Pick the draft that best meets: {run.rubric}",
-        "expires_at": "",
+        # No default lifetime (as ask_user): only the window the agent asked for.
+        "expires_at": ask_user_expires_at(run.pick_expires_in_s),
         "owner_session_id": sid,
         "attended_session_id": attended_session_id(app, sid),
         "tool_name": DRAFT_TOOL,
@@ -464,7 +469,7 @@ def _lm_refine(run: VariantRun, module: Any, inputs: Mapping[str, Any], lm: Any)
     return load_run(_ctx.active_app(), run.session_id, pred.variant_selection["variants_id"])
 
 
-def _draft(n: int, rubric: str, strategy: str, judge: str) -> str:
+def _draft(n: int, rubric: str, strategy: str, judge: str, expires_in_s: int = 0) -> str:
     from clio_agent.gact.agents.clio_react import active_loop  # noqa: PLC0415
     from clio_agent.gact.artifacts.observer_bridge import observer_call_id  # noqa: PLC0415
     from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
@@ -480,6 +485,8 @@ def _draft(n: int, rubric: str, strategy: str, judge: str) -> str:
         raise DraftAlternativesError(
             "n must be >= 1 and the rubric must say what makes a good draft"
         )
+    if expires_in_s < 0:
+        raise DraftAlternativesError("expiresInSeconds must be >= 0 (0: no deadline)")
     if not loop.variant_claim.acquire(blocking=False):
         raise DraftAlternativesError("this turn is already drafting alternatives")
     try:
@@ -497,6 +504,7 @@ def _draft(n: int, rubric: str, strategy: str, judge: str) -> str:
             rubric=rubric.strip(),
             threshold=1.0 if judge == "lm" else None,
             base_cut_id=loop.recorder.head_id,
+            pick_expires_in_s=expires_in_s,
         )
         emit_injection(
             DRAFTING_SOURCE, _drafting_note(run), call_id=observer_call_id(), agent_id=run.agent_id
@@ -543,7 +551,11 @@ def build_draft_alternatives_tool() -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def draft_alternatives(
-        n: int, rubric: str, strategy: str = "best_of_n", judge: str = "user"
+        n: int,
+        rubric: str,
+        strategy: str = "best_of_n",
+        judge: str = "user",
+        expiresInSeconds: int = 0,  # noqa: N803 - public tool schema is camelCase (ask_user's)
     ) -> str:
         """Draft several alternative answers to the user's request and keep the best.
 
@@ -553,9 +565,16 @@ def build_draft_alternatives_tool() -> Any:
         drafts ``n`` alternatives at once; ``refine`` drafts one and improves it with
         feedback, up to ``n`` drafts. ``judge``: ``user`` shows the drafts to the user,
         who picks one (and may comment to refine it); ``lm`` scores them against
-        ``rubric``. The selected draft is your answer and the turn ends.
+        ``rubric``. The selected draft is your answer and the turn ends. If the user
+        sends a new message instead of picking, the drafts are dropped.
         """
-        return _draft(int(n), str(rubric or ""), str(strategy or ""), str(judge or ""))
+        return _draft(
+            int(n),
+            str(rubric or ""),
+            str(strategy or ""),
+            str(judge or ""),
+            int(expiresInSeconds or 0),
+        )
 
     return native_tool(
         draft_alternatives,
@@ -574,6 +593,13 @@ def build_draft_alternatives_tool() -> Any:
             "judge": {
                 "type": "string",
                 "description": "user (the user picks) or lm (scored against the rubric).",
+            },
+            "expiresInSeconds": {
+                "type": "integer",
+                "description": (
+                    "judge user only: optional window in seconds for the pick. Omit or 0: "
+                    "the drafts wait until the user picks, dismisses them or moves on."
+                ),
             },
         },
     )
@@ -633,15 +659,6 @@ class UserJudgedVariant(dspy.Module):
         return dspy.Prediction(answer="", termination_reason="variant_pick_yield")
 
 
-def _latest_question(app: Any, variants_id: str) -> Any:
-    rows = [
-        q
-        for q in getattr(app.state, "user_questions", {}).values()
-        if (q.metadata or {}).get("variants_id") == variants_id
-    ]
-    return max(rows, key=lambda q: str(q.created_at or "")) if rows else None
-
-
 def _clear_pending(app: Any, sid: str) -> None:
     app.state.sessions.update(sid, metadata_patch={PENDING_META: {}})
 
@@ -659,7 +676,9 @@ def resume_pending(agent: Any, inputs: Mapping[str, Any]) -> dspy.Prediction | N
     """Take up this agent's human-judged run once the user answered its question.
 
     ``None`` when there is nothing to resume (no run waits on this agent, or its
-    question is still open): the forward runs as usual. Otherwise the answer is recorded
+    question is still open, or it was dismissed or expired -- the run is closed as such,
+    if the close did not happen yet): the forward runs as usual. Otherwise the answer is
+    recorded
     on the run; a Refine comment (below ``n`` tries) runs another try forked from the
     pick and yields again; else BestOfN selects the pick and its line continues the
     conversation -- the forward's answer is the pick's text, with no model call.
@@ -675,13 +694,11 @@ def resume_pending(agent: Any, inputs: Mapping[str, Any]) -> dspy.Prediction | N
     if pending.get("agent_id") != _ctx.active_react_scope():
         return None
     run = load_run(app, _ctx.active_react_session() or sid, str(pending["variants_id"]))
-    question = _latest_question(app, run.variants_id)
+    question = latest_question(app, run.variants_id)
     if question is None or question.status == "pending":
         return None
-    if question.status != "answered":  # cancelled or expired: the drafts are dropped
-        run.status = "failed"
-        save_run(app, run)
-        _clear_pending(app, sid)
+    if question.status != "answered":  # cancelled or expired: closed without a pick
+        close_for_question(app, question)
         return None
     pick = _pick(run, question)
     comment = str(question.answer or "").strip()
