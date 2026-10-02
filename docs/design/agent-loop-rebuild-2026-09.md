@@ -1594,7 +1594,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - A new turn supersedes the pending drafts pick: the question closes and a late answer gets a 409, so nothing is spliced into the past.
   - `cancelled` and `expired` are typed end states, restart-safe.
   - New `variant.closed` v3 frame.
-  - In flight: gact-tui renders closed runs (branch `fix/variant-closed`).
+  - gact-tui renders closed runs (gact-tui #521): the badge and notice, no pick on a closed run, the same after reload, the pick deadline, and the composer never answering a drafts pick.
 - **In flight:** a failed clio-core cleanup on session delete becomes a typed error (branch `fix/delete-cleanup-typed`).
 - **Timeout semantics** (#1577, the rest). Branch `fix/timeout-semantics`:
   - Claude Code inter-message idle bound;
