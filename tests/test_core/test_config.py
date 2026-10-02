@@ -240,3 +240,22 @@ def test_default_adapter_never_repairs_or_falls_back() -> None:
     assert isinstance(adapter, dspy.ChatAdapter)
     assert adapter.use_json_adapter_fallback is False
     assert type(adapter).__name__ == "ClioChatAdapter"
+
+
+def test_codex_completed_marker_spacing_keeps_typed_workflow_state() -> None:
+    """A missing space in the final protocol marker cannot fail a completed turn."""
+    import dspy
+
+    class FinalState(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+        workflow_state: dict[str, object] = dspy.OutputField()
+
+    adapter = create_chat_adapter(LMProviderConfig(provider="codex", model="gpt-6-luna"))
+    parsed = adapter.parse(
+        FinalState,
+        '[[ ## answer ## ]]\nReady.\n[[ ## workflow_state ## ]]\n{"status":"complete"}\n'
+        "[[ ## completed ##]]",
+    )
+
+    assert parsed == {"answer": "Ready.", "workflow_state": {"status": "complete"}}

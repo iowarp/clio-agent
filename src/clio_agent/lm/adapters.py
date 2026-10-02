@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -301,6 +302,7 @@ def _strict_guided_json_adapter_cls() -> Any:
 
 
 _CHAT_ADAPTER_CLS: Any = None
+_COMPLETED_MARKER_VARIANT = re.compile(r"(?m)^([ \t]*)\[\[ ## completed ##\]\]([ \t]*)$")
 
 
 def _chat_adapter_cls() -> Any:
@@ -311,7 +313,16 @@ def _chat_adapter_cls() -> Any:
     dspy = _dspy()
 
     class ClioChatAdapter(dspy.ChatAdapter):  # type: ignore[name-defined]
-        """``ChatAdapter`` + a typed context-overflow check before the call."""
+        """``ChatAdapter`` with context checks and tolerant end-marker spacing."""
+
+        def parse(self, signature: Any, completion: str) -> dict[str, Any]:
+            """Accept Codex's spacing variant of DSPy's final field marker.
+
+            The marker is protocol framing, not field content. Keep every typed
+            field and DSPy's normal validation unchanged.
+            """
+            normalized = _COMPLETED_MARKER_VARIANT.sub(r"\1[[ ## completed ## ]]\2", completion)
+            return super().parse(signature, normalized)
 
         def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
             _check_context_overflow(self, signature, demos, inputs)
