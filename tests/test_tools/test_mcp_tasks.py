@@ -1223,7 +1223,7 @@ def test_no_tool_dispatching_client_is_built_outside_the_factory() -> None:
         "src/clio_agent/gact/routes/catalog.py",
         "src/clio_agent/gact/routes/blueprints.py",
         "src/clio_agent/gact/routes/mcp.py",
-        "src/clio_agent/runtime/status.py",
+        "src/clio_agent/runtime/status_gateway.py",
     }
     pattern = re.compile(r"(?<![.\w])Client\(")
     offenders = []
