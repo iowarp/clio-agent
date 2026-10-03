@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent import paths
 from clio_agent.gact import session_store
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
@@ -36,17 +37,20 @@ def test_workspace_owned_session_writes_nothing_under_storage_root(tmp_path: Pat
     """A workspace-owned session + every message-ledger write seam leave the
     workspace storage root empty (the mirror is gone)."""
 
-    ws_root = tmp_path / "ws-store"
+    project = tmp_path / "proj"
+    project.mkdir()
+    ws_root = paths.workspace_state_dir(project)
     sessions_path = tmp_path / "server" / "sessions.json"
     with TestClient(build_app(sessions_path=sessions_path)) as client:
-        ws = client.post(
+        response = client.post(
             "/v1/workspaces",
             json={
                 "name": "w",
-                "root_path": str(tmp_path / "proj"),
-                "storage_root": str(ws_root),
+                "root_path": str(project),
             },
-        ).json()
+        )
+        assert response.status_code == 201, response.text
+        ws = response.json()
         wid = ws["id"]
         # The wire field still resolves — only the on-disk mirror was removed.
         assert ws["storage_root"] == str(ws_root)
@@ -62,3 +66,4 @@ def test_workspace_owned_session_writes_nothing_under_storage_root(tmp_path: Pat
     # Nothing — no sessions.json, no messages/ ledger — under the workspace root.
     written = list(ws_root.rglob("*")) if ws_root.exists() else []
     assert written == [], f"workspace storage root was written to: {written}"
+    assert list(project.iterdir()) == []
