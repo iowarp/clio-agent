@@ -65,7 +65,12 @@ jobs:
           export UV_TOOL_BIN_DIR="$smoke_root/bin"
           wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
           test -n "$wheel"
-          uv tool install --python 3.12 --no-cache "$wheel"
+          uv tool install --python 3.12 --no-cache \
+            --with dspy==3.4.0 \
+            --with fastmcp==4.0.0b5 \
+            --with fastmcp-slim==4.0.0b5 \
+            --with fastmcp-tasks==4.0.0b5 \
+            "$wheel"
           version="$PKG_VERSION"
           "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
 

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -73,7 +74,7 @@ def test_wrap_prepends_setpriv_pdeathsig_on_linux(monkeypatch: pytest.MonkeyPatc
     sys.platform != "linux" or not shutil.which("setpriv"),
     reason="parent-death-signal reaping needs Linux + setpriv",
 )
-def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path) -> None:
+def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path: Path) -> None:
     """The leak-detector: spawn a child the same way the mcp SDK does (asyncio
     subprocess), HARD-kill the parent so no cleanup runs, and assert the wrapped
     child is reaped by the kernel. A plain (unwrapped) child would orphan to init —
@@ -81,10 +82,15 @@ def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path) -> None:
     pidfile = tmp_path / "child.pid"
     parent_src = (
         "import asyncio\n"
+        "from pathlib import Path\n"
         "async def main():\n"
         "    p = await asyncio.create_subprocess_exec("
         "'setpriv','--pdeathsig','SIGKILL','--','sleep','30')\n"
-        f"    open({str(pidfile)!r},'w').write(str(p.pid))\n"
+        # Publish readiness only after the complete PID has been written. A
+        # reader can observe an empty file between open('w') and write().
+        f"    pending = Path({str(pidfile.with_suffix('.tmp'))!r})\n"
+        "    pending.write_text(str(p.pid), encoding='utf-8')\n"
+        f"    pending.replace({str(pidfile)!r})\n"
         "    await asyncio.sleep(30)\n"
         "asyncio.run(main())\n"
     )

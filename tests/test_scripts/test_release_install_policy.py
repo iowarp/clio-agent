@@ -112,7 +112,8 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
 
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
-    smoke = workflow.index('uv tool install --python 3.12 --no-cache "$wheel"')
+    smoke_step = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
+    smoke = workflow.index("uv tool install --python 3.12 --no-cache", smoke_step)
     version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
     publish = workflow.index("run: uv publish", version_check)
 
@@ -208,6 +209,23 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "except ArcStoreUnavailableError" in arc_smoke  # typed: clio-core or exit 1
 
 
+def test_release_workflow_smokes_the_built_wheel_with_pinned_prereleases() -> None:
+    """The pre-publish wheel install uses the official installer's narrow beta roots."""
+    workflow = _text(".github/workflows/release.yml")
+    start = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
+    end = workflow.index("- name: Check for an identical existing PyPI artifact", start)
+    smoke = workflow[start:end]
+    assert '"$wheel"' in smoke
+    for requirement in (
+        EXPECTED_DSPY,
+        EXPECTED_FASTMCP,
+        EXPECTED_FASTMCP_SLIM,
+        EXPECTED_FASTMCP_TASKS,
+    ):
+        assert f"--with {requirement}" in smoke
+    assert "--prerelease" not in smoke
+
+
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
     """After publish, CI enables the pinned betas for the registry install."""
 
@@ -218,9 +236,9 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
-    assert "--with fastmcp==4.0.0b5" in workflow
-    assert "--with fastmcp-slim==4.0.0b5" in workflow
-    assert "--with fastmcp-tasks==4.0.0b5" in workflow
+    assert "--with fastmcp==4.0.0b5" in workflow[registry_install:]
+    assert "--with fastmcp-slim==4.0.0b5" in workflow[registry_install:]
+    assert "--with fastmcp-tasks==4.0.0b5" in workflow[registry_install:]
     assert "assert dspy.__version__ == '3.4.0'" in workflow
     assert "assert hasattr(dspy, 'lm15')" in workflow
 

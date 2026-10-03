@@ -50,6 +50,16 @@ artifact reference and row identity. The CLIO owl and custom UI icons rendered.
 - All 48 UI browser cases and both deployment-dialog cases passed in CI. The
   packaged corpus smoke was updated for the current accessible surface label and
   deferred rendering; it locally verified every one of the 43 published examples.
+- The final UI head `45785c37` passed the complete workspace, Go and schema jobs,
+  including Windows/Linux Desktop debug builds and the real native WebView proof.
+- The 0.9.5b2 source distribution and wheel built successfully. A clean persistent
+  tool install reported `clio-agent 0.9.5b2`; installed metadata pinned schemas
+  0.5.3, and native/relocated filesystem roots resolved correctly. The pre-publish
+  wheel smoke now uses the same explicit FastMCP beta roots as the official
+  installers and published-package smoke. All 19 release-policy tests passed.
+- A Linux parent-death test publishes its PID file atomically, preventing the
+  reader from observing an empty file while the child starts. Its kernel reaping
+  assertions remain unchanged; the Linux run is verified in CI.
 - Website: 27 unit tests, three video tests, Astro checks, a 60-page production
   build and internal-link checks passed. Home and interactive widget pages were
   visually reviewed. Marketplace's 191 tests passed with schemas 0.5.3.
