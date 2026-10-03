@@ -202,12 +202,15 @@ def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = Fals
     lines.extend(
         [
             "",
-            "## Loading one component's schema",
+            "## Loading component schemas",
             (
                 f'Call `load_skill("{skill_id}", '
                 'file="catalog.json#/components/<Name>")` for the exact schema '
-                "of one component before producing it -- this index only names "
-                "what exists, never its shape."
+                "of one component when its signature is insufficient. For several "
+                'components, use ONE call with files=["catalog.json#/components/<Name>", '
+                "...] and omit file. Include the layout container and any other "
+                "components whose property shapes you need; do not guess optional "
+                "property values. Each returned schema includes its referenced $defs."
             ),
         ]
     )
