@@ -52,7 +52,9 @@ def test_missing_home_uses_packaged_data_without_a_disk_cache(
         raise paths.HomeDirectoryUnavailable("no home")
 
     monkeypatch.setattr(paths, "user_cache_dir", unavailable)
-    monkeypatch.chdir(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
     catalog = FetchedCatalog(
         "widgets",
         "https://example/catalog.json",
@@ -64,7 +66,7 @@ def test_missing_home_uses_packaged_data_without_a_disk_cache(
     assert result.data == {"library": True}
     assert result.source == "library_packaged"
     assert result.stale_reason == "library_packaged: home_directory_unavailable"
-    assert list(tmp_path.iterdir()) == []
+    assert list(workspace.iterdir()) == []
 
 
 def _catalog(
