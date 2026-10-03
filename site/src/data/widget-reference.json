@@ -1,0 +1,1327 @@
+{
+  "clio.chart.v1": {
+    "description": "Any chart over tabular rows: a preset or an Altair/Vega-Lite spec.",
+    "properties": [
+      {
+        "name": "colorField",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "data",
+        "required": false,
+        "description": "Inline rows (at most 10000) — this array rides the surface's own wire message, so it is capped for transfer size; for a larger or growing dataset use dataUri instead, unbounded and paged/downsampled by the viewer. A cell is a scalar OR a strictly-shaped GeoJSON Geometry object ($defs/GeoJsonGeometry), so a geoshape mark can draw real shapes from inline rows.",
+        "type": "array"
+      },
+      {
+        "name": "dataQuery",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation.",
+        "type": "string"
+      },
+      {
+        "name": "entityField",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "facetField",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "height",
+        "required": false,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "preset",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "selection",
+        "required": false,
+        "description": "Bind to /selection/<key>; the bound value is a SelectionState ({field, values[], source?}, see $defs/SelectionState). Components bound to the same path share one selection.",
+        "type": "value"
+      },
+      {
+        "name": "selectionField",
+        "required": false,
+        "description": "Column used for an explicit selection binding. Ordinary views of one dataUri link by __row without this property; trajectory and spectra points select exact rows while entityField groups each curve.",
+        "type": "value"
+      },
+      {
+        "name": "selectionParam",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "spec",
+        "required": false,
+        "description": "A Vega-Lite spec whose rows come from data/dataUri as the named dataset 'source' — the spec is chart configuration, never a data channel, and the dataset itself is unbounded via dataUri regardless of this cap. This schema already enforces the top-level key allowlist, no url/usermeta key at any depth, no bind.element at any depth (a CSS selector that could mount an input widget anywhere on the host page), and data only as {name: source} at any depth; the renderer additionally enforces the config-size (65536 bytes) and view-count (8) caps that keep the spec itself bounded and abuse-resistant, which JSON Schema cannot express. See a2ui/chart/guard_rules.json.",
+        "type": "object"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "xField",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "xType",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "yField",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.data-table.v1": {
+    "description": "Tabular rows, inline or from a referenced dataset.",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "columns",
+        "required": false,
+        "description": "Required with inline rows; optional with dataUri (defaults to the queried/dataset columns).",
+        "type": "array"
+      },
+      {
+        "name": "dataQuery",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation.",
+        "type": "string"
+      },
+      {
+        "name": "rows",
+        "required": false,
+        "description": "Inline rows; use dataUri instead for a registered dataset.",
+        "type": "array"
+      },
+      {
+        "name": "selection",
+        "required": false,
+        "description": "Bind to /selection/<key>; the bound value is a SelectionState ({field, values[], source?}, see $defs/SelectionState). Components bound to the same path share one selection.",
+        "type": "value"
+      },
+      {
+        "name": "selectionField",
+        "required": false,
+        "description": "Dataset column the shared selection's values are drawn from; required when selection is bound.",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.map.v1": {
+    "description": "Interactive points, ordered trajectories, or GeoJSON geometry on a map.",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "actionLabel",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "categoryField",
+        "required": false,
+        "description": "Dataset column grouping points into categories.",
+        "type": "value"
+      },
+      {
+        "name": "dataQuery",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Requires latitudeField/longitudeField/labelField; a referenced dataset is bounded by dataQuery/limit, not the inline point cap.",
+        "type": "string"
+      },
+      {
+        "name": "detailField",
+        "required": false,
+        "description": "Dataset column holding each point's detail text.",
+        "type": "value"
+      },
+      {
+        "name": "filterFields",
+        "required": false,
+        "description": "With dataUri, columns worth filtering while exploring this map. Choose one or more real columns from the task and dataset, such as a category, magnitude, or time column. Use a registered table even for small maps when these native filters matter. The viewer creates typed controls and applies them to the map and Reference this; omit for the viewer's default fields.",
+        "type": "array"
+      },
+      {
+        "name": "geojsonUri",
+        "required": false,
+        "description": "Artifact URI of a GeoJSON FeatureCollection. Geometry is read by reference and drawn as points, lines, and polygons; feature properties supply labelField, categoryField, or valueField when named.",
+        "type": "string"
+      },
+      {
+        "name": "idField",
+        "required": false,
+        "description": "Dataset column holding each point's stable id.",
+        "type": "value"
+      },
+      {
+        "name": "labelField",
+        "required": false,
+        "description": "Dataset column holding each point's label (required with dataUri).",
+        "type": "value"
+      },
+      {
+        "name": "latitudeField",
+        "required": false,
+        "description": "Dataset column holding latitude (required with dataUri).",
+        "type": "value"
+      },
+      {
+        "name": "longitudeField",
+        "required": false,
+        "description": "Dataset column holding longitude (required with dataUri).",
+        "type": "value"
+      },
+      {
+        "name": "orderField",
+        "required": false,
+        "description": "With trackField, time or numeric sequence column ordering positions along each trajectory.",
+        "type": "value"
+      },
+      {
+        "name": "points",
+        "required": false,
+        "description": "Inline points (at most 500) — this array rides the surface's own wire message, so it is capped for transfer size; for a larger dataset use dataUri instead, unbounded and paged/downsampled by the viewer.",
+        "type": "array"
+      },
+      {
+        "name": "selected",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "selection",
+        "required": false,
+        "description": "Bind to /selection/<key>; the bound value is a SelectionState ({field, values[], source?}, see $defs/SelectionState). Components bound to the same path share one selection.",
+        "type": "value"
+      },
+      {
+        "name": "selectionField",
+        "required": false,
+        "description": "Dataset column the shared selection's values are drawn from; required when selection is bound.",
+        "type": "value"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "trackField",
+        "required": false,
+        "description": "With dataUri, column identifying each trajectory (for example storm_id). Rows with the same value form one path.",
+        "type": "value"
+      },
+      {
+        "name": "valueField",
+        "required": false,
+        "description": "Numeric dataset column used for a continuous colour scale and legend.",
+        "type": "value"
+      },
+      {
+        "name": "valueLabel",
+        "required": false,
+        "description": "Human-readable name for the numeric map legend, such as Displacement.",
+        "type": "string"
+      },
+      {
+        "name": "valueUnit",
+        "required": false,
+        "description": "Unit shown beside a continuous-colour legend's values.",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.raster-viewport.v1": {
+    "description": "An interactive viewport for a registered two-dimensional grid, with sampled values, colour scale, and region reference.",
+    "properties": [
+      {
+        "name": "band",
+        "required": false,
+        "description": "",
+        "type": "integer"
+      },
+      {
+        "name": "colormap",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "rasterUri",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "unit",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "variable",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.mesh-viewport.v1": {
+    "description": "An orbitable 3D view of a registered standard mesh or a CLIO FEA mesh with optional result fields.",
+    "properties": [
+      {
+        "name": "camera",
+        "required": false,
+        "description": "Camera position, target, and orientation. Bind it to a data path to retain or coordinate the view.",
+        "type": "value"
+      },
+      {
+        "name": "field",
+        "required": false,
+        "description": "Name of the scalar result field to color by, as stored in the CLIO FEA mesh.",
+        "type": "value"
+      },
+      {
+        "name": "format",
+        "required": false,
+        "description": "The mesh file format. Set it when the file bytes do not identify the format unambiguously.",
+        "type": "string"
+      },
+      {
+        "name": "frame",
+        "required": false,
+        "description": "Zero-based result frame. Bind it to a slider value to step through a simulation.",
+        "type": "value"
+      },
+      {
+        "name": "materialUri",
+        "required": false,
+        "description": "Registered MTL companion file for an OBJ model.",
+        "type": "string"
+      },
+      {
+        "name": "meshUri",
+        "required": true,
+        "description": "Reference to a registered mesh artifact, such as artifact://artifact_specimen. The viewer loads the model from that artifact.",
+        "type": "string"
+      },
+      {
+        "name": "showField",
+        "required": false,
+        "description": "Show or hide scalar coloring while keeping the geometry visible.",
+        "type": "value"
+      },
+      {
+        "name": "syncGroup",
+        "required": false,
+        "description": "Matching group names link the cameras and color scales of related 3D viewports.",
+        "type": "string"
+      },
+      {
+        "name": "thresholdField",
+        "required": false,
+        "description": "Result field used to keep only geometry within a chosen value interval.",
+        "type": "string"
+      },
+      {
+        "name": "thresholdMax",
+        "required": false,
+        "description": "Upper bound of the visible field interval. It can read a value from a control.",
+        "type": "value"
+      },
+      {
+        "name": "thresholdMin",
+        "required": false,
+        "description": "Lower bound of the visible field interval. It can read a value from a control.",
+        "type": "value"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "A short, descriptive title for the view.",
+        "type": "value"
+      },
+      {
+        "name": "upAxis",
+        "required": false,
+        "description": "The axis treated as vertical when framing and orbiting the model.",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.weather.v1": {
+    "description": "Current weather and hourly or daily forecasts for a field site or location.",
+    "properties": [
+      {
+        "name": "condition",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "daily",
+        "required": false,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "hourly",
+        "required": false,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "location",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "observedAt",
+        "required": true,
+        "description": "ISO 8601 local date-time with an explicit UTC offset or Z.",
+        "type": "string"
+      },
+      {
+        "name": "source",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "temperature",
+        "required": true,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "temperatureUnit",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "timeZone",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "windSpeed",
+        "required": false,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "windUnit",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.message-draft.v1": {
+    "description": "Editable alternatives for an email, chat message, or text, with copy and open actions.",
+    "properties": [
+      {
+        "name": "kind",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "versions",
+        "required": true,
+        "description": "",
+        "type": "array"
+      }
+    ]
+  },
+  "clio.steps.v1": {
+    "description": "An interactive protocol or recipe with checkable actions, timers, and separately scaled ingredients.",
+    "properties": [
+      {
+        "name": "baseAmount",
+        "required": false,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "ingredients",
+        "required": false,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "progress",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "scaleLabel",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "steps",
+        "required": true,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "title",
+        "required": true,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.action-card.v1": {
+    "description": "A short pitch with up to six labeled actions.",
+    "properties": [
+      {
+        "name": "actions",
+        "required": true,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "body",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "severity",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.approval.v1": {
+    "description": "A gated decision with one to four actions.",
+    "properties": [
+      {
+        "name": "actions",
+        "required": true,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "reason",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "risk",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "title",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.workflow.v1": {
+    "description": "A step/edge graph showing a multi-step plan's progress.",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. A JSON file shaped {\"nodes\": [...], \"edges\": [...]}.",
+        "type": "string"
+      },
+      {
+        "name": "edges",
+        "required": false,
+        "description": "Inline edges (at most 256), alongside nodes.",
+        "type": "array"
+      },
+      {
+        "name": "nodes",
+        "required": false,
+        "description": "Inline nodes (at most 128) — rides the surface's own wire message; give edges too, or use dataUri instead of both for a larger graph, unbounded.",
+        "type": "array"
+      },
+      {
+        "name": "selected",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.metric.v1": {
+    "description": "One labeled number, optionally with a unit and trend.",
+    "properties": [
+      {
+        "name": "detail",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "label",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "trend",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "unit",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.status.v1": {
+    "description": "A single labeled state, e.g. a running step.",
+    "properties": [
+      {
+        "name": "detail",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "elapsedMs",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "label",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "state",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.progress.v1": {
+    "description": "A bounded or indeterminate operation's progress.",
+    "properties": [
+      {
+        "name": "detail",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "label",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "max",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "state",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "value",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.callout.v1": {
+    "description": "A short flagged note distinct from plain text (info/warning/error severity).",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "body",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "severity",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.artifact.v1": {
+    "description": "A reference card for one registered artifact.",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "mediaType",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "name",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "size",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "uri",
+        "required": true,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.code.v1": {
+    "description": "Syntax-highlighted source, inline or from a referenced file.",
+    "properties": [
+      {
+        "name": "code",
+        "required": false,
+        "description": "Inline source; use dataUri instead for a referenced file.",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Its file content is the source.",
+        "type": "string"
+      },
+      {
+        "name": "language",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.diff.v1": {
+    "description": "A unified diff for one path, inline or from a referenced file.",
+    "properties": [
+      {
+        "name": "action",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Its file content is the diff text.",
+        "type": "string"
+      },
+      {
+        "name": "diff",
+        "required": false,
+        "description": "Inline unified diff text; use dataUri instead for a referenced file.",
+        "type": "value"
+      },
+      {
+        "name": "path",
+        "required": true,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "status",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "clio.mermaid.v1": {
+    "description": "A declarative Mermaid diagram, inline source or from a referenced file.",
+    "properties": [
+      {
+        "name": "dataUri",
+        "required": false,
+        "description": "A workspace file path or artifact:// reference; CLIO registers a path as an artifact before validation. Its file content is the source.",
+        "type": "string"
+      },
+      {
+        "name": "source",
+        "required": false,
+        "description": "Inline diagram source; use dataUri instead for a referenced file.",
+        "type": "value"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "Button": {
+    "description": "A clickable control wrapping one child, firing an action.",
+    "properties": [
+      {
+        "name": "action",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "child",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "variant",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "CheckBox": {
+    "description": "A single labeled boolean toggle.",
+    "properties": [
+      {
+        "name": "label",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "ChoicePicker": {
+    "description": "A single- or multiple-selection picker; bind value to the path an action reads.",
+    "properties": [
+      {
+        "name": "displayStyle",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "filterable",
+        "required": false,
+        "description": "",
+        "type": "boolean"
+      },
+      {
+        "name": "label",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "options",
+        "required": true,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "variant",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "DateTimeInput": {
+    "description": "A date, time, or date-time input with an ISO 8601 value; enable the needed parts.",
+    "properties": [
+      {
+        "name": "enableDate",
+        "required": false,
+        "description": "",
+        "type": "boolean"
+      },
+      {
+        "name": "enableTime",
+        "required": false,
+        "description": "",
+        "type": "boolean"
+      },
+      {
+        "name": "label",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "max",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "min",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "Slider": {
+    "description": "A whole-number range control (see clio.slider.v1 for fractional steps).",
+    "properties": [
+      {
+        "name": "label",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "max",
+        "required": true,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "min",
+        "required": false,
+        "description": "",
+        "type": "number"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "TextField": {
+    "description": "A single- or multi-line text input.",
+    "properties": [
+      {
+        "name": "label",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "validationRegexp",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "value",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "variant",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "clio.slider.v1": {
+    "description": "A fractional-step numeric control, or a two-value range, with typed value boxes.",
+    "properties": [
+      {
+        "name": "label",
+        "required": true,
+        "description": "Describe the quantity the person is changing.",
+        "type": "value"
+      },
+      {
+        "name": "max",
+        "required": true,
+        "description": "Largest allowed value.",
+        "type": "number"
+      },
+      {
+        "name": "min",
+        "required": true,
+        "description": "Smallest allowed value.",
+        "type": "number"
+      },
+      {
+        "name": "range",
+        "required": false,
+        "description": "Enable two handles for an interval instead of one value.",
+        "type": "boolean"
+      },
+      {
+        "name": "step",
+        "required": false,
+        "description": "Distance between allowed values, including fractional increments.",
+        "type": "number"
+      },
+      {
+        "name": "unit",
+        "required": false,
+        "description": "Short unit shown beside the value, such as s or mm.",
+        "type": "string"
+      },
+      {
+        "name": "value",
+        "required": true,
+        "description": "Current numeric value, or two bounds in range mode. A bound data path lets other components read the same value.",
+        "type": "object"
+      }
+    ]
+  },
+  "Column": {
+    "description": "A vertical layout container for child components.",
+    "properties": [
+      {
+        "name": "align",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "children",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "justify",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "Divider": {
+    "description": "A horizontal or vertical rule separating layout regions.",
+    "properties": [
+      {
+        "name": "axis",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "Frame": {
+    "description": "A titled container around one child component.",
+    "properties": [
+      {
+        "name": "child",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "description",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "title",
+        "required": false,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "Grid": {
+    "description": "A fixed-column grid layout container for child components.",
+    "properties": [
+      {
+        "name": "children",
+        "required": true,
+        "description": "",
+        "type": "array"
+      },
+      {
+        "name": "columns",
+        "required": false,
+        "description": "",
+        "type": "integer"
+      },
+      {
+        "name": "gap",
+        "required": false,
+        "description": "",
+        "type": "number"
+      }
+    ]
+  },
+  "Icon": {
+    "description": "A named or SVG icon glyph.",
+    "properties": [
+      {
+        "name": "name",
+        "required": true,
+        "description": "",
+        "type": "object"
+      }
+    ]
+  },
+  "Image": {
+    "description": "A raster or vector image by URL, sized to a preset variant.",
+    "properties": [
+      {
+        "name": "description",
+        "required": false,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "fit",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "url",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "variant",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "List": {
+    "description": "A vertical or horizontal list of child components, optionally templated from bound data.",
+    "properties": [
+      {
+        "name": "align",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "children",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "direction",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "Modal": {
+    "description": "A dialog opened by a trigger component, showing one content component.",
+    "properties": [
+      {
+        "name": "content",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "trigger",
+        "required": true,
+        "description": "",
+        "type": "value"
+      }
+    ]
+  },
+  "Row": {
+    "description": "A horizontal layout container for child components.",
+    "properties": [
+      {
+        "name": "align",
+        "required": false,
+        "description": "",
+        "type": "string"
+      },
+      {
+        "name": "children",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "justify",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  },
+  "Tabs": {
+    "description": "A tabbed switcher between named child components.",
+    "properties": [
+      {
+        "name": "tabs",
+        "required": true,
+        "description": "",
+        "type": "array"
+      }
+    ]
+  },
+  "Text": {
+    "description": "A run of text, plain or headed (h1-h5, caption, body).",
+    "properties": [
+      {
+        "name": "text",
+        "required": true,
+        "description": "",
+        "type": "value"
+      },
+      {
+        "name": "variant",
+        "required": false,
+        "description": "",
+        "type": "string"
+      }
+    ]
+  }
+}

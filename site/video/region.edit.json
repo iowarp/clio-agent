@@ -1,0 +1,84 @@
+{
+  "source": "takes/region-20261003-r5.limited.mp4",
+  "shots": [
+    {
+      "from": 0.2,
+      "to": 24.5,
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "from": 24.5,
+      "to": 107,
+      "speed": 10,
+      "caption": "Actual agent work - 10x speed",
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "from": 107,
+      "to": 114.4,
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "source": "takes/region-20261003-r6-review.limited.mp4",
+      "from": 0.1,
+      "to": 7,
+      "caption": "Review: label both peak observations",
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "source": "takes/region-20261003-r6-review.limited.mp4",
+      "from": 7,
+      "to": 59.5,
+      "speed": 10,
+      "caption": "Actual correction work - 10x speed",
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "source": "takes/region-20261003-r6-review.limited.mp4",
+      "from": 59.5,
+      "to": 67.35,
+      "crop": {
+        "x": 205,
+        "y": 55,
+        "width": 1075,
+        "height": 775
+      }
+    },
+    {
+      "source": "takes/region-20261003-r6-review.limited.mp4",
+      "from": 67.35,
+      "to": 72.85,
+      "crop": {
+        "x": 0,
+        "y": 95,
+        "width": 1280,
+        "height": 775
+      }
+    }
+  ]
+}

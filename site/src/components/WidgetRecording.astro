@@ -1,0 +1,11 @@
+---
+const { name, title, caption, pointerGuide = false, timingNote = 'Pauses are shortened.' } = Astro.props as { name: string; title: string; caption: string; pointerGuide?: boolean; timingNote?: string };
+---
+<figure class="widget-recording not-content">
+  <div class="widget-recording-heading"><span>CLIO</span><strong>{title}</strong><small>Recorded in CLIO</small></div>
+  <video controls playsinline preload="metadata" poster={`/media/${name}.jpg`} aria-label={title}>
+    <source src={`/media/${name}.mp4`} type="video/mp4" />
+    <track kind="captions" src={`/media/${name}.vtt`} srclang="en" label="English" />
+  </video>
+  <figcaption>{caption} {timingNote}{pointerGuide ? ' A pointer guide follows the recorded actions.' : ''}</figcaption>
+</figure>

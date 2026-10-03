@@ -1,0 +1,20 @@
+{
+  "name": "clio-demo-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "studio": "remotion studio src/index.tsx",
+    "render:ffmpeg": "node render-ffmpeg.mjs",
+    "render": "remotion render src/index.tsx DemoEdit --concurrency=1 --offthreadvideo-cache-size-in-bytes=67108864"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.521",
+    "@remotion/cli": "4.0.521",
+    "@remotion/renderer": "4.0.521",
+    "puppeteer": "25.10.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "remotion": "4.0.521"
+  }
+}
