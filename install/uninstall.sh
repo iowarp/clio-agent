@@ -2,13 +2,12 @@
 # CLIO uninstaller (Linux / macOS).
 #
 # Undoes install.sh: stops the server, removes the launcher, and
-# deletes the install prefix. Pass --purge to also remove CLIO's user
-# state + config (~/.config/clio-agent and ~/.config/gact).
+# removes known application payloads. Pass --purge to also remove the
+# resolved Agent config directory. Data, state, and other products are retained.
 #
 #   Flags:
 #     --yes     skip the confirmation prompt (non-interactive)
-#     --purge   also remove ~/.config/clio-agent (sessions, workspaces,
-#               blueprints, ARC) AND ~/.config/gact (TUI config/themes)
+#     --purge   also remove Agent configuration (including stored credentials)
 #
 #   Environment overrides (must match the install):
 #     CLIO_PREFIX   install root      (default: $HOME/.local/share/clio)
@@ -19,23 +18,42 @@ set -euo pipefail
 if [[ "$(uname -s)" = Darwin* ]]; then
   agent_data_default="$HOME/Library/Application Support/clio-agent/data"
 else
-  agent_data_default="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"
+  xdg_data="${XDG_DATA_HOME:-}"
+  case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+  agent_data_default="$xdg_data/clio-agent"
 fi
 agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
 agent_data="${agent_data:-$agent_data_default}"
+case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 2 ;; esac
 requested_prefix="${CLIO_PREFIX:-}"
 CLIO_PREFIX="${CLIO_PREFIX:-$agent_data/app}"
-if [[ -z "$requested_prefix" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+if [[ -z "$requested_prefix" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
   CLIO_PREFIX="$HOME/.local/share/clio"
 fi
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-# Per-host, like the launcher's (shared cluster homes); the unkeyed name is
-# what launchers before that change wrote.
-PIDFILE="$CLIO_PREFIX/clio-server.$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost).pid"
-[ -f "$PIDFILE" ] || PIDFILE="$CLIO_PREFIX/clio-server.pid"
+CLIO_STATE="$CLIO_PREFIX"
 CLIO_CONFIG="$HOME/.config/clio-agent"
-GACT_CONFIG="$HOME/.config/gact"
+AGENT_PYTHON="$CLIO_PREFIX/clio-agent/.venv/bin/python"
+if [[ -x "$AGENT_PYTHON" ]]; then
+  # Resolve before deleting the installed interpreter. Older releases retain
+  # the legacy paths above if they do not expose the namespace helpers.
+  resolved_state="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())' 2>/dev/null)" && CLIO_STATE="$resolved_state"
+  resolved_config="$("$AGENT_PYTHON" -c 'from clio_agent.paths import user_config_dir; print(user_config_dir())' 2>/dev/null)" && CLIO_CONFIG="$resolved_config"
+fi
+HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
+PIDFILE="$CLIO_STATE/clio-server.$HOST_ID.pid"
+for candidate in "$CLIO_STATE/clio-server.pid" "$CLIO_PREFIX/clio-server.$HOST_ID.pid" "$CLIO_PREFIX/clio-server.pid"; do
+  [[ -f "$PIDFILE" ]] || PIDFILE="$candidate"
+done
+
+if [[ "$PURGE" -eq 1 ]]; then
+  case "$CLIO_CONFIG" in
+    /*/clio-agent|/*/clio-agent/config) ;;
+    *) echo "Refusing to purge a custom config root: $CLIO_CONFIG. Remove its contents explicitly after review." >&2; exit 2 ;;
+  esac
+fi
 LAUNCHER="$CLIO_BIN_DIR/clio"
 
 ASSUME_YES=0
@@ -54,14 +72,12 @@ warn() { printf "${YELLOW}!!${RESET} %s\n" "$*" >&2; }
 
 echo ""
 echo "CLIO uninstall — the following will be removed:"
-echo "  install prefix:  $CLIO_PREFIX"
+echo "  application payloads in: $CLIO_PREFIX (unknown files retained)"
 echo "  launcher:        $LAUNCHER"
 if [[ "$PURGE" -eq 1 ]]; then
   echo "  clio config:     $CLIO_CONFIG  (--purge)"
-  echo "  gact config:     $GACT_CONFIG  (--purge)"
 else
   echo "  clio config:     $CLIO_CONFIG  (KEPT — pass --purge to remove)"
-  echo "  gact config:     $GACT_CONFIG  (KEPT — pass --purge to remove)"
 fi
 echo ""
 
@@ -116,6 +132,6 @@ if [[ "$PURGE" -eq 1 ]]; then
 fi
 
 say "CLIO uninstalled."
-if [[ "$PURGE" -ne 1 ]] && { [[ -d "$CLIO_CONFIG" ]] || [[ -d "$GACT_CONFIG" ]]; }; then
-  echo "  config kept ($CLIO_CONFIG, $GACT_CONFIG) — re-run with --purge to remove"
+if [[ "$PURGE" -ne 1 && -d "$CLIO_CONFIG" ]]; then
+  echo "  Agent config kept ($CLIO_CONFIG) — re-run with --purge to remove"
 fi

@@ -33,10 +33,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---------- resolved paths --------------------------------------------
-if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
+if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } elseif ($env:CLIO_USER_DIR) { Join-Path $env:CLIO_USER_DIR 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
 # Continue a pre-namespace installation until it is explicitly migrated.
 $LegacyPrefix = Join-Path $env:LOCALAPPDATA 'clio'
-if (-not $env:CLIO_PREFIX -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
+if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGENT_DATA_DIR -and -not $env:CLIO_USER_DIR -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
 if ($env:CLIO_PORT)   { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR){ $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 # Agent data stays with the selected install. The clio-core daemon does NOT: there

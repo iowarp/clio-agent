@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import sys
+import warnings
 from collections.abc import Mapping
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Literal
@@ -18,6 +19,10 @@ logger = logging.getLogger(__name__)
 Role = Literal["config", "data", "state", "cache", "runtime"]
 Platform = Literal["linux", "macos", "windows"]
 _APP = "clio-agent"
+
+
+class HomeDirectoryUnavailable(RuntimeError):
+    """Native roots cannot be resolved and no explicit role root was configured."""
 
 
 def resolve_root(
@@ -49,7 +54,11 @@ def resolve_root(
             return relocated / role
         legacy = override("CLIO_USER_DIR")
         if legacy is not None:
-            logger.warning("CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME")
+            warnings.warn(
+                "CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME",
+                FutureWarning,
+                stacklevel=2,
+            )
             return legacy if role == "config" else legacy / role
     if platform == "windows":
         if role == "runtime":
@@ -94,13 +103,18 @@ def _root(
     env: Mapping[str, str] | None = None,
     legacy: bool = True,
 ) -> Path:
-    root = resolve_root(
-        role, home=home or Path.home(), env=os.environ if env is None else env, platform=_platform()
-    )
+    source = os.environ if env is None else env
+    override_names = (f"CLIO_AGENT_{role.upper()}_DIR", "CLIO_AGENT_HOME", "CLIO_USER_DIR")
+    explicit = next((source[name] for name in override_names if source.get(name, "").strip()), "")
+    # A fully relocated process need not have a resolvable OS home (service users).
+    try:
+        base_home = home if home is not None else Path(explicit) if explicit else Path.home()
+    except RuntimeError as exc:
+        raise HomeDirectoryUnavailable("Configure CLIO_AGENT_HOME for this service user") from exc
+    root = resolve_root(role, home=base_home, env=source, platform=_platform())
     if root is None:
         raise ValueError("runtime requires a private instance directory")
     result = Path(root)
-    source = os.environ if env is None else env
     if legacy and not any(
         source.get(key, "").strip()
         for key in ("CLIO_AGENT_HOME", "CLIO_USER_DIR", f"CLIO_AGENT_{role.upper()}_DIR")
@@ -134,9 +148,9 @@ def user_config_dir_for(home: Path, env: Mapping[str, str]) -> Path:
     return _root("config", home=home, env=env)
 
 
-def user_data_dir() -> Path:
+def user_data_dir(env: Mapping[str, str] | None = None) -> Path:
     """Return the durable Agent data root."""
-    return _root("data")
+    return _root("data", env=env)
 
 
 def user_state_dir() -> Path:
@@ -247,4 +261,4 @@ def workspace_agent_dir(cwd: str | Path | None = None) -> Path:
 
 def workspace_core_dir(cwd: str | Path | None = None) -> Path:
     """Return the authored workspace CTE configuration lookup location."""
-    return workspace_shared_dir(cwd if cwd is not None else Path.cwd()) / "core"
+    return workspace_config_path(cwd if cwd is not None else Path.cwd(), "core")

@@ -84,6 +84,18 @@ def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -
     assert not custom.exists()
     assert list(project.iterdir()) == []
 
+    legacy = c.post(
+        "/v1/workspaces",
+        json={
+            "name": "legacy-client",
+            "root_path": str(project),
+            "storage_root": str(project / ".clio"),
+        },
+    )
+    assert legacy.status_code == 201
+    assert legacy.json()["storage_root"] == str(workspace_state_dir(project))
+    assert list(project.iterdir()) == []
+
 
 # The per-workspace session/message mirror was DELETED in #771 (reader-less,
 # write-only). The inverse guarantee — a workspace-owned session writes NOTHING

@@ -51,7 +51,9 @@ def test_view_image_retains_only_verified_workspace_metadata(tmp_path: Path) -> 
         "snapshot_sha256": result["sha256"],
     }
     assert len(result["sha256"]) == 64
-    assert result["snapshot"].startswith(".clio/tool-output/")
+    from clio_agent.paths import workspace_state_dir
+
+    assert Path(result["snapshot"]).is_relative_to(workspace_state_dir(tmp_path) / "tool-output")
     assert (tmp_path / result["snapshot"]).read_bytes() == _ONE_PIXEL_PNG
     assert "base64" not in str(result).lower()
 

@@ -319,15 +319,26 @@ class FetchedCatalog(Generic[T]):
     # -- internals -----------------------------------------------------------
 
     def _get_locked(self, *, force_refresh: bool, allow_fetch: bool) -> CatalogResult[T]:
-        cache_path = self.cache_path
+        try:
+            cache_path = self.cache_path
+        except paths.HomeDirectoryUnavailable:
+            # Environment-only clients can consult packaged catalog data without
+            # inventing a writable cache under their working directory.
+            cache_path = None
+            allow_fetch = False
         if not force_refresh and self._fresh is not None:
             memo_path, memo = self._fresh
             if memo_path == cache_path and _age_s(memo.fetched_at) < self.ttl_s:
                 return memo
 
-        cached = self._read_disk_cache()
+        cached = self._read_disk_cache() if cache_path is not None else None
 
-        if cached is not None and not force_refresh and _age_s(cached.fetched_at) < self.ttl_s:
+        if (
+            cache_path is not None
+            and cached is not None
+            and not force_refresh
+            and _age_s(cached.fetched_at) < self.ttl_s
+        ):
             data = self._safe_parse(cached, context="disk_cache")
             if data is not None:
                 result = CatalogResult(
@@ -344,8 +355,10 @@ class FetchedCatalog(Generic[T]):
             # treat it as absent for the rest of this read.
             cached = None
 
-        fetch_failure_reason = "fetch_disabled"
-        if allow_fetch:
+        fetch_failure_reason = (
+            "home_directory_unavailable" if cache_path is None else "fetch_disabled"
+        )
+        if allow_fetch and cache_path is not None:
             fetched, fetch_failure_reason = self._fetch(cached)
             if fetched is not None:
                 # A later read of this payload is a read of the disk cache it

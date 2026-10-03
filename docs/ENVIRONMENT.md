@@ -103,7 +103,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES` | `gact.context_references.summary_messages` | int | `5` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CORE_PORT` | `arc.core_port` | str | `str(_DEFAULT_CTE_CORE_PORT)` _(computed)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
-| `CLIO_DATA_DIR` | `paths.data_dir` | str | `.clio/agent` | `src/clio_agent/runtime/status.py` |
 | `CLIO_DEBUG` | `debug.level` | str | `low` | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEBUG_MEMPROF` | `debug.memprof` | bool | `false` | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_MEMPROF_FRAMES` | `debug.memprof_frames` | int | `20` | `src/clio_agent/gact/diagnostics.py` |
@@ -338,7 +337,6 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
-| `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 
 ## Owned elsewhere
 

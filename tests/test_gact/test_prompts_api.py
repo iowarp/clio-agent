@@ -218,7 +218,6 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             json={
                 "name": "Workspace",
                 "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
             },
         ).json()["id"]
         saved = c.put(
@@ -236,7 +235,8 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             params={"workspace_id": wid},
         ).json()["prompt"]
 
-    assert (workspace / ".clio" / "prompts" / "clio.chat--default.md").exists()
+    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.chat--default.md").exists()
+    assert not (workspace / ".clio").exists()
     assert prompt["text"] == "Workspace chat prompt."
     assert prompt["scope"] == "workspace"
 

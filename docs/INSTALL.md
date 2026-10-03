@@ -107,6 +107,8 @@ Opening a workspace creates no hidden directory inside it. Explicitly saved
 project configuration uses `.clio-agent/shared`; legacy `.clio` configuration
 remains readable. The API reports the actual managed `storage_root` and rejects
 new custom storage roots, which previously had no effect on the writers.
+Older clients may still send the former `<workspace>/.clio` default; it is
+accepted as a compatibility input and normalized to the managed state directory.
 
 An existing legacy session store remains active until explicitly migrated.
 Stop Agent, Desktop and their Core daemon first, then preview the bounded migration:
@@ -131,6 +133,17 @@ installer. Desktop gives fresh managed Agents their own `CLIO_AGENT_HOME`;
 existing `clio-user` installations remain readable until migration. Core host
 coordination is shared at native `state/core-hosts/<host>` (with legacy lookup)
 because the Core daemon has one fixed endpoint per host.
+
+Source installs require a new or explicitly emptied program directory; an
+existing checkout is never erased automatically. Uninstall retains Agent data,
+state, and unknown files. `--purge` / `-Purge` additionally removes the resolved
+Agent config directory, including saved credentials; custom config roots require
+explicit manual removal.
+
+The public Agent CI needs a `CLIO_NAMESPACES_READ_TOKEN` repository secret with
+read-only Contents access to the private `iowarp/clio-namespaces` repository.
+The workflow checks out the pinned checker without persisting credentials and
+fails explicitly if the secret is absent.
 
 ## ⚠️ Running more than one at once
 The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and default
