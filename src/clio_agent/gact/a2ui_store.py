@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from threading import Lock, RLock
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui import (
     A2UISurfaceRecord,
     A2UITranscriptFrozenError,
@@ -176,11 +177,24 @@ class A2UIStore:
 
         self._projection_cache.pop(session_id, None)
 
+    def _messages(self, session_id: str) -> list[Any]:
+        """Read the transcript with a typed failure for invalid stored text."""
+        try:
+            return self._app.state.messages.get(session_id, []) or []
+        except UnicodeDecodeError as exc:
+            # Keep unreadable persisted bytes intact. Readers can report this
+            # session's degradation while still returning questions/permissions.
+            raise ClioError(
+                f"Interactive transcript for session {session_id!r} contains invalid text",
+                error_type="a2ui_transcript_decode_failed",
+                details={"session_id": session_id},
+            ) from exc
+
     def _all_part_ids(self, session_id: str) -> set[str]:
         """Return every part id already recorded for ``session_id``."""
 
         ids: set[str] = set()
-        for message in self._app.state.messages.get(session_id, []) or []:
+        for message in self._messages(session_id):
             for part in getattr(message, "parts", []) or []:
                 ids.add(str(getattr(part, "id", "") or ""))
         for part in (getattr(self._app.state, "live_assistant_parts", {}) or {}).get(
@@ -209,7 +223,7 @@ class A2UIStore:
         """
 
         candidates: list[Any] = []
-        for message in self._app.state.messages.get(session_id, []) or []:
+        for message in self._messages(session_id):
             candidates.extend(getattr(message, "parts", []) or [])
         candidates.extend(
             (getattr(self._app.state, "live_assistant_parts", {}) or {}).get(session_id, [])

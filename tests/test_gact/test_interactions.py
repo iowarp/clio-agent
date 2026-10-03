@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import dspy
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.blob_frame import BlobDecodeError
@@ -53,6 +55,38 @@ def test_damaged_surface_ledger_degrades_interactions_and_snapshot(tmp_path, mon
     assert response.json()["degradations"][0]["reason"] == "clio_core_blob_invalid_base64"
     assert snapshot.json()["surfaces"] == []
     assert snapshot.json()["degradations"][0]["reason"] == "clio_core_blob_invalid_base64"
+
+
+def test_invalid_transcript_text_degrades_surfaces_without_hiding_permissions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt session cannot turn the global attention poll into an HTTP 500."""
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="invalid text")
+
+    class UnreadableMessages(dict[str, list[Any]]):
+        def get(self, key: str, default: Any = None) -> Any:
+            raise UnicodeDecodeError("utf-8", b"\xa0", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(app.state, "messages", UnreadableMessages())
+    app.state.permissions["perm_keep"] = {
+        "id": "perm_keep",
+        "session_id": session.id,
+        "status": "pending",
+        "reason": "Read source data",
+        "created_at": "2026-10-03T11:00:00Z",
+        "tool_call": {"tool_name": "shell_bash", "input": {"command": "Get-Content data.csv"}},
+    }
+    with TestClient(app) as client:
+        response = client.get(f"/v1/sessions/{session.id}/interactions", headers=HEADERS)
+        snapshot = client.get(f"/v1/sessions/{session.id}/a2ui/surfaces", headers=HEADERS)
+
+    assert response.status_code == snapshot.status_code == 200
+    assert response.json()["interactions"][0]["id"] == "permission:perm_keep"
+    assert response.json()["degradations"][0]["reason"] == "a2ui_transcript_decode_failed"
+    assert snapshot.json()["surfaces"] == []
+    assert snapshot.json()["degradations"][0]["reason"] == "a2ui_transcript_decode_failed"
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:

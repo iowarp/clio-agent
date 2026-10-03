@@ -1,7 +1,7 @@
 ---
 name: present-interactive-analysis
 title: Present Interactive Analysis
-description: Use for answers people will explore or edit: charts, maps, forecasts, checklists, and especially email/chat/text drafts with alternative versions to tweak. Load the active A2UI catalog for exact shapes.
+description: Use for explorable answers, generated images and SVG figures, editable message drafts, and follow-ups about selected evidence. Show saved visual artifacts with the active A2UI catalog's Image component; load the catalog for exact shapes.
 ---
 
 Use this skill when interaction or structure helps the person use the answer.
@@ -16,6 +16,16 @@ a rendered `.png`) makes a file in the workspace: the user sees a file
 attachment, not a chart, unless a surface for it also exists. Reach for the
 surface when the ask is to see, render, plot, or map something; reach for an
 artifact when the deliverable itself is a file the user asked to keep.
+When that deliverable is a generated visual artifact (PNG, JPEG, SVG, or
+another supported image), also display the registered file with the active
+catalog's Image component. The person should see the figure in the answer
+and retain its downloadable file. Use the artifact reference, not a local
+filesystem path, a base64 copy, or an invented URL. Follow the catalog's
+supported media formats; report an unavailable image component explicitly.
+Show each figure once in A2UI, with its downloadable file alongside it. Refer
+to that view in prose instead of repeating the figure as a Markdown image.
+Give a new figure a distinct surface ID so its source map, chart, or model
+remains available. Reuse the image surface only for revisions of that figure.
 
 Component shapes are NOT in this skill — the catalog itself is the allowlist and
 the source of truth (`docs/design/a2ui-compat-campaign-2026-09.md` S2/S4). Load a
@@ -128,8 +138,8 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   then bind the values used by the view's data query.
 - Ongoing/completed work, a warning, or a diff → the matching status/callout/diff
   component, never repurposing a generic text block for it.
-- A durable export (an image, a report) the user did not ask to view inline → a
-  registered artifact reference, not an inlined image.
+- A durable nonvisual export (a document or data file) → a registered artifact
+  reference. Generated visual exports also use the Image guidance above.
 
 ### How to set up filters
 
@@ -163,6 +173,22 @@ visible there. Do not add filter buttons or actions to the component spec.
 Use `dataQuery.filter` for the initial scientific slice, and leave subsequent
 exploration to the viewer. Confirm that the visible rows, counts, and
 `Reference this` payload describe the same filtered subset.
+
+### Answering a question from a selection
+
+Treat **Reference this** as a pointer to evidence. Its preview and projected
+columns describe the current view; they are not the complete source dataset.
+For a follow-up, inspect the referenced artifact's schema and read the selected
+records before answering. Preserve the reference's filters and stable row IDs
+when querying it. Expand the column projection when the question needs fields
+that the view did not display. For example, a rate needs observation times as
+well as measured values. Do not declare a field unavailable merely because it
+is absent from the preview. If the underlying source also lacks it, state that
+limitation and answer only what the available evidence supports.
+
+Keep the response focused on the selected evidence and the person's question.
+Show a new view when it makes the explanation easier to inspect, rather than
+repeating the original dashboard or the reference's technical payload.
 
 ## Composing surfaces
 

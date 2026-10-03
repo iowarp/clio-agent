@@ -30,6 +30,18 @@ def _builtin(text: str = "builtin text") -> dict[str, PromptDefinition]:
     }
 
 
+def test_builtin_chat_shows_generated_visual_artifacts_in_a2ui() -> None:
+    """The standard agent presents saved figures through the negotiated catalog."""
+    prompt = builtin_prompt_definitions()["clio.chat"].profiles["default"].text
+    assert "register the saved file" in prompt
+    assert "A2UI catalog's Image component" in prompt
+    assert "present-interactive-analysis" in prompt
+    assert "Keep the file" in prompt
+    assert "Give a new figure its own image view" in prompt
+    assert "keep\nits source map, chart, or model available" in prompt
+    assert "Reuse that image view for revisions" in prompt
+
+
 def test_external_prompt_overrides_builtin_profile(tmp_path: Path) -> None:
     root = tmp_path / "prompts"
     root.mkdir()
