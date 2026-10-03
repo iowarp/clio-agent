@@ -11,8 +11,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from urllib.parse import urlsplit
 
-import anyio
 import httpx
+from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
@@ -25,6 +25,7 @@ from clio_agent.gact.infrastructure.drivers import (
     LOOPBACK_ONLY_SERVICES,
     DriverPlan,
     build_driver_plan,
+    clio_agent_version,
     service_connection_port,
     service_definitions,
 )
@@ -43,6 +44,7 @@ from clio_agent.gact.infrastructure.models import (
     VersionConflictDetail,
 )
 from clio_agent.gact.infrastructure.probe import probe_target
+from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, stop_desktop_launches
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
 from clio_agent.gact.infrastructure.server_access import (
     ServerAccessMixin,
@@ -132,12 +134,22 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         self._credential_resolver = credential_resolver
         self._endpoint_reachable = endpoint_reachable or self._check_tcp_reachable
         self._http_transport = http_transport
+        self._remote_launches: dict[str, RemoteLaunch] = {}
+        self._exiting_desktops: set[str] = set()
+
+    async def stop_desktop_agents(self, desktop_id: str) -> list[str]:
+        """Stop this Desktop's launches while its SSH bridges can still carry commands."""
+
+        self._exiting_desktops.add(desktop_id)
+        return await stop_desktop_launches(
+            desktop_id, self._remote_launches, self.store, self._execute, self._target_locks
+        )
 
     async def _check_tcp_reachable(self, url: str) -> bool:
-        return await anyio.to_thread.run_sync(_tcp_reachable, url)
+        return await run_sync(_tcp_reachable, url)
 
     async def _execute_local(self, spec: CommandSpec) -> CommandResult:
-        return await anyio.to_thread.run_sync(_run_local, spec)
+        return await run_sync(_run_local, spec)
 
     async def _execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
         target = self.store.target(target_id)
@@ -424,6 +436,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 made_key = True
             output: list[str] = []
             for index, spec in enumerate(plan.commands):
+                if plan.remote_launch and spec.args[1].startswith("# clio-deploy:start"):
+                    if plan.remote_launch.desktop_id in self._exiting_desktops:
+                        raise RuntimeError("Desktop is closing; remote deployment was cancelled")
+                    self._remote_launches[request.target_id] = plan.remote_launch
                 result = await self._execute(request.target_id, spec)
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 row = self.store.put_operation(
@@ -493,6 +509,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                                     installed_version=claim.installed_version or "unknown",
                                     pid=claim.pid or "",
                                     health=health,
+                                    target_version=clio_agent_version(),
+                                    owner=claim.owner or "",
+                                    port=plan.connection_port or 17800,
                                 ),
                                 "logs": _bounded("\n".join(output)),
                             }
@@ -529,6 +548,22 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             # A reinstall replaces only the server; the image and caches stay
             # on the ledger, so both install and reinstall merge.
             owned = merge_owned(installed.owned_resources if installed else [], created)
+            if row.service_id == "clio_agent" and request.action in {
+                "install",
+                "start",
+                "reinstall",
+            }:
+                adopted = claim is not None and claim.result in {"found", "adopted"}
+                configuration = dict(request.configuration)
+                configuration.update(
+                    desktop_owned="false" if adopted else "true",
+                    version=(claim.installed_version or "unknown")
+                    if adopted and claim is not None
+                    else clio_agent_version(),
+                )
+                request = request.model_copy(update={"configuration": configuration})
+                if not adopted and plan.remote_launch:
+                    resolved_root_update = plan.remote_launch.root
             await self._settle_service(
                 row.service_id,
                 request.model_copy(
@@ -689,7 +724,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 # persisted fact about the service (#1528 review); stripped
                 # here too, defensively, however `request` reached this point.
                 configuration={
-                    k: v for k, v in request.configuration.items() if k != "on_conflict"
+                    k: v
+                    for k, v in request.configuration.items()
+                    if k not in {"on_conflict", "conflict_pid", "conflict_root"}
                 },
                 state=state,
                 connection_url=connection_url,

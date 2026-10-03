@@ -76,7 +76,7 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 _USER_CONFIG_RELPATH = ("clio-agent", "config.yaml")
-_WORKSPACE_CONFIG_RELPATH = (".clio", "config.yaml")
+_WORKSPACE_CONFIG_RELPATH = (".clio-agent", "shared", "config.yaml")
 
 # The committed base-layer defaults document, shipped inside the wheel next to
 # this module (``src/clio_agent/config.defaults.yaml``). Generated + drift-tested
@@ -308,7 +308,8 @@ class ConfigStore:
         # on the other OS. reload() and __init__ always run unpatched.
         user_path, workspace_path = self._layer_paths()
         user = _read_yaml_mapping(user_path) if user_path is not None else {}
-        workspace = _read_yaml_mapping(workspace_path)
+        legacy = workspace_path.parent.parent.parent / ".clio" / "config.yaml"
+        workspace = _deep_merge(_read_yaml_mapping(legacy), _read_yaml_mapping(workspace_path))
         return _deep_merge(user, workspace)
 
     def _layer_paths(self) -> tuple[Path | None, Path]:

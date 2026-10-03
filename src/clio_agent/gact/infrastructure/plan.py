@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult
 from clio_agent.gact.infrastructure.models import CommandSpec
+from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch
 from clio_agent.gact.infrastructure.resource_ledger import StepRecorder
 
 
@@ -52,3 +53,4 @@ class DriverPlan:
     readiness: Readiness | None = None
     after_ready: tuple[CommandSpec, ...] = ()
     configuration: dict[str, str] | None = None
+    remote_launch: RemoteLaunch | None = None

@@ -156,7 +156,7 @@ from clio_agent.gact.app import build_app
 # routes/context.py.
 # 282 -> 283: POST /v1/server/shutdown (graceful stop of a server clio_agent.serve
 # spawned; same bearer contract as the desktop route), owned by routes/lifecycle.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 283
+EXPECTED_ROUTE_METHOD_PAIRS = 284  # Desktop-owned remote launch shutdown endpoint.
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

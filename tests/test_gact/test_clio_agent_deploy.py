@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import signal
 import socket
@@ -37,6 +38,7 @@ from clio_agent.gact.infrastructure.models import (
     SshRoute,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.release_tag import release_tag
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
@@ -73,15 +75,16 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     plan = _plan(InfrastructureStore(tmp_path / "infra.json"))
     tags = [spec.args[1].splitlines()[0] for spec in plan.commands]
     assert tags[:2] == ["# clio-deploy:claim", "# clio-deploy:install"]
-    assert plan.commands[2].args[1].rstrip().endswith('"$bin/clio" start')
+    assert '"$bin/clio" start' in plan.commands[2].args[1]
     # Trailing "0": claim never replaces a found CLIO unless configuration
     # says so (see build_driver_plan's on_conflict plumbing).
-    assert plan.commands[0].args[-3:] == [str(CLIO_AGENT_PORT), VERSION, "0"]
+    assert plan.commands[0].args[-4:] == [str(CLIO_AGENT_PORT), VERSION, "0", ""]
     install = plan.commands[1]
-    assert install.args[-3:] == [
+    assert install.args[-4:] == [
         VERSION,
         f"https://pypi.org/pypi/clio-agent/{VERSION}/json",
-        f"https://raw.githubusercontent.com/iowarp/clio-agent/v{VERSION}/install/install.sh",
+        f"https://raw.githubusercontent.com/iowarp/clio-agent/{release_tag(VERSION)}/install/install.sh",
+        release_tag(VERSION),
     ]
     # A failed install fails the step: nothing swallows it.
     assert "; true" not in install.args[1] and "set -o pipefail" in install.args[1]
@@ -89,7 +92,7 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     fresh = plan.teardown(ClaimResult(result="free", existing_root=False))
     kept = plan.teardown(ClaimResult(result="stopped", existing_root=True))
     assert fresh.args[1].startswith("# clio-deploy:teardown")
-    assert fresh.args[-1] == "1" and kept.args[-1] == "0"
+    assert fresh.args[-2] == "1" and kept.args[-2] == "0"
 
 
 def test_reinstall_claims_the_port_before_uninstalling_this_roots_own_install() -> None:
@@ -507,7 +510,11 @@ def _fake_install(prefix: Path, version: str = VERSION, server_script: str = _FA
     server.write_text(server_script)
     server.chmod(0o755)
     python = bin_dir / "python"
-    python.write_text(f"#!/bin/sh\necho {version}\n")
+    python.write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        f'  *clio_agent.paths*) exec {shlex.quote(sys.executable)} "$@" ;;\n'
+        f"  *) echo {version} ;;\nesac\n"
+    )
     python.chmod(0o755)
     (prefix / ".clio-managed-install").touch()
     return server
@@ -547,7 +554,9 @@ def test_claim_on_a_free_port_reports_free(tmp_path: Path) -> None:
 
 
 @linux_only
-def test_claim_adopts_this_installs_healthy_server_of_the_target_version(tmp_path: Path) -> None:
+def test_claim_asks_about_this_installs_healthy_server_even_at_the_target_version(
+    tmp_path: Path,
+) -> None:
     prefix = tmp_path / "clio"
     _fake_install(prefix)
     port = _free_port()
@@ -556,9 +565,14 @@ def test_claim_adopts_this_installs_healthy_server_of_the_target_version(tmp_pat
         result = _run_script(claim_command(str(prefix), port, VERSION))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(
-            result="adopted", existing_root=True, pid=str(server.pid), owner=str(prefix)
+            result="found",
+            existing_root=True,
+            pid=str(server.pid),
+            owner=str(prefix),
+            installed_version=VERSION,
+            health="healthy",
         )
-        assert f"Reusing the running CLIO (pid {server.pid}" in result.stdout
+        assert f"already running (pid {server.pid}" in result.stdout
         assert _alive(server)
     finally:
         server.kill()
@@ -761,7 +775,12 @@ def test_claim_checks_health_on_this_node_even_behind_a_site_proxy(
             # stopped, with replace) instead of adopted.
             result = _run_script(claim_command(str(prefix), port, VERSION))
             assert parse_claim(result.stdout) == ClaimResult(
-                result="adopted", existing_root=True, pid=str(server.pid), owner=str(prefix)
+                result="found",
+                existing_root=True,
+                pid=str(server.pid),
+                owner=str(prefix),
+                installed_version=VERSION,
+                health="healthy",
             )
             assert _alive(server)
         finally:
@@ -804,7 +823,9 @@ _FAKE_CURL = textwrap.dedent(
 )
 
 
-def _install(tmp_path: Path, *, pypi: str, installer: str) -> subprocess.CompletedProcess[str]:
+def _install(
+    tmp_path: Path, *, pypi: str, installer: str, version: str = "0.9.4.18"
+) -> subprocess.CompletedProcess[str]:
     """Run the install step against a stand-in PyPI and release installer."""
 
     tools = tmp_path / "tools"
@@ -813,7 +834,11 @@ def _install(tmp_path: Path, *, pypi: str, installer: str) -> subprocess.Complet
         (tools / name).write_text(body)
         (tools / name).chmod(0o755)
     (tmp_path / "installer.sh").write_text(installer)
-    spec = install_command(str(tmp_path / "clio"), "0.9.4.18")
+    # Login shells may replace PATH from /etc/profile. Install these test-only
+    # shims after that so this regression can never run the network installer.
+    bash_env = tmp_path / "bash-env"
+    bash_env.write_text(f"export PATH={shlex.quote(str(tools))}:$PATH\n")
+    spec = install_command(str(tmp_path / "clio"), version)
     return subprocess.run(
         [spec.program, *spec.args],
         capture_output=True,
@@ -824,6 +849,7 @@ def _install(tmp_path: Path, *, pypi: str, installer: str) -> subprocess.Complet
             "PATH": f"{tools}:{os.environ['PATH']}",
             "FAKE_PYPI_CODE": pypi,
             "FAKE_INSTALLER": str(tmp_path / "installer.sh"),
+            "BASH_ENV": str(bash_env),
         },
     )
 
@@ -836,6 +862,22 @@ def test_an_unpublished_version_fails_the_install_with_one_plain_line(tmp_path: 
         "CLIO 0.9.4.18 isn't published; deploy from a released CLIO."
     )
     assert "SHOULD-NOT-RUN" not in result.stdout
+
+
+@linux_only
+def test_beta_bootstrap_pins_assets_even_with_the_already_released_installer(
+    tmp_path: Path,
+) -> None:
+    """The old beta installer needs GACT_VERSION as well as the script ref override."""
+
+    result = _install(
+        tmp_path,
+        pypi="200",
+        version="0.9.5b1",
+        installer='printf "%s|%s|%s\\n" "$CLIO_VERSION" "$CLIO_INSTALLER_REF" "$GACT_VERSION"\n',
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0.9.5b1|v0.9.5-beta.1|v0.9.5-beta.1"
 
 
 @linux_only

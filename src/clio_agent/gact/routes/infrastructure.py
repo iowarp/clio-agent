@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, status
+from fastapi import FastAPI, HTTPException, Request, WebSocket, status
 
+from clio_agent.gact.auth import has_valid_bearer
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
+    DesktopExitRequest,
     ExternalServiceConnectionRequest,
     ServiceActionRequest,
     TransportStateRequest,
@@ -51,6 +53,15 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
 
     def runtime() -> InfrastructureRuntime:
         return app.state.infrastructure_runtime
+
+    @app.post("/v1/infrastructure/desktop-exit")
+    async def desktop_exit(body: DesktopExitRequest, request: Request) -> dict[str, object]:
+        """Drain only Desktop-owned remote agents before the SSH transport closes."""
+
+        token = getattr(app.state, "bearer_token", None)
+        if token is None or not has_valid_bearer(request.scope, token):
+            raise HTTPException(status_code=401, detail="Desktop sign-in required")
+        return {"failures": await runtime().stop_desktop_agents(body.desktop_id)}
 
     @app.get("/v1/infrastructure/targets")
     async def list_targets() -> dict[str, object]:

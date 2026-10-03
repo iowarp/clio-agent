@@ -42,7 +42,9 @@ def test_an_oversize_result_goes_to_a_file_and_the_agent_is_told(tmp_path: Path)
     assert rows.startswith(head) and head.endswith(",") is False  # ends on a whole line
     spilled = _spilled_path(result)
     assert spilled.read_text(encoding="utf-8") == rows
-    assert tmp_path / ".clio" / "tool-output" in spilled.parents
+    from clio_agent.paths import workspace_state_dir
+
+    assert workspace_state_dir(tmp_path) / "tool-output" in spilled.parents
 
 
 def test_a_json_result_spills_as_json(tmp_path: Path) -> None:

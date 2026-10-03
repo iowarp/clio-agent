@@ -855,7 +855,9 @@ def test_definition_artifact_filename_is_hashed_for_a_traversal_surface_id(
         result["definition_artifact_id"]
     )
     stored_path = Path(version.path)
-    assert stored_path.parent == (tmp_path / ".clio" / "a2ui").resolve()
+    from clio_agent.paths import workspace_state_dir
+
+    assert stored_path.parent == workspace_state_dir(tmp_path) / "a2ui"
     assert stored_path.name.startswith("surface-")
     assert stored_path.name != "evil.json"
 

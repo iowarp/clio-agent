@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent import paths
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
     _PLAN_FILE_METADATA_KEY,
@@ -173,7 +174,7 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
     with tool_workspace_context(str(workspace)):
         plan_mode_reminder(app, sess.id, sess)
         plan_file = app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY]
-        assert Path(plan_file).parent == (workspace / ".clio" / "plans").resolve()
+        assert Path(plan_file).parent == (paths.workspace_state_dir(workspace) / "plans").resolve()
         assert FileAccessPolicy.from_env().validate_write(plan_file) == Path(plan_file)
         assert (
             resolve(
@@ -200,7 +201,7 @@ def test_plan_injection_resolves_and_creates_workspace_plan_dir_without_tool_con
     plan_mode_reminder(app, sess.id, sess)
 
     plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
-    expected = (workspace / ".clio" / "plans").resolve()
+    expected = (paths.workspace_state_dir(workspace) / "plans").resolve()
     assert plan_file.parent == expected
     assert expected.is_dir()
 
@@ -210,9 +211,10 @@ def test_first_plan_turn_creates_only_the_owned_plan_directory(
 ) -> None:
     """A clean checkout can write its first plan without CLIO pre-writing content."""
 
-    owned_plans = tmp_path / "clean-checkout" / ".clio" / "plans"
+    workspace = tmp_path / "clean-checkout"
+    owned_plans = paths.workspace_state_dir(workspace) / "plans"
     app, sess = _plan_session(tmp_path)
-    app.state.workspaces.update(sess.workspace_id, root_path=str(owned_plans.parents[1]))
+    app.state.workspaces.update(sess.workspace_id, root_path=str(workspace))
     assert not owned_plans.exists()
 
     plan_mode_reminder(app, sess.id, sess)

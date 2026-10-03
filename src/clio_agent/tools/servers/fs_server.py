@@ -148,7 +148,7 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     catalog ``write`` tag. The tool remains in the effective runtime catalog
     for audit and harness execution. It is model-visible only while the active
     session is in Plan mode, where the permission resolver limits it to the
-    recorded ``.clio/plans/*.md`` file. Outside Plan mode the model proposes a
+    recorded plan file in Agent-managed workspace state. Outside Plan mode the model proposes a
     reviewable edit and the approved ``/diffs/apply`` route owns this write.
 
     Designed for the GACT /diffs/apply path: when the user accepts

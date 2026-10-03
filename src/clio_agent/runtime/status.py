@@ -682,11 +682,10 @@ class RuntimeProbe:
         return f"default:{default}"
 
     def _data_dir(self) -> tuple[Path, str]:
-        """Agent data dir (``paths.data_dir`` / ``CLIO_DATA_DIR``, default ``.clio/agent``)."""
-        raw = self._conf.resolve(
-            "paths.data_dir", env="CLIO_DATA_DIR", default=".clio/agent", cast=conf.as_str
-        )
-        return Path(raw), self._source_label("paths.data_dir", "CLIO_DATA_DIR", ".clio/agent")
+        """Resolve the Agent data root using the same namespace inputs as the runtime."""
+        from clio_agent import paths  # noqa: PLC0415
+
+        return paths.user_data_dir(env=self.env), "clio-agent filesystem contract"
 
     def _api_base(self) -> tuple[str, str]:
         """gact API base URL (``runtime.api_base`` / ``CLIO_API_BASE``); empty = skip probe."""

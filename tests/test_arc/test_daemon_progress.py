@@ -232,6 +232,7 @@ def test_tree_work_is_cumulative_when_a_working_child_exits(
             f"p = subprocess.Popen([sys.executable, '-c', {_BURN_CPU!r}, '0.5'],"
             " stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)\n"
             "print(p.stdout.readline().strip(), flush=True)\n"
+            "sys.stdin.readline()\n"
             "p.stdin.write('\\n'); p.stdin.flush(); p.wait()\n"
             "print('child-exited', flush=True)\n"
             "sys.stdin.readline()\n",
@@ -245,6 +246,10 @@ def test_tree_work_is_cumulative_when_a_working_child_exits(
     tree = ProcessTreeWork(launcher.pid)
     assert launcher.stdout.readline().strip() == "done"
     before_exit = tree.sample()
+    # Keep the descendant alive until sampled, including on a busy CI runner.
+    assert launcher.stdin is not None
+    launcher.stdin.write("\n")
+    launcher.stdin.flush()
     assert launcher.stdout.readline().strip() == "child-exited"
     after_exit = tree.sample()
 

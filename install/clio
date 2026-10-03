@@ -42,14 +42,32 @@
 #   CLIO_DESKTOP_BIN   installed desktop app binary for `clio --desktop`
 set -euo pipefail
 
-CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
+if [[ "$(uname -s)" = Darwin* ]]; then
+  agent_data_default="$HOME/Library/Application Support/clio-agent/data"
+else
+  xdg_data="${XDG_DATA_HOME:-}"
+  case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+  agent_data_default="$xdg_data/clio-agent"
+fi
+agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
+agent_data="${agent_data:-$agent_data_default}"
+case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 2 ;; esac
+requested_prefix="${CLIO_PREFIX:-}"
+CLIO_PREFIX="${CLIO_PREFIX:-$agent_data/app}"
+if [[ -z "$requested_prefix" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+  CLIO_PREFIX="$HOME/.local/share/clio"
+fi
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 # Agent data stays with the selected install. The clio-core daemon does NOT: there
 # is exactly one per machine (its state under ~/.clio/hosts/<host>, fixed ports,
 # one CTE config per host), shared by every CLIO on that machine, so the
 # launcher never scopes its identity.
-export CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"
+# Preserve an existing legacy session store until an explicit migration retires it.
+if [[ -z "${CLIO_SESSIONS_PATH:-}" && -f "$CLIO_PREFIX/clio-agent/.clio/agent/sessions.json" ]]; then
+  export CLIO_SESSIONS_PATH="$CLIO_PREFIX/clio-agent/.clio/agent/sessions.json"
+fi
 export PATH="$CLIO_BIN_DIR:$PATH"
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
 # detached server inherits that directory even when it was started through a
@@ -61,15 +79,22 @@ export PATH="$CLIO_BIN_DIR:$PATH"
 # pid belong to one host, so the launcher's per-server files are keyed by it:
 # a login node's pidfile must never describe a compute node's server.
 CLIO_HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
-PIDFILE="$CLIO_PREFIX/clio-server.$CLIO_HOST_ID.pid"
-SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.$CLIO_HOST_ID.log}"
+CLIO_STATE="$CLIO_PREFIX"
+CLIO_CACHE="$CLIO_PREFIX"
+if [[ -x "$CLIO_PREFIX/clio-agent/.venv/bin/python" ]]; then
+  CLIO_STATE="$("$CLIO_PREFIX/clio-agent/.venv/bin/python" -c 'from clio_agent.paths import user_state_dir; print(user_state_dir())')"
+  CLIO_CACHE="$("$CLIO_PREFIX/clio-agent/.venv/bin/python" -c 'from clio_agent.paths import user_cache_dir; print(user_cache_dir())')"
+  mkdir -p "$CLIO_STATE" "$CLIO_CACHE"
+fi
+PIDFILE="$CLIO_STATE/clio-server.$CLIO_HOST_ID.pid"
+SERVER_LOG="${CLIO_LOG:-$CLIO_STATE/clio-server.$CLIO_HOST_ID.log}"
 # Loopback is this host: never send it to a site proxy. Cluster nodes often
 # export http_proxy for the whole environment, and a proxied check of
 # http://127.0.0.1:PORT is answered by the proxy (a compute node's squid
 # replied 503) for a server that is not running here.
 export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
 export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
-GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
+GACT_LOG="$CLIO_STATE/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent"
 GACT_BIN="$CLIO_PREFIX/gact"
 # The Go TUI is brand-neutral and white-labels purely from GACT_BRAND_NAME at
@@ -79,7 +104,7 @@ GACT_BIN="$CLIO_PREFIX/gact"
 CLIO_BRAND_NAME="${GACT_BRAND_NAME:-CLIO}"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
-UPDATE_STAMP="$CLIO_PREFIX/.update-checked"
+UPDATE_STAMP="$CLIO_CACHE/.update-checked"
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }

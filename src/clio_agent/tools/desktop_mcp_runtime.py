@@ -10,6 +10,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from clio_agent import paths
+
 
 def desktop_mcp_log_file(namespace: str) -> Path | None:
     """Return an inheritable stderr sink for managed desktop MCP children."""
@@ -70,7 +72,7 @@ def bundled_module_launcher(
         ambient_path = os.environ.get("PATH", "")
         env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
     env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
-        "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
+        "CLIO_KIT_CACHE_DIR", str(paths.user_cache_dir() / "mcp-runtime")
     )
     executable = Path(sys.executable).resolve()
     return str(executable), ["-c", selected[1], *args], env

@@ -354,7 +354,7 @@ def _resync(
     skips = _skip_ids(install_root, source, ref=ref, pinned=pinned, home=home, cwd=cwd)
     installed: list[str] = []
     skipped = dict(skips)
-    with tempfile.TemporaryDirectory(prefix="clio-registry-resync-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="clio-agent-registry-resync-") as tmp:
         root, kind, commit = _materialize(source, ref=ref, pinned=pinned, tmp=Path(tmp))
         for candidate in _install_candidates(root):
             parsed = parse_agent_blueprint_root(candidate, scope="install")

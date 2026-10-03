@@ -250,13 +250,13 @@ async def test_install_records_everything_it_created_and_uninstall_removes_all_o
     record = store.service(target_id, "ollama")
     assert record is not None
     kinds = {(row.kind, row.ref) for row in record.owned_resources}
-    service_dir = f"{HOME}/.local/share/clio/services/ares/clio-ollama"
+    service_dir = f"{HOME}/.local/share/clio-agent/services/ares/clio-ollama"
     assert kinds == {
         ("parent_directory", f"{HOME}/.local"),
         ("parent_directory", f"{HOME}/.local/share"),
-        ("parent_directory", f"{HOME}/.local/share/clio"),
-        ("parent_directory", f"{HOME}/.local/share/clio/services"),
-        ("parent_directory", f"{HOME}/.local/share/clio/services/ares"),
+        ("parent_directory", f"{HOME}/.local/share/clio-agent"),
+        ("parent_directory", f"{HOME}/.local/share/clio-agent/services"),
+        ("parent_directory", f"{HOME}/.local/share/clio-agent/services/ares"),
         ("parent_directory", service_dir),
         ("directory", f"{service_dir}/cache"),
         ("image", IMAGE),
@@ -307,7 +307,7 @@ async def test_things_that_existed_before_the_deploy_are_never_removed(tmp_path:
 
     assert IMAGE in target.images
     assert preexisting_dirs <= target.dirs
-    assert not any(d.startswith(f"{HOME}/.local/share/clio") for d in target.dirs)
+    assert not any(d.startswith(f"{HOME}/.local/share/clio-agent") for d in target.dirs)
     assert target.containers == {}
 
 
@@ -492,7 +492,7 @@ def test_discovery_learns_the_default_context_of_a_running_managed_ollama(tmp_pa
 async def test_parents_shared_by_two_deployments_go_with_the_last_uninstall(
     tmp_path: Path, order: tuple[str, str]
 ) -> None:
-    """Live on ares: vLLM created ~/.local/share/clio/services/<host>, Ollama found it
+    """Live on ares: vLLM created ~/.local/share/clio-agent/services/<host>, Ollama found it
     there; vLLM's uninstall could not remove it (not empty), Ollama had not recorded
     it, so it outlived both."""
 

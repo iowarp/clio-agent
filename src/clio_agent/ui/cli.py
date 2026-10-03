@@ -2,12 +2,7 @@
 
 """ClioAgent Command-Line Interface — a thin GACT client.
 
-Interactive TUI for the CLIO scientific-data agent. As of the "one front
-door" work (#799/#800) this CLI holds **no in-process agent**: it does not
-load DSPy, it does not construct a :class:`~clio_agent.agent.ClioAgent`, and
-it never drives an LM directly. Everything runs on the GACT server; the CLI
-speaks to it exclusively through the typed SDK
-(:class:`clio_agent.sdk.ClioClient`).
+A typed SDK client of the GACT server; no in-process agent or LM.
 
 Boot is separated from logic for testability: :class:`ClioAgentCLI` takes an
 already-built :class:`ClioClient` (tests inject one over an in-process ASGI
@@ -22,10 +17,7 @@ probe engine (:func:`clio_agent.runtime.status.collect_runtime_status`)
 ``/doctor`` instead renders the *server's* health view via the SDK. Two access
 paths, one engine.
 
-The ``serve`` subcommand is the front door's serve verb: it runs the GACT
-server in the foreground on this process (the same server the
-``clio-agent-gact`` console script runs), so a single ``clio-agent`` binary is
-both the client and the server launcher.
+The ``serve`` subcommand runs GACT in the foreground.
 
 Example:
     # Interactive (connect-or-spawn the server, then talk to it)
@@ -1012,6 +1004,13 @@ def main() -> None:
     at it made ``clio-agent doctor`` boot a server instead of diagnosing one.)
     """
     import argparse
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "migrate-paths":
+        from clio_agent.path_migration import main as migrate_main
+
+        migrate_main(sys.argv[2:])
+        return
 
     parser = argparse.ArgumentParser(
         description="ClioAgent: Agent Framework for Scientific Computing (IOWarp Intelligence Layer)"

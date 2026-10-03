@@ -207,7 +207,7 @@ def _command_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     return [
-        (cwd / ".clio" / "commands", "clio_workspace"),
+        (paths.workspace_config_path(cwd, "commands"), "clio_workspace"),
         (cwd / ".claude" / "commands", "claude_workspace"),
         (paths.user_config_dir_for(home, os.environ) / "commands", "clio_user"),
         (home / ".claude" / "commands", "claude_user"),
