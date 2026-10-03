@@ -370,6 +370,12 @@ class ServiceActionRequest(BaseModel):
     configuration: dict[str, str] = Field(default_factory=dict)
 
 
+class DesktopExitRequest(BaseModel):
+    """The single Desktop instance whose owned remote launches should stop."""
+
+    desktop_id: str = Field(min_length=1, max_length=100)
+
+
 class VersionConflictDetail(BaseModel):
     """A CLIO-looking process the claim step found but left running untouched.
 
@@ -391,6 +397,9 @@ class VersionConflictDetail(BaseModel):
     installed_version: str
     pid: str
     health: Literal["healthy", "unresponsive", "unknown"] = "unknown"
+    target_version: str = ""
+    owner: str = ""
+    port: int = 17800
 
 
 class InfrastructureOperation(BaseModel):

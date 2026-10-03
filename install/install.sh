@@ -47,6 +47,18 @@ die()  { printf "${RED}xx ${RESET} %s\n" "$*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# PyPI package spelling and GitHub tag spelling differ for beta releases.
+release_tag() {
+  local version="${1#v}"
+  if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)b([0-9]+)$ ]]; then
+    printf 'v%s-beta.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+)?$ ]]; then
+    printf 'v%s' "$version"
+  else
+    die "no GitHub release tag for package version: $version"
+  fi
+}
+
 # ---------- defaults ---------------------------------------------------
 PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
@@ -181,8 +193,8 @@ elif [ -n "$GACT_REF" ]; then
 else
   tag="$GACT_VERSION"
   if [ "$tag" = "latest" ]; then
-    if [ -n "$CLIO_VERSION" ]; then
-      tag="v$CLIO_VERSION"
+    if [ -n "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}" ]; then
+      tag="$(release_tag "${CLIO_INSTALLED_VERSION:-$CLIO_VERSION}")"
     else
       say "Resolving latest clio-agent release"
       tag="$(curl -fsSL https://api.github.com/repos/iowarp/clio-agent/releases/latest \
@@ -221,7 +233,7 @@ fi
 # installed PyPI version, unless an explicit installer ref is provided.
 launcher_ref="${CLIO_REF:-${CLIO_INSTALLER_REF:-}}"
 if [ -z "$launcher_ref" ] && [ -n "$CLIO_INSTALLED_VERSION" ]; then
-  launcher_ref="v$CLIO_INSTALLED_VERSION"
+  launcher_ref="$(release_tag "$CLIO_INSTALLED_VERSION")"
 fi
 launcher_ref="${launcher_ref:-main}"
 RAW="https://raw.githubusercontent.com/iowarp/clio-agent/${launcher_ref}/install"
