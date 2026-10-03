@@ -160,7 +160,10 @@ async def probe_target(
                 + 'agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"; '
                 + 'if [ -z "$agent_data" ]; then '
                 + 'if [ "$os" = Darwin ]; then agent_data="$HOME/Library/Application Support/clio-agent/data"; '
-                + 'else agent_data="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"; fi; fi; '
+                + 'else xdg_data="${XDG_DATA_HOME:-}"; '
+                + 'case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac; '
+                + 'agent_data="$xdg_data/clio-agent"; fi; fi; '
+                + 'case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 75 ;; esac; '
                 + 'printf "clio-agent-data|%s\\n" "$agent_data"',
             ],
             timeout_seconds=60,

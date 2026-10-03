@@ -315,8 +315,11 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
         profile=sandbox.PROFILE_FLEET,
         state=_codex_active_state(),
     )
-    cache_dir = ws / sandbox.CHILD_CACHE_DIRNAME
-    assert cache_dir.is_dir()  # created best-effort under the ALREADY-writable territory
+    from clio_agent.paths import workspace_cache_dir
+
+    cache_dir = workspace_cache_dir(ws)
+    assert cache_dir.is_dir()
+    assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()
     for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS:
         assert confined.env_overlay[key] == str(cache_dir)
     assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"

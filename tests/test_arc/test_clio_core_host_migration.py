@@ -34,6 +34,7 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(paths, "user_data_dir", lambda: home / "data")
+    monkeypatch.setattr(paths, "host_state_dir", lambda: home / "state")
     monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=home, cwd=tmp_path / "cwd", env={}))
     monkeypatch.setattr(clio_core_config.socket, "gethostname", lambda: "desk")
     return home

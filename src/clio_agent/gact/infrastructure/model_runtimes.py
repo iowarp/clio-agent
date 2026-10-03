@@ -319,6 +319,8 @@ def _service_dir(spec: EngineSpec, facts: TargetFacts, target: InfrastructureTar
             if facts.os == "macos"
             else module.join(facts.home, ".local", "share", "clio-agent")
         )
+    if not module.isabs(root):
+        raise ValueError("The target's Agent data directory must be absolute")
     # Cluster nodes share one home: without the host in the path, a login node
     # and a compute node deploying the same engine would share one cache and
     # one SIF, and uninstalling on one would delete the other's.

@@ -246,17 +246,13 @@ def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
         assert record.default == default, f"{name} default {record.default!r} != {default!r}"
 
 
-def test_status_data_dir_and_api_base_are_config_first() -> None:
-    """``runtime/status.py`` resolves ``CLIO_DATA_DIR`` / ``CLIO_API_BASE`` config-first.
-
-    Regression (#985 move 1): both were read through an injected ``self.env`` mapping
-    (env-only). They now resolve file → env → default through ``conf`` and must be
-    discovered as configured knobs, not env-only.
-    """
+def test_status_api_base_is_config_first_and_data_uses_namespaces() -> None:
+    """API config remains config-first; the retired data knob cannot mask native roots."""
     resolved, env_only = _collect_root()
     by_env = {r.env: r for r in resolved}
     env_names = {e.env for e in env_only}
-    for name, key in (("CLIO_DATA_DIR", "paths.data_dir"), ("CLIO_API_BASE", "runtime.api_base")):
+    assert "CLIO_DATA_DIR" not in by_env
+    for name, key in (("CLIO_API_BASE", "runtime.api_base"),):
         assert name in by_env, f"{name} missing from resolved knobs after migration"
         assert name not in env_names, f"{name} must no longer be env-only"
         assert by_env[name].key == key

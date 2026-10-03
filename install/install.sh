@@ -63,13 +63,17 @@ release_tag() {
 if [[ "$(uname -s)" = Darwin* ]]; then
   agent_data_default="$HOME/Library/Application Support/clio-agent/data"
 else
-  agent_data_default="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"
+  xdg_data="${XDG_DATA_HOME:-}"
+  case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+  agent_data_default="$xdg_data/clio-agent"
 fi
 agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
 agent_data="${agent_data:-$agent_data_default}"
+case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 2 ;; esac
 PREFIX="${CLIO_PREFIX:-$agent_data/app}"
 # An existing legacy install remains addressable until explicit migration.
-if [[ -z "${CLIO_PREFIX:-}" && ! -d "$PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+if [[ -z "${CLIO_PREFIX:-}" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" && ! -d "$PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
   PREFIX="$HOME/.local/share/clio"
 fi
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
@@ -138,10 +142,9 @@ VENV="$PREFIX/clio-agent/.venv"
 
 if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
-  if [[ -e "$PREFIX/clio-agent/.clio" || -e "$PREFIX/clio-agent/.clio-agent" ]]; then
-    die "Source reinstall refused: migrate user data with clio-agent migrate-paths --from-server '$PREFIX/clio-agent' first."
+  if [[ -e "$PREFIX/clio-agent" ]]; then
+    die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
   fi
-  rm -rf "$PREFIX/clio-agent"
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
   say "Installing clio-agent deps (uv sync --extra argonne)"
   ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )

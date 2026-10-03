@@ -714,10 +714,6 @@ KEY_NOTES: dict[str, str] = {
         "Sets the OpenAI-standard top-p sampling parameter; tune for reasoning models needing "
         "fuller sampling than the temp-0 default."
     ),
-    "paths.data_dir": (
-        "Base directory for the agent's on-disk data (ARC, sessions, etc.), default "
-        '".clio/agent" under the workspace; relocates agent state.'
-    ),
     "paths.model_catalog": (
         "Overrides the file path for the discovered-model catalog cache; set to relocate it off "
         "the default user-data directory."
@@ -728,7 +724,7 @@ KEY_NOTES: dict[str, str] = {
     ),
     "paths.sessions": (
         "Full override path for the sessions.json registry file; unset defaults to "
-        "`<workspace>/.clio/agent/sessions.json`."
+        "Agent state/server/sessions.json (existing legacy session stores remain readable)."
     ),
     "paths.web_dir": (
         "Directory of the built web-UI bundle to serve; unset (default) disables web mode and "

@@ -45,13 +45,17 @@ set -euo pipefail
 if [[ "$(uname -s)" = Darwin* ]]; then
   agent_data_default="$HOME/Library/Application Support/clio-agent/data"
 else
-  agent_data_default="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"
+  xdg_data="${XDG_DATA_HOME:-}"
+  case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+  agent_data_default="$xdg_data/clio-agent"
 fi
 agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
 agent_data="${agent_data:-$agent_data_default}"
+case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 2 ;; esac
 requested_prefix="${CLIO_PREFIX:-}"
 CLIO_PREFIX="${CLIO_PREFIX:-$agent_data/app}"
-if [[ -z "$requested_prefix" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+if [[ -z "$requested_prefix" && -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
   CLIO_PREFIX="$HOME/.local/share/clio"
 fi
 CLIO_PORT="${CLIO_PORT:-17800}"

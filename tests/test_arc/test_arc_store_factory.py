@@ -230,7 +230,7 @@ def _isolate_clio_home(monkeypatch, tmp_path):
     # runtime_state_dir() honours CLIO_RUNTIME_STATE_DIR before Path.home(); the suite's
     # session-wide private-daemon isolation (tests/_cte_isolation.py) sets it, so these
     # registry unit tests must clear it to get their own per-test tmp registry.
-    monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
+    monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(tmp_path / "runtime-state"))
     monkeypatch.setattr(storage.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(storage, "_client_registered", False)
     monkeypatch.setattr(runtime_stop, "_runtime_shutdown_requested", False)

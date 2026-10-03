@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Workspace(BaseModel):
@@ -28,10 +29,20 @@ class CreateWorkspaceRequest(BaseModel):
 
     name: str
     root_path: str = ""
-    storage_root: Literal[""] = Field(
-        default="", description="Deprecated; storage is Agent-managed."
-    )
+    storage_root: str = Field(default="", description="Deprecated; storage is Agent-managed.")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def normalize_legacy_storage(self) -> Self:
+        """Accept the old default sent by clients, without creating it or honoring overrides."""
+        if self.storage_root:
+            if (
+                not self.root_path
+                or Path(self.storage_root).resolve() != (Path(self.root_path) / ".clio").resolve()
+            ):
+                raise ValueError("storage_root is Agent-managed; omit this field")
+            self.storage_root = ""
+        return self
 
 
 class ListWorkspacesResponse(BaseModel):

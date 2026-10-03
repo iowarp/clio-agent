@@ -98,7 +98,8 @@ async def test_big_output_spills_in_full_with_head_tail_and_totals(workspace: Pa
     path = Path(spill["path"])
     assert path.parent == spill_directory(workspace).resolve()
     assert path.name.endswith(".stdout.txt")
-    assert spill["relative_path"] == path.relative_to(workspace.resolve()).as_posix()
+    assert spill["relative_path"] == str(path)
+    assert not path.is_relative_to(workspace)
 
     text = path.read_bytes().decode("utf-8").replace("\r\n", "\n")
     expected = [f"row-{i:06d},payload" for i in range(lines)]
@@ -136,7 +137,8 @@ async def test_spill_is_filed_under_the_active_session(workspace: Path) -> None:
 
     path = Path(data["stdout_spill"]["path"])
     assert path.parent == spill_directory(workspace, session_id="sess_owner1").resolve()
-    assert data["stdout_spill"]["relative_path"].startswith(".clio/tool-output/sess_owner1/")
+    assert data["stdout_spill"]["relative_path"] == str(path)
+    assert path.parent.name == "sess_owner1"
 
 
 @pytest.mark.asyncio
@@ -296,7 +298,7 @@ def test_description_states_effective_limits_and_spill(is_windows: bool) -> None
     text = build_shell_tool_description(facts, limits)
     for number in ("12345", "2222", "33333", "7000"):
         assert number in text
-    assert ".clio/tool-output/" in text
+    assert "Agent-managed ``tool-output/``" in text
     assert "stdout_spill" in text
     assert "write" in text.lower() and "file" in text.lower()
 
@@ -312,7 +314,7 @@ async def test_listed_tool_description_matches_the_effective_config() -> None:
     description = tools["bash"].description or ""
     assert str(limits.max_command_chars) in description
     assert str(limits.default_output_bytes) in description
-    assert ".clio/tool-output/" in description
+    assert "Agent-managed ``tool-output/``" in description
 
 
 # --------------------------------------------------------------------------- #

@@ -42,6 +42,31 @@ def _parse_dict(payload: bytes) -> dict[str, Any]:
     return data
 
 
+def test_missing_home_uses_packaged_data_without_a_disk_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An env-only service user never creates a cache in its current directory."""
+    from clio_agent import paths
+
+    def unavailable() -> Path:
+        raise paths.HomeDirectoryUnavailable("no home")
+
+    monkeypatch.setattr(paths, "user_cache_dir", unavailable)
+    monkeypatch.chdir(tmp_path)
+    catalog = FetchedCatalog(
+        "widgets",
+        "https://example/catalog.json",
+        parse=_parse_dict,
+        library_offline=lambda: {"library": True},
+        ttl_s=3600,
+    )
+    result = catalog.get()
+    assert result.data == {"library": True}
+    assert result.source == "library_packaged"
+    assert result.stale_reason == "library_packaged: home_directory_unavailable"
+    assert list(tmp_path.iterdir()) == []
+
+
 def _catalog(
     tmp_path: Path,
     *,

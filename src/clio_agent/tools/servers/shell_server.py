@@ -431,7 +431,7 @@ async def bash(
     docstring is the developer reference. The command runs until it exits unless
     ``timeout_s`` is positive (or an operator ceiling applies) and the working
     directory must be inside ``CLIO_ALLOWED_ROOTS``. Output that does not fit the
-    result budget is spilled in full under ``.clio/tool-output/`` and excerpted
+    result budget is spilled in full under Agent-managed ``tool-output/`` state and excerpted
     (:mod:`clio_agent.tools.servers.shell_output`). A cancelled turn or a
     timeout kills the command's whole process tree.
     """
