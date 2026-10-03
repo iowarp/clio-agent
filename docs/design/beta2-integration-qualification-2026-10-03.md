@@ -43,6 +43,13 @@ artifact reference and row identity. The CLIO owl and custom UI icons rendered.
 - A stalled-daemon test now confirms the process is stopped before probing it,
   closing a signal-delivery race. Suspend and kill modes passed three repetitions
   each without relaxing their typed-error or timeout assertions.
+- DSPy proxy loading waits for an in-progress DSPy import to finish. A controlled
+  import-lock regression and 21 repeated import-order/first-query tests passed in
+  an isolated environment using the published dependency, rather than the
+  workstation's locally modified DSPy installation.
+- All 48 UI browser cases and both deployment-dialog cases passed in CI. The
+  packaged corpus smoke was updated for the current accessible surface label and
+  deferred rendering; it locally verified every one of the 43 published examples.
 - Website: 27 unit tests, three video tests, Astro checks, a 60-page production
   build and internal-link checks passed. Home and interactive widget pages were
   visually reviewed. Marketplace's 191 tests passed with schemas 0.5.3.
