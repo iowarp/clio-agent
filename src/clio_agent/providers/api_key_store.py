@@ -73,7 +73,12 @@ def stored_api_key(provider_id: str) -> str:
     (``credential_ref``); that key is resolved here, so discovery, probes and
     chat all send it without anyone copying it. ``""`` when there is none.
     """
-    store = ProviderApiKeyStore()
+    try:
+        store = ProviderApiKeyStore()
+    except paths.HomeDirectoryUnavailable:
+        # An environment-only service user has no saved key store to consult.
+        # Saving still fails explicitly; never invent a cwd-relative credential file.
+        return ""
     own = store.load(provider_id)
     if own:
         return own

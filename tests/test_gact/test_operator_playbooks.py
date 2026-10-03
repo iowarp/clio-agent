@@ -448,7 +448,8 @@ def test_no_playbook_resolve_is_byte_identical() -> None:
 def test_no_playbook_reminder_is_unchanged(tmp_path: Path) -> None:
     app, sess = _plan_session(tmp_path)
     out = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
-    assert "playbook" not in out.lower()
+    # The pytest-owned absolute plan path includes this test's name.
+    assert "playbook" not in out.replace(str(tmp_path), "<test-root>").lower()
     assert recorded_playbook(app.state.sessions.get(sess.id)) is None
 
 

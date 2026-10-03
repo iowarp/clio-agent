@@ -1,4 +1,4 @@
-# DRAFT: the clio-desktop owner (maintainer TBD in registry.yaml) must confirm every entry before this manifest is treated as the contract for clio-desktop.
+# CLIO Desktop profile filesystem contract, including its native-layout compatibility boundary.
 # Current CLIO profile uses ai.iowarp.clio.desktop. Tauri owns its bundle-id WebView,
 # boot logs and settings roots; the installation-local Windows layout is not expressible
 # as a role root in contract 1.1. Managed content is <INSTDIR>/data on Windows,

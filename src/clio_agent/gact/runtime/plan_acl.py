@@ -71,11 +71,9 @@ PLAN_ACL_MODES = frozenset({"plan", "architect", READ_ONLY_POLICY_MODE})
 def plans_dir() -> Path:
     """Return the sole writable plan-artifact directory for plan mode (P1.1 #1063).
 
-    During a live session turn, ``<workspace>/.clio/plans`` is authoritative. This keeps the
-    CLIO-owned plan inside the same workspace boundary enforced by the file tools when the server
-    hosts workspaces outside its own checkout. Off-turn, ``<repo>/.clio/plans`` is used when the
-    current working directory is inside a VCS (``.git``) repo (so the plan file is committable),
-    else ``~/.clio/plans``. Returned resolved+absolute so the
+    Plans live in Agent state/workspaces/<workspace-hash>/plans. The active tool workspace
+    selects the hash during a turn; otherwise the current working directory does.
+    Returned resolved+absolute so the
     ``path_pattern`` glob it seeds matches the resolved target path the gate hands
     :func:`grant_resolver.resolve`. The actual plan artifact is minted in a later slice (P1.3);
     this helper only defines WHERE the single @70 write carve-out permits a ``*.md`` write.

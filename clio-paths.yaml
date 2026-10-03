@@ -1,4 +1,4 @@
-# DRAFT: Jaime must confirm every entry before this manifest is treated as the contract for clio-agent.
+# Agent filesystem contract; audited against the declared writers and isolated-home checks.
 # Contract 1.1 adoption. Legacy CLIO_USER_DIR preserves its old config/data/cache layout.
 # Explicit CLIO_PREFIX and remote managed roots may relocate the app and its role roots.
 # Core host coordination uses native state/core-hosts even when CLIO_AGENT_HOME isolates content.

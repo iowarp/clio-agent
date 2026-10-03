@@ -68,8 +68,18 @@ _ROOT = r"""
 root="$1"
 if [ -z "$root" ]; then
   data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
-  root="${data:-${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent}/app"
-  if [ ! -d "$root/clio-agent/.venv" ] && [ -d "$HOME/.local/share/clio/clio-agent/.venv" ]; then
+  data="${data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"
+  if [ -z "$data" ]; then
+    if [ "$(uname -s)" = Darwin ]; then
+      data="$HOME/Library/Application Support/clio-agent/data"
+    else
+      xdg_data="${XDG_DATA_HOME:-}"
+      case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac
+      data="$xdg_data/clio-agent"
+    fi
+  fi
+  root="$data/app"
+  if [ -z "${CLIO_AGENT_HOME:-}${CLIO_AGENT_DATA_DIR:-}${CLIO_USER_DIR:-}" ] && [ ! -d "$root/clio-agent/.venv" ] && [ -d "$HOME/.local/share/clio/clio-agent/.venv" ]; then
     root="$HOME/.local/share/clio"
   fi
 fi

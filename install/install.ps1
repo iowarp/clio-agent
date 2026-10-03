@@ -56,10 +56,10 @@ function RemoveTree($path) {
 }
 
 # ---------- defaults ---------------------------------------------------
-$Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
+$Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } elseif ($env:CLIO_USER_DIR) { Join-Path $env:CLIO_USER_DIR 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
 # Continue a pre-namespace installation until it is explicitly migrated.
 $LegacyPrefix = Join-Path $env:LOCALAPPDATA 'clio'
-if (-not $env:CLIO_PREFIX -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
+if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGENT_DATA_DIR -and -not $env:CLIO_USER_DIR -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
 $BinDir      = if ($env:CLIO_BIN_DIR)      { $env:CLIO_BIN_DIR }     else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 function Get-ClioReleaseTag([string]$Version) {
     $Version = $Version -replace '^v', ''
@@ -120,10 +120,9 @@ $Venv = Join-Path $Prefix 'clio-agent\.venv'
 
 if ($ClioRef) {
     Say "Cloning clio-agent at $ClioRef (source-build mode)"
-    if ((Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.clio')) -or (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.clio-agent'))) {
-        Die 'Source reinstall refused: migrate the existing Agent user data first with clio-agent migrate-paths.'
+    if (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent')) {
+        Die 'Source reinstall refused: the installation already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data.'
     }
-    RemoveTree (Join-Path $Prefix 'clio-agent')
     RunNative git @('clone', '--quiet', '--recurse-submodules', '--shallow-submodules', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
     Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')

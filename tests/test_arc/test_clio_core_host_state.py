@@ -27,6 +27,7 @@ def shared_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(paths, "user_data_dir", lambda: home / ".local" / "share" / "clio-agent")
+    monkeypatch.setattr(paths, "host_state_dir", lambda: home / ".local/state/clio-agent")
     monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=home, cwd=tmp_path / "cwd", env={}))
     monkeypatch.setattr(storage, "_client_registered", False)
     monkeypatch.setattr(runtime_stop, "_runtime_shutdown_requested", False)
@@ -65,8 +66,8 @@ def test_two_hosts_on_one_home_keep_separate_runtime_state(
     _on(monkeypatch, "ares-comp-11")
     compute = clio_core_config.runtime_state_dir()
 
-    assert login == shared_home / ".clio" / "hosts" / "ares"
-    assert compute == shared_home / ".clio" / "hosts" / "ares-comp-11"
+    assert login == paths.host_state_dir() / "core-hosts" / "ares"
+    assert compute == paths.host_state_dir() / "core-hosts" / "ares-comp-11"
     assert login.is_dir() and compute.is_dir()
 
 
