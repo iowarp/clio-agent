@@ -251,19 +251,23 @@ def test_materialize_ledger_serves_retained_ledger_without_waiting_when_lane_bus
 
     lane_lock = arc._segments._lock_for(sid, projection.MESSAGE_PART_SCOPE)
     holder_ready = threading.Event()
+    release_holder = threading.Event()
 
-    def _hold_lock_briefly() -> None:
-        lane_lock.acquire()
-        holder_ready.set()
-        time.sleep(0.4)  # simulates an in-flight append/mint under the same lock
-        lane_lock.release()
+    def _hold_lock_until_read_finishes() -> None:
+        with lane_lock:
+            holder_ready.set()
+            # Event-loop setup can take longer than a fixed sleep on a loaded
+            # runner. Keep the lane busy throughout the read, with a backstop
+            # so a blocking-acquire regression fails instead of hanging pytest.
+            release_holder.wait(timeout=5.0)
 
-    holder = threading.Thread(target=_hold_lock_briefly, daemon=True)
+    holder = threading.Thread(target=_hold_lock_until_read_finishes, daemon=True)
     holder.start()
     assert holder_ready.wait(timeout=2.0)
     try:
         messages, elapsed = _time_materialize_ledger(app, sid, use_loop=use_loop)
     finally:
+        release_holder.set()
         holder.join(timeout=2.0)
 
     assert elapsed < 0.2, f"materialize_ledger waited on the busy lane ({elapsed:.3f}s)"

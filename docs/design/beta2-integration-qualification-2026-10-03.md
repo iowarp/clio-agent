@@ -64,6 +64,9 @@ artifact reference and row identity. The CLIO owl and custom UI icons rendered.
 - A Linux parent-death test publishes its PID file atomically, preventing the
   reader from observing an empty file while the child starts. Its kernel reaping
   assertions remain unchanged; the Linux run is verified in CI.
+- The busy-lane transcript fixture holds its simulated writer lock until the
+  reader returns instead of releasing it after a fixed sleep. Both loop modes
+  passed five repetitions each with the existing latency and audit assertions.
 - Website: 27 unit tests, three video tests, Astro checks, a 60-page production
   build and internal-link checks passed. Home and interactive widget pages were
   visually reviewed. Marketplace's 191 tests passed with schemas 0.5.3.
