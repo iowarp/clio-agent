@@ -54,6 +54,13 @@ def main() -> int:
             daemon = None
         else:
             daemon.suspend()
+            # SIGSTOP delivery is asynchronous on POSIX. Start the probe only once
+            # the daemon has stopped, otherwise it can still answer the new RPC.
+            deadline = time.monotonic() + 10
+            while daemon.status() != psutil.STATUS_STOPPED:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("the private daemon did not enter the stopped state")
+                time.sleep(0.01)
         result["stage"] = mode
         deregistered: list[bool] = []
         started = time.monotonic()
