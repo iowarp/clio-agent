@@ -341,7 +341,7 @@ def _limits_text(limits: ShellLimits) -> str:
         f"max_output_bytes (default {limits.default_output_bytes}, at most "
         f"{limits.max_output_bytes}) and the whole result stays under "
         f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
-        f"stream is saved under .clio/{SPILL_DIRNAME}/ in the workspace (one "
+        f"stream is saved in the workspace's Agent-managed ``{SPILL_DIRNAME}/`` directory (one "
         "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
         "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
         "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
