@@ -15,7 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="POSIX installer acceptance")
 
 
-def test_uninstall_uses_namespace_pid_and_preserves_data(tmp_path: Path) -> None:
+@pytest.mark.parametrize("purge", [False, True])
+def test_uninstall_uses_namespace_pid_and_preserves_data(tmp_path: Path, purge: bool) -> None:
     """The installed resolver locates the PID even when the port is nonstandard."""
     prefix = tmp_path / "program"
     python = prefix / "clio-agent/.venv/bin/python"
@@ -44,17 +45,23 @@ def test_uninstall_uses_namespace_pid_and_preserves_data(tmp_path: Path) -> None
             str(process.pid)
         )
         result = subprocess.run(
-            ["bash", str(ROOT / "install/uninstall.sh"), "--yes"],
+            ["bash", str(ROOT / "install/uninstall.sh"), "--yes", *(["--purge"] if purge else [])],
             env=env,
             capture_output=True,
             text=True,
             timeout=15,
         )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert process.wait(timeout=3) < 0
+        if purge:
+            assert result.returncode == 2, result.stdout + result.stderr
+            assert "Refusing to purge a custom config root" in result.stderr
+            assert process.poll() is None
+            assert python.exists()
+        else:
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert process.wait(timeout=3) < 0
+            assert not python.exists()
         assert data.read_text() == "valuable"
         assert unknown.read_text() == "keep"
-        assert not python.exists()
     finally:
         if process.poll() is None:
             process.terminate()
