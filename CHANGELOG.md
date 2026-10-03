@@ -6,8 +6,31 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.2] — 2026-10-03
+
+### Added
+
+- CLIO namespace layout for local and remote Agent configuration, state, data,
+  cache, workspace registration, and project sharing; explicit migration with
+  backups and rollback preserves legacy installations.
+- A2UI widget contracts from clio-schemas 0.5.3, linked selection, bounded table
+  export and raster queries, registered visual artifacts, and selection-aware
+  agent guidance.
+- New owl branding and supplied icons across desktop profiles, installers, and
+  the website, with interactive widget documentation and recorded walkthroughs.
+- Workspace MCP warmup prepares tools without creating a saved session.
+
 ### Fixed
 
+- Remote deployments retain their Desktop SSH bridge, expose existing-agent
+  lifecycle choices, and preserve namespace-managed state through replacement
+  (#1612, #1613).
+- Prerelease package versions resolve to valid GitHub release install URLs (#1614).
+- The entry composer stays temporary until first send; Settings navigation no
+  longer creates sessions. Failed sends reuse the created session while the
+  draft remains open.
+- Damaged A2UI ledgers report partial projections, and lost native ARC clients
+  are quarantined instead of silently continuing with corrupt context.
 - A standalone `clio.approval.v1` card (the agent's own yes/no question, not
   bound to a real pending native permission) no longer 422s on Approve/Cancel.
   `approval.respond` only routes to the permission gate when its `context`

@@ -42,23 +42,13 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_errors import ArcPersistError as ArcPersistError
+from clio_agent.arc.segment_errors import SegmentReadError as SegmentReadError
 from clio_agent.arc.segment_ids import ContextOpLogError, require_live
 from clio_agent.arc.segment_index import SegmentIndex as SegmentIndex
 from clio_agent.arc.storage import ARCStore
-from clio_agent.errors import ClioError
 
 logger = logging.getLogger(__name__)
-
-
-class SegmentReadError(ClioError):
-    """A persisted segment scope cannot be decoded into its expected record list."""
-
-    def __init__(self, session_id: str, scope: str) -> None:
-        super().__init__(
-            f"ARC segments for session {session_id!r}, scope {scope!r} cannot be decoded",
-            error_type="clio_core_segments_invalid",
-            details={"session_id": session_id, "scope": scope},
-        )
 
 
 def _encode_safe(value: Any) -> Any:
@@ -117,18 +107,6 @@ def _encode_safe(value: Any) -> Any:
         return _encode_safe(obj_dict)
     # Last resort: a stable string form (never throws on a foreign object).
     return str(value)
-
-
-class ArcPersistError(ClioError):
-    """clio-core did not accept a write; the in-memory copy was discarded."""
-
-    def __init__(self, session_id: str, scope: str, cause: BaseException) -> None:
-        self.scope = scope
-        super().__init__(
-            f"clio-core did not store the write to {session_id}/{scope}: {cause}",
-            error_type="arc_persist_failed",
-            details={"session_id": session_id, "scope": scope, "cause": type(cause).__name__},
-        )
 
 
 def _coerce_content(content: dict[str, Any]) -> dict[str, Any]:

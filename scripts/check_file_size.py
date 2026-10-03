@@ -149,7 +149,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 985,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
     "src/clio_agent/arc/memory.py": 1068,  # 11a: the segment-plane surface moved to arc/memory_segments.py
-    "src/clio_agent/arc/segments.py": 959,  # 11a: SegmentIndex moved to arc/segment_index.py
+    "src/clio_agent/arc/segments.py": 951,  # Typed persistence errors live in segment_errors.py.
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -478,7 +478,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 2415,
+    "src/clio_agent/gact/app.py": 2411,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -891,7 +891,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1135,
+    "src/clio_agent/runtime/status.py": 1108,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

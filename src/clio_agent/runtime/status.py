@@ -21,6 +21,9 @@ from clio_agent.conf import ConfigStore
 from clio_agent.config import _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.runtime.humanize import format_bytes as _format_bytes
+from clio_agent.runtime.status_gateway import (
+    _list_gateway_capabilities as _list_gateway_capabilities,
+)
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 
@@ -1103,38 +1106,3 @@ def collect_runtime_status(
 
 def _module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
-
-
-def _list_gateway_capabilities() -> list[dict[str, Any]]:
-    import asyncio
-    import concurrent.futures
-
-    from fastmcp import Client
-
-    from clio_agent.tools.gateway import gateway
-
-    async def _list_tools() -> list[Any]:
-        async with Client(gateway) as client:
-            return await client.list_tools()
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        tools = asyncio.run(_list_tools())
-    else:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            tools = pool.submit(lambda: asyncio.run(_list_tools())).result()
-
-    capabilities = []
-    for tool in sorted(tools, key=lambda item: item.name):
-        description = tool.description or ""
-        first_sentence = description.split(".")[0].strip() + "." if description else ""
-        server = tool.name.split("_", 1)[0] if "_" in tool.name else tool.name
-        capabilities.append(
-            {
-                "name": tool.name,
-                "description": first_sentence,
-                "server": server,
-            }
-        )
-    return capabilities

@@ -141,9 +141,7 @@ def test_timed_out_raster_worker_keeps_its_permit_until_it_exits(
                 await first
             assert semaphore.locked()
             second = asyncio.create_task(
-                raster_route._run_bounded_query(
-                    semaphore, tmp_path, "grid.npy", body, timeout=0.5
-                )
+                raster_route._run_bounded_query(semaphore, tmp_path, "grid.npy", body, timeout=0.5)
             )
             await asyncio.sleep(0.03)
             assert not second.done()
