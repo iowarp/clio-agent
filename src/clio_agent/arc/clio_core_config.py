@@ -1,11 +1,6 @@
 """clio-core CTE config generation + capacity resolution (owner module).
 
-This module owns the default clio-core CTE configuration that ARC's clio-core backend
-seeds under the OS data dir: a self-managed DRAM↔disk hierarchy (DRAM hot tier,
-score 1.0; file cold tier, score 0.0). It was split out of
-:mod:`clio_agent.arc.storage` so the capacity policy (how big the RAM hot tier is
-allowed to grow) has a single home instead of being bolted onto the storage
-god-file (owner-module discipline, iowarp/clio-agent#774/#890).
+Owns ARC CTE configuration and capacity policy under Agent data roots.
 
 Why the RAM cap matters (#890): clio-core reads a tier ``capacity_limit`` of
 ``"0g"`` as *"default to 80% of total system DRAM"*. With the ram hot tier set to
@@ -59,7 +54,6 @@ import yaml
 from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
-    migrate_legacy_runtime_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,10 +106,15 @@ def runtime_state_dir() -> Path:
         state = Path(override).expanduser()
         state.mkdir(parents=True, exist_ok=True)
         return state
-    state = Path.home() / ".clio" / "hosts" / host_key()
+    from clio_agent import paths  # noqa: PLC0415
+
+    state = paths.host_state_dir() / "core-hosts" / host_key()
+    legacy = Path.home() / ".clio" / "hosts" / host_key()
+    if legacy.exists() and not state.exists():
+        logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
+        state = legacy
     state.mkdir(parents=True, exist_ok=True)
     # One-time move of the pre-host-key bookkeeping (~/.clio/clio-runtime.*).
-    migrate_legacy_runtime_state(Path.home() / ".clio", state)
     return state
 
 

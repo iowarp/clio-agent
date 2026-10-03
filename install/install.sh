@@ -60,7 +60,18 @@ release_tag() {
 }
 
 # ---------- defaults ---------------------------------------------------
-PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
+if [[ "$(uname -s)" = Darwin* ]]; then
+  agent_data_default="$HOME/Library/Application Support/clio-agent/data"
+else
+  agent_data_default="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"
+fi
+agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-$agent_data_default}"
+PREFIX="${CLIO_PREFIX:-$agent_data/app}"
+# An existing legacy install remains addressable until explicit migration.
+if [[ -z "${CLIO_PREFIX:-}" && ! -d "$PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+  PREFIX="$HOME/.local/share/clio"
+fi
 BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 CLIO_VERSION="${CLIO_VERSION:-}"
 GACT_VERSION="${GACT_VERSION:-latest}"
@@ -127,6 +138,9 @@ VENV="$PREFIX/clio-agent/.venv"
 
 if [ -n "$CLIO_REF" ]; then
   say "Cloning clio-agent at $CLIO_REF (source-build mode)"
+  if [[ -e "$PREFIX/clio-agent/.clio" || -e "$PREFIX/clio-agent/.clio-agent" ]]; then
+    die "Source reinstall refused: migrate user data with clio-agent migrate-paths --from-server '$PREFIX/clio-agent' first."
+  fi
   rm -rf "$PREFIX/clio-agent"
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
   say "Installing clio-agent deps (uv sync --extra argonne)"
@@ -134,7 +148,7 @@ if [ -n "$CLIO_REF" ]; then
 else
   pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
   say "Installing $pkg_spec from PyPI"
-  rm -rf "$PREFIX/clio-agent"
+  rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
     uv venv --python ">=3.12" "$VENV" >/dev/null

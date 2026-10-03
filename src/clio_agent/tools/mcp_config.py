@@ -16,9 +16,7 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes (highest precedence wins, merged by name): workspace
-``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-``AGENT.md`` frontmatter ``mcp_servers:`` > built-in defaults (fs/shell).
+Scopes: workspace ``.clio-agent/shared/mcp.yaml`` > user config > pack > built-ins.
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -515,7 +513,9 @@ def load_mcp_servers(
 
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"
     _merge_mcp_yaml(merged, user_mcp, source="user", env=env)
-    _merge_mcp_yaml(merged, cwd / ".clio" / "mcp.yaml", source="workspace", env=env)
+    _merge_mcp_yaml(
+        merged, paths.workspace_config_path(cwd, "mcp.yaml"), source="workspace", env=env
+    )
 
     return {n: replace(s, name=n) for n, s in merged.items()}
 

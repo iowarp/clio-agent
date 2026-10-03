@@ -496,7 +496,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # surface with nothing to show for it). All logic (materialize + emit) lives in
     # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
     # call site is here. Ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 805,  # external-input echo classification moved to its provenance owner (#1320); #1333: 862 -> 805, identity hashing (compute_identity/_stat_and_hash/hash_max_file_bytes) moved to the new owner module gact/artifacts/hashing.py
+    "src/clio_agent/gact/artifacts/minting.py": 804,  # external-input echo classification moved to its provenance owner (#1320); #1333: 862 -> 805, identity hashing (compute_identity/_stat_and_hash/hash_max_file_bytes) moved to the new owner module gact/artifacts/hashing.py
     # #1191: not previously baselined (silently over the 800 cap already, from
     # earlier unbaselined growth on this branch — the create_artifact tool floor).
     # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the
@@ -891,7 +891,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1136,
+    "src/clio_agent/runtime/status.py": 1135,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
@@ -1155,7 +1155,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # run_doctor/--tune stub moved to their owner modules; the `--yes` flag (owner's
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
-    "src/clio_agent/ui/cli.py": 1138,
+    "src/clio_agent/ui/cli.py": 1137,
     # (agent_elicitation.py's entry retired, #1331 review round: the file was a
     # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
     # cap is a backstop, not a license. Split by behavior into owner modules

@@ -1,115 +1,250 @@
-"""Single source of truth for clio-agent's on-disk artifact locations.
+"""Agent filesystem roots: clio.filesystem/v1, contract 1.1.
 
-Two clearly-delimited kinds of root:
-
-* **WORKSPACE** — ``<cwd>/.clio`` — per-project artifacts that belong to the workspace,
-  split into ``agent/`` (clio-agent: ARC, sessions, traces, messages, context-files) and
-  ``core/`` (clio-core / the clio-core runtime: config, any file-tier output).
-* **USER** — per-user, shared across every workspace, resolved **OS-correctly via
-  ``platformdirs``** (Linux ``~/.config/clio-agent`` honoring ``XDG_CONFIG_HOME``; macOS
-  ``~/Library/Application Support/clio-agent``; Windows ``%APPDATA%\\clio-agent``):
-    * :func:`user_config_dir` — user content/state (custom agents, workspace registry,
-      installed blueprints + expert-packs, hooks, prompts, config). The valuable stuff.
-    * :func:`user_cache_dir` — regenerable caches (the models.dev catalog). Safe to wipe.
-
-Every default path in clio-agent resolves through this module, so there is exactly one
-place that decides where artifacts live (no scattered ``~/.config`` literals that silently
-break on macOS/Windows). ``CLIO_USER_DIR`` overrides the per-user root (tests / power users).
+Resolution is read-only. Role overrides outrank CLIO_AGENT_HOME and native
+roots. CLIO_USER_DIR retains its old layout for one compatibility release.
 """
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 import sys
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
+from typing import Literal
 
-import platformdirs
-
+logger = logging.getLogger(__name__)
+Role = Literal["config", "data", "state", "cache", "runtime"]
+Platform = Literal["linux", "macos", "windows"]
 _APP = "clio-agent"
 
 
-def _user_override() -> "Path | None":
-    raw = os.environ.get("CLIO_USER_DIR", "").strip()
-    return Path(raw).expanduser() if raw else None
+def resolve_root(
+    role: Role, *, home: str | PurePath, env: Mapping[str, str], platform: Platform
+) -> PurePath | None:
+    """Resolve without filesystem access; absent runtime means private temp.
+
+    This pure entry point supports cross-platform contract checks. Runtime has
+    no HOME fallback: its caller must allocate a private instance directory.
+    """
+    pure = PureWindowsPath if platform == "windows" else PurePosixPath
+    base = pure(home)
+
+    def override(name: str) -> PurePath | None:
+        raw = env.get(name, "").strip()
+        if not raw:
+            return None
+        path = pure(raw)
+        if not path.is_absolute():
+            raise ValueError(f"{name} must be an absolute path")
+        return path
+
+    direct = override(f"CLIO_AGENT_{role.upper()}_DIR")
+    if direct is not None:
+        return direct
+    if role != "runtime":
+        relocated = override("CLIO_AGENT_HOME")
+        if relocated is not None:
+            return relocated / role
+        legacy = override("CLIO_USER_DIR")
+        if legacy is not None:
+            logger.warning("CLIO_USER_DIR is deprecated; migrate to CLIO_AGENT_HOME")
+            return legacy if role == "config" else legacy / role
+    if platform == "windows":
+        if role == "runtime":
+            return None
+        name = "APPDATA" if role == "config" else "LOCALAPPDATA"
+        fallback = base / "AppData" / ("Roaming" if role == "config" else "Local")
+        return (override(name) or fallback) / _APP / role
+    if platform == "macos":
+        if role == "runtime":
+            return None
+        if role == "cache":
+            return base / "Library" / "Caches" / _APP
+        return base / "Library" / "Application Support" / _APP / role
+    defaults = {
+        "config": base / ".config",
+        "data": base / ".local" / "share",
+        "state": base / ".local" / "state",
+        "cache": base / ".cache",
+        "runtime": None,
+    }
+    name = "XDG_RUNTIME_DIR" if role == "runtime" else f"XDG_{role.upper()}_HOME"
+    raw = env.get(name)
+    selected = defaults[role]
+    if raw is not None:
+        if raw and pure(raw).is_absolute():
+            selected = pure(raw)
+        else:
+            logger.warning("%s is empty or relative; using the native fallback", name)
+    return selected / _APP if selected is not None else None
+
+
+def _platform() -> Platform:
+    return (
+        "windows" if sys.platform == "win32" else "macos" if sys.platform == "darwin" else "linux"
+    )
+
+
+def _root(
+    role: Role,
+    *,
+    home: Path | None = None,
+    env: Mapping[str, str] | None = None,
+    legacy: bool = True,
+) -> Path:
+    root = resolve_root(
+        role, home=home or Path.home(), env=os.environ if env is None else env, platform=_platform()
+    )
+    if root is None:
+        raise ValueError("runtime requires a private instance directory")
+    result = Path(root)
+    source = os.environ if env is None else env
+    if legacy and not any(
+        source.get(key, "").strip()
+        for key in ("CLIO_AGENT_HOME", "CLIO_USER_DIR", f"CLIO_AGENT_{role.upper()}_DIR")
+    ):
+        # Continue an existing user store until the explicit migration retires it.
+        # In particular Windows/macOS previously used the XDG spelling too.
+        legacy_base = (
+            Path(source.get("XDG_CONFIG_HOME") or (home or Path.home()) / ".config") / _APP
+        )
+        legacy_path = legacy_base if role == "config" else legacy_base / role
+        if legacy_path != result and legacy_path.is_dir() and not result.exists():
+            logger.warning(
+                "Using legacy Agent %s at %s; run migrate-paths to relocate it", role, legacy_path
+            )
+            return legacy_path
+    return result
+
+
+def canonical_root(role: Role) -> Path:
+    """Return the configured root without the transitional existing-store fallback."""
+    return _root(role, legacy=False)
 
 
 def user_config_dir() -> Path:
-    """OS-correct per-user config/content dir for clio-agent (resolved from the real env).
-
-    Linux ``~/.config/clio-agent`` (honors ``XDG_CONFIG_HOME``), macOS
-    ``~/Library/Application Support/clio-agent``, Windows ``%LOCALAPPDATA%\\clio-agent``.
-    Overridable with ``CLIO_USER_DIR``. Callers that inject a fake ``home``/``env`` for
-    tests (conf, mcp_config, blueprints, …) must use :func:`user_config_dir_for` instead —
-    ``platformdirs`` reads the real process environment and cannot honor an injected one.
-    """
-    override = _user_override()
-    if override is not None:
-        return override
-    return Path(platformdirs.user_config_dir(_APP, appauthor=False))
+    """Return the user-authored configuration root."""
+    return _root("config")
 
 
 def user_config_dir_for(home: Path, env: Mapping[str, str]) -> Path:
-    """Per-user config dir resolved from an INJECTED ``home`` + ``env`` (the DI variant).
-
-    Same precedence + OS layout as :func:`user_config_dir` (``CLIO_USER_DIR`` →
-    ``XDG_CONFIG_HOME`` → OS-native: macOS ``~/Library/Application Support/clio-agent``,
-    Windows ``%LOCALAPPDATA%\\clio-agent``, else ``~/.config/clio-agent``) — but
-    parameterized so callers that inject a fake home/env for tests keep working (in
-    production, ``home=Path.home()`` + ``env=os.environ`` and this matches
-    :func:`user_config_dir`). The OS layout is mirrored by hand here because
-    ``platformdirs`` cannot resolve against an injected env.
-    """
-    override = (env.get("CLIO_USER_DIR") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    xdg = (env.get("XDG_CONFIG_HOME") or "").strip()
-    if xdg:
-        return Path(xdg) / _APP
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / _APP
-    if os.name == "nt":
-        return Path(env.get("LOCALAPPDATA") or env.get("APPDATA") or str(home)) / _APP
-    return home / ".config" / _APP
-
-
-def user_cache_dir() -> Path:
-    """OS-correct per-user cache dir for regenerable artifacts (e.g. the models.dev catalog).
-
-    Linux ``~/.cache/clio-agent``, macOS ``~/Library/Caches/clio-agent``, Windows
-    ``%LOCALAPPDATA%\\clio-agent\\Cache``. Overridable with ``CLIO_USER_DIR`` (``/cache``).
-    """
-    override = _user_override()
-    if override is not None:
-        return override / "cache"
-    return Path(platformdirs.user_cache_dir(_APP, appauthor=False))
+    """Resolve config using injected inputs and the same rules as production."""
+    return _root("config", home=home, env=env)
 
 
 def user_data_dir() -> Path:
-    """OS-correct per-user DATA dir for clio-agent durable artifacts.
+    """Return the durable Agent data root."""
+    return _root("data")
 
-    This is where backing-store data (the clio-core file tier / config) lives —
-    distinct from config (:func:`user_config_dir`) and regenerable cache
-    (:func:`user_cache_dir`). Linux ``~/.local/share/clio-agent`` (honors
-    ``XDG_DATA_HOME``), macOS ``~/Library/Application Support/clio-agent``, Windows
-    ``%LOCALAPPDATA%\\clio-agent``. Overridable with ``CLIO_USER_DIR`` (``/data``).
+
+def user_state_dir() -> Path:
+    """Return the generated Agent state root."""
+    return _root("state")
+
+
+def host_state_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return host-wide Agent coordination state, shared by managed installs.
+
+    CLIO_AGENT_HOME/CLIO_USER_DIR isolate an instance's content, not the one
+    Core daemon's fixed RPC endpoint. CLIO_RUNTIME_STATE_DIR remains the explicit
+    complete isolation override at the runtime owner.
     """
-    override = _user_override()
-    if override is not None:
-        return override / "data"
-    return Path(platformdirs.user_data_dir(_APP, appauthor=False))
+    source = dict(os.environ if env is None else env)
+    source.pop("CLIO_AGENT_HOME", None)
+    source.pop("CLIO_USER_DIR", None)
+    return _root("state", env=source, legacy=False)
 
 
-def workspace_clio(cwd: "str | Path | None" = None) -> Path:
-    """The workspace clio root: ``<cwd>/.clio``."""
-    return (Path(cwd) if cwd is not None else Path.cwd()) / ".clio"
+def user_cache_dir() -> Path:
+    """Return the disposable Agent cache root."""
+    return _root("cache")
 
 
-def workspace_agent_dir(cwd: "str | Path | None" = None) -> Path:
-    """Per-workspace clio-agent artifacts: ``<cwd>/.clio/agent`` (ARC, sessions, traces)."""
-    return workspace_clio(cwd) / "agent"
+def server_state_dir() -> Path:
+    """Return persistent server state, never a directory inside the install."""
+    return user_state_dir() / "server"
 
 
-def workspace_core_dir(cwd: "str | Path | None" = None) -> Path:
-    """Per-workspace clio-core artifacts: ``<cwd>/.clio/core`` (CTE config / file tiers)."""
-    return workspace_clio(cwd) / "core"
+def arc_data_dir() -> Path:
+    """Keep an existing working-directory ARC active until explicit migration."""
+    legacy = Path.cwd() / ".clio" / "agent" / "arc"
+    if legacy.is_dir():
+        logger.warning("Using legacy ARC at %s; migrate-paths relocates this store", legacy)
+        return legacy
+    return user_data_dir() / "arc"
+
+
+def workspace_key(root: str | Path) -> str:
+    """Return a stable identity shared by writers that know the workspace path."""
+    normalized = os.path.normcase(str(Path(root).expanduser().resolve()))
+    return hashlib.sha256(normalized.encode()).hexdigest()[:24]
+
+
+def workspace_state_dir(root: str | Path) -> Path:
+    """Return generated workspace storage without creating project directories."""
+    return user_state_dir() / "workspaces" / workspace_key(root)
+
+
+def workspace_cache_dir(root: str | Path) -> Path:
+    """Return the workspace's disposable sandbox cache."""
+    return user_cache_dir() / "sandbox" / workspace_key(root)
+
+
+def workspace_shared_dir(root: str | Path) -> Path:
+    """Return the explicit, authored project configuration location."""
+    return Path(root) / ".clio-agent" / "shared"
+
+
+def workspace_config_path(root: str | Path, name: str) -> Path:
+    """Read authored configuration from the new location, then the legacy one.
+
+    Writers must use workspace_shared_dir. The fallback is read-only and lasts
+    until an explicit migration; an upgrade must not hide existing settings.
+    """
+    current = workspace_shared_dir(root) / name
+    legacy = Path(root) / ".clio" / name
+    if not current.exists() and legacy.exists():
+        logger.warning(
+            "Legacy workspace configuration at %s; migrate to .clio-agent/shared", legacy
+        )
+        return legacy
+    return current
+
+
+def initialize_workspace(root: Path) -> Path:
+    """Explicitly initialize a project, installing self-ignore before any payload."""
+    if not root.is_dir():
+        raise ValueError("workspace must already exist")
+    project = root / ".clio-agent"
+    local = project / "local"
+    if project.is_symlink() or local.is_symlink():
+        raise ValueError("workspace initialization refuses symlinks")
+    local.mkdir(parents=True, exist_ok=True)
+    marker = local / ".gitignore"
+    try:
+        with marker.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write("*\n")
+    except FileExistsError:
+        if marker.is_symlink() or marker.read_text(encoding="utf-8") != "*\n":
+            raise ValueError(
+                "existing local/.gitignore must contain exactly '*' and a newline"
+            ) from None
+    (project / "shared").mkdir(exist_ok=True)
+    return project
+
+
+def workspace_clio(cwd: str | Path | None = None) -> Path:
+    """Compatibility helper for generated state; no project-root writes."""
+    return workspace_state_dir(cwd) if cwd is not None else server_state_dir()
+
+
+def workspace_agent_dir(cwd: str | Path | None = None) -> Path:
+    """Return workspace state or, without a workspace, server state."""
+    return workspace_clio(cwd)
+
+
+def workspace_core_dir(cwd: str | Path | None = None) -> Path:
+    """Return the authored workspace CTE configuration lookup location."""
+    return workspace_shared_dir(cwd if cwd is not None else Path.cwd()) / "core"

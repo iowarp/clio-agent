@@ -16,7 +16,18 @@
 #     CLIO_BIN_DIR  launcher location (default: $HOME/.local/bin)
 set -euo pipefail
 
-CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
+if [[ "$(uname -s)" = Darwin* ]]; then
+  agent_data_default="$HOME/Library/Application Support/clio-agent/data"
+else
+  agent_data_default="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"
+fi
+agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+agent_data="${agent_data:-$agent_data_default}"
+requested_prefix="${CLIO_PREFIX:-}"
+CLIO_PREFIX="${CLIO_PREFIX:-$agent_data/app}"
+if [[ -z "$requested_prefix" && ! -d "$CLIO_PREFIX/clio-agent/.venv" && -d "$HOME/.local/share/clio/clio-agent/.venv" ]]; then
+  CLIO_PREFIX="$HOME/.local/share/clio"
+fi
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 # Per-host, like the launcher's (shared cluster homes); the unkeyed name is
@@ -93,12 +104,15 @@ if [[ -e "$LAUNCHER" ]]; then
   rm -f "$LAUNCHER"
 fi
 if [[ -d "$CLIO_PREFIX" ]]; then
-  say "Removing $CLIO_PREFIX"
-  rm -rf "$CLIO_PREFIX"
+  say "Removing installed application payloads in $CLIO_PREFIX"
+  rm -rf -- "$CLIO_PREFIX/clio-agent/.venv" "$CLIO_PREFIX/clio-agent/web"
+  rm -f -- "$CLIO_PREFIX/gact" "$CLIO_PREFIX/uninstall.sh"
+  rmdir -- "$CLIO_PREFIX/clio-agent" "$CLIO_PREFIX" 2>/dev/null || true
+  [[ ! -d "$CLIO_PREFIX" ]] || warn "Retained user data and unknown files in $CLIO_PREFIX."
 fi
 if [[ "$PURGE" -eq 1 ]]; then
   [[ -d "$CLIO_CONFIG" ]] && { say "Removing $CLIO_CONFIG"; rm -rf "$CLIO_CONFIG"; }
-  [[ -d "$GACT_CONFIG" ]] && { say "Removing $GACT_CONFIG"; rm -rf "$GACT_CONFIG"; }
+  # gact is a separate product; its configuration is retained.
 fi
 
 say "CLIO uninstalled."

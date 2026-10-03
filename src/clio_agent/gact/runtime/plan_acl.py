@@ -22,6 +22,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from clio_agent import paths
+
 #: Priority FLOOR for the built-in plan-mode ACL (P1.1 #1063): engine-level DEFAULT plan_acl rows
 #: :func:`grant_resolver.resolve` consults for every plan-restricted ``kind="tool"`` call. They are
 #: NEVER persisted (a ``PUT /v1/policies`` cannot drop them) and replace the read-only lock formerly
@@ -92,18 +94,18 @@ def plans_dir() -> Path:
 
         active_root = str(get_active_tool_workspace_root() or "").strip()
         if active_root:
-            return (Path(active_root).expanduser() / ".clio" / "plans").resolve()
+            return (paths.workspace_state_dir(active_root) / "plans").resolve()
     except (ImportError, OSError):
         pass
     try:
         cwd = Path.cwd()
     except OSError:
-        return (Path.home() / ".clio" / "plans").resolve()
+        return (paths.user_state_dir() / "plans").resolve()
     for base in (cwd, *cwd.parents):
         # A git worktree carries a ``.git`` FILE (not a dir); ``.exists()`` covers both.
         if (base / ".git").exists():
-            return (base / ".clio" / "plans").resolve()
-    return (Path.home() / ".clio" / "plans").resolve()
+            return (paths.workspace_state_dir(base) / "plans").resolve()
+    return (paths.user_state_dir() / "plans").resolve()
 
 
 def default_plan_acl_rows() -> list[dict[str, Any]]:

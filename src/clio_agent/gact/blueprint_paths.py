@@ -40,7 +40,7 @@ def install_root(*, home: Path, cwd: Path, scope: str) -> Path:
     if scope == "global":
         return config_root / "agent-blueprints"
     if scope == "workspace":
-        return cwd / ".clio" / "agent-blueprints"
+        return cwd / ".clio-agent" / "shared" / "agent-blueprints"
     raise ValueError("scope must be global or workspace")
 
 

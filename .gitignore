@@ -179,3 +179,9 @@ src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
 
 # Owned transient test storage (Linux/macOS)
 .test-runs/
+
+# Committed benchmark sample fixtures (not transient run output).
+!benchmark/ndp-wildfire-smoke-impact/runs/sample_honest_nationwide.txt
+!benchmark/ndp-wildfire-smoke-impact/runs/sample_region1_nationwide.txt
+!benchmark/ndp-wildfire-smoke-impact/runs/sample_regions.txt
+!benchmark/ndp-wildfire-smoke-impact/runs/sample_southwest.txt

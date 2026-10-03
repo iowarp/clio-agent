@@ -10,6 +10,16 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  filesystem-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: iowarp/clio-namespaces@c7dceb98c106bbe696f0750103c024c956a6e16c
+
   # Every job carries timeout-minutes just above its measured normal duration, so a
   # hang fails the job in minutes instead of running to GitHub's 6-hour limit. The
   # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,

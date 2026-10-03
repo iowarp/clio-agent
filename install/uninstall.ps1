@@ -25,7 +25,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($env:CLIO_PREFIX)  { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $HOME 'AppData\Local\clio' }
+if ($env:CLIO_PREFIX)  { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $(if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } else { Join-Path $env:LOCALAPPDATA 'clio-agent\data' }) 'app' }
+# Continue a pre-namespace installation until it is explicitly migrated.
+$LegacyPrefix = Join-Path $env:LOCALAPPDATA 'clio'
+if (-not $env:CLIO_PREFIX -and -not (Test-Path -LiteralPath (Join-Path $Prefix 'clio-agent\.venv')) -and (Test-Path -LiteralPath (Join-Path $LegacyPrefix 'clio-agent\.venv'))) { $Prefix = $LegacyPrefix }
 if ($env:CLIO_PORT)    { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR) { $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 
@@ -107,15 +110,20 @@ foreach ($f in @($LauncherCmd, $LauncherPs1)) {
     if (Test-Path $f) { Say "Removing $f"; Remove-Item $f -Force -ErrorAction SilentlyContinue }
 }
 if (Test-Path $Prefix) {
-    Say "Removing $Prefix"
-    Remove-Item $Prefix -Recurse -Force -ErrorAction SilentlyContinue
+    Say "Removing installed application payloads in $Prefix"
+    $ResolvedPrefix = [IO.Path]::GetFullPath($Prefix)
+    foreach ($relative in @('clio-agent\.venv', 'clio-agent\web', 'gact.exe', 'uninstall.ps1')) {
+        $OwnedPath = [IO.Path]::GetFullPath((Join-Path $ResolvedPrefix $relative))
+        if (-not $OwnedPath.StartsWith($ResolvedPrefix + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid application path' }
+        Remove-Item -LiteralPath $OwnedPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
     if (Test-Path $Prefix) {
-        Warn "could not fully remove $Prefix - a file may still be locked; retry after closing CLIO/gact."
+        Warn "Retained user data and unknown files in $Prefix."
     }
 }
 if ($Purge) {
     if (Test-Path $ClioConfig) { Say "Removing $ClioConfig"; Remove-Item $ClioConfig -Recurse -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $GactConfig) { Say "Removing $GactConfig"; Remove-Item $GactConfig -Recurse -Force -ErrorAction SilentlyContinue }
+    # gact owns its own configuration; retain it.
 }
 
 Say "CLIO uninstalled."
