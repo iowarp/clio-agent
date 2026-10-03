@@ -98,6 +98,20 @@ def test_windows_ignores_xdg() -> None:
     assert root == PureWindowsPath(r"D:\Roaming\clio-agent\config")
 
 
+def test_relative_legacy_xdg_cannot_redirect_storage_to_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing relative legacy directory must not defeat native fallback."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "relative" / "clio-agent").mkdir(parents=True)
+    home = tmp_path / "home"
+    env = {"XDG_CONFIG_HOME": "relative"}
+    root = paths.user_config_dir_for(home, env)
+    expected = paths.resolve_root("config", home=home, env=env, platform=paths._platform())
+    assert root == expected
+    assert root.is_absolute()
+
+
 def test_workspace_storage_and_server_state_do_not_follow_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

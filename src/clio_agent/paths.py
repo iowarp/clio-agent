@@ -121,9 +121,10 @@ def _root(
     ):
         # Continue an existing user store until the explicit migration retires it.
         # In particular Windows/macOS previously used the XDG spelling too.
-        legacy_base = (
-            Path(source.get("XDG_CONFIG_HOME") or (home or Path.home()) / ".config") / _APP
-        )
+        legacy_config = Path(source.get("XDG_CONFIG_HOME") or base_home / ".config")
+        if not legacy_config.is_absolute():
+            legacy_config = base_home / ".config"
+        legacy_base = legacy_config / _APP
         legacy_path = legacy_base if role == "config" else legacy_base / role
         if legacy_path != result and legacy_path.is_dir() and not result.exists():
             logger.warning(
