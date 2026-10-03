@@ -73,11 +73,8 @@ from typing import Any, AsyncIterator, Optional
 
 import numpy  # noqa: E402, F401
 import pyarrow  # noqa: E402, F401
-from fastapi import FastAPI, HTTPException
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
@@ -85,7 +82,7 @@ from clio_agent.arc import loop_guard
 from clio_agent.gact import composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
-from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
+from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -690,7 +687,7 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _record_resolved_permission,
 )
 from clio_agent.gact.sessions import SessionStore, _default_store_path
-from clio_agent.gact.skills import SkillNotDelegatableError
+from clio_agent.gact.skills import SkillNotDelegatableError as SkillNotDelegatableError
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
 # re-exported for ``from clio_agent.gact.app import <name>`` callers.
@@ -730,7 +727,6 @@ from clio_agent.gact.transcript import TurnTranscriptRegistry
 from clio_agent.gact.transcript_file import boot_transcript_store
 from clio_agent.gact.types import (
     AgentDef,
-    ErrorEnvelope,
     ErrorInfo,
     Message,
     Part,
@@ -2241,55 +2237,7 @@ def build_app(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
 
-    @app.exception_handler(HTTPException)
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(request, exc: StarletteHTTPException) -> JSONResponse:
-        """Wrap HTTPExceptions in the v0.2 error envelope."""
-
-        if isinstance(exc.detail, dict) and "error" in exc.detail:
-            # Already an envelope (caller built one explicitly).
-            return JSONResponse(status_code=exc.status_code, content=exc.detail)
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error=error_code_for_status(exc.status_code),
-                message=str(exc.detail) if exc.detail else "",
-                recoverable=exc.status_code < 500,
-            )
-        )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=envelope.model_dump(exclude_none=True),
-        )
-
-    @app.exception_handler(SkillNotDelegatableError)
-    async def _skill_not_delegatable(request, exc: SkillNotDelegatableError) -> JSONResponse:
-        """Typed 400 for a skill id used as an agent id (#918)."""
-        info = ErrorInfo(
-            error="skill_not_delegatable",
-            message=str(exc),
-            details={"skill_id": exc.skill_id, "skill_path": exc.path},
-            recoverable=True,
-        )
-        return JSONResponse(
-            status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def _validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
-        """Wrap FastAPI request validation failures in the GACT envelope."""
-
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error="validation_error",
-                message="Request validation failed.",
-                details={"errors": jsonable_encoder(exc.errors())},
-                recoverable=True,
-            )
-        )
-        return JSONResponse(
-            status_code=422,
-            content=envelope.model_dump(exclude_none=True),
-        )
+    install_typed_error_handlers(app)
 
     # The Exception backstop is registered by install_error_envelope above,
     # paired with the middleware it must agree with.
