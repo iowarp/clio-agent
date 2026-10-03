@@ -58,6 +58,17 @@ function RemoveTree($path) {
 # ---------- defaults ---------------------------------------------------
 $Prefix      = if ($env:CLIO_PREFIX)       { $env:CLIO_PREFIX }      else { Join-Path $HOME 'AppData\Local\clio' }
 $BinDir      = if ($env:CLIO_BIN_DIR)      { $env:CLIO_BIN_DIR }     else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
+function Get-ClioReleaseTag([string]$Version) {
+    $Version = $Version -replace '^v', ''
+    if ($Version -match '^([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)b([0-9]+)$') {
+        return "v$($Matches[1])-beta.$($Matches[2])"
+    }
+    if ($Version -match '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-beta\.[0-9]+)?$') {
+        return "v$Version"
+    }
+    throw "No GitHub release tag for package version: $Version"
+}
+
 $ClioVersion = $env:CLIO_VERSION
 $GactVersion = if ($env:GACT_VERSION)      { $env:GACT_VERSION }     else { 'latest' }
 $ClioInstallerRef = $env:CLIO_INSTALLER_REF
@@ -193,8 +204,8 @@ if ($ClioRef -and -not $GactRef) {
 } else {
     $tag = $GactVersion
     if ($tag -eq 'latest') {
-        if ($ClioVersion) {
-            $tag = "v$ClioVersion"
+        if ($InstalledClioVersion -or $ClioVersion) {
+            $tag = Get-ClioReleaseTag $(if ($InstalledClioVersion) { $InstalledClioVersion } else { $ClioVersion })
         } else {
             Say "Resolving latest clio-agent release"
             $rel = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/iowarp/clio-agent/releases/latest'
@@ -247,7 +258,7 @@ $launcherRef = if ($ClioRef) {
 } elseif ($ClioInstallerRef) {
     $ClioInstallerRef
 } elseif ($InstalledClioVersion) {
-    "v$InstalledClioVersion"
+    Get-ClioReleaseTag $InstalledClioVersion
 } else {
     'main'
 }

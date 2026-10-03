@@ -96,18 +96,21 @@ class InfrastructureTransportRegistry:
             async with self._lock:
                 if self._connections.get(target_id) is connection:
                     self._connections.pop(target_id, None)
-                self._forwards = {
-                    key: value for key, value in self._forwards.items() if key[0] != target_id
-                }
+                    self._forwards = {
+                        key: value for key, value in self._forwards.items() if key[0] != target_id
+                    }
+                    self._on_state(target_id, "disconnected")
             connection.fail_pending("Desktop SSH transport disconnected")
-            self._on_state(target_id, "disconnected")
 
     async def execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
         """Execute one CLIO-generated command through an attached Desktop bridge."""
 
         connection = self._connections.get(target_id)
         if connection is None:
-            raise TransportUnavailableError("Desktop SSH transport is not connected")
+            raise TransportUnavailableError(
+                f"This local CLIO backend has no Desktop SSH bridge for target {target_id!r}. "
+                "Reconnect the SSH host from Desktop, then retry. The remote agent may still be running."
+            )
         payload = await connection.request(
             {"type": "exec", "command": spec.model_dump(mode="json")},
             timeout=spec.timeout_seconds + 10,
@@ -126,7 +129,10 @@ class InfrastructureTransportRegistry:
 
         connection = self._connections.get(target_id)
         if connection is None:
-            raise TransportUnavailableError("Desktop SSH transport is not connected")
+            raise TransportUnavailableError(
+                f"The Desktop SSH bridge for target {target_id!r} is disconnected from this "
+                "local CLIO backend. Reconnect the SSH host to restore its tunnel."
+            )
         cached = self._forwards.get((target_id, remote_port))
         if cached is not None:
             return cached
@@ -142,6 +148,10 @@ class InfrastructureTransportRegistry:
         if payload.get("type") != "forward_result" or not isinstance(payload.get("local_url"), str):
             raise RuntimeError("Desktop transport returned an invalid forwarding response")
         url = str(payload["local_url"])
+        if self._connections.get(target_id) is not connection:
+            raise TransportUnavailableError(
+                "The Desktop SSH bridge changed while opening its tunnel; reconnect the host."
+            )
         self._forwards[(target_id, remote_port)] = url
         return url
 
@@ -150,12 +160,13 @@ class InfrastructureTransportRegistry:
 
         async with self._lock:
             connection = self._connections.pop(target_id, None)
+            self._forwards = {
+                key: value for key, value in self._forwards.items() if key[0] != target_id
+            }
+            if connection is not None:
+                self._on_state(target_id, "disconnected")
         if connection is None:
             return
         connection.fail_pending("Desktop SSH transport was detached")
-        self._forwards = {
-            key: value for key, value in self._forwards.items() if key[0] != target_id
-        }
         with suppress(Exception):
             await connection.websocket.close(code=1000)
-        self._on_state(target_id, "disconnected")
