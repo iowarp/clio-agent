@@ -89,9 +89,53 @@ uv tool install --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==
 clio-agent serve
 ```
 
+## Agent storage and upgrades
+
+Local and remote Agents use the same filesystem resolver. New installations
+separate configuration, durable data, state, and caches under `clio-agent` in the
+native OS directories (XDG on Linux, Application Support/Caches on macOS,
+Roaming/Local AppData on Windows). `CLIO_AGENT_HOME=/absolute/directory` relocates
+those four roles together; `CLIO_AGENT_CONFIG_DIR`, `CLIO_AGENT_DATA_DIR`,
+`CLIO_AGENT_STATE_DIR`, and `CLIO_AGENT_CACHE_DIR` override individual roles.
+Relative overrides fail. Existing `CLIO_USER_DIR` stores remain supported with
+a deprecation warning.
+
+New server sessions live in `state/server`; uploads and ARC live in `data`.
+Workspace-generated inputs, artifacts, documents and plans live in
+`state/workspaces/<path-hash>`, and sandbox caches in `cache/sandbox/<path-hash>`.
+Opening a workspace creates no hidden directory inside it. Explicitly saved
+project configuration uses `.clio-agent/shared`; legacy `.clio` configuration
+remains readable. The API reports the actual managed `storage_root` and rejects
+new custom storage roots, which previously had no effect on the writers.
+
+An existing legacy session store remains active until explicitly migrated.
+Stop Agent, Desktop and their Core daemon first, then preview the bounded migration:
+
+```sh
+clio-agent migrate-paths --from-server /old/install/clio-agent --dry-run
+clio-agent migrate-paths --from-server /old/install/clio-agent --apply
+```
+
+Use `--from-user /old/config-root` for user settings and `--workspace /project`
+for explicitly selected authored project configuration. `--from-home /home/user`
+selects only Agent-owned legacy host records, plans, MCP cache and services.
+The command refuses
+occupied destinations, links and live writers, verifies file hashes, keeps
+backups and receipts under `state/migrations`, and rolls back failed cutovers.
+Generated legacy workspace copies remain readable at their original paths.
+Nothing moves or removes the shared `~/.clio` tree owned by other CLIO products.
+
+Reinstall replaces executable payloads while retaining sessions and user data.
+Remote bootstrap also protects data when it must invoke an older release's
+installer. Desktop gives fresh managed Agents their own `CLIO_AGENT_HOME`;
+existing `clio-user` installations remain readable until migration. Core host
+coordination is shared at native `state/core-hosts/<host>` (with legacy lookup)
+because the Core daemon has one fixed endpoint per host.
+
 ## ⚠️ Running more than one at once
 The CLI (`clio` / `clio --web`) and the desktop app each spawn a gact server and default
-to the **same port + the same `~/.config/clio-agent/` state dir**. Running two
+to the **same port**. Agents sharing a state directory must not run two writers.
+Running two
 simultaneously can clash on the port and risk concurrent-write corruption / version skew.
 Use one at a time, or a different `CLIO_PORT` (desktop supervisor) / `--port`
 (raw server) + state dirs. Tracked in

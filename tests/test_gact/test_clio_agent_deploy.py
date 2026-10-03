@@ -510,7 +510,11 @@ def _fake_install(prefix: Path, version: str = VERSION, server_script: str = _FA
     server.write_text(server_script)
     server.chmod(0o755)
     python = bin_dir / "python"
-    python.write_text(f"#!/bin/sh\necho {version}\n")
+    python.write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        f'  *clio_agent.paths*) exec {shlex.quote(sys.executable)} "$@" ;;\n'
+        f"  *) echo {version} ;;\nesac\n"
+    )
     python.chmod(0o755)
     (prefix / ".clio-managed-install").touch()
     return server

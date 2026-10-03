@@ -26,7 +26,10 @@ NATIVE_PORT = 8088
 def _prefix(root: str) -> str:
     return (
         f"$root={powershell.literal(root)}; if (!$root) {{ "
-        f"$root=Join-Path $env:LOCALAPPDATA 'CLIO\\services\\llama.cpp\\{LLAMA_BUILD}'"
+        "$data=if ($env:CLIO_AGENT_DATA_DIR) { $env:CLIO_AGENT_DATA_DIR } "
+        "elseif ($env:CLIO_AGENT_HOME) { Join-Path $env:CLIO_AGENT_HOME 'data' } "
+        "else { Join-Path $env:LOCALAPPDATA 'clio-agent\\data' }; "
+        f"$root=Join-Path $data 'services\\llama.cpp\\{LLAMA_BUILD}'"
         " };"
     )
 

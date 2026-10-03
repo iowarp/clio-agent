@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,7 +28,9 @@ class CreateWorkspaceRequest(BaseModel):
 
     name: str
     root_path: str = ""
-    storage_root: str = ""
+    storage_root: Literal[""] = Field(
+        default="", description="Deprecated; storage is Agent-managed."
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

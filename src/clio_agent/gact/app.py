@@ -1,9 +1,6 @@
 """GACT v0.2 FastAPI application for CLIO.
 
-Exposes the GACT v0.2 contract surface. Most routes are 501 stubs
-today; they get wired one at a time in
-follow-on iterations against the spec at
-``gact-tui/contract/SPEC.md`` and the docs in ``docs/tui/``.
+Exposes the GACT contract documented in ``gact-tui/contract/SPEC.md``.
 
 Run via::
 
@@ -26,6 +23,8 @@ import asyncio
 import logging
 import sys
 import time
+
+from clio_agent import paths
 
 # Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
 # (#714 decomposition). Imported + re-exported here; ``_install_sigusr1_diagnostic``
@@ -1112,7 +1111,7 @@ def build_app(
     app.state.prompt_registry = PromptRegistry(
         sources=[
             PromptSource("global", prompt_write_root),
-            PromptSource("workspace", Path.cwd() / ".clio" / "prompts"),
+            PromptSource("workspace", paths.workspace_config_path(Path.cwd(), "prompts")),
         ],
         write_root=prompt_write_root,
     )
@@ -1122,13 +1121,14 @@ def build_app(
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
     initialize_a2ui_store(app, session_store_path.parent)
+    trace_root = (
+        paths.user_state_dir() / "traces"
+        if session_store_path.parent == paths.server_state_dir()
+        else session_store_path.parent
+    )
     app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
-    app.state.semantic_trace_backend = build_trace_backend(
-        session_store_path.parent / "semantic_traces"
-    )
-    provenance_wiring.wire_artifact_provenance(
-        app, session_store_path.parent / "artifact_provenance"
-    )
+    app.state.semantic_trace_backend = build_trace_backend(trace_root / "semantic_traces")
+    provenance_wiring.wire_artifact_provenance(app, trace_root / "artifact_provenance")
     # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
     # _emit_semantic_event routes each event through arc.record_semantic_event, which
     # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
@@ -1455,7 +1455,7 @@ def build_app(
             prompt_root = pack.root / "prompts"
             if prompt_root.is_dir():
                 sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
-        sources.append(PromptSource("workspace", cwd / ".clio" / "prompts"))
+        sources.append(PromptSource("workspace", paths.workspace_config_path(cwd, "prompts")))
         if session_id:
             active_blueprint_path = _active_session_agent_blueprint_path(session_id)
             active_blueprint_id = _active_session_agent_blueprint_id(session_id)
@@ -1495,7 +1495,7 @@ def build_app(
             return prompt_write_root.parent / "session-prompts" / session_id
         if scope == "workspace":
             cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
-            return cwd / ".clio" / "prompts"
+            return cwd / ".clio-agent" / "shared" / "prompts"
         if scope in {"global", "user", ""}:
             return prompt_write_root
         raise ValueError("scope must be global, workspace, or session")

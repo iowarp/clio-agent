@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
+
+from clio_agent import paths
 
 GLOBAL_WORKSPACE_ID = "ws_global"
 
@@ -25,22 +27,13 @@ def default_workspace_storage_root(root_path: str) -> Path:
     """Return the default runtime storage root for one workspace."""
 
     root = Path(root_path or os.getcwd()).expanduser()
-    return root / ".clio"
+    return paths.workspace_state_dir(root)
 
 
 def resolve_workspace_storage_root(row: Any) -> Path:
     """Return the configured or default storage root for a workspace row."""
 
     root_path = str(getattr(row, "root_path", "") or os.getcwd())
-    config = getattr(row, "config", {}) or {}
-    metadata = getattr(row, "metadata", {}) or {}
-    configured = ""
-    if isinstance(config, Mapping):
-        configured = str(config.get("storage_root") or config.get("storage_path") or "")
-    if not configured and isinstance(metadata, Mapping):
-        configured = str(metadata.get("storage_root") or metadata.get("storage_path") or "")
-    if configured:
-        return Path(configured).expanduser()
     return default_workspace_storage_root(root_path)
 
 

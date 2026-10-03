@@ -28,7 +28,7 @@ is no silent fallback: a spawn that never turns healthy raises :class:`ServerSta
 with its structured reason attached, and the partially-started process is torn down first.
 
 The pidfile lives under the canonical per-user data dir
-(``clio_agent.paths.user_data_dir()`` — e.g. ``%LOCALAPPDATA%\\clio-agent`` on Windows,
+(``clio_agent.paths.user_state_dir()`` — e.g. ``%LOCALAPPDATA%\\clio-agent`` on Windows,
 ``~/.local/share/clio-agent`` on Linux), named ``gact-server-<port>.pid``, so distinct
 ports never clobber each other's record. It is a small JSON blob guarded by a sibling
 ``filelock`` lock, carrying the PID, the process creation-time (a PID-reuse guard), the
@@ -53,7 +53,7 @@ from typing import Any
 import httpx
 from filelock import FileLock
 
-from clio_agent.paths import user_data_dir
+from clio_agent.paths import user_state_dir
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +277,7 @@ def _server_bin() -> str:
 
 def _pidfile_path(port: int) -> Path:
     """Return the per-port pidfile path under the canonical user data dir."""
-    root = user_data_dir()
+    root = user_state_dir()
     root.mkdir(parents=True, exist_ok=True)
     return root / f"gact-server-{port}.pid"
 
@@ -420,7 +420,7 @@ def ensure_server(
     _remove_pidfile(pidfile)
 
     server_bin = _server_bin()  # raises ServerBinaryNotFound (structured) if missing
-    log_path = user_data_dir() / f"gact-server-{port}.log"
+    log_path = user_state_dir() / f"gact-server-{port}.log"
     # The owner contract the desktop launcher also uses: a one-use bearer the server
     # enforces (and publishes in its owner-only credential record), plus the marker
     # that exposes the graceful shutdown route stop_server calls.

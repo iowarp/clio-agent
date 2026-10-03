@@ -126,6 +126,7 @@ class CASStore:
 
     def __init__(self, workspace_root: str | Path) -> None:
         self._root = cas_root_for(workspace_root)
+        self._legacy = Path(workspace_root) / ".clio" / "agent" / "artifacts" / "cas"
 
     @property
     def root(self) -> Path:
@@ -134,7 +135,9 @@ class CASStore:
 
     def blob_path(self, sha256: str) -> Path:
         """Map a content hash to its addressed blob path (``<root>/<sha[:2]>/<sha>``)."""
-        return self._root / sha256[:2] / sha256
+        current = self._root / sha256[:2] / sha256
+        legacy = self._legacy / sha256[:2] / sha256
+        return legacy if not current.exists() and legacy.is_file() else current
 
     def has_blob(self, sha256: str) -> bool:
         """Whether a blob for ``sha256`` is present on disk."""
@@ -159,7 +162,7 @@ class CASStore:
         through :func:`win_extended_path` -- a CAS root nested under a deep
         workspace can exceed Windows' 260-character ``MAX_PATH``.
         """
-        blob = self.blob_path(sha256)
+        blob = self._root / sha256[:2] / sha256
         extended_blob = win_extended_path(blob)
         if os.path.isfile(extended_blob):
             if self._blob_valid(blob, sha256, size_bytes, trust_stat=trust_stat):
@@ -283,7 +286,7 @@ class CASStore:
         free nor emits a false eviction event for a live blob; the caller distinguishes
         "gone" from "still here" via :meth:`has_blob` and emits a typed skip.
         """
-        blob = self.blob_path(sha256)
+        blob = self._root / sha256[:2] / sha256
         try:
             size = blob.stat().st_size
         except OSError:

@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional
 import msgspec
 from sortedcontainers import SortedDict
 
+from clio_agent import paths
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +79,7 @@ class LSMTree:
 
     def __init__(
         self,
-        data_dir: str = ".clio/agent/arc/lsm",
+        data_dir: str | None = None,
         memtable_size: int = 1000,
         compaction_threshold: int = 5,
     ):
@@ -88,7 +90,7 @@ class LSMTree:
             memtable_size: Maximum MemTable entries before flush
             compaction_threshold: SSTable count to trigger compaction
         """
-        self.data_dir = Path(data_dir)
+        self.data_dir = Path(data_dir) if data_dir is not None else paths.arc_data_dir() / "lsm"
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # MemTable: in-memory sorted map (timestamp -> metric)

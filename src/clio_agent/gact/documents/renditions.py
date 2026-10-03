@@ -193,7 +193,7 @@ def render_pdf(
     )
     rendition_root.mkdir(parents=True, exist_ok=True)
     target = rendition_root / f"{Path(record.name).stem}.pdf"
-    with tempfile.TemporaryDirectory(prefix="clio-document-rendition-") as raw_tmp:
+    with tempfile.TemporaryDirectory(prefix="clio-agent-document-rendition-") as raw_tmp:
         temporary_root = Path(raw_tmp)
         source = _source_path(workspace_root, version, temporary_root, record.name)
         rendered, converter = _convert_to_pdf(source, temporary_root)

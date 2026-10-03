@@ -59,12 +59,28 @@ from typing import Literal
 
 from clio_agent.gact.infrastructure.models import CommandSpec
 from clio_agent.gact.infrastructure.release_tag import release_tag
+from clio_agent.gact.infrastructure.remote_install_guard import INSTALL_GUARD
 
 # Shared by both scripts: resolve the install root the same way the install
 # and start commands do, find a TCP listener's pid, and recognize a CLIO
 # server process.
-_COMMON = r"""
-root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi
+_ROOT = r"""
+root="$1"
+if [ -z "$root" ]; then
+  data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"
+  root="${data:-${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent}/app"
+  if [ ! -d "$root/clio-agent/.venv" ] && [ -d "$HOME/.local/share/clio/clio-agent/.venv" ]; then
+    root="$HOME/.local/share/clio"
+  fi
+fi
+case "$root" in /*) ;; *) printf 'The CLIO installation path must be absolute.\n'; exit 75 ;; esac
+root="${root%/}"
+[ -n "$root" ] && [ "$root" != "$HOME" ] || { printf 'Choose a dedicated CLIO installation directory.\n'; exit 75; }
+"""
+
+_COMMON = (
+    _ROOT
+    + r"""
 port="$2"
 host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
@@ -86,6 +102,13 @@ alive() {
   kill -0 "$1" 2>/dev/null || return 1
   ! grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null
 }
+pidfile_for() {
+  local prefix="$1" candidate
+  for candidate in "$prefix/user/state/clio-server.$host_id.pid" "$prefix/clio-server.$host_id.pid" "$prefix/clio-server.pid"; do
+    if [ -f "$candidate" ]; then printf '%s' "$candidate"; return; fi
+  done
+  printf '%s' "$prefix/user/state/clio-server.$host_id.pid"
+}
 # Echo the install prefix of a CLIO server process, or fail (return 1).
 clio_prefix_of() {
   local pid="$1" line script prefix recorded cwd
@@ -94,7 +117,7 @@ clio_prefix_of() {
   [ -n "$script" ] || return 1
   script="${script% serve*}"
   prefix="${script%/clio-agent/.venv/bin/clio-agent}"
-  recorded="$(cat "$prefix/clio-server.$host_id.pid" 2>/dev/null || cat "$prefix/clio-server.pid" 2>/dev/null || true)"
+  recorded="$(cat "$(pidfile_for "$prefix")" 2>/dev/null || true)"
   cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   if [ "$recorded" = "$pid" ] || [ "$cwd" = "$prefix/clio-agent" ]; then
     printf '%s' "$prefix"
@@ -154,6 +177,7 @@ except Exception:
   esac
 }
 """
+)
 
 _CLAIM = (
     "# clio-deploy:claim\n"
@@ -162,7 +186,7 @@ _CLAIM = (
 version="$3"
 replace="${4:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
-recorded="$(cat "$root/clio-server.$host_id.pid" 2>/dev/null || true)"
+recorded="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 if ! port_busy "$port"; then
   if [ -n "$recorded" ] && alive "$recorded"; then
     fail "This installation already has a running process. Choose a separate installation directory for another port."
@@ -209,8 +233,7 @@ _TEARDOWN = (
     + r"""
 purge_root="$3"
 did=0
-pidfile="$root/clio-server.$host_id.pid"
-[ -f "$pidfile" ] || pidfile="$root/clio-server.pid"
+pidfile="$(pidfile_for "$root")"
 pid="$(cat "$pidfile" 2>/dev/null || true)"
 if [ -n "$pid" ] && alive "$pid"; then
   owner="$(clio_prefix_of "$pid" || true)"
@@ -313,8 +336,8 @@ def teardown_command(
 # Resolve the install root the same way every step does, and keep the
 # launcher and agent data inside it, so removing the root removes the install.
 LAUNCHER_PRELUDE = (
-    'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; bin="$root/bin"; '
-    'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_DATA_DIR="$root/data"; '
+    _ROOT + 'bin="$root/bin"; '
+    'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_AGENT_HOME="$root/user"; '
 )
 
 PYPI_RELEASE_URL = "https://pypi.org/pypi/clio-agent/{version}/json"
@@ -349,7 +372,11 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh || { printf 'Could not install uv.\n'; exit 75; }
 fi
 export CLIO_VERSION="$version" CLIO_INSTALLER_REF="$5" GACT_VERSION="$5"
+"""
+    + INSTALL_GUARD
+    + r"""
 curl -fsSL "$4" | bash || { code=$?; printf 'Could not install CLIO %s from GitHub release %s (%s).\n' "$version" "$5" "$4"; exit "$code"; }
+install_ok=1
 """
 )
 

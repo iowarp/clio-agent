@@ -106,7 +106,9 @@ def user_overlay_dir() -> Path:
 
 def project_overlay_dir(cwd: "str | Path | None" = None) -> Path:
     """``<cwd>/.clio/model-catalog.d`` -- root 3 (brief Part 8.6)."""
-    return (Path(cwd) if cwd is not None else Path.cwd()) / ".clio" / "model-catalog.d"
+    return paths.workspace_config_path(
+        Path(cwd) if cwd is not None else Path.cwd(), "model-catalog.d"
+    )
 
 
 def _entry_from_raw(raw: Any, *, root: str, source_name: str) -> OverlayEntry | None:

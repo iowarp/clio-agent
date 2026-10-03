@@ -68,17 +68,21 @@ def test_workspace_exposes_default_and_configured_storage_root(tmp_path: Path) -
         "/v1/workspaces",
         json={"name": "default-storage", "root_path": str(project)},
     ).json()
-    custom_ws = c.post(
+    custom_response = c.post(
         "/v1/workspaces",
         json={
             "name": "custom-storage",
             "root_path": str(project),
             "storage_root": str(custom),
         },
-    ).json()
+    )
 
-    assert default_ws["storage_root"] == str(project / ".clio")
-    assert custom_ws["storage_root"] == str(custom)
+    from clio_agent.paths import workspace_state_dir
+
+    assert default_ws["storage_root"] == str(workspace_state_dir(project))
+    assert custom_response.status_code == 422
+    assert not custom.exists()
+    assert list(project.iterdir()) == []
 
 
 # The per-workspace session/message mirror was DELETED in #771 (reader-less,

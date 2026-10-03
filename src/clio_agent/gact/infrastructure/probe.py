@@ -22,6 +22,7 @@ from clio_agent.gact.infrastructure.runtime_probe import (
     local_runtime_facts,
     parse_probe,
 )
+from clio_agent.paths import user_data_dir
 
 CommandExecutor = Callable[[CommandSpec], Awaitable[CommandResult]]
 
@@ -94,6 +95,7 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         container_runtimes=runtimes,
         identity=identity,
         home=home,
+        agent_data_root=str(user_data_dir()),
         hostname=platform.node().split(".")[0],
     )
 
@@ -153,7 +155,13 @@ async def probe_target(
                 "di=0; dr=0; uv=0; command -v docker >/dev/null 2>&1 && di=1; "
                 "docker info >/dev/null 2>&1 && dr=1; command -v uv >/dev/null 2>&1 && uv=1; "
                 'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"; '
-                + POSIX_RUNTIME_PROBE,
+                + POSIX_RUNTIME_PROBE
+                + '; agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"; '
+                + 'agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"; '
+                + 'if [ -z "$agent_data" ]; then '
+                + 'if [ "$os" = Darwin ]; then agent_data="$HOME/Library/Application Support/clio-agent/data"; '
+                + 'else agent_data="${XDG_DATA_HOME:-$HOME/.local/share}/clio-agent"; fi; fi; '
+                + 'printf "clio-agent-data|%s\\n" "$agent_data"',
             ],
             timeout_seconds=60,
         )
@@ -178,5 +186,13 @@ async def probe_target(
         container_runtimes=runtimes,
         identity=identity,
         home=home,
+        agent_data_root=next(
+            (
+                line.split("|", 1)[1]
+                for line in result.stdout.splitlines()
+                if line.startswith("clio-agent-data|")
+            ),
+            "",
+        ),
         hostname=hostname,
     )

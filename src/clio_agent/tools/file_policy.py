@@ -108,6 +108,15 @@ def _with_active_workspace(resolved: list[Path]) -> tuple[Path, ...]:
     extra: list[Path] = []
     if workspace is not None and workspace not in resolved:
         extra.append(workspace)
+    if workspace is not None:
+        from clio_agent import paths  # noqa: PLC0415
+
+        extra.extend(
+            [
+                paths.workspace_state_dir(workspace).resolve(),
+                paths.workspace_cache_dir(workspace).resolve(),
+            ]
+        )
     for granted in _granted_roots_for(workspace):
         if granted not in resolved and granted not in extra:
             extra.append(granted)

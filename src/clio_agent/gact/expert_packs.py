@@ -202,8 +202,8 @@ def expert_pack_roots(home: Path, cwd: Path) -> list[tuple[Path, str, str]]:
     return [
         (config_root / "experts", "global", "loose"),
         (config_root / "expert-packs", "global", "packs"),
-        (cwd / ".clio" / "experts", "workspace", "loose"),
-        (cwd / ".clio" / "expert-packs", "workspace", "packs"),
+        (paths.workspace_config_path(cwd, "experts"), "workspace", "loose"),
+        (paths.workspace_config_path(cwd, "expert-packs"), "workspace", "packs"),
     ]
 
 

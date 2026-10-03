@@ -69,7 +69,7 @@ export CLIO_PORT="$2" CLIO_DESKTOP_LAUNCH="$3"
 # it implicitly or claim its ownership just because the launcher says healthy.
 port_busy "$port" && fail "Port $port became busy. Choose another port or reconnect."
 "$bin/clio" start || exit $?
-pid="$(cat "$root/clio-server.$host_id.pid" 2>/dev/null || true)"
+pid="$(cat "$(pidfile_for "$root")" 2>/dev/null || true)"
 [ -n "$pid" ] && [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$(id -u)" ] || fail "Cannot verify the new CLIO process owner"
 tr '\0' '\n' <"/proc/$pid/environ" | grep -Fxq "CLIO_DESKTOP_LAUNCH=$3" || fail "The running CLIO was not started by this deployment"
 say "Started Desktop-owned CLIO (pid $pid, $root, port $port)"
@@ -89,7 +89,7 @@ def stop_owned_command(launch: RemoteLaunch) -> CommandSpec:
         "# clio-deploy:teardown\n"
         + _COMMON
         + r"""
-pidfile="$root/clio-server.$host_id.pid"
+pidfile="$(pidfile_for "$root")"
 pid="$(cat "$pidfile" 2>/dev/null || true)"
 if [ -z "$pid" ] || ! alive "$pid"; then exit 0; fi
 [ "$(stat -c %u "/proc/$pid" 2>/dev/null)" = "$(id -u)" ] || fail "Leaving another user's process running"

@@ -99,7 +99,7 @@ def agent_blueprint_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     config_root = paths.user_config_dir_for(home, os.environ)
     return [
         (config_root / "agent-blueprints", "global"),
-        (cwd / ".clio" / "agent-blueprints", "workspace"),
+        (paths.workspace_config_path(cwd, "agent-blueprints"), "workspace"),
     ]
 
 

@@ -17,6 +17,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import paths
 from clio_agent.gact.a2ui_producer._refusal import refusal
 
 if TYPE_CHECKING:
@@ -83,7 +84,8 @@ def mint_surface_definition_artifact(
             ),
         )
     resolved_root = root.resolve(strict=False)
-    target = (root / ".clio" / "a2ui" / _definition_file_name(surface_id)).resolve(strict=False)
+    resolved_root = paths.workspace_state_dir(root).resolve(strict=False)
+    target = (resolved_root / "a2ui" / _definition_file_name(surface_id)).resolve(strict=False)
     # Defense in depth: _definition_file_name's charset already makes escaping
     # impossible, but a definition artifact is NEVER written outside the
     # workspace root regardless -- a typed refusal, never a silent path fix.
