@@ -30,7 +30,8 @@ def build_create_a2ui_surface_tool() -> Any:
     ) -> dict[str, Any]:
         """Create or update an inline interactive view or widget in this conversation.
 
-        Reuse an existing ``surface_id`` to revise in place; call
+        Reuse a ``surface_id`` from a prior result's ``session_surface_ids``
+        to revise it in place; call
         ``inspect_a2ui_surface`` when the id is missing from this turn.
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect

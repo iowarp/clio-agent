@@ -434,11 +434,9 @@ def test_fix_touching_fewer_ids_than_the_bad_update_still_folds_it_away(tmp_path
         "updateComponents": {
             "surfaceId": "surface_1",
             "components": [
-                # `gap: 15` is accepted by the server's currently-pinned
-                # clio-schemas 0.5.1 (the client-side bound landed in 0.5.2,
-                # clio-schemas#19, not yet pinned here) -- the exact drift
-                # that produced this bug live.
-                {"id": "root", "component": "Grid", "gap": 15, "children": ["a"]},
+                # Use a valid but superseded definition under the current
+                # contract. Out-of-bounds gaps are rejected separately below.
+                {"id": "root", "component": "Grid", "gap": 12, "children": ["a"]},
                 {"id": "a", "component": "Text", "text": "A"},
             ],
         },
@@ -471,6 +469,25 @@ def test_fix_touching_fewer_ids_than_the_bad_update_still_folds_it_away(tmp_path
         },
     }
     assert surface["messages"] == [_create_message(), merged]
+
+
+def test_grid_gap_above_catalog_bound_is_rejected_without_persisting(tmp_path: Path) -> None:
+    """The newer contract rejects the invalid gap behind the historical fold bug."""
+    client, sid, _ = _session_client(tmp_path)
+    update = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 15, "children": []}],
+        },
+    }
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), update]},
+    )
+    assert response.status_code == 422
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
 def test_message_revisions_are_present_and_monotonic_per_slot(tmp_path: Path) -> None:
