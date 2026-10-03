@@ -40,6 +40,7 @@ from clio_agent.gact.routes.workspace_file_listing import (
 from clio_agent.gact.routes.workspace_file_policy import workspace_read_redaction_reason
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
+from clio_agent.gact.routes.workspace_warmup import register_workspace_warmup_route
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -246,7 +247,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``build_app`` local.
     """
 
-    # ---- /v1/workspaces -------------------------
+    register_workspace_warmup_route(app)
 
     @app.get("/v1/workspaces", response_model=ListWorkspacesResponse)
     async def list_workspaces(request: Request) -> ListWorkspacesResponse | JSONResponse:
