@@ -185,3 +185,6 @@ src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
 !benchmark/ndp-wildfire-smoke-impact/runs/sample_region1_nationwide.txt
 !benchmark/ndp-wildfire-smoke-impact/runs/sample_regions.txt
 !benchmark/ndp-wildfire-smoke-impact/runs/sample_southwest.txt
+
+# Generated standalone widget bundles.
+/public/widgets/

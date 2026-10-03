@@ -1,0 +1,15 @@
+---
+import { widgetGroups, widgets } from '../data/widget-library.mjs';
+import reference from '../data/widget-reference.json';
+const byName = Object.fromEntries(widgets.map((widget) => [widget.name, widget]));
+const descriptions = reference as Record<string, { description: string }>;
+---
+
+<div class="widget-catalog">
+  {widgetGroups.map((group) => <section class="widget-group"><h2>{group.title}</h2><div class="widget-cards">
+    {group.names.map((name) => {
+      const widget = byName[name];
+      return <a class="widget-card" href={`/docs/widgets/${widget.slug}/`}><span>{widget.label}</span><small>{descriptions[name].description}</small></a>;
+    })}
+  </div></section>)}
+</div>

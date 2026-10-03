@@ -1,15 +1,16 @@
 ---
 title: Widget gallery
-description: Explore CLIO's interactive components and linked data views.
+description: Explore scientific data through CLIO's interactive views.
 tableOfContents: false
 ---
 
-import WidgetGalleryFrame from '../../../components/WidgetGalleryFrame.astro';
+import WidgetSectionTabs from '../../../components/WidgetSectionTabs.astro';
+import WidgetLive from '../../../components/WidgetLive.astro';
 
-Ask a question and explore the answer visually. Play the hurricane walkthrough below, then select an observation in the map, wind chart, or table. The sample works without a running agent.
+<WidgetSectionTabs active="intro" />
 
-The **Components** tab shows the full catalog. Open **Agent guidance** for the standard marketplace agent and its presentation skill; each component's **Contract** shows its exact schema.
+CLIO can draw a view while answering a question. The view stays useful after the answer: you can inspect values, select observations, and bring the evidence into your next message.
 
-<a class="widget-gallery-open" href="/widgets/widget-preview.html" target="_blank" rel="noopener noreferrer">Open the gallery in a full page</a>
+## Answers you can explore
 
-<WidgetGalleryFrame />
+<WidgetLive mode="intro" />

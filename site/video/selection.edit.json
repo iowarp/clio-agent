@@ -1,0 +1,15 @@
+{
+  "source": "takes/selection-20261003-r6.limited.mp4",
+  "shots": [
+    {
+      "crop": {
+        "x": 300,
+        "height": 775,
+        "y": 55,
+        "width": 930
+      },
+      "to": 23.3,
+      "from": 0.2
+    }
+  ]
+}

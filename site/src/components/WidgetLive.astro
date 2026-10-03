@@ -1,0 +1,13 @@
+---
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const { mode, name } = Astro.props as { mode: 'gallery' | 'linked' | 'intro' | 'interaction' | 'component'; name?: string };
+const html = readFileSync(resolve('public/widgets/widget-docs.html'), 'utf8');
+const script = html.match(/<script type="module" crossorigin src="([^"]+)"/u)?.[1];
+const styles = [...html.matchAll(/<link rel="stylesheet" crossorigin href="([^"]+)"/gu)].map((match) => match[1]);
+if (!script || !styles.length) throw new Error('The native widget renderer has not been staged. Run the widget engine build first.');
+---
+{styles.map((href) => <link rel="stylesheet" href={href} />)}
+<div class="widget-live not-content" data-clio-widget-live={mode} data-component={name} aria-label={mode === 'gallery' ? 'Interactive component gallery' : mode === 'linked' ? 'Linked data examples' : mode === 'intro' ? 'Interactive introduction examples' : mode === 'interaction' ? 'Interactive human and agent example' : `Interactive ${name} example`}></div>
+<script type="module" src={script} is:inline></script>

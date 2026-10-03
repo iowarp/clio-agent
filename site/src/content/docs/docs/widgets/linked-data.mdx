@@ -1,0 +1,20 @@
+---
+title: Linked data
+description: Select once and find the same observation across views.
+tableOfContents: false
+---
+
+import WidgetSectionTabs from '../../../../components/WidgetSectionTabs.astro';
+import WidgetLive from '../../../../components/WidgetLive.astro';
+
+<WidgetSectionTabs active="linked" />
+
+When CLIO draws several views of the same records, the views can share selection. A station selected on a map is the same station highlighted in a chart or table. The person does not have to ask the agent to add selection controls.
+
+<WidgetLive mode="linked" />
+
+## How linking works
+
+Views reading the same dataset share each row's stable identity. Inline map, chart, and table views can also link by a unique entity field. When different datasets describe one conceptual entity, the agent can bind them to a shared selection path. [See the chart contract](/docs/widgets/chart/) and [map contract](/docs/widgets/map/) for the data fields.
+
+A control can write to a data-model path that another component reads. In the thermal example, elapsed time is bound to the viewport's frame. The two viewports also share a camera synchronization group, so the comparison keeps the same viewing angle. [See the numeric slider](/docs/widgets/numeric-slider/) and [3D viewport](/docs/widgets/mesh-viewport/) for their inputs.

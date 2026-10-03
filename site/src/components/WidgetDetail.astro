@@ -1,0 +1,90 @@
+---
+import { widgetFor, widgetGroups, widgetUses, widgets } from '../data/widget-library.mjs';
+import reference from '../data/widget-reference.json';
+import terrainCapture from '../assets/captures/terrain-mesh.png';
+import mapCapture from '../assets/captures/earthscope-map.png';
+import chartCapture from '../assets/captures/earthscope-chart.png';
+import WidgetSectionTabs from './WidgetSectionTabs.astro';
+import WidgetLive from './WidgetLive.astro';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+type Field = { name: string; required: boolean; description: string; type: string };
+type Contract = { description: string; properties: Field[] };
+const { name } = Astro.props as { name: string };
+const widget = widgetFor(name);
+if (!widget) throw new Error(`Unknown widget: ${name}`);
+const contract = (reference as Record<string, Contract>)[name];
+if (!contract) throw new Error(`Missing catalog contract: ${name}`);
+const fragments = JSON.parse(readFileSync(resolve('public/widgets/gallery-skills/component-skills.json'), 'utf8')) as Record<string, { call: string; content: string }>;
+const fragment = fragments[name];
+if (!fragment) throw new Error(`Missing agent skill fragment: ${name}`);
+const linked = ['clio.chart.v1', 'clio.map.v1', 'clio.data-table.v1'].includes(name);
+const visualCapture = ['clio.raster-viewport.v1', 'clio.mesh-viewport.v1'].includes(name);
+const captures: Record<string, { src: string; alt: string }> = {
+  'clio.mesh-viewport.v1': { src: terrainCapture.src, alt: 'CLIO 3D terrain mesh with a selected peak' },
+  'clio.map.v1': { src: mapCapture.src, alt: 'CLIO map of scientific observation sites' },
+  'clio.chart.v1': { src: chartCapture.src, alt: 'CLIO chart of scientific observations' },
+};
+const capture = captures[name];
+---
+
+<div class="widget-detail">
+  <WidgetSectionTabs active="components" />
+  <label class="widget-jump"><span>Browse components</span><select data-widget-jump aria-label="Choose a component">
+    {widgetGroups.map((group) => <optgroup label={group.title}>{group.names.map((itemName) => {
+      const item = widgets.find((entry) => entry.name === itemName);
+      if (!item) throw new Error(`Unknown catalog component: ${itemName}`);
+      return <option value={`/docs/widgets/${item.slug}/`} selected={itemName === name}>{item.label}</option>;
+    })}</optgroup>)}
+  </select></label>
+  <p class="widget-eyebrow">{widget.group} / {name}</p>
+  <p class="widget-lead">{(widgetUses as Record<string, string>)[name]}</p>
+  <div class="widget-detail-tabs" data-widget-detail-tabs>
+    <div class="widget-detail-tablist" role="tablist" aria-label={`${widget.label} guide sections`}>
+      <button type="button" role="tab" aria-selected="true" aria-controls="widget-detail-example">Live example</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="widget-detail-guide" tabindex="-1">How it works</button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="widget-detail-skill" tabindex="-1">Skill</button>
+    </div>
+    <section id="widget-detail-example" role="tabpanel" class="widget-detail-panel">
+      <WidgetLive mode="component" name={name} />
+    </section>
+    <section id="widget-detail-guide" role="tabpanel" class="widget-detail-panel" hidden>
+      <h2>When to use it</h2>
+      <p>{(widgetUses as Record<string, string>)[name]}</p>
+      <h2>What the agent supplies</h2>
+      <p>{contract.description}</p>
+      <p>The agent chooses the content and binds it to the component. CLIO then renders the view and its available controls.</p>
+      {linked && <p>When this view uses the same dataset as another view, selection travels with each row. A person can find the same observation across the views.</p>}
+      {visualCapture && <p>The viewport can carry selected geometry or a labelled visual region into a follow-up, preserving the visual context of the question.</p>}
+      {capture && <figure class="widget-detail-visual"><img src={capture.src} alt={capture.alt} /><figcaption>Used in a CLIO answer</figcaption></figure>}
+    </section>
+    <section id="widget-detail-skill" role="tabpanel" class="widget-detail-panel" hidden>
+      <h2>What the agent receives</h2>
+      <p>The exact output of <code>load_skill</code>, including resolved local definitions.</p>
+      <pre class="widget-agent-output"><code>{fragment.call}</code></pre>
+      <pre class="widget-agent-output"><code>{fragment.content}</code></pre>
+    </section>
+  </div>
+</div>
+<script>
+  document.querySelectorAll<HTMLSelectElement>('[data-widget-jump]').forEach((select) => {
+    select.addEventListener('change', () => { window.location.href = select.value; });
+  });
+  document.querySelectorAll<HTMLElement>('[data-widget-detail-tabs]').forEach((root) => {
+    const tabs = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    const panels = Array.from(root.querySelectorAll<HTMLElement>('[role="tabpanel"]'));
+    const select = (index: number) => {
+      tabs.forEach((tab, position) => { tab.setAttribute('aria-selected', String(position === index)); tab.tabIndex = position === index ? 0 : -1; });
+      panels.forEach((panel, position) => { panel.hidden = position !== index; });
+    };
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => select(index));
+      tab.addEventListener('keydown', (event) => {
+        const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index - 1 + tabs.length) % tabs.length : -1;
+        if (next < 0) return;
+        event.preventDefault(); select(next); tabs[next].focus();
+      });
+    });
+  });
+</script>

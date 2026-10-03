@@ -49,18 +49,23 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: iowarp/gact-tui
-          ref: e4accea14b0c0136299a10ef3ac91c10fd57a14e
+          ref: 19d624671af72d4874e7e288399f241fc14bed6e
           path: gact-tui-checkout
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.9
       - run: pnpm install --frozen-lockfile
         working-directory: gact-tui-checkout
-      - run: pnpm --filter @clio/workspace exec vite build
+      - run: node scripts/prepare-widget-engine.mjs ../gact-tui-checkout
+      - run: pnpm --filter @clio/workspace exec tsc -b --pretty false
+        working-directory: gact-tui-checkout
+      - run: pnpm --filter @clio/workspace exec vite build --base /widgets/
         working-directory: gact-tui-checkout
         env:
           CLIO_GALLERY_STANDALONE: '1'
+      - uses: astral-sh/setup-uv@v5
       - run: node scripts/stage-widgets.mjs ../gact-tui-checkout/web/dist
+      - run: node scripts/generate-widget-pages.mjs ../gact-tui-checkout/web/src/test-fixtures/a2ui/v0_9_1/catalogs/clio-workspace/v1/catalog.json
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: site/package.json

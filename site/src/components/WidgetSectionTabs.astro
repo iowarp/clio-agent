@@ -1,0 +1,13 @@
+---
+const { active, skills = false } = Astro.props as { active: 'intro' | 'linked' | 'interaction' | 'components'; skills?: boolean };
+const sections = [
+  { id: 'intro', label: 'Introduction', href: '/docs/widgets/' },
+  { id: 'linked', label: 'Linked data', href: '/docs/widgets/linked-data/' },
+  { id: 'interaction', label: 'Human and agent', href: '/docs/widgets/interaction/' },
+  { id: 'components', label: 'Components', href: '/docs/widgets/components/' },
+];
+---
+<nav class="widget-section-tabs" aria-label="Widget gallery sections">
+  {sections.map((section) => <a href={section.href} aria-current={active === section.id ? 'page' : undefined}>{section.label}</a>)}
+  {skills && <button type="button" class="widget-section-skill" data-gallery-skill-open>Agent and presentation skills</button>}
+</nav>
