@@ -14,6 +14,13 @@ describe('parseProjectVersion', () => {
 });
 
 describe('releaseFor', () => {
+	it('uses the GitHub beta spelling while preserving the package and container versions', () => {
+		expect(releaseFor('0.9.5b1')).toEqual({
+			version: '0.9.5b1', tag: 'v0.9.5-beta.1',
+			notesUrl: 'https://github.com/iowarp/clio-agent/releases/tag/v0.9.5-beta.1',
+			webImage: 'ghcr.io/iowarp/clio-web:0.9.5b1',
+		});
+	});
 	it('derives the tag, notes page, and web image from one version', () => {
 		expect(releaseFor('0.9.4.24')).toEqual({
 			version: '0.9.4.24',

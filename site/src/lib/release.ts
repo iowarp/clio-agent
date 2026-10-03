@@ -39,7 +39,7 @@ export function parseProjectVersion(pyproject: string): string {
 
 /** Build the release record for `version`. */
 export function releaseFor(version: string): Release {
-	const tag = `v${version}`;
+	const tag = `v${version.replace(/^(\d+\.\d+\.\d+)b(\d+)$/, '$1-beta.$2')}`;
 	return {
 		version,
 		tag,
