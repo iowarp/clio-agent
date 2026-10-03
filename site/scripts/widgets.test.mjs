@@ -103,7 +103,7 @@ describe('native widget docs', () => {
       'src/hooks/use-repository.ts': "import { createGalleryRepository } from '@/lib/gallery-repository';\nreturn window.location.pathname.endsWith('/widget-preview.html') ? createGalleryRepository(repository) : repository;",
       'src/widget-preview.tsx': "function HurricaneShowcase() {}\nfunction IntroShowcase() {}\ncreateRoot(document.getElementById('root')!).render(view);",
       'src/gallery-skill-dialog.tsx': 'original skill module',
-      'src/components/clio/a2ui-chart.tsx': '// Vega lays legends outside the plot width. Leave room inside the\n// surface so categorical and continuous legends remain readable.\nwidth: Math.max(220, measuredWidth - (colorField || seriesLegend.visible ? 112 : 0)),',
+      'src/components/clio/use-chart-view.ts': '// Vega lays legends outside the plot width. Leave room inside the\n// surface so categorical and continuous legends remain readable.\nwidth: Math.max(220, measuredWidth - (colorField || seriesLegend.visible ? 112 : 0)),',
       'src/components/clio/a2ui-mesh-viewport.tsx': '          {boxButton()}\n          {zoomButtons()}\n          <SurfaceToolbar capabilities={toolbarCapabilities} floating={false} />',
       'src/widget-gallery.tsx': '<button>Contract</button>',
     };
@@ -115,7 +115,7 @@ describe('native widget docs', () => {
     try {
       for (const [file, text] of Object.entries(originals)) writeFileSync(resolve(web, file), text);
       run('prepare-widget-engine.mjs');
-      expect(readFileSync(resolve(web, 'src/components/clio/a2ui-chart.tsx'), 'utf8')).toContain('width: Math.max(220, measuredWidth),');
+      expect(readFileSync(resolve(web, 'src/components/clio/use-chart-view.ts'), 'utf8')).toContain('width: Math.max(220, measuredWidth),');
       expect(readFileSync(resolve(web, 'src/components/clio/a2ui-mesh-viewport.tsx'), 'utf8')).toContain('flex shrink-0 items-center gap-0.5');
       expect(readFileSync(resolve(web, 'src/widget-gallery.tsx'), 'utf8')).toContain('>Skill</button>');
       const first = readFileSync(resolve(web, 'src/hooks/use-repository.ts'), 'utf8');

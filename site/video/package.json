@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test pointer-guide.test.mjs render-ffmpeg.test.mjs",
     "capture": "node capture.mjs",
     "studio": "remotion studio src/index.tsx",
     "render:ffmpeg": "node render-ffmpeg.mjs",

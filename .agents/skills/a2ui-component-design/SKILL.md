@@ -1,6 +1,6 @@
 ---
 name: a2ui-component-design
-description: Guidance for designing or changing A2UI components and catalogs across clio-schemas, clio-agent, and gact-tui — the data-by-reference contract, one charting layer, shared selection, and progressive disclosure. Load before adding a component, a component property, or a catalog/validator/renderer change, and before writing an agent-facing catalog description or instructions.md section.
+description: clio-schemas is the canonical copy; this repository vendors the guidance. Guidance for designing or changing A2UI components and catalogs across clio-schemas, clio-agent, and gact-tui — the data-by-reference contract, one charting layer, shared selection, and progressive disclosure. Load before adding a component, a component property, or a catalog/validator/renderer change, and before writing an agent-facing catalog description or instructions.md section.
 ---
 
 # Designing A2UI components (CLIO catalogs)

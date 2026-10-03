@@ -62,8 +62,9 @@ def test_map_signature_shows_points_or_datauri_alternative() -> None:
     assert "detailField" in signature
     assert "idField" in signature
     assert "selectionField" in signature
-    # dataQuery is optional and dependent on dataUri -- its own bracket group.
-    assert "[dataQuery]" in signature
+    # Dataset query/filter and trajectory fields retain their dependency group.
+    assert "[dataQuery, filterFields, orderField, trackField]" in signature
+    assert "| geojsonUri" in signature
     # title (and the other plain optional properties) trail with '?'.
     assert "title?" in signature
     # selectionField is required-when-bound (a properties-value conditional,
@@ -144,5 +145,5 @@ def test_catalog_skill_index_line_carries_description_then_signature() -> None:
     _basic, workspace = load_builtin_catalogs()
     body = generate_catalog_skill_body(workspace)
 
-    assert "- `clio.map.v1` — Points on an interactive map" in body
+    assert "- `clio.map.v1` — Interactive points, ordered trajectories, or GeoJSON geometry" in body
     assert "`points[] | dataUri + latitudeField/longitudeField/labelField" in body

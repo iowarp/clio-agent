@@ -42,7 +42,7 @@ await original('src/gallery-skill-dialog.tsx');
 // Use the production components with their shared sizing and toolbar fixes.
 // Vega's fit autosize includes legends; subtracting their width a second time
 // leaves an empty strip beside every chart.
-const chartPath = 'src/components/clio/a2ui-chart.tsx';
+const chartPath = 'src/components/clio/use-chart-view.ts';
 const chart = await original(chartPath);
 await writeFile(resolve(web, chartPath), chart.replace(/\/\/ Vega lays legends outside the plot width\.[\s\S]*?width: Math\.max\(220, measuredWidth - \(colorField \|\| seriesLegend\.visible \? 112 : 0\)\),/u, 'width: Math.max(220, measuredWidth),'));
 const meshPath = 'src/components/clio/a2ui-mesh-viewport.tsx';
