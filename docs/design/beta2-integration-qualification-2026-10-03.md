@@ -52,6 +52,10 @@ artifact reference and row identity. The CLIO owl and custom UI icons rendered.
   deferred rendering; it locally verified every one of the 43 published examples.
 - The final UI head `45785c37` passed the complete workspace, Go and schema jobs,
   including Windows/Linux Desktop debug builds and the real native WebView proof.
+- UI follow-up `1f1cfa14` changes only Docker context/CI policy: preserve the PNG
+  imported by the widget gallery instead of excluding every PNG. All three Docker
+  image builds and Go CI passed. The UI beta tag was refreshed to this corrected
+  source; the application code remains identical to `45785c37`.
 - The 0.9.5b2 source distribution and wheel built successfully. A clean persistent
   tool install reported `clio-agent 0.9.5b2`; installed metadata pinned schemas
   0.5.3, and native/relocated filesystem roots resolved correctly. The pre-publish
