@@ -54,6 +54,10 @@ class _LoadProxiesAfterDspy(importlib.abc.MetaPathFinder):
 def install() -> None:
     """Load DSPy's proxies now if ``dspy`` is imported, else right after it is."""
     if "dspy" in sys.modules:
+        # Presence does not mean execution has finished: another thread may still
+        # be importing DSPy and installing/using its lazy proxies. The standard
+        # importer waits for that thread's module lock before we materialize them.
+        importlib.import_module("dspy")
         load_proxies()
     elif not any(isinstance(f, _LoadProxiesAfterDspy) for f in sys.meta_path):
         sys.meta_path.insert(0, _LoadProxiesAfterDspy())
