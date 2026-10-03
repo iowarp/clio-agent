@@ -48,12 +48,6 @@ for candidate in "$CLIO_STATE/clio-server.pid" "$CLIO_PREFIX/clio-server.$HOST_I
   [[ -f "$PIDFILE" ]] || PIDFILE="$candidate"
 done
 
-if [[ "$PURGE" -eq 1 ]]; then
-  case "$CLIO_CONFIG" in
-    /*/clio-agent|/*/clio-agent/config) ;;
-    *) echo "Refusing to purge a custom config root: $CLIO_CONFIG. Remove its contents explicitly after review." >&2; exit 2 ;;
-  esac
-fi
 LAUNCHER="$CLIO_BIN_DIR/clio"
 
 ASSUME_YES=0
@@ -65,6 +59,13 @@ for arg in "$@"; do
     *) echo "uninstall: unknown flag '$arg' (want --yes, --purge)" >&2; exit 2 ;;
   esac
 done
+
+if [[ "$PURGE" -eq 1 ]]; then
+  case "$CLIO_CONFIG" in
+    /*/clio-agent|/*/clio-agent/config) ;;
+    *) echo "Refusing to purge a custom config root: $CLIO_CONFIG. Remove its contents explicitly after review." >&2; exit 2 ;;
+  esac
+fi
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
