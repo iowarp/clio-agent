@@ -36,7 +36,8 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Keep Chromium's user-namespace sandbox available for the video tests.
+    runs-on: ubuntu-22.04
     defaults:
       run:
         working-directory: site
@@ -49,7 +50,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: iowarp/gact-tui
-          ref: eefaa13e1476371eb3d31becb3bdc9bb566e144b
+          ref: 61701eace05190314487248751dceb97e4721f77
           path: gact-tui-checkout
       - uses: pnpm/action-setup@v4
         with:
