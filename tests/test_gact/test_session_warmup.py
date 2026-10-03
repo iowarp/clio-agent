@@ -262,3 +262,23 @@ def test_a_turn_with_every_server_connected_does_no_discovery() -> None:
     executor._clio_warmed_namespaces = frozenset({"geo", "ndp"})  # type: ignore[attr-defined]
 
     assert session_warmup.warm_session_servers(_NoDiscovery(executor, pack={})) == {}
+
+
+def test_a_changed_blueprint_still_warms_its_new_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A warm draft's default must not suppress a later blueprint's preparation."""
+    from clio_agent.tools.execution import tool_blueprint_context
+
+    mounted: list[str] = []
+
+    def mount(executor: Any, namespace: str, spec: Any, *, connect: bool = True) -> dict:
+        mounted.append(namespace)
+        return {}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    executor = _Executor(_specs("web", "science", always_load=("web",)))
+    executor.is_namespace_prepared = lambda ns: ns == "web"  # type: ignore[attr-defined]
+    executor._clio_warmed_namespaces = frozenset({"web"})  # type: ignore[attr-defined]
+    with tool_blueprint_context("science-blueprint"):
+        report = session_warmup.warm_session_servers(_Agent(executor, pack={"science": {}}))
+    assert mounted == ["science"]
+    assert report == {"science": "ready", "web": "ready"}
