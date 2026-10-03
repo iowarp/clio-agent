@@ -380,7 +380,10 @@ def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> 
     assert "selectedStationIds" not in body
     # Points at catalog skills as the source of truth for exact shapes.
     assert 'load_skill("a2ui-catalog-<slug>")' in body
-    assert 'file="catalog.json#/components/<Name>")' in body
+    assert 'file="catalog.json#/components/<ExactComponentId>")' in body
+    assert "generated images and SVG figures" in body
+    assert "Give a new figure a distinct surface ID" in body
+    assert "Show each figure once in A2UI" in body
     # #1533 S4 adversarial review item 7: the retired clio.time-series.v1
     # component is never named as a distinct view choice -- both time-series
     # and multi-entity bullets point at the one real chart component.
@@ -696,7 +699,9 @@ def test_builtin_main_with_a2ui_catalog_sees_presentation_skill(tmp_path: Path) 
     runtime = skill_runtime_for_agent(app, _builtin_main_agent(), session_id=session.id)
 
     assert "present-interactive-analysis" in runtime.resolved
-    assert "editable message draft" in runtime.prompt_block
+    assert "editable message drafts" in runtime.prompt_block
+    assert "generated images and SVG figures" in runtime.prompt_block
+    assert "A2UI catalog's Image component" in runtime.prompt_block
     assert "a2ui-catalog-clio-workspace" in runtime.resolved
 
 
