@@ -31,8 +31,7 @@ def build_create_a2ui_surface_tool() -> Any:
         """Create or update an inline interactive view or widget in this conversation.
 
         Reuse a ``surface_id`` from a prior result's ``session_surface_ids``
-        to revise it in place; call
-        ``inspect_a2ui_surface`` when the id is missing from this turn.
+        to revise it in place; call ``inspect_a2ui_surface`` if the id is missing.
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
         ``catalog.json#/components/<ExactComponentId>`` for its schema.

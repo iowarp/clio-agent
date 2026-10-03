@@ -422,10 +422,8 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             return content
 
         requested_files = [str(f).strip() for f in files if str(f).strip()] if files else []
-        if file and requested_files:
-            raise ValueError("pass exactly one of file or files, never both")
         if file:
-            requested_files = [file]
+            requested_files.insert(0, file)
         duplicates_collapsed = 0
         if len(requested_files) > 1:
             # A repeated request (e.g. two components both cited by id) is
@@ -602,7 +600,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
         _emit_loaded(len(body.encode("utf-8")))
         listing = (
-            "\n\nBundled files (load with load_skill(skill_id, file=...)):\n"
+            "\n\nBundled files (use file=... for one or files=[...] for a batch):\n"
             + "\n".join(f"- {name}" for name in bundled)
             if bundled
             else ""
@@ -625,7 +623,8 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             "skill, call with no file first (its index names every component "
             "plus a compact signature); then, only if the index alone is not "
             "enough, load one or several component schemas in ONE call with "
-            "file=<bundled path> or files=[<bundled path>, ...] — each JSON "
+            "file=<bundled path> or files=[<bundled path>, ...]. For a batch, "
+            "put all paths in files; an additional file is included in the same batch. Each JSON "
             "fragment (file=...#/components/<Name>) comes back with the "
             "catalog's own $defs inlined, so it fully explains that component."
         ),
@@ -635,7 +634,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "type": "string",
                 "description": (
                     "Optional bundled file path inside the skill directory. "
-                    "Mutually exclusive with files."
+                    "When files is also supplied, included first in the same batch."
                 ),
             },
             "files": {
@@ -643,8 +642,8 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "items": {"type": "string"},
                 "description": (
                     "Optional: several bundled file paths to load in ONE call, "
-                    "each returned clearly separated and labelled. Mutually "
-                    "exclusive with file."
+                    "each returned clearly separated and labelled. Any file argument "
+                    "is included first; repeated paths are read only once."
                 ),
             },
         },

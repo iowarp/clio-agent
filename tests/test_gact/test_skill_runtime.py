@@ -647,18 +647,21 @@ def test_load_skill_files_with_one_entry_matches_the_bare_file_form(pack: Path) 
     )
 
 
-def test_load_skill_rejects_both_file_and_files(pack: Path) -> None:
+def test_load_skill_combines_file_and_files_without_duplicate_reads(pack: Path) -> None:
+    (pack / "skills" / "quality-rubric" / "references" / "second.md").write_text(
+        "SECOND CHECKLIST", encoding="utf-8"
+    )
     rt = _runtime(pack)
     tool = build_load_skill_tool(_agent(pack), rt)
 
-    with pytest.raises(ValueError) as excinfo:
-        tool.func(
-            skill_id="quality-rubric",
-            file="references/checklist.md",
-            files=["references/checklist.md"],
-        )
-
-    assert "exactly one of file or files" in str(excinfo.value)
+    out = tool.func(
+        skill_id="quality-rubric",
+        file="references/checklist.md",
+        files=["references/checklist.md", "references/second.md"],
+    )
+    assert out.count("THE CHECKLIST") == 1
+    assert "SECOND CHECKLIST" in out
+    assert "1 duplicate file request" in out
 
 
 def test_load_skill_files_propagates_an_unresolvable_entry(pack: Path) -> None:
