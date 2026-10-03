@@ -194,6 +194,9 @@ def effective_write_roots(
 
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
+    if workspace_root:
+        _add(paths.workspace_state_dir(workspace_root))
+        _add(paths.workspace_cache_dir(workspace_root))
     _add(paths.user_cache_dir())
     _add(paths.user_config_dir())
 

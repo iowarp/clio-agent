@@ -77,10 +77,11 @@ def test_launchers_never_scope_the_host_global_clio_core_daemon() -> None:
     assert "clio-core.port" not in _text("install/clio")
 
     shell = _text("install/clio")
-    assert 'CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"' in shell
+    assert "export CLIO_DATA_DIR=" not in shell
+    assert "user_state_dir" in shell
     assert "unset CLIO_PORT" in shell
     powershell = _text("install/clio.ps1")
-    assert "$env:CLIO_DATA_DIR = Join-Path $Prefix 'data'" in powershell
+    assert "$env:CLIO_DATA_DIR =" not in powershell
     assert "Remove-Item Env:CLIO_PORT" in powershell
 
 

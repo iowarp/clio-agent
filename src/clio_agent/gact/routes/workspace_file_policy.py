@@ -70,7 +70,10 @@ _SERVICE_CACHE_DIRECTORY_NAMES = frozenset({CHILD_CACHE_DIRNAME.casefold()})
 #: tier is documented as env-only by WRITER policy (``conf.py``), which is not
 #: an enforced constraint on the file's contents, so this refuses it as a
 #: byte-serve regardless — defense in depth, not a guess at what it contains.
-_WORKSPACE_CONFIG_RELATIVE_PARTS = (".clio", "config.yaml")
+_WORKSPACE_CONFIG_RELATIVE_PARTS = {
+    (".clio", "config.yaml"),
+    (".clio-agent", "shared", "config.yaml"),
+}
 
 
 def workspace_read_redaction_reason(relative_path: Path) -> str | None:
@@ -87,7 +90,7 @@ def workspace_read_redaction_reason(relative_path: Path) -> str | None:
     parts = tuple(part.casefold() for part in relative_path.parts)
     if any(part in _SERVICE_CACHE_DIRECTORY_NAMES for part in parts):
         return "sandbox_child_cache"
-    if parts == _WORKSPACE_CONFIG_RELATIVE_PARTS:
+    if parts in _WORKSPACE_CONFIG_RELATIVE_PARTS:
         return "workspace_secret_config"
     return None
 

@@ -352,7 +352,7 @@ def _agent_blueprint_export_root(
 
     if scope == "workspace":
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        return (cwd or Path.cwd()) / ".clio" / "agent-blueprints"
+        return (cwd or Path.cwd()) / ".clio-agent" / "shared" / "agent-blueprints"
     if scope == "global":
         from clio_agent import paths  # noqa: PLC0415
 

@@ -1,6 +1,5 @@
 """
 ClioAgent - Main Agent Host
-
 The process-level HOST for CLIO's runtime resources. ClioAgent owns the
 provider identity (``_main_lm`` / ``_dspy_adapter``), the tool
 gateway + per-workspace executors, pack/blueprint discovery, the ARC memory
@@ -30,7 +29,7 @@ from typing import Any, Callable, Dict, Iterator, List
 
 import dspy
 
-from clio_agent import conf
+from clio_agent import conf, paths
 from clio_agent.arc import history_mode
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Conversation
@@ -149,7 +148,7 @@ class ClioAgent(dspy.Module):
     def __init__(
         self,
         verbose: bool = False,
-        data_dir: str = ".clio/agent",
+        data_dir: str | None = None,
         arc: ARCMemory | None = None,
         provider_config: LMProviderConfig | None = None,
         remote_mcp_federation: RemoteMcpFederation | None = None,
@@ -196,6 +195,7 @@ class ClioAgent(dspy.Module):
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
         # ARC and re-injects it on every bind) or mint one; None in History mode.
+        data_dir = data_dir if data_dir is not None else str(paths.arc_data_dir().parent)
         self.arc = self._arc_for_mode(arc, data_dir=data_dir)
 
         # Initialize Agent Registry (for discovery, not routing)

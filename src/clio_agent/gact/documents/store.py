@@ -559,25 +559,26 @@ class DocumentStore:
             return
         root = self._workspace_root(workspace_id)
         documents_root = self._documents_root(root)
-        ledger = documents_root / "reviews.jsonl"
-        if ledger.is_file():
-            for raw in ledger.read_text(encoding="utf-8").splitlines():
-                if not raw.strip():
-                    continue
-                review = ArtifactReview.model_validate_json(raw)
-                self._reviews[review.id] = review
-                if review.idempotency_key:
-                    self._idempotency[(review.session_id, review.idempotency_key)] = review.id
-        copies_root = documents_root / "working-copies"
-        if copies_root.is_dir():
-            for manifest in copies_root.glob("*/manifest.json"):
-                try:
-                    row = DocumentWorkingCopy.model_validate_json(
-                        manifest.read_text(encoding="utf-8")
-                    )
-                except (OSError, ValueError):
-                    continue
-                self._working_copies[row.id] = row
+        for read_root in (root / ".clio" / "agent" / "documents", documents_root):
+            ledger = read_root / "reviews.jsonl"
+            if ledger.is_file():
+                for raw in ledger.read_text(encoding="utf-8").splitlines():
+                    if not raw.strip():
+                        continue
+                    review = ArtifactReview.model_validate_json(raw)
+                    self._reviews[review.id] = review
+                    if review.idempotency_key:
+                        self._idempotency[(review.session_id, review.idempotency_key)] = review.id
+            copies_root = read_root / "working-copies"
+            if copies_root.is_dir():
+                for manifest in copies_root.glob("*/manifest.json"):
+                    try:
+                        row = DocumentWorkingCopy.model_validate_json(
+                            manifest.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError):
+                        continue
+                    self._working_copies[row.id] = row
         self._loaded_workspaces.add(workspace_id)
         if any(
             row.workspace_id == workspace_id

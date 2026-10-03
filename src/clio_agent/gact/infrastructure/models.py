@@ -233,6 +233,7 @@ class TargetFacts(BaseModel):
     container_runtimes: list[ContainerRuntimeFact] = Field(default_factory=list)
     identity: TargetIdentity = Field(default_factory=TargetIdentity)
     home: str = ""
+    agent_data_root: str = ""
     #: The target's short hostname: per-host state (service directories on a
     #: home shared by many nodes, Apptainer instance logs) is namespaced by it.
     hostname: str = ""

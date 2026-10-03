@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from clio_agent import conf
+from clio_agent import conf, paths
 from clio_agent.gact.mcp_user_configuration import (
     McpUserConfigurationError,
     configured_web_remote_url,
@@ -43,7 +43,11 @@ def initialize_composer_state(app: Any, session_store_path: Path) -> None:
         cast=conf.as_int,
     )
     app.state.resource_store = ResourceStore(
-        root=state_root / "resources",
+        root=(
+            paths.user_data_dir() / "resources"
+            if state_root == paths.server_state_dir()
+            else state_root / "resources"
+        ),
         max_resource_bytes=max_resource_bytes,
     )
     app.state.resource_delivery_store = ResourceDeliveryStore(
