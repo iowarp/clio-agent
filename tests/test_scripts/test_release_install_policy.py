@@ -442,6 +442,35 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
     assert publishers == [("release-check", order[3])]
 
 
+def test_release_macos_gate_can_read_and_recheck_draft_assets() -> None:
+    """Draft verification has visibility and can reuse the exact built release assets."""
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    jobs = workflow["jobs"]
+    startup = jobs["macos-startup"]
+    assert startup.get("permissions", {}).get("contents") == "write"
+    assert "!cancelled()" in startup["if"]
+    assert "inputs.verify_macos" in startup["if"]
+    assert "failure" in startup["if"]
+    assert startup["env"]["RELEASE_TAG"] == "${{ inputs.tag || github.ref_name }}"
+    checkout = startup["steps"][0]
+    assert checkout["with"]["ref"] == "${{ env.RELEASE_TAG }}"
+    boot = next(step for step in startup["steps"] if "run" in step)
+    assert boot["run"].count('gh release download "$RELEASE_TAG"') == 2
+    assert "shasum -a 256 --check" in boot["run"]
+    assert "smoke_macos_bundle.py" in boot["run"]
+
+    # PyYAML's YAML 1.1 loader interprets the unquoted Actions key `on` as True.
+    triggers = workflow.get("on", workflow.get(True))
+    assert triggers["workflow_dispatch"]["inputs"]["verify_macos"]["type"] == "boolean"
+    publish_step = next(
+        step for step in jobs["release-check"]["steps"] if step.get("id") == "publish"
+    )
+    # A failed requested startup check must block dispatch publication too.
+    assert publish_step["if"].strip() == (
+        "!contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')"
+    )
+
+
 def test_release_completeness_expects_signed_updater_assets() -> None:
     """check_release_completeness.py's EXPECTED_ASSETS covers the new signed-update assets."""
 
