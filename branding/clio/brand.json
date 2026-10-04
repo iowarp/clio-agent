@@ -16,7 +16,7 @@
   },
   "markGlyph": "C",
   "logoSvg": "logo.svg",
-  "logoImage": "mark.png",
+  "logoImage": "mark.svg",
   "accent": "#ea7b2a",
   "themeTokens": {
     "--color-accent": "#ea7b2a"
@@ -72,7 +72,7 @@
       "label": "Inspect the files in this workspace, identify generated artifacts, and explain what evidence is ready to present."
     }
   ],
-  "wordmarkImage": "wordmark.png",
+  "wordmarkImage": "wordmark.svg",
   "iconSvg": "ui-icons/clio-owl-currentColor.svg",
   "faviconSvg": "ui-icons/clio-owl-orange.svg"
 }
