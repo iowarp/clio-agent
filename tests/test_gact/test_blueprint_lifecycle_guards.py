@@ -42,7 +42,7 @@ def test_failed_copy_preserves_installed_revision(
     def fail_copy(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(migration, "copytree_extended", fail_copy)
+    monkeypatch.setattr(migration, "copy_blueprint_tree", fail_copy)
     with pytest.raises(OSError, match="disk full"):
         _install(source, tmp_path)
     assert (root / "AGENT.md").read_text().endswith("Original\n")

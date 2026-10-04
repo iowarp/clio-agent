@@ -8,6 +8,7 @@ LiteLLM wheel stays exact.
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import subprocess
 import tomllib
@@ -523,24 +524,41 @@ def _verify_tag_step() -> str:
 def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
     """Run the real check script with ``uv version --short`` answering ``package_version``."""
 
-    bash = shutil.which("bash")
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None, "the release check is a bash script"
+
+    def shell_path(path: Path) -> str:
+        value = path.as_posix()
+        return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     uv = bin_dir / "uv"
-    uv.write_text(f"#!/usr/bin/env bash\necho {package_version}\n", encoding="utf-8")
+    uv.write_text(f"#!/usr/bin/env bash\necho {package_version}\n", encoding="utf-8", newline="\n")
     uv.chmod(0o755)
     script = tmp_path / "check.sh"
     script.write_text(_verify_tag_step(), encoding="utf-8", newline="\n")
     for name in ("github_env", "github_output"):
         (tmp_path / name).write_text("", encoding="utf-8")
     env = {
-        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin",
+        **os.environ,
+        "TEST_PATH": f"{shell_path(bin_dir)}:/usr/bin:/bin",
         "GITHUB_REF_NAME": tag,
-        "GITHUB_ENV": (tmp_path / "github_env").as_posix(),
-        "GITHUB_OUTPUT": (tmp_path / "github_output").as_posix(),
+        "GITHUB_ENV": shell_path(tmp_path / "github_env"),
+        "GITHUB_OUTPUT": shell_path(tmp_path / "github_output"),
     }
-    return subprocess.run([bash, script.as_posix()], env=env, check=False).returncode
+    return subprocess.run(
+        [
+            bash,
+            "-c",
+            'export PATH="$TEST_PATH"; exec bash "$1"',
+            "release-test",
+            shell_path(script),
+        ],
+        env=env,
+        check=False,
+        timeout=10,
+    ).returncode
 
 
 def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: Path) -> None:

@@ -584,7 +584,10 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 or getattr(app.state, "relay_runtime_status", None)
             ),
         )
-        return project_for_request(
+        # Catalog discovery may initialize installed blueprint snapshots. Keep all
+        # filesystem work off the request loop so health/SSE remain responsive.
+        return await asyncio.to_thread(
+            project_for_request,
             request,
             v3=lambda: JSONResponse(
                 content=capabilities_to_v3(

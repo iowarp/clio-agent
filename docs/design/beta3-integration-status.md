@@ -11,9 +11,9 @@ separate from the October 5 Delta qualification with the owner.
 - UI: `external/gact-tui`, branch `codex/beta3-integration`; `9976580f` reconciles
   develop, `9c8c00bb` preserves PR #502 and resolves transcript integration.
 - Schemas: `codex/beta3-integration`, shared contracts commit
-  `fb1b8cbe686984d96d25bfd32f47eed70f9d021e`, based on existing `main`; `develop`
+  `fdba1f98b0c15130608e524406d762f2ca7db295`, based on existing `main`; `develop`
   was established at that same base for PR #25. Agent and UI pin
-  that exact revision. Version `0.6.0b1` is not published to PyPI.
+  that exact revision. Version `0.6.0b2` is not published to PyPI.
 - Marketplace: `external/clio-agent-marketplace`, branch
   `codex/beta3-integration`, based on `main`; SPOTTER now uses the same pinned
   attention profiles/reducer and verified local capture files.
@@ -363,14 +363,63 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   multi-selection transcript heat, profile-aware SPOTTER finding links, and both
   Delta demonstrations. This checkpoint does not close #1628.
 
+### Provenance connection and activation checkpoint (October 4)
+
+- Services can attach Flowcept or CMF independently, verify fresh write/readback,
+  and select the connection for the next CLIO start. Flowcept's process-global SDK
+  is verified in a child process; activation never leaves an old SDK silently
+  writing to another service. CMF uses its existing direct-server provider.
+- Settings-file hashes and all capture settings participate in connection
+  identity. Edits invalidate readiness; failed rechecks revoke it. A completed
+  probe cannot recreate a forgotten or edited connection. Legacy generic
+  connection controls cannot bypass these checks.
+- Configuration changes preserve the other backend and existing user settings;
+  workspace overrides refuse activation instead of reporting an ineffective save.
+  Attention configuration supports `provenance.attention.enabled` beside
+  `files_dir`, retaining compatibility with the older boolean opt-in.
+- Disconnect changes the next-start consumer configuration. Forget removes only
+  an inactive connection record. Neither action stops an external service or
+  deletes its data. Packaged Desktop and the remote installer include the
+  Flowcept extra; the bundle install set resolves against the lock for Windows
+  x64, macOS arm64, Linux x64 and Linux arm64.
+- Live homelab checks: fresh Flowcept transport/query readback; fresh CMF
+  input/output lineage; independent CMF activation after restart; both providers
+  active after a second restart; disconnect/restart retained both external
+  services (each still returned HTTP 200); failed recheck after service shutdown
+  revoked readiness. Owned qualification services were stopped and uninstalled;
+  data/evidence remained under `/data/clio-beta3-qualification/monitoring`.
+  The user's existing services were not managed by this exercise.
+- Browser evidence covers connection forms, pending/active/disconnected states,
+  receipts, private-settings error, host-specific folder browsing, tap/keyboard
+  explanations, dark/light and 390 px layout. See `provenance-*.png` and sanitized
+  `provenance-connection-receipts.json`. This used a real isolated Windows CLIO
+  API and an explicit OpenSSH qualification tunnel, not packaged Desktop transport
+  or fresh inference. Reproduce the setup with the two
+  `scripts/qualification/*provenance*.py` helpers; forward ports 19938/19939/19940/
+  19980 to homelab 18038/16389/37027/18380 respectively.
+- Browser boot exposed local blueprint copying of SPOTTER's `.venv`. Installation,
+  drafts and checksums now exclude machine-local runtimes/caches, checksum reads
+  are bounded, and capability projection runs off the API event loop.
+- Automated regression: **166 passed**, including provenance ownership, paths,
+  settings migration, blueprint portable files, route count, release policy and
+  executable installer fixtures. Focused UI: **47 passed**, followed by the
+  updated connection suite (**5 passed**). UI typecheck/full repository lint,
+  Ruff and focused mypy (**5 files**) passed. Windows release-tag fixture now
+  uses Git Bash with POSIX paths instead of accidentally invoking WSL.
+- `e955c92b` passed the macOS packaged startup, schema, Docker and Pages jobs;
+  its CI failed only the intentional route-count expectation. That expectation
+  now includes lookup plus the six provenance connection routes (325 pairs).
+  This checkpoint still needs CI against its newly pushed commit.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,
-   default-build and additional-driver qualification, connect/use provenance flow,
-   attention verification, and remaining service connection flows.
+   default-build and additional-driver qualification, fresh attention verification,
+   and remaining service connection flows. Provenance connect/use/restart is now
+   qualified independently and together on the isolated CLIO.
 3. Complete marketplace #1627: full source configuration and pin editing, runtime/MCP reload
    qualification, receipt recovery UI, and the Providers-style composition.
 4. Finish full-transcript selection producers, multi-selection transcript heat and

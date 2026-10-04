@@ -168,7 +168,9 @@ from clio_agent.gact.app import build_app
 # 293 -> 309: connected sources, transfers/reviews, folder uploads, references and trusted sign-in.
 # 309 -> 314: registry discovery, host model inventory/acquisition/cancel/retry.
 # 314 -> 318: authoring state, draft read, publish and explicit Reload alias.
-EXPECTED_ROUTE_METHOD_PAIRS = 318
+# 318 -> 319: bidirectional revision-bound attention lookup.
+# 319 -> 325: independent provenance connection, verification and restart-bound activation.
+EXPECTED_ROUTE_METHOD_PAIRS = 325
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

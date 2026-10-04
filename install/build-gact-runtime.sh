@@ -110,7 +110,7 @@ trap '[ -z "$CLEANUP_CHECKOUT" ] || rm -rf "$(dirname "$CLEANUP_CHECKOUT")"' EXI
 # hardcoded clio-kit==2.10.6 (click>=8.3.3) broke against the locked click.
 # scripts/check_bundle_matches_lock.py BUNDLE_EXTRAS must equal this list
 # (tests/test_scripts/test_check_bundle_matches_lock.py enforces it).
-BUNDLE_EXTRAS="argonne desktop"
+BUNDLE_EXTRAS="argonne desktop flowcept"
 CONSTRAINTS="$OUT/.lock-constraints.txt"
 EXPORT_EXTRA_ARGS=""
 for extra in $BUNDLE_EXTRAS; do EXPORT_EXTRA_ARGS="$EXPORT_EXTRA_ARGS --extra $extra"; done

@@ -238,6 +238,17 @@ class InfrastructureStore:
                 raise KeyError(connection_id)
             self._flush()
 
+    def replace_connection(
+        self, previous: ExternalServiceConnection, updated: ExternalServiceConnection
+    ) -> ExternalServiceConnection:
+        """Commit a probe only if its connection was neither edited nor forgotten meanwhile."""
+        with self._lock:
+            if self._connections.get(previous.id) != previous or updated.id != previous.id:
+                raise ValueError("The connection changed during verification; check it and retry")
+            self._connections[updated.id] = updated.model_copy(deep=True)
+            self._flush()
+            return updated.model_copy(deep=True)
+
     def operation(self, operation_id: str) -> InfrastructureOperation | None:
         """Return one durable operation receipt."""
 

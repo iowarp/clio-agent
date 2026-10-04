@@ -26,12 +26,11 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.blueprint_identity import identity_fields
+from clio_agent.gact.blueprint_install_files import blueprint_files, copy_blueprint_tree
 from clio_agent.gact.blueprint_ledgers import write_json_atomic
 from clio_agent.gact.blueprint_mutations import BLUEPRINT_MUTATION_LOCK
 from clio_agent.platform_paths import (
-    copytree_extended,
     rename_extended,
-    tree_files,
     win_extended_path,
 )
 
@@ -77,7 +76,7 @@ def read_draft(root: Path, relative: str) -> dict[str, str]:
 def _hashes(root: Path) -> dict[str, str]:
     return {
         relative.as_posix(): _hash(Path(filename).read_bytes())
-        for relative, filename in tree_files(root)
+        for relative, filename in blueprint_files(root)
         if ".git" not in relative.parts and relative.name != ".clio-install.md"
     }
 
@@ -171,7 +170,7 @@ def save_draft(
         if not draft.exists():
             with tempfile.TemporaryDirectory(dir=owner, prefix="prepare-") as temporary:
                 staged = Path(temporary) / "tree"
-                copytree_extended(root, staged)
+                copy_blueprint_tree(root, staged)
                 for directory, _, files in os.walk(win_extended_path(staged), followlinks=False):
                     os.chmod(directory, 0o700)
                     for name in files:

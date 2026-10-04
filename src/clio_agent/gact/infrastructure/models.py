@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from clio_schemas.connected_resources import HostStorageLocations
@@ -485,6 +485,8 @@ class ExternalServiceConnection(BaseModel):
     reachable: bool | None = None
     checked_at: str | None = None
     created_at: str = Field(default_factory=utc_now)
+    configuration: dict[str, str] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommandSpec(BaseModel):

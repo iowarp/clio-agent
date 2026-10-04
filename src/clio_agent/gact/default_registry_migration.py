@@ -61,7 +61,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from clio_agent.platform_paths import copytree_extended, rename_extended, rmtree_extended
+from clio_agent.gact.blueprint_install_files import copy_blueprint_tree
+from clio_agent.platform_paths import rename_extended, rmtree_extended
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +333,7 @@ def replace_pack_atomically(
     backup = staging_root / f"{pack_id}.old-{token}"
     final = install_root / pack_id
     try:
-        copytree_extended(candidate, staged)
+        copy_blueprint_tree(candidate, staged)
         parsed = parse_agent_blueprint_root(staged, scope=str(metadata.get("scope") or "install"))
         if not parsed.enabled:
             raise ValueError("staged blueprint is invalid: " + "; ".join(parsed.validation_errors))

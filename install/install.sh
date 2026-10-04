@@ -146,10 +146,10 @@ if [ -n "$CLIO_REF" ]; then
     die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
   fi
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync --extra argonne)"
-  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
+  say "Installing clio-agent deps (uv sync --extra argonne --extra flowcept)"
+  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne --extra flowcept )
 else
-  pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
+  pkg_spec="clio-agent[argonne,flowcept]${CLIO_VERSION:+==$CLIO_VERSION}"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
   wheel_arg=""

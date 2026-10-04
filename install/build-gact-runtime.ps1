@@ -141,7 +141,7 @@ if ($Source) {
 # hardcoded clio-kit==2.10.6 (click>=8.3.3) broke against the locked click.
 # scripts/check_bundle_matches_lock.py BUNDLE_EXTRAS must equal this list
 # (tests/test_scripts/test_check_bundle_matches_lock.py enforces it).
-$BundleExtras = @('argonne', 'desktop')
+$BundleExtras = @('argonne', 'desktop', 'flowcept')
 $constraints = Join-Path $Out '.lock-constraints.txt'
 Write-Host "[build-gact-runtime] exporting $checkout\uv.lock (extras: $($BundleExtras -join ',')) as an install constraint"
 $exportArgs = @('export', '--project', $checkout, '--frozen', '--no-hashes', '--no-emit-project', '-o', $constraints)
