@@ -66,6 +66,17 @@ def _availability(client: TestClient) -> dict[str, Any]:
     return client.get(f"/v1/sessions/{SID}/attention/availability").json()
 
 
+def test_profile_parameters_are_validated_before_capture_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client({}, monkeypatch)
+    for profile in ({"decay_base": 0}, {"direction": "guessed"}, {"version": 2}):
+        result = client.post(
+            f"/v1/sessions/{SID}/messages/msg_asst_1/attention", json={"profile": profile}
+        )
+        assert result.status_code == 422
+
+
 def test_availability_marks_the_recorded_vllm_answer_and_selection_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

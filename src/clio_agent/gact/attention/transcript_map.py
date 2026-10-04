@@ -12,7 +12,9 @@ section it would have been in.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +43,12 @@ class TranscriptText:
     field: str
     kind: str
     text: str
+    call_id: str = ""
+
+    @property
+    def content_revision(self) -> str:
+        """Revision of the exact source text whose character coordinates we expose."""
+        return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
 
 
 def transcript_texts(messages: list[Any]) -> list[TranscriptText]:
@@ -51,21 +59,28 @@ def transcript_texts(messages: list[Any]) -> list[TranscriptText]:
         for part in getattr(message, "parts", []) or []:
             ptype = getattr(part, "type", "")
             pid = getattr(part, "id", "") or ""
+            call_id = getattr(part, "call_id", "") or ""
             if ptype == "text" and getattr(part, "text", ""):
                 kind = "user_text" if role == "user" else "assistant_text"
                 out.append(TranscriptText(message.id, pid, "text", kind, part.text))
             elif ptype == "tool_call":
                 if getattr(part, "thought", ""):
-                    out.append(TranscriptText(message.id, pid, "thought", "thought", part.thought))
+                    out.append(
+                        TranscriptText(message.id, pid, "thought", "thought", part.thought, call_id)
+                    )
                 if getattr(part, "input", None):
                     text = json.dumps(part.input, ensure_ascii=False)
-                    out.append(TranscriptText(message.id, pid, "input", "tool_input", text))
+                    out.append(
+                        TranscriptText(message.id, pid, "input", "tool_input", text, call_id)
+                    )
             elif ptype == "tool_result":
                 text = getattr(part, "text", "") or "\n".join(
                     getattr(c, "text", "") for c in getattr(part, "content", []) or []
                 )
                 if text:
-                    out.append(TranscriptText(message.id, pid, "result", "tool_result", text))
+                    out.append(
+                        TranscriptText(message.id, pid, "result", "tool_result", text, call_id)
+                    )
     return out
 
 
@@ -103,11 +118,13 @@ def anchor_texts(
     return anchors
 
 
-def heat_runs(anchor: Anchor, encoded: Encoded, mass: Mass) -> list[list[float]]:
+def heat_runs(
+    anchor: Anchor, encoded: Encoded, mass: Mass, *, values: Sequence[float] | None = None
+) -> list[list[float]]:
     """``[char_lo, char_hi, value]`` in the transcript text for retained tokens."""
     runs: list[list[float]] = []
     for token in range(anchor.token_lo, anchor.token_hi):
-        value = float(mass.mean[token])
+        value = float(mass.mean[token] if values is None else values[token])
         if value <= 0.0:
             continue  # not in the top-N% for these steps; the UI shows the residual
         a, b = encoded.offsets[token]

@@ -16,8 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from clio_schemas.attention import UNIFORM_MEAN, AttentionReduction
 
 from clio_agent.gact.attention.contract import AttentionStep, AttentionSummary
+from clio_agent.gact.attention.profiles import reduce_steps
 from clio_agent.gact.attention.ranges import GAP_LABEL, DeclaredRange
 
 
@@ -72,20 +74,22 @@ def declared_ranges_match(ranges: list[DeclaredRange], summary: AttentionSummary
     return all((r.lo, r.hi) in captured for r in ranges)
 
 
-def mass_from_steps(steps: list[AttentionStep], total: int) -> Mass:
+def mass_from_steps(
+    steps: list[AttentionStep], total: int, *, reduction: AttentionReduction | None = None
+) -> Mass:
     """Average the selected steps' retained mean mass per prompt token."""
-    mean = np.zeros(total, dtype=np.float64)
+    reduced = reduction or reduce_steps(steps, total, UNIFORM_MEAN)
     peak = np.zeros(total, dtype=np.float64)
-    residual = 0.0
     for step in steps:
         keep = (step.pos >= 0) & (step.pos < total)
         pos = step.pos[keep].astype(np.int64)
-        np.add.at(mean, pos, step.mean[keep].astype(np.float64))
         np.maximum.at(peak, pos, step.max[keep].astype(np.float64))
-        residual += step.residual
-    n = max(1, len(steps))
     return Mass(
-        mean=mean / n, peak=peak, residual=residual / n, steps=len(steps), exact_totals=False
+        mean=np.asarray(reduced.mean_mass),
+        peak=peak,
+        residual=reduced.residual,
+        steps=len(reduced.steps),
+        exact_totals=False,
     )
 
 

@@ -79,6 +79,33 @@ def test_fixture_is_the_real_capture() -> None:
     assert fixture_thought().startswith(FIRST_SENTENCE)
 
 
+def test_profiles_recompute_the_same_capture_without_changing_mean_mass() -> None:
+    from clio_schemas.attention import DECAYED_MAX
+
+    uniform = _explain()
+    decayed = _explain(
+        request=SelectionRequest(
+            message_id="msg_asst_1",
+            part_id="call_sel",
+            field="thought",
+            start=0,
+            end=len(FIRST_SENTENCE),
+            profile=DECAYED_MAX,
+        )
+    )
+    assert decayed["profile_revision"] == DECAYED_MAX.revision
+    assert decayed["request_id"] == uniform["request_id"]
+    assert decayed["sources"] == uniform["sources"]
+    assert decayed["residual"] == uniform["residual"]
+    assert decayed["profile_weights"][0] > decayed["profile_weights"][1]
+    assert decayed["blocks"]
+    assert any(
+        a["score"] != b["score"] for a, b in zip(uniform["blocks"], decayed["blocks"], strict=True)
+    )
+    assert all(0 <= block["intensity"] <= 1 for block in decayed["blocks"])
+    assert all(len(block["content_revision"]) == 64 for block in decayed["blocks"])
+
+
 def test_selection_maps_to_its_decode_steps_and_mass_is_bounded() -> None:
     result = _explain()
     sel = result["selection"]

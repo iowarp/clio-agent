@@ -19,6 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from clio_schemas.attention import AttentionProfile
 from fastapi import FastAPI
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
@@ -44,6 +45,7 @@ class AttentionRequestBody(BaseModel):
     end: int | None = None
     #: Rendered text the person selected (located server-side when no span is given).
     text: str = ""
+    profile: AttentionProfile = AttentionProfile()
 
 
 def _backend(app: FastAPI) -> Any:
@@ -154,6 +156,7 @@ def register_attention_routes(app: FastAPI) -> None:
                     start=body.start,
                     end=body.end,
                     text=body.text,
+                    profile=body.profile,
                 ),
             )
 

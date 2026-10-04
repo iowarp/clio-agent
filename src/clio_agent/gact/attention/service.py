@@ -23,10 +23,12 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
+from clio_schemas.attention import UNIFORM_MEAN, AttentionProfile, display_intensities
 
 from clio_agent.gact.attention import aggregate as agg
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.lm_calls import LmCall, turn_calls
+from clio_agent.gact.attention.profiles import reduce_steps
 from clio_agent.gact.attention.ranges import DeclaredRange, declare_ranges
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.rendered import find_rendered
@@ -67,6 +69,7 @@ class SelectionRequest:
     #: The rendered text the person selected; located in the message's parts when
     #: no explicit span is given (:mod:`.rendered`).
     text: str = ""
+    profile: AttentionProfile = UNIFORM_MEAN
 
 
 def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any, int, Any, str]:
@@ -199,7 +202,8 @@ def explain_selection(
         summary.record,
     )
     steps = store.steps(summary, step_span.steps[0], step_span.steps[-1])
-    mass = agg.mass_from_steps(steps, summary.prompt_tokens)
+    reduction = reduce_steps(steps, summary.prompt_tokens, request.profile)
+    mass = agg.mass_from_steps(steps, summary.prompt_tokens, reduction=reduction)
 
     shares = agg.section_shares(sections, mass)
     peaks = agg.section_peaks(sections, mass)
@@ -211,6 +215,9 @@ def explain_selection(
         if not (t.message_id == message.id and t.part_id == part.id and t.field == request.field)
     ]
     anchors = anchor_texts(texts, encoded, sections)
+    block_scores = [reduction.block_score(range(a.token_lo, a.token_hi)) for a in anchors]
+    intensities = display_intensities(block_scores, request.profile)
+    token_intensities = display_intensities(reduction.scores, request.profile)
     domains = agg.domain_shares(sections, shares)
     return {
         "schema": RESPONSE_SCHEMA,
@@ -220,6 +227,17 @@ def explain_selection(
         "response_id": call.response_id,
         "request_id": summary.request_id,
         "lm_call_id": call.event_id,
+        "profile": request.profile.model_dump(),
+        "profile_revision": request.profile.revision,
+        "profile_weights": list(reduction.weights),
+        "mass_semantics": "uniform mean over unique selected captured steps",
+        "display_semantics": {
+            "metric": request.profile.metric,
+            "block_scale": max(block_scores, default=0.0),
+            "token_scale": max(reduction.scores, default=0.0),
+            "scope": "this selected item",
+            "missing": "unretained, not measured zero",
+        },
         "selection": {
             "part_id": part.id,
             "field": request.field,
@@ -259,13 +277,21 @@ def explain_selection(
             {
                 "message_id": a.text.message_id,
                 "part_id": a.text.part_id,
+                "call_id": a.text.call_id,
+                "content_revision": a.text.content_revision,
                 "field": a.text.field,
                 "kind": a.text.kind,
                 "section": a.section_index,
                 **block_stats(a, mass),
                 "runs": heat_runs(a, encoded, mass),
+                "score": score,
+                "intensity": intensity,
+                "retained_tokens": sum(
+                    count > 0 for count in reduction.retained_steps[a.token_lo : a.token_hi]
+                ),
+                "display_runs": heat_runs(a, encoded, mass, values=token_intensities),
             }
-            for a in anchors
+            for a, score, intensity in zip(anchors, block_scores, intensities, strict=True)
         ],
         "tokens": _drilldown(renderer, call.content or "", steps, sections, encoded),
     }

@@ -11,11 +11,42 @@ separate from the October 5 Delta qualification with the owner.
 - UI: `external/gact-tui`, branch `codex/beta3-integration`; `9976580f` reconciles
   develop, `9c8c00bb` preserves PR #502 and resolves transcript integration.
 - Schemas: `codex/beta3-integration`, shared contracts commit
-  `7be60ee655287859124c4b3ea5e130ef976dc26d`, based on existing `main`; `develop`
+  `fb1b8cbe686984d96d25bfd32f47eed70f9d021e`, based on existing `main`; `develop`
   was established at that same base for PR #25. Agent and UI pin
   that exact revision. Version `0.6.0b1` is not published to PyPI.
 - Marketplace: `external/clio-agent-marketplace`, branch
-  `codex/beta3-integration`, based on `main`; no beta-3 changes yet.
+  `codex/beta3-integration`, based on `main`; SPOTTER now uses the same pinned
+  attention profiles/reducer and verified local capture files.
+
+## Attention profile and direct-store checkpoint
+
+- Shared schema/reducer: uniform mean and decayed-maximum presets, editable
+  direction/normalization/block/display reduction, immutable profile revision
+  hashes, duplicate-step elimination, and explicit unretained coverage.
+- Agent exposes profile heat separately from uniform mean source mass. Tool
+  blocks carry recorded call IDs and exact text revisions. UI matches tool cards
+  by call ID, scopes pending attention to the connected endpoint, and recomputes
+  a selection when its profile changes.
+- SPOTTER has read-only `list_attention_calls` and `inspect_attention` tools over
+  its configured Flowcept store. The reader verifies byte count/SHA-256, prompt
+  partition and tensor dimensions; rejects partial and ambiguous captures; and
+  stays within an explicit local capture root or local mirror. No SSH fetching
+  or automatic quarantine is part of these tools.
+- Checks: 70 Agent attention/handoff tests, 21 source files checked with Linux
+  Mypy, 34 SPOTTER tests and Pyright, 47 focused UI tests, UI typecheck/lint.
+- Recorded EarthScope capture replay gave exactly equal top-token scores and
+  residual mass in CLIO and SPOTTER for both presets. This is recorded evidence,
+  **not fresh inference or a completed OPAL demonstration**. Run
+  `tests.test_gact.test_attention.verify_spotter_replay` with SPOTTER's `impl/src`
+  on PYTHONPATH and `uv run --no-sync --with safetensors python -m ...`.
+- Browser: selected text, opened attention, changed preset/decay/direction,
+  opened the info explanation and applied the profile. The displayed mass stayed
+  unchanged. Screenshot: `docs/qualification/beta3/attention-profile-editor-light.jpg`.
+  The requested browser viewport override did not change the measured viewport;
+  this checkpoint does **not** claim a completed narrow-layout profile review.
+- Still required: shared revision-bound multi-surface selection entry points,
+  deduplicated lookup in both directions, exact evidence navigation/findings,
+  portal highlights, and fresh Delta inference plus both OPAL/SPOTTER demos.
 
 ## Completed checks at this checkpoint
 
