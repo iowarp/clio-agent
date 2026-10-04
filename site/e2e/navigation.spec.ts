@@ -66,3 +66,17 @@ test('header and footer use real vector artwork on home and documentation pages'
     await expect(page.getByRole('button', { name: 'Docs index', exact: true })).toBeHidden();
   }
 });
+
+test('download labels match stable installers and beta downloads require an explicit choice', async ({ page }) => {
+  const stableInstaller = 'https://github.com/iowarp/clio-agent/releases/download/v0.9.4.24/CLIO.Desktop_0.9.4.24_x64-bundled.exe';
+  await page.route('https://api.github.com/repos/iowarp/clio-agent/releases/latest', (route) => route.fulfill({
+    json: { assets: [{ name: 'CLIO.Desktop_0.9.4.24_x64-bundled.exe', browser_download_url: stableInstaller }] },
+  }));
+  await page.goto('/#download');
+  const downloads = page.getByRole('region', { name: 'Get CLIO stable.' });
+  await expect(downloads.getByRole('button', { name: 'Download installer', exact: true })).toHaveAttribute('href', stableInstaller);
+  await expect(downloads.getByRole('link', { name: 'Stable release notes' })).toHaveAttribute('href', 'https://github.com/iowarp/clio-agent/releases/latest');
+  await expect(downloads.getByRole('link', { name: 'Browse beta releases' })).toHaveAttribute('href', 'https://github.com/iowarp/clio-agent/releases');
+  await expect(downloads.getByText(/Betas may be unstable/)).toBeVisible();
+  await downloads.screenshot({ path: test.info().outputPath('stable-and-beta-downloads.png') });
+});
