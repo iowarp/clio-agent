@@ -20,6 +20,7 @@ from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
+from clio_agent.gact.blueprint_identity import identity_fields, select_blueprint
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 
@@ -81,10 +82,7 @@ def activate_session_blueprint(
                     )
                 ).model_dump(exclude_none=True),
             )
-        blueprint = next(
-            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
-            None,
-        )
+        blueprint = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
         if blueprint is None:
             raise not_found(
                 f"agent blueprint not found: {blueprint_id}",
@@ -102,7 +100,8 @@ def activate_session_blueprint(
             sid,
             metadata_patch={
                 **activation_metadata,
-                "active_agent_blueprint_path": "",
+                "active_agent_blueprint_path": str(blueprint.root),
+                "active_agent_blueprint_identity": identity_fields(blueprint)["identity"],
                 "active_expert_pack_id": "",
                 "active_expert_pack_path": "",
             },

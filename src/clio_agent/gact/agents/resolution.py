@@ -51,6 +51,7 @@ from clio_agent.gact.agents.execution_blueprint import (
     runtime_effective_agent_blueprint_id,
     runtime_effective_agent_blueprint_path,
 )
+from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.gact.catalog import _builtin_agents
 from clio_agent.gact.expert_packs import (
     load_expert_packs,
@@ -269,15 +270,11 @@ def _active_workflow_state_schema(
         blueprint = (
             parse_agent_blueprint_root(blueprint_path, scope="session")
             if blueprint_path is not None
-            else next(
-                (
-                    row
-                    for row in discover_agent_blueprints(
-                        cwd=_runtime_workspace_catalog_cwd(app, session_id=session_id)
-                    )
-                    if row.id == blueprint_id
+            else select_blueprint(
+                discover_agent_blueprints(
+                    cwd=_runtime_workspace_catalog_cwd(app, session_id=session_id)
                 ),
-                None,
+                blueprint_id,
             )
         )
         if blueprint is not None and blueprint.enabled:

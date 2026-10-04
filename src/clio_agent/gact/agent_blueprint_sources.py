@@ -228,6 +228,9 @@ def upsert_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     persisted = dict(row)
     source_id = persisted.get("id")
     with _SOURCE_REGISTRY_LOCK:
+        from clio_agent.gact.blueprint_ledgers import set_source_forgotten
+
+        set_source_forgotten(sources_path().with_suffix(".removed.json"), str(source_id), False)
         rows = [item for item in load_agent_blueprint_sources() if item.get("id") != source_id]
         rows.append(persisted)
         save_agent_blueprint_sources(rows)
@@ -249,6 +252,9 @@ def delete_agent_blueprint_source(source_id: str) -> bool:
         kept = [row for row in rows if row.get("id") != source_id]
         if len(kept) == len(rows):
             return False
+        from clio_agent.gact.blueprint_ledgers import set_source_forgotten
+
+        set_source_forgotten(sources_path().with_suffix(".removed.json"), source_id, True)
         save_agent_blueprint_sources(kept)
     return True
 
@@ -328,14 +334,14 @@ def source_install_skip_ids(*, scope: str, cwd: Path, home: Path | None = None) 
     from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415 - avoid a cycle
         _install_root,
         _tree_checksum,
+        parse_agent_blueprint_root,
         read_install_metadata,
     )
 
     home = home or Path.home()
     skip: dict[str, str] = {}
-    if scope == "global":
-        for blueprint_id in read_uninstalled_tombstones(home=home, cwd=cwd):
-            skip[blueprint_id] = "user_uninstalled"
+    for blueprint_id in read_uninstalled_tombstones(home=home, cwd=cwd, scope=scope):
+        skip[blueprint_id] = "user_uninstalled"
     try:
         install_root = _install_root(home=home, cwd=cwd, scope=scope)
         installed_roots = sorted(install_root.iterdir()) if install_root.is_dir() else []
@@ -347,7 +353,12 @@ def source_install_skip_ids(*, scope: str, cwd: Path, home: Path | None = None) 
             continue
         recorded = str(read_install_metadata(installed).get("checksum") or "").strip()
         if recorded and recorded != _tree_checksum(installed):
-            skip.setdefault(installed.name, "local_edits_present")
+            from clio_agent.gact.blueprint_identity import identity_fields
+
+            identity = identity_fields(parse_agent_blueprint_root(installed, scope=scope))[
+                "identity"
+            ]
+            skip.setdefault(identity, "local_edits_present")
     return skip
 
 
@@ -392,6 +403,10 @@ def record_default_agent_blueprint_source(
 
     source_id = source_registry_id(source, ref)
     with _SOURCE_REGISTRY_LOCK:
+        from clio_agent.gact.blueprint_ledgers import forgotten_sources
+
+        if source_id in forgotten_sources(sources_path().with_suffix(".removed.json")):
+            return {}
         rows = load_agent_blueprint_sources()
         existing = next((row for row in rows if row.get("id") == source_id), {})
         row = {
@@ -475,6 +490,7 @@ def install_agent_blueprint_source(
     refreshed["installed_blueprints"] = [
         {
             "id": str(item.get("id") or ""),
+            "identity": str(item.get("identity") or ""),
             "version": str(item.get("version") or ""),
             "scope": str(item.get("scope") or scope),
         }

@@ -10,11 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-import subprocess
-import tempfile
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,11 +19,11 @@ from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
 from clio_agent.gact.agent_blueprint_requires import floor_declaration_errors
-from clio_agent.gact.blueprint_git import run_git
-from clio_agent.gact.blueprint_install_files import tree_checksum as _tree_checksum
-from clio_agent.gact.blueprint_install_files import (
-    write_install_metadata as _write_install_metadata,
+from clio_agent.gact.blueprint_identity import (
+    identity_fields,
+    select_blueprint,
 )
+from clio_agent.gact.blueprint_install_files import tree_checksum, write_install_metadata
 from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
@@ -36,15 +33,15 @@ from clio_agent.gact.expert_packs import (
     parse_expert_file,
     validate_expert_hierarchy,
 )
-from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
-from clio_agent.platform_paths import copytree_extended, rmtree_extended
 from clio_agent.tools.catalog import TOOL_CATALOG
 
 # Historical private names kept importable here: agent_blueprint_refresh.py /
 # agent_blueprint_sources.py do ``from ...agent_blueprints import _install_root``.
 _install_root = install_root
 _relative_to_blueprint_root = relative_to_blueprint_root
+_tree_checksum = tree_checksum
+_write_install_metadata = write_install_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +87,7 @@ class AgentBlueprintDefinition:
         # Same lifecycle; surfaced so the UI can render/filter by kind.
         payload["kind"] = "blueprint" if str(self.root_expert).strip() else "pack"
         payload["name"] = self.display_name or self.title or self.id
+        payload.update(identity_fields(self))
         return payload
 
 
@@ -193,10 +191,10 @@ def discover_agent_blueprints(
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
-    # ONE row per id: the most specific copy wins (#13, 2026-08-13).
+    # Preserve distinct marketplaces and scopes; legacy names resolve only when unique.
     by_id: dict[str, AgentBlueprintDefinition] = {}
     for row in blueprints:
-        by_id[row.id] = row
+        by_id[identity_fields(row)["identity"]] = row
     blueprints = list(by_id.values())
     if bootstrap_diagnostic and not any(row.id == DEFAULT_AGENT_BLUEPRINT_ID for row in blueprints):
         install_root = (
@@ -361,9 +359,9 @@ def load_agent_blueprints(
     rows: list[AgentDef] = []
     # ONE catalog per load (#917): same home/cwd as discovery, one scan per root.
     skill_catalog = _skills.SkillCatalog(home=home, cwd=cwd)
-    for blueprint in discover_agent_blueprints(home=home, cwd=cwd):
-        if blueprint_id and blueprint.id != blueprint_id:
-            continue
+    blueprints = discover_agent_blueprints(home=home, cwd=cwd)
+    selected = select_blueprint(blueprints, blueprint_id) if blueprint_id else None
+    for blueprint in [selected] if selected else [] if blueprint_id else blueprints:
         rows.extend(_load_blueprint_agents(blueprint, skill_catalog=skill_catalog))
     return rows
 
@@ -738,127 +736,24 @@ def install_agent_blueprint(
     skip_invalid: bool = False,
     skip_blueprint_ids: Mapping[str, str] | None = None,
     app: Any | None = None,
+    preserve_invalid: bool = False,
 ) -> dict[str, Any]:
-    """Install blueprint pack(s) from ``source`` (all packs when ``blueprint_id`` is empty).
+    """Install marketplace blueprints through the staged snapshot installer."""
+    from clio_agent.gact.blueprint_installer import install_agent_blueprint as install
 
-    ``skip_invalid`` governs a multi-pack install: ``False`` (explicit installs)
-    keeps the strict contract — any invalid pack fails the whole call; ``True``
-    (the registry bootstrap) skips invalid packs with a logged, returned
-    ``skipped`` row each, so one broken marketplace entry can never veto the
-    rest of the set.
-    ``skip_blueprint_ids`` maps a blueprint id to the typed reason it is not installed.
-    ``app`` (the install ROUTE has one) lets an overwrite-audit reason reach a semantic event.
-    """
-    from clio_agent.gact.agent_blueprint_refresh import clear_uninstall_tombstones, install_row
-    from clio_agent.gact.agent_blueprint_requires import AgentBlueprintInstallRefused
-
-    home = home or Path.home()
-    install_root = _install_root(home=home, cwd=cwd, scope=scope)
-    install_root.mkdir(parents=True, exist_ok=True)
-    source_path = Path(source).expanduser()
-    with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-") as tmp:
-        tmp_path = Path(tmp)
-        resolved_source: Path
-        source_kind = "path"
-        commit = ""
-        if source_path.exists():
-            resolved_source = source_path
-            try:
-                commit = subprocess.check_output(
-                    ["git", "-C", str(source_path), "rev-parse", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-            except Exception as exc:
-                commit = ""
-                if pinned_commit:
-                    # A pin was requested but the source commit cannot be
-                    # resolved: refuse to install unverified rather than let the
-                    # mismatch check below fall through on the empty commit.
-                    raise ValueError(
-                        f"registry pin unverifiable: cannot resolve commit for "
-                        f"{source_path} to verify pin {pinned_commit}: {exc!r}"
-                    ) from exc
-                logger.warning(
-                    "registry commit unresolvable reason=registry_commit_unresolvable "
-                    "path=%s error=%r",
-                    source_path,
-                    exc,
-                )
-            if pinned_commit and commit and commit != pinned_commit:
-                raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
-        else:
-            source_kind = "git"
-            clone_target = tmp_path / "repo"
-            branch = ["--branch", ref] if ref else []
-            clone_source = normalize_git_clone_source(source)  # file:// -> path (#903)
-            cmd = ["git", "clone", "--depth", "1", *branch, clone_source, str(clone_target)]
-            env = {
-                **os.environ,
-                "GIT_TERMINAL_PROMPT": "0",
-                "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
-            }
-            run_git(cmd, env=env)  # waited for while git works; typed when it stalls
-            resolved_source = clone_target
-            commit = subprocess.check_output(
-                ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
-                text=True,
-            ).strip()
-            if pinned_commit and commit != pinned_commit:
-                git_dir = ["git", "-C", str(clone_target)]
-                run_git([*git_dir, "fetch", "--depth", "1", "origin", pinned_commit], env=env)
-                run_git([*git_dir, "checkout", "--detach", pinned_commit], env=env)
-                commit = subprocess.check_output(
-                    ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
-                    text=True,
-                ).strip()
-            if pinned_commit and commit != pinned_commit:
-                raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
-        candidates = _install_candidates(resolved_source, blueprint_id=blueprint_id)
-        if not candidates:
-            raise ValueError("source contains no Agent Blueprint folders with AGENT.md")
-        installed: list[dict[str, Any]] = []
-        skipped: list[dict[str, Any]] = []
-        for candidate in candidates:
-            parsed = parse_agent_blueprint_root(candidate, scope=scope)
-            skip_reason = str((skip_blueprint_ids or {}).get(parsed.id, ""))
-            if skip_reason:
-                logger.info("blueprint_install_skipped reason=%s id=%s", skip_reason, parsed.id)
-                skipped.append({"id": parsed.id, "reason": skip_reason})
-                continue
-            if not parsed.enabled:
-                if skip_invalid:
-                    logger.warning(
-                        "blueprint_install_skipped reason=validation_errors id=%s "
-                        "source=%s errors=%s",
-                        parsed.id,
-                        source,
-                        "; ".join(parsed.validation_errors),
-                    )
-                    skipped.append(
-                        {"id": parsed.id, "validation_errors": list(parsed.validation_errors)}
-                    )
-                    continue
-                raise AgentBlueprintInstallRefused(list(parsed.validation_errors))
-            dest = install_root / parsed.id
-            previous_checksum = str(read_install_metadata(dest).get("checksum") or "").strip()
-            if dest.exists():
-                rmtree_extended(dest)
-            copytree_extended(candidate, dest)
-            metadata = {
-                "source": source,
-                "source_kind": source_kind,
-                "ref": ref,
-                "commit": commit,
-                "pinned_commit": pinned_commit,
-                "installed_at": datetime.now(UTC).isoformat(),
-                "checksum": _tree_checksum(dest),
-                "scope": scope,
-            }
-            _write_install_metadata(dest, metadata)
-            installed.append(install_row(dest, scope, metadata, previous_checksum, source, app=app))
-        clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)
-        return {"installed": installed, "skipped": skipped}
+    return install(
+        source=source,
+        scope=scope,
+        cwd=cwd,
+        home=home,
+        ref=ref,
+        blueprint_id=blueprint_id,
+        pinned_commit=pinned_commit,
+        skip_invalid=skip_invalid,
+        skip_blueprint_ids=skip_blueprint_ids,
+        app=app,
+        preserve_invalid=preserve_invalid,
+    )
 
 
 def read_install_metadata(root: Path) -> dict[str, str]:

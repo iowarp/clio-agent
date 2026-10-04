@@ -115,13 +115,15 @@ def resolve_agent_blueprint_root(
                     active_path = Path(definition_path).expanduser()
         if active_path is not None:
             parsed = parse_agent_blueprint_root(active_path, scope="session")
-            if parsed.id == blueprint_id:
+            from clio_agent.gact.blueprint_identity import identity_fields
+
+            if blueprint_id in {parsed.id, identity_fields(parsed)["identity"]}:
                 return parsed.root
     cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-    for blueprint in discover_agent_blueprints(cwd=cwd):
-        if blueprint.id == blueprint_id:
-            return blueprint.root
-    return None
+    from clio_agent.gact.blueprint_identity import select_blueprint
+
+    selected = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
+    return selected.root if selected is not None else None
 
 
 def list_blueprint_files(root: Path) -> list[dict[str, Any]]:

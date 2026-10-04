@@ -3008,7 +3008,12 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert [row["id"] for row in source["available_blueprints"]] == ["genomics"]
         assert [row["id"] for row in created.json()["installed"]] == ["genomics"]
         assert source["installed_blueprints"] == [
-            {"id": "genomics", "version": "0.1.0", "scope": "global"}
+            {
+                "id": "genomics",
+                "identity": f"global::{source['id']}::genomics",
+                "version": "0.1.0",
+                "scope": "global",
+            }
         ]
 
         globally_installed = client.get("/v1/agent-blueprints").json()

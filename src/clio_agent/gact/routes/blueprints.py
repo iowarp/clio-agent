@@ -66,6 +66,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_workspace_catalog_cwd,
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
+from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
@@ -90,10 +91,10 @@ if TYPE_CHECKING:
 
 
 def _invalidate_a2ui_catalogs(app: FastAPI) -> None:
-    """Drop cached A2UI pack-catalog discovery after a blueprint mutation (S2 campaign doc)."""
-    catalogs = getattr(app.state, "a2ui_catalogs", None)
-    if catalogs is not None:
-        catalogs.invalidate()
+    """Reconcile all blueprint projections after a committed mutation."""
+    from clio_agent.gact.blueprint_revision import blueprint_revision_changed
+
+    blueprint_revision_changed(app)
 
 
 def _mutation_error(status: int, code: str, message: str) -> HTTPException:
@@ -115,6 +116,10 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     ``build_app`` local. The expert-pack routes call the blueprint handlers
     directly so a single implementation backs both surfaces.
     """
+
+    from clio_agent.gact.routes.blueprint_identity import register_identity_error_handler
+
+    register_identity_error_handler(app)
 
     @app.get("/v1/agent-blueprints/sources")
     async def list_agent_blueprint_sources() -> dict[str, Any]:
@@ -162,6 +167,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             _install_agent_blueprint_source, row, cwd=cwd, scope=scope
         )
         _upsert_agent_blueprint_source(row)
+        _invalidate_a2ui_catalogs(app)
         return {"source": row, **installation}
 
     @app.post("/v1/agent-blueprints/sources/{source_id}/refresh")
@@ -178,6 +184,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     _install_agent_blueprint_source, refreshed, cwd=cwd, scope=scope
                 )
                 _upsert_agent_blueprint_source(refreshed)
+                _invalidate_a2ui_catalogs(app)
                 return {"source": refreshed, **installation}
         raise HTTPException(
             status_code=404,
@@ -203,6 +210,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        _invalidate_a2ui_catalogs(app)
         return {"deleted": {"id": source_id}}
 
     register_blueprint_catalog_route(app)
@@ -328,20 +336,20 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         workspace_id: Optional[str] = None,
     ) -> dict[str, Any]:
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id or "")
-        for blueprint in discover_agent_blueprints(cwd=cwd):
-            if blueprint.id == blueprint_id:
-                agents = validate_agent_hierarchy(
-                    load_agent_blueprints(cwd=cwd, blueprint_id=blueprint_id),
-                    blueprint=blueprint,
-                )
-                return {
-                    "agent_blueprint": blueprint.to_wire(),
-                    "agents": [row.model_dump(exclude_none=True) for row in agents],
-                    "mcp_descriptors": load_mcp_descriptors(
-                        blueprint.root, scope=blueprint.scope, blueprint_id=blueprint.id
-                    ),
-                    "a2ui_capabilities": catalog_ids_for_resolved_blueprint(app, blueprint),
-                }
+        blueprint = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
+        if blueprint is not None:
+            agents = validate_agent_hierarchy(
+                load_agent_blueprints(cwd=cwd, blueprint_id=blueprint_id),
+                blueprint=blueprint,
+            )
+            return {
+                "agent_blueprint": blueprint.to_wire(),
+                "agents": [row.model_dump(exclude_none=True) for row in agents],
+                "mcp_descriptors": load_mcp_descriptors(
+                    blueprint.root, scope=blueprint.scope, blueprint_id=blueprint.id
+                ),
+                "a2ui_capabilities": catalog_ids_for_resolved_blueprint(app, blueprint),
+            }
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(
@@ -473,10 +481,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
         try:
-            result = update_installed_agent_blueprint(
-                blueprint_id=blueprint_id,
-                scope=scope,  # type: ignore[arg-type]
-                cwd=cwd or Path.cwd(),
+            result = await run_off_loop(
+                lambda: update_installed_agent_blueprint(
+                    blueprint_id=blueprint_id,
+                    scope=scope,  # type: ignore[arg-type]
+                    cwd=cwd or Path.cwd(),
+                )
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -491,7 +501,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         scope: str = "workspace",
         workspace_id: str = "",
     ) -> dict[str, Any]:
-        if blueprint_id == DEFAULT_AGENT_BLUEPRINT_ID and scope == "global":
+        if blueprint_id.rsplit("::", 1)[-1] == DEFAULT_AGENT_BLUEPRINT_ID and scope == "global":
             raise HTTPException(
                 status_code=400,
                 detail=ErrorEnvelope(
@@ -562,10 +572,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         body = req or {}
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
-        blueprint = next(
-            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
-            None,
-        )
+        blueprint = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
         if blueprint is None:
             raise HTTPException(
                 status_code=404,
@@ -752,10 +759,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         blueprint_id = deps.active_session_agent_blueprint_id(sid)
         blueprint_path = _runtime_active_agent_blueprint_path(app, sid)
         cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
-        blueprint = next(
-            (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id),
-            None,
-        )
+        blueprint = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
         blueprint_wire: dict[str, Any] | None = (
             blueprint.to_wire() if blueprint is not None else None
         )

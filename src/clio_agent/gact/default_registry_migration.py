@@ -230,8 +230,12 @@ def _skip_ids(
         _BLUEPRINT_ROOT_NAME,
         read_install_metadata,
     )
+    from clio_agent.gact.blueprint_identity import source_tombstones
 
-    skips = dict.fromkeys(read_uninstalled_tombstones(home=home, cwd=cwd), "user_uninstalled")
+    skips = dict.fromkeys(
+        source_tombstones(read_uninstalled_tombstones(home=home, cwd=cwd), source, ref, "global"),
+        "user_uninstalled",
+    )
     if not install_root.is_dir():
         return skips
     for root in sorted(install_root.iterdir()):
@@ -300,7 +304,12 @@ def _materialize(source: str, *, ref: str, pinned: str, tmp: Path) -> tuple[Path
 
 
 def replace_pack_atomically(
-    candidate: Path, install_root: Path, pack_id: str, metadata: dict[str, Any]
+    candidate: Path,
+    install_root: Path,
+    pack_id: str,
+    metadata: dict[str, Any],
+    *,
+    keep_backup: bool = False,
 ) -> None:
     """Install ``candidate`` as ``install_root/pack_id`` with an all-or-nothing swap.
 
@@ -313,6 +322,7 @@ def replace_pack_atomically(
     from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
         _tree_checksum,
         _write_install_metadata,
+        parse_agent_blueprint_root,
     )
 
     staging_root = install_root.parent / STAGING_DIR_NAME
@@ -323,7 +333,15 @@ def replace_pack_atomically(
     final = install_root / pack_id
     try:
         copytree_extended(candidate, staged)
-        _write_install_metadata(staged, {**metadata, "checksum": _tree_checksum(staged)})
+        parsed = parse_agent_blueprint_root(staged, scope=str(metadata.get("scope") or "install"))
+        if not parsed.enabled:
+            raise ValueError("staged blueprint is invalid: " + "; ".join(parsed.validation_errors))
+        retained = (
+            {"retained_previous_revision": str(backup)} if keep_backup and final.exists() else {}
+        )
+        _write_install_metadata(
+            staged, {**metadata, **retained, "checksum": _tree_checksum(staged)}
+        )
         if final.exists():
             rename_extended(final, backup)
         try:
@@ -334,7 +352,7 @@ def replace_pack_atomically(
             raise
     finally:
         rmtree_extended(staged, ignore_errors=True)
-    if backup.exists():
+    if backup.exists() and not keep_backup:
         try:
             rmtree_extended(backup)
         except OSError as exc:

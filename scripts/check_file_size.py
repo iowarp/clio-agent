@@ -202,7 +202,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 996,
+    "src/clio_agent/gact/agent_blueprints.py": 891,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -373,7 +373,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # route and the executing agent can never disagree. Genuinely new
     # decision logic (not a call-site wrap), hence living here rather than in
     # a caller.
-    "src/clio_agent/gact/agents/resolution.py": 832,
+    "src/clio_agent/gact/agents/resolution.py": 829,
     # NEW entry (C1-S7, #1309 gate-review F1/F3): crossed the flat 800 cap
     # (795 -> 820) for two new optional TaskSpec fields (tool_allowlist /
     # agent_elicitation_depth) and the metadata_patch lines that stamp them

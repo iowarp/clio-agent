@@ -202,6 +202,34 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   regressions are repaired; Python 3.12 runtime cleanup now reports its underlying
   failure for diagnosis. It is not yet a passed integration gate.
 
+### Marketplace ownership checkpoint (October 4)
+
+- Installs stage and validate replacements before swapping; failed copy/swap
+  preserves the working copy. Individual updates retain pins, refuse dirty pinned
+  sources and refuse overwriting local edits. Invalid legacy default repairs keep
+  the previous files in a receipt-linked backup.
+- Marketplace/scope-qualified identities coexist even when author IDs match.
+  Legacy ambiguous references return a conflict. File reads, activation, updates,
+  uninstall and frontend selection retain ownership. Workspace tombstones persist;
+  forgetting the default marketplace no longer recreates its source registration.
+- Mutations invalidate A2UI/workflow discovery and emit a connected-CLIO revision
+  event. UI queries and blueprint file caches are scoped to the endpoint; source
+  errors and skipped choices are retained, and failed installation envelopes no
+  longer produce success toasts. Individual update work runs off the ASGI loop.
+- Backend marketplace regression: 175 passed. Core outcome/identity tests: 6
+  passed; stream/active-blueprint tests: 22 passed. UI typecheck/lint passed.
+  Managed-service tests: 26 passed after making names follow branding vocabulary.
+- CI typing failures were corrected (Linux-target mypy: 961 files passed). The
+  Python 3.12 cleanup cause was read-only parent directories in storage fixtures;
+  the test-owned cleanup now restores directory permissions before removal.
+  Fresh CI remains required. The product read-only fence is unchanged.
+- Browser review verified the actual default-blueprint actions and marketplace
+  inventory after restarting the isolated backend. The screenshot
+  `marketplace-default-actions-dark.jpg` is a checkpoint, not complete UI acceptance.
+- Draft/publish, complete source Reload and safe session turn-boundary application,
+  transparent activation of not-yet-materialized entries, and final marketplace
+  composition/qualification remain open. Do not treat this as closing #1627.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
