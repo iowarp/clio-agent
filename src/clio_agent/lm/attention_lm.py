@@ -13,8 +13,6 @@ from typing import Any
 
 from clio_agent.gact.attention.declare import declared_request
 
-_CLASS: Any = None
-
 
 @contextmanager
 def attention_request(
@@ -60,21 +58,6 @@ def attention_request(
 
 def attention_lm_class() -> Any:
     """Return the lazy DSPy subclass that preserves declarations through callbacks."""
-    global _CLASS  # noqa: PLW0603
-    if _CLASS is not None:
-        return _CLASS
-    import dspy  # noqa: PLC0415
+    from clio_agent.lm.attention_dspy import AttentionLM  # noqa: PLC0415
 
-    class AttentionLM(dspy.LM):
-        """DSPy's normal provider engine with per-call attention declarations."""
-
-        def __call__(self, prompt: Any = None, *, messages: Any = None, **kwargs: Any) -> Any:
-            with attention_request(self, prompt, messages, kwargs) as (value, rows, options):
-                return super().__call__(value, messages=rows, **options)
-
-        async def acall(self, prompt: Any = None, *, messages: Any = None, **kwargs: Any) -> Any:
-            with attention_request(self, prompt, messages, kwargs) as (value, rows, options):
-                return await super().acall(value, messages=rows, **options)
-
-    _CLASS = AttentionLM
-    return _CLASS
+    return AttentionLM

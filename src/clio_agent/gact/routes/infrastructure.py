@@ -66,7 +66,9 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
             "services": [row.model_dump(mode="json") for row in store().services()],
             "connections": [row.model_dump(mode="json") for row in store().connections()],
             "operations": [row.model_dump(mode="json") for row in store().operations()[:200]],
-            "model_acquisitions": [row.model_dump(mode="json") for row in store().model_acquisitions()],
+            "model_acquisitions": [
+                row.model_dump(mode="json") for row in store().model_acquisitions()
+            ],
         }
 
     @app.post("/v1/infrastructure/desktop-exit")

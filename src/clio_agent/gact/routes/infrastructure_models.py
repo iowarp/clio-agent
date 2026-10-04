@@ -39,6 +39,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
             selected_root = root
             if selected_root is None:
                 facts = await probe_target(target, run if target.kind == "ssh" else None)
+                if facts.transport_state != "connected":
+                    raise ValueError("Connect this execution host to inspect and download models.")
                 if facts.os != "linux":
                     raise ValueError(
                         "Managed model downloads currently require a Linux execution host"
@@ -113,7 +115,9 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 return await app.state.infrastructure_runtime.execute_on_target(target_id, spec)
 
             facts = await probe_target(target, run if target.kind == "ssh" else None)
-            if facts.os != "linux":
+            if facts.transport_state != "connected":
+                unavailable = "Connect this execution host to inspect and download models."
+            elif facts.os != "linux":
                 unavailable = "Managed model downloads require a Linux execution host. Select a connected Linux host."
             elif not facts.uv_available:
                 unavailable = "Install uv on this execution host before downloading models."

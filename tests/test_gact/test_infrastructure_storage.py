@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -132,7 +133,7 @@ def test_storage_http_checks_host_and_saves_without_moving_data(
         return TargetFacts(
             target_id=target.id,
             label=target.label,
-            os="windows",
+            os="windows" if sys.platform == "win32" else "linux",
             arch="x86_64",
             agent_data_root=str(tmp_path),
         )

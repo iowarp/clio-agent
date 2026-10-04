@@ -27,12 +27,37 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent import paths
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+
+async def prune_orphans_and_cache(app: FastAPI) -> None:
+    """Reap proven orphans before inspecting the liveness of cached MCP children."""
+    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
+    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
+
+    await _prime_orphan_scan_cache(app)
+    await boot_prune_off_loop()
+
+
+def reconcile_connected_storage(app: FastAPI) -> None:
+    """Recover interrupted source operations for the server's registered workspaces."""
+    storage = getattr(app.state, "connected_storage", None)
+    if storage is not None:
+        storage.reconcile({row.id: Path(row.root_path) for row in app.state.workspaces.list()})
+
+
+async def shutdown_connected_storage(app: FastAPI) -> None:
+    """Drain trusted source operations before the server tears down its runtime."""
+    storage = getattr(app.state, "connected_storage", None)
+    if storage is not None:
+        await storage.shutdown()
+
 
 logger = logging.getLogger(__name__)
 

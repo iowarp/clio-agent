@@ -18,7 +18,9 @@ import websockets
 from websockets.typing import Subprotocol
 
 
-async def bridge(endpoint: str, target: str, profile: str, duration: int) -> None:
+async def bridge(
+    endpoint: str, target: str, profile: str, duration: int, ssh_options: tuple[str, ...] = ()
+) -> None:
     """Forward CLIO-generated commands to an explicitly chosen test host until the deadline."""
     parsed = urlparse(endpoint)
     if parsed.hostname not in {"127.0.0.1", "localhost"}:
@@ -40,6 +42,7 @@ async def bridge(endpoint: str, target: str, profile: str, duration: int) -> Non
                 "ssh",
                 "-o",
                 "BatchMode=yes",
+                *ssh_options,
                 profile,
                 shlex.join([command["program"], *command.get("args", [])]),
                 stdin=asyncio.subprocess.PIPE,
@@ -94,8 +97,20 @@ def main() -> None:
     parser.add_argument("--target", required=True)
     parser.add_argument("--profile", required=True)
     parser.add_argument("--duration", type=int, default=3600)
+    parser.add_argument("--jump")
+    parser.add_argument("--identity-file")
+    parser.add_argument("--known-hosts")
     args = parser.parse_args()
-    asyncio.run(bridge(args.endpoint, args.target, args.profile, args.duration))
+    options = []
+    if args.jump:
+        options.extend(["-J", args.jump])
+    if args.identity_file:
+        options.extend(["-i", args.identity_file])
+    if args.known_hosts:
+        options.extend(
+            ["-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + args.known_hosts]
+        )
+    asyncio.run(bridge(args.endpoint, args.target, args.profile, args.duration, tuple(options)))
 
 
 if __name__ == "__main__":

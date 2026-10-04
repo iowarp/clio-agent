@@ -219,6 +219,7 @@ def test_http_reconciles_original_root_and_targets_retry_and_cancel(
             arch="x86_64",
             agent_data_root="/data/original",
             uv_available=True,
+            transport_state="connected",
         )
 
     async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
@@ -279,3 +280,31 @@ def test_registry_search_contract_and_input_validation() -> None:
         ModelDownloadRequest(repository="https://example/unsafe")
     with pytest.raises(ValueError):
         ModelDownloadRequest(repository="org/model", revision="../escape")
+
+
+def test_disconnected_host_keeps_receipts_and_explains_transport_first(tmp_path: Path) -> None:
+    app = FastAPI()
+    register_infrastructure_routes(app, tmp_path)
+    store = app.state.infrastructure_store
+    target = store.create_target(
+        CreateTargetRequest(label="Linux node", kind="ssh", ssh=SshRoute(profile="node"))
+    )
+    store.register_model_root(target.id, "/data/original")
+    store.put_model_acquisition(
+        ModelAcquisition.model_validate(
+            {
+                **job("/data/original/model"),
+                "target_id": target.id,
+                "storage_root": "/data/original",
+            }
+        )
+    )
+    with TestClient(app) as client:
+        route = f"/v1/infrastructure/targets/{target.id}/models"
+        result = client.get(route).json()
+        assert len(result["models"]) == 1
+        assert result["unavailable_reason"].startswith("Connect this execution host")
+        assert result["errors"]
+        response = client.post(route, json={"repository": "org/model"})
+        assert response.status_code == 409
+        assert response.json()["detail"].startswith("Connect this execution host")

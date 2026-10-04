@@ -11,8 +11,8 @@ separate from the October 5 Delta qualification with the owner.
 - UI: `external/gact-tui`, branch `codex/beta3-integration`; `9976580f` reconciles
   develop, `9c8c00bb` preserves PR #502 and resolves transcript integration.
 - Schemas: `codex/beta3-integration`, shared contracts commit
-  `7be60ee655287859124c4b3ea5e130ef976dc26d`, based on existing `main` (there is no
-  remote `develop`; final PR base is awaiting clarification). Agent and UI pin
+  `7be60ee655287859124c4b3ea5e130ef976dc26d`, based on existing `main`; `develop`
+  was established at that same base for PR #25. Agent and UI pin
   that exact revision. Version `0.6.0b1` is not published to PyPI.
 - Marketplace: `external/clio-agent-marketplace`, branch
   `codex/beta3-integration`, based on `main`; no beta-3 changes yet.
@@ -111,7 +111,28 @@ This checkpoint is not completion of #1617 or of the beta-3 acceptance gate.
   bounded OpenSSH qualification bridge, not a packaged Desktop SSH acceptance run.
 
 Not yet complete: native vLLM, connection of downloaded models to guided runtime
-setup, packaged installation, GPU inference and the Ares/Delta acceptance gates.
+setup, packaged installation, GPU inference and the remaining deployment gates.
+
+### Ares allocation and SSH-hop checkpoint (October 4)
+
+- Slurm job `24356` allocated `ares-comp-27` with two CPUs and 8 GiB for a bounded
+  one-hour request. Actual use was under five minutes. The job was explicitly
+  cancelled after checks; `scontrol` confirmed `CANCELLED` and `squeue` was empty.
+  Slurm accounting is disabled; no accounting result is claimed.
+- Production host inspection and model acquisition ran through `ProxyJump ares`
+  with the existing Ares identity and a verified node host key. The node reported
+  usable Docker and Podman, uv, no Apptainer and no GPU. No inference was attempted.
+- An owned directory under `/mnt/common/jcernudagarcia/clio-beta3-qualification`
+  used the writable shared filesystem with approximately 13 TB free. Real model
+  cancellation, retry, immutable-revision hash verification and cache reuse passed.
+- Disconnect/reconnect retained the same model operation and recovered its ready
+  state without a duplicate download. Evidence: `ares-model-lifecycle.json`,
+  `ares-host-and-model.json`, and `ares-reconnect.json`. The latter records the
+  observed misleading disconnected-host explanation; a focused regression now
+  checks that disconnection is reported before platform compatibility.
+- Retained model bytes are deliberate evidence/cache. No service or allocation
+  remains running from this test. This qualifies the model lifecycle through the
+  hop, not native inference, provenance deployment or the packaged Desktop bridge.
 
 ## Required work still outstanding
 
@@ -131,8 +152,8 @@ setup, packaged installation, GPU inference and the Ares/Delta acceptance gates.
    keyboard, light/dark, narrow layouts and long transcripts. Complete packaged
    install/update-channel checks and exact dependency qualification.
 6. Complete homelab deployment/provenance/reconnect/cleanup on an owned
-   `/data` directory; external bounded Ares allocation and SSH-hop checks.
-   Model acquisition and SFTP passed; the remaining deployment gates are open.
+   `/data` directory. Ares allocation, SSH-hop model lifecycle and reconnect passed;
+   homelab model acquisition and SFTP passed. Service deployment gates remain open.
 7. Prepare ordered Delta setup, then together run fresh instrumented inference,
    token mapping, both OPAL/SPOTTER demos and evidence retention through shutdown.
 

@@ -806,14 +806,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # off-loop). The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
-    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
-
-    async def _reap_orphans_then_prune_mcp_cache() -> None:
-        await _prime_orphan_scan_cache(app)
-        await boot_prune_off_loop()
-
-    app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
+    app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
     app.state.registry_resync = _registry_resync.start_in_background(app)  # v15 S8, a thread
 
     task: Optional[asyncio.Task] = None
@@ -836,14 +829,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
         app.state.provider_catalog_startup_task = provider_catalog_task
 
-    storage = getattr(app.state, "connected_storage", None)
-    if storage is not None:
-        storage.reconcile({row.id: Path(row.root_path) for row in app.state.workspaces.list()})
+    server_boot.reconcile_connected_storage(app)
 
     yield
 
-    if storage is not None:
-        await storage.shutdown()
+    await server_boot.shutdown_connected_storage(app)
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
     # does not stop that thread, and Python waits for executor workers at process

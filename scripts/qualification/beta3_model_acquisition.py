@@ -6,7 +6,7 @@ import argparse
 import json
 import shlex
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from clio_agent.gact.infrastructure import node_models
 
@@ -44,9 +44,16 @@ def main() -> None:
     parser.add_argument("--profile", required=True)
     parser.add_argument("--root", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--jump")
+    parser.add_argument("--identity-file")
+    parser.add_argument("--known-hosts")
     args = parser.parse_args()
-    if not args.root.startswith(
-        ("/data/clio-beta3-qualification/", "/mnt/common/clio-beta3-qualification/")
+    root = PurePosixPath(args.root)
+    if (
+        ".." in root.parts
+        or not root.is_absolute()
+        or "clio-beta3-qualification" not in root.parts
+        or root.name == "clio-beta3-qualification"
     ):
         raise ValueError("Use a dedicated beta-3 qualification folder")
     script = Path(node_models.__file__).read_text(encoding="utf-8")
@@ -57,8 +64,17 @@ def main() -> None:
         "revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
         "destination": args.root + "/models/tiny-gpt2",
     }
+    ssh = ["ssh", "-o", "BatchMode=yes"]
+    if args.jump:
+        ssh.extend(["-J", args.jump])
+    if args.identity_file:
+        ssh.extend(["-i", args.identity_file])
+    if args.known_hosts:
+        ssh.extend(
+            ["-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=" + args.known_hosts]
+        )
     result = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", args.profile, shlex.join(["python3", "-c", RUNNER])],
+        [*ssh, args.profile, shlex.join(["python3", "-c", RUNNER])],
         input=json.dumps(payload),
         text=True,
         capture_output=True,
