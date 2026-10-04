@@ -577,6 +577,8 @@ jobs:
           stage_name() {
             local base
             base="$(basename "$1")"
+            # Match GitHub's upload filename normalization before hashing.
+            base="${base// /.}"
             base="${base//$tauri_version/$release_version}"
             case "$base" in
               *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-${{ matrix.target }}.app.tar.gz.sig" ;;
@@ -665,7 +667,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15]
+        os: [macos-14, macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     steps:

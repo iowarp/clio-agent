@@ -16,7 +16,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize("version", ["0.9.5b2", "v0.9.5-beta.2", "0.9.4.24"])
 @pytest.mark.parametrize("integrity", ["valid", "tampered", "missing", "duplicate"])
-def test_verified_desktop_download(tmp_path: Path, version: str, integrity: str) -> None:
+@pytest.mark.parametrize("checksum_format", ["canonical", "legacy", "binary"])
+def test_verified_desktop_download(
+    tmp_path: Path, version: str, integrity: str, checksum_format: str
+) -> None:
     """A real hash check must precede setup, including beta normalization and bad manifests."""
     windows = os.name == "nt"
     tag_version = "0.9.5-beta.2" if "b" in version else version
@@ -25,7 +28,13 @@ def test_verified_desktop_download(tmp_path: Path, version: str, integrity: str)
     payload = tmp_path / "fixture.bin"
     payload.write_bytes(b"release payload")
     digest = hashlib.sha256(payload.read_bytes()).hexdigest()
-    line = f"{digest}  {asset_name}\n"
+    checksum_name = (
+        asset_name
+        if checksum_format == "canonical"
+        else asset_name.replace("CLIO.Desktop", "CLIO Desktop")
+    )
+    marker = "*" if checksum_format == "binary" else " "
+    line = f"{digest} {marker}{checksum_name}\n"
     manifest = tmp_path / "checksums"
     manifest.write_text(
         "" if integrity == "missing" else line * (2 if integrity == "duplicate" else 1)
