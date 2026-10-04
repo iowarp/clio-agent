@@ -10,6 +10,7 @@ import Search from '@astrojs/starlight/components/Search.astro';
 import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
 import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
 import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import MobileDocsIndex from './MobileDocsIndex.astro';
 import { primaryNav, isActiveNav } from '../../lib/nav';
 
 const path = Astro.url.pathname;
@@ -43,6 +44,8 @@ const path = Astro.url.pathname;
 		<a class="download-cta" href="/#download">Download</a>
 	</div>
 </div>
+
+<MobileDocsIndex />
 
 <style>
 	@layer starlight.core {

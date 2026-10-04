@@ -19,6 +19,9 @@ TUI/HTTP surface aren't tracked here.
 - New owl branding and supplied icons across desktop profiles, installers, and
   the website, with interactive widget documentation and recorded walkthroughs.
 - Workspace MCP warmup prepares tools without creating a saved session.
+- **Enable beta updates** in Desktop Settings controls Agent and Desktop release
+  checks, with an instability warning and a saved opt-in or opt-out.
+- Checksum-verifying terminal Desktop installers for macOS and Windows.
 
 ### Fixed
 
@@ -26,6 +29,14 @@ TUI/HTTP surface aren't tracked here.
   lifecycle choices, and preserve namespace-managed state through replacement
   (#1612, #1613).
 - Prerelease package versions resolve to valid GitHub release install URLs (#1614).
+- Numbered beta updates are ordered correctly; draft releases are excluded and
+  stable users remain on stable releases. Desktop beta 1 needs one manual upgrade
+  to obtain the new channel-aware updater.
+- macOS bundles select a compatible Rasterio wheel and preserve the app signature
+  through first startup on macOS 14, 15 and 26. Fix BSD sed release-tag parsing.
+- Website logos use the supplied vector artwork and mobile navigation exposes
+  the full Docs index separately from the current page's headings.
+- Unchanged legacy interactive forms retain typed input across rerenders.
 - The entry composer stays temporary until first send; Settings navigation no
   longer creates sessions. Failed sends reuse the created session while the
   draft remains open.
