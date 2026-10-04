@@ -172,7 +172,8 @@ from clio_agent.gact.app import build_app
 # 319 -> 325: independent provenance connection, verification and restart-bound activation.
 # 325 -> 326: marketplace configuration save, separate from runtime Reload.
 # 326 -> 327: durable connected-CLIO marketplace operation history.
-EXPECTED_ROUTE_METHOD_PAIRS = 327
+# 327 -> 328: exact transcript content references for attention selection.
+EXPECTED_ROUTE_METHOD_PAIRS = 328
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

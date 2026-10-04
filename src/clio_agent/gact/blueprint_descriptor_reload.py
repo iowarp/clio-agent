@@ -48,13 +48,11 @@ def _spec(descriptor: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any
 
 
 def _probe(spec: dict[str, Any]) -> list[Any]:
-    from fastmcp import Client
-
-    from clio_agent.tools.mcp_config import transport_from_spec
+    from clio_agent.tools.mcp_runtime import make_mcp_client
     from clio_agent.tools.mcp_server_progress import wait_while_server_works
 
     async def listing() -> list[Any]:
-        async with Client(transport_from_spec(spec)) as client:
+        async with make_mcp_client(spec) as client:
             return list(await client.list_tools())
 
     return asyncio.run(wait_while_server_works(listing(), op_name="blueprint descriptor Reload"))

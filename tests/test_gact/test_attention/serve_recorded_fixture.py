@@ -46,6 +46,11 @@ def main() -> None:
     messages = fixture_transcript()
     for message in messages:
         message.session_id = session.id
+    # The compact test transcript omits invocation IDs. Give its recorded
+    # call/result pairs explicit replay identities; production never infers
+    # identity from display order.
+    for index, part in enumerate(messages[-1].parts[:-1]):
+        part.call_id = f"replay-call-{index // 2}"
     messages[-1].parts[-1] = Part(id="call_sel", type="text", text=fixture_thought())
     app.state.messages[session.id] = messages
     renderer = FixtureRenderer()

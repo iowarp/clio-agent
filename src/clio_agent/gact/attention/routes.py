@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from clio_schemas.attention import AttentionProfile
 from clio_schemas.connected_resources import ContentSelection
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -60,6 +60,7 @@ class AttentionLookupBody(BaseModel):
     profile: AttentionProfile = AttentionProfile()
     cursor: int = Field(default=0, ge=0)
     limit: int = Field(default=16, ge=1, le=32)
+    lm_call_id: str = Field(default="", max_length=256)
 
 
 def _backend(app: FastAPI) -> Any:
@@ -140,6 +141,23 @@ def session_availability(app: FastAPI, sid: str) -> dict[str, Any]:
 
 def register_attention_routes(app: FastAPI) -> None:
     """Mount the attention endpoints on ``app``."""
+
+    @app.get("/v1/sessions/{sid}/messages/{mid}/attention/content")
+    async def get_content_references(
+        sid: str,
+        mid: str,
+        cursor: int = Query(default=0, ge=0),
+    ) -> dict[str, Any]:
+        from clio_agent.gact.attention.content_references import message_content_references
+
+        message = next((m for m in app.state.messages.get(sid, []) if m.id == mid), None)
+        if message is None:
+            raise HTTPException(status_code=404, detail="Message not found in this session")
+        rows = await run_in_threadpool(message_content_references, message)
+        return {
+            "items": rows[cursor : cursor + 100],
+            "next_cursor": cursor + 100 if cursor + 100 < len(rows) else None,
+        }
 
     @app.get("/v1/sessions/{sid}/attention/availability")
     async def get_attention_availability(sid: str) -> dict[str, Any]:

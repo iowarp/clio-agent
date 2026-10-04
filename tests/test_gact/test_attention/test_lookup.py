@@ -10,6 +10,7 @@ from clio_schemas.attention import DECAYED_MAX, UNIFORM_MEAN, AttentionProfile
 from clio_schemas.connected_resources import ContentSelection
 
 from clio_agent.gact.attention.lookup import lookup_attention
+from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.store import AttentionStore
 from clio_agent.gact.attention.transcript_map import transcript_texts
 from tests.test_gact.test_attention._support import (
@@ -71,6 +72,7 @@ def test_overlapping_generated_selections_reduce_unique_steps(profile: Attention
     assert view["sources"] == one["sources"]
     assert view["blocks"] == one["blocks"]
     assert view["profile_weights"] == one["profile_weights"]
+    assert view["selected_references"] == [whole.model_dump(), overlap.model_dump()]
 
 
 def test_reverse_lookup_deduplicates_source_positions_and_keeps_profiles_inspectable() -> None:
@@ -93,6 +95,12 @@ def test_reverse_lookup_deduplicates_source_positions_and_keeps_profiles_inspect
     assert decayed["mass"] == one["mass"]
     assert decayed["profile_revision"] == DECAYED_MAX.revision
     assert decayed["capture_sha256"] == one["capture_sha256"]
+    assert one["heat"]["blocks"]
+    for block in one["heat"]["blocks"]:
+        source_text = block["source_text"]
+        assert all(0 <= lo < hi <= len(source_text) for lo, hi, _ in block["display_runs"])
+        assert all(0 <= intensity <= 1 for _, _, intensity in block["display_runs"])
+    assert one["heat"]["profile_revision"] == UNIFORM_MEAN.revision
 
 
 def test_unavailable_coordinates_stale_revision_and_cross_session_are_explicit() -> None:
@@ -130,3 +138,16 @@ def test_reverse_lookup_pages_calls_and_excludes_content_created_later() -> None
     assert result["views"] == []  # the output cannot be its own prompt source
     assert result["next_cursor"] == 1
     assert _lookup([ref], reverse=True, cursor=1)["next_cursor"] is None
+
+
+def test_evidence_lookup_is_bound_to_the_exact_model_call() -> None:
+    source = _ref("u0", "text")
+    result = _lookup(
+        [source],
+        reverse=True,
+        calls=[_call(), replace(_call(), event_id="later")],
+        lm_call_id="later",
+    )
+    assert [view["lm_call_id"] for view in result["views"]] == ["later"]
+    with pytest.raises(AttentionUnavailable, match="referenced model call"):
+        _lookup([source], reverse=True, lm_call_id="another-session-call")

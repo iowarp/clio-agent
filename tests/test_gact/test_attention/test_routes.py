@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.attention import routes as attention_routes
 from clio_agent.gact.attention.transcript_map import transcript_texts
+from clio_agent.gact.parts import Part
 from tests.test_gact.test_attention._support import (
     SID,
     FixtureRenderer,
@@ -65,6 +66,24 @@ def _client(readers: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> TestCli
 
 def _availability(client: TestClient) -> dict[str, Any]:
     return client.get(f"/v1/sessions/{SID}/attention/availability").json()
+
+
+def test_content_references_page_exact_parts_and_reject_another_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client({}, monkeypatch)
+    message = client.app.state.messages[SID][-1]
+    message.parts = [Part(id=f"p{i}", type="text", text=f"Text {i}") for i in range(103)]
+    path = f"/v1/sessions/{SID}/messages/{message.id}/attention/content"
+    page = client.get(path)
+    assert page.status_code == 200
+    assert len(page.json()["items"]) == 100
+    assert page.json()["next_cursor"] == 100
+    rest = client.get(path, params={"cursor": 100}).json()
+    assert [item["reference"]["part_id"] for item in rest["items"]] == ["p100", "p101", "p102"]
+    assert rest["next_cursor"] is None
+    assert client.get(path.replace(SID, "another-session")).status_code == 404
+    assert client.get(path, params={"cursor": -1}).status_code == 422
 
 
 def test_profile_parameters_are_validated_before_capture_query(

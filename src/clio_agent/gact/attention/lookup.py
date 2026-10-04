@@ -17,6 +17,7 @@ from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.selection import locate_output, output_steps
 from clio_agent.gact.attention.service import SelectionRequest, explain_selection, resolve_generated
 from clio_agent.gact.attention.store import AttentionStore
+from clio_agent.gact.attention.textmap import locate_all
 from clio_agent.gact.attention.transcript_map import TranscriptText, anchor_texts, transcript_texts
 
 
@@ -154,6 +155,7 @@ def _source_view(
     # call aggregation above retains every generated token exactly once.
     ranked = sorted(zip(rows, intensity, strict=True), key=lambda pair: -pair[0]["score"])
     generated = []
+    output_blocks = []
     for message in messages:
         if message.turn_id != call.turn_id or message.role != "assistant":
             continue
@@ -177,6 +179,32 @@ def _source_view(
                     }
                 ).model_dump()
             )
+            hits = locate_all(call.content or "", text.text)
+            if len(hits) != 1:
+                continue
+            mapped = [
+                (row, scale, hits[0].from_haystack(row["start"], row["end"]))
+                for row, scale in zip(rows, intensity, strict=True)
+                if row["retained_tokens"] > 0
+            ]
+            mapped_rows = [(row, scale, span) for row, scale, span in mapped if span is not None]
+            mass = sum(row["mass"] for row, _, _ in mapped_rows) / max(1, len(rows))
+            output_blocks.append(
+                {
+                    "message_id": text.message_id,
+                    "part_id": text.part_id,
+                    "field": text.field,
+                    "kind": text.kind,
+                    "call_id": text.call_id,
+                    "content_revision": text.content_revision,
+                    "source_text": text.text,
+                    "share": mass,
+                    "mean": mass / max(1, len(mapped_rows)),
+                    "tokens": len(mapped_rows),
+                    "runs": [[*span, row["mass"]] for row, _, span in mapped_rows],
+                    "display_runs": [[*span, scale] for _, scale, span in mapped_rows],
+                }
+            )
     return {
         "kind": "source",
         "available": True,
@@ -189,6 +217,17 @@ def _source_view(
         "profile_revision": profile.revision,
         "sources": matched,
         "generated_references": generated,
+        "heat": {
+            "available": True,
+            "message_id": generated[0]["message_id"] if generated else "",
+            "selection": {"text": "Later use of selected sources"},
+            "profile": profile.model_dump(),
+            "profile_revision": profile.revision,
+            "blocks": output_blocks,
+            "sources": [],
+            "flags": [],
+            "residual": reduction.residual,
+        },
         "prompt_positions": sorted(positions),
         "score": reduction.block_score(sorted(positions)),
         "mass": sum(reduction.mean_mass[p] for p in positions),
@@ -213,12 +252,19 @@ def lookup_attention(
     profile: AttentionProfile,
     cursor: int = 0,
     limit: int = 16,
+    lm_call_id: str = "",
 ) -> dict[str, Any]:
     """Deduplicate references and aggregate once per capture, with explicit gaps.
 
     Reverse lookup pages recorded calls rather than truncating them silently.
     Captures remain local to the configured CLIO host; this reader never SSHs.
     """
+    if lm_call_id:
+        calls = [call for call in calls if call.event_id == lm_call_id]
+        if not calls:
+            raise AttentionUnavailable(
+                "lm_call_not_found", "the referenced model call is unavailable in this session"
+            )
     unique = {ref.model_dump_json(): ref for ref in selections}
     resolved = []
     unavailable = []
@@ -232,18 +278,21 @@ def lookup_attention(
     next_cursor: int | None = None
     if direction == "generated_to_source":
         groups: dict[str, list[SelectionRequest]] = defaultdict(list)
+        references: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for ref, _, start, end in resolved:
             request = _request(ref, start, end, profile)
             try:
                 selected = resolve_generated(messages, calls, request)
                 groups[selected.span.call.event_id].append(request)
+                references[selected.span.call.event_id].append(ref.model_dump())
             except AttentionUnavailable as exc:
                 unavailable.append({"selection": ref.model_dump(), **exc.to_wire()})
-        for requests in groups.values():
+        for call_id, requests in groups.items():
             try:
                 views.append(
                     {
                         "kind": "generated",
+                        "selected_references": references[call_id],
                         **explain_selection(
                             messages=messages,
                             calls=calls,

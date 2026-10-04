@@ -509,6 +509,42 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   macOS startup passed on 14, 15 and 26. This is packaging evidence, not Delta GPU
   or end-to-end inference qualification.
 
+### Transcript attention and evidence checkpoint (October 4)
+
+- The message content picker returns authoritative part/call identities and exact
+  revisions for text, reasoning, arguments, results, artifacts and media. Whole
+  media references explicitly report missing coordinate maps. The picker is
+  paginated and authenticated-connection scoped; it does not expose image bytes.
+- Combined generated selections and reverse source lookup can apply one capture's
+  heat to the transcript. Reverse heat uses all mapped retained output rows, not
+  the truncated highest-token preview. Tool-result detail dialogs preserve raw
+  Unicode coordinates and refuse changed arguments/results. Lifted tool reasoning
+  retains its stored identity. No numerical reducer was duplicated in the UI.
+- Evidence links carry selections, resolved profile/revision, model call and capture
+  digest. Reopening a link re-reads that exact capture, opens the owning activity
+  and tool details, and refuses a missing/different capture. Strict-mode remounts,
+  session changes, clearing selections and pending-request cancellation are covered.
+- Browser replay: whole-answer selection, source inspection, exact tool-result
+  navigation and heat after reload, reverse lookup, custom decay, selection retention
+  through Settings, 390-pixel light/dark views and tap-open explanations. Screenshots:
+  `attention-tool-result-restored-light.png`, `attention-profile-narrow-light.png`,
+  `attention-reverse-lookup-narrow-light.png`, `attention-explanation-narrow-dark.png`,
+  `attention-reverse-heat-narrow-dark.png`. The replay supplies explicit test call IDs
+  for its recorded pairs; production does not infer identities from order. This is
+  recorded-capture qualification, not fresh inference or a completed OPAL demo.
+- Checks: all **73 backend attention tests**, **4 route/architecture checks**, focused
+  mypy on three modules, **64 initial UI regressions**, then **20 evidence/editor
+  regressions** and **46 strict-mount/turn regressions** passed. UI typecheck, full
+  lint and file-size guards passed. New pushed-head CI remains required.
+- CI exposed two earlier marketplace regressions: the editor conflict test used its
+  old unscoped cache key, and descriptor Reload constructed a bare MCP client.
+  The test now addresses the authenticated key; Reload uses the shared client
+  factory. **5 descriptor/factory tests** and a real HTTP initialize/list against
+  the isolated qualification server passed. Neither change weakens a guard.
+- Agent `ee64e79c` passed schema, Pages, Docker and packaged macOS startup on 14/15/26;
+  Agent CI failed only the factory guard above. UI `f40e33a2` passed core CI/schema;
+  workspace CI failed the editor conflict test above. Both require fresh CI.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
@@ -523,10 +559,11 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    rollback, interrupted-operation receipts, source configuration/pins and Blueprint
    authoring integration are implemented. HTTP MCP Reload is browser-qualified;
    actual active remote-session fleet replacement and packaged stdio remain open.
-4. Finish full-transcript selection producers, multi-selection transcript heat and
-   SPOTTER finding links. Shared profiles, local SPOTTER capture inspection,
-   bidirectional text lookup and stable tool-call heat identities are implemented;
-   fresh inference and both demos remain unqualified. No fabricated image patches.
+4. Finish image-region/structured A2UI selection producers and SPOTTER finding links.
+   Shared profiles, local SPOTTER capture inspection, whole-block/media references,
+   bidirectional lookup, multi-selection transcript heat, tool details and exact
+   capture/profile navigation are implemented. Fresh inference and both demos
+   remain unqualified. No fabricated image patches.
 5. Complete browser review of every changed control, empty/error states,
    keyboard, light/dark, narrow layouts and long transcripts. Complete packaged
    install/update-channel checks and exact dependency qualification.
