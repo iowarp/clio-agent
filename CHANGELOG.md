@@ -36,6 +36,8 @@ TUI/HTTP surface aren't tracked here.
   through first startup on macOS 14, 15 and 26. Fix BSD sed release-tag parsing.
 - Website logos use the supplied vector artwork and mobile navigation exposes
   the full Docs index separately from the current page's headings.
+- Production SVG logo and wordmark filenames retain the image extension so
+  Desktop webviews and static servers display the supplied artwork correctly.
 - Website download labels match the stable installers; beta downloads have an
   explicit link and instability warning.
 - Unchanged legacy interactive forms retain typed input across rerenders.

@@ -2,7 +2,7 @@
 
 This records the integrated follow-up to the [A2UI handoff](a2ui-release-handoff-2026-10-03.md).
 The release combines the release-user-issues fixes with the A2UI campaign, using
-Agent 0.9.5b2, UI 0.11.3-beta.3 and published clio-schemas 0.5.3.
+Agent 0.9.5b2, UI 0.11.3-beta.4 and published clio-schemas 0.5.3.
 CI conclusions and merged dependency identities remain authoritative on the release PRs.
 
 ## Live model and browser acceptance
@@ -118,6 +118,13 @@ override a failing full-suite check. Existing platform-gated skips are not passe
   advertised the package's beta version. The heading and notes now identify the
   stable downloads; beta downloads have a separate link and instability warning.
   A browser regression checks the displayed channel against the installer URL.
+- Inspection of the release web archive caught a production-only SVG filename
+  bug: the UI plugin emitted `.svg_xml`, which decoded with naturalWidth=0 for
+  both the logo and wordmark. UI beta 4 emits `.svg`; a real branded production
+  build served through HTTP decoded both at naturalWidth=1024 and rendered them.
+  The regression failed before the fix; all 18 branding tests, lint, typecheck
+  and production build passed afterward. The final UI pin is `e0d30349` (PRs
+  #535/#536); runtime UI and Rust code are unchanged from the qualified beta 3.
 - Desktop beta 1 requires one manual Desktop upgrade to obtain channel-aware
   updates. Its hardcoded stable feed cannot be pointed at beta without exposing
   stable users. Drafts remain excluded; beta 2 becomes available after publication.
