@@ -218,7 +218,8 @@ echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFOR
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
-  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"]
+  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"],
+  "env": {"PYTHONDONTWRITEBYTECODE": "1"}
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
