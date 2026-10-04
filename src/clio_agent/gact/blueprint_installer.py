@@ -18,6 +18,12 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.blueprint_git import run_git
 from clio_agent.gact.blueprint_identity import install_destination
+from clio_agent.gact.blueprint_install_files import read_install_metadata
+from clio_agent.gact.blueprint_install_revision import InstallRevision
+from clio_agent.gact.blueprint_runtime_preparation import (
+    prepare_blueprint_runtime,
+    require_unchanged_runtime,
+)
 from clio_agent.gact.git_source import normalize_git_clone_source
 
 logger = logging.getLogger(__name__)
@@ -53,7 +59,6 @@ def install_agent_blueprint(
     from clio_agent.gact.agent_blueprint_refresh import clear_uninstall_tombstones, install_row
     from clio_agent.gact.agent_blueprint_requires import AgentBlueprintInstallRefused
     from clio_agent.gact.agent_blueprint_sources import source_registry_id
-    from clio_agent.gact.blueprint_mutations import replace_installed_blueprint
 
     home = home or Path.home()
     source_id = source_id or source_registry_id(source, ref)
@@ -135,53 +140,75 @@ def install_agent_blueprint(
             raise ValueError("source contains no Agent Blueprint folders with AGENT.md")
         installed: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-        for candidate in candidates:
-            parsed = parse_agent_blueprint_root(candidate, scope=scope)
-            identity = f"{scope}::{source_id}::{parsed.id}"
-            skips = skip_blueprint_ids or {}
-            skip_reason = str(skips.get(identity) or skips.get(parsed.id, ""))
-            if skip_reason:
-                logger.info("blueprint_install_skipped reason=%s id=%s", skip_reason, parsed.id)
-                skipped.append({"id": parsed.id, "reason": skip_reason})
-                continue
-            if not parsed.enabled:
-                if skip_invalid:
-                    logger.warning(
-                        "blueprint_install_skipped reason=validation_errors id=%s "
-                        "source=%s errors=%s",
-                        parsed.id,
-                        source,
-                        "; ".join(parsed.validation_errors),
-                    )
-                    skipped.append(
-                        {"id": parsed.id, "validation_errors": list(parsed.validation_errors)}
-                    )
+        with InstallRevision(install_root) as revision:
+            staged_rows: list[tuple[Path, Path, str]] = []
+            for candidate in candidates:
+                parsed = parse_agent_blueprint_root(candidate, scope=scope)
+                identity = f"{scope}::{source_id}::{parsed.id}"
+                skips = skip_blueprint_ids or {}
+                skip_reason = str(skips.get(identity) or skips.get(parsed.id, ""))
+                if skip_reason:
+                    logger.info("blueprint_install_skipped reason=%s id=%s", skip_reason, parsed.id)
+                    skipped.append({"id": parsed.id, "reason": skip_reason})
                     continue
-                raise AgentBlueprintInstallRefused(list(parsed.validation_errors))
-            metadata = {
-                "source": source,
-                "source_id": source_id,
-                "source_kind": source_kind,
-                "ref": ref,
-                "commit": commit,
-                "pinned_commit": pinned_commit,
-                "installed_at": datetime.now(UTC).isoformat(),
-                "scope": scope,
-            }
-            dest = install_destination(install_root, parsed.id, metadata)
-            if preserve_invalid:
-                from clio_agent.gact.agent_blueprint_refresh import _default_blueprint_root_disabled
+                if not parsed.enabled:
+                    if skip_invalid:
+                        logger.warning(
+                            "blueprint_install_skipped reason=validation_errors id=%s "
+                            "source=%s errors=%s",
+                            parsed.id,
+                            source,
+                            "; ".join(parsed.validation_errors),
+                        )
+                        skipped.append(
+                            {"id": parsed.id, "validation_errors": list(parsed.validation_errors)}
+                        )
+                        continue
+                    raise AgentBlueprintInstallRefused(list(parsed.validation_errors))
+                metadata = {
+                    "source": source,
+                    "source_id": source_id,
+                    "source_kind": source_kind,
+                    "ref": ref,
+                    "commit": commit,
+                    "pinned_commit": pinned_commit,
+                    "installed_at": datetime.now(UTC).isoformat(),
+                    "scope": scope,
+                }
+                dest = install_destination(install_root, parsed.id, metadata)
+                if preserve_invalid:
+                    from clio_agent.gact.agent_blueprint_refresh import (
+                        _default_blueprint_root_disabled,
+                    )
 
-                legacy = install_root / parsed.id
-                if legacy.exists() and _default_blueprint_root_disabled(legacy)[0]:
-                    dest = legacy
-            previous_checksum, metadata = replace_installed_blueprint(
-                candidate,
-                dest,
-                metadata,
-                preserve_invalid=preserve_invalid,
-                allow_pin_change=allow_pin_change,
-            )
-            installed.append(install_row(dest, scope, metadata, previous_checksum, source, app=app))
-        clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)
+                    legacy = install_root / parsed.id
+                    if legacy.exists() and _default_blueprint_root_disabled(legacy)[0]:
+                        dest = legacy
+                staged, previous_checksum = revision.stage(
+                    candidate,
+                    dest,
+                    metadata,
+                    preserve_invalid=preserve_invalid,
+                    allow_pin_change=allow_pin_change,
+                )
+                staged_rows.append((staged, dest, previous_checksum))
+            # Reject every static error before starting any candidate MCP process.
+            prepared = [
+                (
+                    dest,
+                    previous_checksum,
+                    prepare_blueprint_runtime(staged, destination=dest, scope=scope, cwd=cwd),
+                )
+                for staged, dest, previous_checksum in staged_rows
+            ]
+            require_unchanged_runtime()
+            revision.apply()
+            for dest, previous_checksum, checks in prepared:
+                row = install_row(
+                    dest, scope, read_install_metadata(dest), previous_checksum, source, app=app
+                )
+                row["runtime_checks"] = checks
+                installed.append(row)
+            clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)
+            revision.finish()
         return {"installed": installed, "skipped": skipped}

@@ -15,7 +15,7 @@ from clio_agent.gact.agent_blueprint_sources import (
 )
 from clio_agent.gact.agent_blueprints import read_install_metadata
 from clio_agent.gact.app import build_app
-from clio_agent.gact.blueprint_drafts import authoring_root
+from clio_agent.gact.blueprint_drafts import authoring_root, authoring_state
 from clio_agent.gact.blueprint_source_configuration import (
     SourceConfigurationConflict,
     require_unchanged,
@@ -134,6 +134,10 @@ def test_configured_checkout_is_used_for_authoring_only(client: TestClient, tmp_
     )
     assert not saved.get("reload_required")
     assert authoring_root(root) == checkout
+    state = authoring_state(root)
+    assert state["source"] == str(checkout)
+    assert state["reload_source"] == str(source)
+    assert state["separate_checkout"] is True
     assert (root / "AGENT.md").read_text().endswith("Original\n")
 
 

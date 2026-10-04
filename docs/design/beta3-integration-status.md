@@ -473,6 +473,42 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   environment/config reference files; regeneration and all **26 reference tests**
   now pass. A fresh pushed-head CI run is still required.
 
+### Marketplace staged Reload checkpoint (October 4)
+
+- Reload stages and validates every selected pack before starting fresh MCP
+  initialize/list probes. It checks each active workspace's effective configuration,
+  preserves explicit descriptor enablement, and refuses missing tools or changes to
+  credential-bearing endpoints. New descriptors are never enabled implicitly.
+- A journaled installation revision restores all previous packs on swap/audit
+  failure and recovers interrupted swaps before discovery. Source/configuration,
+  installed-file and descriptor races fail closed. The existing whole-turn gate
+  prevents mixed revisions in an active turn; prior fleets are recycled and rebuilt
+  on demand, rather than kept alive across a failed preparation.
+- Durable operation receipts survive navigation and restart. Duplicate Reload for
+  the same target joins its active operation. An interrupted operation is explicitly
+  unknown until reconciliation, never reported as successful cleanup or activation.
+  Receipts expose checksums and sanitized MCP outcomes without source credentials.
+- Blueprint cards and the editor show marketplace ownership. Editor buffers, file
+  queries and operation receipts include authenticated connection identity. Unsaved
+  edits survive navigation and concurrent saved-file changes require review. The
+  editor distinguishes its authoring checkout from the registered Reload source.
+- Browser review: an invalid MCP launcher retained installed version 1.2; a real
+  HTTP MCP initialize/list allowed version 1.3 and its receipt persisted after
+  navigation/reload. Light/dark 390 px receipts and the Blueprint editor are retained
+  under `marketplace-reload-*.png`, `marketplace-failed-reload-retains-1.2.png` and
+  `marketplace-blueprint-editor-ownership-light.png`. No inference or tool execution
+  was used. A stdio probe on this Windows connected-storage fixture was refused
+  because its active child-process fence could not enforce source exclusions; that
+  path remains unqualified in this environment. No sandbox protection was bypassed.
+- Automated: **239 backend regressions passed**, then **16** staging/configuration
+  tests after the final static-before-runtime change and **4** descriptor/workspace
+  tests. UI operation/settings/streaming tests: **26 passed**; editor account/conflict
+  tests: **3 passed**; core repository: **8 passed**. Typecheck, UI lint, Ruff and
+  file-size/silent-fallback guards passed. Fresh CI is required for this checkpoint.
+- The preceding pushed Agent `82e1cc43` and UI `b0ca41af` passed CI. Agent packaged
+  macOS startup passed on 14, 15 and 26. This is packaging evidence, not Delta GPU
+  or end-to-end inference qualification.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
@@ -483,10 +519,10 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    default-build and additional-driver qualification, fresh attention verification,
    and remaining service connection flows. Provenance connect/use/restart is now
    qualified independently and together on the isolated CLIO.
-3. Complete marketplace #1627: prepare/verify/rollback the complete runtime and MCP
-   revision, qualify live reload, and finish operation-receipt recovery UI and
-   Blueprint-tab integration. Source configuration/pins and compact management rows
-   are implemented and browser-reviewed.
+3. Finish marketplace cross-host live fleet qualification. Staging, MCP readiness,
+   rollback, interrupted-operation receipts, source configuration/pins and Blueprint
+   authoring integration are implemented. HTTP MCP Reload is browser-qualified;
+   actual active remote-session fleet replacement and packaged stdio remain open.
 4. Finish full-transcript selection producers, multi-selection transcript heat and
    SPOTTER finding links. Shared profiles, local SPOTTER capture inspection,
    bidirectional text lookup and stable tool-call heat identities are implemented;

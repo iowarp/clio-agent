@@ -136,8 +136,18 @@ def authoring_state(root: Path) -> dict[str, Any]:
             source = authoring_root(root)
         except ValueError:
             source = None
+        from clio_agent.gact.blueprint_source_configuration import configured_install
+
+        configured = configured_install(install)
+        reload_source = str(configured.get("source") or root)
+        checkout_separate = bool(configured.get("working_checkout")) and (
+            Path(str(configured["working_checkout"])).expanduser().resolve()
+            != Path(reload_source).expanduser().resolve()
+        )
         return {
-            "source": str(install.get("source") or root),
+            "source": str(source or reload_source),
+            "reload_source": reload_source,
+            "separate_checkout": checkout_separate,
             "git_source": bool(install.get("commit") or install.get("source_kind") == "git"),
             "scope": str(install.get("scope") or "session"),
             "installed_revision": str(install.get("commit") or install.get("checksum") or ""),

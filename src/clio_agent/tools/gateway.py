@@ -43,6 +43,7 @@ from clio_agent.tools.catalog import (
     classification_tags,
     normalize_mcp_annotations,
 )
+from clio_agent.tools.catalog_visibility import expert_visibility as _expert_visibility
 from clio_agent.tools.mcp_config import (
     BUILTIN_SERVER_NAMES,
     MCPServerSpec,
@@ -725,7 +726,9 @@ def _list_tools_sync(gw: FastMCP) -> list[Any]:
     return _run_coro_sync(_list)
 
 
-def _list_declared_tools(spec: MCPServerSpec, *, attempt_key: object | None = None) -> list[Any]:
+def _list_declared_tools(
+    spec: MCPServerSpec, *, attempt_key: object | None = None, cwd: str | None = None
+) -> list[Any]:
     """List one declared server's BARE tools via a LISTING-OWNED transport.
 
     Exclusive ownership (finding 1): builds its OWN transport from the spec and
@@ -756,7 +759,7 @@ def _list_declared_tools(spec: MCPServerSpec, *, attempt_key: object | None = No
     from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
-        client = Client(transport_for(spec))
+        client = Client(transport_for(spec, cwd=cwd))
         listing_attempts.register(attempt_key, asyncio.get_running_loop(), client)
         try:
             async with client:
@@ -807,30 +810,6 @@ def _tool_annotations(tool: Any) -> Mapping[str, Any] | None:
     """
 
     return normalize_mcp_annotations(tool)
-
-
-def _expert_visibility(experts: Iterable[Any] | None) -> dict[str, set[str]]:
-    """Map each declared tool name to the expert ids that list it in ``tools:``.
-
-    A tool is visible to an expert iff that expert lists it. The planner sees a
-    tool iff at least one expert that lists it is planner-visible.
-    """
-    visible: dict[str, set[str]] = {}
-    for expert in experts or []:
-        expert_id = str(getattr(expert, "id", "") or "").strip()
-        if not expert_id:
-            continue
-        metadata = getattr(expert, "metadata", {}) or {}
-        planner_visible = bool(metadata.get("planner_visible", True))
-        for tool_name in getattr(expert, "tools", []) or []:
-            name = str(tool_name).strip()
-            if not name:
-                continue
-            scopes = visible.setdefault(name, set())
-            scopes.add(expert_id)
-            if planner_visible:
-                scopes.add("planner")
-    return visible
 
 
 def build_tool_catalog(

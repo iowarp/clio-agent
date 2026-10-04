@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from clio_agent.gact import agent_blueprint_sources as sources
-from clio_agent.gact import default_registry_migration as migration
+from clio_agent.gact import blueprint_install_revision as revision
 from clio_agent.gact.agent_blueprint_refresh import (
     uninstall_agent_blueprint,
     update_installed_agent_blueprint,
@@ -42,7 +42,7 @@ def test_failed_copy_preserves_installed_revision(
     def fail_copy(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(migration, "copy_blueprint_tree", fail_copy)
+    monkeypatch.setattr(revision, "copy_blueprint_tree", fail_copy)
     with pytest.raises(OSError, match="disk full"):
         _install(source, tmp_path)
     assert (root / "AGENT.md").read_text().endswith("Original\n")
@@ -54,14 +54,14 @@ def test_failed_swap_restores_previous_revision(
 ) -> None:
     source = _pack(tmp_path / "source")
     root = _install(source, tmp_path)
-    rename = migration.rename_extended
+    rename = revision.rename_extended
 
     def fail_new(source: Path, destination: Path) -> None:
-        if ".new-" in source.name:
+        if source.name.startswith("new-"):
             raise OSError("sharing violation")
         rename(source, destination)
 
-    monkeypatch.setattr(migration, "rename_extended", fail_new)
+    monkeypatch.setattr(revision, "rename_extended", fail_new)
     with pytest.raises(OSError, match="sharing violation"):
         _install(source, tmp_path)
     assert (root / "AGENT.md").read_text().endswith("Original\n")

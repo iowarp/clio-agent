@@ -176,7 +176,10 @@ def discover_agent_blueprints(
     from clio_agent.gact.agent_blueprint_refresh import (  # noqa: PLC0415 - cycle-free lazily
         ensure_default_registry_bootstrap,
     )
+    from clio_agent.gact.blueprint_install_revision import recover_install_revisions
 
+    for root, _ in agent_blueprint_roots(home, cwd):
+        recover_install_revisions(root)
     bootstrap_diagnostic = ensure_default_registry_bootstrap(home=home, cwd=cwd)
     blueprints: list[AgentBlueprintDefinition] = []
     for root, scope in agent_blueprint_roots(home, cwd):

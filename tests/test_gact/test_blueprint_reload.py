@@ -14,6 +14,7 @@ from clio_agent.gact.agent_blueprints import (
     install_agent_blueprint,
     update_installed_agent_blueprint,
 )
+from clio_agent.gact.blueprint_operations import list_blueprint_operations
 from clio_agent.gact.blueprint_reload import apply_blueprint_change
 from clio_agent.gact.turn_runner import TurnRunner
 
@@ -113,3 +114,32 @@ async def test_client_cancellation_does_not_release_boundary_during_copy() -> No
         await request
     await queued
     assert seen == ["committed", "next turn"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_reload_joins_the_same_durable_operation() -> None:
+    app = _app()
+    entered, finish = threading.Event(), threading.Event()
+    calls: list[str] = []
+
+    def change() -> dict[str, Any]:
+        calls.append("apply")
+        entered.set()
+        assert finish.wait(5)
+        return {"installed": []}
+
+    target = {"source_id": "src_repeat", "scope": "global"}
+    first = asyncio.create_task(apply_blueprint_change(app, change, label="Reload", target=target))
+    assert await asyncio.to_thread(entered.wait, 5)
+    repeated = asyncio.create_task(
+        apply_blueprint_change(app, change, label="Reload", target=target)
+    )
+    await asyncio.sleep(0)
+    active = await asyncio.to_thread(list_blueprint_operations, app)
+    assert any(row.get("target") == target and row["status"] == "preparing" for row in active)
+    finish.set()
+    a, b = await asyncio.gather(first, repeated)
+    assert a["operation"]["id"] == b["operation"]["id"]
+    assert calls == ["apply"]
+    history = await asyncio.to_thread(list_blueprint_operations, app)
+    assert next(row for row in history if row["id"] == a["operation"]["id"])["status"] == "applied"

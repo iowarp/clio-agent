@@ -435,6 +435,7 @@ def install_agent_blueprint_source(
     *,
     cwd: Path,
     scope: Literal["global", "workspace"] = "global",
+    strict: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Install every valid blueprint exposed by a refreshed marketplace source.
 
@@ -472,7 +473,7 @@ def install_agent_blueprint_source(
             cwd=cwd,
             ref=str(refreshed.get("ref") or ""),
             pinned_commit=str(refreshed.get("pinned_commit") or ""),
-            skip_invalid=True,
+            skip_invalid=not strict,
             skip_blueprint_ids=source_install_skip_ids(scope=scope, cwd=cwd),
         )
     except Exception as exc:  # noqa: BLE001 - persisted as an explicit source failure

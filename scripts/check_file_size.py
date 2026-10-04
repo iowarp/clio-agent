@@ -202,7 +202,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 891,
+    "src/clio_agent/gact/agent_blueprints.py": 888,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -1147,7 +1147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # trace_dropped_x_mcp_header_tools) at the listing choke point -- the
     # diagnostic's own logic lives in that owner module; only the lazy
     # import + one await land here.
-    "src/clio_agent/tools/gateway.py": 960,
+    "src/clio_agent/tools/gateway.py": 939,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

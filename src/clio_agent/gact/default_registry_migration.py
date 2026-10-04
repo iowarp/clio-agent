@@ -58,8 +58,11 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+from filelock import FileLock, Timeout
 
 from clio_agent.gact.blueprint_install_files import copy_blueprint_tree
 from clio_agent.platform_paths import rename_extended, rmtree_extended
@@ -165,10 +168,8 @@ def registry_install_lock(install_root: Path) -> Iterator[bool]:
     process holds it -- the caller skips this time instead of blocking.
     """
 
-    from filelock import FileLock, Timeout  # noqa: PLC0415
-
     install_root.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(install_root / LOCK_NAME), timeout=0)
+    lock = _registry_file_lock(str((install_root / LOCK_NAME).resolve()))
     try:
         lock.acquire()
     except Timeout:
@@ -178,6 +179,12 @@ def registry_install_lock(install_root: Path) -> Iterator[bool]:
         yield True
     finally:
         lock.release()
+
+
+@lru_cache(maxsize=128)
+def _registry_file_lock(path: str) -> FileLock:
+    """Share lock instances so nested discovery/install calls remain reentrant."""
+    return FileLock(path, timeout=0)
 
 
 def lock_busy_diagnostic() -> str:

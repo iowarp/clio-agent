@@ -55,7 +55,7 @@ from clio_agent.gact.agents.resolution import (
     _runtime_workspace_catalog_cwd,
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
-from clio_agent.gact.blueprint_identity import select_blueprint
+from clio_agent.gact.blueprint_identity import identity_fields, select_blueprint
 from clio_agent.gact.blueprint_mutations import BLUEPRINT_MUTATION_LOCK
 from clio_agent.gact.blueprint_reload import apply_blueprint_change
 from clio_agent.gact.blueprint_source_configuration import (
@@ -118,6 +118,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.gact.routes.blueprint_identity import register_identity_error_handler
 
     register_identity_error_handler(app)
+    from clio_agent.gact.routes.blueprint_operations import register_blueprint_operation_routes
+
+    register_blueprint_operation_routes(app)
     from clio_agent.gact.routes.blueprint_source_configuration import (
         register_source_configuration_route,
     )
@@ -208,13 +211,21 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ) -> dict[str, Any]:
                     require_unchanged(original)
                     installed_source, installation = _install_agent_blueprint_source(
-                        prepared, cwd=target, scope=install_scope
+                        prepared, cwd=target, scope=install_scope, strict=True
                     )
                     _upsert_agent_blueprint_source(installed_source)
                     return {"source": installed_source, **installation}
 
                 return await apply_blueprint_change(
-                    app, install_refreshed, label="Reload marketplace"
+                    app,
+                    install_refreshed,
+                    label="Reload marketplace",
+                    verify_runtime=True,
+                    target={
+                        "source_id": source_id,
+                        "scope": scope,
+                        "workspace_id": str(row.get("workspace_id") or ""),
+                    },
                 )
         raise HTTPException(
             status_code=404,
@@ -438,6 +449,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     cwd=cwd or Path.cwd(),
                 ),
                 label="Reload blueprint",
+                verify_runtime=True,
+                target={
+                    "blueprint_id": blueprint_id,
+                    "scope": scope,
+                    "workspace_id": str(body.get("workspace_id") or ""),
+                },
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -667,7 +684,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception as exc:  # noqa: BLE001
                 connect_error = repr(exc)
                 status = "error"
-        app.state.external_mcp_servers[sid] = {
+        server = {
             "id": sid,
             "name": descriptor.get("name") or descriptor_id,
             "status": status,
@@ -676,10 +693,21 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             "spec": spec,
             "source": "agent_blueprint",
             "agent_blueprint_id": blueprint_id,
+            "agent_blueprint_identity": identity_fields(blueprint)["identity"],
             "descriptor_id": descriptor_id,
         }
         if connect_error:
-            app.state.external_mcp_servers[sid]["error"] = connect_error
+            server["error"] = connect_error
+        from clio_agent.gact.blueprint_descriptor_reload import store_enabled_descriptor
+
+        await asyncio.to_thread(
+            store_enabled_descriptor,
+            app,
+            sid,
+            server,
+            blueprint.root,
+            str((blueprint.metadata.get("install") or {}).get("checksum") or ""),
+        )
         return {
             "id": sid,
             "name": descriptor.get("name") or descriptor_id,
