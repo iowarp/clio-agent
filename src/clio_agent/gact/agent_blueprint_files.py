@@ -151,7 +151,7 @@ def list_blueprint_files(root: Path) -> list[dict[str, Any]]:
         for child in children:
             if cap <= 0:
                 return
-            if child.name in _BLUEPRINT_FILE_SKIP_DIRS:
+            if child.name in _BLUEPRINT_FILE_SKIP_DIRS or child.name == ".clio-install.md":
                 continue
             try:
                 is_dir = child.is_dir()

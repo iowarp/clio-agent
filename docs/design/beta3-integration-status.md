@@ -230,6 +230,40 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   transparent activation of not-yet-materialized entries, and final marketplace
   composition/qualification remain open. Do not treat this as closing #1627.
 
+### Blueprint authoring and turn-boundary checkpoint (October 4)
+
+- Save draft writes an isolated, workspace/source-qualified tree in Agent state.
+  Invalid drafts do not modify source or runtime. Byte hashes protect concurrent
+  editors; clean files pick up source edits while dirty files preserve conflicts.
+- Publish validates the draft, detects upstream changes, and replaces selected
+  authoring files individually. Its resumable receipt does not imply a filesystem
+  transaction across the entire directory. Explicit Git options commit only the
+  selected blueprint paths and optionally push to the configured upstream;
+  unrelated staged work is retained. Runtime application remains a separate Reload.
+- Reload gates whole turns and dependent child turns, queues new turns, releases
+  waiting-session fleet holds, and recycles idle MCP fleets before installation.
+  Request cancellation does not release the guard while a filesystem worker is
+  still committing. Durable operation receipts and revision events record outcomes.
+  Session activation metadata receives the applied checksum. Runtime startup/probe
+  qualification for changed MCP implementations still needs live acceptance.
+- The Blueprint tab now separates Save draft, Publish and Reload, retains unsaved
+  buffers and selected files across navigation, exposes source/host/revision via
+  compact labels and info icons, and refreshes its catalog metadata after events.
+  The narrower layout reserves more room for editing; installation metadata is
+  excluded from the editable file tree.
+- Backend regression: **177 passed**; Linux-target mypy: **966 files passed**.
+  UI editor/conflict/resource and canvas tests: **31 passed**; core session
+  contracts: **13 passed**. Final UI typecheck and lint passed.
+- Browser review on the isolated backend proved navigation retention and the
+  three separate file states: draft-only, source-published/runtime-unchanged,
+  and reloaded with a new session checksum. Desktop light/dark and narrow dark screenshots
+  are in `docs/qualification/beta3/blueprint-authoring-*.jpg`.
+- The preceding pushed Agent head `b9288963` passed all CI shards, coverage,
+  filesystem/Flowcept integration, Pages, Docker, schema and macOS startup jobs.
+  UI `de614588` passed CI/schema but its workspace browser gate found two open
+  transcript regressions: an 11 px tool-card boundary gap and one 56 ms stream
+  task. These remain failures; thresholds have not been relaxed.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
@@ -238,8 +272,9 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,
    default-build and additional-driver qualification, connect/use provenance flow,
    attention verification, and remaining service connection flows.
-3. Implement marketplace audit #1627, including scoped identities, safe reload,
-   drafts/publish, pin preservation, events, and deletion distinctions.
+3. Complete marketplace #1627: transparent selection/materialization, full source
+   configuration and pin editing, path-activation coherence, runtime/MCP reload
+   qualification, receipt recovery UI, and the Providers-style composition.
 4. Finish full-transcript stable attention selections, shared editable numerical
    profiles, bidirectional lookup, SPOTTER tools and findings. Replace the old
    ordinal tool-block bridge with stable call identities. No fabricated image

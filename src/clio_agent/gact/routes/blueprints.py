@@ -17,16 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import Response
 
 from clio_agent.gact.a2ui_capabilities import catalog_ids_for_resolved_blueprint
-from clio_agent.gact.agent_blueprint_files import (
-    BlueprintPathEscapesRootError,
-    is_textual_blueprint_file,
-    list_blueprint_files,
-    resolve_agent_blueprint_root,
-    resolve_blueprint_file_path,
-)
 from clio_agent.gact.agent_blueprint_sources import (
     delete_agent_blueprint_source as _delete_agent_blueprint_source,
 )
@@ -67,9 +59,11 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.blueprint_identity import select_blueprint
+from clio_agent.gact.blueprint_reload import apply_blueprint_change
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
+from clio_agent.gact.routes.blueprint_file_read import register_blueprint_file_read_routes
 from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
 from clio_agent.gact.routes.blueprint_session_activation import activate_session_blueprint
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -163,12 +157,15 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         if bool(req.get("refresh", True)):
             row = await asyncio.to_thread(_refresh_agent_blueprint_source, row)
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
-        row, installation = await asyncio.to_thread(
-            _install_agent_blueprint_source, row, cwd=cwd, scope=scope
-        )
-        _upsert_agent_blueprint_source(row)
-        _invalidate_a2ui_catalogs(app)
-        return {"source": row, **installation}
+
+        def install_source() -> dict[str, Any]:
+            installed_source, installation = _install_agent_blueprint_source(
+                row, cwd=cwd, scope=scope
+            )
+            _upsert_agent_blueprint_source(installed_source)
+            return {"source": installed_source, **installation}
+
+        return await apply_blueprint_change(app, install_source, label="Add marketplace")
 
     @app.post("/v1/agent-blueprints/sources/{source_id}/refresh")
     async def refresh_agent_blueprint_source(source_id: str) -> dict[str, Any]:
@@ -180,12 +177,31 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
                 refreshed = await asyncio.to_thread(_refresh_agent_blueprint_source, row)
                 refreshed["updated_at"] = datetime.now(timezone.utc).isoformat()
-                refreshed, installation = await asyncio.to_thread(
-                    _install_agent_blueprint_source, refreshed, cwd=cwd, scope=scope
+
+                def install_refreshed(
+                    prepared: dict[str, Any] = refreshed,
+                    target: Path = cwd,
+                    install_scope: Literal["global", "workspace"] = scope,
+                ) -> dict[str, Any]:
+                    current = next(
+                        (
+                            source
+                            for source in _load_agent_blueprint_sources()
+                            if source["id"] == source_id
+                        ),
+                        None,
+                    )
+                    if current is None:
+                        raise ValueError("Marketplace was removed while Reload was preparing")
+                    installed_source, installation = _install_agent_blueprint_source(
+                        prepared, cwd=target, scope=install_scope
+                    )
+                    _upsert_agent_blueprint_source(installed_source)
+                    return {"source": installed_source, **installation}
+
+                return await apply_blueprint_change(
+                    app, install_refreshed, label="Reload marketplace"
                 )
-                _upsert_agent_blueprint_source(refreshed)
-                _invalidate_a2ui_catalogs(app)
-                return {"source": refreshed, **installation}
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(
@@ -215,118 +231,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     register_blueprint_catalog_route(app)
 
-    @app.get("/v1/agent-blueprints/{blueprint_id}/files")
-    async def list_agent_blueprint_files(
-        blueprint_id: str,
-        workspace_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> dict[str, Any]:
-        """iowarp/clio-agent#1192 -- flat recursive listing of a blueprint root.
-
-        Mirrors ``GET /v1/workspaces/{wid}/files``'s conventions (path/type/
-        size relative to the root, capped walk, skip cost-walking dirs) but
-        scoped to an agent-blueprint root. ``session_id`` additionally
-        resolves a PATH-activated blueprint (see
-        :func:`clio_agent.gact.agent_blueprint_files.resolve_agent_blueprint_root`)
-        when its own id matches ``blueprint_id`` -- the demo case
-        (``earthscope-flat``) where a blueprint is activated by on-disk path
-        rather than by installed id. Registered ahead of the greedy
-        ``{blueprint_id:path}`` GET below so it is not shadowed.
-        """
-
-        root = resolve_agent_blueprint_root(
-            app, blueprint_id, workspace_id=workspace_id or "", session_id=session_id or ""
-        )
-        if root is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"agent blueprint not found: {blueprint_id}",
-                        details={"agent_blueprint_id": blueprint_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        return {"entries": list_blueprint_files(root)}
-
-    @app.get("/v1/agent-blueprints/{blueprint_id}/files/read")
-    async def read_agent_blueprint_file(
-        blueprint_id: str,
-        path: str,
-        workspace_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-    ) -> Response:
-        """iowarp/clio-agent#1192 -- raw content read for one blueprint file.
-
-        Path-traversal-hardened to the blueprint root (a ``..`` escape is a
-        typed 400); a missing file is a typed 404. Text is served decoded as
-        ``text/plain``, binary raw with its real content type, mirroring
-        ``GET /v1/workspaces/{wid}/files/read`` (#673, #676).
-        """
-
-        root = resolve_agent_blueprint_root(
-            app, blueprint_id, workspace_id=workspace_id or "", session_id=session_id or ""
-        )
-        if root is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"agent blueprint not found: {blueprint_id}",
-                        details={"agent_blueprint_id": blueprint_id},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            target = resolve_blueprint_file_path(root, path)
-        except BlueprintPathEscapesRootError:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="path_outside_blueprint",
-                        message=f"path escapes blueprint root: {path}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from None
-        if not target.is_file():
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"file not found: {path}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        try:
-            data = target.read_bytes()
-        except OSError as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="read_failed",
-                        message=f"could not read file: {exc}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-        if is_textual_blueprint_file(target.name, data):
-            return Response(
-                content=data.decode("utf-8", errors="replace"),
-                media_type="text/plain; charset=utf-8",
-            )
-        import mimetypes  # noqa: PLC0415
-
-        guessed, _ = mimetypes.guess_type(target.name)
-        return Response(content=data, media_type=guessed or "application/octet-stream")
+    register_blueprint_file_read_routes(app)
 
     register_blueprint_file_write_route(app)
 
@@ -439,7 +344,8 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             # A fetch, a copy and clio-core writes: never on the event loop.
-            result = await run_off_loop(
+            result = await apply_blueprint_change(
+                app,
                 lambda: install_agent_blueprint(
                     source=source,
                     scope=scope,  # type: ignore[arg-type]
@@ -450,7 +356,8 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         req.get("pinned_commit") or source_row.get("pinned_commit") or ""
                     ),
                     app=app,
-                )
+                ),
+                label="Install blueprint",
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -462,6 +369,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
 
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/update")
+    @app.post("/v1/agent-blueprints/{blueprint_id:path}/reload")
     async def update_agent_blueprint_route(
         blueprint_id: str,
         req: dict[str, Any] | None = None,
@@ -481,12 +389,14 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
         try:
-            result = await run_off_loop(
+            result = await apply_blueprint_change(
+                app,
                 lambda: update_installed_agent_blueprint(
                     blueprint_id=blueprint_id,
                     scope=scope,  # type: ignore[arg-type]
                     cwd=cwd or Path.cwd(),
-                )
+                ),
+                label="Reload blueprint",
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -525,12 +435,14 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
         try:
-            result = await run_off_loop(
+            result = await apply_blueprint_change(
+                app,
                 lambda: uninstall_agent_blueprint(
                     blueprint_id=blueprint_id,
                     scope=scope,  # type: ignore[arg-type]
                     cwd=cwd or Path.cwd(),
-                )
+                ),
+                label="Uninstall blueprint",
             )
             _invalidate_a2ui_catalogs(app)
             return result

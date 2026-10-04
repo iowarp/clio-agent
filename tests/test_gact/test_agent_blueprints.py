@@ -4326,8 +4326,8 @@ def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None
     assert "id: root" in read.text
 
 
-def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_path: Path) -> None:
-    """The editor atomically persists a real blueprint file and reports runtime validation."""
+def test_agent_blueprint_files_write_saves_draft_without_changing_runtime(tmp_path: Path) -> None:
+    """The editor saves a draft and validates it while the applied files remain intact."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as client:
@@ -4340,6 +4340,10 @@ def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_pa
         )
         reread = client.get(
             "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md", "draft": True},
+        )
+        applied = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
             params={"workspace_id": wid, "path": "experts/root.md"},
         )
 
@@ -4347,6 +4351,8 @@ def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_pa
     assert written.json()["entry"]["size"] == len(replacement.encode("utf-8"))
     assert "validation" in written.json()
     assert reread.text == replacement
+    assert applied.text != replacement
+    assert "Coordinate genomics work." in applied.text
 
 
 def test_agent_blueprint_files_write_rejects_path_traversal(tmp_path: Path) -> None:
@@ -5189,12 +5195,8 @@ def test_source_refresh_never_resurrects_an_uninstalled_pack(tmp_path: Path) -> 
         assert "genomics" not in {row["id"] for row in listed}
 
 
-def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> None:
-    """Refreshing a source never discards edits made through the file-write route.
-
-    **Sabotage:** stop reporting ``local_edits_present`` -> the reinstall
-    rmtree+copytree's the edited root and the edited text is gone -> red.
-    """
+def test_source_refresh_preserves_saved_draft(tmp_path: Path) -> None:
+    """Refreshing installed files never discards an isolated authoring draft."""
 
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
@@ -5213,12 +5215,13 @@ def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> 
         refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
         assert refreshed.status_code == 200, refreshed.text
         payload = refreshed.json()
-        assert payload["installed"] == []
-        assert payload["skipped"] == [{"id": "genomics", "reason": "local_edits_present"}]
+        assert len(payload["installed"]) == 1
+        assert payload["skipped"] == []
         assert payload["source"]["status"] == "ready"
 
         read_back = client.get(
-            "/v1/agent-blueprints/genomics/files/read", params={"path": "experts/root.md"}
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"path": "experts/root.md", "draft": True},
         )
         assert read_back.status_code == 200, read_back.text
         assert "Coordinate LOCALLY EDITED genomics work." in read_back.text
