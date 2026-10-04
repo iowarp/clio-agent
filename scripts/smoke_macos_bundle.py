@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify and launch the actual macOS app, then boot its packaged sidecar.
+"""Verify the actual macOS app and launch it with its real packaged sidecar.
 
 Run against a relocated copy from a mounted DMG or extracted updater archive.
 This tests bundle integrity and runtime compatibility, not Apple notarization.
@@ -23,7 +23,9 @@ from urllib.request import Request, urlopen
 
 def verify(app: Path) -> None:
     """Require an intact application seal and an executable for this host."""
-    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+    subprocess.run(
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)], check=True
+    )
     with (app / "Contents/Info.plist").open("rb") as stream:
         metadata = plistlib.load(stream)
     if metadata["CFBundleIdentifier"] != "ai.iowarp.clio.desktop":
@@ -42,6 +44,28 @@ def stop(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=5)
 
 
+def launch_desktop(app: Path, root: Path, env: dict[str, str]) -> None:
+    """Require the native Desktop process to survive startup against the backend."""
+    with (root / "desktop.log").open("wb") as log:
+        desktop = subprocess.Popen(
+            [str(app / "Contents/MacOS/clio-desktop")],
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            try:
+                status = desktop.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("Native Desktop remained running", flush=True)
+            else:
+                raise RuntimeError(f"Desktop exited during startup: {status}")
+        finally:
+            stop(desktop)
+            print((root / "desktop.log").read_text(errors="replace"))
+
+
 def smoke(app: Path, *, bundled: bool) -> None:
     """Launch the native app and require readiness from the real bundled backend."""
     verify(app)
@@ -53,24 +77,6 @@ def smoke(app: Path, *, bundled: bool) -> None:
             if not key.startswith(("CLIO_", "GACT_"))
         }
         env.update(CLIO_AGENT_HOME=str(root / "agent"), CLIO_DESKTOP_HOME=str(root / "desktop"))
-        with (root / "desktop.log").open("wb") as log:
-            desktop = subprocess.Popen(
-                [str(app / "Contents/MacOS/clio-desktop")],
-                env=env,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            try:
-                try:
-                    status = desktop.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    print("Native Desktop remained running", flush=True)
-                else:
-                    raise RuntimeError(f"Desktop exited during startup: {status}")
-            finally:
-                stop(desktop)
-                print((root / "desktop.log").read_text(errors="replace"))
         if bundled:
             runtime = app / "Contents/Resources/gact-runtime"
             if not (runtime / "runtime.json").is_file():
@@ -110,9 +116,16 @@ def smoke(app: Path, *, bundled: bool) -> None:
                         raise TimeoutError(
                             "Packaged sidecar did not become ready within 90 seconds"
                         )
+                    # Attach to the live, real packaged backend. Launching Desktop
+                    # first would start its own independently grouped backend and
+                    # race this smoke's second server over the same configuration.
+                    env["CLIO_GACT_URL"] = f"http://127.0.0.1:{port}"
+                    launch_desktop(app, root, env)
                 finally:
                     stop(backend)
                     print((root / "backend.log").read_text(errors="replace"))
+        else:
+            launch_desktop(app, root, env)
         # Starting Python must not invalidate the signed app by modifying resources.
         verify(app)
 
