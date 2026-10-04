@@ -68,6 +68,8 @@ jobs:
           bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" \
             install/install.sh \
             install/install.ps1 \
+            install/desktop.sh \
+            install/desktop.ps1 \
             install/clio \
             install/clio.cmd \
             install/clio.ps1 \
@@ -656,9 +658,36 @@ jobs:
           cd "$RUNNER_TEMP/clio-desktop-stage"
           bash "$uploader" "$GITHUB_REF_NAME" ./*
 
+  macos-startup:
+    name: macOS packaged startup · ${{ matrix.os }}
+    if: github.event_name == 'push'
+    needs: desktop
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Verify and boot the release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p package "$RUNNER_TEMP/clio-image"
+          gh release download "$GITHUB_REF_NAME" --pattern '*aarch64-bundled.dmg' --dir package
+          gh release download "$GITHUB_REF_NAME" --pattern 'SHA256SUMS.aarch64-apple-darwin.bundled.txt' --dir package
+          (cd package && grep 'aarch64-bundled.dmg$' SHA256SUMS.*.txt | shasum -a 256 --check)
+          hdiutil verify package/*.dmg
+          hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
+          ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
+          hdiutil detach "$RUNNER_TEMP/clio-image"
+          uv run --no-project --python 3.12 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+
   release-check:
     name: release completeness
-    needs: [release, desktop, web, tui, installers]
+    needs: [release, desktop, web, tui, installers, macos-startup]
     # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
     # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
     # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
