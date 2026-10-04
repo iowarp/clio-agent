@@ -85,6 +85,13 @@ jobs:
       - run: pnpm check
       # Fails on any broken internal link (starlight-links-validator).
       - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: site-browser-evidence
+          path: site/test-results
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
