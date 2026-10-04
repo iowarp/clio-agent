@@ -88,7 +88,7 @@ disables security settings or removes quarantine. Invalid checksums/signatures f
 before replacing an installed app.
 
 The macOS CI builds a DMG from source and boots its relocated application and packaged
-backend on macOS 14 and 15. The same checks gate release publication. These checks
+backend on macOS 14, 15, and 26. The same checks gate release publication. These checks
 validate package integrity and startup, separately from Apple notarization.
 
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/

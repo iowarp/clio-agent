@@ -51,7 +51,13 @@ trap cleanup EXIT
 printf 'Downloading %s (%s)\n' "$tag" "$variant"
 curl --proto '=https' --tlsv1.2 -fSL --retry 3 "$repo/releases/download/$tag/$asset" -o "$scratch/$asset"
 curl --proto '=https' --tlsv1.2 -fsSL --retry 3 "$repo/releases/download/$tag/$checksums" -o "$scratch/checksums"
-expected="$(awk -v name="$asset" '$2 == name {print $1}' "$scratch/checksums")"
+# GitHub normalizes spaces in uploaded asset names to dots. Older manifests
+# retain the pre-upload name; both text and binary checksum markers are valid.
+expected="$(awk -v name="$asset" '
+  substr($0,65,2) == "  " || substr($0,65,2) == " *" {
+    file=substr($0,67); sub(/^CLIO Desktop/, "CLIO.Desktop", file)
+    if (file == name) print substr($0,1,64)
+  }' "$scratch/checksums")"
 [[ "$expected" =~ ^[0-9a-fA-F]{64}$ ]] || die 'release checksum missing or ambiguous'
 actual="$(shasum -a 256 "$scratch/$asset" | awk '{print $1}')"
 [ "$actual" = "$expected" ] || die 'download checksum mismatch; nothing installed'
