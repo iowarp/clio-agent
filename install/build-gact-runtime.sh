@@ -224,6 +224,21 @@ cat >"$OUT/runtime.json" <<EOF
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
 
+# The one-shot upgrade repair writes a fingerprint marker next to Python.
+# Prepare it in the ORIGINAL image before macOS seals the app; booting only
+# the relocated copy leaves first launch modifying a signed resource tree.
+PYTHONDONTWRITEBYTECODE=1 "$OUT/$PYBIN_REL" - <<'PY'
+import sys
+from pathlib import Path
+from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
+
+report = repair_bundled_runtime_bytecode()
+if report is not None and (report.errors or report.ambiguous_metadata):
+    raise SystemExit("build-gact-runtime: bundled bytecode verification failed")
+if not (Path(sys.prefix) / ".clio-bytecode-verified").is_file():
+    raise SystemExit("build-gact-runtime: bundled bytecode marker was not prepared")
+PY
+
 # --- 5. portability proof on the real object ----------------------------
 # A venv would leave a pyvenv.cfg pinning the build host's interpreter;
 # assert the failure mode is structurally absent, then boot the runtime
