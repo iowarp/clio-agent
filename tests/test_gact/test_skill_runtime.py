@@ -298,6 +298,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     # edited blueprint, matching the existing ``planning`` precedent exactly.
     assert effective_declared_skills(listing_root, catalog) == [
         "user-skill",
+        "connect-data",
         "planning",
         "present-interactive-analysis",
         "update-models",

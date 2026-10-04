@@ -61,23 +61,21 @@ def probe_flowcept(row: ExternalServiceConnection, probe: str) -> dict[str, Any]
 
 
 def main() -> None:
-    """Verify the selected backend independently and suppress private diagnostics."""
-    try:
-        row = ExternalServiceConnection.model_validate_json(sys.stdin.read())
-        probe = str(uuid.uuid4())
-        with contextlib.redirect_stdout(sys.stderr):
-            if row.service_id == "cmf":
-                evidence = verify_cmf(
-                    {"verification_document": verification_document()}, row.url, probe
-                )
-            elif row.service_id == "flowcept":
-                evidence = probe_flowcept(row, probe)
-            else:
-                raise ValueError("Unsupported provenance backend")
-        print(json.dumps({"probe_id": probe, **evidence}))
-    except Exception:  # noqa: BLE001 - child boundary must never print private configuration
-        print(json.dumps({"write_readback": False}))
-        raise SystemExit(1) from None
+    """Verify independently; the parent suppresses private subprocess diagnostics."""
+    row = ExternalServiceConnection.model_validate_json(sys.stdin.read())
+    probe = str(uuid.uuid4())
+    # Failure exits nonzero with no receipt. The parent captures both streams and
+    # publishes only allowlisted success fields or its fixed failure message.
+    with contextlib.redirect_stdout(sys.stderr):
+        if row.service_id == "cmf":
+            evidence = verify_cmf(
+                {"verification_document": verification_document()}, row.url, probe
+            )
+        elif row.service_id == "flowcept":
+            evidence = probe_flowcept(row, probe)
+        else:
+            raise ValueError("Unsupported provenance backend")
+    print(json.dumps({"probe_id": probe, **evidence}))
 
 
 if __name__ == "__main__":

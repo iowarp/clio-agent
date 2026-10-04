@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 
-def serve(root: Path, port: int) -> None:
+def serve(root: Path, port: int, *, seed_storage: bool = False) -> None:
     """Keep test configuration and session state under the explicitly selected directory."""
     root = root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -26,6 +26,10 @@ def serve(root: Path, port: int) -> None:
     from clio_agent.gact.app import build_app
 
     app = build_app(agent=None, sessions_path=root / "agent-home/sessions.json")
+    if seed_storage:
+        from beta3_storage_setup import seed_setup_session
+
+        seed_setup_session(app, root)
     uvicorn.run(app, host="127.0.0.1", port=port)
 
 
@@ -33,5 +37,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18825)
+    parser.add_argument("--seed-storage", action="store_true")
     args = parser.parse_args()
-    serve(args.state_dir, args.port)
+    serve(args.state_dir, args.port, seed_storage=args.seed_storage)

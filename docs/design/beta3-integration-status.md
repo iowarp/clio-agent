@@ -411,9 +411,38 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   now includes lookup plus the six provenance connection routes (325 pairs).
   This checkpoint still needs CI against its newly pushed commit.
 
+### Trusted connected-data handoff checkpoint (October 4)
+
+- The main agent now has the read-only `connected_data_status` native tool and
+  the built-in `connect-data` skill. Its result offers **Connect data**, opening
+  the composer/Files picker after checking the owning CLIO and workspace.
+  Authentication, source creation and permission changes remain trusted UI actions.
+  Tool output contains only approved source identity, status and materialized paths;
+  neither authentication objects nor source configuration enter the observation.
+- Picker state and requests are scoped to both endpoint and credential identity.
+  Switching identities closes the setup action and clears the visible selection;
+  late attachment callbacks cannot populate a different connection's composer.
+- A real isolated API exercised the status tool, rendered its recorded result,
+  registered an owned local folder read-only, and materialized its 35-byte CSV.
+  Reopening after navigation preserved the source selection. Browser evidence
+  includes light/dark, 390 px layout, and the tap-open privacy explanation under
+  `connected-data-*.png`. The seed explicitly labels the call as qualification,
+  without inference. Reproduce with `serve_beta3_provenance.py --seed-storage`
+  and a new private `--state-dir`.
+- Storage/skill tests: **75 passed**. Tool-observer/presentation/provenance tests:
+  **52 passed**. Focused UI: **11 passed**, core presentation: **7 passed**;
+  UI typecheck/lint and focused mypy/Ruff
+  passed. The provenance child now fails directly; its parent still withholds
+  private stderr and publishes only validated receipt fields or a fixed error.
+  This fixes the new broad-exception CI guard failure without changing its baseline.
+- `8a4d4e85` passed macOS packaged startup and bundle lock resolution. Its CI
+  reported the provenance exception guard above; the next commit needs fresh CI.
+  Google/Globus live OAuth still awaits CLIO-owned application registration.
+
 ## Required work still outstanding
 
-1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
+1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
+   is implemented and browser-reviewed. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,

@@ -615,6 +615,7 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # Its discovery is stubbed below: a stored sign-in (e.g. Argonne)
             # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
+            "connected_data_status": {},
             # Bounded workspace-resource reads, auto-attached to every react
             # expert. Called against a missing resource id on purpose: each
             # returns a typed not-found row rather than raising, and the
