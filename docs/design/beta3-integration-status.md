@@ -50,10 +50,45 @@ UI controls. Models store their resolved paths in deployment configuration;
 older model receipts are frozen before defaults change. The six Infrastructure
 sections and retained management state are being connected to full workflows.
 
+### Connected-data checkpoint (October 4)
+
+- Local and SFTP adapters stream explicit copies into Agent namespaced storage;
+  Drive uses its file API and Globus submits/reconciles native transfer tasks.
+  Provider adapters declare actual modes; browser-uploaded folders and Globus
+  transfers do not claim to be writable filesystem mounts.
+- Source records bind workspace, owning CLIO, host and OS owner. Durable transfers
+  preserve prior inputs on failure. Working-copy review shows bounded text diffs,
+  checks upstream/local revisions, applies only selected files, retains immutable
+  baselines and records partial success without promising directory atomicity.
+- Trusted browser sign-in uses state/PKCE and private credential storage. No token
+  is returned in source records. File policy and sandbox projections exclude
+  credentials and protect read-only inputs; unsupported child fences fail closed.
+  Source policy changes refuse busy turns and recycle resident idle tool fleets.
+- Composer and Files share the source picker. Folder upload preserves nested
+  paths, uses resumable resource custody, then publishes a verified baseline.
+  Approved references retain source/revision identity in existing resource custody.
+- Focused storage suites: **33 passed**; subsequent source-policy, HTTP and route
+  guards: **8 passed**. Focused Pyright and Ruff passed. UI source/upload/composer:
+  **14 passed**; typecheck, focused Oxlint and production build passed. The build
+  retains the existing CSS Custom Highlight and bundle-size warnings.
+- Browser checked: connect/materialize/refresh local working copy, inspect a real
+  diff, apply one selected file, verify its upstream bytes, browse and attach a
+  source reference without creating a persisted session; explicitly upload a
+  desktop folder and browse its preserved hierarchy; mobile tap explanation and
+  light/dark source views. Screenshots are under `docs/qualification/beta3/`.
+- **Live homelab SFTP passed** through the production adapter against an owned
+  synthetic fixture in `/data/clio-beta3-qualification/sftp-input`: nested transfer,
+  selected writeback, unchanged unselected file, restart receipt and restored
+  original fixture. Receipt: `docs/qualification/beta3/homelab-sftp.json`.
+
+Not yet qualified: live Google/Globus authorization and transfers (distributor
+application registrations/test-user access still needed), full source setup skill,
+every provider error/reconnect browser flow, and live sandbox exclusions on each OS.
+This checkpoint is not completion of #1617 or of the beta-3 acceptance gate.
+
 ## Required work still outstanding
 
-1. Complete connected storage adapters, trusted OAuth setup, source picker,
-   transfers, immutable working-copy baselines and conflict review. CLIO-owned
+1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
 2. Complete guided model download, native vLLM, versioned service definitions,

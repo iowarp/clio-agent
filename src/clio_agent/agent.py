@@ -514,6 +514,10 @@ class ClioAgent(dspy.Module):
         blueprint_id = get_active_tool_blueprint_id().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted while the relay federation was
@@ -663,6 +667,10 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             leases[root] = leases.get(root, 0) + 1
         try:
             yield

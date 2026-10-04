@@ -247,6 +247,7 @@ class FileAccessPolicy:
     def validate_read(self, filepath: str, *, field: str = "filepath") -> Path:
         """Validate a read-only file path and return its resolved path."""
         raw_path = _coerce_path(filepath, field=field)
+        self._check_connected_storage(raw_path, field=field)
         if not self.allow_symlinks and _has_symlink(raw_path):
             raise self._error(
                 code="symlink_denied",
@@ -267,7 +268,13 @@ class FileAccessPolicy:
                 next_action="Provide an existing file inside an allowed root.",
             ) from exc
 
-        self._ensure_allowed(resolved, field=field)
+        from clio_agent.runtime.storage_access import materialized_read_roots  # noqa: PLC0415
+
+        source_roots = tuple(
+            approved for root in self.allowed_roots for approved in materialized_read_roots(root)
+        )
+        if not any(resolved.is_relative_to(root) for root in source_roots):
+            self._ensure_allowed(resolved, field=field)
         if not resolved.is_file():
             raise self._error(
                 code="not_a_file",
@@ -300,6 +307,7 @@ class FileAccessPolicy:
     ) -> Path:
         """Validate an explicit output path and return its resolved path."""
         raw_path = _coerce_path(filepath, field=field)
+        self._check_connected_storage(raw_path, field=field, write=True)
         parent = raw_path.parent
         if not self.allow_symlinks and (_has_symlink(parent) or raw_path.is_symlink()):
             raise self._error(
@@ -327,6 +335,20 @@ class FileAccessPolicy:
             ) from exc
         self._ensure_allowed(resolved_parent, field=field)
         return resolved_parent / raw_path.name
+
+    def _check_connected_storage(self, path: Path, *, field: str, write: bool = False) -> None:
+        from clio_agent.runtime.storage_access import check_storage_access  # noqa: PLC0415
+
+        try:
+            check_storage_access(path, write=write)
+        except PermissionError as exc:
+            raise self._error(
+                code="connected_storage_access",
+                message=str(exc),
+                field=field,
+                path=str(path),
+                next_action="Use the connected-source setup or working-copy review in CLIO.",
+            ) from exc
 
     def _ensure_allowed(self, path: Path, *, field: str) -> None:
         if any(_is_relative_to(path, root) for root in self.allowed_roots):

@@ -155,6 +155,7 @@ class ResourceRecord(BaseModel):
     workspace_path: str = ""
     materialization: ResourceMaterialization = Field(default_factory=ResourceMaterialization)
     source_artifact_id: str = ""
+    connected_source: dict[str, str] | None = None
     source_registration: ResourceSourceRegistration = Field(
         default_factory=ResourceSourceRegistration
     )
@@ -480,6 +481,19 @@ class ResourceStore:
             if artifact_id:
                 update["source_artifact_id"] = artifact_id
             record = record.model_copy(update=update)
+            self._records[resource_id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
+    def set_connected_source(self, resource_id: str, origin: dict[str, str]) -> ResourceRecord:
+        """Bind custody bytes to the approved source and immutable revision they came from."""
+        with self._lock:
+            record = self._require_locked(resource_id)
+            if record.connected_source is not None and record.connected_source != origin:
+                raise ResourceConflictError(
+                    "Resource is already bound to another source revision", record
+                )
+            record = record.model_copy(update={"connected_source": dict(origin)})
             self._records[resource_id] = record
             self._flush_locked()
             return record.model_copy(deep=True)

@@ -437,6 +437,7 @@ from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
+from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
 )
@@ -835,7 +836,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
         app.state.provider_catalog_startup_task = provider_catalog_task
 
+    storage = getattr(app.state, "connected_storage", None)
+    if storage is not None:
+        storage.reconcile({row.id: Path(row.root_path) for row in app.state.workspaces.list()})
+
     yield
+
+    if storage is not None:
+        await storage.shutdown()
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
     # does not stop that thread, and Python waits for executor workers at process
@@ -2190,6 +2198,7 @@ def build_app(
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
     register_infrastructure_routes(app, session_store_path.parent)
+    register_connected_storage_routes(app)
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
     # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches
