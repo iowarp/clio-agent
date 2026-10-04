@@ -23,7 +23,7 @@ from clio_agent.gact.attention.chat_render import ChatRenderer
 from clio_agent.gact.attention.contract import AttentionRecord
 from clio_agent.gact.attention.lm_calls import LmCall
 from clio_agent.gact.attention.reasons import AttentionUnavailable
-from clio_agent.gact.attention.textmap import Located, locate
+from clio_agent.gact.attention.textmap import Located, locate_all
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,7 @@ class OutputSpan:
 def locate_output(calls: list[LmCall], part_text: str, sel_lo: int, sel_hi: int) -> OutputSpan:
     """Find the call that produced ``part_text`` and the selection's output span.
 
-    When several calls of the turn contain the text, the latest wins (the one
-    whose output became the answer) and ``candidates`` reports how many matched.
+    Multiple compatible outputs are ambiguous; recency cannot establish origin.
     """
     with_payload = [c for c in calls if c.content is not None]
     if calls and not with_payload:
@@ -51,16 +50,16 @@ def locate_output(calls: list[LmCall], part_text: str, sel_lo: int, sel_hi: int)
         )
     hits: list[tuple[LmCall, Located]] = []
     for call in with_payload:
-        hit = locate(call.content or "", part_text)
-        if hit is not None:
-            hits.append((call, hit))
+        hits.extend((call, hit) for hit in locate_all(call.content or "", part_text))
     if not hits:
         raise AttentionUnavailable(
             "selection_not_located" if with_payload else "lm_call_not_found",
             "the answer text is not in any recorded model output of this turn",
             {"calls_searched": len(with_payload)},
         )
-    call, hit = hits[-1]
+    if len(hits) != 1:
+        raise AttentionUnavailable("lm_call_ambiguous", "multiple output passages match this part")
+    call, hit = hits[0]
     out_lo, out_hi = hit.to_haystack(sel_lo, sel_hi)
     return OutputSpan(call, out_lo, out_hi, hit.encoding, len(hits))
 

@@ -318,6 +318,24 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   unchanged message references while streaming. Focused tests passed; rendered
   adjacent targets meet within 0.011 px. Its full browser CI remains pending.
 
+### Attention identity and CI repair checkpoint (October 4)
+
+- Text selections carry the exact message, part and source revision. Stale
+  revisions, repeated passages and multiple matching model outputs refuse
+  attribution instead of choosing an occurrence by position or recency.
+- Prompt projection requires a unique compatible passage and transcript owner.
+  Unmapped content has an accessible info explanation; the source breakdown no
+  longer calls a small tool-result share "most" of total attention.
+- Selecting an installed blueprint reads its snapshot under the revision gate
+  without recycling the temporary composer's warm tool fleet. New installs
+  retain the mutation boundary. CI fixtures now use real installed blueprints
+  and mutate the installed copy when simulating a stale installation.
+- Backend regression: 79 passed; Linux-target mypy: 22 files passed. UI selection,
+  revision and hook tests: 19 passed. Browser replay resolved a revision-bound
+  selection and its unmapped-content explanation; evidence is
+  `attention-revision-unmapped-dark.jpg`. This uses a retained capture, not fresh
+  inference. CI still needs to qualify the pushed repair.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned

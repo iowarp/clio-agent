@@ -46,6 +46,7 @@ class AttentionRequestBody(BaseModel):
     #: Rendered text the person selected (located server-side when no span is given).
     text: str = ""
     profile: AttentionProfile = AttentionProfile()
+    content_revision: str = ""
 
 
 def _backend(app: FastAPI) -> Any:
@@ -157,6 +158,7 @@ def register_attention_routes(app: FastAPI) -> None:
                     end=body.end,
                     text=body.text,
                     profile=body.profile,
+                    content_revision=body.content_revision,
                 ),
             )
 

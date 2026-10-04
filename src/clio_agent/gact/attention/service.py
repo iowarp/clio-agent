@@ -18,6 +18,7 @@ Pipeline -- every step either succeeds or raises a typed reason:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any
@@ -70,6 +71,7 @@ class SelectionRequest:
     #: no explicit span is given (:mod:`.rendered`).
     text: str = ""
     profile: AttentionProfile = UNIFORM_MEAN
+    content_revision: str = ""
 
 
 def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any, int, Any, str]:
@@ -86,6 +88,13 @@ def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any,
             continue
         text = part.thought if request.field == "thought" else part.text
         if text:
+            if (
+                request.content_revision
+                and hashlib.sha256(text.encode("utf-8")).hexdigest() != request.content_revision
+            ):
+                raise AttentionUnavailable(
+                    "content_revision_changed", "the selected content changed"
+                )
             return message, index, part, text
     raise AttentionUnavailable("message_not_generated", "no generated text in that part")
 
@@ -97,16 +106,26 @@ def _resolve_rendered(messages: list[Any], request: SelectionRequest) -> Selecti
     message = next((m for m in messages if m.id == request.message_id), None)
     if message is None:
         raise AttentionUnavailable("message_not_found", request.message_id)
-    # Answer text before tool-call thoughts, latest part first: the transcript
-    # selection surface is the answer, and a later part repeating earlier words
-    # is the one on screen.
+    # A supplied part identity is authoritative. Legacy text-only clients must
+    # have a unique match; display order cannot establish which text was selected.
     parts = [p for p in reversed(message.parts) if not request.part_id or p.id == request.part_id]
+    matches = []
     for field in ("text", "thought"):
+        if request.part_id and field != request.field:
+            continue
         for part in parts:
             source = part.text if field == "text" else part.thought
             span = find_rendered(source or "", request.text)
             if span is not None:
-                return replace(request, part_id=part.id, field=field, start=span[0], end=span[1])
+                matches.append(
+                    replace(request, part_id=part.id, field=field, start=span[0], end=span[1])
+                )
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise AttentionUnavailable(
+            "selection_ambiguous", "the selected text occurs in multiple parts"
+        )
     raise AttentionUnavailable(
         "selection_not_located", "the selected text is not in this message's generated text"
     )
@@ -240,6 +259,7 @@ def explain_selection(
         },
         "selection": {
             "part_id": part.id,
+            "content_revision": hashlib.sha256(part_text.encode("utf-8")).hexdigest(),
             "field": request.field,
             "start": start,
             "end": end,
@@ -273,6 +293,17 @@ def explain_selection(
             if d in domains
         ],
         "flags": _flags(domains),
+        "unmapped_content": [
+            {
+                "message_id": text.message_id,
+                "part_id": text.part_id,
+                "field": text.field,
+                "content_revision": text.content_revision,
+                "reason": "No unique compatible passage in the captured prompt.",
+            }
+            for text in texts
+            if not any(anchor.text is text for anchor in anchors)
+        ],
         "blocks": [
             {
                 "message_id": a.text.message_id,

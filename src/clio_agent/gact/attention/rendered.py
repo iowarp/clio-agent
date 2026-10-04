@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import re
 
+from clio_agent.gact.attention.reasons import AttentionUnavailable
+
 #: Characters markdown renders away (emphasis, code, headings, quotes, tables).
 _MARKUP = frozenset("*_`#>|~")
 #: Line-leading list markers (``- item``, ``1. item``), rendered as bullets/numbers.
@@ -61,4 +63,8 @@ def find_rendered(source: str, selected: str) -> tuple[int, int] | None:
     found = haystack.find(needle)
     if found < 0:
         return None
+    if haystack.find(needle, found + 1) >= 0:
+        raise AttentionUnavailable(
+            "selection_ambiguous", "rendered text occurs more than once in this part"
+        )
     return index[found], index[found + len(needle) - 1] + 1

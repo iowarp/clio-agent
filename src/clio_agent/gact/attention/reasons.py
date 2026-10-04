@@ -21,6 +21,8 @@ AttentionReason = Literal[
     "ranges_not_declared",
     "response_id_missing",
     "selection_not_located",
+    "selection_ambiguous",
+    "content_revision_changed",
     # connector store (see contract.py)
     "attention_query_failed",
     "attention_record_not_found",
@@ -50,6 +52,8 @@ REASON_TEXT: dict[str, str] = {
     "ranges_not_declared": "Section ranges were not declared for this model call.",
     "response_id_missing": "The model call has no provider response id.",
     "selection_not_located": "The selected text was not found in the model output.",
+    "selection_ambiguous": "This text appears more than once; select an exact content range.",
+    "content_revision_changed": "The selected content changed. Select it again to inspect this revision.",
     "attention_query_failed": "The attention store query failed.",
     "attention_record_not_found": "No attention record exists for this model call yet.",
     "attention_capture_failed": "The attention capture failed for this model call.",

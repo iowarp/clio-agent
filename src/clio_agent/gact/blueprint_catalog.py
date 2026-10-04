@@ -65,14 +65,10 @@ def blueprint_catalog(*, cwd: Path | None, workspace_id: str = "") -> list[dict[
     return list(rows.values())
 
 
-def materialize_blueprint(
-    identifier: str, *, cwd: Path | None, workspace_id: str = "", app: Any = None
-) -> AgentBlueprintDefinition:
-    """Resolve an unambiguous choice and install it if necessary on this CLIO.
-
-    Call inside the runtime revision boundary. Existing snapshots are reused;
-    selecting one never implicitly reloads changed source files or changes a pin.
-    """
+def resolve_blueprint_choice(
+    identifier: str, *, cwd: Path | None, workspace_id: str = ""
+) -> dict[str, Any]:
+    """Resolve one installed or available identity without materializing it."""
     choices = [
         row
         for row in blueprint_catalog(cwd=cwd, workspace_id=workspace_id)
@@ -85,7 +81,18 @@ def materialize_blueprint(
         )
     if not choices:
         raise FileNotFoundError(f"agent blueprint not found: {identifier}")
-    row = choices[0]
+    return choices[0]
+
+
+def materialize_blueprint(
+    identifier: str, *, cwd: Path | None, workspace_id: str = "", app: Any = None
+) -> AgentBlueprintDefinition:
+    """Resolve an unambiguous choice and install it if necessary on this CLIO.
+
+    Call inside the runtime revision boundary. Existing snapshots are reused;
+    selecting one never implicitly reloads changed source files or changes a pin.
+    """
+    row = resolve_blueprint_choice(identifier, cwd=cwd, workspace_id=workspace_id)
     if row["materialized"]:
         return parse_agent_blueprint_root(Path(row["root"]), scope=row["scope"])
     install = row["metadata"]["install"]

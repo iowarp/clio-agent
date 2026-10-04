@@ -39,9 +39,10 @@ def main() -> None:
     os.environ["CLIO_PROVENANCE_ATTENTION"] = "1"
     os.environ["CLIO_GACT_CORS_ORIGINS"] = "http://127.0.0.1:4394"
     app = build_app(agent=None, sessions_path=root / "sessions.json")
-    session = app.state.sessions.create(
-        workspace_id="ws_default", title="Recorded attention replay (no inference)"
-    )
+    title = "Recorded attention replay (no inference)"
+    session = next((s for s in app.state.sessions.list() if s.title == title), None)
+    if session is None:
+        session = app.state.sessions.create(workspace_id="ws_default", title=title)
     messages = fixture_transcript()
     for message in messages:
         message.session_id = session.id

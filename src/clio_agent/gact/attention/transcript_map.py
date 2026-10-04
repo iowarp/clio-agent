@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -105,17 +106,20 @@ def _section_at(sections: list[Section], token: int) -> int:
 def anchor_texts(
     texts: list[TranscriptText], encoded: Encoded, sections: list[Section]
 ) -> list[Anchor]:
-    """Locate each transcript text in the rendered prompt (first compatible hit)."""
+    """Locate unique compatible passages; repeated content has no inferred location."""
     anchors: list[Anchor] = []
     for item in texts:
         allowed = _ALLOWED_DOMAINS.get(item.kind, frozenset())
+        matches: list[Anchor] = []
         for hit in locate_all(encoded.text, item.text):
             tok_lo, tok_hi = encoded.token_span(hit.start, hit.end)
             index = _section_at(sections, tok_lo)
             if index >= 0 and sections[index].domain in allowed:
-                anchors.append(Anchor(item, hit, index, tok_lo, tok_hi))
-                break
-    return anchors
+                matches.append(Anchor(item, hit, index, tok_lo, tok_hi))
+        if len(matches) == 1:
+            anchors.append(matches[0])
+    owners = Counter((anchor.hit.start, anchor.hit.end) for anchor in anchors)
+    return [anchor for anchor in anchors if owners[(anchor.hit.start, anchor.hit.end)] == 1]
 
 
 def heat_runs(
