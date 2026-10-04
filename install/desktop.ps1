@@ -33,7 +33,11 @@ try {
     Invoke-WebRequest "$repo/releases/download/$tag/$asset" -OutFile $installer -UseBasicParsing
     $manifest = (Invoke-WebRequest "$repo/releases/download/$tag/$checksums" -UseBasicParsing).Content
     if ($manifest -is [byte[]]) { $manifest = [Text.Encoding]::UTF8.GetString($manifest) }
-    $entries = @($manifest -split '\r?\n' | Where-Object { $_ -match ('^([a-fA-F0-9]{64})  ' + [regex]::Escape($asset) + '$') })
+    # GitHub replaces spaces in asset names with dots; older checksum manifests
+    # preserve the original name. Accept sha256sum's text and binary markers.
+    $entries = @($manifest -split '\r?\n' | Where-Object {
+        ($_ -replace 'CLIO Desktop', 'CLIO.Desktop') -match ('^([a-fA-F0-9]{64}) [ *]' + [regex]::Escape($asset) + '$')
+    })
     if ($entries.Count -ne 1) { throw 'Release checksum missing or ambiguous; nothing installed' }
     $expected = $entries[0].Substring(0, 64)
     if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expected) {
