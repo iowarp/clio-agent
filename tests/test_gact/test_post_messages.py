@@ -958,7 +958,8 @@ Do leaf work.
     agent = FakeClioAgent(answer="legacy planner must not run")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
-        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        workspace = app.state.workspaces.create(name="stale-install test", root_path=str(tmp_path))
+        sid = c.post("/v1/sessions", json={"title": "x", "workspace_id": workspace.id}).json()["id"]
         activated = c.post(f"/v1/sessions/{sid}/agent-blueprint", json={"path": str(source)})
         assert activated.status_code == 200, activated.text
         # The stale-install mutation: the declared root is no longer react while

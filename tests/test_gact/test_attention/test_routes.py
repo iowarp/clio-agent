@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.attention import routes as attention_routes
+from clio_agent.gact.attention.transcript_map import transcript_texts
 from tests.test_gact.test_attention._support import (
     SID,
     FixtureRenderer,
@@ -161,3 +162,34 @@ def test_lm_calls_fall_back_to_flowcept_records(monkeypatch: pytest.MonkeyPatch)
     body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 59}
     result = client.post(f"/v1/sessions/{SID}/messages/msg_asst_1/attention", json=body).json()
     assert result["available"] is True
+
+
+def test_lookup_validates_references_and_reads_recorded_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    readers = {"jsonl": SimpleNamespace(path=_journal(tmp_path)), "flowcept": fixture_flowcept()}
+    client = _client(readers, monkeypatch)
+    source = next(t for t in transcript_texts(fixture_transcript()) if t.part_id == "u0")
+    reference = {
+        "session_id": SID,
+        "message_id": source.message_id,
+        "part_id": source.part_id,
+        "field": source.field,
+        "content_revision": source.content_revision,
+        "selection": {"kind": "whole"},
+    }
+    body = {"direction": "source_to_generation", "selections": [reference]}
+    response = client.post(f"/v1/sessions/{SID}/attention/lookup", json=body)
+    assert response.status_code == 200
+    result = response.json()
+    assert result["schema"] == "clio.attention.lookup.v1"
+    assert len(result["views"]) == 1
+    assert result["views"][0]["sources"][0]["content_revision"] == source.content_revision
+    assert result["next_cursor"] is None
+    for invalid in ({"selections": []}, {"limit": 33}, {"profile": {"decay_base": 0}}):
+        assert (
+            client.post(
+                f"/v1/sessions/{SID}/attention/lookup", json={**body, **invalid}
+            ).status_code
+            == 422
+        )

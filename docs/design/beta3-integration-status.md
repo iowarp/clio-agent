@@ -336,6 +336,33 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   `attention-revision-unmapped-dark.jpg`. This uses a retained capture, not fresh
   inference. CI still needs to qualify the pushed repair.
 
+### Bidirectional attention lookup checkpoint (October 4)
+
+- Shared content references now identify the exact transcript field. Agent lookup
+  accepts bounded, revision-checked selection sets in both directions: generated
+  text to prompt sources, and source passages to later recorded generations.
+  Overlapping selections count captured positions/steps once. Every result retains
+  capture SHA-256 and profile identity; absent media coordinates stay unavailable.
+- The inspector retains selections and profile settings across navigation in the
+  current browser tab, scoped to endpoint, credential identity and session. It
+  re-reads captures on demand, supports paged later-call lookup, and links back to
+  exact transcript parts with a revision check. Unicode offsets and repeated words
+  no longer fall back to highlighting the first matching substring.
+- The schema commit is `fdba1f98b0c15130608e524406d762f2ca7db295` (0.6.0b2).
+  Agent and SPOTTER pin that exact revision. No attention reader fetches via SSH.
+- Backend attention/message regression: **122 passed**; mypy: **22 files passed**.
+  Frontend selection/projection/navigation tests: **41 passed**, followed by the
+  expanded inspector suite: **3 passed**. Core contracts: **254 passed**. Frontend
+  typecheck and lint passed. The preceding Agent commit `b20da37e` passed full CI
+  and the macOS packaged startup job; this new checkpoint needs its own CI.
+- Browser evidence in `attention-*-lookup-*.png` and
+  `attention-lookup-profile-narrow-dark.png` covers both directions, exact-field
+  navigation, navigation retention, profile recomputation, tap-open explanations,
+  light/dark and 390 px layout. These are recorded-capture checks, not new inference.
+- Remaining attention work includes tool/media/A2UI selection producers,
+  multi-selection transcript heat, profile-aware SPOTTER finding links, and both
+  Delta demonstrations. This checkpoint does not close #1628.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
@@ -346,10 +373,10 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    attention verification, and remaining service connection flows.
 3. Complete marketplace #1627: full source configuration and pin editing, runtime/MCP reload
    qualification, receipt recovery UI, and the Providers-style composition.
-4. Finish full-transcript stable attention selections, shared editable numerical
-   profiles, bidirectional lookup, SPOTTER tools and findings. Replace the old
-   ordinal tool-block bridge with stable call identities. No fabricated image
-   patch attribution; no SSH fetching inside the attention reader.
+4. Finish full-transcript selection producers, multi-selection transcript heat and
+   SPOTTER finding links. Shared profiles, local SPOTTER capture inspection,
+   bidirectional text lookup and stable tool-call heat identities are implemented;
+   fresh inference and both demos remain unqualified. No fabricated image patches.
 5. Complete browser review of every changed control, empty/error states,
    keyboard, light/dark, narrow layouts and long transcripts. Complete packaged
    install/update-channel checks and exact dependency qualification.

@@ -27,13 +27,13 @@ import numpy as np
 from clio_schemas.attention import UNIFORM_MEAN, AttentionProfile, display_intensities
 
 from clio_agent.gact.attention import aggregate as agg
+from clio_agent.gact.attention.capture import load_capture
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.lm_calls import LmCall, turn_calls
 from clio_agent.gact.attention.profiles import reduce_steps
-from clio_agent.gact.attention.ranges import DeclaredRange, declare_ranges
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.rendered import find_rendered
-from clio_agent.gact.attention.selection import locate_output, output_steps
+from clio_agent.gact.attention.selection import OutputSpan, locate_output, output_steps
 from clio_agent.gact.attention.store import AttentionStore
 from clio_agent.gact.attention.transcript_map import (
     anchor_texts,
@@ -72,6 +72,7 @@ class SelectionRequest:
     text: str = ""
     profile: AttentionProfile = UNIFORM_MEAN
     content_revision: str = ""
+    lm_call_id: str = ""
 
 
 def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any, int, Any, str]:
@@ -83,10 +84,17 @@ def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any,
         raise AttentionUnavailable(
             "message_not_generated", f"{message.role} messages have no attention rows"
         )
+    if request.field not in {"text", "thought", "input"}:
+        raise AttentionUnavailable("message_not_generated", "this field is not generated content")
     for part in message.parts:
         if request.part_id and part.id != request.part_id:
             continue
-        text = part.thought if request.field == "thought" else part.text
+        candidates = [
+            item
+            for item in transcript_texts([message])
+            if item.part_id == part.id and item.field == request.field
+        ]
+        text = candidates[0].text if candidates else ""
         if text:
             if (
                 request.content_revision
@@ -131,32 +139,37 @@ def _resolve_rendered(messages: list[Any], request: SelectionRequest) -> Selecti
     )
 
 
-def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]:
-    return [
-        DeclaredRange(
-            lo=int(r["lo"]),
-            hi=int(r["hi"]),
-            domain=str(r["domain"]),
-            label=str(r["label"]),
-            message_index=int(r["message_index"]),
-            char_lo=int(r["char_lo"]),
-            char_hi=int(r["char_hi"]),
-        )
-        for r in declaration.get("ranges") or []
-    ]
+@dataclass(frozen=True)
+class GeneratedSelection:
+    """A validated transcript range and its unambiguous producing model call."""
+
+    request: SelectionRequest
+    message: Any
+    index: int
+    part: Any
+    text: str
+    start: int
+    end: int
+    span: OutputSpan
 
 
-def _check_prompt(encoded: Encoded, summary: Any) -> None:
-    if len(encoded.ids) != summary.prompt_tokens:
-        raise AttentionUnavailable(
-            "range_alignment_mismatch",
-            f"re-rendered prompt has {len(encoded.ids)} tokens, capture scored "
-            f"{summary.prompt_tokens}",
-        )
-    if not np.array_equal(np.asarray(encoded.ids, dtype=np.int64), summary.prompt_token_ids):
-        raise AttentionUnavailable(
-            "range_alignment_mismatch", "re-rendered prompt token ids differ from the capture"
-        )
+def resolve_generated(
+    messages: list[Any], calls: list[LmCall], request: SelectionRequest
+) -> GeneratedSelection:
+    """Bind an exact revision/range to its recorded output before reading tensors."""
+    request = _resolve_rendered(messages, request)
+    message, index, part, part_text = _selected_text(messages, request)
+    start = 0 if request.start is None else request.start
+    end = len(part_text) if request.end is None else request.end
+    if start < 0 or end > len(part_text) or end <= start:
+        raise AttentionUnavailable("selection_not_located", "empty selection")
+    candidates = turn_calls(calls, message.turn_id)
+    if not candidates:
+        raise AttentionUnavailable("lm_call_not_found", f"no lm.call for turn {message.turn_id}")
+    if request.lm_call_id:
+        candidates = [call for call in candidates if call.event_id == request.lm_call_id]
+    span = locate_output(candidates, part_text, start, end)
+    return GeneratedSelection(request, message, index, part, part_text, start, end, span)
 
 
 def explain_selection(
@@ -166,52 +179,28 @@ def explain_selection(
     store: AttentionStore,
     renderer_for: Callable[[str], ChatRenderer],
     request: SelectionRequest,
+    additional_requests: tuple[SelectionRequest, ...] = (),
 ) -> dict[str, Any]:
     """The full attention payload for one selection (see module docstring)."""
-    request = _resolve_rendered(messages, request)
-    message, index, part, part_text = _selected_text(messages, request)
-    start = 0 if request.start is None else max(0, request.start)
-    end = len(part_text) if request.end is None else min(len(part_text), request.end)
-    if end <= start:
-        raise AttentionUnavailable("selection_not_located", "empty selection")
-    candidates = turn_calls(calls, message.turn_id)
-    if not candidates:
-        raise AttentionUnavailable("lm_call_not_found", f"no lm.call for turn {message.turn_id}")
-    span = locate_output(candidates, part_text, start, end)
-    call = span.call
-    if not call.model.startswith("hosted_vllm/"):
-        raise AttentionUnavailable("provider_not_vllm", call.model)
-    if call.messages is None:
-        raise AttentionUnavailable("lm_call_payload_unavailable", "input messages not recorded")
-    declaration = call.declaration or {}
-    if declaration.get("status") == "not_declared" and declaration.get("reason") == (
-        "provider_not_vllm"
-    ):
-        raise AttentionUnavailable("provider_not_vllm", call.model)
-
-    summary = store.summary_for(call.response_id)
-    identity = str(declaration.get("tokenizer") or "") or store.workflow_tokenizer(
-        summary.record.workflow_id
+    selected = [
+        resolve_generated(messages, calls, item) for item in [request, *additional_requests]
+    ]
+    first = selected[0]
+    request, message, part, part_text, start, end, span = (
+        first.request,
+        first.message,
+        first.part,
+        first.text,
+        first.start,
+        first.end,
+        first.span,
     )
-    if not identity:
-        raise AttentionUnavailable(
-            "attention_tokenizer_unavailable", "no tokenizer recorded on the call or workflow"
-        )
-    renderer = renderer_for(identity)
-    encoded = renderer.render_encoded(call.messages, declaration.get("template_kwargs") or {})
-    _check_prompt(encoded, summary)
-
-    if declaration.get("status") == "declared":
-        ranges = _ranges_from_declaration(declaration)
-        if not agg.declared_ranges_match(ranges, summary):
-            raise AttentionUnavailable(
-                "range_alignment_mismatch", "declared ranges are not verbatim captured segments"
-            )
-        sections_source = "declared"
-    else:
-        ranges = declare_ranges(call.messages, encoded).ranges
-        sections_source = "derived"
-    sections = agg.sections_with_gaps(ranges, summary.prompt_tokens)
+    call = span.call
+    if any(item.span.call.event_id != call.event_id for item in selected):
+        raise AttentionUnavailable("selection_ambiguous", "aggregate selections per model call")
+    capture = load_capture(call, store, renderer_for)
+    summary, renderer, encoded = capture.summary, capture.renderer, capture.encoded
+    sections, sections_source = capture.sections, capture.sections_source
 
     step_span = output_steps(
         renderer,
@@ -220,7 +209,26 @@ def explain_selection(
         span.out_hi,
         summary.record,
     )
-    steps = store.steps(summary, step_span.steps[0], step_span.steps[-1])
+    selected_steps = set(step_span.steps)
+    for item in selected[1:]:
+        if item.request.profile != request.profile:
+            raise AttentionUnavailable("selection_ambiguous", "one profile is required for a union")
+        selected_steps.update(
+            output_steps(
+                renderer, call.content or "", item.span.out_lo, item.span.out_hi, summary.record
+            ).steps
+        )
+    if len(selected_steps) > 4096:
+        raise AttentionUnavailable("selection_too_large", "select at most 4096 output tokens")
+    # Read only contiguous selected intervals; gaps do not become selected rows.
+    steps = []
+    ordered = sorted(selected_steps)
+    lo = previous = ordered[0]
+    for step in [*ordered[1:], ordered[-1] + 2]:
+        if step != previous + 1:
+            steps.extend(store.steps(summary, lo, previous))
+            lo = step
+        previous = step
     reduction = reduce_steps(steps, summary.prompt_tokens, request.profile)
     mass = agg.mass_from_steps(steps, summary.prompt_tokens, reduction=reduction)
 
@@ -230,8 +238,13 @@ def explain_selection(
     # earlier parts (the turn's tool calls/results), minus the selected output.
     texts = [
         t
-        for t in transcript_texts(messages[: index + 1])
-        if not (t.message_id == message.id and t.part_id == part.id and t.field == request.field)
+        for t in transcript_texts(messages[: max(item.index for item in selected) + 1])
+        if not any(
+            t.message_id == item.message.id
+            and t.part_id == item.part.id
+            and t.field == item.request.field
+            for item in selected
+        )
     ]
     anchors = anchor_texts(texts, encoded, sections)
     block_scores = [reduction.block_score(range(a.token_lo, a.token_hi)) for a in anchors]
@@ -245,6 +258,7 @@ def explain_selection(
         "turn_id": message.turn_id,
         "response_id": call.response_id,
         "request_id": summary.request_id,
+        "capture_sha256": summary.record.sha256,
         "lm_call_id": call.event_id,
         "profile": request.profile.model_dump(),
         "profile_revision": request.profile.revision,
@@ -257,6 +271,18 @@ def explain_selection(
             "scope": "this selected item",
             "missing": "unretained, not measured zero",
         },
+        "selected_steps": ordered,
+        "selections": [
+            {
+                "message_id": item.message.id,
+                "part_id": item.part.id,
+                "field": item.request.field,
+                "start": item.start,
+                "end": item.end,
+                "content_revision": hashlib.sha256(item.text.encode("utf-8")).hexdigest(),
+            }
+            for item in selected
+        ],
         "selection": {
             "part_id": part.id,
             "content_revision": hashlib.sha256(part_text.encode("utf-8")).hexdigest(),
@@ -312,6 +338,7 @@ def explain_selection(
                 "content_revision": a.text.content_revision,
                 "field": a.text.field,
                 "kind": a.text.kind,
+                **({"source_text": a.text.text} if a.text.kind == "tool_input" else {}),
                 "section": a.section_index,
                 **block_stats(a, mass),
                 "runs": heat_runs(a, encoded, mass),

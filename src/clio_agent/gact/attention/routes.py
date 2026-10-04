@@ -17,11 +17,12 @@ error. Blocking store/tokenizer work runs in the threadpool.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from clio_schemas.attention import AttentionProfile
+from clio_schemas.connected_resources import ContentSelection
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent.gact.attention.lm_calls import (
@@ -30,6 +31,7 @@ from clio_agent.gact.attention.lm_calls import (
     lm_calls_from_flowcept_rows,
     lm_calls_from_jsonl,
 )
+from clio_agent.gact.attention.lookup import lookup_attention
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.service import SelectionRequest, explain_selection
 from clio_agent.gact.attention.store import AttentionStore
@@ -47,6 +49,17 @@ class AttentionRequestBody(BaseModel):
     text: str = ""
     profile: AttentionProfile = AttentionProfile()
     content_revision: str = ""
+    lm_call_id: str = ""
+
+
+class AttentionLookupBody(BaseModel):
+    """Bounded references for either direction, including explicit unavailable media."""
+
+    selections: list[ContentSelection] = Field(min_length=1, max_length=32)
+    direction: Literal["generated_to_source", "source_to_generation"] = "generated_to_source"
+    profile: AttentionProfile = AttentionProfile()
+    cursor: int = Field(default=0, ge=0)
+    limit: int = Field(default=16, ge=1, le=32)
 
 
 def _backend(app: FastAPI) -> Any:
@@ -159,7 +172,27 @@ def register_attention_routes(app: FastAPI) -> None:
                     text=body.text,
                     profile=body.profile,
                     content_revision=body.content_revision,
+                    lm_call_id=body.lm_call_id,
                 ),
+            )
+
+        try:
+            return await run_in_threadpool(run)
+        except AttentionUnavailable as exc:
+            return exc.to_wire()
+
+    @app.post("/v1/sessions/{sid}/attention/lookup")
+    async def post_attention_lookup(sid: str, body: AttentionLookupBody) -> dict[str, Any]:
+        def run() -> dict[str, Any]:
+            return lookup_attention(
+                session_id=sid,
+                messages=list(app.state.messages.get(sid, [])),
+                calls=session_lm_calls(app, sid),
+                store=attention_store(app),
+                renderer_for=_renderer,
+                **body.model_dump(exclude={"selections", "profile"}),
+                selections=body.selections,
+                profile=body.profile,
             )
 
         try:

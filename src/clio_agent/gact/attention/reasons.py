@@ -23,6 +23,8 @@ AttentionReason = Literal[
     "selection_not_located",
     "selection_ambiguous",
     "content_revision_changed",
+    "selection_too_large",
+    "content_coordinates_unavailable",
     # connector store (see contract.py)
     "attention_query_failed",
     "attention_record_not_found",
@@ -54,6 +56,8 @@ REASON_TEXT: dict[str, str] = {
     "selection_not_located": "The selected text was not found in the model output.",
     "selection_ambiguous": "This text appears more than once; select an exact content range.",
     "content_revision_changed": "The selected content changed. Select it again to inspect this revision.",
+    "selection_too_large": "Select a smaller range to inspect its attention.",
+    "content_coordinates_unavailable": "This capture has no verified token coordinates for this content.",
     "attention_query_failed": "The attention store query failed.",
     "attention_record_not_found": "No attention record exists for this model call yet.",
     "attention_capture_failed": "The attention capture failed for this model call.",
