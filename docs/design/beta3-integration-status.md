@@ -176,6 +176,32 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   missing attention fixture and minimap expectations were repaired; Python 3.12
   CI currently exits unsuccessfully after its test summary and needs investigation.
 
+### Services interaction checkpoint (October 4)
+
+- Services now starts with installed/retained resources, grouped into Inference,
+  Monitoring and provenance, and Supporting services. Deploy new and Connect
+  existing have distinct entry points. Management uses Status, Configuration,
+  Logs and Storage tabs with host identity and accessible explanation icons.
+- Selection, configuration drafts and tabs survive in-app navigation; backend
+  operations restore after reload. Registered SSH hosts can be selected in a
+  browser without creating a new Desktop transport. A URL retains the selected
+  host through full reload. Unapplied edits do not affect status or stop requests.
+- The real browser flow installed and started Flowcept on homelab, verified a
+  fresh record, changed its private API port, observed verification invalidation,
+  restarted, reconnected, reverified, stopped and removed the runtime. Mongo data
+  and evidence remain; its owned containers are gone. Final API state is retained
+  in `flowcept-ui-final-state.json`; mobile light/dark screenshots are alongside it.
+  This uses the explicit OpenSSH qualification bridge, not a packaged Desktop
+  transport. Current container-log refresh additionally has regression coverage.
+- Focused service UI tests: 66 passed across six files after adapting lifecycle
+  assertions to the management tabs. UI typecheck and lint passed. Backend:
+  69 path/model/docs/cleanup/attention tests and 39 monitoring/native/attention
+  tests passed in overlapping focused runs; Linux-target typecheck passed.
+- Packaged macOS startup workflow 37190116552 passed on macOS 14, 15 and 26.
+  Full Agent CI remains open: generated configuration docs and broad-exception
+  regressions are repaired; Python 3.12 runtime cleanup now reports its underlying
+  failure for diagnosis. It is not yet a passed integration gate.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
@@ -183,7 +209,7 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    never include secrets in this document or the transcript.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,
    default-build and additional-driver qualification, connect/use provenance flow,
-   attention verification, and the shared Services management UI.
+   attention verification, and remaining service connection flows.
 3. Implement marketplace audit #1627, including scoped identities, safe reload,
    drafts/publish, pin preservation, events, and deletion distinctions.
 4. Finish full-transcript stable attention selections, shared editable numerical

@@ -201,4 +201,4 @@ def cleanup_test_runtime(
             last_error = exc
             if attempt + 1 < attempts:
                 time.sleep(retry_delay_seconds)
-    raise RuntimeError(f"could not remove test runtime: {root}") from last_error
+    raise RuntimeError(f"could not remove test runtime: {root}: {last_error}") from last_error

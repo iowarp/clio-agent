@@ -250,6 +250,7 @@ def download(receipt: Path) -> None:
     """Download a resolved revision and verify file sizes/hashes before marking it ready."""
     import threading
 
+    import httpx
     from huggingface_hub import HfApi, snapshot_download
 
     # Parent publishes process identity first; both processes write the receipt.
@@ -366,7 +367,7 @@ def download(receipt: Path) -> None:
             updated_at=time.time(),
         )
         write_json(receipt, job)
-    except Exception as exc:  # noqa: BLE001 - detached worker records a sanitized terminal failure
+    except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
         # Upstream exception strings can contain signed URLs or auth headers.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         detail = (
@@ -385,6 +386,8 @@ def download(receipt: Path) -> None:
             force_redownload=job["phase"] == "Verifying downloaded revision",
         )
         write_json(receipt, job)
+        # Fail the detached process loudly without exposing upstream URLs or credentials.
+        raise AcquisitionError(detail) from None
 
 
 def main() -> None:

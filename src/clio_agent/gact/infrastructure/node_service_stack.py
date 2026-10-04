@@ -238,19 +238,28 @@ def start(root: Path, manifest: dict[str, Any]) -> None:
             command(root, ["exec", component["name"], *component["initialize"]])
 
 
+def collect_logs(root: Path, manifest: dict[str, Any]) -> None:
+    """Refresh bounded logs from existing owned containers without changing their state."""
+    private = json.loads((root / "credentials.json").read_text())
+    for component in manifest["components"]:
+        name = component["name"]
+        if inspect(root, "container", name) is None:
+            continue
+        logs = command(root, ["logs", "--tail", "100", name])[-16000:]
+        for value in private.values():
+            if value:
+                logs = logs.replace(str(value), "[redacted]")
+        (root / "logs" / (component["role"] + ".log")).write_text(logs)
+
+
 def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
     """Stop/remove only matching owned containers, retaining every data directory."""
+    collect_logs(root, manifest)
     for component in reversed(manifest["components"]):
         name = component["name"]
         row = inspect(root, "container", name)
         if row is None:
             continue
-        logs = command(root, ["logs", "--tail", "100", name])[-16000:]
-        private = json.loads((root / "credentials.json").read_text())
-        for value in private.values():
-            if value:
-                logs = logs.replace(str(value), "[redacted]")
-        (root / "logs" / (component["role"] + ".log")).write_text(logs)
         if row["State"]["Running"]:
             command(root, ["stop", "--time", "15", name])
         observed = inspect(root, "container", name)
@@ -272,6 +281,8 @@ def main() -> None:
         install(root, manifest)
     elif action in {"stop", "uninstall"}:
         cleanup(root, manifest, remove=action == "uninstall")
+    elif action == "logs":
+        collect_logs(root, manifest)
     elif action == "delete_data":
         if any(
             inspect(root, "container", row["name"]) is not None for row in manifest["components"]

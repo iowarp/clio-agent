@@ -455,6 +455,43 @@ async def test_reinstall_after_a_reload_uses_the_installed_configuration(tmp_pat
     assert IMAGE not in target.images
 
 
+@pytest.mark.asyncio
+async def test_reinstall_cannot_abandon_an_owned_storage_directory(tmp_path: Path) -> None:
+    target = FakeLinuxTarget()
+    runtime, store, target_id = _runtime(tmp_path, target)
+    assert (await _finish(runtime, store, "ollama", _install(target_id))).state == "succeeded"
+    record = store.service(target_id, "ollama")
+    assert record is not None
+    store.put_service(
+        record.model_copy(
+            update={
+                "configuration": {
+                    **record.configuration,
+                    "storage.service_directory": "/data/owned-service",
+                }
+            }
+        )
+    )
+    before = target.snapshot()
+    result = await _finish(
+        runtime,
+        store,
+        "ollama",
+        ServiceActionRequest(
+            target_id=target_id,
+            action="reinstall",
+            variant_id="cpu",
+            configuration={"storage.service_directory": "/data/another-service"},
+        ),
+    )
+    assert result.state == "failed" and "explicit data migration" in result.error
+    assert target.snapshot() == before
+    assert (
+        store.service(target_id, "ollama").configuration["storage.service_directory"]
+        == "/data/owned-service"
+    )
+
+
 def test_discovery_learns_the_default_context_of_a_running_managed_ollama(tmp_path: Path) -> None:
     from clio_agent.gact.infrastructure.models import EffectiveParameter, ServiceRecord
     from clio_agent.gact.infrastructure.served_defaults import ollama_context_default_lookup

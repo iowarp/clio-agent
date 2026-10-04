@@ -509,6 +509,7 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
             )
             write_json(root / "evidence/verification.json", evidence)
         elif action == "logs":
+            hook(root, "logs")
             tails = []
             for file in (root / "logs").glob("*.log"):
                 with file.open("rb") as stream:

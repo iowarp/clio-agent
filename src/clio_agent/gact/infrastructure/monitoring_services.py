@@ -187,7 +187,7 @@ def monitoring_plan(
         "installation_bytes": 1024**3,
         "files": files,
         "post_install": "stack.py",
-        "hooks": dict.fromkeys(("stop", "uninstall", "delete_data"), "stack.py"),
+        "hooks": dict.fromkeys(("stop", "uninstall", "delete_data", "logs"), "stack.py"),
         "arguments": [],
         "launcher": Path(__file__).with_name("monitoring_launch.py").read_text(encoding="utf-8"),
     }

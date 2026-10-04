@@ -774,6 +774,10 @@ KEY_NOTES: dict[str, str] = {
         'Flowcept payload privacy level ("metadata" default, no raw content); relax only when '
         "the Flowcept backend is trusted with full content."
     ),
+    "provenance.agentic.flowcept.persistence_owner": (
+        'Exactly one persistence owner: "client" for a standalone Flowcept client, or '
+        '"collector" when a managed collector persists records. Avoid duplicate database writers.'
+    ),
     "provenance.agentic.flowcept.workflow_scope": (
         'Whether a Flowcept workflow record spans one session or the process ("session" '
         "default); change to correlate sessions as one workflow."

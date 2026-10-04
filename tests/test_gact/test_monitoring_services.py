@@ -157,3 +157,25 @@ def test_image_capacity_uses_engine_storage_not_data_directory(
     monkeypatch.setattr(node_service_stack.shutil, "disk_usage", usage)
     with pytest.raises(ValueError, match="image-store space"):
         node_service_stack.engine_capacity(tmp_path, 8 * 1024**3)
+
+
+def test_live_logs_refresh_without_stopping_services_and_redact_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "credentials.json").write_text(json.dumps({"password": "private-secret"}))
+    config = manifest("flowcept")
+    calls: list[list[str]] = []
+
+    def command(root: Path, arguments: list[str], **kwargs: Any) -> str:
+        calls.append(arguments)
+        assert arguments[:3] == ["logs", "--tail", "100"]
+        return "fresh record private-secret"
+
+    monkeypatch.setattr(node_service_stack, "inspect", lambda *args: {"State": {"Running": True}})
+    monkeypatch.setattr(node_service_stack, "command", command)
+    node_service_stack.collect_logs(tmp_path, config)
+    assert len(calls) == 2
+    for role in ("redis", "mongo"):
+        assert (tmp_path / "logs" / f"{role}.log").read_text() == "fresh record [redacted]"
+    assert config["hooks"]["logs"] == "stack.py"

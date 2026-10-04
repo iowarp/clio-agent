@@ -123,7 +123,11 @@ def test_worker_verifies_hash_and_retries_resolved_commit(
 
     monkeypatch.setattr(huggingface_hub, "HfApi", Api)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
-    node_models.download(receipt)
+    if corrupt:
+        with pytest.raises(node_models.AcquisitionError, match="hash check"):
+            node_models.download(receipt)
+    else:
+        node_models.download(receipt)
     result = json.loads(receipt.read_text())
     assert requests[0]["revision"] == "f" * 40
     assert result["state"] == ("failed" if corrupt else "ready")
@@ -148,7 +152,10 @@ def test_worker_redacts_auth_error(tmp_path: Path, monkeypatch: pytest.MonkeyPat
             )
 
     monkeypatch.setattr(huggingface_hub, "HfApi", Api)
-    node_models.download(receipt)
+    with pytest.raises(node_models.AcquisitionError, match="access denied") as error:
+        node_models.download(receipt)
+    assert error.value.__suppress_context__
+    assert "secret" not in str(error.value)
     result = json.loads(receipt.read_text())
     assert result["state"] == "failed" and "access denied" in result["error"]
     assert "secret" not in receipt.read_text()
@@ -174,7 +181,8 @@ def test_worker_checks_capacity_before_downloading(
     monkeypatch.setattr(huggingface_hub, "HfApi", Api)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", unexpected)
     monkeypatch.setattr(node_models.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
-    node_models.download(receipt)
+    with pytest.raises(node_models.AcquisitionError, match="Insufficient space"):
+        node_models.download(receipt)
     result = json.loads(receipt.read_text())
     assert result["state"] == "failed" and "Insufficient space" in result["error"]
 

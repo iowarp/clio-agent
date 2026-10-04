@@ -27,6 +27,26 @@ def _real_declaration() -> tuple[Any, Encoded]:
     return declare_ranges(data["lm_call"]["messages"], encoded), encoded
 
 
+@pytest.mark.parametrize("unexpected", [False, True])
+def test_renderer_failures_are_typed_or_propagated(
+    monkeypatch: pytest.MonkeyPatch, unexpected: bool
+) -> None:
+    def resolve(*args: Any) -> Any:
+        if unexpected:
+            raise AssertionError("programming defect")
+        raise ValueError("private prompt content")
+
+    monkeypatch.setattr(tokenizer_source, "resolve_renderer", resolve)
+    arguments = {"model": "hosted_vllm/test", "messages": [], "lm_kwargs": {}, "call_kwargs": {}}
+    if unexpected:
+        with pytest.raises(AssertionError, match="programming defect"):
+            build_declaration(**arguments)
+    else:
+        _, record = build_declaration(**arguments)
+        assert record["reason"] == "attention_tokenizer_unavailable"
+        assert record["detail"] == "render failed: ValueError"
+
+
 def test_real_prompt_sections_are_ordered_disjoint_and_labelled() -> None:
     declaration, encoded = _real_declaration()
     ranges = declaration.ranges

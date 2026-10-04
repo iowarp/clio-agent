@@ -8,9 +8,9 @@ that LiteLLM forwards via ``extra_body``), and the labelled ranges are recorded
 on the call's ``lm.call`` provenance record (see :func:`current_declaration`).
 
 Never for non-vLLM providers; a skipped declaration records a typed reason on
-the ``lm.call`` record instead of disappearing. Declaration can never fail the
-call: an unresolvable tokenizer sends the request undeclared (the connector
-then uses fixed chunks) and records ``attention_tokenizer_unavailable``.
+the ``lm.call`` record instead of disappearing. Known tokenizer/render failures
+send the request undeclared (the connector then uses fixed chunks) and record
+``attention_tokenizer_unavailable``. Unexpected programming errors propagate.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
+
+from jinja2 import TemplateError
 
 from clio_agent.gact.attention.ranges import declare_ranges
 from clio_agent.gact.attention.reasons import AttentionUnavailable
@@ -93,9 +95,9 @@ def build_declaration(
         encoded = renderer.render_encoded(messages, template_kwargs)
     except AttentionUnavailable as exc:
         return call_kwargs, _not_declared(exc.reason, exc.detail)
-    except Exception as exc:  # noqa: BLE001 - template render errors: typed, never fatal
+    except (OSError, ValueError, TypeError, RuntimeError, LookupError, TemplateError) as exc:
         return call_kwargs, _not_declared(
-            "attention_tokenizer_unavailable", f"render failed: {type(exc).__name__}: {exc}"
+            "attention_tokenizer_unavailable", f"render failed: {type(exc).__name__}"
         )
     declaration = declare_ranges(messages, encoded)
     # DSPy merges the LM's kwargs under the call's, so a call-level extra_body would

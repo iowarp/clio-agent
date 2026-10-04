@@ -1554,6 +1554,12 @@ provenance.agentic.flowcept.exclude_events: ["lm.token.delta", "thinking.*"]
 # not excluded); narrow to scope provenance to specific events.
 provenance.agentic.flowcept.include_events: ["*"]
 
+# CLIO_FLOWCEPT_PERSISTENCE_OWNER  (str)  <- src/clio_agent/gact/provenance/factory.py
+# Exactly one persistence owner: "client" for a standalone Flowcept client,
+# or "collector" when a managed collector persists records. Avoid duplicate
+# database writers.
+provenance.agentic.flowcept.persistence_owner: "client"
+
 # CLIO_FLOWCEPT_PRIVACY  (str)  <- src/clio_agent/gact/provenance/factory.py
 # Flowcept payload privacy level ("metadata" default, no raw content); relax
 # only when the Flowcept backend is trusted with full content.

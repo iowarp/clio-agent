@@ -393,6 +393,18 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 row.model_copy(update={"progress": f"Running {request.action}"})
             )
             installed = self.store.service(request.target_id, row.service_id)
+            if installed is not None and request.action in {"install", "reinstall"}:
+                previous_directory = installed.configuration.get("storage.service_directory")
+                requested_directory = request.configuration.get("storage.service_directory")
+                if (
+                    previous_directory
+                    and requested_directory
+                    and requested_directory != previous_directory
+                ):
+                    raise ValueError(
+                        "This deployment owns its existing storage directory. Changing its path "
+                        "requires an explicit data migration; reinstall cannot move or abandon it."
+                    )
             # `on_conflict` answers exactly THIS operation's found-conflict
             # question, if any. It must never be read back from a persisted
             # record or merged forward -- a past "Replace"/"Connect" would

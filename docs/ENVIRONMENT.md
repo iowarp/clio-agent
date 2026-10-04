@@ -118,6 +118,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_FLOWCEPT_CHECK_SAFE_STOPS` | `provenance.agentic.flowcept.check_safe_stops` | bool | `true` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_EXCLUDE_EVENTS` | `provenance.agentic.flowcept.exclude_events` | list | `lm.token.delta,thinking.*` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_INCLUDE_EVENTS` | `provenance.agentic.flowcept.include_events` | list | `*` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_FLOWCEPT_PERSISTENCE_OWNER` | `provenance.agentic.flowcept.persistence_owner` | str | `client` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_PRIVACY` | `provenance.agentic.flowcept.privacy` | str | `metadata` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_WORKFLOW_SCOPE` | `provenance.agentic.flowcept.workflow_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FS_MAX_READ_BYTES` | `limits.fs_read_bytes` | int | `262144` | `src/clio_agent/tools/servers/fs_server.py` |
