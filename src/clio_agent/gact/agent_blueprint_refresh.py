@@ -45,7 +45,12 @@ from clio_agent.gact.agent_blueprints import (
     read_install_metadata,
     validate_agent_blueprint_path,
 )
-from clio_agent.gact.blueprint_identity import identity_fields, installed_root, source_tombstones
+from clio_agent.gact.blueprint_identity import (
+    identity_fields,
+    install_destination,
+    installed_root,
+    source_tombstones,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -518,7 +523,7 @@ def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
 
 
 def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str) -> str:
-    """Install/update registry packs from the global root (local-path sources only).
+    """Bootstrap missing local registry packs without applying source updates.
 
     A local registry checkout (the dev submodule) makes enumeration free, so a
     pack added to the registry after the original bootstrap (the
@@ -537,8 +542,8 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
       time) are never clobbered — same rule as
       ``agent_blueprint_sources.source_install_skip_ids``'s
       ``local_edits_present``. Otherwise, a source checksum that differs from
-      the installed one re-installs (never a silent stale copy) and is
-      logged with BOTH checksums;
+      the installed one records BOTH checksums but retains the working revision.
+      Applying that change requires explicit Reload at a safe turn boundary;
     * a pack the USER uninstalled (the tombstone ledger) is never resurrected;
     * the whole body is failure-isolated: any error is a logged, returned
       diagnostic, never an exception into discovery (every blueprint route sits
@@ -579,9 +584,11 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                 if parsed.id in tombstones:
                     logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
                     continue
-                existing_root = install_root / parsed.id
+                existing_root = install_destination(
+                    install_root, parsed.id, {"source": source, "ref": DEFAULT_REGISTRY_REF}
+                )
                 reinstall_reason = _reinstall_reason(existing_root, candidate)
-                if reinstall_reason is None:
+                if reinstall_reason != "missing_from_install_root":
                     continue
                 try:
                     install_agent_blueprint(

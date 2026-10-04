@@ -261,8 +261,31 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
 - The preceding pushed Agent head `b9288963` passed all CI shards, coverage,
   filesystem/Flowcept integration, Pages, Docker, schema and macOS startup jobs.
   UI `de614588` passed CI/schema but its workspace browser gate found two open
-  transcript regressions: an 11 px tool-card boundary gap and one 56 ms stream
+  transcript regressions: an 11 px minimap hit-area gap and one 56 ms stream
   task. These remain failures; thresholds have not been relaxed.
+
+### Blueprint selection and transcript checkpoint (October 4)
+
+- The catalog includes available marketplace choices without installing them.
+  Selecting a new conversation's blueprint materializes it on the connected CLIO
+  before creating the session. Missing/ambiguous choices leave no empty session.
+  Workspace choices stay scoped to their owner; path activation uses a namespaced
+  snapshot. Selection reuses the installed revision until explicit Reload.
+- Discovery now retains changed source snapshots and records their checksum
+  difference. It preserves marketplace names, pins, errors and available entries;
+  a read cannot overwrite those user choices or resurrect uninstalled snapshots.
+- Real browser selection exposed and corrected dropped blueprint metadata in the
+  frontend repository request. Keyboard selection then materialized the chosen
+  blueprint, populated its exact identity/checksum and opened its installed files.
+  Evidence: `blueprint-selection-materialized-light.jpg`. This is a focused flow,
+  not complete marketplace browser acceptance.
+- Backend selection/default/blueprint regression: 165 passed after extracting
+  creation into its own route module; ownership/discovery regression: 11 passed.
+  The earlier overlapping selection/capability run passed 209 tests. Linux-target
+  typechecks, frontend lint/typecheck, 16 UI and 16 core contract tests passed.
+- UI commit `59617e65` makes minimap magnified hit regions contiguous and preserves
+  unchanged message references while streaming. Focused tests passed; rendered
+  adjacent targets meet within 0.011 px. Its full browser CI remains pending.
 
 ## Required work still outstanding
 
@@ -272,8 +295,7 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,
    default-build and additional-driver qualification, connect/use provenance flow,
    attention verification, and remaining service connection flows.
-3. Complete marketplace #1627: transparent selection/materialization, full source
-   configuration and pin editing, path-activation coherence, runtime/MCP reload
+3. Complete marketplace #1627: full source configuration and pin editing, runtime/MCP reload
    qualification, receipt recovery UI, and the Providers-style composition.
 4. Finish full-transcript stable attention selections, shared editable numerical
    profiles, bidirectional lookup, SPOTTER tools and findings. Replace the old

@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact import context_reference_retry, session_warmup
+from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.compaction import CompactionError, compact_session_context
 from clio_agent.gact.context_rollback import follow_rollback
@@ -38,6 +38,7 @@ from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
+from clio_agent.gact.routes.session_creation import register_session_creation_route
 from clio_agent.gact.routes.session_question_helpers import (
     normalize_question_options,
     pending_user_questions,
@@ -46,15 +47,12 @@ from clio_agent.gact.routes.session_question_helpers import (
 )
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
-from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import _new_attempt_id, _new_question_id
 from clio_agent.gact.runtime.retention import enforce_dict_bound
-from clio_agent.gact.session_defaults import apply_default_effort
 from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.session_tool_output import delete_session_tool_output
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
-    CreateSessionRequest,
     CreateUserQuestionRequest,
     ErrorEnvelope,
     ErrorInfo,
@@ -106,59 +104,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     # ---- /v1/sessions CRUD -----------------------------------------
-    @app.post("/v1/sessions", response_model=Session)
-    async def create_session(req: CreateSessionRequest, request: Request) -> Session | JSONResponse:
-        wid = req.workspace_id or "ws_default"
-        if app.state.workspaces.get(wid) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"workspace not found: {wid}",
-                        details={"workspace_id": wid},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        defaults = app.state.session_defaults.get()
-        supplied = req.model_fields_set
-        metadata = dict(req.metadata)
-        apply_default_effort(metadata, defaults)  # provenance-stamped starting level
-        if defaults.blueprint_id and "active_agent_blueprint_id" not in metadata:
-            metadata["active_agent_blueprint_id"] = defaults.blueprint_id
-        if "model" in supplied:
-            model = req.model.model_dump(exclude_none=True) if req.model else None
-        elif defaults.provider_id or defaults.model_id:
-            model = {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
-        else:
-            model = None
-        sess = app.state.sessions.create(
-            workspace_id=wid,
-            title=req.title,
-            metadata=metadata,
-            model=model,
-            agent=req.agent.model_dump(exclude_none=True) if req.agent else None,
-            mode=req.mode if "mode" in supplied else defaults.mode,
-            edit_mode=req.edit_mode if "edit_mode" in supplied else defaults.edit_mode,
-            routing_mode=(
-                req.routing_mode if "routing_mode" in supplied else defaults.routing_mode
-            ),
-            approval_mode=(
-                req.approval_mode if "approval_mode" in supplied else defaults.approval_mode
-            ),
-        )
-        bringup_timing.timer_for_session(app, sess.id).start_phase("session.create")
-        # Session creation inherits territory and emits no fabricated grant (#979.2).
-        sync_watcher_for_mode(app, sess)
-        bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
-        # Start the session's servers now, not on its first message.
-        session_warmup.start_session_warmup(app, sess.id, trigger="session_created")
-        return project_for_request(
-            request,
-            v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),
-            v2=lambda: Session(**sess.to_wire()),
-        )
+    register_session_creation_route(app)
 
     @app.patch("/v1/sessions/{sid}", response_model=Session)
     async def patch_session(

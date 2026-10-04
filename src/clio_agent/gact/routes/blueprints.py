@@ -60,11 +60,11 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.gact.blueprint_reload import apply_blueprint_change
-from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
 from clio_agent.gact.routes.blueprint_file_read import register_blueprint_file_read_routes
 from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
+from clio_agent.gact.routes.blueprint_selection import selection_errors
 from clio_agent.gact.routes.blueprint_session_activation import activate_session_blueprint
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -701,8 +701,16 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/sessions/{sid}/agent-blueprint")
     async def set_session_agent_blueprint(sid: str, req: dict[str, Any]) -> dict[str, Any]:
-        # Validation, discovery and activation record reasons in clio-core (store
-        # writes): the whole activation runs off the event loop.
-        return await run_off_loop(
-            lambda: activate_session_blueprint(app, deps, sid, req, not_found=_not_found)
+        from clio_agent.gact.session_warmup import start_session_warmup
+
+        result = await apply_blueprint_change(
+            app,
+            lambda: selection_errors(
+                lambda: activate_session_blueprint(
+                    app, deps, sid, req, not_found=_not_found, warmup=False
+                )
+            ),
+            label="Select blueprint",
         )
+        start_session_warmup(app, sid, trigger="blueprint_activated")
+        return result

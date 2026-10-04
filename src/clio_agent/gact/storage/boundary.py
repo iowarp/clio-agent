@@ -19,6 +19,13 @@ def source_policy_change(agent: Any) -> Iterator[None]:
     if agent is None:
         yield
         return
+    if not callable(getattr(agent, "_workspace_state", None)):
+        if callable(getattr(agent, "_active_tool_executor", None)):
+            raise ValueError("This agent does not expose a safe tool-process restart boundary")
+        # Protocol-only agents have no CLIO-owned tool fleet to drain. Their
+        # running turns are still protected by the caller's revision gate.
+        yield
+        return
     lock, executors, leases = agent._workspace_state()
     with lock:
         if (

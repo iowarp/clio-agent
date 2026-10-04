@@ -161,6 +161,29 @@ def test_other_source_cannot_overwrite_installed_owner(tmp_path: Path) -> None:
     assert not other.exists()
 
 
+def test_discovery_preserves_default_marketplace_configuration_and_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A read cannot reset a user's pin, failed operation or available choices."""
+    monkeypatch.setattr(sources, "sources_path", lambda: tmp_path / "sources.json")
+    source = _pack(tmp_path / "source")
+    root = _install(source, tmp_path)
+    arguments = {
+        "source": str(source),
+        "ref": "main",
+        "pinned_commit": "",
+        "install_root": root.parent,
+    }
+    row = sources.record_default_agent_blueprint_source(**arguments)
+    row.update(name="Lab marketplace", pinned_commit="abc123", status="error", error="Offline")
+    sources.upsert_agent_blueprint_source(row)
+    before = sources.load_agent_blueprint_sources()[0]
+    uninstall_agent_blueprint(blueprint_id="demo", scope="workspace", cwd=tmp_path)
+    assert sources.record_default_agent_blueprint_source(**arguments) == before
+    assert sources.load_agent_blueprint_sources() == [before]
+    assert before["available_blueprints"][0]["id"] == "demo"
+
+
 def test_qualified_file_routes_do_not_choose_an_ambiguous_legacy_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

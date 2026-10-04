@@ -376,9 +376,9 @@ def record_default_agent_blueprint_source(
     the catalog from the installed, source-matching snapshots instead of
     cloning the remote a second time during first-run bootstrap.
 
-    Discovery calls this on every invocation (including per-turn agent
-    resolution), so the ledger is rewritten only when the recorded row actually
-    changes — ``updated_at`` alone is not a change.
+    Discovery calls this on every invocation, including per-turn resolution.
+    Existing registrations belong to the user: preserve their name, pin, catalog
+    and last operation outcome. Explicit source refresh owns subsequent updates.
     """
 
     from clio_agent.gact.agent_blueprints import read_install_metadata  # noqa: PLC0415
@@ -409,6 +409,8 @@ def record_default_agent_blueprint_source(
             return {}
         rows = load_agent_blueprint_sources()
         existing = next((row for row in rows if row.get("id") == source_id), {})
+        if existing:
+            return dict(existing)
         row = {
             **existing,
             "id": source_id,
@@ -426,8 +428,6 @@ def record_default_agent_blueprint_source(
             "install_scope": "global",
             "is_default": True,
         }
-        if existing and {**existing, "updated_at": now} == row:
-            return dict(existing)
         save_agent_blueprint_sources(
             [existing_row for existing_row in rows if existing_row.get("id") != source_id] + [row]
         )

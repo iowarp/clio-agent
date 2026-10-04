@@ -15,12 +15,12 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact import session_warmup
 from clio_agent.gact.agent_blueprints import (
-    discover_agent_blueprints,
     runtime_tool_names_for_validation,
     validate_agent_blueprint_path,
 )
 from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
-from clio_agent.gact.blueprint_identity import identity_fields, select_blueprint
+from clio_agent.gact.blueprint_catalog import materialize_blueprint, materialize_blueprint_path
+from clio_agent.gact.blueprint_identity import identity_fields
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 
@@ -31,6 +31,7 @@ def activate_session_blueprint(
     req: dict[str, Any],
     *,
     not_found: Callable[..., HTTPException],
+    warmup: bool = True,
 ) -> dict[str, Any]:
     """Validate, resolve and activate the requested blueprint on session ``sid``."""
     sess = app.state.sessions.get(sid)
@@ -54,18 +55,21 @@ def activate_session_blueprint(
             raise path_activation_invalid_http_exception(
                 validation, blueprint_path, blueprint_wire, app=app, session_id=sid
             )
-        install_root = Path(str(blueprint_wire.get("root") or blueprint_path)).expanduser()
+        blueprint = materialize_blueprint_path(Path(blueprint_path), cwd=cwd, app=app)
+        blueprint_wire = blueprint.to_wire()
+        install_root = blueprint.root
         activation_metadata = deps.agent_blueprint_activation_metadata(
             blueprint_wire=blueprint_wire,
             install_root=install_root,
-            scope="session",
+            scope=blueprint.scope,
             session_id=sid,
         )
         updated = app.state.sessions.update(
             sid,
             metadata_patch={
                 **activation_metadata,
-                "active_agent_blueprint_path": str(Path(blueprint_path).expanduser()),
+                "active_agent_blueprint_path": str(install_root),
+                "active_agent_blueprint_identity": identity_fields(blueprint)["identity"],
                 "active_expert_pack_id": "",
                 "active_expert_pack_path": "",
             },
@@ -82,13 +86,16 @@ def activate_session_blueprint(
                     )
                 ).model_dump(exclude_none=True),
             )
-        blueprint = select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
-        if blueprint is None:
+        try:
+            blueprint = materialize_blueprint(
+                blueprint_id, cwd=cwd, workspace_id=sess.workspace_id, app=app
+            )
+        except FileNotFoundError as exc:
             raise not_found(
                 f"agent blueprint not found: {blueprint_id}",
                 agent_blueprint_id=blueprint_id,
                 session_id=sid,
-            )
+            ) from exc
         blueprint_wire = blueprint.to_wire()
         activation_metadata = deps.agent_blueprint_activation_metadata(
             blueprint_wire=blueprint_wire,
@@ -107,12 +114,13 @@ def activate_session_blueprint(
             },
         )
     # The blueprint's servers start now, not on the session's next message.
-    session_warmup.start_session_warmup(app, sid, trigger="blueprint_activated")
+    if warmup:
+        session_warmup.start_session_warmup(app, sid, trigger="blueprint_activated")
     return {
         "session_id": sid,
         "workspace_id": getattr(sess, "workspace_id", ""),
         "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
-        "active_agent_blueprint_path": str(blueprint_path),
+        "active_agent_blueprint_path": str(blueprint.root),
         "agent_blueprint": blueprint_wire,
         "session": Session(**updated.to_wire()).model_dump(exclude_none=True) if updated else None,
     }
