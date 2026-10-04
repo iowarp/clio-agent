@@ -471,17 +471,19 @@ main() {
     update)
       shift || true
       local uv_bin
+      local wheel_arg=""
+      [[ "$(uname -s)" != Darwin ]] || wheel_arg="--only-binary=rasterio"
       uv_bin="$(command -v uv 2>/dev/null || true)"
       [[ -z "$uv_bin" && -x "$CLIO_VENV/bin/uv" ]] && uv_bin="$CLIO_VENV/bin/uv"
       say "updating clio-agent to the latest PyPI release"
       if health; then say "stopping the running server first"; stop_server; fi
       if [[ -n "$uv_bin" ]]; then
-        "$uv_bin" pip install --python "$CLIO_VENV/bin/python" -U clio-agent \
+        "$uv_bin" pip install --python "$CLIO_VENV/bin/python" ${wheel_arg:+"$wheel_arg"} -U clio-agent \
           "dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
           "fastmcp-tasks==4.0.0b5" \
           || { err "update failed"; return 1; }
       else
-        "$CLIO_VENV/bin/python" -m pip install -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }
+        "$CLIO_VENV/bin/python" -m pip install ${wheel_arg:+"$wheel_arg"} -U clio-agent || { err "update failed (no uv; pip fallback also failed)"; return 1; }
       fi
       rm -f "$UPDATE_STAMP" 2>/dev/null || true
       say "updated — run 'clio' to start the new version"
