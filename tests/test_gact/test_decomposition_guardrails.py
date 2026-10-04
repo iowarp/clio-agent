@@ -163,7 +163,8 @@ from clio_agent.gact.app import build_app
 # 285 -> 286: Desktop-owned remote launch shutdown endpoint.
 # 286 -> 287: POST /v1/workspaces/{wid}/warmup prepares the draft workspace fleet
 # without a saved session, owned by routes/workspace_warmup.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 287
+# 287 -> 289: attention availability and message selection routes.
+EXPECTED_ROUTE_METHOD_PAIRS = 289
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

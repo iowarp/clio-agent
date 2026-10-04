@@ -89,3 +89,21 @@ def kvnorm_join_enabled() -> bool:
     ):
         return False
     return "flowcept" in configured_provider_names()
+
+
+def attention_capture_enabled() -> bool:
+    """Whether model calls declare attention ranges for the Flowcept connector."""
+    return (
+        conf.resolve(
+            "provenance.attention",
+            env="CLIO_PROVENANCE_ATTENTION",
+            default=False,
+            cast=conf.as_bool,
+        )
+        and "flowcept" in configured_provider_names()
+    )
+
+
+def response_id_join_enabled() -> bool:
+    """Whether model provenance retains the provider response join key."""
+    return kvnorm_join_enabled() or attention_capture_enabled()
