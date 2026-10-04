@@ -20,15 +20,48 @@ Each platform comes in one or two variants:
 |---|---|---|
 | Windows x64 | `.exe` (setup) and `.msi` | `.exe` (setup) and `.msi` |
 | Windows on ARM | none | `.exe` |
-| macOS, Apple Silicon | `.dmg` | `.dmg` |
-| macOS, Intel | none | `.dmg` |
+| macOS 14+, Apple Silicon | `.dmg` | `.dmg` |
+| macOS 14+, Intel | none | `.dmg` |
 | Linux x86_64 and aarch64 | `.deb` and `.rpm` | `.deb`, `.rpm`, and `.AppImage` |
 
 When you close the window, the app asks "Keep CLIO running?" You can keep it running in the system tray or quit. The app runs as a single instance.
 
-<Aside type="caution">
-Run only one CLIO backend at a time. The desktop app and the `clio` command each start a server on port 17800 and share the same user configuration folder. Running both can clash on the port and risk corrupting saved state. Quit one before starting the other.
+Desktop lets you connect to an existing CLIO service or deploy a separate one. Use the existing-service option when you already run CLIO from a terminal.
+
+### Install Desktop from a terminal
+
+These commands install the Desktop application and verify its release SHA-256 checksum. They require no Python, uv, or Node installation. To try beta 2 explicitly:
+
+<Tabs syncKey="os">
+<TabItem label="macOS">
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
+  | CLIO_VERSION=v0.9.5-beta.2 bash
+```
+
+Installs into `~/Applications`, retaining a previous app beside it when upgrading. Apple Silicon receives the bundled backend; Intel receives an attach-only app. Set `CLIO_DESKTOP_DIR` to choose another absolute application directory.
+
+</TabItem>
+<TabItem label="Windows">
+
+```powershell
+$env:CLIO_VERSION = 'v0.9.5-beta.2'
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
+```
+
+Runs the bundled x64 setup silently and adds CLIO Desktop to the Start menu. Windows on ARM uses x64 emulation.
+
+</TabItem>
+</Tabs>
+
+Omit `CLIO_VERSION` to select the latest stable release. The macOS script requires an intact signed app and refuses older unsigned packages. Use `--download-only DIR` with the saved shell script, or `-DownloadOnly -DownloadDirectory DIR` with the saved PowerShell script, to verify a download without installing it.
+
+<Aside type="note" title="macOS first launch">
+CLIO currently uses an ad-hoc app signature, not Apple Developer ID notarization. If macOS asks for approval, open **System Settings → Privacy & Security → Open Anyway** after attempting to open the app. The installer does not change Gatekeeper or remove quarantine attributes. An invalid signature or failed checksum is an installation error; do not bypass it.
 </Aside>
+
+On Linux, choose the bundled `.deb` or `.rpm` for a local backend. The AppImage is attach-only and needs a separately installed service.
 
 ## Install script
 
@@ -65,7 +98,7 @@ The first start is slower than later ones. See [Connect a model](/docs/connect-a
 
 | Item | macOS and Linux | Windows |
 |---|---|---|
-| Install prefix | `~/.local/share/clio` | `%LOCALAPPDATA%\clio` |
+| Install prefix | Linux: `$XDG_DATA_HOME/clio-agent/app` (default `~/.local/share/clio-agent/app`); macOS: `~/Library/Application Support/clio-agent/data/app` | `%LOCALAPPDATA%\clio-agent\data\app` |
 | `clio` command | `~/.local/bin/clio` | `clio.cmd` and `clio.ps1` in `%LOCALAPPDATA%\Microsoft\WindowsApps` |
 
 Inside the prefix:
@@ -92,8 +125,8 @@ Set these before running the script.
 <TabItem label="macOS and Linux">
 
 ```sh
-CLIO_VERSION=0.9.4.24 \
-  curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh \
+  | CLIO_VERSION=0.9.4.24 bash
 ```
 
 </TabItem>

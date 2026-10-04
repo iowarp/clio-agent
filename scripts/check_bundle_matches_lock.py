@@ -315,6 +315,10 @@ def resolve_bundle(project: Path) -> int:
                         BUNDLE_PYTHON,
                         "--python-platform",
                         target,
+                        # Rasterio source builds link to runner-local GDAL,
+                        # which cannot be assumed on a relocated Desktop install.
+                        "--only-binary",
+                        "rasterio",
                         str(requirements),
                         "-o",
                         str(Path(tmp) / f"{target}.txt"),

@@ -30,6 +30,10 @@
       "icons/icon.icns"
     ],
     "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "-"
+    },
     "windows": {
       "nsis": {
         "headerImage": "installer/header.bmp",
