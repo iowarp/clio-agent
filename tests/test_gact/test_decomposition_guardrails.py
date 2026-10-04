@@ -173,7 +173,8 @@ from clio_agent.gact.app import build_app
 # 325 -> 326: marketplace configuration save, separate from runtime Reload.
 # 326 -> 327: durable connected-CLIO marketplace operation history.
 # 327 -> 328: exact transcript content references for attention selection.
-EXPECTED_ROUTE_METHOD_PAIRS = 328
+# 328 -> 329: revision-bound A2UI image/structured content selection.
+EXPECTED_ROUTE_METHOD_PAIRS = 329
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

@@ -405,6 +405,19 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         "This deployment owns its existing storage directory. Changing its path "
                         "requires an explicit data migration; reinstall cannot move or abandon it."
                     )
+                if row.service_id in {"flowcept", "cmf"} and previous_directory:
+                    for field, default in (
+                        ("container_runtime", "docker"),
+                        ("image_storage", "engine"),
+                    ):
+                        previous = installed.configuration.get(field) or default
+                        requested = request.configuration.get(field) or previous
+                        if requested != previous:
+                            raise ValueError(
+                                "This deployment owns its container runtime and image storage. "
+                                "Remove its runtime and explicitly delete retained data before "
+                                "choosing a different engine or image store."
+                            )
             # `on_conflict` answers exactly THIS operation's found-conflict
             # question, if any. It must never be read back from a persisted
             # record or merged forward -- a past "Replace"/"Connect" would

@@ -184,17 +184,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> Session | JSONResponse:
         sess = app.state.sessions.get(sid)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _session_not_found(sid)
         if workspace_id and sess.workspace_id != workspace_id:
             raise HTTPException(
                 status_code=403,

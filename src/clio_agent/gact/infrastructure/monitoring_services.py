@@ -28,9 +28,10 @@ from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
 MONITORING_SERVICES = frozenset({"flowcept", "cmf"})
 CMF_REVISION = "53d9c3e518ab2fde46955f10520d4842c572bf05"
-MONGO_IMAGE = "mongo@sha256:02a0cc7939f5ed38f30f9bc714ef5f682d49baf9350c54acf302ce833087fe8a"
-REDIS_IMAGE = "redis@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf"
-POSTGRES_IMAGE = "postgres@sha256:4689940c683801b4ab839ab3b0a0a3555a5fe425371422310944e89eca7d8068"
+CMF_BASE_IMAGE = "docker.io/library/python@sha256:f8aa74bffbe59d02f7442dba43c9ea72b2c34cc29aa7a7edc74b29521b23bb43"
+MONGO_IMAGE = "docker.io/library/mongo@sha256:02a0cc7939f5ed38f30f9bc714ef5f682d49baf9350c54acf302ce833087fe8a"
+REDIS_IMAGE = "docker.io/library/redis@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf"
+POSTGRES_IMAGE = "docker.io/library/postgres@sha256:4689940c683801b4ab839ab3b0a0a3555a5fe425371422310944e89eca7d8068"
 
 
 def monitoring_port(service: str, configuration: dict[str, str]) -> int:
@@ -61,7 +62,7 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                 description="Execution provenance and attention records."
                 if service == "flowcept"
                 else "Artifact lineage with direct server access.",
-                definition_version=f"{service}-managed-1",
+                definition_version=f"{service}-managed-2",
                 recommended_variant="managed",
                 variants=[
                     ServiceVariant(
@@ -82,6 +83,12 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                         label="Dependency runtime",
                         options=[str(engine) for engine in engines],
                         placeholder=engines[0] if engines else "No supported engine",
+                    ),
+                    ServiceConfigurationField(
+                        id="image_storage",
+                        label="Container images",
+                        options=["engine", "service"],
+                        placeholder="engine",
                     ),
                     ServiceConfigurationField(
                         id="port",
@@ -171,6 +178,11 @@ def monitoring_plan(
     )
     if engine not in {"docker", "podman"}:
         raise ValueError("Choose Docker or Podman for monitoring dependencies")
+    image_storage = configuration.get("image_storage") or "engine"
+    if image_storage not in {"engine", "service"}:
+        raise ValueError("Choose engine storage or the service folder for container images")
+    if image_storage == "service" and engine != "podman":
+        raise ValueError("Container images in the service folder require Podman on this host")
     port = monitoring_port(service, configuration)
     files = {
         "stack.py": Path(__file__).with_name("node_service_stack.py").read_text(encoding="utf-8"),
@@ -183,6 +195,7 @@ def monitoring_plan(
         "port": port,
         "health_path": "/api/v1/health/ready" if service == "flowcept" else "/",
         "container_runtime": engine,
+        "image_storage": image_storage,
         "network": prefix,
         "installation_bytes": 1024**3,
         "files": files,
@@ -191,6 +204,10 @@ def monitoring_plan(
         "arguments": [],
         "launcher": Path(__file__).with_name("monitoring_launch.py").read_text(encoding="utf-8"),
     }
+    if engine == "podman":
+        manifest["pod_infra_image"] = (
+            "registry.k8s.io/pause@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a"
+        )
     if service == "flowcept":
         dependencies.append(
             f"flowcept[extras,webservice] @ git+https://github.com/spotter-ai-genesis/flowcept.git@{FLOWCEPT_REVISION}"
@@ -243,7 +260,13 @@ def monitoring_plan(
                         ["data/redis", "/data", False],
                         ["redis.conf", "/etc/redis.conf", True],
                     ],
-                    "arguments": ["redis-server", "/etc/redis.conf"],
+                    # The private config is owned by the executing user. Rootless
+                    # Podman maps that user to container root; bypass the image's
+                    # privilege-dropping entrypoint rather than exposing the secret.
+                    "entrypoint": "redis-server",
+                    "arguments": ["/etc/redis.conf"],
+                    "secrets": ["REDISCLI_AUTH"],
+                    "check": ["sh", "-c", 'test "$(redis-cli --raw ping)" = PONG'],
                 },
                 {
                     "name": prefix + "-mongo",
@@ -272,6 +295,8 @@ def monitoring_plan(
                 "repository": "https://github.com/HewlettPackard/cmf.git",
                 "revision": CMF_REVISION,
                 "dockerfile": "server/Dockerfile",
+                "base_image": CMF_BASE_IMAGE,
+                "upstream_base": "docker.io/library/python:3.10-slim-bullseye",
             }
         manifest.update(
             verification_document=verification_document(),
@@ -301,7 +326,7 @@ def monitoring_plan(
                     "mounts": [["data/cmf", "/cmf-server/data", False]],
                     "secrets": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"],
                     "environment": {
-                        "POSTGRES_HOST": "postgres",
+                        "POSTGRES_HOST": "127.0.0.1" if engine == "podman" else "postgres",
                         "POSTGRES_PORT": "5432",
                         "HOME": "/cmf-server/data",
                         "CMF_LOG_FILE": "/cmf-server/data/cmflib.log",
@@ -317,6 +342,13 @@ def monitoring_plan(
     resolved = {
         **configuration,
         "container_runtime": engine,
+        "image_storage": image_storage,
+        "storage.container_images": posixpath.join(directory, "containers/images")
+        if image_storage == "service"
+        else "",
+        "storage.container_downloads": posixpath.join(directory, "containers/downloads")
+        if image_storage == "service"
+        else "",
         "port": str(port),
         "storage.service_directory": directory,
         "storage.captures": posixpath.join(directory, "evidence"),

@@ -18,14 +18,14 @@ from clio_agent.gact.infrastructure.service_observation import parse_observation
 from clio_agent.gact.infrastructure.service_readiness import wait_until_ready
 
 
-async def qualify(service: str, output: Path, image: str) -> None:
+async def qualify(service: str, output: Path, image: str, runtime: str = "docker") -> None:
     """Inspect, install, serve, write/read back, restart and remove only owned resources."""
     target = InfrastructureTarget(
-        id="homelab-monitoring-qualification",
+        id=f"homelab-monitoring-qualification-{runtime}",
         label="Homelab qualification",
         kind="ssh",
         transport_state="connected",
-        storage=HostStorageLocations(root="/data/clio-beta3-qualification/monitoring"),
+        storage=HostStorageLocations(root=f"/data/clio-beta3-qualification/monitoring-{runtime}"),
     )
 
     async def execute(spec: CommandSpec) -> CommandResult:
@@ -44,7 +44,8 @@ async def qualify(service: str, output: Path, image: str) -> None:
     facts = await probe_target(target, execute)
     configuration = {
         "port": "18038" if service == "flowcept" else "18380",
-        "container_runtime": "docker",
+        "container_runtime": runtime,
+        "image_storage": "service" if runtime == "podman" else "engine",
     }
     if service == "flowcept":
         configuration.update(redis_port="16389", mongo_port="37027")
@@ -74,7 +75,7 @@ async def qualify(service: str, output: Path, image: str) -> None:
                 wait_until_ready(
                     plan.readiness, execute, lambda message: print(message, flush=True), interval=3
                 ),
-                900,
+                2100 if verb == "install" else 900,
             )
             for spec in plan.after_ready:
                 result = await execute(spec)
@@ -124,5 +125,6 @@ if __name__ == "__main__":
     parser.add_argument("--service", choices=["flowcept", "cmf"], required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--server-image", default="")
+    parser.add_argument("--runtime", choices=["docker", "podman"], default="docker")
     args = parser.parse_args()
-    asyncio.run(qualify(args.service, args.output, args.server_image))
+    asyncio.run(qualify(args.service, args.output, args.server_image, args.runtime))

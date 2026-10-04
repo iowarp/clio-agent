@@ -611,6 +611,58 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   writer, while replay still reads the recorded Flowcept evidence. Fresh pushed-head CI
   is required. The earlier DMG failure is not treated as a current packaging pass/fail.
 
+### Service storage and OPAL preparation checkpoint (October 4)
+
+- Podman can keep its image store and download scratch space inside the selected
+  service directory. Runtime metadata uses a short, owner-verified `/run/user` path;
+  inherited remote-engine settings cannot redirect it. Existing engine storage
+  remains the default, and established deployments cannot silently change engines
+  or stores. Images/evidence survive runtime removal; explicit data deletion stays
+  separate and checks ownership.
+- Homelab's Podman 3 rootless networking required owned pods with a pinned pause
+  image, loopback port publication and private database traffic. Legacy CNI labels
+  are checked in their actual inspect envelope. Redis keeps its private configuration
+  readable by the mapped owner without making it world-readable; readiness uses
+  authentication. Unknown pod members prevent cleanup.
+- CMF's pinned upstream source still selected the retired Bullseye base, whose
+  package repositories failed during the live build ([Debian's end-of-LTS notice](https://www.debian.org/News/2026/20260831)). The compatibility profile
+  explicitly replaces only that FROM line with the immutable official Python 3.10
+  Bookworm image, preserves the upstream checkout, and retains source/image digests.
+  A cold build exceeded the original 15-minute bound; cached retries and durable
+  build progress now work with a bounded 30-minute build window.
+- The complete **CMF source-build/Podman** lifecycle passed on homelab: install,
+  start, fresh lineage write/readback, stop, restart, second verification and removal.
+  `homelab-cmf-podman.json` retains exact artifacts and observations. Models were not
+  used, no inference ran, and data/images/evidence remain under `/data`.
+- The same complete **Flowcept/Podman** lifecycle subsequently passed, including
+  fresh write/readback before and after restart and runtime removal with retained
+  evidence. `homelab-flowcept-podman.json` records its exact image IDs and Python lock.
+  Explicit retained-data deletion is covered locally but was not executed against
+  these evidence-bearing deployments.
+- Browser review covered the image-store selector, unsupported/locked choices,
+  host/folder identity, retained draft after navigating to Models & storage and back,
+  and narrow light/dark layouts with tap explanations. Screenshots:
+  `container-storage-setup-dark.png`, `container-storage-info-narrow-light.png`.
+  UI commit `e8086566` passed 31 focused tests, typecheck and full lint locally.
+- OPAL's APPL-CORE helper still wrote workspace `.clio`; Marketplace `ede0b1f`
+  now uses the canonical state directory supplied per shell invocation by Agent.
+  An explicit command subdirectory or inherited value cannot change the owning
+  workspace. Legacy cards remain untouched. All 41 pack tests and real blueprint
+  validation passed, plus an actual shell write test across two bound workspaces.
+- The operator-side replay preparer validates all six reference rounds, changes
+  only round 5, and separates evaluator answers from prompts. The resumable runner
+  pins accepted message/turn identities and the explicit model; it never approves
+  pending questions or claims capture/verdict verification from completion alone.
+  Eight preparation/retry tests passed. Private inputs were prepared locally;
+  no OPAL inference was performed. The ordered broad and controlled procedures are
+  in `docs/qualification/beta3/delta-procedure.md`.
+- Checks: 60 focused Agent regressions before the final Redis/deletion additions;
+  then 27 monitoring/storage/shell checks passed. Focused mypy and Ruff passed.
+  Agent `a0efc493` CI found only the route-count and file-size guards, now repaired
+  without relaxing their policy. That head passed packaged macOS build/startup
+  on 14/15/26, schema, Pages and Docker. UI `6bcb098a` passed all its CI. New heads
+  still require their own CI; no old-head result substitutes for it.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
@@ -618,7 +670,7 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    Google/Globus client registrations do not exist yet; the registration guide is ready;
    never include secrets in this document or the transcript.
 2. Qualify native vLLM with a real GPU; qualify the implemented versioned service definitions,
-   default-build and additional-driver qualification, fresh attention verification,
+   remaining additional-driver qualification, fresh attention verification,
    and remaining service connection flows. Provenance connect/use/restart is now
    qualified independently and together on the isolated CLIO.
 3. Finish marketplace cross-host live fleet qualification. Staging, MCP readiness,
@@ -637,7 +689,7 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
 6. Complete integrated host/connection qualification. Homelab monitoring deployment,
    provenance, restart and removal passed on `/data`; Ares allocation, SSH-hop model
    lifecycle and reconnect passed. Packaged transport and GPU gates remain open.
-7. Prepare ordered Delta setup, then together run fresh instrumented inference,
+7. Follow the prepared Delta procedure together: run fresh instrumented inference,
    token mapping, both OPAL/SPOTTER demos and evidence retention through shutdown.
 
 Do not label unavailable, skipped, simulated or inspection-only checks as passed

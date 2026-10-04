@@ -7,6 +7,7 @@ installation and their immutable IDs are retained in the deployment receipt.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 OWNER_LABEL = "ai.iowarp.clio.deployment"
+RUNTIME_PARENT = Path("/run/user")
 
 
 def flowcept_environment(root: Path) -> None:
@@ -44,17 +46,89 @@ def engine_capacity(root: Path, required: int) -> None:
 def command(root: Path, arguments: list[str], *, env: dict[str, str] | None = None) -> str:
     """Run the selected engine without printing private container environment."""
     manifest = json.loads((root / "manifest.json").read_text())
+    program, environment = engine_invocation(root, manifest, env)
+    building = arguments[0] == "build"
     result = subprocess.run(
-        [manifest["container_runtime"], *arguments],
-        env=env,
-        capture_output=True,
+        [*program, *arguments],
+        env=environment,
+        # Build progress belongs in the supervisor's durable install log. The
+        # pinned source recipe receives no generated database credentials.
+        stdout=sys.stdout if building else subprocess.PIPE,
+        stderr=subprocess.STDOUT if building else subprocess.PIPE,
         text=True,
-        timeout=900,
+        timeout=1800 if building else 900,
         check=False,
     )
     if result.returncode:
+        diagnostics = ((result.stdout or "") + (result.stderr or ""))[-16000:]
+        credentials = root / "credentials.json"
+        if credentials.is_file():
+            for secret in json.loads(credentials.read_text()).values():
+                if secret:
+                    diagnostics = diagnostics.replace(str(secret), "[redacted]")
+        log = root / "logs/container-engine.log"
+        if log.is_symlink():
+            raise ValueError("Container diagnostic log cannot be a symlink")
+        log.parent.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        log.write_text(f"{stamp} Container {arguments[0]} failed\n" + diagnostics[-15800:])
         raise RuntimeError(f"Container {arguments[0]} failed (exit {result.returncode})")
-    return result.stdout + (result.stderr if arguments[0] == "logs" else "")
+    return (result.stdout or "") + ((result.stderr or "") if arguments[0] == "logs" else "")
+
+
+def engine_invocation(
+    root: Path, manifest: dict[str, Any], env: dict[str, str] | None
+) -> tuple[list[str], dict[str, str] | None]:
+    """Keep an explicitly selected Podman store inside this deployment's owned folder."""
+    program = [manifest["container_runtime"]]
+    if manifest.get("image_storage", "engine") == "engine":
+        return program, env
+    if manifest.get("image_storage") != "service" or program != ["podman"]:
+        raise ValueError("Only Podman supports deployment-owned image storage")
+    paths = {name: root / "containers" / name for name in ("images", "downloads")}
+    for path in paths.values():
+        if path.resolve() != path or root not in path.parents:
+            raise ValueError("Container storage cannot leave the owned service directory")
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    runroot = podman_runroot(root)
+    environment = dict(os.environ if env is None else env)
+    # A remote engine or inherited storage options must not redirect these paths.
+    for key in ("CONTAINER_HOST", "CONTAINER_CONNECTION", "CONTAINERS_STORAGE_CONF"):
+        environment.pop(key, None)
+    environment["TMPDIR"] = str(paths["downloads"])
+    program += [
+        "--remote=false",
+        "--root",
+        str(paths["images"]),
+        "--runroot",
+        str(runroot),
+    ]
+    return program, environment
+
+
+def podman_runroot(root: Path) -> Path:
+    """Use short, private runtime state on tmpfs; image bytes stay in the service folder."""
+    uid = os.getuid()
+    base = RUNTIME_PARENT / str(uid)
+    if not base.is_dir() or base.resolve() != base or base.stat().st_uid != uid:
+        raise ValueError("Podman needs the execution user's private /run/user directory")
+    directory = base / ("clio-" + hashlib.sha256(str(root).encode()).hexdigest()[:16])
+    if directory.is_symlink():
+        raise ValueError("Podman runtime storage cannot be a symlink")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    marker = directory / "clio-owner.json"
+    expected = json.loads((root / "owner.json").read_text())
+    if marker.is_symlink():
+        raise ValueError("Podman runtime ownership cannot be a symlink")
+    if marker.exists():
+        if json.loads(marker.read_text()) != expected:
+            raise ValueError("Podman runtime storage belongs to another deployment")
+    elif any(directory.iterdir()):
+        raise ValueError("Refusing to adopt non-empty Podman runtime storage")
+    else:
+        with marker.open("x") as stream:
+            json.dump(expected, stream)
+    return directory
 
 
 def inspect(root: Path, kind: str, name: str) -> dict[str, Any] | None:
@@ -62,14 +136,18 @@ def inspect(root: Path, kind: str, name: str) -> dict[str, Any] | None:
     # Listing succeeds even when the named resource is absent, unlike inspect.
     arguments = (
         [kind, "ls", "--format", "{{.Name}}"]
-        if kind == "network"
+        if kind in {"network", "pod"}
         else ["ps", "-a", "--format", "{{.Names}}"]
     )
     if name not in command(root, arguments).splitlines():
         return None
-    row = json.loads(command(root, [kind, "inspect", name]))[0]
+    payload = json.loads(command(root, [kind, "inspect", name]))
+    row = payload[0] if isinstance(payload, list) else payload
     expected = json.loads((root / "owner.json").read_text())["owner"]
-    labels = row.get("Labels") if kind == "network" else row["Config"].get("Labels")
+    labels = row.get("Labels") if kind in {"network", "pod"} else row["Config"].get("Labels")
+    if kind == "network" and labels is None:
+        # Podman CNI and Netavark use different inspect envelopes.
+        labels = row.get("labels") or row.get("args", {}).get("podman_labels")
     if (labels or {}).get(OWNER_LABEL) != expected:
         raise ValueError("A monitoring resource name belongs to another deployment")
     return row
@@ -101,6 +179,7 @@ def private_configuration(root: Path, manifest: dict[str, Any]) -> dict[str, str
         )
         (root / "redis.conf").chmod(0o600)
     return {
+        "REDISCLI_AUTH": password,
         "MONGO_INITDB_ROOT_USERNAME": "clio",
         "MONGO_INITDB_ROOT_PASSWORD": password,
         "POSTGRES_USER": "clio",
@@ -134,21 +213,28 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
             capture_output=True,
             timeout=60,
         )
+        dockerfile = source / build["dockerfile"]
+        if build.get("base_image"):
+            dockerfile = build_definition(root, dockerfile, build)
         command(
             root,
             [
                 "build",
+                *(["--layers=true"] if manifest["container_runtime"] == "podman" else []),
                 "--label",
                 "org.opencontainers.image.revision=" + build["revision"],
                 "--file",
-                str(source / build["dockerfile"]),
+                str(dockerfile),
                 "--tag",
                 build["image"],
                 str(source),
             ],
         )
     images: dict[str, str] = {}
-    for component in manifest["components"]:
+    components = list(manifest["components"])
+    if manifest.get("pod_infra_image"):
+        components.append({"name": "pod_infra", "image": manifest["pod_infra_image"]})
+    for component in components:
         image = component["image"]
         try:
             details = json.loads(command(root, ["image", "inspect", image]))[0]
@@ -168,13 +254,54 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     temporary.replace(root / "images.json")
 
 
+def build_definition(root: Path, upstream: Path, build: dict[str, Any]) -> Path:
+    """Keep the pinned upstream recipe while replacing its retired OS base explicitly."""
+    content = upstream.read_text()
+    expected = "FROM " + build["upstream_base"]
+    if [line for line in content.splitlines() if line.startswith("FROM ")] != [expected]:
+        raise ValueError(
+            "The pinned service build recipe no longer matches its compatibility profile"
+        )
+    if "@sha256:" not in build["base_image"]:
+        raise ValueError("The service build base must have an immutable digest")
+    output = root / "Containerfile"
+    if output.is_symlink():
+        raise ValueError("Service build definition cannot be a symlink")
+    output.write_text(content.replace(expected, "FROM " + build["base_image"], 1))
+    return output
+
+
 def start(root: Path, manifest: dict[str, Any]) -> None:
     """Start only owned dependency containers, with data in the chosen host root."""
     owner = json.loads((root / "owner.json").read_text())["owner"]
     network = manifest["network"]
-    if inspect(root, "network", network) is None:
-        command(root, ["network", "create", "--label", f"{OWNER_LABEL}={owner}", network])
     images = json.loads((root / "images.json").read_text())
+    pod = manifest["container_runtime"] == "podman"
+    rootless = False
+    if pod:
+        info = json.loads(command(root, ["info", "--format", "json"]))
+        rootless = bool(info.get("host", {}).get("security", {}).get("rootless"))
+        if inspect(root, "pod", network) is None:
+            args = [
+                "pod",
+                "create",
+                "--name",
+                network,
+                "--label",
+                f"{OWNER_LABEL}={owner}",
+                "--infra-image",
+                images["pod_infra"],
+                "--infra-command",
+                "/pause",
+            ]
+            if rootless:
+                args += ["--network", "slirp4netns"]
+            for component in manifest["components"]:
+                for host, container in component.get("ports", []):
+                    args += ["--publish", f"127.0.0.1:{host}:{container}"]
+            command(root, args)
+    elif inspect(root, "network", network) is None:
+        command(root, ["network", "create", "--label", f"{OWNER_LABEL}={owner}", network])
     env = {**os.environ, **private_configuration(root, manifest)}
     if manifest["service"] == "cmf":
         for directory in ("static", "env", "labels", "tensorboard-logs"):
@@ -195,21 +322,19 @@ def start(root: Path, manifest: dict[str, Any]) -> None:
                 name,
                 "--label",
                 f"{OWNER_LABEL}={owner}",
-                "--network",
-                network,
-                "--network-alias",
-                component["role"],
+                *(
+                    ["--pod", network]
+                    if pod
+                    else ["--network", network, "--network-alias", component["role"]]
+                ),
                 "--restart",
                 "no",
                 "--user",
-                f"{os.getuid()}:{os.getgid()}",
+                "0:0" if rootless else f"{os.getuid()}:{os.getgid()}",
             ]
-            if manifest["container_runtime"] == "podman":
-                info = json.loads(command(root, ["info", "--format", "json"]))
-                if info.get("host", {}).get("security", {}).get("rootless"):
-                    arguments += ["--userns", "keep-id"]
-            for host, container in component.get("ports", []):
-                arguments += ["--publish", f"127.0.0.1:{host}:{container}"]
+            if not pod:
+                for host, container in component.get("ports", []):
+                    arguments += ["--publish", f"127.0.0.1:{host}:{container}"]
             for relative, destination, readonly in component.get("mounts", []):
                 path = root / relative
                 if root not in path.parents or path.resolve() != path:
@@ -221,6 +346,8 @@ def start(root: Path, manifest: dict[str, Any]) -> None:
                 arguments += ["--env", name]
             for key, value in component.get("environment", {}).items():
                 arguments += ["--env", f"{key}={value}"]
+            if component.get("entrypoint"):
+                arguments += ["--entrypoint", component["entrypoint"]]
             arguments += [images[component["name"]], *component.get("arguments", [])]
             command(root, arguments, env=env)
         # Database readiness is checked by its native client before consumers start.
@@ -269,6 +396,63 @@ def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
             command(root, ["rm", name])
     if remove and inspect(root, "network", manifest["network"]) is not None:
         command(root, ["network", "rm", manifest["network"]])
+    pod = (
+        inspect(root, "pod", manifest["network"])
+        if manifest["container_runtime"] == "podman"
+        else None
+    )
+    if pod:
+        expected = {row["name"] for row in manifest["components"]}
+        if any(
+            row.get("Id") != pod.get("InfraContainerID") and row.get("Name") not in expected
+            for row in pod.get("Containers", [])
+        ):
+            raise ValueError("The owned pod contains an unexpected container; cleanup refused")
+        command(root, ["pod", "stop", "--time", "15", manifest["network"]])
+        if remove:
+            command(root, ["pod", "rm", manifest["network"]])
+
+
+def delete_images(root: Path, manifest: dict[str, Any]) -> None:
+    """Delete only this deployment's retained image store, after all runtimes are removed."""
+    if manifest.get("image_storage") != "service":
+        return
+    if command(root, ["ps", "-a", "--quiet"]).strip():
+        raise ValueError("The deployment image store still has containers; remove them first")
+    if command(root, ["images", "--quiet"]).strip():
+        # Let Podman remove files with subordinate-UID ownership. Never reset the
+        # engine: network configuration may be shared outside its image root.
+        command(root, ["rmi", "--all"])
+    if command(root, ["images", "--quiet"]).strip():
+        raise RuntimeError("The deployment image store still contains retained images")
+    shutil.rmtree(podman_runroot(root))
+
+
+def delete_podman_data(root: Path, manifest: dict[str, Any]) -> None:
+    """Remove explicitly deleted owned database data through its rootless UID mapping."""
+    if manifest["container_runtime"] != "podman":
+        return
+    if inspect(root, "pod", manifest["network"]) is not None:
+        raise ValueError("Remove the owned pod before deleting retained data")
+    data = root / "data"
+    if data.resolve() != data:
+        raise ValueError("Service data cannot leave its owned directory")
+    if not data.exists():
+        return
+    info = json.loads(command(root, ["info", "--format", "json"]))
+    if info.get("host", {}).get("security", {}).get("rootless"):
+        command(
+            root,
+            [
+                "unshare",
+                "python3",
+                "-c",
+                "import shutil,sys; shutil.rmtree(sys.argv[1])",
+                str(data),
+            ],
+        )
+        if data.exists():
+            raise RuntimeError("Owned service data remains after rootless deletion")
 
 
 def main() -> None:
@@ -288,6 +472,8 @@ def main() -> None:
             inspect(root, "container", row["name"]) is not None for row in manifest["components"]
         ):
             raise ValueError("Remove the monitoring runtime before deleting retained data")
+        delete_podman_data(root, manifest)
+        delete_images(root, manifest)
     else:
         raise ValueError("Unsupported monitoring hook")
 
