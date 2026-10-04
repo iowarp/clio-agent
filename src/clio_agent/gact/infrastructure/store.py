@@ -9,6 +9,7 @@ from typing import Any
 
 from clio_schemas.connected_resources import HostStorageLocations
 
+from clio_agent.gact.infrastructure.model_registry import ModelAcquisition
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     ExternalServiceConnection,
@@ -40,6 +41,8 @@ class InfrastructureStore:
         self._services: dict[str, ServiceRecord] = {}
         self._connections: dict[str, ExternalServiceConnection] = {}
         self._operations: dict[str, InfrastructureOperation] = {}
+        self._model_roots: dict[str, list[str]] = {}
+        self._model_acquisitions: dict[str, ModelAcquisition] = {}
         self._load()
         self._interrupt_unfinished_operations()
         self._reset_ssh_transport_state()
@@ -82,6 +85,10 @@ class InfrastructureStore:
         if target_id == "local":
             raise ValueError("The built-in local target cannot be deleted")
         with self._lock:
+            if self._model_roots.get(target_id):
+                raise ValueError(
+                    "This host owns model storage; keep its connection to manage retained downloads"
+                )
             if self._targets.pop(target_id, None) is None:
                 raise KeyError(target_id)
             self._services = {
@@ -102,6 +109,10 @@ class InfrastructureStore:
             previous = self._targets.get(target_id)
             if previous is None:
                 raise KeyError(target_id)
+            if previous.ssh != request.ssh and self._model_roots.get(target_id):
+                raise ValueError(
+                    "Create a new host for a different SSH route; existing model receipts belong to this host"
+                )
             row = InfrastructureTarget(
                 id=target_id,
                 storage=previous.storage,
@@ -234,6 +245,36 @@ class InfrastructureStore:
             row = self._operations.get(operation_id)
             return row.model_copy(deep=True) if row else None
 
+    def register_model_root(self, target_id: str, root: str) -> None:
+        """Record ownership before dispatch so timeout/restart can reconcile the same root."""
+        with self._lock:
+            if target_id not in self._targets:
+                raise KeyError(target_id)
+            roots = self._model_roots.setdefault(target_id, [])
+            if root not in roots:
+                roots.append(root)
+                self._flush()
+
+    def model_roots(self, target_id: str) -> list[str]:
+        """Keep earlier locations discoverable after changing future download destinations."""
+        with self._lock:
+            return list(self._model_roots.get(target_id, []))
+
+    def model_acquisitions(self, target_id: str | None = None) -> list[ModelAcquisition]:
+        """Return observations without implying that a disconnected host was just checked."""
+        with self._lock:
+            return [
+                row.model_copy(deep=True)
+                for row in self._model_acquisitions.values()
+                if target_id is None or row.target_id == target_id
+            ]
+
+    def put_model_acquisition(self, row: ModelAcquisition) -> None:
+        """Persist a target-side job independently of controller process lifetime."""
+        with self._lock:
+            self._model_acquisitions[f"{row.target_id}:{row.id}"] = row.model_copy(deep=True)
+            self._flush()
+
     def operations(self) -> list[InfrastructureOperation]:
         """Return durable activity newest first, including interrupted operations."""
         with self._lock:
@@ -325,6 +366,18 @@ class InfrastructureStore:
         self._load_rows(payload.get("services"), ServiceRecord, self._services)
         self._load_rows(payload.get("connections"), ExternalServiceConnection, self._connections)
         self._load_rows(payload.get("operations"), InfrastructureOperation, self._operations)
+        self._load_rows(
+            payload.get("model_acquisitions"), ModelAcquisition, self._model_acquisitions
+        )
+        roots = payload.get("model_roots", {})
+        if isinstance(roots, dict):
+            self._model_roots = {
+                key: list(value)
+                for key, value in roots.items()
+                if key in self._targets
+                and isinstance(value, list)
+                and all(isinstance(root, str) for root in value)
+            }
 
     @staticmethod
     def _load_rows(raw: Any, model: type[Any], destination: dict[str, Any]) -> None:
@@ -353,6 +406,11 @@ class InfrastructureStore:
             },
             "operations": {
                 key: value.model_dump(mode="json") for key, value in self._operations.items()
+            },
+            "model_roots": self._model_roots,
+            "model_acquisitions": {
+                key: value.model_dump(mode="json")
+                for key, value in self._model_acquisitions.items()
             },
         }
         # Retries while another process (antivirus, an indexer, a monitoring

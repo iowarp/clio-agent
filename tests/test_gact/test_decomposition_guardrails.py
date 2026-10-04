@@ -166,7 +166,8 @@ from clio_agent.gact.app import build_app
 # 287 -> 289: attention availability and message selection routes.
 # 289 -> 293: host storage read/update, path inspection and durable inventory.
 # 293 -> 309: connected sources, transfers/reviews, folder uploads, references and trusted sign-in.
-EXPECTED_ROUTE_METHOD_PAIRS = 309
+# 309 -> 314: registry discovery, host model inventory/acquisition/cancel/retry.
+EXPECTED_ROUTE_METHOD_PAIRS = 314
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

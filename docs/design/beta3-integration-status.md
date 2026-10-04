@@ -86,12 +86,39 @@ application registrations/test-user access still needed), full source setup skil
 every provider error/reconnect browser flow, and live sandbox exclusions on each OS.
 This checkpoint is not completion of #1617 or of the beta-3 acceptance gate.
 
+### Model acquisition checkpoint (October 4)
+
+- Models & storage now searches the public Hugging Face registry and accepts exact
+  repository/revision inputs. Acquisition is separate from runtime startup.
+- Linux target workers resolve immutable commits, check capacity, download to an
+  explicit host folder, verify file hashes, and retain durable receipts. Cancellation
+  checks boot/process identity, preserves partial bytes, and serializes with retries.
+  Corrupt or changed files cannot be reported as a reusable verified model.
+- The CLIO ownership ledger retains original roots when defaults change. Retrying
+  uses the recorded root/revision. Changing an SSH route cannot assign existing model
+  ownership to a different host. Operation directories are also host-namespaced for
+  shared HPC filesystems. Unsupported hosts expose a disabled action and explanation.
+- **18 backend tests passed**, covering acquisition, host paths and route guards;
+  **19 UI tests passed**, covering model controls and existing Infrastructure behavior.
+  UI typecheck and focused lint passed. Model-native qualification is Linux-only.
+- **Live homelab passed**: actual tiny-gpt2 download, registry hash verification,
+  cancellation before retry, same-job retry and cache reuse without file changes.
+  Evidence: `docs/qualification/beta3/homelab-model-lifecycle.json`.
+- Browser checked real registry search, explicit host/path selection, download,
+  completed receipt, Activity navigation and retained host selection. Narrow layout
+  and tap-accessible info were reviewed at 390 × 844. Screenshots are retained beside
+  the lifecycle receipt. The browser used the real command transport through the
+  bounded OpenSSH qualification bridge, not a packaged Desktop SSH acceptance run.
+
+Not yet complete: native vLLM, connection of downloaded models to guided runtime
+setup, packaged installation, GPU inference and the Ares/Delta acceptance gates.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
-2. Complete guided model download, native vLLM, versioned service definitions,
+2. Finish guided model-to-runtime setup, native vLLM, versioned service definitions,
    independent Flowcept/CMF deployment and write/readback verification, pinned
    attention probe activation, receipts, ownership-safe lifecycle controls.
 3. Implement marketplace audit #1627, including scoped identities, safe reload,
@@ -103,9 +130,9 @@ This checkpoint is not completion of #1617 or of the beta-3 acceptance gate.
 5. Complete browser review of every changed control, empty/error states,
    keyboard, light/dark, narrow layouts and long transcripts. Complete packaged
    install/update-channel checks and exact dependency qualification.
-6. Real homelab deployment/download/provenance/reconnect/cleanup on an owned
+6. Complete homelab deployment/provenance/reconnect/cleanup on an owned
    `/data` directory; external bounded Ares allocation and SSH-hop checks.
-   Neither has been completed at this checkpoint.
+   Model acquisition and SFTP passed; the remaining deployment gates are open.
 7. Prepare ordered Delta setup, then together run fresh instrumented inference,
    token mapping, both OPAL/SPOTTER demos and evidence retention through shutdown.
 
