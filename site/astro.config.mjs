@@ -24,7 +24,7 @@ export default defineConfig({
 			title: 'CLIO',
 			description:
 				'An open-source AI workspace for scientific data: data discovery, analysis, expert agents, and provenance in one place.',
-			logo: { src: './src/assets/brand/clio-mark.png', alt: 'CLIO' },
+			logo: { src: './src/assets/brand/clio-mark.svg', alt: 'CLIO' },
 			favicon: '/favicon.svg',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/iowarp/clio-agent' }],
 			editLink: { baseUrl: 'https://github.com/iowarp/clio-agent/edit/develop/site/' },
@@ -36,6 +36,7 @@ export default defineConfig({
 				Header: './src/components/starlight/Header.astro',
 				Hero: './src/components/overview/Hero.astro',
 				Footer: './src/components/starlight/Footer.astro',
+				MobileTableOfContents: './src/components/starlight/MobileTableOfContents.astro',
 			},
 			plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
 			sidebar: [

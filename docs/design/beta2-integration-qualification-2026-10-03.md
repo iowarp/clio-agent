@@ -78,6 +78,35 @@ override a failing full-suite check. Existing platform-gated skips are not passe
 
 ## Remaining acceptance boundaries
 
+## Release follow-up qualification
+
+- Native workflow `37166419334` built the repaired Mac DMG and passed signature
+  verification before and after real packaged backend/Desktop startup on macOS
+  14, 15, and 26. The original bundle mutated its sealed Python resources during
+  first startup; bytecode writes are now disabled and the repair fingerprint is
+  prepared before signing. Agent CI `37166419290`, Docker, schema and Pages passed
+  at `26902b90`. The final release DMG must pass the same native gate.
+- UI follow-up adds the saved **Enable beta updates** preference, instability
+  warning, beta-number comparisons, published-release selection and a native
+  bridge retaining signature verification and no-downgrade behavior. Local checks
+  passed: 63 focused unit/integration tests, two native endpoint-policy tests,
+  lint, typecheck and production build. Settings persistence and the form/action
+  lifecycle passed three browser repetitions each.
+- The form regression reproduced loss of typed input on an unchanged legacy
+  surface without a part ID. Skipping an unchanged revision fixes the failure
+  while retaining rebuilds for actual legacy updates and fresh lifecycles.
+- Header, footer and favicon use the supplied true vector owl. Mobile docs have
+  separate Docs index and On this page controls. Four browser tests passed,
+  covering 360/390/412px viewports, reaching the final sidebar entry, navigation,
+  and checking that home/docs logos contain paths rather than embedded bitmaps.
+  Rendered mobile screenshots were inspected; 27 site unit tests and Astro checks
+  passed (zero errors/warnings; five existing hints).
+- Desktop beta 1 requires one manual Desktop upgrade to obtain channel-aware
+  updates. Its hardcoded stable feed cannot be pointed at beta without exposing
+  stable users. Drafts remain excluded; beta 2 becomes available after publication.
+
+## Remaining acceptance boundaries (continued)
+
 The third Abaqus demonstration still requires its real source exports. Original
 CHPC deployment and interactive Desktop-exit acceptance have not been reproduced
 on that user's host. The namespace and SSH/lifecycle regression checks cover

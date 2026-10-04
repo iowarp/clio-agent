@@ -1,0 +1,43 @@
+---
+import MobileTableOfContents from '@astrojs/starlight/components/MobileTableOfContents.astro';
+
+const { hasSidebar } = Astro.locals.starlightRoute;
+---
+
+{hasSidebar && (
+	<button class="docs-index md:sl-hidden print:hidden" popovertarget="starlight__sidebar">
+		Docs index
+	</button>
+)}
+<MobileTableOfContents />
+
+<style>
+	.docs-index {
+		position: fixed;
+		inset-block-start: calc(var(--sl-nav-height) + 0.5rem);
+		inset-inline-start: 1rem;
+		z-index: calc(var(--sl-z-index-toc) + 1);
+		height: calc(var(--sl-mobile-toc-height) - 1rem);
+		padding-inline: 0.75rem;
+		border: 1px solid var(--line-control);
+		border-radius: 0.5rem;
+		background: var(--paper);
+		color: var(--ink);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+	}
+	@media (max-width: 49.99rem) {
+		:global(mobile-starlight-toc summary) {
+			padding-inline-start: 8rem;
+		}
+		:global(mobile-starlight-toc .display-current) {
+			display: none;
+		}
+		:global(#starlight__sidebar) {
+			margin: 0;
+			max-height: calc(100dvh - var(--sl-nav-height));
+			padding-bottom: max(1rem, env(safe-area-inset-bottom));
+			overscroll-behavior: contain;
+		}
+	}
+</style>
