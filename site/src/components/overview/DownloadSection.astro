@@ -3,7 +3,7 @@
 import { ArrowRight } from 'lucide-react';
 import SectionHeading from './SectionHeading.astro';
 import DownloadCards, { type PlatformIcons } from './DownloadCards';
-import { release } from '@/lib/release';
+import { RELEASES_PAGE } from '@/lib/downloads';
 import apple from '@/assets/platform-icons/apple.svg';
 import linux from '@/assets/platform-icons/linux.svg';
 import windows from '@/assets/platform-icons/windows.svg';
@@ -16,15 +16,19 @@ const icons: PlatformIcons = { windows: windows.src, macos: apple.src, linux: li
 		id="download"
 		label="Download"
 		title="Get CLIO"
-		emphasis={`${release.tag}.`}
-		lede="Pick your platform. The recommended installer includes the CLIO backend, so there is nothing else to set up; on first launch, CLIO asks which model to connect."
+		emphasis="stable."
+		lede="These downloads install the latest stable release. Pick your platform. The recommended installer includes the CLIO backend; on first launch, CLIO asks which model to connect."
 	/>
 	<div class="cards">
 		<DownloadCards client:load icons={icons} />
 	</div>
 	<p class="other">
 		<a href="/docs/install/">Other ways to install <ArrowRight aria-hidden="true" size={16} /></a>
-		<a href={release.notesUrl}>Release notes <ArrowRight aria-hidden="true" size={16} /></a>
+		<a href={RELEASES_PAGE}>Stable release notes <ArrowRight aria-hidden="true" size={16} /></a>
+	</p>
+	<p class="beta">
+		Want to try upcoming features? <a href="https://github.com/iowarp/clio-agent/releases">Browse beta releases</a>.
+		Betas may be unstable. After installing, manage beta updates in Settings → Desktop → App updates.
 	</p>
 </section>
 
@@ -52,5 +56,12 @@ const icons: PlatformIcons = { windows: windows.src, macos: apple.src, linux: li
 	}
 	.other :global(svg) {
 		color: var(--accent);
+	}
+	.beta {
+		max-width: 45rem;
+		color: var(--ink-soft);
+	}
+	.beta a {
+		color: var(--ink);
 	}
 </style>

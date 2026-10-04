@@ -2,7 +2,7 @@
 
 This records the integrated follow-up to the [A2UI handoff](a2ui-release-handoff-2026-10-03.md).
 The release combines the release-user-issues fixes with the A2UI campaign, using
-Agent 0.9.5b2, UI 0.11.3-beta.2 and published clio-schemas 0.5.3.
+Agent 0.9.5b2, UI 0.11.3-beta.3 and published clio-schemas 0.5.3.
 CI conclusions and merged dependency identities remain authoritative on the release PRs.
 
 ## Live model and browser acceptance
@@ -86,6 +86,8 @@ override a failing full-suite check. Existing platform-gated skips are not passe
   at `26902b90`. The vector-branding follow-up `a0e5037a` also passed full Agent
   CI `37168002479`, Mac startup workflow `37168002474`, Docker, schema and Pages.
   The final release DMG must pass the same native gate.
+- Combined UI pin `96d50c7f` passed native workflow `37169633416`: the final app
+  built and preserved its signature through startup on macOS 14, 15 and 26.
 - UI follow-up adds the saved **Enable beta updates** preference, instability
   warning, beta-number comparisons, published-release selection and a native
   bridge retaining signature verification and no-downgrade behavior. Local checks
@@ -105,13 +107,17 @@ override a failing full-suite check. Existing platform-gated skips are not passe
   surface without a part ID. Skipping an unchanged revision fixes the failure
   while retaining rebuilds for actual legacy updates and fresh lifecycles.
 - Header, footer and favicon use the supplied true vector owl. Mobile docs have
-  separate Docs index and On this page controls. Five browser tests passed,
+  separate Docs index and On this page controls. Six browser tests passed,
   covering 360/390/412px viewports, reaching the final sidebar entry, navigation,
   gallery pages without a heading menu, and checking that home/docs logos contain
   paths rather than embedded bitmaps. The gallery regression reproduced the
   missing index; the control now lives independently in the shared header.
   Rendered light/dark mobile screenshots were inspected; 27 site unit tests and Astro checks
   passed (zero errors/warnings; five existing hints).
+- Download cards already fetched the latest stable release, but their heading
+  advertised the package's beta version. The heading and notes now identify the
+  stable downloads; beta downloads have a separate link and instability warning.
+  A browser regression checks the displayed channel against the installer URL.
 - Desktop beta 1 requires one manual Desktop upgrade to obtain channel-aware
   updates. Its hardcoded stable feed cannot be pointed at beta without exposing
   stable users. Drafts remain excluded; beta 2 becomes available after publication.

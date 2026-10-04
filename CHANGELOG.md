@@ -36,6 +36,8 @@ TUI/HTTP surface aren't tracked here.
   through first startup on macOS 14, 15 and 26. Fix BSD sed release-tag parsing.
 - Website logos use the supplied vector artwork and mobile navigation exposes
   the full Docs index separately from the current page's headings.
+- Website download labels match the stable installers; beta downloads have an
+  explicit link and instability warning.
 - Unchanged legacy interactive forms retain typed input across rerenders.
 - The entry composer stays temporary until first send; Settings navigation no
   longer creates sessions. Failed sends reuse the created session while the
