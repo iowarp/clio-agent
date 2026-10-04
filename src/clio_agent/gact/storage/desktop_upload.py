@@ -59,10 +59,10 @@ def publish_uploaded_source(
         if item.path.casefold() in seen:
             raise ValueError("Desktop folder contains colliding filenames")
         seen.add(item.path.casefold())
-        record = resources.get(workspace_id, item.resource_id)
-        if record is None or record.revision != item.revision or record.state != "ready":
+        uploaded = resources.get(workspace_id, item.resource_id)
+        if uploaded is None or uploaded.revision != item.revision or uploaded.state != "ready":
             raise ValueError("Every folder file must be fully uploaded to this CLIO workspace")
-        originals.append((item, record))
+        originals.append((item, uploaded))
     fingerprint = hashlib.sha256(
         json.dumps(
             {

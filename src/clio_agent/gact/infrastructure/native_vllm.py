@@ -138,7 +138,7 @@ def native_vllm_plan(
         **configuration,
         "storage.service_directory": directory,
         "storage.captures": posixpath.join(directory, "evidence"),
-        "compatibility_profile": manifest["definition_version"],
+        "compatibility_profile": str(manifest["definition_version"]),
         "native_owner": ownership,
     }
     return supervised_plan(

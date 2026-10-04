@@ -105,3 +105,18 @@ def test_live_suite_runtime_is_not_system_temp() -> None:
     assert Path(os.environ["PYTHONPYCACHEPREFIX"]).resolve().is_relative_to(runtime)
     assert Path(os.environ["XDG_CACHE_HOME"]).resolve().is_relative_to(runtime)
     assert Path(os.environ["XDG_STATE_HOME"]).resolve().is_relative_to(runtime)
+
+
+def test_cleanup_removes_readonly_snapshot_directories(tmp_path: Path) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    runtime = create_test_runtime(checkout, {}, pid=458, nonce="snapshot")
+    snapshot = runtime.pytest_dir / "source" / "snapshot"
+    target = snapshot / "OPAL" / "poisoned" / "data.csv"
+    target.parent.mkdir(parents=True)
+    target.write_text("input,value\na,1\n", encoding="utf-8")
+    target.chmod(0o444)
+    for directory in (target.parent, target.parent.parent, snapshot):
+        directory.chmod(0o555)
+    cleanup_test_runtime(runtime.root, runtime.parent, retry_delay_seconds=0)
+    assert not runtime.root.exists()

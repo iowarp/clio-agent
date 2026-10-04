@@ -107,10 +107,10 @@ def synthesize_codex_profile(
             and any(Path(path).resolve().is_relative_to(root) for root in read_only)
         )
     }
-    for root in read_only:
-        filesystem[str(root)] = "read"
-    for root in denied:
-        filesystem[str(root)] = "deny"
+    for protected_root in read_only:
+        filesystem[str(protected_root)] = "read"
+    for protected_root in denied:
+        filesystem[str(protected_root)] = "deny"
     profile: dict[str, Any] = {
         "description": (
             f"clio sandbox profile {profile_name!r}: read-anywhere, "

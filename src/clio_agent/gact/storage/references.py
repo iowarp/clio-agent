@@ -23,6 +23,7 @@ def source_resource(
     No provider request or secret is needed on the model's resource read path.
     """
     source = record.source
+    expected: str | None
     if not source.local_path or source.materialization not in {"ready", "stale", "transferring"}:
         raise ValueError("Transfer this source before attaching its files")
     if source.mode == "write_enabled":

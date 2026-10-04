@@ -6,7 +6,7 @@ import io
 import posixpath
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO, Literal, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -151,7 +151,7 @@ class DriveSource:
                         raise ValueError(
                             "The Drive folder contains duplicate filenames; select or rename distinct files"
                         )
-                    kind = "directory" if mime == _FOLDER else "file"
+                    kind: Literal["directory", "file"] = "directory" if mime == _FOLDER else "file"
                     rows.append(
                         FileEntry(
                             path=path,

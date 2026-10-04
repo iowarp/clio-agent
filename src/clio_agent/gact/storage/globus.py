@@ -5,7 +5,7 @@ from __future__ import annotations
 import posixpath
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import globus_sdk
@@ -83,7 +83,9 @@ class GlobusSource:
                             raise ValueError(
                                 "Select regular files and folders; collection links are not imported"
                             )
-                        kind = "directory" if metadata["type"] == "dir" else "file"
+                        kind: Literal["directory", "file"] = (
+                            "directory" if metadata["type"] == "dir" else "file"
+                        )
                         rows.append(
                             FileEntry(
                                 path=path,

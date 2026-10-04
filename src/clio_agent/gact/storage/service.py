@@ -162,7 +162,9 @@ class StorageService:
         """Open a private provider connection; never return its credentials to a caller."""
         source = record.source
         if source.provider == "local":
-            adapter = LocalSource(source.root, writable=source.mode != "read_only")
+            adapter: SourceAdapter | GlobusSource = LocalSource(
+                source.root, writable=source.mode != "read_only"
+            )
         elif source.provider == "sftp":
             adapter = SftpSource(
                 record.configuration.ssh_profile,

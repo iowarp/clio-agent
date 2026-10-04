@@ -80,7 +80,7 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                     ServiceConfigurationField(
                         id="container_runtime",
                         label="Dependency runtime",
-                        options=engines,
+                        options=[str(engine) for engine in engines],
                         placeholder=engines[0] if engines else "No supported engine",
                     ),
                     ServiceConfigurationField(
