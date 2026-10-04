@@ -61,6 +61,9 @@ def main() -> None:
     routes.session_lm_calls = lambda app, sid: [replace(_call(), session_id=session.id)]
     # The fixture carries no live writer; route overrides above read the fixture.
     app.state.semantic_trace_backend = SimpleNamespace()
+    from tests.test_gact.test_attention.reviewer_fixture import add_reviewer_fixture
+
+    add_reviewer_fixture(app, session.id)
     print(f"Replay session: {session.id}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=18824)
 

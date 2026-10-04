@@ -11,7 +11,7 @@ separate from the October 5 Delta qualification with the owner.
 - UI: `external/gact-tui`, branch `codex/beta3-integration`; `9976580f` reconciles
   develop, `9c8c00bb` preserves PR #502 and resolves transcript integration.
 - Schemas: `codex/beta3-integration`, shared contracts commit
-  `fdba1f98b0c15130608e524406d762f2ca7db295`, based on existing `main`; `develop`
+  `e1ac2efbdd7a9e40f0bfee8949a1af6b0611be7b`, based on existing `main`; `develop`
   was established at that same base for PR #25. Agent and UI pin
   that exact revision. Version `0.6.0b2` is not published to PyPI.
 - Marketplace: `external/clio-agent-marketplace`, branch
@@ -545,6 +545,34 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   Agent CI failed only the factory guard above. UI `f40e33a2` passed core CI/schema;
   workspace CI failed the editor conflict test above. Both require fresh CI.
 
+### Reviewer findings checkpoint (October 4)
+
+- The shared `AttentionEvidenceInspection` contract binds selections to the capture,
+  model call and resolved aggregation profile. Agent, UI and SPOTTER pin Schemas
+  `e1ac2efb`; Marketplace guidance/pin is `d6d7e8e`.
+- Native `raise_alert_card` accepts the reviewer's exact response, capture digest,
+  selected decode steps, profile/revision and uncertainty. The owning CLIO maps
+  each token to one authoritative parent-transcript field and checks that replay
+  reproduces the exact step set. Changed captures, ambiguous mappings, stop tokens
+  and another session's response cannot produce an enabled inspection action.
+- Findings remain visible when attribution is unavailable. Disabled/unknown actions
+  have keyboard/tap explanations. The v3 projection preserves only the validated
+  receipt. Inspect evidence restores its profile and heat and opens the existing
+  reviewer in the canvas. Discuss opens that same panel without replacing the
+  parent conversation. Pending lookups cannot navigate after credentials change.
+- Browser replay covered exact 14-token inspection, decayed-max restoration,
+  keyboard Discuss, light/dark and 390px reviewer presentation. Retained images:
+  `spotter-finding-evidence-dark.png`, `spotter-finding-evidence-light.png`,
+  `spotter-reviewer-narrow-light.png`. This remains a recorded fixture; it is not
+  a live SPOTTER verdict or Delta inference acceptance.
+- Checks: **124 backend attention/card/v3 projection tests**, then **9 binder
+  tests** after the final capture recheck; **51 focused UI tests**, shared schema
+  round-trip/attention **65 tests** plus **1 receipt bounds test**; focused mypy,
+  Ruff, UI lint/typecheck and ownership/file-size guards passed.
+- Agent `c6884b54` CI, schema, Pages and Docker passed. Its macOS app built, but
+  DMG creation failed in `bundle_dmg.sh` (run `37208222403`); startup qualification
+  did not run and this head is not packaging-qualified. New heads need fresh CI.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
@@ -559,7 +587,8 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    rollback, interrupted-operation receipts, source configuration/pins and Blueprint
    authoring integration are implemented. HTTP MCP Reload is browser-qualified;
    actual active remote-session fleet replacement and packaged stdio remain open.
-4. Finish image-region/structured A2UI selection producers and SPOTTER finding links.
+4. Finish image-region/structured A2UI selection producers and reviewer follow-up
+   conversation controls. SPOTTER finding links are now implemented and replayed.
    Shared profiles, local SPOTTER capture inspection, whole-block/media references,
    bidirectional lookup, multi-selection transcript heat, tool details and exact
    capture/profile navigation are implemented. Fresh inference and both demos
