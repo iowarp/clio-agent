@@ -150,18 +150,22 @@ if [ -n "$CLIO_REF" ]; then
   ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
 else
   pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
+  # On macOS, select an available Rasterio wheel for the user's OS instead
+  # of trying to compile a newer release against a missing system GDAL.
+  wheel_arg=""
+  [ "$OS" != darwin ] || wheel_arg="--only-binary=rasterio"
   say "Installing $pkg_spec from PyPI"
   rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
     uv venv --python ">=3.12" "$VENV" >/dev/null
-    uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec" \
+    uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} "$pkg_spec" \
       "dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
       "fastmcp-tasks==4.0.0b5"
   else
     python3 -m venv "$VENV"
     "$VENV/bin/$PYINSTALL" install --quiet --upgrade pip
-    "$VENV/bin/$PYINSTALL" install --quiet "$pkg_spec"
+    "$VENV/bin/$PYINSTALL" install --quiet ${wheel_arg:+"$wheel_arg"} "$pkg_spec"
   fi
 fi
 

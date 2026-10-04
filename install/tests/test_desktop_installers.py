@@ -14,6 +14,56 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _bash_path(path: Path) -> str:
+    """Return a native POSIX or Git Bash path for shell fixture files."""
+    value = path.as_posix()
+    return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
+
+
+@pytest.mark.parametrize("system", ["Darwin", "Linux"])
+def test_backend_installer_requests_compatible_mac_wheels(tmp_path: Path, system: str) -> None:
+    """The registry install uses wheel-only resolution on Mac, retaining Linux source support."""
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    args_file = tmp_path / "uv-args"
+    shims = {
+        "uname": f'if [ "$1" = -s ]; then echo {system}; else echo arm64; fi',
+        "curl": "exit 99",
+        "uv": 'if [ "$1" = venv ]; then exit 0; fi\nprintf "%s\\n" "$@" > "$TEST_UV_ARGS"\nexit 77',
+    }
+    for name, contents in shims.items():
+        shim = binaries / name
+        shim.write_text("#!/bin/bash\n" + contents + "\n", newline="\n")
+        shim.chmod(0o755)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("CLIO_")}
+    env.update(
+        HOME=_bash_path(tmp_path),
+        TEST_PATH=f"{_bash_path(binaries)}:/usr/bin:/bin",
+        CLIO_PREFIX=_bash_path(tmp_path / "install"),
+        CLIO_BIN_DIR=_bash_path(tmp_path / "launchers"),
+        CLIO_VERSION="0.9.5b2",
+        TEST_UV_ARGS=_bash_path(args_file),
+    )
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else "bash"
+    result = subprocess.run(
+        [
+            bash,
+            "-c",
+            'export PATH="$TEST_PATH"; exec bash "$1"',
+            "installer-test",
+            _bash_path(ROOT / "install/install.sh"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 77, result.stdout + result.stderr
+    args = args_file.read_text().splitlines()
+    assert "clio-agent[argonne]==0.9.5b2" in args
+    assert ("--only-binary=rasterio" in args) == (system == "Darwin")
+
+
 @pytest.mark.parametrize("version", ["0.9.5b2", "v0.9.5-beta.2", "0.9.4.24"])
 @pytest.mark.parametrize("integrity", ["valid", "tampered", "missing", "duplicate"])
 @pytest.mark.parametrize("checksum_format", ["canonical", "legacy", "binary"])
