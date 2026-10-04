@@ -23,6 +23,7 @@ from clio_agent.gact.infrastructure.transport_admission import (
     refuse_transport,
     transport_refusal,
 )
+from clio_agent.gact.routes.infrastructure_storage import register_infrastructure_storage_routes
 from clio_agent.providers.capabilities.server_defaults import (
     register_context_default_lookup,
 )
@@ -44,6 +45,7 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
     app.state.infrastructure_store = durable_store
     app.state.infrastructure_transports = transports
     app.state.infrastructure_runtime = InfrastructureRuntime(durable_store, transports)
+    register_infrastructure_storage_routes(app)
     # Discovery learns the default context a CLIO-deployed Ollama applies before
     # a model loads (no Ollama endpoint reports it).
     register_context_default_lookup("infrastructure", ollama_context_default_lookup(durable_store))
@@ -53,6 +55,16 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
 
     def runtime() -> InfrastructureRuntime:
         return app.state.infrastructure_runtime
+
+    @app.get("/v1/infrastructure/inventory")
+    async def inventory() -> dict[str, object]:
+        """Return recorded ownership and activity; timestamps identify last observations."""
+        return {
+            "targets": [row.model_dump(mode="json") for row in store().targets()],
+            "services": [row.model_dump(mode="json") for row in store().services()],
+            "connections": [row.model_dump(mode="json") for row in store().connections()],
+            "operations": [row.model_dump(mode="json") for row in store().operations()[:200]],
+        }
 
     @app.post("/v1/infrastructure/desktop-exit")
     async def desktop_exit(body: DesktopExitRequest, request: Request) -> dict[str, object]:

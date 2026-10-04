@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from clio_schemas.connected_resources import HostStorageLocations
+
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     ExternalServiceConnection,
@@ -102,6 +104,7 @@ class InfrastructureStore:
                 raise KeyError(target_id)
             row = InfrastructureTarget(
                 id=target_id,
+                storage=previous.storage,
                 created_at=previous.created_at,
                 transport_state=(
                     previous.transport_state if previous.ssh == request.ssh else "state_unknown"
@@ -116,6 +119,17 @@ class InfrastructureStore:
                     for key, value in self._services.items()
                     if value.target_id != target_id
                 }
+            self._flush()
+            return row.model_copy(deep=True)
+
+    def set_storage(self, target_id: str, locations: HostStorageLocations) -> InfrastructureTarget:
+        """Persist locations for future deployments without moving existing data."""
+        with self._lock:
+            previous = self._targets.get(target_id)
+            if previous is None:
+                raise KeyError(target_id)
+            row = previous.model_copy(update={"storage": locations, "updated_at": utc_now()})
+            self._targets[target_id] = row
             self._flush()
             return row.model_copy(deep=True)
 
@@ -220,6 +234,15 @@ class InfrastructureStore:
             row = self._operations.get(operation_id)
             return row.model_copy(deep=True) if row else None
 
+    def operations(self) -> list[InfrastructureOperation]:
+        """Return durable activity newest first, including interrupted operations."""
+        with self._lock:
+            return sorted(
+                (row.model_copy(deep=True) for row in self._operations.values()),
+                key=lambda row: row.created_at,
+                reverse=True,
+            )
+
     def put_operation(self, row: InfrastructureOperation) -> InfrastructureOperation:
         """Persist an operation state transition."""
 
@@ -291,11 +314,13 @@ class InfrastructureStore:
         if not isinstance(payload, dict) or payload.get("schema_version") != _SCHEMA_VERSION:
             return
         self._load_rows(payload.get("targets"), InfrastructureTarget, self._targets)
+        local_storage = self._targets["local"].storage
         self._targets["local"] = InfrastructureTarget(
             id="local",
             label="This CLIO's computer",
             kind="local",
             transport_state="connected",
+            storage=local_storage,
         )
         self._load_rows(payload.get("services"), ServiceRecord, self._services)
         self._load_rows(payload.get("connections"), ExternalServiceConnection, self._connections)

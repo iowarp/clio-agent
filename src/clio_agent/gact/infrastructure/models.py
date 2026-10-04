@@ -7,6 +7,7 @@ from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 from uuid import uuid4
 
+from clio_schemas.connected_resources import HostStorageLocations
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from clio_agent.gact.infrastructure.server_parameters import ServerParameter
@@ -106,6 +107,7 @@ class InfrastructureTarget(BaseModel):
     label: str
     kind: TargetKind
     install_root: str = ""
+    storage: HostStorageLocations = Field(default_factory=HostStorageLocations)
     ssh: SshRoute | None = None
     transport_state: TransportState = "disconnected"
     auto_reconnect: bool = True

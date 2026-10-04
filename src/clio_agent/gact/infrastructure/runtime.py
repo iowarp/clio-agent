@@ -151,6 +151,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
     async def _execute_local(self, spec: CommandSpec) -> CommandResult:
         return await run_sync(_run_local, spec)
 
+    async def execute_on_target(self, target_id: str, spec: CommandSpec) -> CommandResult:
+        """Execute a server-generated host operation through the owning transport."""
+        return await self._execute(target_id, spec)
+
     async def _execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
         target = self.store.target(target_id)
         if target is None:

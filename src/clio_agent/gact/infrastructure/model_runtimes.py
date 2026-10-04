@@ -304,6 +304,13 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
 def _service_dir(spec: EngineSpec, facts: TargetFacts, target: InfrastructureTarget | None) -> str:
     windows = facts.os == "windows"
     module = ntpath if windows else posixpath
+    if target and any(target.storage.model_dump().values()):
+        from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
+
+        locations = resolved_locations(target, facts)
+        return module.join(
+            locations.service_data, facts.hostname or facts.target_id, spec.container_name
+        )
     root = (target.install_root.strip() if target else "").rstrip("/\\")
     if not root:
         root = facts.agent_data_root
@@ -350,6 +357,43 @@ def _health_command(url: str, windows: bool) -> CommandSpec:
         ],
         timeout_seconds=30,
     )
+
+
+def deployment_storage_configuration(
+    service_id: str,
+    facts: TargetFacts,
+    target: InfrastructureTarget,
+    configuration: dict[str, str],
+    owned: list[OwnedResource],
+) -> dict[str, str]:
+    """Freeze an existing model deployment's paths before changing host defaults.
+
+    Legacy receipts recorded created directories but no resolved configuration.
+    Prefer their actual cache directory, then resolve with the old host settings.
+    """
+    module = ntpath if facts.os == "windows" else posixpath
+    spec = ENGINES[service_id]
+    caches = [
+        row.ref
+        for row in owned
+        if row.kind == "directory"
+        and module.basename(row.ref) == "cache"
+        and module.basename(module.dirname(row.ref)) == spec.container_name
+    ]
+    if len(caches) > 1:
+        raise ValueError(
+            f"Multiple model caches recorded for {service_id}; inspect its storage first"
+        )
+    service_dir = configuration.get("storage.service_directory") or (
+        module.dirname(caches[0]) if caches else _service_dir(spec, facts, target)
+    )
+    return {
+        **configuration,
+        "storage.service_directory": service_dir,
+        "storage.model_cache": configuration.get("storage.model_cache")
+        or (caches[0] if caches else module.join(service_dir, "cache")),
+        "storage.temporary": configuration.get("storage.temporary") or service_dir,
+    }
 
 
 def _port_free_command(port: int) -> CommandSpec:
@@ -510,9 +554,29 @@ def build_model_runtime_plan(
         return DriverPlan(
             (stop_command(runtime, name),), connection_port=port, configuration=resolved
         )
-    service_dir = _service_dir(spec, facts, target)
+    service_dir = configuration.get("storage.service_directory") or _service_dir(
+        spec, facts, target
+    )
     module = ntpath if windows else posixpath
-    cache_dir = module.join(service_dir, "cache")
+    cache_dir = configuration.get("storage.model_cache") or module.join(service_dir, "cache")
+    temporary_dir = configuration.get("storage.temporary") or module.join(service_dir, "tmp")
+    if target and any(target.storage.model_dump().values()):
+        from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
+
+        locations = resolved_locations(target, facts)
+        cache_dir = configuration.get("storage.model_cache") or module.join(
+            locations.models, facts.hostname or facts.target_id, spec.container_name
+        )
+        temporary_dir = configuration.get("storage.temporary") or module.join(
+            locations.temporary, facts.hostname or facts.target_id, spec.container_name
+        )
+    resolved.update(
+        {
+            "storage.service_directory": service_dir,
+            "storage.model_cache": cache_dir,
+            "storage.temporary": temporary_dir,
+        }
+    )
     images_dir = module.join(service_dir, "images")
     launch = _launch(
         spec, variant, runtime, resolved, port, cache_dir, windows, keyed=bool(api_key)
@@ -573,8 +637,10 @@ def build_model_runtime_plan(
     commands.append(remove_container_command(runtime, name))
     if not windows:
         commands.append(_port_free_command(port))
-    directories = [cache_dir] + (
-        [images_dir, module.join(service_dir, "apptainer-cache")] if runtime == "apptainer" else []
+    directories = [cache_dir, temporary_dir] + (
+        [images_dir, module.join(temporary_dir, "apptainer-cache")]
+        if runtime == "apptainer"
+        else []
     )
     for directory in directories:
         recorders[len(commands)] = directory_recorder(directory, facts.os)
@@ -583,7 +649,7 @@ def build_model_runtime_plan(
     commands.append(image_present_command(runtime, variant.image, images_dir, name))
     commands.append(
         pull_command(
-            runtime, variant.image, images_dir, module.join(service_dir, "apptainer-cache"), name
+            runtime, variant.image, images_dir, module.join(temporary_dir, "apptainer-cache"), name
         )
     )
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)
