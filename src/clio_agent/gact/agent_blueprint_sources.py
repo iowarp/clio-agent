@@ -82,6 +82,7 @@ def blueprint_source_clone_timeout_s() -> float:
 def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     """Inspect a source, cloning remotes temporarily, and list its blueprints."""
 
+    from clio_agent.gact.blueprint_source_revision import inspect_revision
     from clio_agent.gact.routes.blueprint_candidates import (  # noqa: PLC0415
         agent_blueprint_candidates,
     )
@@ -99,14 +100,9 @@ def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     try:
         if source_path.exists():
-            try:
-                refreshed["commit"] = subprocess.check_output(
-                    ["git", "-C", str(source_path), "rev-parse", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-            except Exception:  # noqa: BLE001 - commit is optional display metadata
-                refreshed["commit"] = ""
+            refreshed["commit"] = inspect_revision(
+                source_path, pin=str(row.get("pinned_commit") or ""), fetched=False
+            )
             refreshed["available_blueprints"] = agent_blueprint_candidates(source_path)
             return refreshed
         with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
@@ -128,9 +124,9 @@ def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
                 },
             )
-            refreshed["commit"] = subprocess.check_output(
-                ["git", "-C", str(clone_target), "rev-parse", "HEAD"], text=True
-            ).strip()
+            refreshed["commit"] = inspect_revision(
+                clone_target, pin=str(row.get("pinned_commit") or ""), fetched=True
+            )
             refreshed["available_blueprints"] = agent_blueprint_candidates(clone_target)
             return refreshed
     except Exception as exc:  # noqa: BLE001 - source diagnostics belong on the source row
@@ -262,8 +258,8 @@ def delete_agent_blueprint_source(source_id: str) -> bool:
 def source_install_cwd(app: Any, *, scope: str, workspace_id: str) -> Path:
     """Resolve the install directory for a source registration.
 
-    A workspace-scoped install writes ``<cwd>/.clio/agent-blueprints/<id>`` and
-    destroys whatever sits there, so an unresolvable workspace must be refused
+    A workspace-scoped install writes the Agent namespace's blueprint snapshots,
+    so an unresolvable workspace must be refused
     rather than substituted with the server process's own working directory
     (which is commonly the default workspace root).
 
@@ -469,6 +465,9 @@ def install_agent_blueprint_source(
     try:
         result = install_agent_blueprint(
             source=source,
+            source_id=str(refreshed.get("id") or ""),
+            allow_pin_change=True,
+            resolved_commit=str(refreshed.get("commit") or ""),
             scope=scope,
             cwd=cwd,
             ref=str(refreshed.get("ref") or ""),
@@ -508,5 +507,9 @@ def install_agent_blueprint_source(
             error=f"invalid blueprint entries were not installed: {skipped_ids}",
         )
     else:
-        refreshed.update(status="ready", error="")
+        refreshed.update(
+            status="ready",
+            error="",
+            reload_required=any(item.get("reason") == "local_edits_present" for item in skipped),
+        )
     return refreshed, {"installed": installed, "skipped": skipped}

@@ -12,6 +12,7 @@ from typing import Any
 from clio_agent import paths
 from clio_agent.gact.blueprint_activation import agent_blueprint_activation_metadata
 from clio_agent.gact.blueprint_ledgers import write_json_atomic
+from clio_agent.gact.blueprint_mutations import BLUEPRINT_MUTATION_LOCK
 from clio_agent.gact.blueprint_revision import blueprint_revision_changed
 from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import run_off_loop
@@ -75,7 +76,7 @@ async def apply_blueprint_change(
     def commit() -> dict[str, Any]:
         for session in app.state.sessions.list():
             release_session_fleet(session.id)
-        with source_policy_change(getattr(app.state, "agent", None)):
+        with source_policy_change(getattr(app.state, "agent", None)), BLUEPRINT_MUTATION_LOCK:
             result = change()
             _reconcile_sessions(app, result)
             return result

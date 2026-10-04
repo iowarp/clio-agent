@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 def install_agent_blueprint(
     *,
     source: str,
+    source_id: str = "",
+    allow_pin_change: bool = False,
+    resolved_commit: str = "",
     scope: Literal["global", "workspace"],
     cwd: Path,
     home: Path | None = None,
@@ -53,6 +56,7 @@ def install_agent_blueprint(
     from clio_agent.gact.blueprint_mutations import replace_installed_blueprint
 
     home = home or Path.home()
+    source_id = source_id or source_registry_id(source, ref)
     install_root = _install_root(home=home, cwd=cwd, scope=scope)
     install_root.mkdir(parents=True, exist_ok=True)
     source_path = Path(source).expanduser()
@@ -98,6 +102,7 @@ def install_agent_blueprint(
                 )
         else:
             source_kind = "git"
+            checkout_commit = pinned_commit or resolved_commit
             clone_target = tmp_path / "repo"
             branch = ["--branch", ref] if ref else []
             clone_source = normalize_git_clone_source(source)  # file:// -> path (#903)
@@ -113,16 +118,18 @@ def install_agent_blueprint(
                 ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                 text=True,
             ).strip()
-            if pinned_commit and commit != pinned_commit:
+            if checkout_commit and commit != checkout_commit:
                 git_dir = ["git", "-C", str(clone_target)]
-                run_git([*git_dir, "fetch", "--depth", "1", "origin", pinned_commit], env=env)
-                run_git([*git_dir, "checkout", "--detach", pinned_commit], env=env)
+                run_git([*git_dir, "fetch", "--depth", "1", "origin", checkout_commit], env=env)
+                run_git([*git_dir, "checkout", "--detach", checkout_commit], env=env)
                 commit = subprocess.check_output(
                     ["git", "-C", str(clone_target), "rev-parse", "HEAD"],
                     text=True,
                 ).strip()
-            if pinned_commit and commit != pinned_commit:
-                raise ValueError(f"registry pin mismatch: expected {pinned_commit}, found {commit}")
+            if checkout_commit and commit != checkout_commit:
+                raise ValueError(
+                    f"registry revision mismatch: expected {checkout_commit}, found {commit}"
+                )
         candidates = _install_candidates(resolved_source, blueprint_id=blueprint_id)
         if not candidates:
             raise ValueError("source contains no Agent Blueprint folders with AGENT.md")
@@ -130,7 +137,7 @@ def install_agent_blueprint(
         skipped: list[dict[str, Any]] = []
         for candidate in candidates:
             parsed = parse_agent_blueprint_root(candidate, scope=scope)
-            identity = f"{scope}::{source_registry_id(source, ref)}::{parsed.id}"
+            identity = f"{scope}::{source_id}::{parsed.id}"
             skips = skip_blueprint_ids or {}
             skip_reason = str(skips.get(identity) or skips.get(parsed.id, ""))
             if skip_reason:
@@ -153,7 +160,7 @@ def install_agent_blueprint(
                 raise AgentBlueprintInstallRefused(list(parsed.validation_errors))
             metadata = {
                 "source": source,
-                "source_id": source_registry_id(source, ref),
+                "source_id": source_id,
                 "source_kind": source_kind,
                 "ref": ref,
                 "commit": commit,
@@ -169,7 +176,11 @@ def install_agent_blueprint(
                 if legacy.exists() and _default_blueprint_root_disabled(legacy)[0]:
                     dest = legacy
             previous_checksum, metadata = replace_installed_blueprint(
-                candidate, dest, metadata, preserve_invalid=preserve_invalid
+                candidate,
+                dest,
+                metadata,
+                preserve_invalid=preserve_invalid,
+                allow_pin_change=allow_pin_change,
             )
             installed.append(install_row(dest, scope, metadata, previous_checksum, source, app=app))
         clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)

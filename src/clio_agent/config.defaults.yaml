@@ -1652,12 +1652,12 @@ provenance.artifacts.provider: "native"
 # slow provider causes drops under bursty activity.
 provenance.artifacts.queue_size: 4096
 
-# CLIO_PROVENANCE_ATTENTION  (bool)  <- src/clio_agent/provenance_config.py
+# CLIO_PROVENANCE_ATTENTION  (str)  <- src/clio_agent/provenance_config.py
 # On vLLM calls, declare one token range per transcript section as
 # kv_transfer_params.ranges for vllm-attn-connector and record the labelled
 # ranges on the lm.call; powers the attention view. Only effective with
 # Flowcept configured.
-provenance.attention: false
+provenance.attention: "false"
 
 # CLIO_PROVENANCE_ATTENTION_FILES_DIR  (str)  <- src/clio_agent/gact/attention/files.py
 # Local copy of the attention connector's out_dir (same <workflow_id>/<file>

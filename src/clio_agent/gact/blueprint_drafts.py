@@ -197,7 +197,12 @@ def save_draft(
 def authoring_root(root: Path, *, checkout: str = "") -> Path:
     """Resolve a folder source or an explicitly configured working checkout."""
     install = read_install_metadata(root)
-    source = Path(checkout or install.get("source") or str(root)).expanduser()
+    from clio_agent.gact.blueprint_source_configuration import configured_install
+
+    install = configured_install(install)
+    source = Path(
+        checkout or install.get("working_checkout") or install.get("source") or str(root)
+    ).expanduser()
     if not source.is_dir():
         raise ValueError("Configure a working checkout on this CLIO to publish a Git source")
     blueprint = parse_agent_blueprint_root(root, scope="install")

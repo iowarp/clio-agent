@@ -69,3 +69,17 @@ def tree_checksum(root: Path) -> str:
             while block := handle.read(1024 * 1024):
                 digest.update(block)
     return digest.hexdigest()
+
+
+def read_install_metadata(root: Path) -> dict[str, str]:
+    """Read the installed snapshot's source identity and revision receipt."""
+    path = root / ".clio-install.md"
+    if not path.exists():
+        return {}
+    rows: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw or raw.startswith("#") or ":" not in raw:
+            continue
+        key, _, value = raw.partition(":")
+        rows[key.strip()] = value.strip()
+    return rows

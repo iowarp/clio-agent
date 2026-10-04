@@ -170,7 +170,8 @@ from clio_agent.gact.app import build_app
 # 314 -> 318: authoring state, draft read, publish and explicit Reload alias.
 # 318 -> 319: bidirectional revision-bound attention lookup.
 # 319 -> 325: independent provenance connection, verification and restart-bound activation.
-EXPECTED_ROUTE_METHOD_PAIRS = 325
+# 325 -> 326: marketplace configuration save, separate from runtime Reload.
+EXPECTED_ROUTE_METHOD_PAIRS = 326
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

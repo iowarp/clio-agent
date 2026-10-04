@@ -14,7 +14,12 @@ BLUEPRINT_MUTATION_LOCK = threading.RLock()
 
 
 def replace_installed_blueprint(
-    candidate: Path, destination: Path, metadata: dict[str, Any], *, preserve_invalid: bool = False
+    candidate: Path,
+    destination: Path,
+    metadata: dict[str, Any],
+    *,
+    preserve_invalid: bool = False,
+    allow_pin_change: bool = False,
 ) -> tuple[str, dict[str, str]]:
     """Stage and validate a snapshot, refusing to overwrite edits or another source.
 
@@ -37,12 +42,17 @@ def replace_installed_blueprint(
         if destination.exists() and not repair:
             if not checksum or tree_checksum(destination) != checksum:
                 raise ValueError("local_edits_present: save or publish the working draft first")
-            if previous.get("source") != metadata.get("source"):
+            same_registration = bool(previous.get("source_id")) and previous.get(
+                "source_id"
+            ) == metadata.get("source_id")
+            if not same_registration and previous.get("source") != metadata.get("source"):
                 raise ValueError(
                     "source_conflict: this installed blueprint belongs to another source"
                 )
-            if previous.get("pinned_commit") and previous["pinned_commit"] != metadata.get(
-                "pinned_commit"
+            if (
+                not allow_pin_change
+                and previous.get("pinned_commit")
+                and previous["pinned_commit"] != metadata.get("pinned_commit")
             ):
                 raise ValueError("pinned_revision: changing the pin requires an explicit selection")
         replace_pack_atomically(

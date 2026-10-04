@@ -439,6 +439,40 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   reported the provenance exception guard above; the next commit needs fresh CI.
   Google/Globus live OAuth still awaits CLIO-owned application registration.
 
+### Marketplace configuration checkpoint (October 4)
+
+- Registered marketplaces retain their source identity when their folder, branch,
+  tag or pin changes. Workspace registrations of the same repository are distinct.
+  Save configuration uses optimistic concurrency and preserves installed files;
+  Reload refuses a source edited or removed during preparation. Repository
+  discovery honors the pin, and installation uses its inspected commit even if
+  the upstream branch moves. Explicit pin changes require a configuration save.
+- Working checkouts are persisted on the connected CLIO and used by the existing
+  draft/publication path. Install, Reload and removal reject unresolved workspaces;
+  workspace registrations cannot install into another workspace. Legacy default
+  discovery retains its unique existing installation instead of duplicating it.
+- Marketplace rows now disclose source details and blueprint inventory on demand.
+  Configuration includes scope, host-specific folder browsing, branch/tag, pin,
+  working checkout and tap/focus explanations. Settings queries and editor state
+  include credential identity. Workspace actions use qualified blueprint identities;
+  selected workspace/tab persist across navigation. The phone Settings menu exposes
+  every section without placing the entire navigation above the active form.
+- Browser review used the real isolated API: add/browse local source, Reload a
+  valid root-agent blueprint, configure a working checkout, change source,
+  confirm installed version 1.1 remained after Save, then explicitly Reload and
+  confirm version 1.2. Light/dark, 390 px, keyboard/menu and info-icon states are
+  retained under `marketplace-*.png` and `settings-navigation-narrow-dark.png`.
+  This does not qualify a live MCP fleet replacement or inference.
+- Backend marketplace/route regressions: **177 passed**. Focused UI: **12 passed**,
+  responsive Settings navigation: **1 passed**, core repository contract: **7 passed**.
+  Full UI lint/typecheck, Ruff, size/exception guards and mypy (three new modules)
+  passed. The connected-source callback guard now updates its ref in a layout effect,
+  preserving the account-switch protection while satisfying React's lint rule.
+- `f4fbaec7` CI passed lint, packaging lock resolution, filesystem contract,
+  Flowcept integration and coverage. Its test failures were two stale generated
+  environment/config reference files; regeneration and all **26 reference tests**
+  now pass. A fresh pushed-head CI run is still required.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
@@ -449,8 +483,10 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    default-build and additional-driver qualification, fresh attention verification,
    and remaining service connection flows. Provenance connect/use/restart is now
    qualified independently and together on the isolated CLIO.
-3. Complete marketplace #1627: full source configuration and pin editing, runtime/MCP reload
-   qualification, receipt recovery UI, and the Providers-style composition.
+3. Complete marketplace #1627: prepare/verify/rollback the complete runtime and MCP
+   revision, qualify live reload, and finish operation-receipt recovery UI and
+   Blueprint-tab integration. Source configuration/pins and compact management rows
+   are implemented and browser-reviewed.
 4. Finish full-transcript selection producers, multi-selection transcript heat and
    SPOTTER finding links. Shared profiles, local SPOTTER capture inspection,
    bidirectional text lookup and stable tool-call heat identities are implemented;

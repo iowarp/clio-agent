@@ -217,11 +217,16 @@ def update_installed_agent_blueprint(
         _install_root(home=home or Path.home(), cwd=cwd, scope=scope), blueprint_id
     )
     metadata = read_install_metadata(root)
+    from clio_agent.gact.blueprint_source_configuration import configured_install
+
+    metadata = configured_install(metadata)
     source = str(metadata.get("source") or "").strip()
     if not source:
         raise ValueError(f"agent blueprint {blueprint_id!r} has no install source metadata")
     return install_agent_blueprint(
         source=source,
+        source_id=str(metadata.get("source_id") or ""),
+        allow_pin_change=bool(metadata.get("allow_pin_change")),
         scope=scope,  # type: ignore[arg-type]
         cwd=cwd,
         home=home,

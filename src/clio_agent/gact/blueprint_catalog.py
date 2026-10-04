@@ -36,7 +36,7 @@ def blueprint_catalog(*, cwd: Path | None, workspace_id: str = "") -> list[dict[
             continue
         if scope not in {"global", "workspace"}:
             continue
-        source_id = source_registry_id(str(source["source"]), str(source.get("ref") or ""))
+        source_id = str(source["id"])
         for candidate in source.get("available_blueprints") or []:
             identifier = f"{scope}::{source_id}::{candidate['id']}"
             rows.setdefault(
@@ -100,6 +100,7 @@ def materialize_blueprint(
         raise ValueError("workspace-scoped installation requires a workspace root")
     result = install_agent_blueprint(
         source=install["source"],
+        source_id=row["source_id"],
         ref=install["ref"],
         pinned_commit=install["pinned_commit"],
         blueprint_id=row["id"],

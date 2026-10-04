@@ -23,6 +23,7 @@ from clio_agent.gact.blueprint_identity import (
     identity_fields,
     select_blueprint,
 )
+from clio_agent.gact.blueprint_install_files import read_install_metadata as read_install_metadata
 from clio_agent.gact.blueprint_install_files import tree_checksum, write_install_metadata
 from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
@@ -727,6 +728,9 @@ def load_mcp_descriptors(
 def install_agent_blueprint(
     *,
     source: str,
+    source_id: str = "",
+    allow_pin_change: bool = False,
+    resolved_commit: str = "",
     scope: Literal["global", "workspace"],
     cwd: Path,
     home: Path | None = None,
@@ -743,6 +747,9 @@ def install_agent_blueprint(
 
     return install(
         source=source,
+        source_id=source_id,
+        allow_pin_change=allow_pin_change,
+        resolved_commit=resolved_commit,
         scope=scope,
         cwd=cwd,
         home=home,
@@ -754,19 +761,6 @@ def install_agent_blueprint(
         app=app,
         preserve_invalid=preserve_invalid,
     )
-
-
-def read_install_metadata(root: Path) -> dict[str, str]:
-    path = root / ".clio-install.md"
-    if not path.exists():
-        return {}
-    rows: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        if not raw or raw.startswith("#") or ":" not in raw:
-            continue
-        key, _, value = raw.partition(":")
-        rows[key.strip()] = value.strip()
-    return rows
 
 
 def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:

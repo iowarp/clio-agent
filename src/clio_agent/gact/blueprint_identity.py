@@ -72,16 +72,25 @@ def install_destination(install_root: Path, blueprint_id: str, metadata: Mapping
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", blueprint_id) or blueprint_id in {".", ".."}:
         raise ValueError("invalid blueprint id")
+    source_id = str(
+        metadata.get("source_id")
+        or source_registry_id(str(metadata["source"]), str(metadata.get("ref") or ""))
+    )
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", source_id):
+        raise ValueError("invalid marketplace source id")
     matching = []
     for path in install_root.iterdir():
         if not path.is_dir() or not (path / "AGENT.md").is_file():
             continue
         previous = read_install_metadata(path)
         if (
-            previous.get("source") == metadata.get("source")
-            and previous.get("ref", "") in ("", metadata.get("ref", ""))
-            and parse_agent_blueprint_root(path, scope="install").id == blueprint_id
-        ):
+            previous.get("source_id") == source_id
+            or (
+                (not previous.get("source_id") or not metadata.get("source_id"))
+                and previous.get("source") == metadata.get("source")
+                and previous.get("ref", "") in ("", metadata.get("ref", ""))
+            )
+        ) and parse_agent_blueprint_root(path, scope="install").id == blueprint_id:
             matching.append(path)
     if len(matching) > 1:
         raise AmbiguousBlueprintError("Multiple installed copies have the same source identity")
@@ -90,7 +99,6 @@ def install_destination(install_root: Path, blueprint_id: str, metadata: Mapping
     else:
         destination = install_root / blueprint_id
         if destination.exists():
-            source_id = source_registry_id(str(metadata["source"]), str(metadata.get("ref") or ""))
             destination = install_root / f"{source_id}--{blueprint_id}"
     destination.resolve().relative_to(install_root.resolve())
     return destination

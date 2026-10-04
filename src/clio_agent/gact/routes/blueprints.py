@@ -35,9 +35,6 @@ from clio_agent.gact.agent_blueprint_sources import (
     source_install_cwd as _source_install_cwd,
 )
 from clio_agent.gact.agent_blueprint_sources import (
-    source_registry_id as _source_registry_id,
-)
-from clio_agent.gact.agent_blueprint_sources import (
     upsert_agent_blueprint_source as _upsert_agent_blueprint_source,
 )
 from clio_agent.gact.agent_blueprints import (
@@ -59,7 +56,14 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.blueprint_identity import select_blueprint
+from clio_agent.gact.blueprint_mutations import BLUEPRINT_MUTATION_LOCK
 from clio_agent.gact.blueprint_reload import apply_blueprint_change
+from clio_agent.gact.blueprint_source_configuration import (
+    SourceConfigurationConflict,
+    registration_id,
+    require_unchanged,
+    validate_configuration,
+)
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
 from clio_agent.gact.routes.blueprint_file_read import register_blueprint_file_read_routes
@@ -114,6 +118,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     from clio_agent.gact.routes.blueprint_identity import register_identity_error_handler
 
     register_identity_error_handler(app)
+    from clio_agent.gact.routes.blueprint_source_configuration import (
+        register_source_configuration_route,
+    )
+
+    register_source_configuration_route(app)
 
     @app.get("/v1/agent-blueprints/sources")
     async def list_agent_blueprint_sources() -> dict[str, Any]:
@@ -134,10 +143,8 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         ref = str(req.get("ref") or "").strip()
-        source_id = str(req.get("id") or "").strip() or _source_registry_id(source, ref)
         now = datetime.now(timezone.utc).isoformat()
         row = {
-            "id": source_id,
             "name": str(req.get("name") or source),
             "source": source,
             "ref": ref,
@@ -150,6 +157,17 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         if scope not in {"global", "workspace"}:
             raise HTTPException(status_code=422, detail="scope must be global or workspace")
         workspace_id = str(req.get("workspace_id") or "")
+        row["id"] = registration_id(source, ref, scope, workspace_id)
+        row["install_scope"] = scope
+        try:
+            row.update(
+                await asyncio.to_thread(
+                    validate_configuration,
+                    {**row, "working_checkout": req.get("working_checkout", "")},
+                )
+            )
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
         if scope == "workspace":
             row["workspace_id"] = workspace_id
         # Cloning and installing block for tens of seconds; keep them off the loop.
@@ -159,6 +177,10 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             row["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         def install_source() -> dict[str, Any]:
+            if any(item["id"] == row["id"] for item in _load_agent_blueprint_sources()):
+                raise SourceConfigurationConflict(
+                    "Marketplace already registered in this scope; edit its configuration"
+                )
             installed_source, installation = _install_agent_blueprint_source(
                 row, cwd=cwd, scope=scope
             )
@@ -182,17 +204,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     prepared: dict[str, Any] = refreshed,
                     target: Path = cwd,
                     install_scope: Literal["global", "workspace"] = scope,
+                    original: dict[str, Any] = row,
                 ) -> dict[str, Any]:
-                    current = next(
-                        (
-                            source
-                            for source in _load_agent_blueprint_sources()
-                            if source["id"] == source_id
-                        ),
-                        None,
-                    )
-                    if current is None:
-                        raise ValueError("Marketplace was removed while Reload was preparing")
+                    require_unchanged(original)
                     installed_source, installation = _install_agent_blueprint_source(
                         prepared, cwd=target, scope=install_scope
                     )
@@ -215,7 +229,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.delete("/v1/agent-blueprints/sources/{source_id}")
     async def delete_agent_blueprint_source(source_id: str) -> dict[str, Any]:
-        if not _delete_agent_blueprint_source(source_id):
+        def forget() -> bool:
+            with BLUEPRINT_MUTATION_LOCK:
+                return _delete_agent_blueprint_source(source_id)
+
+        if not await asyncio.to_thread(forget):
             raise HTTPException(
                 status_code=404,
                 detail=ErrorEnvelope(
@@ -310,6 +328,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
+        if source_id and any(
+            key in req for key in ("source", "url", "path", "ref", "pinned_commit")
+        ):
+            raise HTTPException(
+                422, detail="Edit the registered marketplace configuration before installing"
+            )
         source = str(
             req.get("source") or req.get("url") or req.get("path") or source_row.get("source") or ""
         ).strip()
@@ -336,7 +360,14 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(req.get("workspace_id") or ""))
+        workspace_id = str(req.get("workspace_id") or "")
+        if source_row.get("install_scope") == "workspace" and (
+            scope != "workspace" or workspace_id != source_row.get("workspace_id")
+        ):
+            raise HTTPException(
+                422, detail="Install into the marketplace's registered scope and workspace"
+            )
+        cwd = _source_install_cwd(app, scope=scope, workspace_id=workspace_id)
         from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
             AgentBlueprintInstallRefused,
             install_refusal_http_exception,
@@ -344,10 +375,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         try:
             # A fetch, a copy and clio-core writes: never on the event loop.
-            result = await apply_blueprint_change(
-                app,
-                lambda: install_agent_blueprint(
+            def install_selected() -> dict[str, Any]:
+                if source_row:
+                    require_unchanged(source_row)
+                return install_agent_blueprint(
                     source=source,
+                    source_id=source_id,
                     scope=scope,  # type: ignore[arg-type]
                     cwd=cwd or Path.cwd(),
                     ref=str(req.get("ref") or source_row.get("ref") or ""),
@@ -356,13 +389,19 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         req.get("pinned_commit") or source_row.get("pinned_commit") or ""
                     ),
                     app=app,
-                ),
+                )
+
+            result = await apply_blueprint_change(
+                app,
+                install_selected,
                 label="Install blueprint",
             )
             _invalidate_a2ui_catalogs(app)
             return result
         except AgentBlueprintInstallRefused as exc:
             raise install_refusal_http_exception(exc) from exc
+        except SourceConfigurationConflict:
+            raise
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
             raise _mutation_error(
                 400, "validation_error", f"agent blueprint install failed: {exc}"
@@ -387,7 +426,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
+        cwd = _source_install_cwd(
+            app, scope=scope, workspace_id=str(body.get("workspace_id") or "")
+        )
         try:
             result = await apply_blueprint_change(
                 app,
@@ -433,7 +474,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
+        cwd = _source_install_cwd(app, scope=scope, workspace_id=workspace_id)
         try:
             result = await apply_blueprint_change(
                 app,
