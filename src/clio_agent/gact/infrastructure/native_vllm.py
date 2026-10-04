@@ -5,20 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import posixpath
-from pathlib import Path
-from uuid import uuid4
 
-from clio_agent.gact.infrastructure import node_service
 from clio_agent.gact.infrastructure.models import (
-    CommandResult,
-    CommandSpec,
-    OwnedResource,
     ServiceVariant,
     TargetFacts,
 )
-from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
+from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.server_parameters import compile_parameters
-from clio_agent.gact.infrastructure.service_observation import parse_observation
+from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
 CONNECTOR_REVISION = "95ab2acd6fe1be74ad9a3fa2aca1ecbee60a6284"
 FLOWCEPT_REVISION = "e638b4e2072290a2921965a03a150db124e11c2e"
@@ -57,7 +51,6 @@ def launcher(attention: bool) -> str:
 import os
 import runpy
 import sys
-from pathlib import Path
 
 # Settings are a private file on this host, never agent/transcript material.
 root = Path(__file__).parent
@@ -148,55 +141,13 @@ def native_vllm_plan(
         "compatibility_profile": manifest["definition_version"],
         "native_owner": ownership,
     }
-    script = Path(node_service.__file__).read_text(encoding="utf-8")
-    operation_id = str(uuid4())
-
-    def command(verb: str, *, cleanup: bool = False) -> CommandSpec:
-        body: dict[str, object] = {
-            "root": directory,
-            "owner": ownership,
-            "action": verb,
-            "operation_id": operation_id,
-        }
-        if cleanup:
-            body["require_operation_id"] = operation_id
-        if verb in {"install", "start"}:
-            body.update(manifest=manifest, script=script)
-            if verb == "start" and api_key:
-                body["api_key"] = api_key
-        return CommandSpec(
-            program="python3", args=["-c", script], stdin=json.dumps(body), timeout_seconds=30
-        )
-
-    def record(result: CommandResult) -> list[OwnedResource]:
-        observed = parse_observation([result.stdout])
-        return [OwnedResource(kind="directory", ref=directory)] if observed else []
-
-    status = command("status")
-    commands = (
-        [command("prepare"), command("install")]
-        if action == "install"
-        else [command("stop"), command("prepare"), command("install")]
-        if action == "reinstall"
-        else [command(action)]
-    )
-    return DriverPlan(
-        tuple(commands),
-        connection_port=port,
+    return supervised_plan(
+        action,
+        directory=directory,
+        ownership=ownership,
+        manifest=manifest,
+        port=port,
+        label="vLLM",
         configuration=resolved,
-        recorders={len(commands) - 2: record} if action in {"install", "reinstall"} else {},
-        readiness=Readiness(
-            status,
-            status,
-            command("logs"),
-            "vLLM installation" if action != "start" else "vLLM",
-            capability="installed" if action != "start" else "serving",
-        )
-        if action in {"install", "reinstall", "start"}
-        else None,
-        after_ready=(status,) if action in {"install", "reinstall", "start"} else (),
-        retain_record=action != "delete_data",
-        failure_cleanup=(command("stop", cleanup=True),)
-        if action in {"install", "reinstall", "start"}
-        else (),
+        api_key=api_key,
     )

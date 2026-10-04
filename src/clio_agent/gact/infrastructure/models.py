@@ -315,6 +315,7 @@ class ServiceObservation(BaseModel):
     provenance_ingesting: bool = False
     attention_verified: bool = False
     evidence_directory: str = ""
+    effective_artifacts: dict[str, str] = Field(default_factory=dict)
     error: str | None = None
     observed_at: float = 0
 
@@ -332,7 +333,7 @@ class ManagedServiceDefinition(BaseModel):
     """Catalog projection for one CLIO-managed service."""
 
     id: str
-    category: Literal["model_runtime", "scientific_service", "remote_access"]
+    category: Literal["model_runtime", "scientific_service", "remote_access", "monitoring"]
     label: str
     description: str
     recommended_variant: str
@@ -399,7 +400,15 @@ class ServiceActionRequest(BaseModel):
 
     target_id: str = "local"
     action: Literal[
-        "install", "start", "status", "stop", "logs", "reinstall", "uninstall", "delete_data"
+        "install",
+        "start",
+        "status",
+        "stop",
+        "logs",
+        "reinstall",
+        "uninstall",
+        "delete_data",
+        "verify",
     ]
     variant_id: str
     configuration: dict[str, str] = Field(default_factory=dict)

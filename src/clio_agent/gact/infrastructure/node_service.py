@@ -94,6 +94,11 @@ def owner(root: Path, expected: str) -> None:
         "evidence",
         "cache",
         "tmp",
+        "credentials.json",
+        "settings.yaml",
+        "redis.conf",
+        "images.json",
+        "evidence/verification.json",
     ):
         if (root / relative).is_symlink():
             raise ValueError("A native service ownership path was replaced by a symlink")
@@ -114,6 +119,30 @@ def prepare(root: Path, expected: str) -> None:
                 {"owner": expected, "host": socket.gethostname(), "root": str(root)},
             )
         owner(root, expected)
+        root.chmod(0o700)
+
+
+def hook(root: Path, action: str, *, timeout: int = 90) -> None:
+    """Run a definition-owned lifecycle hook and refuse an unsuccessful cleanup."""
+    manifest_path = root / "manifest.json"
+    if not manifest_path.exists():
+        return
+    manifest = json.loads(manifest_path.read_text())
+    name = manifest.get("hooks", {}).get(action)
+    if not name:
+        return
+    script = root / name
+    if script.parent != root or script.is_symlink() or not script.is_file():
+        raise ValueError("Invalid service lifecycle hook")
+    completed = subprocess.run(
+        [sys.executable, str(script), action],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if completed.returncode:
+        raise RuntimeError(f"Service {action} hook failed; inspect retained logs and resources")
 
 
 def read_receipt(root: Path) -> dict[str, Any]:
@@ -124,6 +153,18 @@ def read_receipt(root: Path) -> dict[str, Any]:
         if file.exists()
         else {"installed": False, "phase": "not_installed"}
     )
+
+
+def effective_artifacts(root: Path) -> dict[str, str]:
+    """Keep immutable installed artifacts inspectable after runtime removal."""
+    artifacts = dict(read_receipt(root).get("effective_artifacts", {}))
+    images = root / "images.json"
+    if images.is_file():
+        artifacts.update(json.loads(images.read_text()))
+    lockfile = root / "environment/uv.lock"
+    if lockfile.is_file():
+        artifacts["python_lock_sha256"] = hashlib.sha256(lockfile.read_bytes()).hexdigest()
+    return artifacts
 
 
 def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
@@ -140,6 +181,11 @@ def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
                 serving = response.status == 200
         except (OSError, URLError):
             serving = False
+    verification = root / "evidence/verification.json"
+    verified = json.loads(verification.read_text()) if verification.is_file() else {}
+    current_verification = verified.get("configuration_revision") == receipt.get(
+        "configuration_revision"
+    ) and verified.get("generation") == receipt.get("generation")
     return {
         "definition_version": receipt.get("definition_version", "1"),
         "configuration_revision": receipt.get("configuration_revision", ""),
@@ -149,11 +195,14 @@ def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
         "running": live and phase == "running",
         "serving": serving,
         "worker_alive": live,
-        "provenance_ingesting": False,
+        "provenance_ingesting": serving
+        and current_verification
+        and bool(verified.get("provenance_ingesting")),
         "attention_verified": False,
         "error": receipt.get("error"),
         "observed_at": time.time(),
         "evidence_directory": str(root / "evidence"),
+        "effective_artifacts": effective_artifacts(root),
     }
 
 
@@ -175,6 +224,7 @@ def stop(root: Path) -> None:
                 time.sleep(0.1)
         if alive(receipt):
             raise RuntimeError("Native service did not stop; its data was retained")
+    hook(root, "stop")
     receipt.update(
         phase="not_installed" if receipt["phase"] == "not_installed" else "stopped",
         pid=0,
@@ -215,6 +265,15 @@ def launch(root: Path, request: dict[str, Any]) -> None:
             )
         environment = root / "environment"
         environment.mkdir(exist_ok=True)
+        for name, content in manifest.get("files", {}).items():
+            path = root / name
+            if (
+                path.parent != root
+                or path.is_symlink()
+                or name in {"owner.json", "receipt.json", "manifest.json", "controller.py", ".lock"}
+            ):
+                raise ValueError("Invalid service definition support file")
+            path.write_text(content, encoding="utf-8")
         write_json(root / "manifest.json", manifest)
         (environment / "pyproject.toml").write_text(manifest["project"], encoding="utf-8")
         (root / "launch.py").write_text(manifest["launcher"], encoding="utf-8")
@@ -299,6 +358,12 @@ def worker(root: Path, action: str, generation: str) -> None:
             *manifest["arguments"],
         ]
     secret = env.get("VLLM_API_KEY", "")
+    secrets = [secret] if secret else []
+    credentials = root / "credentials.json"
+    if credentials.is_file():
+        secrets.extend(
+            str(value) for value in json.loads(credentials.read_text()).values() if value
+        )
     log = root / "logs" / ("install.log" if action == "install" else "server.log")
     try:
         with subprocess.Popen(
@@ -314,9 +379,23 @@ def worker(root: Path, action: str, generation: str) -> None:
             assert process.stdout is not None
             with log.open("w", encoding="utf-8") as output:
                 for line in process.stdout:
-                    output.write(line.replace(secret, "[redacted]") if secret else line)
+                    for value in secrets:
+                        line = line.replace(value, "[redacted]")
+                    output.write(line)
                     output.flush()
                 code = process.wait()
+                if code == 0 and action == "install" and manifest.get("post_install"):
+                    post = root / manifest["post_install"]
+                    if post.parent != root or post.is_symlink():
+                        raise ValueError("Invalid post-install hook")
+                    code = subprocess.run(
+                        [str(root / "environment/.venv/bin/python"), str(post), "install"],
+                        cwd=root,
+                        env=env,
+                        stdout=output,
+                        stderr=subprocess.STDOUT,
+                        check=False,
+                    ).returncode
         if stopping:
             return
         with locked(root):
@@ -325,6 +404,8 @@ def worker(root: Path, action: str, generation: str) -> None:
                 return
             if action == "install":
                 current.update(installed=code == 0, phase="stopped" if code == 0 else "failed")
+                if code == 0:
+                    current["effective_artifacts"] = effective_artifacts(root)
             else:
                 current.update(phase="stopped" if code == 0 else "failed")
             current.update(
@@ -373,6 +454,7 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
                 return observation(root)
             stop(root)
             if action == "uninstall":
+                hook(root, "uninstall")
                 environment = root / "environment"
                 if environment.exists():
                     if environment.is_symlink():
@@ -386,6 +468,7 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(
                     "Remove the native runtime before explicitly deleting its retained data"
                 )
+            hook(root, "delete_data")
             shutil.rmtree(root)
             return {
                 "phase": "not_installed",
@@ -394,6 +477,37 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
                 "serving": False,
                 "data_deleted": True,
             }
+        elif action == "verify":
+            if not observation(root)["serving"]:
+                raise ValueError("Start the service before verifying provenance")
+            verify = root / "verify.py"
+            if verify.is_symlink() or not verify.is_file():
+                raise ValueError("This service definition has no verification procedure")
+            receipt = read_receipt(root)
+            # Invalidate the previous result before attempting a fresh verification.
+            write_json(root / "evidence/verification.json", {})
+            process = subprocess.run(
+                [str(root / "environment/.venv/bin/python"), str(verify)],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=75,
+            )
+            if process.returncode:
+                diagnostics = process.stderr[-16000:]
+                credentials = root / "credentials.json"
+                if credentials.is_file():
+                    for value in json.loads(credentials.read_text()).values():
+                        if value:
+                            diagnostics = diagnostics.replace(str(value), "[redacted]")
+                (root / "logs/verification.log").write_text(diagnostics)
+                raise RuntimeError("Provenance write/readback failed; inspect verification logs")
+            evidence = json.loads(process.stdout)
+            evidence.update(
+                configuration_revision=receipt["configuration_revision"],
+                generation=receipt["generation"],
+            )
+            write_json(root / "evidence/verification.json", evidence)
         elif action == "logs":
             tails = []
             for file in (root / "logs").glob("*.log"):

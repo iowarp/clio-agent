@@ -153,14 +153,37 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   file-size checks passed. CI-found composer and cleanup-ledger regressions were
   repaired and covered locally. Packaged/GPU qualification remains outstanding.
 
+### Independent monitoring checkpoint (October 4)
+
+- Managed Flowcept and HPE CMF now use versioned definitions with separate,
+  ownership-labelled dependencies, private host credentials, explicit data paths,
+  logs and durable deployment receipts. Flowcept has exactly one collector.
+  CMF runs independently through its direct server API without Flowcept or vLLM.
+- Both services passed real homelab install, start, fresh provenance write/readback,
+  stop, restart, fresh re-verification and removal with retained evidence. CMF
+  verification checked both input and output artifact edges, not just HTTP success.
+  Evidence: `homelab-flowcept-managed.json`, `homelab-cmf-managed.json`.
+- CMF used the existing immutable server image identified in its receipt. The
+  default source-build path and rootless Podman are implemented but not yet live
+  qualified. Service data stayed under `/data/clio-beta3-qualification/monitoring`.
+  Existing host services were preserved; qualification containers were removed.
+- Verification is bound to configuration and process generation and expires after
+  restart. Image IDs and the Python lock digest remain inspectable after removal.
+  Image pulls/builds check the engine image-store filesystem separately from the
+  selected service data filesystem. Low root capacity cannot be hidden by `/data`.
+- Focused service/provider regression: 67 passed; additional native/monitoring
+  regression: 20 passed. Linux-target typecheck passed. Full CI is still open:
+  missing attention fixture and minimap expectations were repaired; Python 3.12
+  CI currently exits unsuccessfully after its test summary and needs investigation.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
 2. Qualify native vLLM with a real GPU; finish versioned service definitions,
-   independent Flowcept/CMF deployment and write/readback verification, pinned
-   attention probe activation, receipts, ownership-safe lifecycle controls.
+   default-build and additional-driver qualification, connect/use provenance flow,
+   attention verification, and the shared Services management UI.
 3. Implement marketplace audit #1627, including scoped identities, safe reload,
    drafts/publish, pin preservation, events, and deletion distinctions.
 4. Finish full-transcript stable attention selections, shared editable numerical
@@ -170,9 +193,9 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
 5. Complete browser review of every changed control, empty/error states,
    keyboard, light/dark, narrow layouts and long transcripts. Complete packaged
    install/update-channel checks and exact dependency qualification.
-6. Complete homelab deployment/provenance/reconnect/cleanup on an owned
-   `/data` directory. Ares allocation, SSH-hop model lifecycle and reconnect passed;
-   homelab model acquisition and SFTP passed. Service deployment gates remain open.
+6. Complete integrated host/connection qualification. Homelab monitoring deployment,
+   provenance, restart and removal passed on `/data`; Ares allocation, SSH-hop model
+   lifecycle and reconnect passed. Packaged transport and GPU gates remain open.
 7. Prepare ordered Delta setup, then together run fresh instrumented inference,
    token mapping, both OPAL/SPOTTER demos and evidence retention through shutdown.
 

@@ -234,3 +234,48 @@ def test_cleanup_cannot_stop_a_previous_operation(
 def test_reused_pid_is_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(node_service, "identity", lambda pid: "new-boot:new-start")
     assert not node_service.alive({"pid": 12, "process_identity": "old-boot:old-start"})
+
+
+def test_effective_artifacts_remain_after_runtime_removal(tmp_path: Path) -> None:
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    lockfile = environment / "uv.lock"
+    lockfile.write_text("version = 1\n")
+    before = node_service.effective_artifacts(tmp_path)
+    node_service.write_json(tmp_path / "receipt.json", {"effective_artifacts": before})
+    lockfile.unlink()
+    assert node_service.effective_artifacts(tmp_path) == before
+    assert len(before["python_lock_sha256"]) == 64
+
+
+def test_provenance_verification_expires_with_configuration_or_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    monkeypatch.setattr(
+        node_service,
+        "build_opener",
+        lambda *args: SimpleNamespace(
+            open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))
+        ),
+    )
+    (tmp_path / "evidence").mkdir()
+    node_service.write_json(
+        tmp_path / "receipt.json",
+        {
+            "phase": "running",
+            "configuration_revision": "config-a",
+            "generation": "process-a",
+            "health_url": "http://localhost:8008",
+        },
+    )
+    proof = {
+        "configuration_revision": "config-a",
+        "generation": "process-a",
+        "provenance_ingesting": True,
+    }
+    node_service.write_json(tmp_path / "evidence/verification.json", proof)
+    assert node_service.observation(tmp_path)["provenance_ingesting"]
+    for changed in ({"generation": "process-b"}, {"configuration_revision": "config-b"}):
+        node_service.write_json(tmp_path / "evidence/verification.json", {**proof, **changed})
+        assert not node_service.observation(tmp_path)["provenance_ingesting"]

@@ -366,7 +366,7 @@ def download(receipt: Path) -> None:
             updated_at=time.time(),
         )
         write_json(receipt, job)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - detached worker records a sanitized terminal failure
         # Upstream exception strings can contain signed URLs or auth headers.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         detail = (

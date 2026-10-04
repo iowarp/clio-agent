@@ -83,6 +83,7 @@ class FlowceptProviderConfig:
     include_events: tuple[str, ...] = ("*",)
     exclude_events: tuple[str, ...] = ("lm.token.delta", "thinking.*")
     check_safe_stops: bool = True
+    persistence_owner: str = "client"
 
     def __post_init__(self) -> None:
         if self.workflow_scope not in {"session", "process"}:
@@ -91,6 +92,8 @@ class FlowceptProviderConfig:
             raise ValueError("Flowcept campaign_scope must be session, workspace, or agent")
         if self.privacy not in {"metadata", "redacted", "full"}:
             raise ValueError("Flowcept privacy must be metadata, redacted, or full")
+        if self.persistence_owner not in {"client", "collector"}:
+            raise ValueError("Flowcept persistence_owner must be client or collector")
 
 
 def _stable_id(kind: str, value: str) -> str:
@@ -237,7 +240,7 @@ class FlowceptProvenanceProvider:
         self._runtime = self._flowcept_class(
             workflow_id=runtime_workflow_id,
             workflow_name="CLIO provenance transport",
-            start_persistence=True,
+            start_persistence=config.persistence_owner == "client",
             save_workflow=False,
             check_safe_stops=config.check_safe_stops,
         )
