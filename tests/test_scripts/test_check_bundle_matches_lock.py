@@ -14,8 +14,11 @@ import sys
 import tomllib
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import unquote, urlparse
 
 import pytest
+from packaging.tags import cpython_tags, mac_platforms
+from packaging.utils import parse_wheel_filename
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check_bundle_matches_lock.py"
@@ -34,6 +37,20 @@ def _load_module() -> ModuleType:
 
 
 cbl = _load_module()
+
+
+def test_locked_rasterio_has_a_bundled_macos_14_wheel() -> None:
+    """The macOS 14 bundle must not compile against a runner-local GDAL install."""
+    lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    rasterio = next(package for package in lock["package"] if package["name"] == "rasterio")
+    supported = set(cpython_tags((3, 12), platforms=mac_platforms(version=(14, 0), arch="arm64")))
+    compatible = []
+    for wheel in rasterio["wheels"]:
+        filename = unquote(urlparse(wheel["url"]).path.rsplit("/", 1)[-1])
+        _, _, _, tags = parse_wheel_filename(filename)
+        if supported.intersection(tags):
+            compatible.append(filename)
+    assert compatible, f"Rasterio {rasterio['version']} has no Python 3.12/macOS 14 ARM wheel"
 
 
 def _code_lines(path: Path) -> list[str]:

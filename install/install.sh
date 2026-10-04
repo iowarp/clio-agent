@@ -215,7 +215,7 @@ else
     else
       say "Resolving latest clio-agent release"
       tag="$(curl -fsSL https://api.github.com/repos/iowarp/clio-agent/releases/latest \
-            | sed -nE 's/.*"tag_name":\s*"([^"]+)".*/\1/p' \
+            | sed -nE 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/p' \
             | head -n1 || true)"
       [ -n "$tag" ] || die "couldn't resolve clio-agent latest release tag"
     fi

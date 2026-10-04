@@ -59,6 +59,38 @@ the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/
 without `-bundled` in the name, including every Linux `.AppImage` and the Intel macOS
 `.dmg`, are attach-only: they connect to a clio-agent you install and run separately.
 
+### Desktop from a terminal (beta 2)
+
+macOS 14 or newer, without Python/uv/Node prerequisites:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
+  | CLIO_VERSION=v0.9.5-beta.2 bash
+```
+
+Windows (bundled x64 setup, including x64 emulation on ARM):
+
+```powershell
+$env:CLIO_VERSION = 'v0.9.5-beta.2'
+irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
+```
+
+Both verify the asset against its release checksum before installation. macOS installs
+into `~/Applications` (`CLIO_DESKTOP_DIR` overrides it), keeps the previous app when
+upgrading, and verifies the app's signature. Intel Macs get the attach-only package.
+Save the script and use `--download-only DIR` (macOS) or `-DownloadOnly
+-DownloadDirectory DIR` (Windows) to verify without installing. Omitting `CLIO_VERSION`
+selects the latest stable release; older unsigned Mac packages are refused.
+
+The macOS app is ad-hoc signed, not Apple-notarized. A first-launch approval may still
+be needed in System Settings → Privacy & Security → Open Anyway. Neither script
+disables security settings or removes quarantine. Invalid checksums/signatures fail
+before replacing an installed app.
+
+The macOS CI builds a DMG from source and boots its relocated application and packaged
+backend on macOS 14 and 15. The same checks gate release publication. These checks
+validate package integrity and startup, separately from Apple notarization.
+
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/
 live_verification/desktop_lifecycle_proof.py` drives the INSTALLED
 `clio-desktop.exe` over Chrome DevTools Protocol (WebView2 remote debugging)

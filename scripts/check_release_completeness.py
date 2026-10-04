@@ -96,6 +96,8 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     # them breaks the scripted install pathway.
     ("installer script (POSIX)", r"^install\.sh$"),
     ("installer script (PowerShell)", r"^install\.ps1$"),
+    ("desktop installer (macOS)", r"^desktop\.sh$"),
+    ("desktop installer (Windows)", r"^desktop\.ps1$"),
     ("uninstaller script (POSIX)", r"^uninstall\.sh$"),
     ("uninstaller script (PowerShell)", r"^uninstall\.ps1$"),
     ("clio launcher (POSIX)", r"^clio$"),
