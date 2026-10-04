@@ -1,22 +1,30 @@
 ---
-import MobileTableOfContents from '@astrojs/starlight/components/MobileTableOfContents.astro';
-
-const { hasSidebar } = Astro.locals.starlightRoute;
+const { hasSidebar, toc } = Astro.locals.starlightRoute;
 ---
 
 {hasSidebar && (
-	<button class="docs-index md:sl-hidden print:hidden" popovertarget="starlight__sidebar">
-		Docs index
-	</button>
+	<div class:list={['docs-index-bar md:sl-hidden print:hidden', { 'without-toc': !toc }]}>
+		<button class="docs-index" popovertarget="starlight__sidebar">
+			Docs index
+		</button>
+	</div>
 )}
-<MobileTableOfContents />
 
 <style>
-	.docs-index {
+	.docs-index-bar {
 		position: fixed;
-		inset-block-start: calc(var(--sl-nav-height) + 0.5rem);
-		inset-inline-start: 1rem;
+		inset-block-start: var(--sl-nav-height);
+		inset-inline-start: 0;
 		z-index: calc(var(--sl-z-index-toc) + 1);
+		padding: 0.5rem 1rem;
+		height: var(--sl-mobile-toc-height);
+	}
+	.without-toc {
+		inset-inline-end: 0;
+		background: var(--paper);
+		border-block: 1px solid var(--line-control);
+	}
+	.docs-index {
 		height: calc(var(--sl-mobile-toc-height) - 1rem);
 		padding-inline: 0.75rem;
 		border: 1px solid var(--line-control);
@@ -27,6 +35,9 @@ const { hasSidebar } = Astro.locals.starlightRoute;
 		font-weight: 600;
 	}
 	@media (max-width: 49.99rem) {
+		:global(html[data-has-sidebar]:not([data-has-toc])) {
+			--sl-mobile-toc-height: 3rem;
+		}
 		:global(mobile-starlight-toc summary) {
 			padding-inline-start: 8rem;
 		}

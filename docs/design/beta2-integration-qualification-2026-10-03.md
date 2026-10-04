@@ -76,8 +76,6 @@ Raw session messages, run logs and CI diagnostics are preserved locally under
 Full CI is evaluated separately on each final PR head; focused passes do not
 override a failing full-suite check. Existing platform-gated skips are not passes.
 
-## Remaining acceptance boundaries
-
 ## Release follow-up qualification
 
 - Native workflow `37166419334` built the repaired Mac DMG and passed signature
@@ -85,27 +83,40 @@ override a failing full-suite check. Existing platform-gated skips are not passe
   14, 15, and 26. The original bundle mutated its sealed Python resources during
   first startup; bytecode writes are now disabled and the repair fingerprint is
   prepared before signing. Agent CI `37166419290`, Docker, schema and Pages passed
-  at `26902b90`. The final release DMG must pass the same native gate.
+  at `26902b90`. The vector-branding follow-up `a0e5037a` also passed full Agent
+  CI `37168002479`, Mac startup workflow `37168002474`, Docker, schema and Pages.
+  The final release DMG must pass the same native gate.
 - UI follow-up adds the saved **Enable beta updates** preference, instability
   warning, beta-number comparisons, published-release selection and a native
   bridge retaining signature verification and no-downgrade behavior. Local checks
-  passed: 63 focused unit/integration tests, two native endpoint-policy tests,
+  passed: 64 focused unit/integration tests, two native endpoint-policy tests,
   lint, typecheck and production build. Settings persistence and the form/action
   lifecycle passed three browser repetitions each.
+- UI head `61bdde2a` passed complete workspace CI `37168616909`, including browser,
+  accessibility/visual checks, all 43 corpus examples, Windows/Linux native builds
+  and the real native WebView proof. PRs #533 and #534 rebase-promoted it through
+  develop to main `d5edd72b`; the trees match exactly. The Agent and Pages pins use
+  that main commit, tagged UI `v0.11.3-beta.3` without replacing public UI beta 2.
+- The packaged CSP now permits the specific GitHub API origin used by beta
+  metadata checks. A browser regression failed with the old policy, then passed
+  with the packaged policy while showing beta 2 available to a beta-1 Agent.
+  Channel changes and background checks cannot invalidate an active installation.
 - The form regression reproduced loss of typed input on an unchanged legacy
   surface without a part ID. Skipping an unchanged revision fixes the failure
   while retaining rebuilds for actual legacy updates and fresh lifecycles.
 - Header, footer and favicon use the supplied true vector owl. Mobile docs have
-  separate Docs index and On this page controls. Four browser tests passed,
+  separate Docs index and On this page controls. Five browser tests passed,
   covering 360/390/412px viewports, reaching the final sidebar entry, navigation,
-  and checking that home/docs logos contain paths rather than embedded bitmaps.
-  Rendered mobile screenshots were inspected; 27 site unit tests and Astro checks
+  gallery pages without a heading menu, and checking that home/docs logos contain
+  paths rather than embedded bitmaps. The gallery regression reproduced the
+  missing index; the control now lives independently in the shared header.
+  Rendered light/dark mobile screenshots were inspected; 27 site unit tests and Astro checks
   passed (zero errors/warnings; five existing hints).
 - Desktop beta 1 requires one manual Desktop upgrade to obtain channel-aware
   updates. Its hardcoded stable feed cannot be pointed at beta without exposing
   stable users. Drafts remain excluded; beta 2 becomes available after publication.
 
-## Remaining acceptance boundaries (continued)
+## Remaining acceptance boundaries
 
 The third Abaqus demonstration still requires its real source exports. Original
 CHPC deployment and interactive Desktop-exit acceptance have not been reproduced

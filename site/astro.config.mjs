@@ -36,7 +36,6 @@ export default defineConfig({
 				Header: './src/components/starlight/Header.astro',
 				Hero: './src/components/overview/Hero.astro',
 				Footer: './src/components/starlight/Footer.astro',
-				MobileTableOfContents: './src/components/starlight/MobileTableOfContents.astro',
 			},
 			plugins: [starlightLinksValidator({ errorOnLocalLinks: false })],
 			sidebar: [
