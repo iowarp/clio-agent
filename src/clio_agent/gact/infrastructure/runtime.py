@@ -17,7 +17,6 @@ from anyio.to_thread import run_sync
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
-    hand_over_parents,
     persist_created,
     remove_created,
 )
@@ -54,7 +53,9 @@ from clio_agent.gact.infrastructure.server_access import (
     settle_failed_launch,
     store_key,
 )
+from clio_agent.gact.infrastructure.service_observation import parse_observation
 from clio_agent.gact.infrastructure.service_readiness import observe_service, wait_until_ready
+from clio_agent.gact.infrastructure.service_settlement import settle_service
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import (
     InfrastructureTransportRegistry,
@@ -220,6 +221,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             service.configuration = dict(refreshed.configuration)
             service.owned_resources = list(refreshed.owned_resources)
             service.access = refreshed.access
+            service.observation = refreshed.observation
+            service.recommended_variant = refreshed.variant_id
             service.effective_parameters = (
                 list(refreshed.effective_parameters) if service.state == "running" else []
             )
@@ -280,6 +283,15 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 if result.exit_code not in spec.allowed_exit_codes:
                     return "unknown"
+            structured = parse_observation(output)
+            if structured is not None:
+                self.store.update_service(
+                    target_id,
+                    record.service_id,
+                    state=structured.service_state,
+                    observation=structured,
+                )
+                return structured.service_state
             observed = "\n".join(output).casefold()
             state: ServiceState = (
                 "running"
@@ -577,8 +589,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 output,
                 owned,
                 resolved_root=resolved_root_update,
+                retain_record=plan.retain_record,
             )
-            if request.action == "uninstall" or (
+            if request.action in {"uninstall", "delete_data"} or (
                 request.action in {"install", "reinstall"} and not api_key
             ):
                 # Uninstall removes the key; a keyless (shareable) install drops an old one.
@@ -649,6 +662,17 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         adopted server was already running, so it is left alone.
         """
 
+        if plan and plan.failure_cleanup:
+            try:
+                for spec in plan.failure_cleanup:
+                    result = await self._execute(target_id, spec)
+                    if result.exit_code not in spec.allowed_exit_codes:
+                        return (
+                            f"Cleanup incomplete; retained data: {result.stderr or result.stdout}"
+                        )
+                return "Stopped the owned operation; retained its environment, model cache and evidence."
+            except (OSError, RuntimeError) as exc:
+                return f"Cleanup incomplete; retained data: {exc}"
         if created:
 
             async def execute(spec: CommandSpec) -> CommandResult:
@@ -673,84 +697,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             return f"Cleanup failed: {(result.stderr or result.stdout).strip()}"
         return "Cleaned up what this deploy started."
 
-    async def _settle_service(
-        self,
-        service_id: str,
-        request: ServiceActionRequest,
-        connection_port: int | None,
-        output: list[str],
-        owned: list[OwnedResource] | None = None,
-        *,
-        resolved_root: str | None = None,
-    ) -> None:
-        previous = self.store.service(request.target_id, service_id)
-        if request.action == "uninstall":
-            if previous is not None:
-                hand_over_parents(self.store, request.target_id, previous)
-            self.store.delete_service(request.target_id, service_id)
-            return
-        state: ServiceState = previous.state if previous else "unknown"
-        if request.action in {"install", "reinstall", "start"}:
-            state = "running"
-        elif request.action == "stop":
-            state = "stopped"
-        elif request.action == "status" and output:
-            observed = output[-1].strip().casefold()
-            state = (
-                "running"
-                if "running" in observed
-                else "stopped"
-                if "exited" in observed
-                else "unknown"
-            )
-        connection_url = previous.connection_url if previous else None
-        strategy: ConnectionStrategy | None = previous.connection_strategy if previous else None
-        if connection_port and state == "running":
-            try:
-                connection_url, strategy = await self._resolve_connection(
-                    request.target_id,
-                    connection_port,
-                    service_id=service_id,
-                    previous_url=connection_url,
-                    previous_strategy=strategy,
-                    wait_for_direct=request.action in {"install", "reinstall", "start"},
-                )
-            except (OSError, RuntimeError, ValueError):
-                connection_url = previous.connection_url if previous else None
-                strategy = previous.connection_strategy if previous else None
-        record = self.store.put_service(
-            ServiceRecord(
-                id=f"{request.target_id}:{service_id}",
-                service_id=service_id,
-                target_id=request.target_id,
-                variant_id=request.variant_id,
-                # `on_conflict` is this operation's own answer, never a
-                # persisted fact about the service (#1528 review); stripped
-                # here too, defensively, however `request` reached this point.
-                configuration={
-                    k: v
-                    for k, v in request.configuration.items()
-                    if k not in {"on_conflict", "conflict_pid", "conflict_root"}
-                },
-                state=state,
-                connection_url=connection_url,
-                connection_strategy=strategy,
-                owned_resources=owned
-                if owned is not None
-                else (previous.owned_resources if previous else []),
-                access=previous.access if previous else None,
-                # None means "no fresh answer this operation" -- keep whatever
-                # was already recorded; an explicit value (including "") is
-                # this operation's own finding and replaces it.
-                resolved_root=(
-                    resolved_root
-                    if resolved_root is not None
-                    else (previous.resolved_root if previous else "")
-                ),
-            )
-        )
-        if state == "running" and request.action in {"install", "reinstall", "start", "status"}:
-            await self._refresh_effective(request.target_id, record)
+    _settle_service = settle_service
 
     async def _resolve_connection(
         self,

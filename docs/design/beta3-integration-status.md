@@ -134,12 +134,31 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   remains running from this test. This qualifies the model lifecycle through the
   hop, not native inference, provenance deployment or the packaged Desktop bridge.
 
+### Native runtime supervisor checkpoint (October 4)
+
+- Native vLLM and the pinned attention profile use an owned Linux supervisor,
+  separate install/start operations, boot-and-start process identity, private
+  credentials, durable receipts, and explicit removal versus data deletion.
+  Probe activation precedes engine construction; the attention producer does not
+  own persistence. Installation alone never marks attention as verified.
+- The real pinned Flowcept HTTP service exercised this supervisor on homelab:
+  install cancellation/retry, install without starting, HTTP serving, stop,
+  restart, removal, and retained logs/cache/evidence passed. No provenance ingest
+  or inference is claimed by this check. Receipt: `homelab-native-supervisor.json`.
+- The downloaded-model link carries its exact host/path/revision into runtime
+  setup. Browser review confirmed this with the homelab model. Container vLLM
+  binds downloaded model inputs read-only. The full Services redesign remains open.
+- Focused backend regression run: 80 passed. UI native lifecycle tests: 3 passed;
+  existing service/model tests: 42 passed. UI typecheck, full UI lint, and backend
+  file-size checks passed. CI-found composer and cleanup-ledger regressions were
+  repaired and covered locally. Packaged/GPU qualification remains outstanding.
+
 ## Required work still outstanding
 
 1. Finish connected-storage qualification and agent trusted-setup integration. CLIO-owned
    Google/Globus client registrations and redirect URLs have been requested;
    never include secrets in this document or the transcript.
-2. Finish guided model-to-runtime setup, native vLLM, versioned service definitions,
+2. Qualify native vLLM with a real GPU; finish versioned service definitions,
    independent Flowcept/CMF deployment and write/readback verification, pinned
    attention probe activation, receipts, ownership-safe lifecycle controls.
 3. Implement marketplace audit #1627, including scoped identities, safe reload,

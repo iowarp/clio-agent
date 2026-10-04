@@ -65,6 +65,11 @@ from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.native_vllm import (
+    NATIVE_VARIANTS,
+    native_variants,
+    native_vllm_plan,
+)
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.resource_ledger import (
     StepRecorder,
@@ -239,6 +244,8 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
 
     spec = ENGINES[service_id]
     variants: list[ServiceVariant] = []
+    if service_id == "vllm":
+        variants.extend(native_variants(facts))
     native = (
         service_id == "llama_cpp"
         and facts.target_id == "local"
@@ -285,9 +292,20 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
                 else "No usable runtime"
             ),
             options=list(runtime_options),
+            variants=[item.id for item in spec.variants],
         ),
         _field(PORT_FIELD, "Port", str(spec.port)),
     ]
+    if service_id == "vllm":
+        fields.append(
+            ServiceConfigurationField(
+                id="flowcept_settings",
+                label="Flowcept settings on this host",
+                placeholder="/data/provenance/settings.yaml",
+                required=True,
+                variants=["native-cuda-attention"],
+            )
+        )
     return ManagedServiceDefinition(
         id=service_id,
         category="model_runtime",
@@ -431,6 +449,10 @@ def _launch(
     mounts: list[tuple[str, str]] = []
     if spec.engine == "vllm":
         model = _required(configuration, "model")
+        if (ntpath if windows else posixpath).isabs(model):
+            _check_value("model_path", model)
+            mounts.append((model, "/models/downloaded"))
+            model = "/models/downloaded"
         env.append(("HF_HOME", "/cache/huggingface"))
         args = ["--model", model, "--host", host, "--port", str(port), *compiled.flags]
     elif spec.engine == "llama_cpp":
@@ -516,6 +538,19 @@ def build_model_runtime_plan(
     """
 
     spec = ENGINES[service_id]
+    if service_id == "vllm" and variant_id in NATIVE_VARIANTS:
+        directory = configuration.get("storage.service_directory") or _service_dir(
+            spec, facts, target
+        )
+        return native_vllm_plan(
+            action,
+            variant_id,
+            configuration,
+            facts,
+            directory,
+            service_port(service_id, configuration),
+            api_key,
+        )
     if api_key and service_id not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
     if service_id == "llama_cpp" and variant_id == "native-windows-cpu":

@@ -259,6 +259,7 @@ async def test_install_records_everything_it_created_and_uninstall_removes_all_o
         ("parent_directory", f"{HOME}/.local/share/clio-agent/services/ares"),
         ("parent_directory", service_dir),
         ("directory", f"{service_dir}/cache"),
+        ("directory", f"{service_dir}/tmp"),
         ("image", IMAGE),
         ("container", "clio-ollama"),
     }
@@ -368,7 +369,7 @@ async def test_lifecycle_actions_use_the_installed_configuration_not_the_form(
     record = store.service(target_id, "ollama")
     assert record is not None and record.variant_id == "cpu"
     assert record.configuration["model"] == "qwen2.5:0.5b"
-    assert len(record.owned_resources) == 9
+    assert len(record.owned_resources) == 10
 
 
 class _NeverReadyTarget(FakeLinuxTarget):

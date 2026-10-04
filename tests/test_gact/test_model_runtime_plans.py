@@ -101,6 +101,21 @@ def _run(plan_commands: tuple[CommandSpec, ...], program: str) -> CommandSpec:
     )
 
 
+@pytest.mark.parametrize("runtime", ["docker", "podman", "apptainer"])
+def test_vllm_downloaded_model_is_mounted_read_only(runtime: str) -> None:
+    plan = build_driver_plan(
+        service_id="vllm",
+        action="install",
+        variant_id="cpu",
+        configuration={"model": "/data/models/downloaded", "container_runtime": runtime},
+        facts=_facts(runtime),
+    )
+    command = _run(plan.commands, runtime)
+    assert "/data/models/downloaded:/models/downloaded:ro" in command.args
+    assert command.args[command.args.index("--model") + 1] == "/models/downloaded"
+    assert "/data/models/downloaded" not in plan.configuration.get("storage.model_cache", "")
+
+
 def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     plan = build_driver_plan(
         service_id="ollama",

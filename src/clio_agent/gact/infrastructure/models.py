@@ -249,6 +249,7 @@ class ServiceConfigurationField(BaseModel):
     placeholder: str = ""
     required: bool = False
     options: list[str] = Field(default_factory=list)
+    variants: list[str] = Field(default_factory=list)
 
 
 class ServiceVariant(BaseModel):
@@ -301,6 +302,32 @@ class ServiceAccess(BaseModel):
     verified: bool = False
 
 
+class ServiceObservation(BaseModel):
+    """Independent observed capabilities; package installation is never capture proof."""
+
+    definition_version: str = "1"
+    configuration_revision: str = ""
+    phase: Literal["not_installed", "installing", "stopped", "running", "failed", "interrupted"]
+    installed: bool = False
+    running: bool = False
+    serving: bool = False
+    worker_alive: bool = False
+    provenance_ingesting: bool = False
+    attention_verified: bool = False
+    evidence_directory: str = ""
+    error: str | None = None
+    observed_at: float = 0
+
+    @property
+    def service_state(self) -> ServiceState:
+        """Project process state for older clients without claiming readiness."""
+        if self.running:
+            return "running"
+        if self.phase == "not_installed":
+            return "not_installed"
+        return "stopped" if self.installed else "unknown"
+
+
 class ManagedServiceDefinition(BaseModel):
     """Catalog projection for one CLIO-managed service."""
 
@@ -327,6 +354,8 @@ class ManagedServiceDefinition(BaseModel):
     supports_api_key: bool = False
     #: Who can use the installed deployment (absent when nothing is installed).
     access: ServiceAccess | None = None
+    definition_version: str = "1"
+    observation: ServiceObservation | None = None
 
 
 class ManagedServiceCatalog(BaseModel):
@@ -360,6 +389,7 @@ class ServiceRecord(BaseModel):
     #: when set, not the target's, or they miss the process they adopted.
     resolved_root: str = ""
     updated_at: str = Field(default_factory=utc_now)
+    observation: ServiceObservation | None = None
 
 
 class ServiceActionRequest(BaseModel):
@@ -368,7 +398,9 @@ class ServiceActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_id: str = "local"
-    action: Literal["install", "start", "status", "stop", "logs", "reinstall", "uninstall"]
+    action: Literal[
+        "install", "start", "status", "stop", "logs", "reinstall", "uninstall", "delete_data"
+    ]
     variant_id: str
     configuration: dict[str, str] = Field(default_factory=dict)
 

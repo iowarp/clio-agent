@@ -251,6 +251,10 @@ def build_driver_plan(
     definition = definitions.get(service_id)
     if definition is None:
         raise ValueError(f"Unknown managed service {service_id!r}")
+    if action == "delete_data" and not (
+        service_id == "vllm" and variant_id.startswith("native-cuda")
+    ):
+        raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")

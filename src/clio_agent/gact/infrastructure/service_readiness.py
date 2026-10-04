@@ -25,6 +25,7 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.gact.infrastructure.plan import Readiness
 from clio_agent.gact.infrastructure.server_access import request_headers
 from clio_agent.gact.infrastructure.server_parameters import PARAMETER_PREFIX
+from clio_agent.gact.infrastructure.service_observation import parse_observation
 
 Execute = Callable[[CommandSpec], Awaitable[CommandResult]]
 Progress = Callable[[str], None]
@@ -58,6 +59,20 @@ async def wait_until_ready(
     started = time.monotonic()
     while True:
         health = await execute(readiness.health)
+        observed = parse_observation([health.stdout])
+        if observed is not None:
+            if health.exit_code:
+                raise ServerExitedError(health.stderr or "Service observation failed")
+            if getattr(observed, readiness.capability):
+                return
+            if not observed.worker_alive:
+                raise ServerExitedError(
+                    observed.error
+                    or f"{readiness.label} stopped before it was ready. Inspect its logs."
+                )
+            progress(f"Waiting for {readiness.label} ({int(time.monotonic() - started)}s)")
+            await asyncio.sleep(interval)
+            continue
         answer = (health.stdout + health.stderr).casefold()
         if "no_http_client" in answer:
             raise ServerExitedError(
@@ -112,7 +127,7 @@ async def observe_service(
     # RuntimeUnavailableError (runtime_unknown), never passed on as a string.
     runtime = (
         None
-        if record.variant_id == "native-windows-cpu"
+        if record.variant_id.startswith("native-")
         else parse_runtime_name(record.configuration.get(RUNTIME_FIELD, "") or "docker")
     )
     requested = {
@@ -120,7 +135,13 @@ async def observe_service(
         for key, value in record.configuration.items()
         if key.startswith(PARAMETER_PREFIX) and value.strip()
     }
-    variant = "cpu" if record.variant_id == "native-windows-cpu" else record.variant_id
+    variant = (
+        "cpu"
+        if record.variant_id == "native-windows-cpu"
+        else "cuda"
+        if record.variant_id.startswith("native-cuda")
+        else record.variant_id
+    )
     return await observe_effective(
         spec.engine,
         variant,

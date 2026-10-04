@@ -59,6 +59,19 @@ async def shutdown_connected_storage(app: FastAPI) -> None:
         await storage.shutdown()
 
 
+def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
+    """Refresh provider discovery off the request path when enabled for this server."""
+    if not getattr(app.state, "refresh_provider_catalog_on_startup", False):
+        return None
+    from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
+        refresh_subscription_catalogs_at_startup,
+    )
+
+    task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
+    app.state.provider_catalog_startup_task = task
+    return task
+
+
 logger = logging.getLogger(__name__)
 
 
