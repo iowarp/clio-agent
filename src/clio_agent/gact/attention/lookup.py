@@ -11,6 +11,7 @@ from clio_schemas.connected_resources import ContentSelection
 
 from clio_agent.gact.attention.capture import load_capture
 from clio_agent.gact.attention.chat_render import ChatRenderer
+from clio_agent.gact.attention.content_references import message_content_references
 from clio_agent.gact.attention.lm_calls import LmCall
 from clio_agent.gact.attention.profiles import reduce_steps
 from clio_agent.gact.attention.reasons import AttentionUnavailable
@@ -27,6 +28,26 @@ def _resolve_reference(
     if ref.session_id != session_id:
         raise AttentionUnavailable("message_not_found", "reference belongs to another session")
     if ref.selection.kind not in {"text", "whole"} or ref.artifact_ref:
+        message = next((item for item in messages if item.id == ref.message_id), None)
+        reference = (
+            next(
+                (
+                    row["reference"]
+                    for row in message_content_references(message)
+                    if row["reference"]["part_id"] == ref.part_id
+                    and row["reference"]["field"] == ref.field
+                ),
+                None,
+            )
+            if message is not None
+            else None
+        )
+        if reference is None:
+            raise AttentionUnavailable("message_not_found", "content part is not in this session")
+        if reference["content_revision"] != ref.content_revision:
+            raise AttentionUnavailable("content_revision_changed", "media reference changed")
+        if ref.call_id and ref.call_id != reference["call_id"]:
+            raise AttentionUnavailable("selection_not_located", "tool call identity differs")
         raise AttentionUnavailable(
             "content_coordinates_unavailable",
             "image patches, structured rows and artifact bytes need recorded coordinate mappings",
@@ -253,6 +274,7 @@ def lookup_attention(
     cursor: int = 0,
     limit: int = 16,
     lm_call_id: str = "",
+    validate_reference: Callable[[ContentSelection], None] | None = None,
 ) -> dict[str, Any]:
     """Deduplicate references and aggregate once per capture, with explicit gaps.
 
@@ -270,6 +292,8 @@ def lookup_attention(
     unavailable = []
     for ref in unique.values():
         try:
+            if validate_reference is not None:
+                validate_reference(ref)
             text, start, end = _resolve_reference(messages, session_id, ref)
             resolved.append((ref, text, start, end))
         except AttentionUnavailable as exc:

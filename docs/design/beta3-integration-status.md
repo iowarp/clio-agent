@@ -11,9 +11,9 @@ separate from the October 5 Delta qualification with the owner.
 - UI: `external/gact-tui`, branch `codex/beta3-integration`; `9976580f` reconciles
   develop, `9c8c00bb` preserves PR #502 and resolves transcript integration.
 - Schemas: `codex/beta3-integration`, shared contracts commit
-  `e1ac2efbdd7a9e40f0bfee8949a1af6b0611be7b`, based on existing `main`; `develop`
-  was established at that same base for PR #25. Agent and UI pin
-  that exact revision. Version `0.6.0b2` is not published to PyPI.
+  `a64ae3beabb6e57e3d0dc0b674405ac471a76761`, based on existing `main`.
+  PR #25 targets `main`, as confirmed by the owner. Agent and UI pin
+  that exact revision. Version `0.6.0b3` is not published to PyPI.
 - Marketplace: `external/clio-agent-marketplace`, branch
   `codex/beta3-integration`, based on `main`; SPOTTER now uses the same pinned
   attention profiles/reducer and verified local capture files.
@@ -573,13 +573,51 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
   DMG creation failed in `bundle_dmg.sh` (run `37208222403`); startup qualification
   did not run and this head is not packaging-qualified. New heads need fresh CI.
 
+### Media selections, reviewer follow-ups and OAuth checkpoint (October 4)
+
+- A2UI images and table/chart selections enter the existing attention basket through
+  the shared toolbar. The server resolves the actual stored transcript part and binds
+  the selection to the displayed surface revision and definition digest. Changed,
+  deleted, recreated, foreign-source and foreign-session views cannot be substituted.
+  Image boxes account for object-fit letterboxing/cropping. Unsupported bound sources
+  report a refusal. Media without captured coordinate maps remain explicitly unavailable.
+- Numeric region inputs support keyboard/touch selection. Browser review caught and
+  fixed a clipped narrow editor and stale evidence hashes resurrecting cleared selections
+  on responsive remount. The selected image now survives Settings and light/dark changes;
+  the old capture link stays cleared. Retained screenshots: `attention-media-unavailable-light.png`,
+  `attention-image-editor-narrow-light.png`, `attention-image-explanation-narrow-light.png`,
+  `attention-media-narrow-dark.png`. These use real persisted artifacts/surfaces and recorded
+  captures, not live inference or fabricated image attribution.
+- Reviewer conversations now accept follow-ups beside the parent transcript. A fresh,
+  workspace-scoped v3 session read verifies parent ownership and inherits the child's
+  configured model/mode. Identical failed sends retain request IDs/body across panel
+  remounts; credential switches discard in-flight reads and transcript frames. Browser
+  review verified retained drafts and the actual missing-model error; no reviewer
+  inference was performed. Evidence: `spotter-followup-error-light.png` and
+  `spotter-followup-narrow-light.png`.
+- The owner confirmed no OAuth applications exist. Registration and host configuration
+  are documented in `docs/qualification/beta3/oauth-registration.md`; a private loopback
+  callback helper supports the manual browser-return qualification path. Globus now
+  requests its native `offline_access` scope rather than Google's `access_type` option.
+  Real provider sign-in and transfers remain unqualified until registration/consent.
+- Checks: 83 backend attention tests; 48 session route tests; 20 schema/session/OAuth
+  boundary tests; 74 shared-schema tests and canonical export; 54 media/attention UI
+  tests plus 3 ownership/account-switch tests; 8 follow-up/child-panel UI tests; 257 core
+  tests; 34 SPOTTER tests. Recorded CLIO/SPOTTER scores and residual mass match exactly
+  under both presets. Focused mypy, Ruff, UI typecheck and full lint passed.
+- Agent `89225b17` passed packaged macOS build and startup on 14/15/26 in run
+  `37209530499`. Main CI failed a recorded-finding test because its module fixture enabled
+  an optional Flowcept writer absent on CI; that test now explicitly selects the native
+  writer, while replay still reads the recorded Flowcept evidence. Fresh pushed-head CI
+  is required. The earlier DMG failure is not treated as a current packaging pass/fail.
+
 ## Required work still outstanding
 
 1. Finish connected-storage live OAuth qualification. The agent trusted-setup handoff
    is implemented and browser-reviewed. CLIO-owned
-   Google/Globus client registrations and redirect URLs have been requested;
+   Google/Globus client registrations do not exist yet; the registration guide is ready;
    never include secrets in this document or the transcript.
-2. Qualify native vLLM with a real GPU; finish versioned service definitions,
+2. Qualify native vLLM with a real GPU; qualify the implemented versioned service definitions,
    default-build and additional-driver qualification, fresh attention verification,
    and remaining service connection flows. Provenance connect/use/restart is now
    qualified independently and together on the isolated CLIO.
@@ -587,8 +625,8 @@ setup, packaged installation, GPU inference and the remaining deployment gates.
    rollback, interrupted-operation receipts, source configuration/pins and Blueprint
    authoring integration are implemented. HTTP MCP Reload is browser-qualified;
    actual active remote-session fleet replacement and packaged stdio remain open.
-4. Finish image-region/structured A2UI selection producers and reviewer follow-up
-   conversation controls. SPOTTER finding links are now implemented and replayed.
+4. Qualify image-region/structured A2UI selections and reviewer follow-ups during live
+   inference. Producers and conversation controls are implemented and browser-reviewed.
    Shared profiles, local SPOTTER capture inspection, whole-block/media references,
    bidirectional lookup, multi-selection transcript heat, tool details and exact
    capture/profile navigation are implemented. Fresh inference and both demos

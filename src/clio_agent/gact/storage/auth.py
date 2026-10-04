@@ -153,7 +153,7 @@ class StorageAuth:
                 else "https://www.googleapis.com/auth/drive"
             )
             if app.provider == "google_drive"
-            else "urn:globus:auth:scope:transfer.api.globus.org:all"
+            else "urn:globus:auth:scope:transfer.api.globus.org:all offline_access"
         )
         parameters = {
             "client_id": app.client_id,
@@ -166,8 +166,6 @@ class StorageAuth:
         }
         if app.provider == "google_drive":
             parameters.update(access_type="offline", prompt="consent")
-        else:
-            parameters["access_type"] = "offline"
         return {
             "flow_id": identifier,
             "authorization_url": app.authorize_url + "?" + urlencode(parameters),

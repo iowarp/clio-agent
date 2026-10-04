@@ -179,7 +179,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     @app.get("/v1/sessions/{sid}", response_model=Session)
-    async def get_session(sid: str, workspace_id: Optional[str] = None) -> Session:
+    async def get_session(
+        request: Request, sid: str, workspace_id: Optional[str] = None
+    ) -> Session | JSONResponse:
         sess = app.state.sessions.get(sid)
         if sess is None:
             raise HTTPException(
@@ -210,7 +212,11 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return Session(**sess.to_wire())
+        return project_for_request(
+            request,
+            v3=lambda: JSONResponse(content=session_to_v3(sess)),
+            v2=lambda: Session(**sess.to_wire()),
+        )
 
     @app.delete("/v1/sessions/{sid}")
     async def delete_session(sid: str) -> Response:

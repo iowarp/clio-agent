@@ -64,6 +64,9 @@ def main() -> None:
     from tests.test_gact.test_attention.reviewer_fixture import add_reviewer_fixture
 
     add_reviewer_fixture(app, session.id)
+    from tests.test_gact.test_attention.media_fixture import add_media_fixture
+
+    add_media_fixture(app, session.id, root)
     print(f"Replay session: {session.id}", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=18824)
 

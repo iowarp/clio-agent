@@ -347,4 +347,4 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "e1ac2efbdd7a9e40f0bfee8949a1af6b0611be7b" }
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "a64ae3beabb6e57e3d0dc0b674405ac471a76761" }

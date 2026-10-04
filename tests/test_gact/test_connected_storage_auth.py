@@ -39,6 +39,27 @@ def application() -> OAuthApplication:
     )
 
 
+def test_globus_requests_native_offline_scope_for_refresh(tmp_path: Path) -> None:
+    """Globus uses offline_access; Google's access_type parameter is insufficient."""
+    record = source()
+    record.source = record.source.model_copy(update={"provider": "globus"})
+    app = OAuthApplication(
+        "globus",
+        "clio-client",
+        "https://auth.globus.org/v2/web/auth-code",
+        "https://auth.globus.org/v2/oauth2/authorize",
+        "https://auth.globus.org/v2/oauth2/token",
+    )
+    started = StorageAuth(tmp_path / "tokens.json").start(record, app)
+    query = parse_qs(urlparse(started["authorization_url"]).query)
+    assert set(query["scope"][0].split()) == {
+        "urn:globus:auth:scope:transfer.api.globus.org:all",
+        "offline_access",
+    }
+    assert "access_type" not in query
+    assert query["code_challenge_method"] == ["S256"]
+
+
 @pytest.mark.parametrize("changed", ["principal", "host", "clio", "source", "root", "mode"])
 def test_sign_in_cannot_attach_to_a_different_owner_or_source(tmp_path: Path, changed: str) -> None:
     record = source()

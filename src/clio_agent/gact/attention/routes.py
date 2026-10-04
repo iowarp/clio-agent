@@ -35,6 +35,11 @@ from clio_agent.gact.attention.lookup import lookup_attention
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.service import SelectionRequest, explain_selection
 from clio_agent.gact.attention.store import AttentionStore
+from clio_agent.gact.attention.surface_selection import (
+    SurfaceSelectionRequest,
+    bind_surface_selection,
+    validate_surface_reference,
+)
 from clio_agent.provenance_config import attention_capture_enabled
 
 
@@ -159,6 +164,12 @@ def register_attention_routes(app: FastAPI) -> None:
             "next_cursor": cursor + 100 if cursor + 100 < len(rows) else None,
         }
 
+    @app.post("/v1/sessions/{sid}/attention/surfaces/{surface_id}/selection")
+    async def post_surface_selection(
+        sid: str, surface_id: str, body: SurfaceSelectionRequest
+    ) -> dict[str, Any]:
+        return await run_in_threadpool(bind_surface_selection, app, sid, surface_id, body)
+
     @app.get("/v1/sessions/{sid}/attention/availability")
     async def get_attention_availability(sid: str) -> dict[str, Any]:
         try:
@@ -211,6 +222,7 @@ def register_attention_routes(app: FastAPI) -> None:
                 **body.model_dump(exclude={"selections", "profile"}),
                 selections=body.selections,
                 profile=body.profile,
+                validate_reference=lambda ref: validate_surface_reference(app, sid, ref),
             )
 
         try:

@@ -101,6 +101,8 @@ def test_native_alert_emits_verified_inspection_or_disabled_action(
     from clio_agent.gact.types import AgentDef
     from tests.test_gact.test_action_cards import _call_tool_as, _register_fake_child_task
 
+    # This test uses recorded captures, independent of optional live writers.
+    monkeypatch.setenv("CLIO_PROVENANCE_PROVIDERS", "jsonl")
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
