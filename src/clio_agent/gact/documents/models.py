@@ -174,6 +174,7 @@ class DocumentManifest(BaseModel):
     native_open: bool
     embedded_editors: list[EditorProvider] = Field(default_factory=list)
     rendition_formats: list[str] = Field(default_factory=list)
+    pdf_rendition_artifact_id: str = ""
     provenance: dict[str, Any] = Field(default_factory=dict)
 
 

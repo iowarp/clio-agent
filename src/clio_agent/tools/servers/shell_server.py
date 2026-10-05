@@ -249,7 +249,7 @@ def _windows_shell_backend() -> str:
     return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
 
 
-def _shell_argv(command: str) -> list[str]:
+def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = None) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
     if os.name == "nt":
@@ -272,6 +272,10 @@ def _shell_argv(command: str) -> list[str]:
     shell = shutil.which("bash") or shutil.which("sh")
     if shell is None:
         raise RuntimeError("no POSIX shell found on PATH")
+    if prepared_environment:
+        from clio_agent.runtime.execution_environment import posix_command
+
+        command = posix_command(command, prepared_environment)
     return [shell, "-lc", command]
 
 
@@ -499,7 +503,10 @@ async def bash(
         )
     try:
         safe_cwd = _resolve_cwd(cwd)
-        argv = _shell_argv(command)
+        from clio_agent.runtime.execution_environment import shell_environment
+
+        prepared = shell_environment(_spill_root(safe_cwd))
+        argv = _shell_argv(command, prepared_environment=prepared)
     except FilePolicyError as exc:
         return exc.to_result()
     except Exception as exc:  # noqa: BLE001
@@ -522,7 +529,9 @@ async def bash(
         pdeathsig=False,
     )
     run_argv = [confined.command, *confined.args]
-    run_env = {**os.environ, "PYTHONUTF8": "1", **confined.env_overlay}
+    run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
+    # Prepared scratch is already inside this workspace's writable territory.
+    run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
 
     try:
         process = await asyncio.create_subprocess_exec(

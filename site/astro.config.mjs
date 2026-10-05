@@ -51,6 +51,7 @@ export default defineConfig({
 					label: 'Use CLIO',
 					items: [
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
+						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{
 							label: 'Widget gallery',
 							collapsed: false,
