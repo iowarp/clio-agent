@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from clio_agent.gact.a2ui_producer import (
@@ -132,7 +133,7 @@ def resolve_declared_native_tools(
         if (name != "view_image" or supports_vision) and (name != "view_pdf" or supports_pdf)
     ]
     available: dict[str, Any] = {}
-    builders = {
+    builders: dict[str, Callable[[], Any]] = {
         "ask_user": lambda: build_ask_user_tool(agent_def),
         "prepare_document_runtime": build_prepare_document_runtime_tool,
         "prepare_execution_runtime": build_prepare_execution_runtime_tool,
