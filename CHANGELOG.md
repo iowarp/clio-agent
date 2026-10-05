@@ -6,6 +6,44 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.3] — 2026-10-05
+
+### Added
+
+- Default-agent workflows for PDF, Word, PowerPoint and Excel, with document
+  skills, format-native inspection, creation/editing, rendered review and
+  spreadsheet recalculation. Editable outputs and version-bound PDF previews
+  are artifacts accessible from the workspace.
+- Managed Python/uv and Node/pnpm tools are explained in the default-agent
+  prompt. Installation provisions the locked document packages and Office
+  renderer; agent-facing intermediates stay in workspace `.tmp` directories.
+- Connected sources and reusable provider sign-in for local, SSH/SFTP, Google
+  Drive, Globus and GitHub data. Download and link permissions are independent,
+  and selected changes to originals pass through explicit review/publication.
+- Infrastructure and model lifecycle controls, native vLLM preparation,
+  configurable service storage, and independently selected Flowcept/CMF
+  provenance services.
+- Attention profiles and revision-bound evidence selections shared with
+  SPOTTER, transcript navigation and retry-safe reviewer follow-ups.
+- Marketplace identity, blueprint inspection/materialization, staged MCP
+  validation, separate draft/publish/reload actions, rollback and durable receipts.
+- Website guides and recorded file/source/productivity walkthroughs.
+
+### Fixed
+
+- Desktop bundles, remote installers, Docker images and release checks use
+  Python 3.13. Open-ended Python selection no longer chooses Python 3.14, for
+  which the pinned native core has no wheel.
+- Document caches include interpreter and host identity so runtime upgrades
+  cannot reuse an incompatible virtualenv.
+- Legacy source references retain immutable baseline bytes; explicit editable
+  downloads snapshot current content without requiring a remote connection.
+- Generated environment documentation and browser/native navigation checks
+  match the integrated release behavior.
+
+Fresh Delta GPU inference and both OPAL demonstrations remain live acceptance
+work. Recorded replay and numerical parity do not constitute fresh inference.
+
 ## [0.9.5-beta.2] — 2026-10-03
 
 ### Added

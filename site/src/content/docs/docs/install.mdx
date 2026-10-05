@@ -40,14 +40,14 @@ Desktop lets you connect to an existing CLIO service or deploy a separate one. U
 
 ### Install Desktop from a terminal
 
-These commands install the Desktop application and verify its release SHA-256 checksum. They require no Python, uv, or Node installation. To try beta 2 explicitly:
+These commands install the Desktop application and verify its release SHA-256 checksum. They require no Python, uv, or Node installation. To try beta 3 explicitly:
 
 <Tabs syncKey="os">
 <TabItem label="macOS">
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.sh \
-  | CLIO_VERSION=v0.9.5-beta.2 bash
+  | CLIO_VERSION=v0.9.5-beta.3 bash
 ```
 
 Installs into `~/Applications`, retaining a previous app beside it when upgrading. Apple Silicon receives the bundled backend; Intel receives an attach-only app. Set `CLIO_DESKTOP_DIR` to choose another absolute application directory.
@@ -56,7 +56,7 @@ Installs into `~/Applications`, retaining a previous app beside it when upgradin
 <TabItem label="Windows">
 
 ```powershell
-$env:CLIO_VERSION = 'v0.9.5-beta.2'
+$env:CLIO_VERSION = 'v0.9.5-beta.3'
 irm https://raw.githubusercontent.com/iowarp/clio-agent/main/install/desktop.ps1 | iex
 ```
 
