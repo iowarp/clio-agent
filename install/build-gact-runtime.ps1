@@ -36,14 +36,14 @@
   released tree). Defaults to $env:CLIO_AGENT_SOURCE.
 
 .PARAMETER PythonVersion
-  Python minor version. Defaults to $env:CLIO_RUNTIME_PYTHON or "3.12".
+  Python minor version. Defaults to $env:CLIO_RUNTIME_PYTHON or "3.13".
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string] $Out,
   [string] $Ref = $(if ($env:CLIO_REF) { $env:CLIO_REF } else { 'develop' }),
   [string] $Source = $env:CLIO_AGENT_SOURCE,
-  [string] $PythonVersion = $(if ($env:CLIO_RUNTIME_PYTHON) { $env:CLIO_RUNTIME_PYTHON } else { '3.12' })
+  [string] $PythonVersion = $(if ($env:CLIO_RUNTIME_PYTHON) { $env:CLIO_RUNTIME_PYTHON } else { '3.13' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,7 +92,7 @@ $staging = Join-Path $Out '.uv-python-staging'
 Write-Host "[build-gact-runtime] installing standalone CPython $PythonVersion"
 Invoke-Native -Exe $uv.Source -Args @('python', 'install', $PythonVersion, '--install-dir', $staging)
 # The staging dir holds the real versioned dist plus a bare-minor alias
-# (cpython-3.12-... junction -> cpython-3.12.13-...). Copy the real one.
+# (cpython-3.13-... junction -> cpython-3.13.13-...). Copy the real one.
 $dist = Get-ChildItem -LiteralPath $staging -Directory |
   Where-Object { $_.Name -match ('^cpython-' + [regex]::Escape($PythonVersion) + '\.\d') } |
   Select-Object -First 1

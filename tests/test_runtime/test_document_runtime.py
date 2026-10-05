@@ -4,12 +4,30 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from clio_agent.runtime import document_runtime as runtime
 from clio_agent.tools.file_policy import FileAccessPolicy
+
+
+def test_python_upgrade_and_platform_change_use_distinct_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upgrade cannot reuse a virtualenv built for another interpreter or host."""
+    monkeypatch.setattr(runtime.sysconfig, "get_platform", lambda: "win-amd64")
+    monkeypatch.setattr(
+        runtime, "sys", SimpleNamespace(implementation=SimpleNamespace(cache_tag="cpython-312"))
+    )
+    old_cache = runtime._fingerprint()
+    runtime.sys.implementation.cache_tag = "cpython-313"
+    new_cache = runtime._fingerprint()
+    assert new_cache != old_cache
+    assert runtime._fingerprint() == new_cache
+    monkeypatch.setattr(runtime.sysconfig, "get_platform", lambda: "linux-x86_64")
+    assert runtime._fingerprint() != new_cache
 
 
 def test_missing_uv_reports_execution_host_failure(

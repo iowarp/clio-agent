@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libcairo2 libx11-6 libxext6 libxinerama1 libsm6 libice6 \
     libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0 libx11-xcb1 \

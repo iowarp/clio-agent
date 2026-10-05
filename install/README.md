@@ -49,7 +49,7 @@ runtime-info ndp geo pandas plot`; the released pin does not provide that contra
 ### Prerequisites (release mode)
 
 - `curl` (Linux/macOS) / `Invoke-WebRequest` (PowerShell — built in)
-- `uv` (recommended) **or** Python 3.12+ with `pip`
+- `uv` (recommended) **or** Python 3.13 with `pip`
 
 That's it — no `git`, no `go`.
 
@@ -64,7 +64,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.13 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
 clio-agent serve
 ```
 

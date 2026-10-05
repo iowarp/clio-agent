@@ -39,11 +39,11 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
 
     expected_commands = {
         "install/install.sh": (
-            "uv sync --extra argonne",
+            "uv sync --python 3.13 --extra argonne",
             '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync')",
+            "RunNative uv @('sync', '--python', '3.13')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
@@ -114,7 +114,7 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
     smoke_step = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
-    smoke = workflow.index("uv tool install --python 3.12 --no-cache", smoke_step)
+    smoke = workflow.index("uv tool install --python 3.13 --no-cache", smoke_step)
     version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
     publish = workflow.index("run: uv publish", version_check)
 
@@ -233,7 +233,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
-    registry_install = workflow.index("uv tool install --python 3.12 --no-cache", registry_job)
+    registry_install = workflow.index("uv tool install --python 3.13 --no-cache", registry_job)
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
@@ -248,7 +248,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     """User-facing registry installs enable the package's pinned prereleases."""
 
     command = (
-        f"uv tool install --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
+        f"uv tool install --python 3.13 --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
         f"--with {EXPECTED_FASTMCP_SLIM} "
         f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={DOCUMENTED_VERSION}"
     )
@@ -261,7 +261,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
+        f"uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
     ) in _text("README.md")
 
 
