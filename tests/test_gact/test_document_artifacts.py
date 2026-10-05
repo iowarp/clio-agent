@@ -217,7 +217,7 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
     _docx(document)
 
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
-        _workspace_id, session_id = _workspace_session(client, root)
+        workspace_id, session_id = _workspace_session(client, root)
         first = _pin(client, session_id, document.name)
         created = client.post(
             f"/v1/artifacts/{first['artifact_id']}/working-copies",
@@ -229,6 +229,27 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
         )
         assert created.status_code == 200, created.text
         working_copy = created.json()
+        editable_path = Path(working_copy["path"])
+        assert editable_path.is_relative_to(root / "artifacts" / "document-working-copies")
+        listing = client.get(
+            f"/v1/workspaces/{workspace_id}/files?include_hidden=true&exclude_service_storage=true"
+        ).json()
+        assert str(editable_path.relative_to(root)) in {row["path"] for row in listing["entries"]}
+        from clio_agent import paths
+        from clio_agent.gact.documents.store import DocumentStore
+
+        manifest = (
+            paths.workspace_agent_dir(root)
+            / "documents"
+            / "working-copies"
+            / working_copy["id"]
+            / "manifest.json"
+        )
+        assert manifest.is_file()
+        assert not (editable_path.parent / "manifest.json").exists()
+        restored = DocumentStore(cast(FastAPI, client.app)).get_working_copy(working_copy["id"])
+        assert restored is not None
+        assert restored.path == working_copy["path"]
         _docx(Path(working_copy["path"]), "@clio revise the title")
         updated = get_document_store(cast(FastAPI, client.app)).checkpoint(working_copy["id"])
 

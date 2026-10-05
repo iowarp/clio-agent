@@ -13,6 +13,11 @@ from clio_agent.gact.a2ui_producer import (
 )
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.ask_user_tool import build_ask_user_tool
+from clio_agent.gact.document_tools import (
+    build_prepare_document_runtime_tool,
+    build_prepare_document_tool,
+    build_prepare_execution_runtime_tool,
+)
 from clio_agent.gact.memory_tools import (
     build_memory_context_frame_tool,
     build_memory_search_tool,
@@ -38,6 +43,9 @@ DECLARABLE_NATIVE_TOOLS: frozenset[str] = frozenset(
         "memory_read_context_frame",
         "view_image",
         "view_pdf",
+        "prepare_document_runtime",
+        "prepare_execution_runtime",
+        "prepare_document",
     }
 )
 
@@ -126,6 +134,9 @@ def resolve_declared_native_tools(
     available: dict[str, Any] = {}
     builders = {
         "ask_user": lambda: build_ask_user_tool(agent_def),
+        "prepare_document_runtime": build_prepare_document_runtime_tool,
+        "prepare_execution_runtime": build_prepare_execution_runtime_tool,
+        "prepare_document": build_prepare_document_tool,
         "create_a2ui_surface": build_create_a2ui_surface_tool,
         "update_a2ui_components": build_update_a2ui_components_tool,
         "update_a2ui_data_model": build_update_a2ui_data_model_tool,

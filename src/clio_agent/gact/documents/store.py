@@ -79,8 +79,8 @@ def _safe_filename(name: str) -> str:
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON via tmp+rename in the same directory, long-path-safe on win32.
 
-    A working-copy manifest lives under the workspace root's ``.clio/agent/
-    documents/working-copies/<id>/`` -- deep enough on a long workspace root
+    A working-copy manifest lives in canonical workspace state under
+    ``documents/working-copies/<id>/`` -- deep enough on a long state root
     to exceed Windows' 260-character ``MAX_PATH``, so every OS call here
     routes through :func:`win_extended_path` (a no-op off win32).
     """
@@ -193,7 +193,9 @@ class DocumentStore:
                         )
             working_copy_id = _new_id("docwc")
             root = self._workspace_root(workspace_id)
-            workdir = self._documents_root(root) / "working-copies" / working_copy_id
+            workdir = (root / "artifacts" / "document-working-copies" / working_copy_id).resolve()
+            if not workdir.is_relative_to(root):
+                raise DocumentStoreError("Document working copy escapes the active workspace")
             os.makedirs(win_extended_path(workdir), exist_ok=False)
             target = workdir / _safe_filename(record.name)
             self._copy_verified_version(root, version, target)
@@ -590,7 +592,8 @@ class DocumentStore:
             self._start_monitor()
 
     def _persist_working_copy(self, row: DocumentWorkingCopy) -> None:
-        path = Path(row.path).parent / "manifest.json"
+        root = self._workspace_root(row.workspace_id)
+        path = self._documents_root(root) / "working-copies" / row.id / "manifest.json"
         _atomic_json(path, row.model_dump(mode="json"))
 
     def _replace_working_copy(self, row: DocumentWorkingCopy) -> None:

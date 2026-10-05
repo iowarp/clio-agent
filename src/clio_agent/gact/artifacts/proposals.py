@@ -159,6 +159,7 @@ class Proposal:
     path: str = ""
     content: str = ""
     annotation: str = ""
+    pdf_preview: bool | None = None
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "Proposal":
@@ -177,6 +178,9 @@ class Proposal:
             path=str(raw.get("path") or "").strip(),
             content=content if isinstance(content, str) else "",
             annotation=str(raw.get("annotation") or "").strip(),
+            pdf_preview=raw.get("pdf_preview")
+            if isinstance(raw.get("pdf_preview"), bool)
+            else None,
         )
 
 

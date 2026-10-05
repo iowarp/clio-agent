@@ -155,6 +155,10 @@ def mime_for(version: ArtifactVersion, name: str) -> str:
         suffix = lowered[dot:]
         if suffix in _MIME_BY_SUFFIX:
             return _MIME_BY_SUFFIX[suffix]
+    from clio_agent.gact.documents.profiles import document_format, supported_extensions
+
+    if dot != -1 and lowered[dot:] in supported_extensions():
+        return document_format(name).mime_type
     return _MIME_BY_KIND.get(version.kind, "application/octet-stream")
 
 

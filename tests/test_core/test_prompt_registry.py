@@ -42,6 +42,17 @@ def test_builtin_chat_shows_generated_visual_artifacts_in_a2ui() -> None:
     assert "Reuse that image view for revisions" in prompt
 
 
+def test_default_agent_is_told_about_managed_execution_and_document_skills() -> None:
+    prompt = builtin_prompt_definitions()["clio.chat"].profiles["default"].text
+    assert "prepare_execution_runtime" in prompt
+    assert "Use uv for Python execution" in prompt
+    assert "pnpm for" in prompt
+    assert "load the relevant `work-with-pdfs`" in prompt
+    assert "work-with-word" in prompt
+    assert "work-with-presentations" in prompt
+    assert "work-with-spreadsheets" in prompt
+
+
 def test_external_prompt_overrides_builtin_profile(tmp_path: Path) -> None:
     root = tmp_path / "prompts"
     root.mkdir()

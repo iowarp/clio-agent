@@ -33,6 +33,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         annotation: str = "",
         artifacts: Optional[list[dict[str, Any]]] = None,
         used: Optional[list[str]] = None,
+        pdf_preview: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Register a session output as an artifact (model contract lives in the dspy ``desc``).
 
@@ -69,7 +70,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             annotation=annotation,
             artifacts=artifacts,
         )
-        return promote_proposals(
+        result = promote_proposals(
             app,
             sid,
             proposals,
@@ -78,6 +79,46 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             trace_id=_ctx.active_trace_id(),
             agent_id=agent_id,
         )
+        if pdf_preview is not False or any(proposal.pdf_preview is True for proposal in proposals):
+            from clio_agent.gact.artifacts.registry import get_registry
+            from clio_agent.gact.documents.profiles import document_format
+            from clio_agent.gact.documents.renditions import RenditionError, render_pdf
+
+            previews: list[dict[str, Any]] = []
+            for proposal, item in zip(proposals, result["artifacts"], strict=False):
+                preview_option = (
+                    proposal.pdf_preview if proposal.pdf_preview is not None else pdf_preview
+                )
+                if preview_option is False:
+                    continue
+                if not item.get("accepted"):
+                    continue
+                found = get_registry(app).get_by_artifact_id(item["artifact_id"])
+                if found is None:
+                    continue
+                record, version = found
+                format_row = document_format(record.name)
+                if "pdf" not in format_row.rendition_formats:
+                    continue
+                if preview_option is None and not format_row.profile.startswith(("ooxml-", "odf-")):
+                    continue
+                try:
+                    rendered = render_pdf(app, sid, record, version)
+                except RenditionError as exc:
+                    previews.append({"source_artifact_id": version.artifact_id, "error": str(exc)})
+                else:
+                    previews.append(
+                        {
+                            "source_artifact_id": version.artifact_id,
+                            "artifact_id": rendered.version.artifact_id,
+                            "name": rendered.record.name,
+                            "sha256": rendered.version.sha256,
+                            "converter": rendered.converter,
+                            "path": str(rendered.workspace_path),
+                        }
+                    )
+            result["pdf_previews"] = previews
+        return result
 
     # Declared "chip": normal tool_call/tool_result parts PLUS its resource_link
     # chip, appended at turn finalize — adornment, never a call-row replacement.
@@ -104,12 +145,23 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "FROM via used=[...] (paths, artifact ids, an uploaded attachment's "
             "res_... id or its returned working-copy path, "
             "and/or exact source URLs) so its lineage graph "
-            "shows its real inputs. Returns each record on acceptance, or a typed rejection reason "
+            "shows its real inputs. "
+            "Word, PowerPoint and Excel deliverables automatically get a version-bound "
+            "PDF artifact for the Clio viewer. Set pdf_preview=false to omit it, or "
+            "pdf_preview=true to request a preview for another supported document format. "
+            "In a batch, each item's pdf_preview overrides the call's default. "
+            "A missing converter is reported in pdf_previews without discarding the source. "
+            "Returns each accepted record or a typed rejection reason "
             "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
             "can correct and retry. Nothing is auto-registered; the artifact exists "
             "only because you called this."
         ),
         args={
+            "pdf_preview": {
+                "type": ["boolean", "null"],
+                "default": None,
+                "description": "Office previews are automatic; false omits them, true requests any supported preview.",
+            },
             "name": {
                 "type": "string",
                 "description": (
@@ -135,7 +187,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             },
             "artifacts": {
                 "type": "array",
-                "description": "Batch: a list of {name,kind,path|content,annotation} proposals.",
+                "description": "Batch: {name,kind,path|content,annotation,pdf_preview?} proposals. Each item's boolean pdf_preview overrides the call default; omitted or null inherits it.",
             },
             "used": {
                 "type": "array",
