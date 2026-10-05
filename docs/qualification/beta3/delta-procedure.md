@@ -11,8 +11,9 @@ beta 2. The branch and historical check inventory is in
 - The owner supplies the Delta allocation, compute-node name, SSH route and permitted
   persistent storage location. Allocation stays external to CLIO. Check its expiry
   before downloads and inference; record job/node identities in the evidence receipt.
-- Google and Globus CLIO applications do not exist yet. Complete
-  [registration](oauth-registration.md) before claiming browser sign-in qualification.
+- Google, Globus and GitHub desktop application registrations are bundled. Complete
+  live user consent and source-access qualification before claiming browser sign-in acceptance;
+  [registration](oauth-registration.md) explains the provider-specific requirements.
   An explicit desktop-folder transfer or SFTP materialization can prepare the OPAL
   data meanwhile; it does not count as a Drive/Globus acceptance pass.
 - Use a model revision that fits the actual GPU and the pinned attention profile.

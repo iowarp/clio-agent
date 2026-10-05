@@ -1,7 +1,30 @@
 # Beta 3 implementation and qualification
 
-This is an implementation checkpoint, **not release approval**. Publication is
-separate from the October 5 Delta qualification with the owner.
+The checkpoint below preserves the earlier integration history. On October 5 the
+owner requested publication of beta 3 before a fresh Delta allocation, superseding
+the checkpoint's publication hold. Fresh GPU inference and both OPAL demonstrations
+remain live acceptance work after publication.
+
+## October 5 release integration
+
+- PDF/Word/PowerPoint/Excel default-agent skills, editable artifacts and saved PDF
+  previews are integrated with the recorded Working with files website walkthroughs.
+  Detailed document validation is in [document-runtime.md](../document-runtime.md).
+- Managed Desktop, remote/source installer and Docker runtimes use Python 3.13.
+  Bundled startup isolates its imports from host user packages. A real relocated
+  Windows bundle initialized the native ARC store and served `/v1/capabilities`.
+  The source backend also reports Python 3.13.14 and Agent 0.9.5b3.
+- Marketplace 0.6.11 is published after PRs #87/#88. Schemas 0.6.0b3 is published
+  on PyPI after PRs #25/#26; the Agent pins its released main commit. Their merged
+  campaign branches are deleted while the checkouts and evidence are retained.
+- Google/Globus/GitHub desktop application registrations are present. Their user
+  consent, provider writes and remaining source/transport live qualification are
+  separate from publishing application registration metadata.
+- Native ARC persistence passed. The pinned clio-core 2.2.1 wheels omit the optional
+  search indexer; indexed segment search reports that upstream packaging limitation.
+
+The branch names, source pins and unpublished-package statements below describe
+the historical checkpoint, rather than the current release integration.
 
 ## Branches and preserved work
 

@@ -45,6 +45,8 @@ TUI/HTTP surface aren't tracked here.
 
 Fresh Delta GPU inference and both OPAL demonstrations remain live acceptance
 work. Recorded replay and numerical parity do not constitute fresh inference.
+The pinned clio-core 2.2.1 wheels omit the optional search indexer. ARC persistence
+works; indexed segment searches report the missing-indexer limitation.
 
 ## [0.9.5-beta.2] — 2026-10-03
 
