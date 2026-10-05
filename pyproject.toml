@@ -52,7 +52,7 @@ dependencies = [
     # never an upper bound. The backend gates new models by client version, so
     # runtimes update this in place past the lock from the provider panel, and
     # the provider-sdk-bump workflow moves the floor + lock weekly.
-    "openai-codex-cli-bin>=0.157.1",
+    "openai-codex-cli-bin>=0.160.0",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
@@ -196,7 +196,7 @@ claude-code = [
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound; updated in place from the provider panel and bumped
     # weekly by the provider-sdk-bump workflow.
-    "claude-agent-sdk>=0.2.156",
+    "claude-agent-sdk>=0.2.159",
 ]
 
 flowcept = [
