@@ -174,7 +174,10 @@ from clio_agent.gact.app import build_app
 # 326 -> 327: durable connected-CLIO marketplace operation history.
 # 327 -> 328: exact transcript content references for attention selection.
 # 328 -> 329: revision-bound A2UI image/structured content selection.
-EXPECTED_ROUTE_METHOD_PAIRS = 329
+# 329 -> 346 (beta-3 document integration): +17 document manifest/rendition,
+# review, working-copy and editor method pairs, all owned by routes/documents.py.
+# The integration inherited the infrastructure fingerprint without this surface.
+EXPECTED_ROUTE_METHOD_PAIRS = 346
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -207,7 +210,14 @@ def test_build_app_registers_expected_route_count() -> None:
     from starlette.routing import Route  # noqa: PLC0415
 
     app = build_app()
-    pairs = sum(len(r.methods or ()) for r in app.routes if isinstance(r, Route))
+    route_pairs = [
+        (route.path, method)
+        for route in app.routes
+        if isinstance(route, Route)
+        for method in route.methods or ()
+    ]
+    assert len(set(route_pairs)) == len(route_pairs), "duplicate (route, method) registrations"
+    pairs = len(route_pairs)
 
     assert pairs == EXPECTED_ROUTE_METHOD_PAIRS, (
         f"build_app() registered {pairs} (route, method) pairs, expected "
