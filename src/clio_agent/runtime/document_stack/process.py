@@ -34,7 +34,7 @@ def run(
     """Run argv without a shell and return stdout, or a bounded diagnostic."""
     flags: dict[str, Any] = {}
     if os.name == "nt":
-        flags["creationflags"] = subprocess.CREATE_NO_WINDOW
+        flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
         process = subprocess.Popen(
             command,
