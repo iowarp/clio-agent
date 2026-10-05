@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import globus_sdk
 import httpx
 import pytest
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner
@@ -79,11 +80,17 @@ def test_drive_upload_destination_never_receives_token_on_untrusted_origin(tmp_p
 class GlobusFixture:
     """A test transport preserving the real SDK's transfer payload and native task semantics."""
 
-    def __init__(self) -> None:
+    def __init__(self, mapped_root: Path) -> None:
+        self.mapped_root = mapped_root
         self.requests: list[dict[str, Any]] = []
         self.fail_first = True
         self.status = "ACTIVE"
         self.cancelled: list[str] = []
+
+    def operation_ls(self, endpoint: str, *, path: str) -> list[dict[str, str]]:
+        assert endpoint == "22222222-2222-4222-8222-222222222222"
+        local = self.mapped_root / path.removeprefix("/mapped/")
+        return [{"name": item.name, "type": "file"} for item in local.iterdir()]
 
     def get_submission_id(self) -> dict[str, str]:
         return {"value": "unique-submission"}
@@ -103,7 +110,10 @@ class GlobusFixture:
         self.cancelled.append(identifier)
 
 
-def test_globus_lost_submission_and_restart_reuse_the_native_job(tmp_path: Path) -> None:
+def test_globus_lost_submission_and_restart_reuse_the_native_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(globus_sdk.LocalGlobusConnectPersonal, "endpoint_id", None)
     store = SourceStore(tmp_path / "source-data")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -127,7 +137,7 @@ def test_globus_lost_submission_and_restart_reuse_the_native_job(tmp_path: Path)
     )
     store.put("source", record.source.id, record)
     operation = store.begin_operation(record.source.id, "materialize")
-    client = GlobusFixture()
+    client = GlobusFixture(tmp_path)
     adapter = GlobusSource(record, "private-test-token", client=client)
     with pytest.raises(TimeoutError):
         adapter.submit(store, operation)

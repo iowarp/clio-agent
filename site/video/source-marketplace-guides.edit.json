@@ -1,0 +1,308 @@
+{
+  "schema": 1,
+  "format": "screenshot-walkthrough",
+  "size": [
+    1200,
+    800
+  ],
+  "fps": 24,
+  "background": "#f3f8fa",
+  "font": "C:/Windows/Fonts/segoeui.ttf",
+  "clips": [
+    {
+      "name": "clio-guide-attach",
+      "shots": [
+        {
+          "source": "07-context-entry.jpg",
+          "crop": [
+            324,
+            285,
+            650,
+            215
+          ],
+          "seconds": 5,
+          "caption": "Open + and choose Attach to bring in new material."
+        },
+        {
+          "source": "08-attach-overview.jpg",
+          "crop": [
+            304,
+            78,
+            672,
+            564
+          ],
+          "seconds": 6,
+          "caption": "Choose files or a folder. Or connect a data source."
+        },
+        {
+          "source": "09-saved-sources.jpg",
+          "crop": [
+            312,
+            548,
+            656,
+            114
+          ],
+          "seconds": 5,
+          "caption": "Expand Your sources and open the folder you want to use."
+        },
+        {
+          "source": "10-mapping-publish-later.jpg",
+          "crop": [
+            312,
+            320,
+            640,
+            324
+          ],
+          "seconds": 7,
+          "caption": "Download an editable copy: changes stay in CLIO."
+        },
+        {
+          "source": "12-downloaded-attachment.jpg",
+          "crop": [
+            316,
+            267,
+            925,
+            203
+          ],
+          "seconds": 6,
+          "caption": "The folder is attached. Add your request, then send."
+        }
+      ]
+    },
+    {
+      "name": "clio-guide-reference",
+      "shots": [
+        {
+          "source": "16-reference-search-clean.jpg",
+          "crop": [
+            326,
+            199,
+            914,
+            239
+          ],
+          "seconds": 6,
+          "caption": "Type @ and a name to find existing workspace material."
+        },
+        {
+          "source": "17-reference-chip.jpg",
+          "crop": [
+            316,
+            300,
+            925,
+            138
+          ],
+          "seconds": 5,
+          "caption": "Choose a result. Its reference joins your draft."
+        },
+        {
+          "source": "18-reference-open.jpg",
+          "crop": [
+            288,
+            205,
+            986,
+            420
+          ],
+          "seconds": 7,
+          "caption": "Click the reference to open the file before sending."
+        }
+      ]
+    },
+    {
+      "name": "clio-guide-mapping",
+      "shots": [
+        {
+          "source": "34-mapping-read.jpg",
+          "crop": [
+            312,
+            132,
+            640,
+            415
+          ],
+          "seconds": 7,
+          "caption": "Read-only links let you use files without changing them."
+        },
+        {
+          "source": "35-mapping-stage.jpg",
+          "crop": [
+            312,
+            132,
+            640,
+            415
+          ],
+          "seconds": 7,
+          "caption": "Edit locally, then review and publish when ready."
+        },
+        {
+          "source": "33-warning-complete.jpg",
+          "crop": [
+            312,
+            132,
+            640,
+            415
+          ],
+          "seconds": 8,
+          "caption": "Update originals on save sends edits back. Read the warning."
+        }
+      ]
+    },
+    {
+      "name": "clio-guide-marketplace-browse",
+      "shots": [
+        {
+          "source": "38-installed-search-focused.jpg",
+          "crop": [
+            318,
+            230,
+            916,
+            346
+          ],
+          "seconds": 6,
+          "caption": "Search Installed. Filter or sort to find the right agent."
+        },
+        {
+          "source": "23-blueprint-details.jpg",
+          "crop": [
+            304,
+            102,
+            672,
+            516
+          ],
+          "seconds": 7,
+          "caption": "Open Details for its purpose, services, and requirements."
+        },
+        {
+          "source": "24-blueprint-instructions.jpg",
+          "crop": [
+            304,
+            230,
+            672,
+            260
+          ],
+          "seconds": 6,
+          "caption": "Read the instructions before choosing the blueprint."
+        }
+      ]
+    },
+    {
+      "name": "clio-guide-marketplace-install",
+      "shots": [
+        {
+          "source": "28-add-workspace-marketplace.jpg",
+          "crop": [
+            352,
+            138,
+            576,
+            443
+          ],
+          "seconds": 7,
+          "caption": "Choose a collection and who can use it. Then add it."
+        },
+        {
+          "source": "29-marketplace-installed.jpg",
+          "crop": [
+            324,
+            326,
+            894,
+            336
+          ],
+          "seconds": 6,
+          "caption": "In that workspace, check Ready and the installed count."
+        },
+        {
+          "source": "36-marketplace-updated.jpg",
+          "crop": [
+            324,
+            326,
+            894,
+            336
+          ],
+          "seconds": 6,
+          "caption": "After Reload, the installed copy is now version 1.0.1."
+        },
+        {
+          "source": "37-installed-updated.jpg",
+          "crop": [
+            318,
+            36,
+            916,
+            544
+          ],
+          "seconds": 6,
+          "caption": "Find the installed blueprint, then use it in a new session."
+        }
+      ]
+    }
+  ],
+  "stills": [
+    {
+      "name": "guide-context-menu",
+      "source": "07-context-entry.jpg",
+      "crop": [
+        324,
+        285,
+        650,
+        215
+      ]
+    },
+    {
+      "name": "guide-connect",
+      "source": "08-attach-overview.jpg",
+      "crop": [
+        304,
+        78,
+        672,
+        564
+      ]
+    },
+    {
+      "name": "guide-link-warning",
+      "source": "33-warning-complete.jpg",
+      "crop": [
+        312,
+        132,
+        640,
+        415
+      ]
+    },
+    {
+      "name": "guide-source-management",
+      "source": "19-source-management.jpg",
+      "crop": [
+        304,
+        242,
+        672,
+        236
+      ]
+    },
+    {
+      "name": "guide-remove-source",
+      "source": "20-remove-source-explanation.jpg",
+      "crop": [
+        440,
+        258,
+        400,
+        205
+      ]
+    },
+    {
+      "name": "guide-marketplace-scope",
+      "source": "37-installed-updated.jpg",
+      "crop": [
+        318,
+        36,
+        916,
+        544
+      ]
+    },
+    {
+      "name": "guide-marketplace-failure",
+      "source": "25-marketplace-attention.jpg",
+      "crop": [
+        322,
+        340,
+        924,
+        310
+      ]
+    }
+  ]
+}

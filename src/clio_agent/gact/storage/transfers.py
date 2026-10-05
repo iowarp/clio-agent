@@ -78,8 +78,10 @@ def materialize(
     are removed; previous manifests and workspace copies remain available.
     """
     source = record.source
-    if source.mode == "write_enabled":
-        raise ValueError("Write-enabled folders are used directly, not synchronized")
+    if operation.selected_paths is not None:
+        from clio_agent.gact.storage.downloads import SelectedDownload
+
+        adapter = SelectedDownload(store, record, adapter, operation.selected_paths)
     owner_root = store.root / source.id
     owner_root.mkdir(parents=True, exist_ok=True)
     stage = owner_root / ("stage-" + operation.id)
@@ -94,10 +96,10 @@ def materialize(
         revision = snapshot_revision(entries)
         total = sum(row.size for row in entries if row.kind == "file")
         store.update_operation(operation.id, bytes_total=total)
-        required = total * (2 if source.mode == "working_copy" else 1)
+        required = total * (2 if not record.download_read_only else 1)
         if shutil.disk_usage(owner_root).free < required:
             raise ValueError("Insufficient capacity for the source baseline and working copy")
-        if source.mode == "working_copy" and shutil.disk_usage(workspace_root).free < total:
+        if not record.download_read_only and shutil.disk_usage(workspace_root).free < total:
             raise ValueError("Insufficient workspace capacity for the working copy")
         stage.mkdir()
         done = 0
@@ -117,18 +119,26 @@ def materialize(
                 continue
             os.makedirs(win_extended_path(destination.parent), exist_ok=True)
             digest = hashlib.sha256()
+            file_bytes = 0
             with (
                 adapter.open_read(entry) as reader,
                 open(win_extended_path(destination), "xb") as writer,
             ):
                 while chunk := reader.read(1024 * 1024):
                     check_cancel(store, operation.id)
+                    file_bytes += len(chunk)
+                    if source.provider == "globus" and file_bytes > entry.size:
+                        raise ValueError(
+                            "Source file size changed during transfer; retry the transfer"
+                        )
                     writer.write(chunk)
                     digest.update(chunk)
                     done += len(chunk)
                     store.update_operation(operation.id, bytes_done=done)
                 writer.flush()
                 os.fsync(writer.fileno())
+            if source.provider == "globus" and file_bytes != entry.size:
+                raise ValueError("Source file was truncated during transfer; retry the transfer")
             hashes[entry.path] = digest.hexdigest()
             if entry.sha256 and hashes[entry.path] != entry.sha256:
                 raise ValueError("Source bytes changed during transfer; refresh to try again")
@@ -142,7 +152,7 @@ def materialize(
             id=baseline_id, source_id=source.id, revision=revision, entries=entries, hashes=hashes
         )
         store.put("manifest", baseline_id, manifest)
-        if source.mode == "working_copy":
+        if not record.download_read_only:
             # Stable opaque directory names avoid label renames moving users' files.
             destination = workspace_root / "connected-data" / source.id
             if destination.exists():

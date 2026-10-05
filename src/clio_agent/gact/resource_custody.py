@@ -8,6 +8,7 @@ available to messages, previews, or tools.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import logging
@@ -139,6 +140,7 @@ class ResourceRecord(BaseModel):
     id: str
     workspace_id: str
     client_upload_id: str = ""
+    pending_attachment: bool = False
     revision: int = 1
     name: str
     claimed_mime: str = ""
@@ -246,6 +248,7 @@ class ResourceStore:
         self._index_path = root / "resources.json"
         self._lock = threading.RLock()
         self._records: dict[str, ResourceRecord] = {}
+        self._discarded_uploads: set[str] = set()
         self.load_degradation: dict[str, str] | None = None
         self._load()
 
@@ -254,6 +257,7 @@ class ResourceStore:
             return
         try:
             payload = json.loads(self._index_path.read_text(encoding="utf-8"))
+            self._discarded_uploads = set(payload.get("discarded_uploads", []))
             loaded: dict[str, ResourceRecord] = {}
             for row in payload.get("resources", []):
                 record = ResourceRecord(**row)
@@ -272,7 +276,10 @@ class ResourceStore:
     def _flush_locked(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         temp = self._index_path.with_suffix(".json.tmp")
-        payload = {"resources": [row.model_dump() for row in self._records.values()]}
+        payload = {
+            "resources": [row.model_dump() for row in self._records.values()],
+            "discarded_uploads": sorted(self._discarded_uploads),
+        }
         temp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         os.replace(temp, self._index_path)
 
@@ -297,6 +304,7 @@ class ResourceStore:
         declared_size: int,
         claimed_mime: str = "",
         client_upload_id: str = "",
+        pending_attachment: bool = False,
     ) -> tuple[ResourceRecord, bool]:
         """Create an upload or resume the record for a stable client upload key."""
 
@@ -315,6 +323,8 @@ class ResourceStore:
             raise ValueError("client_upload_id is invalid")
         with self._lock:
             if normalized_upload_id:
+                if workspace_id + "\0" + normalized_upload_id in self._discarded_uploads:
+                    raise ValueError("This attachment was removed; choose the file again")
                 existing = next(
                     (
                         row
@@ -340,6 +350,7 @@ class ResourceStore:
                 id="res_" + uuid.uuid4().hex,
                 workspace_id=workspace_id,
                 client_upload_id=normalized_upload_id,
+                pending_attachment=pending_attachment,
                 name=safe_name,
                 declared_size=declared_size,
                 claimed_mime=normalized_mime,
@@ -546,7 +557,37 @@ class ResourceStore:
                 raise
             return copied.model_copy(deep=True)
 
-    def delete(self, workspace_id: str, resource_id: str) -> bool:
+    def retain_attachments(self, identifiers: set[str]) -> None:
+        """Protect resources after a user message has been durably accepted."""
+        with self._lock:
+            changed = False
+            for identifier in identifiers:
+                record = self._records.get(identifier)
+                if record is not None and record.pending_attachment:
+                    self._records[identifier] = record.model_copy(
+                        update={"pending_attachment": False}
+                    )
+                    changed = True
+            if changed:
+                self._flush_locked()
+
+    def discard_upload(self, workspace_id: str, upload_id: str) -> builtins.list[str]:
+        """Prevent late upload creation and return only this unsent attachment's records."""
+        if not upload_id or len(upload_id) > 200:
+            raise ValueError("A valid attachment upload identity is required")
+        with self._lock:
+            rows = [
+                row
+                for row in self._records.values()
+                if row.workspace_id == workspace_id and row.client_upload_id == upload_id
+            ]
+            if any(not row.pending_attachment for row in rows):
+                return []
+            self._discarded_uploads.add(workspace_id + "\0" + upload_id)
+            self._flush_locked()
+            return [row.id for row in rows]
+
+    def delete(self, workspace_id: str, resource_id: str, *, pending_only: bool = False) -> bool:
         """Delete the original, upload residue, derivatives, and index record.
 
         BYTES FIRST, then the record. A concurrent reader holding the original
@@ -564,6 +605,8 @@ class ResourceStore:
         with self._lock:
             record = self._records.get(resource_id)
             if record is None or record.workspace_id != workspace_id:
+                return False
+            if pending_only and not record.pending_attachment:
                 return False
             from clio_agent.gact.resource_materialization import (  # noqa: PLC0415
                 remove_materialized_resource,

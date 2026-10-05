@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import getpass
 import hashlib
+import io
 import posixpath
 import re
 import shlex
@@ -17,7 +18,8 @@ import paramiko
 from clio_schemas.connected_resources import SourceCapabilities
 from fsspec.implementations.sftp import SFTPFileSystem
 
-from clio_agent.gact.storage.models import FileEntry
+from clio_agent.gact.infrastructure.models import SshRoute
+from clio_agent.gact.storage.models import FileEntry, SftpCredentials
 
 
 class _VerifiedSFTP(SFTPFileSystem):
@@ -32,16 +34,41 @@ def connect_profile(profile: str) -> paramiko.SSHClient:
     """Resolve an existing OpenSSH profile and verify every SSH connection's host key."""
     if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,159}", profile):
         raise ValueError("Select an existing SSH profile name")
-    result = subprocess.run(
-        ["ssh", "-G", profile], capture_output=True, text=True, timeout=15, check=False
+    return connect_route(SshRoute(profile=profile))
+
+
+def connect_route(
+    route: SshRoute, *, credentials: SftpCredentials | None = None
+) -> paramiko.SSHClient:
+    """Resolve a saved host with this CLIO's keys, agent, and strict host verification."""
+    password = (
+        credentials.password.get_secret_value() if credentials and credentials.password else None
     )
+    key = _private_key(credentials) if credentials and credentials.private_key else None
+    explicit = password is not None or key is not None
+    destination = route.profile or route.host
+    if not destination or destination.startswith("-") or any(c.isspace() for c in destination):
+        raise ValueError("Enter an SSH address or profile")
+    arguments = ["ssh", "-G"]
+    if route.user:
+        arguments.extend(["-l", route.user])
+    if route.port != 22 or not route.profile:
+        arguments.extend(["-p", str(route.port)])
+    if route.identity_file:
+        arguments.extend(["-i", route.identity_file])
+    if route.jump_hosts:
+        if any(hop.startswith("-") or any(c.isspace() for c in hop) for hop in route.jump_hosts):
+            raise ValueError("Enter valid SSH jump addresses")
+        arguments.extend(["-J", ",".join(route.jump_hosts)])
+    arguments.append(destination)
+    result = subprocess.run(arguments, capture_output=True, text=True, timeout=15, check=False)
     if result.returncode:
         raise ValueError("The SSH profile could not be resolved on this CLIO")
     settings: dict[str, list[str]] = {}
     for line in result.stdout.splitlines():
-        key, _, value = line.partition(" ")
-        settings.setdefault(key, []).append(value)
-    host = settings.get("hostname", [profile])[0]
+        option, _, value = line.partition(" ")
+        settings.setdefault(option, []).append(value)
+    host = settings.get("hostname", [destination])[0]
     port = int(settings.get("port", ["22"])[0])
     client = paramiko.SSHClient()
     client.load_system_host_keys()
@@ -87,7 +114,13 @@ def connect_profile(profile: str) -> paramiko.SSHClient:
             host,
             port=port,
             username=settings.get("user", [getpass.getuser()])[0],
-            key_filename=cast(Any, identities or None),  # Paramiko accepts a string or list.
+            key_filename=cast(
+                Any, None if explicit else identities or None
+            ),  # Paramiko accepts a string or list.
+            password=password,
+            pkey=key,
+            allow_agent=not explicit,
+            look_for_keys=not explicit,
             sock=socket,
             timeout=20,
             auth_timeout=20,
@@ -97,10 +130,30 @@ def connect_profile(profile: str) -> paramiko.SSHClient:
         client.close()
         if socket is not None:
             socket.close()
+        if isinstance(exc, paramiko.AuthenticationException):
+            raise ValueError(
+                "SSH sign-in failed. Check the username and key or password. "
+                "Interactive authentication requires CLIO Desktop."
+            ) from None
         raise ValueError(
-            "SSH sign-in or host verification failed. Connect this profile in your terminal first."
-        ) from exc
+            "SSH connection or host verification failed. The CLIO host must trust this "
+            "server's SSH host key before connecting."
+        ) from None
     return client
+
+
+def _private_key(credentials: SftpCredentials) -> paramiko.PKey:
+    """Let Paramiko decode a supplied key in memory; never write it to a temporary file."""
+    assert credentials.private_key is not None
+    phrase = credentials.passphrase.get_secret_value() if credentials.passphrase else None
+    for kind in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+        try:
+            return kind.from_private_key(
+                io.StringIO(credentials.private_key.get_secret_value()), password=phrase
+            )
+        except (paramiko.SSHException, ValueError):
+            continue
+    raise ValueError("The private key or its passphrase is invalid")
 
 
 class SftpSource:
@@ -109,22 +162,41 @@ class SftpSource:
     def __init__(self, profile: str, root: str, *, writable: bool = False) -> None:
         if not PurePosixPath(root).is_absolute() or ".." in PurePosixPath(root).parts:
             raise ValueError("Select an absolute folder on the SFTP host")
-        self.fs = _VerifiedSFTP(
-            profile, verified_client=connect_profile(profile), skip_instance_cache=True
-        )
-        self.root = self.fs.ftp.normalize(root)
-        if not stat.S_ISDIR(self.fs.ftp.stat(self.root).st_mode):
-            self.close()
-            raise ValueError("Select an existing SFTP directory")
+        self._initialize(connect_profile(profile), root, writable=writable)
+
+    @classmethod
+    def from_route(
+        cls,
+        route: SshRoute,
+        root: str,
+        *,
+        writable: bool = False,
+        credentials: SftpCredentials | None = None,
+    ) -> SftpSource:
+        """Use the shared host definition with the existing fsspec SFTP adapter."""
+        source = cls.__new__(cls)
+        source._initialize(connect_route(route, credentials=credentials), root, writable=writable)
+        return source
+
+    def _initialize(self, client: paramiko.SSHClient, root: str, *, writable: bool) -> None:
+        try:
+            self.fs = _VerifiedSFTP(
+                "verified-source", verified_client=client, skip_instance_cache=True
+            )
+            self.root = self.fs.ftp.normalize(root)
+            if not stat.S_ISDIR(self.fs.ftp.stat(self.root).st_mode):
+                raise ValueError("Select an existing SFTP directory")
+        except (OSError, ValueError, paramiko.SSHException):
+            client.close()
+            raise
         self.writable = writable
         self.capabilities = SourceCapabilities(
             search=True,
             revision_check=True,
             conditional_write=False,
-            supported_modes=["read_only", "working_copy"],
-            unavailable_reasons={
-                "write_enabled": "SFTP provides file transfers, not a writable operating-system folder on this CLIO."
-            },
+            writable_folder=True,
+            supported_modes=["read_only", "working_copy", "write_enabled"],
+            unavailable_reasons={},
         )
 
     def close(self) -> None:
@@ -152,7 +224,7 @@ class SftpSource:
                 digest.update(cast(bytes, chunk))
             return digest.hexdigest()
 
-    def entries(self) -> list[FileEntry]:
+    def entries(self, *, metadata_only: bool = False) -> list[FileEntry]:
         """Read content hashes, so same-size and coarse-mtime edits still conflict."""
         rows: list[FileEntry] = []
         pending = [""]
@@ -167,13 +239,13 @@ class SftpSource:
                     rows.append(FileEntry(path=name, kind="directory"))
                     pending.append(name)
                 elif stat.S_ISREG(item.st_mode):
-                    digest = self._hash(path)
+                    digest = None if metadata_only else self._hash(path)
                     rows.append(
                         FileEntry(
                             path=name,
                             kind="file",
                             size=item.st_size,
-                            revision=digest,
+                            revision=digest or f"{item.st_mtime}:{item.st_size}",
                             sha256=digest,
                         )
                     )

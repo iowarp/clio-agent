@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner, SourceCapabilities
 from pydantic import Field, field_validator
@@ -38,6 +39,7 @@ class UploadedSource(StorageModel):
 
     label: str = Field(min_length=1, max_length=120)
     files: list[UploadedSourceFile] = Field(min_length=1, max_length=10000)
+    draft: bool = False
 
 
 def publish_uploaded_source(
@@ -47,6 +49,7 @@ def publish_uploaded_source(
     workspace_root: Path,
     principal: str,
     request: UploadedSource,
+    on_prepare: Callable[[SourceRecord], None] | None = None,
 ) -> SourceRecord:
     """Validate the complete revision, then publish a protected namespaced folder.
 
@@ -109,6 +112,8 @@ def publish_uploaded_source(
         origin="desktop_upload",
     )
     store.put("source", identifier, record)
+    if on_prepare is not None:
+        on_prepare(record)
     operation = store.begin_operation(identifier, "materialize")
     stage = owner / ("stage-" + operation.id)
     try:

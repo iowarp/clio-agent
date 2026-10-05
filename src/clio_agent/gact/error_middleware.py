@@ -211,7 +211,16 @@ def install_typed_error_handlers(app: FastAPI) -> None:
             error=ErrorInfo(
                 error="validation_error",
                 message="Request validation failed.",
-                details={"errors": jsonable_encoder(exc.errors())},
+                # Validation can fail on another field while its input still contains
+                # the entire credential-bearing body. Never echo raw inputs/context.
+                details={
+                    "errors": jsonable_encoder(
+                        [
+                            {key: row[key] for key in ("type", "loc", "msg") if key in row}
+                            for row in exc.errors()
+                        ]
+                    )
+                },
                 recoverable=True,
             )
         )

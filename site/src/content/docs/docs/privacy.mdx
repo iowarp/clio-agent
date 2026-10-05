@@ -5,7 +5,13 @@ description: What CLIO runs on your machine, exactly what can leave it, and how 
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-CLIO runs on your computer. Your sessions, files, memory, and results are stored locally. Whether anything leaves the machine depends on the model provider and tools you choose.
+This technical guide complements the public [Privacy Policy](/privacy/) and
+[Terms of Service](/terms/).
+
+CLIO runs on the computer or server you connect to. Your sessions, files, memory,
+and results are stored on that machine. Whether data leaves it depends on the
+model provider, connected sources, and tools you choose. With a remote CLIO
+installation, uploads go to that server even when the interface is in your local browser.
 
 ## What runs locally
 
@@ -13,7 +19,9 @@ CLIO runs on your computer. Your sessions, files, memory, and results are stored
 - Sessions, messages, memory, and artifacts are stored in your [user configuration folder](/docs/configuration/) and in each workspace's `.clio` folder.
 - The desktop app, web page, and terminal UI all talk to that local backend.
 
-There is no product telemetry or analytics. CLIO does not report usage to anyone.
+CLIO does not include a product-usage telemetry or analytics service. Configured
+providers and tools still receive requests, and the installation can retain
+diagnostic and provenance records.
 
 ## What can leave your machine
 

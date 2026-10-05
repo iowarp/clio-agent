@@ -242,6 +242,11 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             ) from exc
         publish("queued_message.created", sid, row.model_dump())
+        from clio_agent.gact.storage.drafts import retain_attachment_resources
+
+        retain_attachment_resources(
+            app, {part.resource_id for part in parts if part.type == "resource_ref"}
+        )
         redrive_queue(sid)
         return row
 

@@ -616,6 +616,13 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
             "connected_data_status": {},
+            "connected_data_open": {"source_id": "missing-source"},
+            "connected_data_write": {
+                "source_id": "missing-source",
+                "path": "missing.txt",
+                "content": "test",
+                "revision": "missing",
+            },
             # Bounded workspace-resource reads, auto-attached to every react
             # expert. Called against a missing resource id on purpose: each
             # returns a typed not-found row rather than raising, and the

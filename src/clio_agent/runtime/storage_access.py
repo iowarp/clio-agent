@@ -34,7 +34,6 @@ def materialized_read_roots(workspace_root: Path) -> tuple[Path, ...]:
             and Path(row["workspace_root"]).resolve() == workspace_root.resolve()
             and source.get("local_path")
             and source["materialization"] in {"ready", "stale", "transferring"}
-            and source["mode"] != "write_enabled"
         ):
             roots.append(Path(source["local_path"]).resolve())
             if row.get("manifest_id"):
@@ -69,11 +68,7 @@ def storage_access_roots() -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     try:
         for record in _source_records():
             source = record["source"]
-            if (
-                record["connected"]
-                and source["provider"] == "local"
-                and source["mode"] != "write_enabled"
-            ):
+            if record["connected"] and source["provider"] == "local":
                 read_only.append(Path(source["root"]).resolve())
     except (sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         raise PermissionError("Connected-source access decisions could not be read") from exc
@@ -92,7 +87,7 @@ def check_storage_access(path: Path, *, write: bool = False) -> None:
         resolved.is_relative_to(root) or root.is_relative_to(resolved) for root in read_only
     ):
         raise PermissionError(
-            "This connected source is read-only; edit its working copy and review changes"
+            "This source is read-only outside its approved linked filesystem; use that filesystem to edit it"
         )
 
 

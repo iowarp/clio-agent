@@ -63,7 +63,11 @@ from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.resource_tools import build_resource_tools
-from clio_agent.gact.storage.setup_tool import build_connected_data_status_tool
+from clio_agent.gact.storage.setup_tool import (
+    build_connected_data_open_tool,
+    build_connected_data_status_tool,
+    build_connected_data_write_tool,
+)
 from clio_agent.gact.todos import build_write_todos_tool
 from clio_agent.gact.weather_tools import build_weather_forecast_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
@@ -143,6 +147,8 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             tools.append(build_weather_forecast_tool())
         tools.append(build_refresh_provider_models_tool())
         tools.append(build_connected_data_status_tool())
+        tools.append(build_connected_data_open_tool())
+        tools.append(build_connected_data_write_tool())
         tools.extend(build_memory_tools(agent_def))
         # Phase 9: the main agent may draft alternatives of its answer (BestOfN /
         # Refine on demand, judged by the user or an LM). Imported here: the drafting

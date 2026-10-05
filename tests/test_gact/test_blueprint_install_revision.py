@@ -51,6 +51,48 @@ def test_invalid_later_pack_does_not_apply_earlier_pack(tmp_path: Path) -> None:
     assert {name: tree_checksum(root) for name, root in roots.items()} == before
 
 
+@pytest.mark.parametrize("reload", [False, True])
+def test_installed_host_tools_are_available_to_staged_validation(
+    tmp_path: Path, reload: bool
+) -> None:
+    """Installation and Reload use the same tool catalog as blueprint validation."""
+    source = tmp_path / "source"
+    pack = _pack(source, "demo")
+    expert = pack / "experts/main.md"
+    expert.write_text(expert.read_text().replace("tier: 1", "tier: 1\ntools: [relay_observe]"))
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            agent=SimpleNamespace(
+                tool_executor=SimpleNamespace(
+                    get_all_tool_definitions=lambda: {"relay_observe": {}}
+                )
+            )
+        )
+    )
+    with runtime_preparation(app, enabled=reload):
+        result = install_agent_blueprint(
+            source=str(source), scope="workspace", cwd=tmp_path, app=None if reload else app
+        )
+    assert len(result["installed"]) == 1
+    assert (Path(result["installed"][0]["root"]) / "AGENT.md").is_file()
+
+
+def test_unavailable_host_tools_still_reject_the_whole_revision(tmp_path: Path) -> None:
+    """Catalog propagation must not bypass real missing-tool checks or rollback."""
+    source = tmp_path / "source"
+    _pack(source, "first")
+    pack = _pack(source, "second")
+    roots = _roots(_install(source, tmp_path))
+    before = {name: tree_checksum(root) for name, root in roots.items()}
+    _pack(source, "first", "2")
+    expert = pack / "experts/main.md"
+    expert.write_text(expert.read_text().replace("tier: 1", "tier: 1\ntools: [missing_tool]"))
+    with pytest.raises(ValueError, match="unknown tool reference: missing_tool") as failure:
+        _install(source, tmp_path)
+    assert 'Blueprint "second" (second)' in str(failure.value)
+    assert {name: tree_checksum(root) for name, root in roots.items()} == before
+
+
 def test_failed_final_swap_restores_all_packs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

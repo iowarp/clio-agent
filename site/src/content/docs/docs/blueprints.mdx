@@ -124,29 +124,9 @@ An agent can only call experts its blueprint declares. CLIO checks every parent-
 
 ## Install, update, and remove
 
-The default marketplace is [iowarp/clio-agent-marketplace](https://github.com/iowarp/clio-agent-marketplace). To browse and install from it:
+Use [Marketplaces and blueprints](/docs/marketplaces/) for the illustrated browsing guide, and [Add, reload, and remove](/docs/marketplaces/manage/) for installation and update workflows.
 
-<Steps>
-
-1. Open Settings and choose **Marketplaces & blueprints**.
-
-2. Open the **Marketplaces** tab. Each marketplace lists the blueprints it publishes, with a version.
-
-3. Choose **Install** next to a blueprint. It then appears on the **Installed** tab, and in the **Agent blueprint** list when you create a session.
-
-</Steps>
-
-To use another repository, choose **Add marketplace** and give it a name, a repository URL or a local folder, and optionally a branch or tag. Use **Refresh** to fetch the latest list.
-
-On the **Installed** tab, the actions menu for each blueprint has **View details**, **Check for update**, and **Remove**.
-
-Installing copies a snapshot of the blueprint, and records where it came from, the commit, and a checksum. CLIO does not update installed blueprints on its own. **Check for update** fetches a new snapshot when you ask for one.
-
-Blueprints can be available to every workspace or to one workspace only.
-
-<Aside type="note">
-Installing a blueprint does not run code. A blueprint is Markdown, and any tool servers it names are started only when a tool is first used, under the usual [permissions](/docs/permissions/).
-</Aside>
+An installed blueprint is a recorded snapshot with its source, revision, and checksum. Reloading is an explicit update operation. CLIO validates the staged copy before replacing the existing installation; validation may start declared services to check their tools. Normal [permissions](/docs/permissions/) still apply when the agent runs.
 
 ## Write your own
 

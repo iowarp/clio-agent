@@ -31,6 +31,19 @@ _EXPORTS = {
 }
 
 
+def drive_folder_id(value: str) -> str:
+    """Extract a folder ID from a Drive folder link without following arbitrary URLs."""
+    value = value.strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        return value
+    parsed = urlparse(value)
+    if parsed.scheme == "https" and parsed.netloc == "drive.google.com":
+        match = re.fullmatch(r"/(?:drive/(?:u/\d+/)?)?folders/([A-Za-z0-9_-]+)/?", parsed.path)
+        if match:
+            return match.group(1)
+    raise ValueError("Paste a Google Drive folder link or folder ID")
+
+
 class _ResponseStream(io.RawIOBase):
     """Bounded binary reader that owns its HTTP response until closed."""
 

@@ -657,7 +657,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         root = Path(ws.root_path or os.getcwd()).expanduser().resolve()
         try:
-            managed = resolve_managed_input(app, wid, root, path)
+            managed = await asyncio.to_thread(resolve_managed_input, app, wid, root, path)
             target = managed or (root / path).resolve()
         except Exception:  # noqa: BLE001 - path resolution failure surfaced as HTTP 400
             raise HTTPException(

@@ -1,0 +1,121 @@
+name: Linux and Windows packaged startup
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'install/**'
+      - 'branding/**'
+      - 'uv.lock'
+      - 'external/gact-tui'
+      - 'scripts/smoke_desktop_package.py'
+      - '.github/workflows/desktop-bundle-smoke.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-smoke-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installed-startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf xvfb
+      - name: Build the real portable runtime (Linux)
+        if: runner.os == 'Linux'
+        run: bash install/build-gact-runtime.sh external/gact-tui/desktop/src-tauri/gact-runtime
+        env:
+          CLIO_AGENT_SOURCE: ${{ github.workspace }}
+      - name: Build and pack the real portable runtime (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./install/pack-gact-runtime.ps1
+      - name: Prepare CLIO branding and unsigned qualification artifacts
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = process.env.GITHUB_WORKSPACE;
+          const ui = path.join(root, 'external/gact-tui');
+          fs.writeFileSync(path.join(ui, 'brand.config.local.json'), JSON.stringify({profile: 'clio', brandingRoot: path.join(root, 'branding')}));
+          fs.cpSync(path.join(root, 'branding/clio/icons'), path.join(ui, 'desktop/src-tauri/icons'), {recursive: true});
+          fs.cpSync(path.join(root, 'branding/clio/installer'), path.join(ui, 'desktop/src-tauri/installer'), {recursive: true});
+          const bundle = {createUpdaterArtifacts: false};
+          if (process.platform === 'win32') bundle.resources = ['gact-runtime.tar.zst', 'gact-runtime.pack.json'];
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'smoke-config.json'), JSON.stringify({bundle}));
+          NODE
+          bash external/gact-tui/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
+      - name: Build an installable Desktop package from the pinned UI
+        working-directory: external/gact-tui
+        shell: bash
+        run: |
+          pnpm install --frozen-lockfile=false
+          pnpm --filter @clio/desktop run gen-brand-backend
+          pnpm --filter @clio/desktop tauri build --bundles ${{ matrix.bundles }} \
+            --config "$GITHUB_WORKSPACE/external/gact-tui/desktop/src-tauri/tauri.bundled.conf.json" \
+            --config "$RUNNER_TEMP/smoke-config.json"
+      - name: Install DEB and launch native Desktop with its packaged backend
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
+          test "${#packages[@]}" -eq 1
+          sudo dpkg -i "${packages[0]}"
+          xvfb-run -a uv run --no-project --python 3.12 --with psutil \
+            scripts/smoke_desktop_package.py /usr/bin/clio-desktop --evidence-dir "$RUNNER_TEMP/startup-evidence"
+      - name: Install NSIS and launch native Desktop with its compressed runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem external/gact-tui/desktop/src-tauri/target/release/bundle/nsis/*.exe)
+          if ($packages.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
+          $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -Wait -PassThru
+          if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
+          uv run --no-project --python 3.12 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence"
+      - name: Retain sanitized startup evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-startup-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/startup-evidence/receipt.json
+            ${{ runner.temp }}/startup-evidence/desktop.log
+          if-no-files-found: warn
+          retention-days: 7

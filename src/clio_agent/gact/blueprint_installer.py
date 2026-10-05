@@ -23,6 +23,7 @@ from clio_agent.gact.blueprint_install_revision import InstallRevision
 from clio_agent.gact.blueprint_runtime_preparation import (
     prepare_blueprint_runtime,
     require_unchanged_runtime,
+    validation_tool_names,
 )
 from clio_agent.gact.git_source import normalize_git_clone_source
 
@@ -190,6 +191,7 @@ def install_agent_blueprint(
                     metadata,
                     preserve_invalid=preserve_invalid,
                     allow_pin_change=allow_pin_change,
+                    runtime_tool_names=validation_tool_names(app),
                 )
                 staged_rows.append((staged, dest, previous_checksum))
             # Reject every static error before starting any candidate MCP process.

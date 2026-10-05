@@ -48,6 +48,15 @@ def runtime_preparation(app: Any, *, enabled: bool) -> Iterator[PreparedRuntime]
         _PREPARATION.reset(token)
 
 
+def validation_tool_names(app: Any | None = None) -> frozenset[str]:
+    """Use the same mounted host tools for installation and interactive validation."""
+    from clio_agent.gact.agent_blueprints import runtime_tool_names_for_validation
+
+    prepared = _PREPARATION.get()
+    owner = app if app is not None else prepared.app if prepared is not None else None
+    return runtime_tool_names_for_validation(owner)
+
+
 def prepare_blueprint_runtime(
     staged: Path, *, destination: Path, scope: str, cwd: Path
 ) -> list[dict[str, Any]]:

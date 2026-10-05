@@ -185,7 +185,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "Marketplace already registered in this scope; edit its configuration"
                 )
             installed_source, installation = _install_agent_blueprint_source(
-                row, cwd=cwd, scope=scope
+                row, cwd=cwd, scope=scope, app=app
             )
             _upsert_agent_blueprint_source(installed_source)
             return {"source": installed_source, **installation}
@@ -211,7 +211,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ) -> dict[str, Any]:
                     require_unchanged(original)
                     installed_source, installation = _install_agent_blueprint_source(
-                        prepared, cwd=target, scope=install_scope, strict=True
+                        prepared, cwd=target, scope=install_scope, strict=True, app=app
                     )
                     _upsert_agent_blueprint_source(installed_source)
                     return {"source": installed_source, **installation}

@@ -10,6 +10,7 @@ import pytest
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner, SourceCapabilities
 
 from clio_agent.gact.storage.auth import OAuthApplication, StorageAuth
+from clio_agent.gact.storage.auth import application as configured_application
 from clio_agent.gact.storage.models import SourceRecord
 
 
@@ -37,6 +38,55 @@ def application() -> OAuthApplication:
         "https://provider.test/authorize",
         "https://provider.test/token",
     )
+
+
+@pytest.mark.parametrize(
+    "desktop_redirect",
+    [None, "http://localhost:48173/clio-storage-return"],
+)
+def test_globus_sign_in_uses_shipped_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, desktop_redirect: str | None
+) -> None:
+    """Desktop and browser clients can begin sign-in without host OAuth setup."""
+    for suffix in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI"):
+        monkeypatch.delenv(f"CLIO_STORAGE_GLOBUS_{suffix}", raising=False)
+    record = source()
+    record.source = record.source.model_copy(update={"provider": "globus"})
+    auth = StorageAuth(tmp_path / "tokens.json")
+    started = auth.start(record, desktop_redirect=desktop_redirect)
+    query = parse_qs(urlparse(started["authorization_url"]).query)
+    assert query["client_id"] == ["ca844cdc-ddb1-4332-bb66-69f9479d99b5"]
+    assert query["redirect_uri"] == [desktop_redirect or "https://auth.globus.org/v2/web/auth-code"]
+    assert query["code_challenge_method"] == ["S256"]
+    assert not auth.connected(record)
+
+
+def test_globus_registration_override_and_explicit_disable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Custom distributions can replace or explicitly disable the bundled identity."""
+    monkeypatch.setenv("CLIO_STORAGE_GLOBUS_CLIENT_ID", "custom-client")
+    assert configured_application("globus").client_id == "custom-client"
+    monkeypatch.setenv("CLIO_STORAGE_GLOBUS_CLIENT_ID", "")
+    record = source()
+    record.source = record.source.model_copy(update={"provider": "globus"})
+    with pytest.raises(ValueError, match="not been configured"):
+        StorageAuth(tmp_path / "tokens.json").start(record)
+
+
+def test_desktop_return_is_bound_to_loopback_and_pending_flow(tmp_path: Path) -> None:
+    auth = StorageAuth(tmp_path / "private" / "auth.json")
+    redirect = "http://127.0.0.1:49211/clio-storage-return"
+    flow = auth.start(source(), application(), desktop_redirect=redirect)
+    assert parse_qs(urlparse(flow["authorization_url"]).query)["redirect_uri"] == [redirect]
+    assert auth._pending[flow["flow_id"]].app.redirect_uri == redirect
+    for invalid in [
+        "https://example.org/callback",
+        "http://127.0.0.1:49211/other",
+        "http://user@127.0.0.1:49211/clio-storage-return",
+    ]:
+        with pytest.raises(ValueError, match="Invalid Desktop"):
+            auth.start(source(), application(), desktop_redirect=invalid)
 
 
 def test_globus_requests_native_offline_scope_for_refresh(tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from clio_schemas.connected_resources import AccessMode, ConnectedSource
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 def now() -> str:
@@ -24,20 +24,33 @@ class SourceConfiguration(StorageModel):
     """Nonsecret connection settings; credentials are held by the auth owner."""
 
     ssh_profile: str = ""
+    target_id: str = ""
+    ssh_origin: Literal["desktop", "clio"] = "desktop"
+    ssh_authentication: Literal["configured", "key", "password"] = "configured"
     collection_id: str = ""
     destination_collection_id: str = ""
     destination_collection_root: str = ""
     destination_local_root: str = ""
+    github_ref: str = ""
+
+
+class SftpCredentials(StorageModel):
+    """Trusted sign-in input, excluded from public serialization and diagnostic repr."""
+
+    password: SecretStr | None = Field(default=None, exclude=True, repr=False)
+    private_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
+    passphrase: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
 
 class CreateSource(StorageModel):
     """Approve one source on the connected CLIO for one workspace."""
 
-    provider: Literal["local", "sftp", "google_drive", "globus"]
+    provider: Literal["local", "sftp", "google_drive", "globus", "github"]
     root: str = Field(min_length=1, max_length=4096)
     label: str = Field(min_length=1, max_length=120)
     mode: AccessMode = "read_only"
     configuration: SourceConfiguration = Field(default_factory=SourceConfiguration)
+    sftp_credentials: SftpCredentials | None = Field(default=None, exclude=True, repr=False)
 
 
 class SourceRecord(StorageModel):
@@ -47,10 +60,51 @@ class SourceRecord(StorageModel):
     configuration: SourceConfiguration = Field(default_factory=SourceConfiguration)
     principal: str
     connected: bool = True
+    removed: bool = False
     manifest_id: str | None = None
     workspace_root: str = ""
     owns_write_grant: bool = False
     origin: Literal["provider", "desktop_upload"] = "provider"
+    target_route: str = ""
+    linked_manifest_id: str | None = None
+    sign_in_required: bool = False
+    link_access: Literal["read_only", "publish_later", "write_through"] | None = None
+    download_access: Literal["read_only", "editable"] | None = None
+
+    @property
+    def linked_access(self) -> Literal["read_only", "publish_later", "write_through"]:
+        """Resolve legacy connections without coupling new link and download choices."""
+        if self.link_access is not None:
+            return self.link_access
+        if self.source.mode == "working_copy":
+            return "publish_later"
+        return "write_through" if self.source.mode == "write_enabled" else "read_only"
+
+    @property
+    def download_read_only(self) -> bool:
+        """Downloads carry their own local permission, independent of their remote link."""
+        return (
+            self.download_access == "read_only"
+            if self.download_access
+            else self.source.mode == "read_only"
+        )
+
+
+class LinkedEdit(StorageModel):
+    """Durable local edit and the original bytes it was based on."""
+
+    before_hash: str | None
+    after_hash: str | None
+    content_path: str | None
+    before_path: str | None = None
+
+
+class LinkedEdits(StorageModel):
+    """A restart-safe publication journal, separate from detached downloads."""
+
+    source_id: str
+    baseline_id: str
+    changes: dict[str, LinkedEdit] = Field(default_factory=dict)
 
 
 class FileEntry(StorageModel):
@@ -116,6 +170,7 @@ class TransferOperation(StorageModel):
     bytes_total: int = 0
     native_job_id: str | None = None
     native_request: dict[str, object] | None = None
+    selected_paths: list[str] | None = None
     cancel_requested: bool = False
     error: str | None = None
     applied_paths: list[str] = Field(default_factory=list)

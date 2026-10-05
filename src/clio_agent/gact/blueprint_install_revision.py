@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from collections.abc import Collection
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,6 +157,7 @@ class InstallRevision:
         *,
         preserve_invalid: bool,
         allow_pin_change: bool,
+        runtime_tool_names: Collection[str] = (),
     ) -> tuple[Path, str]:
         """Copy and validate an immutable snapshot without touching its installation."""
         from clio_agent.gact.agent_blueprints import (
@@ -181,9 +183,12 @@ class InstallRevision:
         if not parsed.enabled:
             raise ValueError("Staged blueprint is invalid: " + "; ".join(parsed.validation_errors))
         if parsed.root_expert:
-            validation = validate_agent_blueprint_path(staged, scope=str(metadata["scope"]))
+            validation = validate_agent_blueprint_path(
+                staged, scope=str(metadata["scope"]), runtime_tool_names=runtime_tool_names
+            )
             if not validation["enabled"]:
                 raise ValueError(
+                    f'Blueprint "{parsed.display_name}" ({parsed.id}): '
                     "Staged blueprint runtime is invalid: "
                     + "; ".join(validation["validation_errors"])
                 )

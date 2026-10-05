@@ -52,6 +52,17 @@ export default defineConfig({
 					items: [
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
 						{
+							label: 'Files and sources', collapsed: false,
+							items: [
+								{ label: 'Overview', slug: 'docs/files' },
+								{ label: 'Attach files and folders', slug: 'docs/files/attach' },
+								{ label: '@ references', slug: 'docs/files/references' },
+								{ label: 'Connect sources', slug: 'docs/files/connect' },
+								{ label: 'Download or link', slug: 'docs/files/download-or-link' },
+								{ label: 'Manage sources', slug: 'docs/files/manage' },
+							],
+						},
+						{
 							label: 'Widget gallery',
 							collapsed: false,
 							items: [
@@ -61,7 +72,14 @@ export default defineConfig({
 								{ label: 'Component catalog', slug: 'docs/widgets/components' },
 							],
 						},
-						{ label: 'Agent blueprints', slug: 'docs/blueprints' },
+						{
+							label: 'Marketplaces', collapsed: false,
+							items: [
+								{ label: 'Find and inspect blueprints', slug: 'docs/marketplaces' },
+								{ label: 'Add, reload, and remove', slug: 'docs/marketplaces/manage' },
+								{ label: 'Write a blueprint', slug: 'docs/blueprints' },
+							],
+						},
 						{ label: 'Tools and MCP servers', slug: 'docs/mcp-servers' },
 						{ label: 'Permissions and sandbox', slug: 'docs/permissions' },
 						{ label: 'Hooks', slug: 'docs/hooks' },
@@ -82,6 +100,8 @@ export default defineConfig({
 						{ label: 'Troubleshooting', slug: 'docs/troubleshooting' },
 						{ label: 'Uninstall', slug: 'docs/uninstall' },
 						{ label: 'Contributing', slug: 'docs/contributing' },
+						{ label: 'Privacy Policy', slug: 'privacy' },
+						{ label: 'Terms of Service', slug: 'terms' },
 					],
 				},
 				{
