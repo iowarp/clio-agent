@@ -60,7 +60,7 @@ def test_backend_installer_requests_compatible_mac_wheels(tmp_path: Path, system
     )
     assert result.returncode == 77, result.stdout + result.stderr
     args = args_file.read_text().splitlines()
-    assert "clio-agent[argonne]==0.9.5b2" in args
+    assert "clio-agent[argonne,flowcept]==0.9.5b2" in args
     assert ("--only-binary=rasterio" in args) == (system == "Darwin")
 
 

@@ -73,6 +73,5 @@
     }
   ],
   "wordmarkImage": "wordmark.svg",
-  "iconSvg": "ui-icons/clio-owl-currentColor.svg",
-  "faviconSvg": "ui-icons/clio-owl-orange.svg"
+  "faviconSvg": "mark.svg"
 }

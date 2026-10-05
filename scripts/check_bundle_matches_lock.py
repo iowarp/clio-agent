@@ -60,7 +60,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: The extras the bundled runtime installs. MUST equal ``BUNDLE_EXTRAS`` in
 #: install/build-gact-runtime.sh and .ps1 (a test enforces this).
-BUNDLE_EXTRAS: tuple[str, ...] = ("argonne", "desktop")
+BUNDLE_EXTRAS: tuple[str, ...] = ("argonne", "desktop", "flowcept")
 
 #: The targets clio-bundles.yml builds the BUNDLED variant for (its matrix
 #: excludes x86_64-apple-darwin and aarch64-pc-windows-msvc: iowarp-core ships no
@@ -77,7 +77,7 @@ BUNDLE_TARGETS: tuple[str, ...] = (
 BUNDLE_MACOSX_DEPLOYMENT_TARGET = "14.0"
 
 #: The bundled runtime's interpreter version (build-gact-runtime default).
-BUNDLE_PYTHON = "3.12"
+BUNDLE_PYTHON = "3.13"
 
 #: Installed distributions that are not lock-resolved packages:
 #: ``clio-agent`` is installed from the local checkout (the lock has no

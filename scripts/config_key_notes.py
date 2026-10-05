@@ -774,6 +774,10 @@ KEY_NOTES: dict[str, str] = {
         'Flowcept payload privacy level ("metadata" default, no raw content); relax only when '
         "the Flowcept backend is trusted with full content."
     ),
+    "provenance.agentic.flowcept.persistence_owner": (
+        'Exactly one persistence owner: "client" for a standalone Flowcept client, or '
+        '"collector" when a managed collector persists records. Avoid duplicate database writers.'
+    ),
     "provenance.agentic.flowcept.workflow_scope": (
         'Whether a Flowcept workflow record spans one session or the process ("session" '
         "default); change to correlate sessions as one workflow."
@@ -846,6 +850,19 @@ KEY_NOTES: dict[str, str] = {
         "Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance record as the join "
         "key between clio's ai_model_invocation stream and vllm-kvnorm's kv_token_importance "
         "stream; only effective when Flowcept is a configured provenance provider."
+    ),
+    "provenance.attention": (
+        "On vLLM calls, declare one token range per transcript section as "
+        "kv_transfer_params.ranges for vllm-attn-connector and record the labelled ranges on "
+        "the lm.call; powers the attention view. Only effective with Flowcept configured."
+    ),
+    "provenance.attention.files_dir": (
+        "Local copy of the attention connector's out_dir (same <workflow_id>/<file> layout) "
+        "for when CLIO does not run on the GPU node; the attention view reads files there."
+    ),
+    "provenance.attention.tokenizer": (
+        "Local directory or Hugging Face id of the served model's tokenizer + chat template "
+        "(files only) for attention ranges; set for air-gapped nodes or custom templates."
     ),
     "providers.claude_code.max_concurrent_processes": (
         "Process-wide cap on concurrently-connected claude CLI subprocesses; a connect beyond it "

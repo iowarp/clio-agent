@@ -1,0 +1,160 @@
+---
+title: Privacy Policy
+description: How CLIO handles your files, connected accounts, conversations, and website visits.
+editUrl: false
+lastUpdated: false
+prev: false
+next: false
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="note" title="Publication review">
+  This policy is prepared for review. The responsible organization and private
+  contact address must be confirmed before publication.
+</Aside>
+
+**Last updated: October 4, 2026**
+
+CLIO is an open-source AI workspace developed by the Gnosis Research Center at
+Illinois Tech as part of IOWarp. This policy explains how the CLIO software and
+the website at [clio.iowarp.ai](https://clio.iowarp.ai/) handle information.
+
+CLIO runs on a computer or server that you choose. If your institution or another
+organization operates that server, its administrator controls that installation
+and may have access to its stored data. Ask that operator about its own privacy,
+access, retention, and backup practices. Installing CLIO does not automatically
+send your workspace to the CLIO project.
+
+## Information CLIO handles
+
+- **Your work:** messages, attachments, selected files and folders, generated
+  results, session history, memory, and records of the actions taken during a run.
+- **Connected sources:** file and folder names, paths, identifiers, sizes,
+  revisions, and the contents you ask CLIO to read, download, or analyze.
+- **Connection information:** server addresses, source settings, and authorization
+  tokens needed to access the services you connect.
+- **Support information:** information you choose to include in a support request,
+  diagnostic report, or issue. Public GitHub issues are visible to others; do not
+  include private files, passwords, or tokens in them.
+
+CLIO uses this information to provide the features you request: browsing and
+linking data, transferring files, running analyses, producing results, and keeping
+the supporting evidence available in your workspace.
+
+## Google Drive and Globus
+
+Connecting an account starts a sign-in and permission request with the provider.
+You enter your Google or Globus account credentials on that provider's sign-in
+page. CLIO receives authorization tokens so it can continue the connection without
+asking you to sign in for every file.
+
+For **Google Drive**, CLIO accesses metadata and file contents for the folder or
+files you select. It can download ordinary files and export Google documents to
+formats it can read. Read-only connections request permission to view and download
+Drive files. Connections configured for supported changes can request broader
+Drive access. Google's permission grant can cover more of your Drive than the
+folder selected in CLIO; the selection is an application-level limit, not a
+separate Google permission boundary. Review the permissions shown by Google.
+
+For **Globus**, CLIO uses your permission to browse the collections you select,
+read selected files, and submit transfer jobs when you request a download and
+receiving storage is available. Globus and the collection operators process the
+requests and transfers under their own policies.
+
+## When data leaves the CLIO machine
+
+When you ask an agent to work with data, relevant messages, file contents, and tool
+results can be sent to the **model provider configured for that conversation**.
+That provider may be on your computer, on another server, or a cloud service.
+Attaching a folder tells the agent the folder exists; reading files from it can
+then include their contents in model requests. Check the chosen provider's data
+handling and retention terms before using sensitive information.
+
+Tools, extensions, connected storage services, and remote execution hosts can
+receive the data needed for the actions you request. Sharing a session, exporting
+results, or uploading a diagnostic report can also share its contents with the
+destination you select. A remote CLIO server and a remote model are separate
+destinations, even when you use the interface in your own browser.
+
+The CLIO project does not sell connected-source data or use it for advertising.
+It does not collect Google user data to train generalized AI or machine-learning
+models. Use model providers and settings that do not use Google data for that
+purpose. Google data is used for the user-facing features you authorize. Project
+maintainers do not have routine access to files in your installation; any human
+access to Google data shared with the project must be limited to your affirmative
+permission or the security and legal exceptions permitted by Google.
+
+CLIO's use and transfer of information received from Google APIs will adhere to
+the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy),
+including its Limited Use requirements.
+
+## Storage and security
+
+Workspace files, downloaded copies, cached linked files, messages, and retained
+evidence are stored on the machine running CLIO. Linking a folder keeps the
+original files at their source and can cache a file locally when it is opened or
+read. A download creates a separate copy on the CLIO machine.
+
+Saved Google and Globus tokens are stored separately from source descriptions and
+agent-visible results. Browser SFTP passwords and uploaded private keys are kept
+in memory for the active connection; host-configured credentials follow the
+host's configuration. Access to stored information depends on that machine's
+accounts, file permissions, and security settings. Operators are responsible for
+securing the host, its backups, and remote connections. This policy does not
+promise that workspace files or token storage are encrypted at rest.
+
+## Your choices and deletion
+
+- **Disconnect a source** to stop CLIO using that folder connection. Your saved
+  Google or Globus sign-in remains available for other sources and workspaces
+  on the same CLIO. Downloaded files and evidence already used in a message remain.
+- **Sign out of a provider** to remove its saved sign-ins from this CLIO across
+  your workspaces. This does not delete downloaded files or remote originals.
+- **Revoke provider access** in your
+  [Google Account connections](https://myaccount.google.com/connections) or
+  [Globus application permissions](https://app.globus.org/settings/consents).
+  Disconnecting in CLIO does not itself revoke every provider-side grant or
+  disconnect another installation.
+- **Unlink a folder** to remove its workspace link. Remove downloaded copies
+  separately when you no longer need them. These actions do not delete originals
+  in Google Drive, Globus, or another source.
+- **Remove an unsent attachment** to withdraw the temporary copy or link it added.
+  Data already retained by a sent message or another attachment is preserved.
+- **Delete retained information separately.** Session history, extracted text,
+  memory, results, downloaded copies, exports, and backups can have separate
+  lifetimes. Removing a connection or message does not erase all of those copies.
+  See [data locations](/docs/configuration/) and [uninstall and data removal](/docs/uninstall/),
+  or ask the operator of your CLIO server for help.
+
+CLIO has no single automatic retention period for all workspace data. Retained
+data remains until you or the installation's operator remove it. Providers and
+recipients may retain information already sent to them under their own policies;
+local deletion does not delete those copies.
+
+## Website visits and routine network requests
+
+The public website is hosted on GitHub Pages. The host processes connection
+information, including IP addresses and request information, as described in
+[GitHub's Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+The site can save interface preferences in your browser. It does not include
+advertising trackers or a project analytics service.
+
+CLIO may contact PyPI or GitHub to check for updates and download public model
+metadata from models.dev. Those services receive ordinary connection information.
+These checks do not require your conversation or connected-source file contents.
+CLIO does not include a product-usage telemetry service. See the
+[Data and network guide](/docs/privacy/) for technical details and update settings.
+
+## Contact and changes
+
+For information stored in an institution's or another operator's installation,
+contact that operator about access, correction, export, or deletion requests.
+For project privacy questions, the private contact address will be added before
+this policy is published. Never post sensitive information in a public issue.
+
+Updates to this policy will appear here with a revised date. A new use of Google
+data outside the permissions and purposes already disclosed requires a new
+disclosure and consent before that use begins.
+
+See also the [Terms of Service](/terms/).

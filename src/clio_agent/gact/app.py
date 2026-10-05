@@ -437,6 +437,7 @@ from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
+from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
 )
@@ -805,14 +806,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # off-loop). The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
-    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
-    async def _reap_orphans_then_prune_mcp_cache() -> None:
-        await _prime_orphan_scan_cache(app)
-        await boot_prune_off_loop()
-
-    app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
+    app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
     app.state.registry_resync = _registry_resync.start_in_background(app)  # v15 S8, a thread
 
     task: Optional[asyncio.Task] = None
@@ -826,16 +821,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         agent_task = asyncio.create_task(_construct_agent_async(app))
         app.state.agent_construction_task = agent_task
 
-    provider_catalog_task: Optional[asyncio.Task] = None
-    if getattr(app.state, "refresh_provider_catalog_on_startup", False):
-        from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
-            refresh_subscription_catalogs_at_startup,
-        )
+    provider_catalog_task = server_boot.start_provider_catalog(app)
 
-        provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
-        app.state.provider_catalog_startup_task = provider_catalog_task
+    server_boot.reconcile_connected_storage(app)
 
     yield
+
+    await server_boot.shutdown_connected_storage(app)
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
     # does not stop that thread, and Python waits for executor workers at process
@@ -2190,6 +2182,7 @@ def build_app(
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
     register_infrastructure_routes(app, session_store_path.parent)
+    register_connected_storage_routes(app)
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
     # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches

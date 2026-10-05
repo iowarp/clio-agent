@@ -1,0 +1,16 @@
+{
+  "checked_at": "2026-10-04T07:21:51.334088+00:00",
+  "host_profile": "homelab",
+  "source_root": "/data/clio-beta3-qualification/sftp-input",
+  "transport": "OpenSSH profile + verified Paramiko SFTP",
+  "checks": {
+    "nested_file_transfer": "passed",
+    "immutable_baseline": "passed",
+    "bounded_change_preview": "passed",
+    "selected_writeback": "passed",
+    "unselected_file_retained_locally": "passed",
+    "restart_receipts": "passed"
+  },
+  "live_inference": "not_requested",
+  "oauth": "not_exercised"
+}

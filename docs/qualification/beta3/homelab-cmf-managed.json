@@ -1,0 +1,195 @@
+{
+  "service": "cmf",
+  "facts": {
+    "target_id": "homelab-monitoring-qualification",
+    "label": "Homelab qualification",
+    "os": "linux",
+    "arch": "x86_64",
+    "accelerator": "none",
+    "docker_available": true,
+    "docker_installed": true,
+    "uv_available": true,
+    "transport_state": "connected",
+    "container_runtimes": [
+      {
+        "name": "docker",
+        "installed": true,
+        "usable": true,
+        "version": "29.2.0",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "podman",
+        "installed": true,
+        "usable": true,
+        "version": "3.0.1",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "apptainer",
+        "installed": false,
+        "usable": false,
+        "version": "",
+        "reason": "not_installed",
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      }
+    ],
+    "identity": {
+      "uid": 1000,
+      "gid": 1000
+    },
+    "home": "/home/jcernuda",
+    "agent_data_root": "/home/jcernuda/.local/share/clio-agent",
+    "hostname": "Server"
+  },
+  "installed": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103329.2344584
+  },
+  "started": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103351.0529315
+  },
+  "verified": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103354.4894824
+  },
+  "stopped": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103358.3527455
+  },
+  "restarted": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103366.1109107
+  },
+  "reverified": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5"
+    },
+    "error": null,
+    "observed_at": 1791103368.2601972
+  },
+  "removed": {
+    "definition_version": "cmf-managed-1",
+    "configuration_revision": "143edb3c2bc76e889352a1a4484aafd88f60111da27f144f1b1c28f1dd919c5a",
+    "phase": "not_installed",
+    "installed": false,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-4edd67fa8b10-postgres": "sha256:264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-4edd67fa8b10-server": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b"
+    },
+    "error": null,
+    "observed_at": 1791103373.022659
+  },
+  "configuration": {
+    "port": "18380",
+    "container_runtime": "docker",
+    "server_image": "sha256:e17f9193919a36f1409914d6172e7046604aa4b495b3718283930565b7be090b",
+    "storage.service_directory": "/data/clio-beta3-qualification/monitoring/services/Server/cmf",
+    "storage.captures": "/data/clio-beta3-qualification/monitoring/services/Server/cmf/evidence",
+    "compatibility_profile": "cmf-managed-1",
+    "native_owner": "4edd67fa8b107e041fdd81179d1f35e1ffccd33619c64218fdcadd42f0e1405a"
+  },
+  "inference_tested": false
+}

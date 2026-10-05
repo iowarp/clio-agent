@@ -117,7 +117,7 @@ For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.13 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
 clio-agent serve
 ```
 

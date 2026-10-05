@@ -249,7 +249,7 @@ def _windows_shell_backend() -> str:
     return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
 
 
-def _shell_argv(command: str) -> list[str]:
+def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = None) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
     if os.name == "nt":
@@ -272,6 +272,10 @@ def _shell_argv(command: str) -> list[str]:
     shell = shutil.which("bash") or shutil.which("sh")
     if shell is None:
         raise RuntimeError("no POSIX shell found on PATH")
+    if prepared_environment:
+        from clio_agent.runtime.execution_environment import posix_command
+
+        command = posix_command(command, prepared_environment)
     return [shell, "-lc", command]
 
 
@@ -499,7 +503,10 @@ async def bash(
         )
     try:
         safe_cwd = _resolve_cwd(cwd)
-        argv = _shell_argv(command)
+        from clio_agent.runtime.execution_environment import shell_environment
+
+        prepared = shell_environment(_spill_root(safe_cwd))
+        argv = _shell_argv(command, prepared_environment=prepared)
     except FilePolicyError as exc:
         return exc.to_result()
     except Exception as exc:  # noqa: BLE001
@@ -522,7 +529,15 @@ async def bash(
         pdeathsig=False,
     )
     run_argv = [confined.command, *confined.args]
-    run_env = {**os.environ, "PYTHONUTF8": "1", **confined.env_overlay}
+    run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
+    # Prepared scratch is already inside this workspace's writable territory.
+    run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
+    from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
+
+    # Skills run in isolated uv environments and cannot import this resolver.
+    # Supply the bound workspace's canonical path, never an inherited host value
+    # or an explicit command subdirectory. The existing write fence still applies.
+    run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -584,7 +599,7 @@ def _spill_root(safe_cwd: Path) -> Path:
     """Where this call's spill files go: the session workspace root.
 
     The model reads spilled output with its workspace file tools, so the files
-    belong under the bound workspace's ``.clio`` root even when the command ran
+    belong under the bound workspace's Agent state root even when the command ran
     in an explicit sub-``cwd``. With no workspace bound (the app-less CLI path,
     whose fallback :func:`_resolve_cwd` already traces) the policy-validated cwd
     is used.

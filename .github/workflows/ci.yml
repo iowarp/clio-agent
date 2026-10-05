@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       # This consumer is public and the contract checker is private. Cross-repo
       # action sharing does not grant access here; use a read-only repository token.
       - name: Require access to the private contract checker
@@ -42,6 +42,8 @@ jobs:
   # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,
   # with every thread's stack in the log; the job limit is the outer backstop.
   lint:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # Static checks, split from the test leg so they run in parallel with it
     # (measured ~2 min; they used to add that to the serial check job).
     runs-on: ubuntu-latest
@@ -107,6 +109,8 @@ jobs:
       - run: uv run mypy src/
 
   check:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # The suite runs as 3 deterministic shards (tests/_sharding.py) per interpreter,
     # each on its own runner with one xdist worker per logical CPU. One 4-worker
     # runner took 23-29 min; the tests are CPU-bound (every gact test builds an app),
@@ -156,6 +160,8 @@ jobs:
           retention-days: 3
 
   coverage:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # Combines the shards' coverage per interpreter and enforces the floor.
     # Coverage floor lowered to 70 as the v0.5 merge brought in large under-tested
     # gact code; tracked in iowarp/clio-agent#31 to ratchet back up to 80% as the
@@ -202,8 +208,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv python install 3.12
-      - run: uv run --no-project --python 3.12 python scripts/check_bundle_matches_lock.py --resolve
+      - run: uv python install 3.13
+      - run: uv run --no-project --python 3.13 python scripts/check_bundle_matches_lock.py --resolve
 
   flowcept-integration:
     # The Flowcept live-runtime test is excluded from the main leg (integration
@@ -218,7 +224,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --python 3.12 --extra dev --extra flowcept
+      - run: uv sync --python 3.13 --extra dev --extra flowcept
       # Fail FAST if the extra did not yield an importable flowcept — otherwise
       # importorskip would skip the module and this job would go green having
       # tested nothing (the exact skip-rot it exists to prevent).

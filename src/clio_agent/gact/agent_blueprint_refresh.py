@@ -45,6 +45,12 @@ from clio_agent.gact.agent_blueprints import (
     read_install_metadata,
     validate_agent_blueprint_path,
 )
+from clio_agent.gact.blueprint_identity import (
+    identity_fields,
+    install_destination,
+    installed_root,
+    source_tombstones,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -207,18 +213,26 @@ def update_installed_agent_blueprint(
 ) -> dict:
     """Re-install one blueprint from its recorded install source (lifecycle op)."""
 
-    root = _install_root(home=home or Path.home(), cwd=cwd, scope=scope) / blueprint_id
+    root = installed_root(
+        _install_root(home=home or Path.home(), cwd=cwd, scope=scope), blueprint_id
+    )
     metadata = read_install_metadata(root)
+    from clio_agent.gact.blueprint_source_configuration import configured_install
+
+    metadata = configured_install(metadata)
     source = str(metadata.get("source") or "").strip()
     if not source:
         raise ValueError(f"agent blueprint {blueprint_id!r} has no install source metadata")
     return install_agent_blueprint(
         source=source,
+        source_id=str(metadata.get("source_id") or ""),
+        allow_pin_change=bool(metadata.get("allow_pin_change")),
         scope=scope,  # type: ignore[arg-type]
         cwd=cwd,
         home=home,
         ref=str(metadata.get("ref") or ""),
-        blueprint_id=blueprint_id,
+        blueprint_id=blueprint_id.rsplit("::", 1)[-1],
+        pinned_commit=str(metadata.get("pinned_commit") or ""),
     )
 
 
@@ -239,29 +253,31 @@ def uninstall_agent_blueprint(
     from clio_agent.platform_paths import rmtree_extended  # noqa: PLC0415
 
     home = home or Path.home()
-    root = _install_root(home=home, cwd=cwd, scope=scope) / blueprint_id
+    root = installed_root(_install_root(home=home, cwd=cwd, scope=scope), blueprint_id)
     if not root.exists():
         raise FileNotFoundError(f"installed agent blueprint not found: {blueprint_id}")
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+
+    identity = identity_fields(parse_agent_blueprint_root(root, scope=scope))["identity"]
     rmtree_extended(root)
-    if scope == "global":
-        tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
-        tombstones.add(blueprint_id)
-        write_uninstalled_tombstones(tombstones, home=home, cwd=cwd)
+    tombstones = read_uninstalled_tombstones(home=home, cwd=cwd, scope=scope)
+    tombstones.add(identity)
+    write_uninstalled_tombstones(tombstones, home=home, cwd=cwd, scope=scope)
     return {"uninstalled": {"id": blueprint_id, "scope": scope, "root": str(root)}}
 
 
-def uninstalled_tombstones_path(*, home: Path, cwd: Path) -> Path:
+def uninstalled_tombstones_path(*, home: Path, cwd: Path, scope: str = "global") -> Path:
     """The per-user ledger of blueprint ids the USER uninstalled (sync must skip)."""
 
-    return _install_root(home=home, cwd=cwd, scope="global") / ".uninstalled.json"
+    return _install_root(home=home, cwd=cwd, scope=scope) / ".uninstalled.json"
 
 
-def read_uninstalled_tombstones(*, home: Path, cwd: Path) -> set[str]:
+def read_uninstalled_tombstones(*, home: Path, cwd: Path, scope: str = "global") -> set[str]:
     """Blueprint ids the user uninstalled — the registry sync never resurrects these."""
 
     import json as _json  # noqa: PLC0415
 
-    path = uninstalled_tombstones_path(home=home, cwd=cwd)
+    path = uninstalled_tombstones_path(home=home, cwd=cwd, scope=scope)
     try:
         payload = _json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -275,14 +291,16 @@ def read_uninstalled_tombstones(*, home: Path, cwd: Path) -> set[str]:
     return {str(item) for item in ids if str(item).strip()}
 
 
-def write_uninstalled_tombstones(ids: set[str], *, home: Path, cwd: Path) -> None:
+def write_uninstalled_tombstones(
+    ids: set[str], *, home: Path, cwd: Path, scope: str = "global"
+) -> None:
     """Persist the uninstall ledger (created on first uninstall, pruned on install)."""
 
-    import json as _json  # noqa: PLC0415
+    from clio_agent.gact.blueprint_ledgers import write_json_atomic
 
-    path = uninstalled_tombstones_path(home=home, cwd=cwd)
+    path = uninstalled_tombstones_path(home=home, cwd=cwd, scope=scope)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_json.dumps({"uninstalled": sorted(ids)}, indent=2), encoding="utf-8")
+    write_json_atomic(path, {"uninstalled": sorted(ids)})
 
 
 def clear_uninstall_tombstones(
@@ -302,12 +320,14 @@ def clear_uninstall_tombstones(
         cwd: Workspace directory locating the tombstone ledger.
     """
 
-    if scope != "global" or not installed:
+    if not installed:
         return
-    tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
-    reinstalled = {str(row.get("id")) for row in installed} & tombstones
+    tombstones = read_uninstalled_tombstones(home=home, cwd=cwd, scope=scope)
+    reinstalled = {
+        str(row.get(key)) for row in installed for key in ("id", "identity")
+    } & tombstones
     if reinstalled:
-        write_uninstalled_tombstones(tombstones - reinstalled, home=home, cwd=cwd)
+        write_uninstalled_tombstones(tombstones - reinstalled, home=home, cwd=cwd, scope=scope)
 
 
 # The per-boot registry sync is boot semantics, not per-request semantics: the
@@ -508,7 +528,7 @@ def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
 
 
 def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str) -> str:
-    """Install/update registry packs from the global root (local-path sources only).
+    """Bootstrap missing local registry packs without applying source updates.
 
     A local registry checkout (the dev submodule) makes enumeration free, so a
     pack added to the registry after the original bootstrap (the
@@ -527,8 +547,8 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
       time) are never clobbered — same rule as
       ``agent_blueprint_sources.source_install_skip_ids``'s
       ``local_edits_present``. Otherwise, a source checksum that differs from
-      the installed one re-installs (never a silent stale copy) and is
-      logged with BOTH checksums;
+      the installed one records BOTH checksums but retains the working revision.
+      Applying that change requires explicit Reload at a safe turn boundary;
     * a pack the USER uninstalled (the tombstone ledger) is never resurrected;
     * the whole body is failure-isolated: any error is a logged, returned
       diagnostic, never an exception into discovery (every blueprint route sits
@@ -555,7 +575,12 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
         with _SYNC_LOCK:
             if gate_key in _SYNC_COMPLETED_FOR:
                 return ""
-            tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
+            tombstones = source_tombstones(
+                read_uninstalled_tombstones(home=home, cwd=cwd),
+                source,
+                DEFAULT_REGISTRY_REF,
+                "global",
+            )
             failures: list[str] = []
             for candidate in _install_candidates(source_path):
                 parsed = parse_agent_blueprint_root(candidate, scope="install")
@@ -564,9 +589,11 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                 if parsed.id in tombstones:
                     logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
                     continue
-                existing_root = install_root / parsed.id
+                existing_root = install_destination(
+                    install_root, parsed.id, {"source": source, "ref": DEFAULT_REGISTRY_REF}
+                )
                 reinstall_reason = _reinstall_reason(existing_root, candidate)
-                if reinstall_reason is None:
+                if reinstall_reason != "missing_from_install_root":
                     continue
                 try:
                     install_agent_blueprint(
@@ -722,6 +749,7 @@ def _refresh_stale_default_registry_install(
             ref=DEFAULT_REGISTRY_REF,
             blueprint_id=DEFAULT_AGENT_BLUEPRINT_ID,
             pinned_commit=pinned,
+            preserve_invalid=True,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(

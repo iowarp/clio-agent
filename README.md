@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="820">
+  <img src="branding/clio/wordmark.svg" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="320">
 </p>
 
 <p align="center">
@@ -51,13 +51,13 @@ clio
 `clio` boots the server (if it isn't already up) and attaches the TUI. On first connect, pick an LM provider in the modal and you're chatting.
 
 Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
-or Python 3.12+ with `pip`. `git` and Go are only needed when you opt into
+or Python 3.13 with `pip`. `git` and Go are only needed when you opt into
 source-build mode with `CLIO_REF` or `GACT_REF`.
 
 CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release.
 Registry-backed `uv tool install` needs that exact DSPy dependency declared as an
 explicit root and prerelease resolution enabled: use
-`uv tool install --prerelease allow --with dspy==3.4.0 clio-agent==0.9.4.24` for a
+`uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent==0.9.4.24` for a
 persistent backend-only install. This keeps unrelated dependencies on stable releases.
 Reserve `uvx` / `uv tool run` for disposable checks. See
 [install/README.md](install/README.md) for the full contract.

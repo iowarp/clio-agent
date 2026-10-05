@@ -1,0 +1,86 @@
+---
+title: Working with files
+description: Read PDFs, revise Word documents and slides, and check spreadsheet results in CLIO.
+---
+
+import WidgetRecording from '../../../components/WidgetRecording.astro';
+
+Bring a document into your workspace, ask for a specific change, and review the result before sharing it. CLIO can work with PDFs, Word documents, PowerPoint decks and Excel workbooks. Office results keep their editable source alongside a saved PDF preview.
+
+:::note[CLIO beta 3]
+These recordings show the document workflows included in CLIO 0.9.5-beta.3. They use real default-agent sessions with synthetic workshop files.
+:::
+
+## Start with a file
+
+Put the file inside your workspace folder. Type `@` in a message and choose its name from **Workspace files**. The reference tells CLIO which file you mean; add the change you want and anything it should preserve.
+
+![Choosing a Word document from the workspace reference picker](/media/files-reference-picker.png)
+
+To read a PDF yourself, open the workspace canvas, choose **File explorer** from **Add to canvas**, and select the file. Expand the canvas for a larger view. The PDF viewer also offers zoom and paged navigation.
+
+<WidgetRecording
+  name="files-pdf-read"
+  title="Open and read a PDF"
+  caption="Select the workshop notes in File explorer, then expand the canvas to read the page."
+  timingNote="A pause between actions is shortened."
+  pointerGuide
+/>
+
+## Revise a Word document
+
+Be explicit about both the edit and the parts that should survive:
+
+> Move the review to Wednesday at 10:00. Keep the diagram and one-page layout. Save a revised Word document and publish it with its PDF preview.
+
+CLIO reads the existing file, makes the change, renders the result and publishes the revised document. Open the resulting artifact to inspect its saved PDF preview. In this example, the diagram stays in place and the review date changes.
+
+<WidgetRecording
+  name="files-word-edit"
+  title="Make a revision and review the result"
+  caption="Choose the source, ask for a date change, then open the revised Word artifact and its saved preview."
+  timingNote="Agent waiting intervals are accelerated and labeled; typing and opening the result remain at normal speed."
+  pointerGuide
+/>
+
+## Update slides and a workbook
+
+A follow-up can refer to more than one file. Here the workshop deck receives the same date change, while the budget workbook changes Review from two hours to three. The revised workbook retains its formulas; its checked totals become eight hours and 200.
+
+<WidgetRecording
+  name="files-office-review"
+  title="Check slides and spreadsheet totals"
+  caption="A real follow-up edits the deck and workbook, then opens their published PDF previews for review."
+  timingNote="Agent waiting intervals are accelerated and labeled. The examples contain synthetic planning data."
+  pointerGuide
+/>
+
+<details>
+<summary>Replay the slide navigation</summary>
+
+![The recorded PDF viewer advances from the revised first slide to the second slide](/media/files-slide-navigation.gif)
+
+</details>
+
+| File | Useful requests | What to review |
+| --- | --- | --- |
+| PDF | Read or extract content, inspect pages, create a report | Page layout, images and extracted text |
+| Word (`.docx`) | Revise text, preserve a template, create a report | Headings, tables, images and pagination |
+| PowerPoint (`.pptx`) | Update a deck or create slides | Every slide, including text placement and images |
+| Excel (`.xlsx`) | Change cells, keep formulas, create a workbook | Recalculated values, formulas and printed sheet layout |
+
+The model and the document's structure affect what can be preserved. Ask CLIO to inspect and explain any unsupported object or rendering failure before you treat the result as ready.
+
+## Keep the editable result
+
+The preview is for reading. The artifact retains the Word document, deck or workbook that produced it. Use the artifact's download action for that editable source; in the desktop app, a configured document editor can open an editable working copy. Make another request to produce a further revision, then review its new preview.
+
+Each saved preview belongs to a particular source version. If conversion fails, the editable artifact remains available and CLIO reports the failure. A separate PDF export can also be useful for sharing, but it does not replace the editable file.
+
+![A revised Word artifact open beside its conversation](/media/files-word-preview.png)
+
+## Draft a message to accompany it
+
+Ask for an email draft when you need to explain the changes to a colleague. The [Message draft widget](/docs/widgets/message-draft/) lets you compare alternatives and edit recipients, subject and body. Copy the draft or open it in your mail composer for review and sending. This is a handoff to your composer; CLIO's draft widget does not send the email.
+
+See the [human-agent interaction gallery](/docs/widgets/interaction/) for other ways to review a choice, and [Memory and evidence](/docs/memory-and-evidence/) for how CLIO records the files and actions behind a result.

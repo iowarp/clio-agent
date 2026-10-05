@@ -115,13 +115,19 @@ esac
 have curl || die "curl is required"
 
 # Need a Python installer for clio-agent. uv is preferred (handles
-# venv + Python toolchain itself); pip works if Python 3.12+ is on PATH.
+# venv + Python toolchain itself). Native core wheels support Python 3.13;
+# use the bundle's tested 3.13 interpreter instead of selecting the newest Python.
 PYINSTALL=""
 if   have uv;   then PYINSTALL=uv
 elif have pip3; then PYINSTALL=pip3
 elif have pip;  then PYINSTALL=pip
 else
   die "need uv or pip to install clio-agent. install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+fi
+
+if [ "$PYINSTALL" != "uv" ]; then
+  python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else 1)' \
+    || die "pip installation requires Python 3.13. Install uv to provision Python 3.13 automatically."
 fi
 
 if [ -n "$CLIO_REF" ]; then
@@ -146,10 +152,10 @@ if [ -n "$CLIO_REF" ]; then
     die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
   fi
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync --extra argonne)"
-  ( cd "$PREFIX/clio-agent" && uv sync --extra argonne )
+  say "Installing clio-agent deps (uv sync --python 3.13 --extra argonne --extra flowcept)"
+  ( cd "$PREFIX/clio-agent" && uv sync --python 3.13 --extra argonne --extra flowcept )
 else
-  pkg_spec="clio-agent[argonne]${CLIO_VERSION:+==$CLIO_VERSION}"
+  pkg_spec="clio-agent[argonne,flowcept]${CLIO_VERSION:+==$CLIO_VERSION}"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
   wheel_arg=""
@@ -158,7 +164,7 @@ else
   rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
-    uv venv --python ">=3.12" "$VENV" >/dev/null
+    uv venv --python 3.13 "$VENV" >/dev/null
     uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} "$pkg_spec" \
       "dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
       "fastmcp-tasks==4.0.0b5"
@@ -173,6 +179,9 @@ CLIO_INSTALLED_VERSION=""
 if [ -x "$VENV/bin/python" ]; then
   CLIO_INSTALLED_VERSION="$("$VENV/bin/python" -c 'from importlib.metadata import version; print(version("clio-agent"))' 2>/dev/null || true)"
 fi
+
+say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
+"$VENV/bin/python" -m clio_agent.runtime.document_install
 
 # ---------- provision clio-kit MCP runtime ----------------------------
 # Marketplace packs launch their MCP servers via the installed `clio-kit
@@ -194,7 +203,7 @@ if have uv; then
     clio_kit_spec="${CLIO_KIT_PACKAGE}[science]"
     say "Provisioning candidate shared clio-kit science runtime ($clio_kit_spec)"
   fi
-  uv tool install "$clio_kit_spec" || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
+  uv tool install --python 3.13 "$clio_kit_spec" || warn "clio-kit provisioning failed; marketplace pack tools will be unavailable until 'uv tool install \"$clio_kit_spec\"' succeeds and '\$(uv tool dir --bin)' is on PATH"
 else
   warn "uv not found — skipping clio-kit MCP runtime provisioning; install uv and rerun this installer"
 fi

@@ -27,7 +27,8 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MARK = REPO_ROOT / "branding" / "logo_cropeed.png"
+DEFAULT_MARK = REPO_ROOT / "branding" / "clio" / "mark.png"
+DEFAULT_WORDMARK = REPO_ROOT / "branding" / "clio" / "wordmark.png"
 DEFAULT_OUT_DIR = REPO_ROOT / "branding" / "clio" / "installer"
 
 HEADER_SIZE = (150, 57)
@@ -40,7 +41,6 @@ HEADER_BG = (255, 255, 255)  # matches MUI_BGCOLOR, so the band reads as one sur
 HEADER_INK = (26, 42, 48)
 SIDEBAR_TOP = (17, 36, 43)
 SIDEBAR_BOTTOM = (8, 17, 21)
-SIDEBAR_INK = (255, 255, 255)
 SIDEBAR_MUTED = (138, 160, 168)
 
 # Supersampling factor. Text and the mark are drawn at this scale and reduced
@@ -147,11 +147,11 @@ def render_header(mark_path: Path = DEFAULT_MARK) -> Image.Image:
     return _flatten(canvas)
 
 
-def render_sidebar(mark_path: Path = DEFAULT_MARK) -> Image.Image:
+def render_sidebar(mark_path: Path = DEFAULT_WORDMARK) -> Image.Image:
     """Render the 164x314 NSIS welcome/finish panel.
 
-    A dark panel so the teal mark and orange core carry the page; the wordmark
-    and the Gnosis Research Center attribution sit under an accent rule.
+    A dark panel with the complete approved owl and serif wordmark, followed
+    by the Gnosis Research Center attribution under an accent rule.
 
     Args:
         mark_path: Path to the RGBA logo.
@@ -175,18 +175,11 @@ def render_sidebar(mark_path: Path = DEFAULT_MARK) -> Image.Image:
             ),
         )
 
-    mark = _fit_height(_trimmed_mark(mark_path), 84 * SCALE)
-    canvas.alpha_composite(mark, ((width - mark.width) // 2, 62 * SCALE))
+    mark = _fit_height(_trimmed_mark(mark_path), 126 * SCALE)
+    canvas.alpha_composite(mark, ((width - mark.width) // 2, 57 * SCALE))
 
     draw = ImageDraw.Draw(canvas)
     centre = width // 2
-    draw.text(
-        (centre, 183 * SCALE),
-        "CLIO",
-        font=_load_font(BOLD_FONTS, 30 * SCALE),
-        fill=(*SIDEBAR_INK, 255),
-        anchor="ms",
-    )
     draw.rectangle(
         [centre - 19 * SCALE, 195 * SCALE, centre + 19 * SCALE, 195 * SCALE + max(1, SCALE // 2)],
         fill=(*ACCENT, 255),
@@ -203,12 +196,15 @@ def render_sidebar(mark_path: Path = DEFAULT_MARK) -> Image.Image:
     return _flatten(canvas)
 
 
-def write_art(out_dir: Path, mark_path: Path = DEFAULT_MARK) -> list[Path]:
+def write_art(
+    out_dir: Path, mark_path: Path = DEFAULT_MARK, wordmark_path: Path = DEFAULT_WORDMARK
+) -> list[Path]:
     """Render both bitmaps into ``out_dir`` as uncompressed 24-bit BMPs.
 
     Args:
         out_dir: Directory to write ``header.bmp`` and ``sidebar.bmp`` into.
         mark_path: Path to the RGBA logo.
+        wordmark_path: Path to the RGBA owl with the approved serif wordmark.
 
     Returns:
         The paths written, in the order header, sidebar.
@@ -217,7 +213,7 @@ def write_art(out_dir: Path, mark_path: Path = DEFAULT_MARK) -> list[Path]:
     written: list[Path] = []
     for name, image in (
         ("header.bmp", render_header(mark_path)),
-        ("sidebar.bmp", render_sidebar(mark_path)),
+        ("sidebar.bmp", render_sidebar(wordmark_path)),
     ):
         path = out_dir / name
         # Pillow writes BI_RGB 24-bit for an RGB image, which is what NSIS needs.
@@ -238,6 +234,12 @@ def main() -> None:
         help="RGBA logo to render (default: the tracked CLIO mark)",
     )
     parser.add_argument(
+        "--wordmark",
+        type=Path,
+        default=DEFAULT_WORDMARK,
+        help="RGBA full logo to render on the sidebar",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         default=DEFAULT_OUT_DIR,
@@ -245,7 +247,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    for path in write_art(args.out_dir, args.mark):
+    for path in write_art(args.out_dir, args.mark, args.wordmark):
         with Image.open(path) as rendered:
             print(f"wrote {path} ({rendered.width}x{rendered.height})")
 

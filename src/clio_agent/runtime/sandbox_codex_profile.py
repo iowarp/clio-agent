@@ -93,6 +93,24 @@ def synthesize_codex_profile(
         filesystem[root] = "read"
     for root in writes:  # write wins over an overlapping read grant
         filesystem[root] = "write"
+    from clio_agent.runtime.storage_access import storage_access_roots  # noqa: PLC0415
+
+    read_only, denied = storage_access_roots()
+    # A nested write grant must not override a protected parent. Denials also
+    # remove nested read grants before the final profile is handed to Codex.
+    filesystem = {
+        path: access
+        for path, access in filesystem.items()
+        if not any(Path(path).resolve().is_relative_to(root) for root in denied)
+        and not (
+            access == "write"
+            and any(Path(path).resolve().is_relative_to(root) for root in read_only)
+        )
+    }
+    for protected_root in read_only:
+        filesystem[str(protected_root)] = "read"
+    for protected_root in denied:
+        filesystem[str(protected_root)] = "deny"
     profile: dict[str, Any] = {
         "description": (
             f"clio sandbox profile {profile_name!r}: read-anywhere, "

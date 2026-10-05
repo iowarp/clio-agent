@@ -47,6 +47,7 @@ from clio_agent.gact.documents.profiles import document_format
 from clio_agent.gact.documents.renditions import (
     RenditionError,
     RenditionUnavailableError,
+    find_pdf_rendition,
     render_pdf,
 )
 from clio_agent.gact.documents.store import (
@@ -112,8 +113,13 @@ def _artifact_source(
     return candidate
 
 
-def _manifest(record: ArtifactRecord, version: ArtifactVersion) -> DocumentManifest:
+def _manifest(
+    record: ArtifactRecord, version: ArtifactVersion, app: FastAPI | None = None
+) -> DocumentManifest:
     format_row = document_format(record.name)
+    rendition = (
+        find_pdf_rendition(app, record, version) if app and format_row.rendition_formats else None
+    )
     return DocumentManifest(
         artifact_id=version.artifact_id,
         workspace_id=record.workspace_id,
@@ -127,6 +133,7 @@ def _manifest(record: ArtifactRecord, version: ArtifactVersion) -> DocumentManif
         native_open=format_row.native_open,
         embedded_editors=list(format_row.embedded_editors),
         rendition_formats=list(format_row.rendition_formats),
+        pdf_rendition_artifact_id=rendition.version.artifact_id if rendition else "",
         provenance={
             "custody": version.custody.value,
             "mechanism": version.mechanism.value,
@@ -309,7 +316,7 @@ def register_document_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/artifacts/{artifact_id}/document", response_model=DocumentManifest)
     async def get_document_manifest(artifact_id: str) -> DocumentManifest:
         record, version = await _artifact(app, artifact_id)
-        return _manifest(record, version)
+        return _manifest(record, version, app)
 
     @app.get("/v1/artifacts/{artifact_id}/document/content")
     async def get_document_content(artifact_id: str) -> FileResponse:

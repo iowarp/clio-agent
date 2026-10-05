@@ -1,0 +1,205 @@
+{
+  "service": "cmf",
+  "facts": {
+    "target_id": "homelab-monitoring-qualification-podman",
+    "label": "Homelab qualification",
+    "os": "linux",
+    "arch": "x86_64",
+    "accelerator": "none",
+    "docker_available": true,
+    "docker_installed": true,
+    "uv_available": true,
+    "transport_state": "connected",
+    "container_runtimes": [
+      {
+        "name": "docker",
+        "installed": true,
+        "usable": true,
+        "version": "29.2.0",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "podman",
+        "installed": true,
+        "usable": true,
+        "version": "3.0.1",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "apptainer",
+        "installed": false,
+        "usable": false,
+        "version": "",
+        "reason": "not_installed",
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      }
+    ],
+    "identity": {
+      "uid": 1000,
+      "gid": 1000
+    },
+    "home": "/home/jcernuda",
+    "agent_data_root": "/home/jcernuda/.local/share/clio-agent",
+    "hostname": "Server"
+  },
+  "installed": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791128964.7968795
+  },
+  "started": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129060.8346846
+  },
+  "verified": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129069.4783294
+  },
+  "stopped": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129082.0989494
+  },
+  "restarted": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129160.1797063
+  },
+  "reverified": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129176.193008
+  },
+  "removed": {
+    "definition_version": "cmf-managed-2",
+    "configuration_revision": "5922dcbce1c2530aa28b27360dc2a0e86b0755582ab613ed689db1b7ef460707",
+    "phase": "not_installed",
+    "installed": false,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "effective_artifacts": {
+      "clio-cmf-edb6ea8a8a15-postgres": "264e9dea325c61b96546c4065848e3ecaa85333b750506f783eced0a1830e37e",
+      "clio-cmf-edb6ea8a8a15-server": "76b4aec9944a600c08f25e017459fd47b925945a9d425cd49abd138447edf2bc",
+      "python_lock_sha256": "eb14901957f2492e2887bd23d60c6a263c91edebe5a21dea23eced62390c2cf5",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136"
+    },
+    "error": null,
+    "observed_at": 1791129220.6941748
+  },
+  "configuration": {
+    "port": "18380",
+    "container_runtime": "podman",
+    "image_storage": "service",
+    "storage.container_images": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/containers/images",
+    "storage.container_downloads": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/containers/downloads",
+    "storage.service_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf",
+    "storage.captures": "/data/clio-beta3-qualification/monitoring-podman/services/Server/cmf/evidence",
+    "compatibility_profile": "cmf-managed-2",
+    "native_owner": "edb6ea8a8a15e2d193125bcd2440362b56c886e41da2a8f05269447329b695a2"
+  },
+  "inference_tested": false
+}

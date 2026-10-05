@@ -1,0 +1,12 @@
+{
+  "name": "clio-document-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@12.9.1",
+  "dependencies": {
+    "docx": "9.8.1",
+    "pptxgenjs": "4.0.1",
+    "sharp": "0.35.5",
+    "tsx": "4.23.15"
+  }
+}

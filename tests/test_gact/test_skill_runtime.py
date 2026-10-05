@@ -298,10 +298,14 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     # edited blueprint, matching the existing ``planning`` precedent exactly.
     assert effective_declared_skills(listing_root, catalog) == [
         "user-skill",
+        "connect-data",
         "planning",
         "present-interactive-analysis",
         "update-models",
         "work-with-pdfs",
+        "work-with-presentations",
+        "work-with-spreadsheets",
+        "work-with-word",
     ]
     # DELETED SEAM regression pin: the retired "listing seam" stamp
     # (metadata["source_blueprint"] == "default_registry") -- the tag
@@ -333,7 +337,12 @@ def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None
     from clio_agent.gact.catalog import _builtin_main_agent
 
     agent = _builtin_main_agent()
-    assert agent.skills == ["work-with-pdfs"]
+    assert agent.skills == [
+        "work-with-pdfs",
+        "work-with-word",
+        "work-with-presentations",
+        "work-with-spreadsheets",
+    ]
     assert "view_image" in agent.tools
 
     catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")

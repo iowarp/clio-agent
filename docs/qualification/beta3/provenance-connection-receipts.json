@@ -1,0 +1,55 @@
+{
+  "connections": [
+    {
+      "id": "2986f9a9-9187-48dd-84b0-528d82f5cfad",
+      "service_id": "cmf",
+      "label": "Homelab CMF",
+      "url": "http://127.0.0.1:19980",
+      "credential_ref": "",
+      "managed": false,
+      "reachable": true,
+      "checked_at": "2026-10-04T07:07:27.604451-05:00",
+      "created_at": "2026-10-04T07:07:20.340014-05:00",
+      "configuration": {
+        "attention_files_dir": "",
+        "capture_attention": "false",
+        "settings_path": ""
+      },
+      "verification": {
+        "input_output_lineage": true,
+        "probe_id": "829aac8a-8de9-4121-833a-50119358b8ed",
+        "revision": "d683a135eb27b2fffcd51965549a6877aedc730b83955583b6a8798f34ca7b51",
+        "verified_at": "2026-10-04T07:07:27.604451-05:00",
+        "write_readback": true
+      },
+      "verified": true,
+      "active": true,
+      "selected": false
+    },
+    {
+      "id": "6a8d8073-f2f6-4cee-94df-d5a964481abd",
+      "service_id": "flowcept",
+      "label": "Homelab Flowcept",
+      "url": "http://127.0.0.1:19938",
+      "credential_ref": "",
+      "managed": false,
+      "reachable": true,
+      "checked_at": "2026-10-04T07:07:53.555633-05:00",
+      "created_at": "2026-10-04T07:07:46.133492-05:00",
+      "configuration": {
+        "attention_files_dir": "",
+        "capture_attention": "false",
+        "settings_path": "<isolated CLIO>/flowcept-settings.yaml"
+      },
+      "verification": {
+        "probe_id": "e4f40b9f-fc5b-4131-abd5-bc7dafa20a01",
+        "revision": "72326a6da99488bac643d844f6a0263676380702d0e6b58b8bbf907dcc0035f7",
+        "verified_at": "2026-10-04T07:07:53.555633-05:00",
+        "write_readback": true
+      },
+      "verified": true,
+      "active": true,
+      "selected": false
+    }
+  ]
+}

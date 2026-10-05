@@ -89,6 +89,9 @@ def _append_session_message(
 
     with forget_unminted_on_failure(app, session_id, message):
         on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
+    from clio_agent.gact.storage.drafts import retain_message_sources
+
+    retain_message_sources(app, message)
 
 
 def _interrupted_assistant_row(

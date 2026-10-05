@@ -57,7 +57,7 @@ def call_record(
     model: str, inputs: dict[str, Any], outputs: Any, exception: BaseException | None
 ) -> dict[str, Any]:
     """The ``lm.call`` payload for one call (typed Request/Response or adapter I/O)."""
-    request = inputs.get("prompt")
+    request = inputs.get("prompt") or inputs.get("kwargs", {}).get("request")
     if hasattr(request, "messages") and hasattr(request, "model"):
         messages: Any = _request_messages(request)
     else:
@@ -74,12 +74,20 @@ def call_record(
         "usage": usage,
         "timestamp": datetime.now(UTC).isoformat(),
     }
-    from clio_agent.provenance_config import kvnorm_join_enabled  # noqa: PLC0415
+    from clio_agent.gact.attention.declare import (  # noqa: PLC0415
+        current_declaration,
+        current_wire_messages,
+    )
+    from clio_agent.provenance_config import response_id_join_enabled  # noqa: PLC0415
 
-    if kvnorm_join_enabled():
+    if response_id_join_enabled():
         # Stage 3 kvnorm crosslink: the provider response id keys this call to its
         # kv_token_importance record in the fused Flowcept store.
         record["response_id"] = str(getattr(outputs, "id", "") or "")
+    if (declaration := current_declaration()) is not None:
+        record["attention"] = declaration
+    if (wire_messages := current_wire_messages()) is not None:
+        record["attention_messages"] = wire_messages
     if exception is not None:
         record["error"] = f"{type(exception).__name__}: {exception}"
     return record

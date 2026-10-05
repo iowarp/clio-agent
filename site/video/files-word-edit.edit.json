@@ -1,0 +1,11 @@
+{
+  "source": "takes/files-word-edit-20261005-c.mp4",
+  "notes": "Real default-agent Word edit. Agent waiting is 8x with a visible label. Idle time after completion is cut. A subsequent continuous take shows the actual zoom controls.",
+  "shots": [
+    {"from": 0, "to": 10.5, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Choose the source and describe the revision"},
+    {"from": 10.5, "to": 107, "speed": 8, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Agent working - waiting shown at 8x speed"},
+    {"from": 107, "to": 112, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "The revised document arrives as an artifact"},
+    {"from": 132, "to": 144.8, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Open its saved PDF and check the whole page"},
+    {"source": "takes/files-word-layout-20261005-d.mp4", "from": 0, "to": 10.1, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Zoom in to check the date and preserved diagram"}
+  ]
+}

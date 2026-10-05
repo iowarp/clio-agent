@@ -20,6 +20,7 @@ out-of-territory write as ``EROFS`` / ``EACCES`` / ``WinError 5``; the floor let
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -413,8 +414,22 @@ def wrap_confined(
         )
 
     cmd: str = command
+    from clio_agent.runtime.storage_access import require_storage_fence  # noqa: PLC0415
+
+    try:
+        require_storage_fence(
+            resolved_state.mechanism,
+            resolved_state.active,
+            tuple(Path(root) for root in write_roots),
+        )
+    except PermissionError as exc:
+        raise SandboxCompositionError(str(exc)) from exc
     arg_list: list[str] = list(args)
     env_overlay: dict[str, str] = {}
+    # Distributor OAuth secrets belong only to the trusted setup owner.
+    for key in ("CLIO_STORAGE_GOOGLE_CLIENT_SECRET", "CLIO_STORAGE_GLOBUS_CLIENT_SECRET"):
+        if key in os.environ:
+            env_overlay[key] = ""
     popen_kwargs: dict[str, Any] = {}
     net_child_id = ""
 

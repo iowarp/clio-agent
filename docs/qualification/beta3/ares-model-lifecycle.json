@@ -1,0 +1,19 @@
+{
+  "hostname": "ares-comp-27",
+  "cancelled_before_retry": "cancelled",
+  "cache_reused_without_file_changes": true,
+  "receipt": {
+    "id": "776212351f94adc9aad41b4f",
+    "repository": "sshleifer/tiny-gpt2",
+    "requested_revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "destination": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/models/tiny-gpt2",
+    "state": "ready",
+    "phase": "Model available; choose a runtime to serve it",
+    "bytes_done": 4734064,
+    "bytes_total": 4734064,
+    "created_at": 1791100989.8084671,
+    "updated_at": 1791101009.3326955,
+    "error": null
+  }
+}

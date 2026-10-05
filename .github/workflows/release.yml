@@ -65,7 +65,7 @@ jobs:
           export UV_TOOL_BIN_DIR="$smoke_root/bin"
           wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
           test -n "$wheel"
-          uv tool install --python 3.12 --no-cache \
+          uv tool install --python 3.13 --no-cache \
             --with dspy==3.4.0 \
             --with fastmcp==4.0.0b5 \
             --with fastmcp-slim==4.0.0b5 \
@@ -165,7 +165,7 @@ jobs:
           export UV_TOOL_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/tools"
           export UV_TOOL_BIN_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/bin"
           for attempt in $(seq 1 12); do
-            if uv tool install --python 3.12 --no-cache \
+            if uv tool install --python 3.13 --no-cache \
               --with dspy==3.4.0 \
               --with fastmcp==4.0.0b5 \
               --with fastmcp-slim==4.0.0b5 \

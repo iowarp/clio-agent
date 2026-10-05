@@ -30,6 +30,12 @@ from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.monitoring_services import (
+    MONITORING_SERVICES,
+    monitoring_definitions,
+    monitoring_plan,
+    monitoring_port,
+)
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 
@@ -51,7 +57,7 @@ CLIO_AGENT_PORT = 17_800
 # reach them at the host's address, so they are always reached through an SSH
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
 # loopback because they have no authentication (see model_runtimes).
-LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES})
+LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
 
 
 def clio_agent_version() -> str:
@@ -71,6 +77,8 @@ def service_connection_port(
 
     if service_id in MODEL_RUNTIME_SERVICES:
         return service_port(service_id, configuration or {}, variant_id)
+    if service_id in MONITORING_SERVICES:
+        return monitoring_port(service_id, configuration or {})
     if service_id == "clio_agent":
         value = (configuration or {}).get("port", str(CLIO_AGENT_PORT))
         if not value.isdigit() or not 1024 <= int(value) <= 65535:
@@ -177,6 +185,7 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
         model_runtime_definition("vllm", facts),
         model_runtime_definition("llama_cpp", facts),
         model_runtime_definition("ollama", facts),
+        *monitoring_definitions(facts),
         web_search,
         relay,
         clio_agent,
@@ -251,9 +260,24 @@ def build_driver_plan(
     definition = definitions.get(service_id)
     if definition is None:
         raise ValueError(f"Unknown managed service {service_id!r}")
+    if action == "delete_data" and not (
+        (service_id == "vllm" and variant_id.startswith("native-cuda"))
+        or service_id in MONITORING_SERVICES
+    ):
+        raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
+    if action == "verify" and service_id not in MONITORING_SERVICES:
+        raise ValueError("This service definition has no setup verification procedure")
+    if service_id in MONITORING_SERVICES:
+        return monitoring_plan(
+            service_id,
+            action,
+            configuration,
+            facts,
+            target or InfrastructureTarget(id=facts.target_id, label=facts.label, kind="local"),
+        )
     if service_id in MODEL_RUNTIME_SERVICES:
         # The model-runtime driver checks its own compatibility, so a missing
         # container runtime surfaces as the typed RuntimeUnavailableError.
@@ -424,7 +448,7 @@ def _relay_plan(
                 "tool",
                 "install",
                 "--python",
-                "3.12",
+                "3.13",
                 "--no-config",
                 f"clio-relay=={RELAY_VERSION}",
             ],

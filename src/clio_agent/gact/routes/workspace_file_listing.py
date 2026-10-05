@@ -164,6 +164,16 @@ async def collect_workspace_file_entries(
 
     await asyncio.to_thread(walk, root)
 
+    sources = getattr(app.state, "connected_storage", None)
+    if sources is not None:
+        from clio_agent.gact.storage.workspace_files import connected_file_entries
+
+        connected, sources_truncated = await asyncio.to_thread(
+            connected_file_entries, sources, workspace_id, max(0, remaining)
+        )
+        entries.extend(connected)
+        truncated = truncated or sources_truncated
+
     store = getattr(app.state, "resource_store", None)
     if store is None:
         return WorkspaceFileWalk(entries=entries, truncated=truncated)
@@ -204,6 +214,14 @@ async def collect_workspace_file_entries(
 def resolve_managed_input(app: Any, workspace_id: str, root: Path, path: str) -> Path | None:
     """Resolve a virtual Files entry only for a registered source in this workspace."""
     from clio_agent.paths import workspace_state_dir
+
+    sources = getattr(app.state, "connected_storage", None)
+    if sources is not None:
+        from clio_agent.gact.storage.workspace_files import resolve_connected_input
+
+        connected = resolve_connected_input(sources, workspace_id, path)
+        if connected is not None:
+            return connected
 
     prefix = Path(".clio-agent/local")
     requested = Path(path)

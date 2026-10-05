@@ -1,0 +1,103 @@
+{
+  "id": "flowcept",
+  "category": "monitoring",
+  "label": "Flowcept",
+  "description": "Execution provenance and attention records.",
+  "recommended_variant": "managed",
+  "variants": [
+    {
+      "id": "managed",
+      "label": "Managed service",
+      "version": "1.0.3",
+      "install_type": "supervised_stack",
+      "artifact": "e638b4e2072290a2921965a03a150db124e11c2e",
+      "compatible": true,
+      "reason": "Ready on this host."
+    }
+  ],
+  "configuration_fields": [
+    {
+      "id": "container_runtime",
+      "label": "Dependency runtime",
+      "placeholder": "docker",
+      "required": false,
+      "options": [
+        "docker",
+        "podman"
+      ],
+      "variants": []
+    },
+    {
+      "id": "port",
+      "label": "Service port",
+      "placeholder": "8008",
+      "required": false,
+      "options": [],
+      "variants": []
+    },
+    {
+      "id": "redis_port",
+      "label": "Private Redis port",
+      "placeholder": "16379",
+      "required": false,
+      "options": [],
+      "variants": []
+    },
+    {
+      "id": "mongo_port",
+      "label": "Private MongoDB port",
+      "placeholder": "37017",
+      "required": false,
+      "options": [],
+      "variants": []
+    }
+  ],
+  "supports_stop": true,
+  "state": "not_installed",
+  "connection_url": "http://127.0.0.1:62150",
+  "connection_strategy": "ssh_forward",
+  "parameters": [],
+  "effective_parameters": [],
+  "configuration": {
+    "port": "18049",
+    "redis_port": "16399",
+    "mongo_port": "37037",
+    "storage.service_directory": "/data/clio-beta3-qualification/services-ui/flowcept",
+    "container_runtime": "docker",
+    "storage.captures": "/data/clio-beta3-qualification/services-ui/flowcept/evidence",
+    "compatibility_profile": "flowcept-managed-1",
+    "native_owner": "00aee992159cf0e4448c205ad98369a4e4945462696450d4536dfcdc49728a48",
+    "flowcept_settings": "/data/clio-beta3-qualification/services-ui/flowcept/settings.yaml",
+    "persistence_owner": "collector"
+  },
+  "owned_resources": [
+    {
+      "kind": "directory",
+      "ref": "/data/clio-beta3-qualification/services-ui/flowcept",
+      "runtime": null,
+      "created_at": "2026-10-04T03:58:18.613522-05:00"
+    }
+  ],
+  "supports_api_key": false,
+  "access": null,
+  "definition_version": "flowcept-managed-1",
+  "observation": {
+    "definition_version": "flowcept-managed-1",
+    "configuration_revision": "a87db2717d4cc43e31e828b6c962cb9b3796e0fcdcb4dda697ad0a17bdb7fa09",
+    "phase": "not_installed",
+    "installed": false,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/services-ui/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-00aee992159c-redis": "sha256:e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-00aee992159c-mongo": "sha256:ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791105403.0417564
+  }
+}

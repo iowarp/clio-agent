@@ -269,6 +269,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 client_upload_id=str(
                     body.get("client_upload_id") or body.get("idempotency_key") or ""
                 ),
+                pending_attachment=body.get("pending_attachment") is True,
             )
         except ResourceLimitError as exc:
             raise _error(
@@ -633,7 +634,9 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     @app.delete("/v1/workspaces/{workspace_id}/resources/{resource_id}")
-    async def delete_resource(workspace_id: str, resource_id: str) -> Response:
+    async def delete_resource(
+        workspace_id: str, resource_id: str, pending_only: bool = False
+    ) -> Response:
         record = _resource(app, workspace_id, resource_id)
         # Stop the remote job BEFORE the bytes go, so a converter is not left
         # working on a resource nobody will ever read, and so its late result
@@ -643,7 +646,9 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         if processing.state in {"submitted", "processing"} and processing.job_id:
             cancellation = await cancel_remote_job(app, processing)
         try:
-            deleted = app.state.resource_store.delete(workspace_id, resource_id)
+            deleted = app.state.resource_store.delete(
+                workspace_id, resource_id, pending_only=pending_only
+            )
         except ResourceDeleteError as exc:
             raise _error(
                 409,
@@ -654,6 +659,8 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 recovery_actions=["close_open_readers", "retry"],
             ) from exc
         if not deleted:
+            if pending_only:
+                return Response(status_code=204)
             raise _error(404, "not_found", f"resource not found: {resource_id}")
         app.state.resource_delivery_store.delete_resource(workspace_id, resource_id)
         emit_workspace_event(
@@ -662,6 +669,21 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             "resource.deleted",
             {**record.to_wire(), "cancellation": cancellation},
         )
+        return Response(status_code=204)
+
+    @app.post("/v1/workspaces/{workspace_id}/resources/discard-upload")
+    async def discard_upload(workspace_id: str, request: Request) -> Response:
+        """Remove an unsent upload and stop delayed upload requests from recreating it."""
+        _workspace(app, workspace_id)
+        body = await json_body(request, route="POST /resources/discard-upload")
+        try:
+            identifiers = app.state.resource_store.discard_upload(
+                workspace_id, str(body.get("client_upload_id") or "")
+            )
+        except ValueError as exc:
+            raise _error(400, "invalid_request", str(exc)) from exc
+        for identifier in identifiers:
+            await delete_resource(workspace_id, identifier, pending_only=True)
         return Response(status_code=204)
 
 

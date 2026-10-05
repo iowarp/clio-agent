@@ -259,6 +259,7 @@ async def test_install_records_everything_it_created_and_uninstall_removes_all_o
         ("parent_directory", f"{HOME}/.local/share/clio-agent/services/ares"),
         ("parent_directory", service_dir),
         ("directory", f"{service_dir}/cache"),
+        ("directory", f"{service_dir}/tmp"),
         ("image", IMAGE),
         ("container", "clio-ollama"),
     }
@@ -368,7 +369,7 @@ async def test_lifecycle_actions_use_the_installed_configuration_not_the_form(
     record = store.service(target_id, "ollama")
     assert record is not None and record.variant_id == "cpu"
     assert record.configuration["model"] == "qwen2.5:0.5b"
-    assert len(record.owned_resources) == 9
+    assert len(record.owned_resources) == 10
 
 
 class _NeverReadyTarget(FakeLinuxTarget):
@@ -452,6 +453,43 @@ async def test_reinstall_after_a_reload_uses_the_installed_configuration(tmp_pat
         ServiceActionRequest(target_id=target_id, action="uninstall", variant_id="cpu"),
     )
     assert IMAGE not in target.images
+
+
+@pytest.mark.asyncio
+async def test_reinstall_cannot_abandon_an_owned_storage_directory(tmp_path: Path) -> None:
+    target = FakeLinuxTarget()
+    runtime, store, target_id = _runtime(tmp_path, target)
+    assert (await _finish(runtime, store, "ollama", _install(target_id))).state == "succeeded"
+    record = store.service(target_id, "ollama")
+    assert record is not None
+    store.put_service(
+        record.model_copy(
+            update={
+                "configuration": {
+                    **record.configuration,
+                    "storage.service_directory": "/data/owned-service",
+                }
+            }
+        )
+    )
+    before = target.snapshot()
+    result = await _finish(
+        runtime,
+        store,
+        "ollama",
+        ServiceActionRequest(
+            target_id=target_id,
+            action="reinstall",
+            variant_id="cpu",
+            configuration={"storage.service_directory": "/data/another-service"},
+        ),
+    )
+    assert result.state == "failed" and "explicit data migration" in result.error
+    assert target.snapshot() == before
+    assert (
+        store.service(target_id, "ollama").configuration["storage.service_directory"]
+        == "/data/owned-service"
+    )
 
 
 def test_discovery_learns_the_default_context_of_a_running_managed_ollama(tmp_path: Path) -> None:

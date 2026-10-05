@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv run --no-project --python 3.12 --with pytest pytest -q -c install/tests/pytest.ini install/tests
+      - run: uv run --no-project --python 3.13 --with pytest pytest -q -c install/tests/pytest.ini install/tests
   build:
     runs-on: macos-14
     timeout-minutes: 40
@@ -86,4 +86,4 @@ jobs:
           hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
           ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
           hdiutil detach "$RUNNER_TEMP/clio-image"
-          uv run --no-project --python 3.12 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+          uv run --no-project --python 3.13 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
