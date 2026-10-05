@@ -54,7 +54,7 @@ def test_bundle_discovery_survives_relocation(
     (tmp_path / "runtime.json").write_text("{}")
     monkeypatch.delenv("GACT_BUNDLED_RUNTIME_DIR", raising=False)
     monkeypatch.setattr(
-        execution.sys, "executable", str(tmp_path / "python" / "bin" / "python3.12")
+        execution.sys, "executable", str(tmp_path / "python" / "bin" / "python3.13")
     )
     assert execution.bundled_root() == tmp_path
 

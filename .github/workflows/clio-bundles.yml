@@ -298,9 +298,9 @@ jobs:
         # present + >=3.11 for tomllib) rather than assuming a runner-ambient
         # python; the script itself has zero third-party dependencies.
         run: |
-          external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12 \
+          external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.13 \
             scripts/check_bundle_matches_lock.py \
-            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12
+            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.13
       - name: Verify bundled runtime matches uv.lock (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
@@ -699,7 +699,7 @@ jobs:
           hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
           ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
           hdiutil detach "$RUNNER_TEMP/clio-image"
-          uv run --no-project --python 3.12 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+          uv run --no-project --python 3.13 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
 
   release-check:
     name: release completeness
@@ -723,7 +723,7 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Generate signed Tauri update manifest
         env:
           GH_TOKEN: ${{ github.token }}

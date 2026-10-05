@@ -77,7 +77,7 @@ BUNDLE_TARGETS: tuple[str, ...] = (
 BUNDLE_MACOSX_DEPLOYMENT_TARGET = "14.0"
 
 #: The bundled runtime's interpreter version (build-gact-runtime default).
-BUNDLE_PYTHON = "3.12"
+BUNDLE_PYTHON = "3.13"
 
 #: Installed distributions that are not lock-resolved packages:
 #: ``clio-agent`` is installed from the local checkout (the lock has no

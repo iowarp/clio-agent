@@ -33,7 +33,7 @@ Use `uv` for environment and command execution:
 - `uv run clio-agent serve --host 0.0.0.0 --port 8100` starts the unified GACT server (the `/v1` REST/SSE API, health at `/v1/health`).
 
 ## Coding Style & Naming Conventions
-Target Python 3.12 with 4-space indentation and type hints on public interfaces. Keep lines readable within the configured `line-length = 100`. Follow existing naming:
+Target Python 3.13 with 4-space indentation and type hints on public interfaces. Keep lines readable within the configured `line-length = 100`. Follow existing naming:
 - modules/functions: `snake_case`
 - classes: `PascalCase`
 - constants: `UPPER_SNAKE_CASE`

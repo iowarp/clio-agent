@@ -15,7 +15,7 @@ reading host profiles. Returned script argument lists select uv and pnpm
 explicitly. Repository dependency environments stay separate.
 
 Preparation provisions an isolated Python environment from Clio's installed
-interpreter, including desktop's bundled Python, using
+interpreter, including desktop's bundled Python 3.13, using
 the shipped `runtime/document_stack/pyproject.toml` and `uv.lock`. Node.js is provided
 by the locked `nodejs-wheel-binaries` package. Clio installs a pinned pnpm privately
 and prepares JavaScript dependencies from `package.json` and `pnpm-lock.yaml` in a
@@ -28,6 +28,8 @@ script workspaces, skill paths, installed fonts and native-tool readiness. Exist
 Python caches are probed before reuse and repaired with a locked reinstall on a
 failed probe. JavaScript import failures get one locked repair attempt. A failed
 JavaScript setup is reported independently from a working Python runtime.
+The cache identity includes the Python interpreter and host platform, so runtime
+upgrades create a compatible environment instead of reusing an older virtualenv.
 The private pnpm command is checked against its pinned metadata and executed
 version; damaged or mismatched commands receive one bounded repair attempt.
 
