@@ -47,7 +47,9 @@ Clio uses bundled LibreOffice or provisions a private verified copy when renderi
 If provisioning fails or the model cannot receive images, report that precise
 review limitation. Successful generation, shape-bound checks and text extraction
 do not establish visual quality. Designate the requested editable `.pptx` with
-`create_artifact(path=output_path, kind="report", pdf_preview=true)` and link it.
+`create_artifact(path=output_path, kind="report", pdf_preview=true)`.
+Name the published artifact in the final response; Clio shows its artifact card.
+Do not format local filesystem paths as Markdown links.
 This registers the editable deck and a version-bound PDF artifact for Clio's
 viewer. Check `pdf_previews` for failures; a saved preview is not visual review.
 A separately registered review PDF does not bind to the editable deck. Keep

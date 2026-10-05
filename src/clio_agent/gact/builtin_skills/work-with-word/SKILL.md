@@ -60,5 +60,7 @@ was requested. In a batch, set `pdf_preview=true` on each editable Office item.
 Clio's UI
 opens the saved PDF when the source artifact is selected; users can still download
 or edit the original. Check `pdf_previews` for conversion failures. A preview is
-not visual review. Return the source link. Cite supplied sources and distinguish
+not visual review. Name the published artifact in the final response; Clio shows
+its artifact card. Do not format local filesystem paths as Markdown links.
+Cite supplied sources and distinguish
 user content from assumptions introduced while drafting.

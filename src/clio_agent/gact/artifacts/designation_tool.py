@@ -151,6 +151,8 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "pdf_preview=true to request a preview for another supported document format. "
             "In a batch, each item's pdf_preview overrides the call's default. "
             "A missing converter is reported in pdf_previews without discarding the source. "
+            "Accepted outputs appear as artifact cards in Clio. Name them in your final "
+            "response; do not make Markdown links using local paths or artifact:// URIs. "
             "Returns each accepted record or a typed rejection reason "
             "(path_missing, escapes_root, over_cap, invalid_kind, missing_input) you "
             "can correct and retry. Nothing is auto-registered; the artifact exists "

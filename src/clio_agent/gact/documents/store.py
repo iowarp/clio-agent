@@ -562,6 +562,7 @@ class DocumentStore:
         root = self._workspace_root(workspace_id)
         documents_root = self._documents_root(root)
         for read_root in (root / ".clio" / "agent" / "documents", documents_root):
+            read_root = Path(win_extended_path(read_root))
             ledger = read_root / "reviews.jsonl"
             if ledger.is_file():
                 for raw in ledger.read_text(encoding="utf-8").splitlines():

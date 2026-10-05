@@ -168,6 +168,7 @@ def _version_wire(
         "evidence_class": version.evidence.evidence_class.value,
         "sha256": version.sha256,
         "size_bytes": version.size_bytes,
+        "media_type": mime_for(version, name),
         "authority": version.evidence.authority,
         "path": version.path,
         "created_at": version.created_at,

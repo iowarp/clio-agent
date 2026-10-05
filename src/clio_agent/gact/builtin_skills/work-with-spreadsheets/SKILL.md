@@ -56,8 +56,10 @@ print layout, not the entire interactive workbook. If the converter or visual to
 is unavailable, state what was actually checked and retain the editable workbook.
 
 Designate the final XLSX with
-`create_artifact(path=output_path, kind="report", pdf_preview=true)` and return
-its link. This registers the editable workbook and its version-bound PDF print
+`create_artifact(path=output_path, kind="report", pdf_preview=true)`.
+Name the published artifact in the final response; Clio shows its artifact card.
+Do not format local filesystem paths as Markdown links.
+This registers the editable workbook and its version-bound PDF print
 preview for Clio's viewer. Check `pdf_previews` for failures. For CSV/TSV, register
 the table directly. Keep provenance for supplied data and label introduced assumptions.
 A separately registered review PDF does not bind to the editable workbook. Keep

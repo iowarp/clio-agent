@@ -68,6 +68,8 @@ splitting or rotation use `pypdf` or PyMuPDF. Preserve the source and reopen the
 output to check page count and requested content, then render and visually inspect
 material pages. Designate the requested final file with `create_artifact`. Do not
 claim form, signature or accessibility preservation from a successful rewrite.
+Name the published artifact in the final response; Clio shows its artifact card.
+Do not format local filesystem paths as Markdown links.
 
 When Docling's richer structural conversion is needed and the attachment has no
 usable structured derivative, the following existing helper remains available.

@@ -210,6 +210,39 @@ def test_native_comments_and_malformed_archives_are_bounded(tmp_path: Path) -> N
         extract_native_comments(unsafe)
 
 
+def test_working_copy_reloads_from_long_canonical_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep actual manifest IO working beyond Windows MAX_PATH after a restart."""
+    from clio_agent import paths
+    from clio_agent.gact.documents.store import DocumentStore
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    document = root / "brief.docx"
+    _docx(document)
+    state_root = tmp_path.joinpath(*(["canonical-document-state-" + "x" * 32] * 5))
+    assert len(str(state_root)) > 260
+
+    def workspace_state(cwd: str | Path | None = None) -> Path:
+        return state_root
+
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
+        _workspace_id, session_id = _workspace_session(client, root)
+        first = _pin(client, session_id, document.name)
+        monkeypatch.setattr(paths, "workspace_agent_dir", workspace_state)
+        created = client.post(
+            f"/v1/artifacts/{first['artifact_id']}/working-copies",
+            json={"session_id": session_id, "provider": "native", "auto_checkpoint": False},
+        )
+        assert created.status_code == 200, created.text
+        working_copy = created.json()
+        restored = DocumentStore(cast(FastAPI, client.app)).get_working_copy(working_copy["id"])
+        assert restored is not None
+        assert Path(restored.path).read_bytes() == document.read_bytes()
+        assert Path(restored.path).is_relative_to(root / "artifacts" / "document-working-copies")
+
+
 def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -219,6 +252,9 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
         workspace_id, session_id = _workspace_session(client, root)
         first = _pin(client, session_id, document.name)
+        assert first["media_type"] == document_format(document.name).mime_type
+        listing = client.get(f"/v1/sessions/{session_id}/artifacts").json()
+        assert listing["artifacts"][0]["versions"][0]["media_type"] == first["media_type"]
         created = client.post(
             f"/v1/artifacts/{first['artifact_id']}/working-copies",
             json={
@@ -245,7 +281,9 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
             / working_copy["id"]
             / "manifest.json"
         )
-        assert manifest.is_file()
+        from clio_agent.platform_paths import win_extended_path
+
+        assert Path(win_extended_path(manifest)).is_file()
         assert not (editable_path.parent / "manifest.json").exists()
         restored = DocumentStore(cast(FastAPI, client.app)).get_working_copy(working_copy["id"])
         assert restored is not None
