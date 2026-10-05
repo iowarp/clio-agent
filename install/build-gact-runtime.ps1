@@ -312,6 +312,7 @@ $previousFileCapacity = $env:CLIO_ARC_CTE_FILE_CAPACITY
 # prune casualty the gate exists to catch.
 $smokeUser = (Join-Path ([System.IO.Path]::GetDirectoryName($Out)) 'gact-runtime-arc-smoke')
 $previousRuntimeStateDir = $env:CLIO_RUNTIME_STATE_DIR
+$previousCorePort = $env:CLIO_CORE_PORT
 Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
 try {
   $env:CLIO_USER_DIR = $smokeUser
@@ -322,6 +323,13 @@ try {
   # runs there. Point them at the smoke's own directory so this proves the
   # RELOCATED IMAGE, and so the daemon log lands where the failure path looks.
   $env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')
+  # Private state also needs a private RPC endpoint: otherwise a developer's
+  # running daemon on 9413 is mistaken for an unversioned smoke-owned daemon.
+  $coreListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $coreListener.Start()
+  try {
+    $env:CLIO_CORE_PORT = [string]$coreListener.LocalEndpoint.Port
+  } finally { $coreListener.Stop() }
   New-Item -ItemType Directory -Path $smokeUser -Force | Out-Null
   New-Item -ItemType Directory -Path $env:CLIO_RUNTIME_STATE_DIR -Force | Out-Null
   # Diagnostic only: never fail the build because free space could not be read.
@@ -333,12 +341,14 @@ try {
   # NOT swallowed: on a degrade the helper prints the typed reason, the stack
   # from a wrapper-free re-run, and the daemon log. That output IS the gate's
   # diagnostic value, and piping it away once already cost a release cycle.
-  Invoke-Native -Exe $relocPy -Args @((Join-Path $Source 'install/arc_smoke.py'))
+  Invoke-Native -Exe $relocPy -Args @('-I', '-B', (Join-Path $Source 'install/arc_smoke.py'))
 } finally {
   Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
   if ($null -eq $previousRuntimeStateDir) {
     Remove-Item Env:CLIO_RUNTIME_STATE_DIR -ErrorAction SilentlyContinue
   } else { $env:CLIO_RUNTIME_STATE_DIR = $previousRuntimeStateDir }
+  if ($null -eq $previousCorePort) { Remove-Item Env:CLIO_CORE_PORT -ErrorAction SilentlyContinue }
+  else { $env:CLIO_CORE_PORT = $previousCorePort }
   if ($null -eq $previousUserDir) { Remove-Item Env:CLIO_USER_DIR -ErrorAction SilentlyContinue }
   else { $env:CLIO_USER_DIR = $previousUserDir }
   if ($null -eq $previousFileCapacity) {
