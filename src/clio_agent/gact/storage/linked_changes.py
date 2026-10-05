@@ -267,9 +267,9 @@ def publish_edits(
                     with linked_adapter(service, record, refresh=True) as adapter:
                         _save_index(service, record, journal, adapter.entries())
                 except Exception:
-                    logging.getLogger(__name__).warning(
-                        "Published files were recorded, but the linked index could not be refreshed",
-                        exc_info=True,
+                    logging.exception(
+                        "reason=linked_index_refresh_failed Published files were recorded, "
+                        "but the linked index could not be refreshed",
                     )
             service.store.update_operation(
                 operation.id, state="failed", error=str(exc), applied_paths=applied
