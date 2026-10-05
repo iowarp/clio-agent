@@ -1,0 +1,85 @@
+{
+  "date": "2026-10-05",
+  "archive": "2026-10-05-021729-working-with-files",
+  "method": "Continuous native Chrome recording; FFmpeg edits use MP4 sources only",
+  "data": "Synthetic workshop documents",
+  "agentBranch": "codex/document-runtime",
+  "uiBranch": "codex/document-renditions",
+  "uiWorkbookContinuationCommit": "8a72e2b62cdba684e8c6bff4ed0b716e54ff8f3b",
+  "acceptedTakes": [
+    "files-pdf-read-20261005-a",
+    "files-word-edit-20261005-c",
+    "files-word-layout-20261005-d",
+    "files-office-followup-20261005-e",
+    "files-workbook-review-20261005-g"
+  ],
+  "rejectedTakes": {
+    "files-word-edit-20261005-a": "Blocked path link and misleading header; reshot after fixes",
+    "files-word-review-20261005-b": "Continuation of rejected Word take",
+    "files-office-followup-20261005-a": "Blocked artifact Markdown links; reshot after guidance fixes",
+    "files-workbook-review-20261005-f": "Stale lazy-import URL while preview was rebuilt; reloaded and reshot"
+  },
+  "timing": "8x agent waiting intervals carry visible labels. Idle gaps are cut. Normal typing and result navigation retained.",
+  "assets": [
+    {
+      "name": "files-office-review.jpg",
+      "bytes": 59125,
+      "sha256": "f3c9030e414c6b646b126059490acaa48f5ab82059dfbee6a73e73f24e036581"
+    },
+    {
+      "name": "files-office-review.mp4",
+      "bytes": 2280430,
+      "sha256": "e5819ab638a603dee98a9a72f11f96e8c3200ec1163c33cd6382955e711eb66e"
+    },
+    {
+      "name": "files-office-review.vtt",
+      "bytes": 451,
+      "sha256": "569691849d65d98497fa99448f17610a743189601294b175b8bc4666b615373e"
+    },
+    {
+      "name": "files-pdf-read.jpg",
+      "bytes": 54255,
+      "sha256": "e4f0ad664222cc0f8e84c576d6cf43248d1fdef0e44523dd1927a71b3775222a"
+    },
+    {
+      "name": "files-pdf-read.mp4",
+      "bytes": 409228,
+      "sha256": "b8b128a88e96aa48eaccc8d374199ca2b491c8aa5cbb5cfb8748820f98344326"
+    },
+    {
+      "name": "files-pdf-read.vtt",
+      "bytes": 129,
+      "sha256": "99900e1c183bda0a358ed5c913145a0c9276923a11b3198f15aabb7cc5c88ba4"
+    },
+    {
+      "name": "files-reference-picker.png",
+      "bytes": 78216,
+      "sha256": "cf31b0a78f52f00b1d869eb4afaec1a14fac75db64f05c40b95ce891bc2a122e"
+    },
+    {
+      "name": "files-slide-navigation.gif",
+      "bytes": 141185,
+      "sha256": "476c749df93c7026b8fa366e20f8b6259fa2d7705eaf8fa51e9177fb81e78319"
+    },
+    {
+      "name": "files-word-edit.jpg",
+      "bytes": 71068,
+      "sha256": "33b9c7b82fdb66ab349708a19d1bff42c497a73505c71e6f7397b72af920beed"
+    },
+    {
+      "name": "files-word-edit.mp4",
+      "bytes": 1487609,
+      "sha256": "df10d1b14036f06a3a3cdec361c5e61e4fe882547b9beeff0998856b69c8084d"
+    },
+    {
+      "name": "files-word-edit.vtt",
+      "bytes": 384,
+      "sha256": "1be704c8c7c8687a516ecf8b374a71df9d2f40682dc6db55d37493d1180dac07"
+    },
+    {
+      "name": "files-word-preview.png",
+      "bytes": 115556,
+      "sha256": "9db3d1c976471e4dc57cdd5edf205833958779166b633dd2f81c94af41d7a4ff"
+    }
+  ]
+}

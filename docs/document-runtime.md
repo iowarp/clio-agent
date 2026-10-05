@@ -197,9 +197,45 @@ bound to the source artifact and visible through the file picker.
 
 The broader local Windows Python run is not qualified: it crashed with stack
 overflow and thread-exhaustion errors after 1,963 passing tests, with failures,
-errors and skips. A frontend worker also exhausted memory during broad UI tests.
-These results remain failed gates; focused passing checks do not replace them.
-The PRs are drafts pending clean broader qualification. The document installation
-matrix passed independently; it does not replace the broader suite. CI's new-helper
+errors and skips. This remains a failed local gate; focused passing checks do not
+replace it. An initial frontend run exhausted a worker's memory; rerunning with
+two workers passed all 2,469 web tests. All 251 core tests and 59 desktop tests
+also passed, with no skips. Lint, type checks, production builds and the three
+real-PDF Chromium artifact-opening cases passed on this develop base.
+The PRs were opened as drafts during broader qualification. Current run conclusions
+are recorded in the PR checks and descriptions. The document installation matrix
+passed independently; it does not replace the broader suite. CI's new-helper
 exception-handler ratchet failure was corrected with typed operation errors, and
 all 15 helper tests passed again.
+The full source mypy check passed for all 911 files on Windows and with Linux
+platform selection. CI's Windows-only subprocess-constant typing failures were
+corrected without ignoring the type errors; both CI interpreter lint jobs passed.
+
+## Live UI and documentation qualification (2026-10-05)
+
+An ordinary two-turn Codex/Luna UI conversation revised an existing Word document,
+then a two-slide PowerPoint deck and a formula-bearing Excel workbook. It loaded
+the built-in document skills, executed the managed runtime, viewed the rendered
+pages and published real artifact cards. Independent checks downloaded every
+editable artifact and saved PDF, verified their hashes and source-ID/hash bindings,
+checked the Word image and date, both slides, and the retained workbook formulas
+and cached totals (8 hours and 200). All recorded tool calls succeeded. A fresh
+spreadsheet conversation also verified that the recalculated deliverable is copied
+outside `.tmp` before publication, without clearing its formula caches.
+
+Live review exposed and fixed document media-type loss, misleading recovery text,
+blocked local-path Markdown links, and unreadably small spreadsheet previews.
+Word and slides open with full-page fitting; spreadsheet previews fit the available
+width. The final preview checks passed 14 unit tests and three Chromium cases;
+the artifact projection checks passed 43 Python tests and the skill/size checks
+passed 33, with no skips. The real long Windows state-path reload and all nine
+default-agent transcript tests also passed. The projection URI helper now lives
+with the wire helpers, keeping the route's size guard below its lowered baseline.
+
+The public site's Working with files page contains real continuous recordings
+for PDF reading, a Word edit, and a slides/workbook follow-up, plus screenshots
+and a slide-navigation GIF. The examples use synthetic planning data. Visible
+labels disclose accelerated agent waits; normal typing, artifact opening and
+preview navigation remain recorded interactions. Rejected takes are retained in
+the dated local capture archive rather than delivered. These examples describe
+the development build and do not imply that the feature has been released.

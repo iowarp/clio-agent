@@ -1,0 +1,12 @@
+{
+  "source": "takes/files-office-followup-20261005-e.mp4",
+  "notes": "Real default-agent two-file follow-up. Waiting is 8x; idle gaps are cut. The workbook continuation was recorded after improving spreadsheet PDF fit to width. The two live source artifacts and immutable PDFs are unchanged.",
+  "shots": [
+    {"from": 0, "to": 13, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Reference the deck and workbook in a follow-up"},
+    {"from": 13, "to": 181, "speed": 8, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Agent working - waiting shown at 8x speed"},
+    {"from": 212, "to": 222, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Open the revised deck artifact"},
+    {"from": 235, "to": 244, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Review the changed date on the first slide"},
+    {"from": 257, "to": 264.8, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Use paged navigation to check the next slide"},
+    {"source": "takes/files-workbook-review-20261005-g.mp4", "from": 0, "to": 11.5, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Open the workbook preview and check 8 hours / 200"}
+  ]
+}
