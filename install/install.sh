@@ -115,13 +115,19 @@ esac
 have curl || die "curl is required"
 
 # Need a Python installer for clio-agent. uv is preferred (handles
-# venv + Python toolchain itself); pip works if Python 3.12+ is on PATH.
+# venv + Python toolchain itself). Native core wheels support Python 3.12/3.13;
+# use the bundle's tested 3.12 interpreter instead of selecting the newest Python.
 PYINSTALL=""
 if   have uv;   then PYINSTALL=uv
 elif have pip3; then PYINSTALL=pip3
 elif have pip;  then PYINSTALL=pip
 else
   die "need uv or pip to install clio-agent. install uv with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+fi
+
+if [ "$PYINSTALL" != "uv" ]; then
+  python3 -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' \
+    || die "pip installation requires Python 3.12 or 3.13. Install uv to provision Python 3.12 automatically."
 fi
 
 if [ -n "$CLIO_REF" ]; then
@@ -158,7 +164,7 @@ else
   rm -rf "$VENV"
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
-    uv venv --python ">=3.12" "$VENV" >/dev/null
+    uv venv --python 3.12 "$VENV" >/dev/null
     uv pip install --quiet --python "$VENV/bin/python" ${wheel_arg:+"$wheel_arg"} "$pkg_spec" \
       "dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
       "fastmcp-tasks==4.0.0b5"

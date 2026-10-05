@@ -101,6 +101,13 @@ else {
     Die "need uv or pip to install clio-agent. install uv with: irm https://astral.sh/uv/install.ps1 | iex"
 }
 
+if ($PyInstall -ne 'uv') {
+    & python -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)'
+    if ($LASTEXITCODE -ne 0) {
+        Die 'pip installation requires Python 3.12 or 3.13. Install uv to provision Python 3.12 automatically.'
+    }
+}
+
 if ($ClioRef) {
     if (-not (Have git)) { Die "git required when CLIO_REF is set (source-build mode)" }
     if (-not (Have uv))  { Die "uv required to build clio-agent from source" }
@@ -134,7 +141,7 @@ if ($ClioRef) {
     RemoveTree $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     if ($PyInstall -eq 'uv') {
-        RunNative uv @('venv', '--python', '>=3.12', $Venv)
+        RunNative uv @('venv', '--python', '3.12', $Venv)
         RunNative uv @(
             'pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'),
             $pkgSpec, 'dspy==3.4.0', 'fastmcp==4.0.0b5',
