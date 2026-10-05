@@ -1,6 +1,6 @@
 ---
 name: work-with-pdfs
-description: Read, inspect, and verify existing PDFs through structured text and rendered-page evidence. Use for PDF questions and review, not for creating a new PDF report.
+description: Read, create, edit and verify PDFs through bounded text extraction, structured conversion and rendered-page evidence.
 ---
 
 # Work with PDFs
@@ -51,10 +51,36 @@ equations, scans, handwriting, or other visual evidence.
 
 ## Local conversion and page rendering
 
-Resolve this skill's directory as `SKILL_ROOT`, then run:
+Prefer the prepared document stack for local work. Call
+`prepare_execution_runtime` for the execution host's verified commands, packages,
+fonts and output directory. It uses locked dependencies outside Clio's own Python
+environment. Keep source files and requested outputs inside the active workspace;
+use its returned `.tmp/` scratch directory for intermediate scripts and data.
+Use `prepare_document(path, action="inspect", pages="1-10")` for
+bounded embedded text, and `prepare_document(path, action="render", pages="1-5")`
+for bounded page PNGs. Read the returned manifest and content derivative. Long
+documents require an explicit range; scans with empty embedded text require
+visual inspection or OCR. Rendering alone does not read an image for the model.
+
+Execute authoring and editing scripts with the returned `python_argv` (uv selects
+the prepared Python). For PDF creation use the prepared ReportLab environment; for page merging,
+splitting or rotation use `pypdf` or PyMuPDF. Preserve the source and reopen the
+output to check page count and requested content, then render and visually inspect
+material pages. Designate the requested final file with `create_artifact`. Do not
+claim form, signature or accessibility preservation from a successful rewrite.
+Name the published artifact in the final response; Clio shows its artifact card.
+Do not format local filesystem paths as Markdown links.
+
+When Docling's richer structural conversion is needed and the attachment has no
+usable structured derivative, the following existing helper remains available.
+Docling is a separate optional dependency and may download model assets; it is
+not advertised by the prepared stack unless installed there.
+
+Resolve this skill's directory as `SKILL_ROOT`. Use the returned absolute `uv`
+and `python` paths as `UV` and `PYTHON`, then run:
 
 ```text
-uv run --no-project --with "docling>=2.0" --with "pymupdf>=1.24" python "SKILL_ROOT/scripts/prepare_pdf.py" "INPUT.pdf" "OUTPUT_DIR"
+"UV" run --no-project --python "PYTHON" --with "docling>=2.0" --with "pymupdf>=1.24" python "SKILL_ROOT/scripts/prepare_pdf.py" "INPUT.pdf" "OUTPUT_DIR"
 ```
 
 This uses uv's shared cached environment. Do not create a `.venv` inside the
@@ -64,7 +90,7 @@ For a drawing, scan, or other explicitly visual question, skip the slower text
 conversion and render pages immediately:
 
 ```text
-uv run --no-project --with "pymupdf>=1.24" python "SKILL_ROOT/scripts/prepare_pdf.py" "INPUT.pdf" "OUTPUT_DIR" --visual-only
+"UV" run --no-project --python "PYTHON" python "SKILL_ROOT/scripts/prepare_pdf.py" "INPUT.pdf" "OUTPUT_DIR" --visual-only
 ```
 
 The helper performs two independent operations:

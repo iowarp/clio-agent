@@ -1,0 +1,8 @@
+{
+  "source": "takes/files-pdf-read-20261005-a.mp4",
+  "notes": "Continuous native browser footage. Cuts shorten one idle pause; no screenshots are video sources.",
+  "shots": [
+    {"from": 0, "to": 4.8, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Select the workspace PDF"},
+    {"from": 12.5, "to": 21.6, "crop": {"x": 0, "y": 0, "width": 1208, "height": 870}, "caption": "Expand the canvas to read the page"}
+  ]
+}

@@ -92,8 +92,22 @@ def _builtin_main_agent() -> AgentDef:
         specialization="orchestrator",
         module={"kind": "react"},
         prompt_id="clio.chat",
-        tools=sorted({*TOOL_CATALOG, "view_image", "view_pdf"}),
-        skills=["work-with-pdfs"],
+        tools=sorted(
+            {
+                *TOOL_CATALOG,
+                "view_image",
+                "view_pdf",
+                "prepare_document_runtime",
+                "prepare_execution_runtime",
+                "prepare_document",
+            }
+        ),
+        skills=[
+            "work-with-pdfs",
+            "work-with-word",
+            "work-with-presentations",
+            "work-with-spreadsheets",
+        ],
         metadata={
             "definition_kind": "builtin_main",
             "a2ui_catalogs": list(BUILTIN_MAIN_A2UI_CATALOGS),

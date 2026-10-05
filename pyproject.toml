@@ -37,6 +37,9 @@ classifiers = [
 ]
 
 dependencies = [
+    # Runtime preparation must also work for pip-installed Clio without a host uv.
+    "uv>=0.8,<1",
+    "truststore==0.10.4",
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
     # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
     "dspy==3.4.0",

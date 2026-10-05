@@ -17,6 +17,7 @@ import hmac
 from pathlib import Path
 
 __all__ = ["ViewedMediaUnavailable", "read_snapshot", "snapshot"]
+_MANAGED_REFERENCE = "clio-tool-output:"
 
 
 class ViewedMediaUnavailable(ValueError):
@@ -30,7 +31,7 @@ def _workspace_root() -> Path:
 
 
 def snapshot(data: bytes, suffix: str) -> tuple[str, str]:
-    """Store ``data``; return ``(workspace-relative path, sha256)`` of the snapshot."""
+    """Store bytes and return a workspace-bound snapshot reference and SHA-256."""
     from clio_agent.tools.servers.shell_spill_store import (  # noqa: PLC0415
         active_session_id,
         spill_directory,
@@ -43,12 +44,27 @@ def snapshot(data: bytes, suffix: str) -> tuple[str, str]:
     path = folder / f"viewed-{digest[:24]}{suffix}"
     if not path.exists():
         path.write_bytes(data)
-    return path.relative_to(root).as_posix(), digest
+    if path.is_relative_to(root):
+        return path.relative_to(root).as_posix(), digest
+    # Canonical state lives outside the authored workspace. Bind the reference
+    # to this workspace's managed tool-output tree rather than an absolute path.
+    return _MANAGED_REFERENCE + path.relative_to(spill_directory(root)).as_posix(), digest
 
 
 def read_snapshot(relative: str, sha256: str) -> bytes:
     """The snapshot's bytes, verified; :class:`ViewedMediaUnavailable` otherwise."""
-    path = _workspace_root() / relative
+    root = _workspace_root()
+    if relative.startswith(_MANAGED_REFERENCE):
+        from clio_agent.tools.servers.shell_spill_store import spill_directory
+
+        base = spill_directory(root).resolve()
+        requested = Path(relative.removeprefix(_MANAGED_REFERENCE))
+    else:
+        base = root
+        requested = Path(relative)
+    path = (base / requested).resolve()
+    if requested.is_absolute() or not path.is_relative_to(base):
+        raise ViewedMediaUnavailable("the snapshot reference escapes its workspace storage")
     try:
         data = path.read_bytes()
     except OSError as exc:
