@@ -45,7 +45,8 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import ArtifactRegistry, get_registry
-from clio_agent.gact.artifacts.wire import artifact_uri, fetch_url_for, mime_for, ui_payload_uri
+from clio_agent.gact.artifacts.wire import fetch_url_for, mime_for
+from clio_agent.gact.artifacts.wire import version_uri as _version_uri
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -135,13 +136,6 @@ def _session_workspace_id(app: FastAPI, sid: str) -> Optional[str]:
     if session is None:
         return None
     return str(getattr(session, "workspace_id", "") or "")
-
-
-def _version_uri(workspace_id: str, name: str, version: ArtifactVersion) -> str:
-    """The logical URI for a version (``ui://`` for a ``ui_payload``, else ``artifact://``)."""
-    if version.kind == ArtifactKind.UI_PAYLOAD:
-        return ui_payload_uri(workspace_id, name, version.version)
-    return artifact_uri(workspace_id, name, version.version)
 
 
 def _version_wire(

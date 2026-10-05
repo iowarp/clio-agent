@@ -123,6 +123,13 @@ def ui_payload_uri(workspace_id: str, name: str, version: int) -> str:
     return f"ui://{workspace_id}/{name}@v{version}"
 
 
+def version_uri(workspace_id: str, name: str, version: ArtifactVersion) -> str:
+    """Return the logical URI using the immutable version's artifact kind."""
+    if version.kind == ArtifactKind.UI_PAYLOAD:
+        return ui_payload_uri(workspace_id, name, version.version)
+    return artifact_uri(workspace_id, name, version.version)
+
+
 def fetch_url_for(artifact_id: str) -> str:
     """The S2 bytes route a client GETs to retrieve the (hash-verified) content."""
     return f"/v1/artifacts/{artifact_id}/bytes"
