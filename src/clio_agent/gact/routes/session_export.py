@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from clio_agent.gact.routes.content_disposition import content_disposition
 from clio_agent.gact.session_export import build_transcript
@@ -32,6 +32,19 @@ class VisualExport(BaseModel):
 
     mode: ExportMode = "transcript"
     visual_review: VisualReview
+
+
+class _ExportFileResponse(FileResponse):
+    """Remove the temporary ZIP even when its browser download is interrupted."""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            # FileResponse's background task runs only after a successful send.
+            # Its file handle is closed before this finally clause, including
+            # cancellation; a single unlink must not itself await cancellation.
+            Path(self.path).unlink(missing_ok=True)
 
 
 def _error(status: int, reason: str, message: str) -> HTTPException:
@@ -68,7 +81,7 @@ def register_session_export_routes(app: FastAPI) -> None:
             raise _error(
                 404, "export_download_unavailable", "Export download expired or was already used."
             )
-        return FileResponse(
+        return _ExportFileResponse(
             item.path,
             media_type="application/zip",
             headers={
@@ -76,7 +89,6 @@ def register_session_export_routes(app: FastAPI) -> None:
                 "Cache-Control": "no-store",
                 "Referrer-Policy": "no-referrer",
             },
-            background=BackgroundTask(item.path.unlink, missing_ok=True),
         )
 
     @app.post("/v1/sessions/{sid}/export-download", response_model=None)
@@ -108,11 +120,10 @@ def register_session_export_routes(app: FastAPI) -> None:
             path: Path = await asyncio.to_thread(build_archive, app, transcript, mode)
         except (OSError, ValueError) as exc:
             raise _error(409, "session_export_failed", str(exc)) from exc
-        return FileResponse(
+        return _ExportFileResponse(
             path,
             media_type="application/zip",
             headers={"Content-Disposition": content_disposition(f"{sid}.{mode}.zip")},
-            background=BackgroundTask(path.unlink, missing_ok=True),
         )
 
     @app.post("/v1/sessions/{sid}/export", response_model=None)
@@ -131,9 +142,8 @@ def register_session_export_routes(app: FastAPI) -> None:
             )
         except (OSError, ValueError) as exc:
             raise _error(409, "session_export_failed", str(exc)) from exc
-        return FileResponse(
+        return _ExportFileResponse(
             path,
             media_type="application/zip",
             headers={"Content-Disposition": content_disposition(f"{sid}.{body.mode}.zip")},
-            background=BackgroundTask(path.unlink, missing_ok=True),
         )
