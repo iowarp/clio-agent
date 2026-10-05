@@ -374,6 +374,11 @@ class SemanticEvent:
                 field_name: _payload_for_detail(getattr(self, field_name), detail_level, allow)
                 for field_name in _BODY_FIELDS
             }
+            if self.event_type == "skill.loaded":
+                # The immutable loaded body belongs to the durable record.
+                # Live skill activity needs its identity/hash, not another
+                # copy of an arbitrarily long procedure on every UI client.
+                bodies["payload"].pop("content", None)
         return {**envelope, **bodies}
 
 

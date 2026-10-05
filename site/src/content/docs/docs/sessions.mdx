@@ -97,3 +97,27 @@ While the agent is working, a **Steer** button appears next to the composer. Typ
 During a run the send button is labeled **Stop**. Choose it to cancel the current work.
 
 The session header also has actions to fork a session, compact its history, share it, and undo.
+
+## Export a session for someone else
+
+Open the session's sidebar menu and choose **Export session**. The default is a **Transcript** archive: a visual review plus the recorded conversation, tool inputs and outputs, loaded skills, traces, and child-agent work.
+
+The two toggles add files to that same review:
+
+| Export | What your recipient receives |
+|---|---|
+| Transcript (default) | The conversation and recorded work, with the data and images needed to inspect its saved views. |
+| Effects | Transcript plus the session's referenced and produced artifacts and recorded input files. Editable documents and their saved previews remain separate files. |
+| Full | Effects plus the registered workspace folders as they exist when you export. This can be much larger. |
+
+**Full** includes **Effects** automatically. Effects follows this session and its child agents; it does not gather every output from other sessions in the same workspace. Full includes the workspace's other files because that is the scope you selected.
+
+Send the ZIP. Your recipient extracts it and opens **index.html** in a browser. They can read the conversation, open tool records and recorded skills, filter supported saved tables and charts, and enlarge captured images without a running CLIO service. Effects and Full also let them open the included editable files. Asking the agent to do more work still requires a live session.
+
+Open **Export coverage** to see unavailable visual dependencies, and **Recording coverage** to see gaps in older sessions. Missing historical skill bodies or artifact versions are reported explicitly. CLIO preserves what was recorded; it does not replace an old skill with today's installed copy.
+
+The archive also includes **transcript.json**, readable **traces/** and **skills/** folders, and a file manifest with checksums. Full records a current workspace snapshot, so later changes are not a replay of the original environment. Importing the transcript into CLIO restores message history and context references; it does not automatically restore the workspace or execute recorded actions.
+
+<Aside type="note">
+These export options are part of the next release after beta-3. Existing sessions may contain records that were shortened before the fuller recording was introduced.
+</Aside>
