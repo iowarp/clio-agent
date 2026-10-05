@@ -46,12 +46,32 @@ def stop_owned(process: psutil.Process, observed: list[psutil.Process]) -> None:
             child.terminate()
         except psutil.NoSuchProcess:
             continue
-    _, alive = psutil.wait_procs(owned, timeout=10)
+    alive = wait_owned(owned, timeout=10)
     for child in alive:
-        child.kill()
-    _, alive = psutil.wait_procs(alive, timeout=5)
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            continue
+    alive = wait_owned(alive, timeout=5)
     if alive:
-        raise RuntimeError("Packaged process cleanup did not finish")
+        raise RuntimeError(f"Packaged process cleanup did not finish: {[p.pid for p in alive]}")
+
+
+def wait_owned(processes: list[psutil.Process], *, timeout: float) -> list[psutil.Process]:
+    """Poll identity-pinned processes without Linux pidfd waits on exited threads."""
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = []
+        for process in processes:
+            try:
+                if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                    alive.append(process)
+            except psutil.NoSuchProcess:
+                continue
+        if not alive or time.monotonic() >= deadline:
+            return alive
+        processes = alive
+        time.sleep(0.05)
 
 
 def file_sha256(path: Path) -> str:
@@ -69,12 +89,17 @@ def require_bundled_python(process: psutil.Process) -> str:
     manifest = json.loads((runtime / "runtime.json").read_text(encoding="utf-8"))
     expected = (runtime / manifest["exec"][0]).resolve(strict=True)
     actual = Path(process.exe()).resolve(strict=True)
-    if not expected.is_relative_to(runtime) or actual != expected:
-        raise ValueError("Desktop launched an interpreter outside its packaged runtime")
+    if not expected.is_relative_to(runtime) or not actual.samefile(expected):
+        raise ValueError(
+            "Desktop launched an interpreter outside its packaged runtime: "
+            f"expected={expected}, actual={actual}, runtime={runtime}"
+        )
     return str(actual)
 
 
-def smoke(desktop: Path, evidence: Path, *, timeout: int = 180) -> dict[str, Any]:
+def smoke(
+    desktop: Path, evidence: Path, *, timeout: int = 180, boot_log: Path | None = None
+) -> dict[str, Any]:
     """Require a real child backend, authenticated capabilities and surviving Desktop."""
     desktop = desktop.resolve(strict=True)
     evidence.mkdir(parents=True, exist_ok=False)
@@ -92,6 +117,7 @@ def smoke(desktop: Path, evidence: Path, *, timeout: int = 180) -> dict[str, Any
     tokens: set[str] = set()
     observed: dict[int, psutil.Process] = {}
     log_path = evidence / "desktop.log"
+    started = time.time()
     with log_path.open("wb") as log:
         child = subprocess.Popen(
             [str(desktop)],
@@ -124,6 +150,20 @@ def smoke(desktop: Path, evidence: Path, *, timeout: int = 180) -> dict[str, Any
                             "contract_version"
                         ):
                             raise ValueError("Packaged backend returned invalid capabilities")
+                        # Only paths and readiness metadata: never retain command lines,
+                        # process environments or the transient authentication token.
+                        (evidence / "backend.json").write_text(
+                            json.dumps(
+                                {
+                                    "pid": candidate.pid,
+                                    "python": candidate.exe(),
+                                    "runtime": candidate.environ().get("GACT_BUNDLED_RUNTIME_DIR"),
+                                    "contract_version": capabilities["contract_version"],
+                                },
+                                indent=2,
+                            ),
+                            encoding="utf-8",
+                        )
                         executable = require_bundled_python(candidate)
                     except (psutil.NoSuchProcess, URLError, TimeoutError):
                         continue
@@ -149,12 +189,18 @@ def smoke(desktop: Path, evidence: Path, *, timeout: int = 180) -> dict[str, Any
         finally:
             try:
                 stop_owned(process, list(observed.values()))
+                child.wait(timeout=5)
             finally:
                 log.close()
-                sanitized = log_path.read_text(errors="replace")
-                for token in tokens:
-                    sanitized = sanitized.replace(token, "[redacted]")
-                log_path.write_text(sanitized, encoding="utf-8")
+                logs = [(log_path, log_path)]
+                if boot_log is not None and boot_log.is_file():
+                    if boot_log.stat().st_mtime >= started - 1:
+                        logs.append((boot_log, evidence / "boot.log"))
+                for source, destination in logs:
+                    sanitized = source.read_text(errors="replace")
+                    for token in tokens:
+                        sanitized = sanitized.replace(token, "[redacted]")
+                    destination.write_text(sanitized, encoding="utf-8")
     # The caller retains the directory on both success and failure.
 
 
@@ -163,8 +209,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("desktop", type=Path)
     parser.add_argument("--evidence-dir", required=True, type=Path)
+    parser.add_argument("--boot-log", type=Path, help="Native boot log for this installed app")
     args = parser.parse_args()
-    result = smoke(args.desktop, args.evidence_dir.resolve())
+    try:
+        result = smoke(args.desktop, args.evidence_dir.resolve(), boot_log=args.boot_log)
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        if args.evidence_dir.is_dir():
+            (args.evidence_dir / "failure.json").write_text(
+                json.dumps({"status": "failed", "error": str(error)}, indent=2), encoding="utf-8"
+            )
+        raise
     text = json.dumps(result, indent=2)
     (args.evidence_dir / "receipt.json").write_text(text, encoding="utf-8")
     print(text)
