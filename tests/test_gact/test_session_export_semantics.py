@@ -7,6 +7,7 @@ import base64
 import gzip
 import hashlib
 import json
+import re
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,7 @@ from clio_agent.gact.session_export_downloads import ExportDownloads
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.types import Message, Part
 from clio_agent.gact.workspaces import WorkspaceStore
+from clio_agent.tools.servers.shell_spill_store import spill_directory
 
 
 @pytest.fixture
@@ -220,6 +222,88 @@ def test_effects_excludes_other_sessions_and_untouched_versions(
         path.unlink()
 
 
+@pytest.mark.parametrize("mode", ["transcript", "effects", "full"])
+def test_complete_tool_outputs_are_portable_and_session_scoped(
+    export_app: tuple[FastAPI, str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: Any
+) -> None:
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "home"))
+    app, sid, wid = export_app
+    root = app.state.workspaces.get(wid).root_path
+    folder = spill_directory(root, session_id=sid)
+    folder.mkdir(parents=True)
+    output = folder / "call.stdout.txt"
+    output.write_text("complete output\n" * 500, encoding="utf-8")
+    sibling = spill_directory(root, session_id="another-session")
+    sibling.mkdir()
+    (sibling / "private.txt").write_text("another session", encoding="utf-8")
+    app.state.messages[sid] = [
+        Message(
+            id="m",
+            session_id=sid,
+            role="assistant",
+            created_at="2026-10-05T00:00:00Z",
+            updated_at="2026-10-05T00:00:00Z",
+            parts=[Part(id="result", type="tool_result", call_id="call")],
+        )
+    ]
+    emit(app, sid, "tool.call.started", {"call_id": "call", "tool": "shell", "args": {}})
+    emit(
+        app,
+        sid,
+        "tool.call.completed",
+        {
+            "call_id": "call",
+            "tool": "shell",
+            "result": {
+                "stdout": "short excerpt",
+                "stdout_spill": {"status": "spilled", "path": str(output)},
+            },
+        },
+    )
+    path = build_archive(app, build_transcript(app, sid), mode)
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            assert len(manifest["tool_output_files"]) == 1
+            entry = manifest["tool_output_files"][0]
+            assert archive.read(entry["archive_path"]) == output.read_bytes()
+            assert "complete output" in archive.read("index.html").decode()
+            assert (
+                "Complete saved output" in archive.read("index.html").decode()
+                if mode == "transcript"
+                else "Open complete saved output" in archive.read("index.html").decode()
+            )
+            assert not any("another-session" in name for name in archive.namelist())
+    finally:
+        path.unlink()
+
+
+def test_recorded_spill_paths_never_authorize_reads(
+    export_app: tuple[FastAPI, str, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "home"))
+    app, sid, _ = export_app
+    private = tmp_path / "private.txt"
+    private.write_text("DO NOT EXPORT", encoding="utf-8")
+    emit(
+        app,
+        sid,
+        "tool.call.completed",
+        {
+            "call_id": "bad",
+            "tool": "shell",
+            "result": {"stdout_spill": {"status": "spilled", "path": str(private)}},
+        },
+    )
+    path = build_archive(app, build_transcript(app, sid), "transcript")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            assert not json.loads(archive.read("manifest.json"))["tool_output_files"]
+            assert "DO NOT EXPORT" not in archive.read("index.html").decode()
+    finally:
+        path.unlink()
+
+
 def test_transcript_has_no_effect_payloads_and_full_includes_workspace(
     export_app: tuple[FastAPI, str, str],
 ) -> None:
@@ -262,8 +346,12 @@ def test_routes_download_zip_and_reject_invalid_modes(export_app: tuple[FastAPI,
         )
         response = client.get(f"/v1/sessions/{sid}/export?mode=transcript")
         assert response.status_code == 200
-        assert response.content.startswith(b"PK")
-        assert "transcript.zip" in response.headers["content-disposition"]
+        assert response.content.startswith(b"<!doctype html>")
+        assert "text/html" in response.headers["content-type"]
+        assert "transcript.html" in response.headers["content-disposition"]
+        bundled = client.get(f"/v1/sessions/{sid}/export?mode=effects")
+        assert bundled.content.startswith(b"PK")
+        assert "effects.zip" in bundled.headers["content-disposition"]
         assert client.get(f"/v1/sessions/{sid}/export?mode=invalid").status_code == 422
         assert client.get("/v1/sessions/missing/export").status_code == 404
         response = client.post(
@@ -304,8 +392,13 @@ def test_visual_bootstrap_preserves_text_without_executable_interpolation(
         with zipfile.ZipFile(path) as archive:
             html = archive.read("index.html").decode()
             assert "</script><script>fetch" not in html
-            assert len(html) < 2000
-            bootstrap = archive.read("review-data.js").decode()
+            assert 'id="archive-document"' in html
+            assert "&lt;script&gt;" in html
+            assert "<script src=" not in html
+            assert '<link rel="stylesheet"' not in html
+            assert 'id="evidence"' in html
+            assert "evidence.html" not in archive.namelist()
+            bootstrap = re.search(r"<script>(window.CLIO_EXPORT_DATA=.*?;)</script>", html).group(1)
             encoded = json.loads(
                 bootstrap.removeprefix("window.CLIO_EXPORT_DATA=").removesuffix(";")
             )
@@ -314,7 +407,9 @@ def test_visual_bootstrap_preserves_text_without_executable_interpolation(
                 "</script><script>fetch('bad')</script>"
             )
             assert "<" not in bootstrap
-            assert "semantic_events" not in review["transcript"]
+            assert review["transcript"]["semantic_events"][0]["payload"] == {
+                "value": "full raw trace"
+            }
             assert json.loads(archive.read("transcript.json"))["semantic_events"][0]["payload"] == {
                 "value": "full raw trace"
             }
@@ -324,8 +419,10 @@ def test_visual_bootstrap_preserves_text_without_executable_interpolation(
                     hashlib.sha256(archive.read(entry["archive_path"])).hexdigest()
                     == entry["sha256"]
                 )
-            assert "connect-src 'none'" in html
-            assert "script-src 'self' 'unsafe-eval';" in html
+            import html as html_module
+
+            assert "connect-src 'none'" in html_module.unescape(html)
+            assert "script-src 'sha256-" in html_module.unescape(html)
     finally:
         path.unlink()
 
@@ -349,7 +446,8 @@ def test_prepared_download_has_only_one_file_capability(
         assert client.post(ticket_path).status_code == 401
         response = client.get(ticket_path)
         assert response.status_code == 200
-        assert response.content.startswith(b"PK")
+        assert prepared.json()["filename"].endswith(".transcript.html")
+        assert response.content.startswith(b"<!doctype html>")
         assert response.headers["cache-control"] == "no-store"
         assert client.get(ticket_path).status_code == 401
         assert not app.state.session_export_downloads._items
@@ -424,6 +522,41 @@ def test_full_never_follows_a_workspace_junction(
     finally:
         path.unlink()
         link.rmdir() if os.name == "nt" else link.unlink()
+
+
+def test_tool_output_store_never_follows_a_junction(
+    export_app: tuple[FastAPI, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+    import subprocess
+
+    monkeypatch.setenv("CLIO_AGENT_HOME", str(tmp_path / "home"))
+    app, sid, wid = export_app
+    folder = spill_directory(app.state.workspaces.get(wid).root_path, session_id=sid)
+    folder.parent.mkdir(parents=True)
+    outside = tmp_path / "private-output"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("private", encoding="utf-8")
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(folder), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        folder.symlink_to(outside, target_is_directory=True)
+    path = build_archive(app, build_transcript(app, sid), "transcript")
+    try:
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            assert not manifest["tool_output_files"]
+            assert any(
+                item["reason"] == "tool_output_link_not_followed" for item in manifest["omissions"]
+            )
+            assert not any("secret.txt" in name for name in archive.namelist())
+    finally:
+        path.unlink()
+        folder.rmdir() if os.name == "nt" else folder.unlink()
 
 
 def test_loaded_skill_body_is_durable_and_live_activity_stays_small() -> None:

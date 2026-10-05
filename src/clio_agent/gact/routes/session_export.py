@@ -13,7 +13,7 @@ from starlette.types import Receive, Scope, Send
 
 from clio_agent.gact.routes.content_disposition import content_disposition
 from clio_agent.gact.session_export import build_transcript
-from clio_agent.gact.session_export_archive import ExportMode, build_archive
+from clio_agent.gact.session_export_archive import ExportMode, build_session_export
 from clio_agent.gact.session_export_downloads import ExportDownloads
 from clio_agent.gact.session_export_review import review_summary
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
@@ -83,7 +83,7 @@ def register_session_export_routes(app: FastAPI) -> None:
             )
         return _ExportFileResponse(
             item.path,
-            media_type="application/zip",
+            media_type="text/html" if item.filename.endswith(".html") else "application/zip",
             headers={
                 "Content-Disposition": content_disposition(item.filename),
                 "Cache-Control": "no-store",
@@ -99,11 +99,12 @@ def register_session_export_routes(app: FastAPI) -> None:
         try:
             transcript = await asyncio.to_thread(build_transcript, app, sid)
             path = await asyncio.to_thread(
-                build_archive, app, transcript, body.mode, body.visual_review.model_dump()
+                build_session_export, app, transcript, body.mode, body.visual_review.model_dump()
             )
             name = str(transcript["session"].get("title") or sid)
             name = "".join(c if c.isalnum() or c in "._-" else "-" for c in name).strip(".-") or sid
-            filename = f"{name}.{body.mode}.zip"
+            extension = "html" if body.mode == "transcript" else "zip"
+            filename = f"{name}.{body.mode}.{extension}"
             return {"download_path": downloads.add(path, filename), "filename": filename}
         except (OSError, ValueError) as exc:
             raise _error(409, "session_export_failed", str(exc)) from exc
@@ -117,13 +118,17 @@ def register_session_export_routes(app: FastAPI) -> None:
             transcript = await asyncio.to_thread(build_transcript, app, sid)
             if mode is None:
                 return transcript
-            path: Path = await asyncio.to_thread(build_archive, app, transcript, mode)
+            path: Path = await asyncio.to_thread(build_session_export, app, transcript, mode)
         except (OSError, ValueError) as exc:
             raise _error(409, "session_export_failed", str(exc)) from exc
         return _ExportFileResponse(
             path,
-            media_type="application/zip",
-            headers={"Content-Disposition": content_disposition(f"{sid}.{mode}.zip")},
+            media_type="text/html" if mode == "transcript" else "application/zip",
+            headers={
+                "Content-Disposition": content_disposition(
+                    f"{sid}.{mode}.{'html' if mode == 'transcript' else 'zip'}"
+                )
+            },
         )
 
     @app.post("/v1/sessions/{sid}/export", response_model=None)
@@ -138,12 +143,16 @@ def register_session_export_routes(app: FastAPI) -> None:
         try:
             transcript = await asyncio.to_thread(build_transcript, app, sid)
             path = await asyncio.to_thread(
-                build_archive, app, transcript, body.mode, body.visual_review.model_dump()
+                build_session_export, app, transcript, body.mode, body.visual_review.model_dump()
             )
         except (OSError, ValueError) as exc:
             raise _error(409, "session_export_failed", str(exc)) from exc
         return _ExportFileResponse(
             path,
-            media_type="application/zip",
-            headers={"Content-Disposition": content_disposition(f"{sid}.{body.mode}.zip")},
+            media_type="text/html" if body.mode == "transcript" else "application/zip",
+            headers={
+                "Content-Disposition": content_disposition(
+                    f"{sid}.{body.mode}.{'html' if body.mode == 'transcript' else 'zip'}"
+                )
+            },
         )

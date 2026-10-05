@@ -15,12 +15,42 @@ from clio_agent.gact.artifacts.export import register_export_gc_roots
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import resolve_owned_artifact_path
 from clio_agent.gact.session_export_viewer import write_archive_review
+from clio_agent.tools.servers.shell_spill_store import spill_directory
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 ExportMode = Literal["transcript", "effects", "full"]
 _EXCLUDED_DIRS = frozenset({".git", ".venv", "node_modules", "__pycache__", ".clio"})
+
+
+def build_session_export(
+    app: FastAPI,
+    transcript: dict[str, Any],
+    mode: ExportMode,
+    visual_review: dict[str, Any] | None = None,
+) -> Path:
+    """Deliver one HTML for Transcript, or a file bundle for Effects and Full."""
+    path = build_archive(app, transcript, mode, visual_review)
+    if mode != "transcript":
+        return path
+    fd, filename = tempfile.mkstemp(prefix="clio-session-export-", suffix=".html")
+    os.close(fd)
+    result = Path(filename)
+    try:
+        with (
+            zipfile.ZipFile(path) as archive,
+            archive.open("index.html") as source,
+            result.open("wb") as target,
+        ):
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                target.write(chunk)
+        return result
+    except BaseException:
+        result.unlink(missing_ok=True)
+        raise
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def _segment(value: str) -> str:
@@ -123,6 +153,54 @@ def _walk_error(error: OSError) -> None:
     raise error
 
 
+def include_tool_outputs(
+    archive: zipfile.ZipFile,
+    app: FastAPI,
+    transcript: dict[str, Any],
+    manifest: dict[str, Any],
+) -> None:
+    """Include complete output files from each owning session's canonical store.
+
+    Recorded paths are evidence, never authority for filesystem reads. Enumerate
+    only the server-resolved session directory; exclude links and other sessions.
+    """
+    manifest["tool_output_files"] = []
+    for row in [transcript, *transcript.get("children", [])]:
+        sid = row["session"]["id"]
+        workspace = app.state.workspaces.get(row["session"]["workspace_id"])
+        if workspace is None:
+            manifest["omissions"].append(
+                {"session_id": sid, "reason": "tool_output_workspace_unavailable"}
+            )
+            continue
+        folder = spill_directory(workspace.root_path, session_id=sid)
+        # An invalid session ID must never fall back to the shared output root.
+        if folder.name != sid:
+            raise ValueError("invalid session identity for tool output export")
+        if not folder.exists():
+            manifest["omissions"].append(
+                {"session_id": sid, "reason": "tool_output_store_unavailable"}
+            )
+            continue
+        if any(_is_link(parent) for parent in (folder, folder.parent, folder.parent.parent)):
+            manifest["omissions"].append(
+                {"session_id": sid, "reason": "tool_output_link_not_followed"}
+            )
+            continue
+        for source in sorted(folder.iterdir()):
+            if _is_link(source) or not stat.S_ISREG(source.stat().st_mode):
+                manifest["omissions"].append(
+                    {"path": str(source), "reason": "tool_output_not_regular_file"}
+                )
+                continue
+            entry = _write_file(archive, source, f"tool-output/{_segment(sid)}/{source.name}")
+            entry["source_path"] = str(source)
+            entry["session_id"] = sid
+            entry["snapshot"] = "export_time"
+            manifest["files"].append(entry)
+            manifest["tool_output_files"].append(entry)
+
+
 def build_archive(
     app: FastAPI,
     transcript: dict[str, Any],
@@ -141,6 +219,7 @@ def build_archive(
     manifest: dict[str, Any] = {
         "schema": "clio.session-export.manifest.v1",
         "mode": mode,
+        "delivery": "single_html" if mode == "transcript" else "zip_bundle",
         "session_id": transcript["session"]["id"],
         "files": [],
         "artifacts": [],
@@ -158,6 +237,7 @@ def build_archive(
         with zipfile.ZipFile(
             path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True
         ) as archive:
+            include_tool_outputs(archive, app, transcript, manifest)
             for aid in sorted(ids):
                 found = registry.get_by_artifact_id(aid)
                 if found is None:
