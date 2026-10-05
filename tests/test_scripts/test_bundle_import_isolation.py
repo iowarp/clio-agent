@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 
 import pytest
@@ -46,3 +49,30 @@ def test_bundle_manifest_ignores_host_python_imports(tmp_path: Path, builder: st
     )
     assert isolated.returncode == 0, isolated.stderr
     assert isolated.stdout.strip() == "json"
+
+
+def test_bundle_uv_install_arguments_are_accepted_without_network(tmp_path: Path) -> None:
+    """Execute bundle install commands in dry-run mode; Python flags cannot reach uv."""
+    uv = shutil.which("uv")
+    assert uv is not None
+    requirement = f"packaging=={version('packaging')}"
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text(requirement + "\n")
+    script = (ROOT / "install/build-gact-runtime.sh").read_text(encoding="utf-8")
+    commands = [line for line in script.splitlines() if line.startswith("uv pip install ")]
+    assert len(commands) == 2
+    replacements = {
+        "$OUT/$PYBIN_REL": sys.executable,
+        "$CONSTRAINTS": str(constraints),
+        "$BUNDLE_SPEC": requirement,
+        "$WEB_MCP_PROJECT": requirement,
+    }
+    for command in commands:
+        arguments = [replacements.get(argument, argument) for argument in shlex.split(command)[1:]]
+        result = subprocess.run(
+            [uv, *arguments, "--dry-run", "--no-index"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert result.returncode == 0, result.stderr

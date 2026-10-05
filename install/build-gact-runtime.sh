@@ -122,7 +122,7 @@ uv export --project "$CHECKOUT" --frozen --no-hashes --no-emit-project $EXPORT_E
 
 BUNDLE_SPEC="${SPEC}[$(echo "$BUNDLE_EXTRAS" | tr ' ' ',')]"
 echo "[build-gact-runtime] installing: $BUNDLE_SPEC (locked)"
-uv pip install --python "$OUT/$PYBIN_REL" -I -B --constraint "$CONSTRAINTS" "$BUNDLE_SPEC"
+uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$BUNDLE_SPEC"
 
 # Install the source-locked Web Search MCP adapter now.  Connecting the
 # recommended service must not build a second Python environment on first use.
@@ -135,7 +135,7 @@ WEB_MCP_PROJECT="$OUT/python/clio-kit-mcp-servers/web"
   exit 1
 }
 echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-uv pip install --python "$OUT/$PYBIN_REL" -I -B --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT"
+uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT"
 rm -f "$CONSTRAINTS"
 
 # check_bundle_matches_lock.py is the automated proof this constraint actually
@@ -202,7 +202,7 @@ find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while
 # some optional provider paths exceed Windows' legacy path limit.
 echo "[build-gact-runtime] compiling portable startup bytecode"
-"$OUT/$PYBIN_REL" "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
+"$OUT/$PYBIN_REL" -I -B "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
   --python-root "$OUT/python"
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then
