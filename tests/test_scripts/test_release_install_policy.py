@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5b2"
+EXPECTED_VERSION = "0.9.5b3"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
 DOCUMENTED_VERSION = "0.9.4.24"
@@ -526,10 +526,15 @@ def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
 
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None, "the release check is a bash script"
+
+    def shell_path(path: Path) -> str:
+        value = path.as_posix()
+        return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
+
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     uv = bin_dir / "uv"
-    uv.write_text(f"#!/usr/bin/env bash\necho {package_version}\n", encoding="utf-8")
+    uv.write_text(f"#!/usr/bin/env bash\necho {package_version}\n", encoding="utf-8", newline="\n")
     uv.chmod(0o755)
     script = tmp_path / "check.sh"
     script.write_text(_verify_tag_step(), encoding="utf-8", newline="\n")
@@ -537,18 +542,23 @@ def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
         (tmp_path / name).write_text("", encoding="utf-8")
     env = {
         **os.environ,
-        "PATH": f"{_bash_path(bin_dir)}:/usr/bin:/bin",
+        "TEST_PATH": f"{shell_path(bin_dir)}:/usr/bin:/bin",
         "GITHUB_REF_NAME": tag,
-        "GITHUB_ENV": _bash_path(tmp_path / "github_env"),
-        "GITHUB_OUTPUT": _bash_path(tmp_path / "github_output"),
+        "GITHUB_ENV": shell_path(tmp_path / "github_env"),
+        "GITHUB_OUTPUT": shell_path(tmp_path / "github_output"),
     }
-    return subprocess.run([bash, _bash_path(script)], env=env, check=False, timeout=15).returncode
-
-
-def _bash_path(path: Path) -> str:
-    """Use MSYS paths on Windows so drive-letter colons cannot split PATH entries."""
-    value = path.as_posix()
-    return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
+    return subprocess.run(
+        [
+            bash,
+            "-c",
+            'export PATH="$TEST_PATH"; exec bash "$1"',
+            "release-test",
+            shell_path(script),
+        ],
+        env=env,
+        check=False,
+        timeout=10,
+    ).returncode
 
 
 def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Literal
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult
 from clio_agent.gact.infrastructure.models import CommandSpec
@@ -26,6 +27,7 @@ class Readiness:
     alive: CommandSpec
     logs: CommandSpec
     label: str = "server"
+    capability: Literal["serving", "installed"] = "serving"
 
 
 @dataclass(frozen=True)
@@ -54,3 +56,5 @@ class DriverPlan:
     after_ready: tuple[CommandSpec, ...] = ()
     configuration: dict[str, str] | None = None
     remote_launch: RemoteLaunch | None = None
+    retain_record: bool = False
+    failure_cleanup: tuple[CommandSpec, ...] = ()

@@ -19,13 +19,12 @@ Usage:
     >>> stats = agent.get_arc_stats()
 """
 
-import contextvars
 import json
 import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List
+from typing import Any, Callable, Dict, List
 
 import dspy
 
@@ -55,6 +54,10 @@ from clio_agent.gact.mcp_gateway_refresh import (
     refresh_declared_mcp_servers as _refresh_declared_mcp_servers,
 )
 from clio_agent.registry.registry import AgentRegistry
+from clio_agent.runtime.cancellation import (  # noqa: F401
+    cancellation_checker,
+    cancellation_requested,
+)
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -80,28 +83,6 @@ from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_de
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
 from clio_agent.tools.workspace_root import canonical_workspace_root
-
-_CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
-    "clio_cancellation_checker", default=None
-)
-
-
-@contextmanager
-def cancellation_checker(checker: Callable[[], bool] | None) -> Iterator[None]:
-    """Scope a cooperative cancellation checker to the current agent turn."""
-
-    token = _CANCELLATION_CHECKER.set(checker)
-    try:
-        yield
-    finally:
-        _CANCELLATION_CHECKER.reset(token)
-
-
-def cancellation_requested() -> bool:
-    """Return whether the active cooperative cancellation checker is set."""
-
-    checker = _CANCELLATION_CHECKER.get()
-    return bool(checker is not None and checker())
 
 
 class ClioAgent(dspy.Module):
@@ -514,6 +495,10 @@ class ClioAgent(dspy.Module):
         blueprint_id = get_active_tool_blueprint_id().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted while the relay federation was
@@ -663,6 +648,10 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             leases[root] = leases.get(root, 0) + 1
         try:
             yield

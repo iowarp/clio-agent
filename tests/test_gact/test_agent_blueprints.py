@@ -703,6 +703,12 @@ def test_valid_default_install_is_not_refreshed(
         install_root, main_md=_REACT_MAIN_MD, child_md=_REACT_CHILD_MD, commit="valid-head"
     )
     install_meta = install_root / ".clio-install.md"
+    install_meta.write_text(
+        install_meta.read_text(encoding="utf-8").replace(
+            f"source: {DEFAULT_REGISTRY_URL}", f"source: {local_registry.as_posix()}"
+        ),
+        encoding="utf-8",
+    )
     before_mtime = install_meta.stat().st_mtime_ns
     before_bytes = install_meta.read_bytes()
 
@@ -2675,6 +2681,7 @@ def test_session_agent_overlay_is_session_local(tmp_path: Path) -> None:
     _write_blueprint(blueprint)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     with TestClient(app) as client:
         sid_a = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
         sid_b = client.post("/v1/sessions", json={"title": "B"}).json()["id"]
@@ -2724,6 +2731,7 @@ def test_session_agent_overlay_rejects_invalid_contracts(tmp_path: Path) -> None
     _write_blueprint(blueprint)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "A"}).json()["id"]
         assert (
@@ -2892,6 +2900,7 @@ def test_session_agent_overlay_prompt_provenance_reaches_prompts_and_turn_metada
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
     with TestClient(app) as client:
+        app.state.workspaces.update("ws_default", root_path=str(tmp_path))
         sid = client.post("/v1/sessions", json={"title": "overlay runtime"}).json()["id"]
         assert (
             client.post(
@@ -3008,7 +3017,12 @@ def test_agent_blueprint_marketplace_sources_persist_and_install_by_id(
         assert [row["id"] for row in source["available_blueprints"]] == ["genomics"]
         assert [row["id"] for row in created.json()["installed"]] == ["genomics"]
         assert source["installed_blueprints"] == [
-            {"id": "genomics", "version": "0.1.0", "scope": "global"}
+            {
+                "id": "genomics",
+                "identity": f"global::{source['id']}::genomics",
+                "version": "0.1.0",
+                "scope": "global",
+            }
         ]
 
         globally_installed = client.get("/v1/agent-blueprints").json()
@@ -3073,7 +3087,9 @@ def test_agent_blueprint_source_installs_valid_entries_and_reports_invalid_ones(
         assert [row["id"] for row in payload["skipped"]] == ["broken-pack"]
 
         globally_installed = client.get("/v1/agent-blueprints").json()
-        installed_ids = {row["id"] for row in globally_installed["agent_blueprints"]}
+        installed_ids = {
+            row["id"] for row in globally_installed["agent_blueprints"] if row["materialized"]
+        }
         assert "genomics" in installed_ids
         assert "broken-pack" not in installed_ids
 
@@ -4321,8 +4337,8 @@ def test_agent_blueprint_files_read_returns_raw_markdown(tmp_path: Path) -> None
     assert "id: root" in read.text
 
 
-def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_path: Path) -> None:
-    """The editor atomically persists a real blueprint file and reports runtime validation."""
+def test_agent_blueprint_files_write_saves_draft_without_changing_runtime(tmp_path: Path) -> None:
+    """The editor saves a draft and validates it while the applied files remain intact."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as client:
@@ -4335,6 +4351,10 @@ def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_pa
         )
         reread = client.get(
             "/v1/agent-blueprints/genomics/files/read",
+            params={"workspace_id": wid, "path": "experts/root.md", "draft": True},
+        )
+        applied = client.get(
+            "/v1/agent-blueprints/genomics/files/read",
             params={"workspace_id": wid, "path": "experts/root.md"},
         )
 
@@ -4342,6 +4362,8 @@ def test_agent_blueprint_files_write_persists_text_and_returns_validation(tmp_pa
     assert written.json()["entry"]["size"] == len(replacement.encode("utf-8"))
     assert "validation" in written.json()
     assert reread.text == replacement
+    assert applied.text != replacement
+    assert "Coordinate genomics work." in applied.text
 
 
 def test_agent_blueprint_files_write_rejects_path_traversal(tmp_path: Path) -> None:
@@ -4414,11 +4436,7 @@ def test_agent_blueprint_files_unknown_id_is_404(tmp_path: Path) -> None:
 def test_agent_blueprint_files_session_scoped_path_activation_resolves(
     tmp_path: Path,
 ) -> None:
-    """#1192 demo case: a blueprint activated by ON-DISK PATH (not an installed
-    id -- never discoverable via the catalog) resolves its files ONLY through
-    the session-scoped seam (``session_id`` + ``metadata.active_agent_blueprint_path``),
-    mirroring how ``earthscope-flat`` is activated in the desktop demo.
-    """
+    """Path activation snapshots authoring files in the owning workspace namespace."""
 
     external_root = tmp_path / "external" / "earthscope-flat"
     _write_blueprint(external_root, blueprint_id="earthscope-flat")
@@ -4443,13 +4461,17 @@ def test_agent_blueprint_files_session_scoped_path_activation_resolves(
         assert activated.status_code == 200, activated.text
         assert activated.json()["active_agent_blueprint_id"] == "earthscope-flat"
 
-        # Never installed into any catalog root -- the bare (no session_id)
-        # lookup is a typed 404, proving the session-scoped assertion below
-        # exercises the path-activation seam and not an accidental catalog hit.
+        snapshot = Path(activated.json()["active_agent_blueprint_path"])
+        assert snapshot != external_root
+        assert snapshot.is_relative_to(workspace / ".clio-agent")
+        assert (snapshot / "AGENT.md").read_bytes() == (external_root / "AGENT.md").read_bytes()
+        (external_root / "experts/root.md").write_text("Unpublished source change")
+        # The installed and session-scoped file views agree. An upstream edit
+        # does not affect this runtime until an explicit Reload.
         bare = client.get(
             "/v1/agent-blueprints/earthscope-flat/files", params={"workspace_id": wid}
         )
-        assert bare.status_code == 404, bare.text
+        assert bare.status_code == 200, bare.text
 
         listed = client.get(
             "/v1/agent-blueprints/earthscope-flat/files", params={"session_id": sid}
@@ -4735,18 +4757,10 @@ def test_uninstalled_pack_is_not_resurrected_by_the_sync(
 # ---- S8 (issue #1363 umbrella, live-gate finding 3): checksum-mismatch reinstall ---
 
 
-def test_registry_sync_updates_installed_pack_when_source_checksum_differs(
+def test_registry_sync_preserves_installed_pack_until_explicit_reload(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The live-harness bug: an already-installed pack id used to be skipped
-    forever regardless of whether the LOCAL marketplace checkout's content
-    (e.g. a version bump) moved past what is installed. A source checksum
-    that differs from the installed one now reinstalls instead of silently
-    serving the stale copy.
-
-    **Sabotage:** revert to the bare "folder exists -> skip" check -> the
-    installed AGENT.md keeps its ORIGINAL content -> red.
-    """
+    """Discovery reports source changes without replacing a running revision."""
 
     from clio_agent.gact.agent_blueprint_refresh import (
         reset_registry_sync_for_tests,
@@ -4777,10 +4791,11 @@ def test_registry_sync_updates_installed_pack_when_source_checksum_differs(
     diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
 
     assert diagnostic == ""
-    assert installed_agent_md.read_text(encoding="utf-8") == updated_pack_md, (
-        "an installed pack must update when the SOURCE checksum changed, never "
-        "serve a stale copy silently"
+    assert installed_agent_md.read_text(encoding="utf-8") == _EXTRA_PACK_MD
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
     )
+    assert installed_agent_md.read_text(encoding="utf-8") == updated_pack_md
 
 
 def test_registry_sync_never_clobbers_local_edits_even_when_source_changed(
@@ -4943,14 +4958,10 @@ def test_install_route_overwrite_with_unchanged_source_reports_no_replaced(
     assert "replaced" not in second["installed"][0]
 
 
-def test_boot_sync_reinstall_reaches_the_same_typed_reason_ledger(
+def test_boot_sync_pending_reload_reaches_the_typed_reason_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The boot-time registry-sync reinstall path (``_reinstall_reason``,
-    already covered functionally by
-    ``test_registry_sync_updates_installed_pack_when_source_checksum_differs``)
-    now records through the SAME ledger the install route uses, not only
-    ``logger.info`` -- both paths converge on one typed reason name/shape."""
+    """A pending source change remains inspectable without applying it on boot."""
 
     from clio_agent.gact.agent_blueprint_refresh import (
         record_blueprint_install_reason,
@@ -5181,15 +5192,12 @@ def test_source_refresh_never_resurrects_an_uninstalled_pack(tmp_path: Path) -> 
         ]
 
         listed = client.get("/v1/agent-blueprints").json()["agent_blueprints"]
-        assert "genomics" not in {row["id"] for row in listed}
+        assert "genomics" not in {row["id"] for row in listed if row["materialized"]}
+        assert next(row for row in listed if row["id"] == "genomics")["materialized"] is False
 
 
-def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> None:
-    """Refreshing a source never discards edits made through the file-write route.
-
-    **Sabotage:** stop reporting ``local_edits_present`` -> the reinstall
-    rmtree+copytree's the edited root and the edited text is gone -> red.
-    """
+def test_source_refresh_preserves_saved_draft(tmp_path: Path) -> None:
+    """Refreshing installed files never discards an isolated authoring draft."""
 
     marketplace = tmp_path / "marketplace"
     _write_blueprint(marketplace / "genomics")
@@ -5208,12 +5216,13 @@ def test_source_refresh_preserves_a_locally_edited_blueprint(tmp_path: Path) -> 
         refreshed = client.post(f"/v1/agent-blueprints/sources/{source_id}/refresh")
         assert refreshed.status_code == 200, refreshed.text
         payload = refreshed.json()
-        assert payload["installed"] == []
-        assert payload["skipped"] == [{"id": "genomics", "reason": "local_edits_present"}]
+        assert len(payload["installed"]) == 1
+        assert payload["skipped"] == []
         assert payload["source"]["status"] == "ready"
 
         read_back = client.get(
-            "/v1/agent-blueprints/genomics/files/read", params={"path": "experts/root.md"}
+            "/v1/agent-blueprints/genomics/files/read",
+            params={"path": "experts/root.md", "draft": True},
         )
         assert read_back.status_code == 200, read_back.text
         assert "Coordinate LOCALLY EDITED genomics work." in read_back.text

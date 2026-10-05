@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context, session_warmup, workspace_warmup
+from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import build_app
 from clio_agent.gact.session_defaults import UpdateSessionDefaultsRequest
 from clio_agent.tools.execution import get_active_tool_blueprint_id, get_active_tool_workspace_root
@@ -78,6 +79,10 @@ def threads(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[threading.Thread]]
 def test_draft_prepares_default_fleet_and_first_session_reuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threads: list[threading.Thread]
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "AGENT.md").write_text("---\nid: science-blueprint\ntitle: Science\n---\nScience")
+    install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     mounted: list[tuple[_Executor, str]] = []
 
     def mount(executor: _Executor, namespace: str, spec: Any, *, connect: bool) -> dict:

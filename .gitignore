@@ -190,3 +190,10 @@ src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
 
 # Generated standalone widget bundles.
 /public/widgets/
+
+.clio-coder/
+
+# Local runtime state, private account data and generated qualification logs.
+/.clio-agent/
+/flowcept_buffer.jsonl
+/site/*.log

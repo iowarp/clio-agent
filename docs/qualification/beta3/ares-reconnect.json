@@ -1,0 +1,7 @@
+{
+  "retained_model_id": "776212351f94adc9aad41b4f",
+  "disconnected_detected": true,
+  "reported_error": "Managed model downloads require a Linux execution host. Select a connected Linux host.",
+  "reconnected_same_model": true,
+  "model_state": "ready"
+}

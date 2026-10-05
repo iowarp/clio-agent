@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from clio_schemas.attention_evidence import AttentionEvidenceInspection
+from pydantic import ValidationError
+
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
@@ -89,11 +92,22 @@ def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
                 projected_behavior["handle_id"] = str(behavior["handle_id"])
             if behavior.get("reason"):
                 projected_behavior["reason"] = str(behavior["reason"])
+            if behavior.get("kind") == "inspect_attention" and behavior.get("inspection"):
+                try:
+                    projected_behavior["inspection"] = AttentionEvidenceInspection.model_validate(
+                        behavior["inspection"]
+                    ).model_dump()
+                except ValidationError:
+                    projected_behavior["reason"] = "The finding has an invalid evidence receipt."
         projected.append(
             {
                 "id": str(action["id"]),
                 "label": str(action.get("label") or action["id"]),
-                "enabled": bool(action.get("enabled", True)),
+                "enabled": bool(action.get("enabled", True))
+                and (
+                    projected_behavior["kind"] != "inspect_attention"
+                    or "inspection" in projected_behavior
+                ),
                 "behavior": projected_behavior,
             }
         )

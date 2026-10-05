@@ -1,0 +1,39 @@
+---
+title: Attach files and folders
+description: Add new material to a message, inspect it before sending, and undo a mistaken attachment.
+---
+
+import FilesGuideNav from '../../../../components/FilesGuideNav.astro';
+import WidgetRecording from '../../../../components/WidgetRecording.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+<FilesGuideNav active="attach" />
+
+Use **Attach** when you want to bring material into the workspace and include it in your next message. For something already there, use [Reference or @](/docs/files/references/).
+
+<WidgetRecording name="clio-guide-attach" title="Bring a folder into your next message" caption="The example uses a saved source, downloads an editable copy, and shows the resulting folder attachment in the draft." formatLabel="Screenshot walkthrough" timingNote="Actual UI states with reading pauses; no message is sent in this example." />
+
+## From your computer
+
+<Steps>
+
+1. Open **+ → Attach** beside the message box.
+2. Choose **Choose files** or **Choose folder**, then select the material on your computer.
+3. Wait for preparation to finish. A folder appears as one attachment rather than a long list of individual files.
+4. Open the attachment to inspect it. Write your request and choose **Send** when it is ready.
+
+</Steps>
+
+CLIO prepares a workspace copy. Editing that copy does not overwrite the original file on your computer.
+
+## From a saved source
+
+Expand **Your sources** at the bottom of Attach, then open a source. Browse to the folder you want. Choose [Download a copy or Link to the originals](/docs/files/download-or-link/), with the access mode you need. The resulting folder reference is added to the composer so the agent can find it when you send.
+
+Downloading individual files is also available from the source's file list. Reuse an existing download or link with **Add source to message**, **Add this folder to message**, or a downloaded file's **Add to message** action instead of preparing another copy.
+
+## Changed your mind?
+
+Use the attachment's remove button before sending. CLIO discards copies or links created for that unsent attachment, including its source-named folder when it is no longer needed. It preserves material that already existed or was used by a sent message.
+
+This does not delete the original files at their source. For ongoing connections and account sign-ins, see [Manage sources](/docs/files/manage/).

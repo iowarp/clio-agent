@@ -19,6 +19,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.blueprint_identity import select_blueprint
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -57,7 +59,7 @@ def _blueprint_row(app: "FastAPI", sid: str, blueprint_id: str, path: Path | Non
     if path is not None:
         return parse_agent_blueprint_root(path, scope="session") if path.exists() else None
     cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
-    return next((row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None)
+    return select_blueprint(discover_agent_blueprints(cwd=cwd), blueprint_id)
 
 
 def diagnose_unresolved_blueprint(app: "FastAPI", sid: str, agent_id: str) -> dict[str, Any]:

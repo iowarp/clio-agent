@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 985,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
+    "src/clio_agent/agent.py": 974,  # Cooperative cancellation moved to runtime/cancellation.py.
     "src/clio_agent/arc/memory.py": 1068,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     "src/clio_agent/arc/segments.py": 951,  # Typed persistence errors live in segment_errors.py.
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -202,7 +202,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 996,
+    "src/clio_agent/gact/agent_blueprints.py": 888,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -373,7 +373,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # route and the executing agent can never disagree. Genuinely new
     # decision logic (not a call-site wrap), hence living here rather than in
     # a caller.
-    "src/clio_agent/gact/agents/resolution.py": 832,
+    "src/clio_agent/gact/agents/resolution.py": 829,
     # NEW entry (C1-S7, #1309 gate-review F1/F3): crossed the flat 800 cap
     # (795 -> 820) for two new optional TaskSpec fields (tool_allowlist /
     # agent_elicitation_depth) and the metadata_patch lines that stamp them
@@ -478,7 +478,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 2411,
+    "src/clio_agent/gact/app.py": 2404,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -707,7 +707,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1167,  # side sessions: fork and aside share one context copy (-4)
+    "src/clio_agent/gact/routes/sessions.py": 1109,  # reuse the shared missing-session response
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -1147,7 +1147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # trace_dropped_x_mcp_header_tools) at the listing choke point -- the
     # diagnostic's own logic lives in that owner module; only the lazy
     # import + one await land here.
-    "src/clio_agent/tools/gateway.py": 960,
+    "src/clio_agent/tools/gateway.py": 939,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/banner.png" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="820">
+  <img src="branding/clio/wordmark.svg" alt="CLIO Agent — Cognitive Layer for Adaptive Universal Data & Intelligent Operations" width="320">
 </p>
 
 <p align="center">

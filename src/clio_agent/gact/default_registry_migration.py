@@ -58,10 +58,14 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from clio_agent.platform_paths import copytree_extended, rename_extended, rmtree_extended
+from filelock import FileLock, Timeout
+
+from clio_agent.gact.blueprint_install_files import copy_blueprint_tree
+from clio_agent.platform_paths import rename_extended, rmtree_extended
 
 logger = logging.getLogger(__name__)
 
@@ -164,10 +168,8 @@ def registry_install_lock(install_root: Path) -> Iterator[bool]:
     process holds it -- the caller skips this time instead of blocking.
     """
 
-    from filelock import FileLock, Timeout  # noqa: PLC0415
-
     install_root.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(install_root / LOCK_NAME), timeout=0)
+    lock = _registry_file_lock(str((install_root / LOCK_NAME).resolve()))
     try:
         lock.acquire()
     except Timeout:
@@ -177,6 +179,12 @@ def registry_install_lock(install_root: Path) -> Iterator[bool]:
         yield True
     finally:
         lock.release()
+
+
+@lru_cache(maxsize=128)
+def _registry_file_lock(path: str) -> FileLock:
+    """Share lock instances so nested discovery/install calls remain reentrant."""
+    return FileLock(path, timeout=0)
 
 
 def lock_busy_diagnostic() -> str:
@@ -230,8 +238,12 @@ def _skip_ids(
         _BLUEPRINT_ROOT_NAME,
         read_install_metadata,
     )
+    from clio_agent.gact.blueprint_identity import source_tombstones
 
-    skips = dict.fromkeys(read_uninstalled_tombstones(home=home, cwd=cwd), "user_uninstalled")
+    skips = dict.fromkeys(
+        source_tombstones(read_uninstalled_tombstones(home=home, cwd=cwd), source, ref, "global"),
+        "user_uninstalled",
+    )
     if not install_root.is_dir():
         return skips
     for root in sorted(install_root.iterdir()):
@@ -300,7 +312,12 @@ def _materialize(source: str, *, ref: str, pinned: str, tmp: Path) -> tuple[Path
 
 
 def replace_pack_atomically(
-    candidate: Path, install_root: Path, pack_id: str, metadata: dict[str, Any]
+    candidate: Path,
+    install_root: Path,
+    pack_id: str,
+    metadata: dict[str, Any],
+    *,
+    keep_backup: bool = False,
 ) -> None:
     """Install ``candidate`` as ``install_root/pack_id`` with an all-or-nothing swap.
 
@@ -313,6 +330,7 @@ def replace_pack_atomically(
     from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
         _tree_checksum,
         _write_install_metadata,
+        parse_agent_blueprint_root,
     )
 
     staging_root = install_root.parent / STAGING_DIR_NAME
@@ -322,8 +340,16 @@ def replace_pack_atomically(
     backup = staging_root / f"{pack_id}.old-{token}"
     final = install_root / pack_id
     try:
-        copytree_extended(candidate, staged)
-        _write_install_metadata(staged, {**metadata, "checksum": _tree_checksum(staged)})
+        copy_blueprint_tree(candidate, staged)
+        parsed = parse_agent_blueprint_root(staged, scope=str(metadata.get("scope") or "install"))
+        if not parsed.enabled:
+            raise ValueError("staged blueprint is invalid: " + "; ".join(parsed.validation_errors))
+        retained = (
+            {"retained_previous_revision": str(backup)} if keep_backup and final.exists() else {}
+        )
+        _write_install_metadata(
+            staged, {**metadata, **retained, "checksum": _tree_checksum(staged)}
+        )
         if final.exists():
             rename_extended(final, backup)
         try:
@@ -334,7 +360,7 @@ def replace_pack_atomically(
             raise
     finally:
         rmtree_extended(staged, ignore_errors=True)
-    if backup.exists():
+    if backup.exists() and not keep_backup:
         try:
             rmtree_extended(backup)
         except OSError as exc:

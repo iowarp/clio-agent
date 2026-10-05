@@ -1,0 +1,40 @@
+{
+  "preview": "http://127.0.0.1:18825",
+  "source_id": "src_54b34ad35887",
+  "fixture": "C:\\Users\\jaime\\AppData\\Local\\Temp\\clio-marketplace-acceptance-tt18qi5e",
+  "verified_versions": [
+    {
+      "id": "acceptance-alpha",
+      "version": "1.0.2"
+    },
+    {
+      "id": "acceptance-zulu",
+      "version": "1.0.2"
+    }
+  ],
+  "reload_outcomes": [
+    {
+      "id": "e2c4f541dfe44041bc33f5903ff7c066",
+      "label": "Reload marketplace",
+      "status": "applied",
+      "finished_at": "2026-10-05T00:45:26.660914+00:00",
+      "error": null
+    },
+    {
+      "id": "b77f87ebea3f46638f0644b082872207",
+      "label": "Reload marketplace",
+      "status": "failed",
+      "finished_at": "2026-10-05T00:44:12.928862+00:00",
+      "error": "blueprint installation failed: Blueprint \"Acceptance Zulu\" (acceptance-zulu): Staged blueprint runtime is invalid: main: unknown tool reference: acceptance_missing_tool"
+    },
+    {
+      "id": "e70caa436af1402c8e17e417568c1823",
+      "label": "Reload marketplace",
+      "status": "applied",
+      "finished_at": "2026-10-05T00:42:24.701712+00:00",
+      "error": null
+    }
+  ],
+  "failed_reload_preserved_checksums": true,
+  "cleanup": "Temporary registration and both installed test blueprints removed; fixture retained under Temp."
+}

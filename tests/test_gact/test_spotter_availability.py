@@ -214,6 +214,27 @@ def test_flowcept_query_default_without_settings_is_a_typed_problem(
     assert agentic["query_default"] == "flowcept"
 
 
+def test_attention_handoff_is_explicit_and_local(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only an enabled capture with a configured root reaches the watcher."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.provenance.handoff import build_provenance_handoff
+
+    monkeypatch.setenv("CLIO_PROVENANCE_PROVIDERS", "jsonl,flowcept")
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION", "1")
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_FILES_DIR", str(tmp_path / "captures"))
+    app = SimpleNamespace(state=SimpleNamespace())
+    document = build_provenance_handoff(app, workspace_root=tmp_path).document
+    assert document["provenance.attention.files_dir"] == str((tmp_path / "captures").resolve())
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION", "0")
+    assert (
+        "provenance.attention.files_dir"
+        not in build_provenance_handoff(app, workspace_root=tmp_path).document
+    )
+
+
 def test_unset_variable_refusal_names_the_variable_as_the_remedy(tmp_path: Path) -> None:
     _install(tmp_path, _LEGACY_AGENT_MD)
     app = build_app(sessions_path=tmp_path / "s.json")

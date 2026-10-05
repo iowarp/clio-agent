@@ -1,5 +1,9 @@
 # CLIO demo video editing
 
+For the explicitly labelled screenshot walkthroughs covering files, sources, and
+marketplaces, see [SOURCE-GUIDES.md](SOURCE-GUIDES.md). The continuous-recording
+workflow below remains the workflow for demonstrating live motion and gestures.
+
 Record a continuous, real interaction before editing. The website's earlier
 recordings were assembled from sparse browser screenshots; their nominal
 30 fps output does not supply the missing motion.

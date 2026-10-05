@@ -24,6 +24,8 @@ def agent_blueprint_candidates(root: Path) -> list[dict[str, Any]]:
             {
                 "id": parsed.id,
                 "title": parsed.title,
+                "display_name": parsed.display_name,
+                "description": parsed.description,
                 "version": parsed.version,
                 "enabled": parsed.enabled,
                 "validation_errors": list(parsed.validation_errors),

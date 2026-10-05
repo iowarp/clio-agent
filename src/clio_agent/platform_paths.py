@@ -263,7 +263,9 @@ def rename_extended(source: str | Path, destination: str | Path) -> None:
     os.rename(_extended_absolute(source), _extended_absolute(destination))
 
 
-def tree_files(root: str | Path) -> list[tuple[Path, str]]:
+def tree_files(
+    root: str | Path, *, excluded_dirs: frozenset[str] = frozenset()
+) -> list[tuple[Path, str]]:
     """Every file under ``root`` as ``(path relative to root, OS path to open)``.
 
     Sorted by the relative :class:`~pathlib.Path` (the order ``sorted(root.rglob(...))``
@@ -272,7 +274,8 @@ def tree_files(root: str | Path) -> list[tuple[Path, str]]:
     """
     base = _extended_absolute(root)
     rows: list[tuple[Path, str]] = []
-    for directory, _subdirs, names in os.walk(base):
+    for directory, subdirs, names in os.walk(base):
+        subdirs[:] = [name for name in subdirs if name not in excluded_dirs]
         for name in names:
             full = os.path.join(directory, name)
             if os.path.isfile(full):

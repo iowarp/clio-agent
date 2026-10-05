@@ -1,0 +1,45 @@
+---
+title: Reference material with @
+description: Find existing files and evidence, insert a reference at the cursor, and inspect it before sending.
+---
+
+import FilesGuideNav from '../../../../components/FilesGuideNav.astro';
+import WidgetRecording from '../../../../components/WidgetRecording.astro';
+import { Steps } from '@astrojs/starlight/components';
+
+<FilesGuideNav active="reference" />
+
+A reference tells the agent **which existing item you mean**. It carries the item's identity into the message, so you do not have to re-upload a file or describe where a result appeared.
+
+<WidgetRecording name="clio-guide-reference" title="Find it. Reference it. Open it." caption="Type @brief, choose the existing file, then open its chip to inspect the file in the canvas." formatLabel="Screenshot walkthrough" timingNote="Actual UI states with reading pauses; the draft remains unsent." />
+
+## Type @ where the reference belongs
+
+<Steps>
+
+1. Type **@** in the message. Workspace files are expanded first. Sources and artifacts appear when the workspace has matching items.
+2. Keep typing a name, such as **@brief**. Search includes files, sources, artifacts, conversations, and other recorded context.
+3. Click a result, or use **↑ / ↓** and **Enter**. CLIO replaces the typed search with a reference chip at that position in your draft. This selection does not send the message.
+4. Click the chip to inspect its file, result, or conversation. Finish your request and send it when ready.
+
+</Steps>
+
+**+ → Reference** opens the same picker with a search box. It inserts at the cursor position you left in the message.
+
+## What the controls mean
+
+| Action | Result |
+|---|---|
+| Type after @ | Search existing workspace context. Matching categories expand. |
+| Enter or Tab while a result is highlighted | Add that reference to the draft. |
+| Escape | Close the picker and keep the text you typed. |
+| Click the reference chip | Open the referenced material for inspection. |
+| Remove a reference chip | Remove it from this message. The existing file or result remains. |
+
+If you intended ordinary text such as an email address, press **Escape** to dismiss the picker. A typed name is not a structured reference until you select a result.
+
+## Whole folders and selected evidence
+
+For an entire connected source, open it through **Attach → Your sources** and choose **Add source to message**. Browse into a subfolder to use **Add this folder to message**. For a selection inside a chart or image, use the view's own **Reference this** or region capture controls. See [Human-agent interaction](/docs/widgets/interaction/).
+
+A reference gives context; it does not change file permissions. A read-only linked file remains read-only when referenced.

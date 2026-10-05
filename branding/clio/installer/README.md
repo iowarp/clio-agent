@@ -17,16 +17,17 @@ surfaces as a broken or blank page in an installer that has already shipped, so
 
 ## Provenance
 
-Generated from the tracked CLIO mark (`branding/logo_cropeed.png`, the same
-raster `branding/clio/logo.svg` embeds) by `scripts/gen_installer_art.py`:
-the mark on white with the wordmark and an accent rule for the header, and a
-dark gradient panel with the mark, wordmark and the Gnosis Research Center
-attribution for the sidebar. The accent is `brand.json`'s `accent` (`#ea7b2a`).
+Generated from the approved `branding/clio/mark.svg` and `wordmark.svg` masters
+by `scripts/gen_brand_assets.py`, which renders fresh transparent PNGs before
+calling `scripts/gen_installer_art.py`. The header uses the owl on white with
+a CLIO label and accent rule. The sidebar uses the complete owl and serif
+wordmark on a dark panel with the Gnosis Research Center attribution.
+The accent rule uses `brand.json`'s UI accent (`#ea7b2a`).
 
 Regenerate after a brand change with:
 
 ```bash
-uv run scripts/gen_installer_art.py
+uv run python -m scripts.gen_brand_assets
 ```
 
 Replacing the art by hand is equally valid — drop in two BMPs that satisfy the

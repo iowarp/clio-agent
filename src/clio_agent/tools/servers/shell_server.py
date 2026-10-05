@@ -532,6 +532,12 @@ async def bash(
     run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
     # Prepared scratch is already inside this workspace's writable territory.
     run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
+    from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
+
+    # Skills run in isolated uv environments and cannot import this resolver.
+    # Supply the bound workspace's canonical path, never an inherited host value
+    # or an explicit command subdirectory. The existing write fence still applies.
+    run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -593,7 +599,7 @@ def _spill_root(safe_cwd: Path) -> Path:
     """Where this call's spill files go: the session workspace root.
 
     The model reads spilled output with its workspace file tools, so the files
-    belong under the bound workspace's ``.clio`` root even when the command ran
+    belong under the bound workspace's Agent state root even when the command ran
     in an explicit sub-``cwd``. With no workspace bound (the app-less CLI path,
     whose fallback :func:`_resolve_cwd` already traces) the policy-validated cwd
     is used.

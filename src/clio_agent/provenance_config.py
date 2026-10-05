@@ -18,6 +18,7 @@ and mirrored by ``config.defaults.yaml`` (drift-tested by
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from clio_agent import conf
 
@@ -89,3 +90,22 @@ def kvnorm_join_enabled() -> bool:
     ):
         return False
     return "flowcept" in configured_provider_names()
+
+
+def attention_capture_enabled() -> bool:
+    """Whether model calls declare attention ranges for the Flowcept connector."""
+    value = conf.resolve(
+        "provenance.attention",
+        env="CLIO_PROVENANCE_ATTENTION",
+        default=False,
+    )
+    # Preserve the established boolean while allowing enabled + files_dir in one
+    # YAML namespace. A files-only mapping does not opt the user into capture.
+    if isinstance(value, Mapping):
+        value = value.get("enabled", False)
+    return conf.as_bool(value) and "flowcept" in configured_provider_names()
+
+
+def response_id_join_enabled() -> bool:
+    """Whether model provenance retains the provider response join key."""
+    return kvnorm_join_enabled() or attention_capture_enabled()

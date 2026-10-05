@@ -1,0 +1,19 @@
+{
+  "hostname": "Server",
+  "cancelled_before_retry": "cancelled",
+  "cache_reused_without_file_changes": true,
+  "receipt": {
+    "id": "4b84e9e5d35f0f17e63f8aa9",
+    "repository": "sshleifer/tiny-gpt2",
+    "requested_revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "destination": "/data/clio-beta3-qualification/model-lifecycle/models/tiny-gpt2",
+    "state": "ready",
+    "phase": "Model available; choose a runtime to serve it",
+    "bytes_done": 4734064,
+    "bytes_total": 4734064,
+    "created_at": 1791100507.4113142,
+    "updated_at": 1791100514.5115914,
+    "error": null
+  }
+}

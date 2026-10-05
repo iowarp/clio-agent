@@ -45,6 +45,8 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from clio_agent.gact.turn_revision_gate import TurnRevisionGate
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -117,6 +119,7 @@ class TurnRunner:
         # registered from the turn executor thread, drained on the loop.
         self._release_callbacks: dict["asyncio.Task[object]", list[Callable[[], None]]] = {}
         self._release_lock = threading.Lock()
+        self.revision_gate = TurnRevisionGate()
 
     def set_idle_hook(self, hook: Callable[[str], None] | None) -> None:
         """Register a callback fired (on the event loop) when a session's turn slot
@@ -221,12 +224,14 @@ class TurnRunner:
         """
 
         loop = self._loop or asyncio.get_event_loop()
-        task = loop.create_task(coro)
+        task = loop.create_task(self.revision_gate.run(coro))
         self._all.add(task)
         self._in_flight[sid] = task
         self._handles[sid] = TurnHandle(sid=sid, turn_id=turn_id, started_at=time.time())
 
         def _done(finished: "asyncio.Task[object]", _sid: str = sid) -> None:
+            # Cancellation can precede the wrapper's first instruction.
+            coro.close()
             self._all.discard(finished)
             # Only clear the per-session slot/handle if THIS task still owns it —
             # a later turn may already have replaced it (though the busy gate now

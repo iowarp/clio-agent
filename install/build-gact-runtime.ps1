@@ -16,7 +16,7 @@
   The runtime self-describes via a generic manifest (<out>\runtime.json,
   iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
   what's inside:
-    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact", "--no-agent"]}
+    {"schema": 1, "exec": ["python/python.exe", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"]}
 
   Console-script exes are DELETED after install: they embed absolute
   build paths and break on relocation -- `-m clio_agent.gact` is the only
@@ -141,7 +141,7 @@ if ($Source) {
 # hardcoded clio-kit==2.10.6 (click>=8.3.3) broke against the locked click.
 # scripts/check_bundle_matches_lock.py BUNDLE_EXTRAS must equal this list
 # (tests/test_scripts/test_check_bundle_matches_lock.py enforces it).
-$BundleExtras = @('argonne', 'desktop')
+$BundleExtras = @('argonne', 'desktop', 'flowcept')
 $constraints = Join-Path $Out '.lock-constraints.txt'
 Write-Host "[build-gact-runtime] exporting $checkout\uv.lock (extras: $($BundleExtras -join ',')) as an install constraint"
 $exportArgs = @('export', '--project', $checkout, '--frozen', '--no-hashes', '--no-emit-project', '-o', $constraints)
@@ -154,7 +154,6 @@ if (-not (Test-Path $constraints) -or (Get-Item $constraints).Length -eq 0) {
 $bundleSpec = "$spec[$($BundleExtras -join ',')]"
 Write-Host "[build-gact-runtime] installing: $bundleSpec (locked)"
 Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $bundleSpec)
-if ($cleanupCheckout) { Remove-Item -LiteralPath $cleanupCheckout -Recurse -Force -ErrorAction SilentlyContinue }
 
 # Web Search is the recommended installer-selected service. Install its
 # source-locked adapter into the main relocatable runtime now, rather than
@@ -259,8 +258,8 @@ if (Test-Path $sitePkgs) {
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while
 # some optional provider paths exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
-$precompiler = Join-Path $Source 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @($precompiler, '--python-root', $pyRoot)
+$precompiler = Join-Path $checkout 'install/precompile_runtime.py'
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -271,7 +270,7 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact', '--no-agent') } |
+$manifest = @{ schema = 1; exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent') } |
   ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
@@ -288,8 +287,8 @@ $reloc = Join-Path ([System.IO.Path]::GetTempPath()) ("gact-runtime-relocated-" 
 Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
-Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
-Invoke-Native -Exe $relocPy -Args @('-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-m', 'clio_agent.gact', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
 $relocUv = Join-Path $reloc 'bin\uv.exe'
 Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
@@ -312,6 +311,7 @@ $previousFileCapacity = $env:CLIO_ARC_CTE_FILE_CAPACITY
 # prune casualty the gate exists to catch.
 $smokeUser = (Join-Path ([System.IO.Path]::GetDirectoryName($Out)) 'gact-runtime-arc-smoke')
 $previousRuntimeStateDir = $env:CLIO_RUNTIME_STATE_DIR
+$previousCorePort = $env:CLIO_CORE_PORT
 Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
 try {
   $env:CLIO_USER_DIR = $smokeUser
@@ -322,6 +322,13 @@ try {
   # runs there. Point them at the smoke's own directory so this proves the
   # RELOCATED IMAGE, and so the daemon log lands where the failure path looks.
   $env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')
+  # Private state also needs a private RPC endpoint: otherwise a developer's
+  # running daemon on 9413 is mistaken for an unversioned smoke-owned daemon.
+  $coreListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $coreListener.Start()
+  try {
+    $env:CLIO_CORE_PORT = [string]$coreListener.LocalEndpoint.Port
+  } finally { $coreListener.Stop() }
   New-Item -ItemType Directory -Path $smokeUser -Force | Out-Null
   New-Item -ItemType Directory -Path $env:CLIO_RUNTIME_STATE_DIR -Force | Out-Null
   # Diagnostic only: never fail the build because free space could not be read.
@@ -333,12 +340,14 @@ try {
   # NOT swallowed: on a degrade the helper prints the typed reason, the stack
   # from a wrapper-free re-run, and the daemon log. That output IS the gate's
   # diagnostic value, and piping it away once already cost a release cycle.
-  Invoke-Native -Exe $relocPy -Args @((Join-Path $Source 'install/arc_smoke.py'))
+  Invoke-Native -Exe $relocPy -Args @('-I', '-B', (Join-Path $checkout 'install/arc_smoke.py'))
 } finally {
   Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
   if ($null -eq $previousRuntimeStateDir) {
     Remove-Item Env:CLIO_RUNTIME_STATE_DIR -ErrorAction SilentlyContinue
   } else { $env:CLIO_RUNTIME_STATE_DIR = $previousRuntimeStateDir }
+  if ($null -eq $previousCorePort) { Remove-Item Env:CLIO_CORE_PORT -ErrorAction SilentlyContinue }
+  else { $env:CLIO_CORE_PORT = $previousCorePort }
   if ($null -eq $previousUserDir) { Remove-Item Env:CLIO_USER_DIR -ErrorAction SilentlyContinue }
   else { $env:CLIO_USER_DIR = $previousUserDir }
   if ($null -eq $previousFileCapacity) {
@@ -350,7 +359,7 @@ try {
 $port = Get-Random -Minimum 24000 -Maximum 44000
 Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
 $srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
-  -ArgumentList @('-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+  -ArgumentList @('-I', '-B', '-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
 $bootWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $bootOk = $false
 foreach ($i in 1..30) {
@@ -367,5 +376,14 @@ if (-not $bootOk) {
   throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds"
 }
 Write-Host ("[build-gact-runtime] relocated cold boot ready in {0:N2}s" -f $bootWatch.Elapsed.TotalSeconds)
+
+if ($cleanupCheckout) {
+  $cleanupRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+  $cleanupTarget = [System.IO.Path]::GetFullPath($cleanupCheckout)
+  if (-not $cleanupTarget.StartsWith((Join-Path $cleanupRoot 'clio-agent-ref-checkout-'))) {
+    throw "build-gact-runtime: unexpected temporary checkout cleanup target $cleanupTarget"
+  }
+  Remove-Item -LiteralPath $cleanupTarget -Recurse -Force
+}
 
 Write-Host "[build-gact-runtime] OK - portable runtime ready at $Out ($sizeAfter MB)"

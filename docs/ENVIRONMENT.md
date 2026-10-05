@@ -118,6 +118,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_FLOWCEPT_CHECK_SAFE_STOPS` | `provenance.agentic.flowcept.check_safe_stops` | bool | `true` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_EXCLUDE_EVENTS` | `provenance.agentic.flowcept.exclude_events` | list | `lm.token.delta,thinking.*` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_INCLUDE_EVENTS` | `provenance.agentic.flowcept.include_events` | list | `*` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_FLOWCEPT_PERSISTENCE_OWNER` | `provenance.agentic.flowcept.persistence_owner` | str | `client` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_PRIVACY` | `provenance.agentic.flowcept.privacy` | str | `metadata` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_WORKFLOW_SCOPE` | `provenance.agentic.flowcept.workflow_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FS_MAX_READ_BYTES` | `limits.fs_read_bytes` | int | `262144` | `src/clio_agent/tools/servers/fs_server.py` |
@@ -213,6 +214,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MODEL_TOOL_RESULT_CHARS` | `limits.model_tool_result_chars` | int | `12000` | `src/clio_agent/tools/mcp_result_projection.py` |
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
+| `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | str | `false` | `src/clio_agent/provenance_config.py` |
+| `CLIO_PROVENANCE_ATTENTION_FILES_DIR` | `provenance.attention.files_dir` | str | _(unset)_ | `src/clio_agent/gact/attention/files.py` |
+| `CLIO_PROVENANCE_ATTENTION_TOKENIZER` | `provenance.attention.tokenizer` | str | _(unset)_ | `src/clio_agent/gact/attention/tokenizer_source.py` |
 | `CLIO_PROVENANCE_JSONL_PATH` | `provenance.agentic.jsonl.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_PROVENANCE_KVNORM` | `provenance.kvnorm` | bool | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
@@ -343,6 +347,9 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
+| `CLIO_STORAGE_GITHUB_APP_URL` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
+| `CLIO_STORAGE_GITHUB_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
+| `CLIO_STORAGE_GOOGLE_API_KEY` | unmigrated | `src/clio_agent/gact/storage/linked.py` |
 
 ## Owned elsewhere
 

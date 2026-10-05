@@ -1554,6 +1554,12 @@ provenance.agentic.flowcept.exclude_events: ["lm.token.delta", "thinking.*"]
 # not excluded); narrow to scope provenance to specific events.
 provenance.agentic.flowcept.include_events: ["*"]
 
+# CLIO_FLOWCEPT_PERSISTENCE_OWNER  (str)  <- src/clio_agent/gact/provenance/factory.py
+# Exactly one persistence owner: "client" for a standalone Flowcept client,
+# or "collector" when a managed collector persists records. Avoid duplicate
+# database writers.
+provenance.agentic.flowcept.persistence_owner: "client"
+
 # CLIO_FLOWCEPT_PRIVACY  (str)  <- src/clio_agent/gact/provenance/factory.py
 # Flowcept payload privacy level ("metadata" default, no raw content); relax
 # only when the Flowcept backend is trusted with full content.
@@ -1645,6 +1651,25 @@ provenance.artifacts.provider: "native"
 # Max queued artifact-provenance events awaiting async dispatch; raise if a
 # slow provider causes drops under bursty activity.
 provenance.artifacts.queue_size: 4096
+
+# CLIO_PROVENANCE_ATTENTION  (str)  <- src/clio_agent/provenance_config.py
+# On vLLM calls, declare one token range per transcript section as
+# kv_transfer_params.ranges for vllm-attn-connector and record the labelled
+# ranges on the lm.call; powers the attention view. Only effective with
+# Flowcept configured.
+provenance.attention: "false"
+
+# CLIO_PROVENANCE_ATTENTION_FILES_DIR  (str)  <- src/clio_agent/gact/attention/files.py
+# Local copy of the attention connector's out_dir (same <workflow_id>/<file>
+# layout) for when CLIO does not run on the GPU node; the attention view
+# reads files there.
+# provenance.attention.files_dir:  # default unset; resolved in code
+
+# CLIO_PROVENANCE_ATTENTION_TOKENIZER  (str)  <- src/clio_agent/gact/attention/tokenizer_source.py
+# Local directory or Hugging Face id of the served model's tokenizer + chat
+# template (files only) for attention ranges; set for air-gapped nodes or
+# custom templates.
+# provenance.attention.tokenizer:  # default unset; resolved in code
 
 # CLIO_PROVENANCE_KVNORM  (bool)  <- src/clio_agent/provenance_config.py
 # Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance

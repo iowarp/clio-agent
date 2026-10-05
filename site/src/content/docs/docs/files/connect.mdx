@@ -1,0 +1,39 @@
+---
+title: Connect a data source
+description: Sign in once, choose a source for a workspace, and decide which files to add.
+---
+
+import FilesGuideNav from '../../../../components/FilesGuideNav.astro';
+import GuideScreenshot from '../../../../components/GuideScreenshot.astro';
+
+<FilesGuideNav active="connect" />
+
+Open **+ → Attach** to connect a folder, repository, or collection. **Sign in** connects your account. **Connect** chooses the particular data you want to use. These are separate actions.
+
+<GuideScreenshot name="guide-connect" alt="Attach shows local file choices, provider accounts, Connect buttons, and collapsed saved sources" caption="An account can already be signed in before you choose a source. Saved sources stay compact at the bottom." />
+
+## Pick a location
+
+| Source | What to provide |
+|---|---|
+| Google Drive | A folder link. Sign in for private data. |
+| GitHub | A repository link, then a branch, tag, or commit. Sign in for private repositories you are allowed to access. |
+| Globus | The collection and folder you want to use. Sign in when access requires it. |
+| SSH / SFTP | A saved host or a new connection, then a folder on that machine. |
+| Folder on the CLIO machine | A path on the machine running CLIO. This option is useful when that machine differs from the computer running the interface. |
+
+For files on the computer in front of you, use **Choose files** or **Choose folder**. Public sources supported by a provider can be connected without signing in; private access requires the appropriate account and permission.
+
+## Sign in, then choose the data
+
+Choose **Sign in** under the provider and finish the browser steps. Return to CLIO and check for **Signed in**. You can then connect more sources using that account.
+
+GitHub's **Repository access** link opens the app's repository selection on GitHub. Signing in alone does not grant access to every private repository. For edits, choose a writable branch; tags and specific commits identify fixed revisions.
+
+After connecting, inspect the source's files. Connecting alone does not download everything or give the agent a new message. Choose [how to add the files](/docs/files/download-or-link/) next.
+
+## What is shared?
+
+**Saved sources belong to a workspace.** **Connected accounts are reusable across workspaces for the same user on that CLIO.** A separate CLIO machine may need its own sign-in.
+
+Signing out is under the provider. Removing one saved source does not sign out the account. See [Manage sources](/docs/files/manage/).

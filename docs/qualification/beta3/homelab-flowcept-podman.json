@@ -1,0 +1,209 @@
+{
+  "service": "flowcept",
+  "facts": {
+    "target_id": "homelab-monitoring-qualification-podman",
+    "label": "Homelab qualification",
+    "os": "linux",
+    "arch": "x86_64",
+    "accelerator": "none",
+    "docker_available": true,
+    "docker_installed": true,
+    "uv_available": true,
+    "transport_state": "connected",
+    "container_runtimes": [
+      {
+        "name": "docker",
+        "installed": true,
+        "usable": true,
+        "version": "29.2.0",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "podman",
+        "installed": true,
+        "usable": true,
+        "version": "3.0.1",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "apptainer",
+        "installed": false,
+        "usable": false,
+        "version": "",
+        "reason": "not_installed",
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      }
+    ],
+    "identity": {
+      "uid": 1000,
+      "gid": 1000
+    },
+    "home": "/home/jcernuda",
+    "agent_data_root": "/home/jcernuda/.local/share/clio-agent",
+    "hostname": "Server"
+  },
+  "installed": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129500.0680876
+  },
+  "started": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129550.5779335
+  },
+  "verified": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129559.8676598
+  },
+  "stopped": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "stopped",
+    "installed": true,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129572.260658
+  },
+  "restarted": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129615.3977861
+  },
+  "reverified": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "running",
+    "installed": true,
+    "running": true,
+    "serving": true,
+    "worker_alive": true,
+    "provenance_ingesting": true,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129622.5968513
+  },
+  "removed": {
+    "definition_version": "flowcept-managed-2",
+    "configuration_revision": "f4b7e6f87df57006f94d681a41f2804b6e7080740910d4d038c694f01b5b14d7",
+    "phase": "not_installed",
+    "installed": false,
+    "running": false,
+    "serving": false,
+    "worker_alive": false,
+    "provenance_ingesting": false,
+    "attention_verified": false,
+    "evidence_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "effective_artifacts": {
+      "clio-flowcept-3884a624ca5b-redis": "e08bd8d5a6774025cff22e5db8361f6a5d023811e84d77d0033e47d44970cc94",
+      "clio-flowcept-3884a624ca5b-mongo": "ffe6488922674e956bef2273e7a938070cd7d5836b129992f052c3a8bb6b24a8",
+      "pod_infra": "873ed75102791e5b0b8a7fcd41606c92fcec98d56d05ead4ac5131650004c136",
+      "python_lock_sha256": "3e7a311fd6ce1b25a8d31970b8054cdb82229576a5f60d0ae401969330eedb7f"
+    },
+    "error": null,
+    "observed_at": 1791129643.9028072
+  },
+  "configuration": {
+    "port": "18038",
+    "container_runtime": "podman",
+    "image_storage": "service",
+    "redis_port": "16389",
+    "mongo_port": "37027",
+    "storage.container_images": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/containers/images",
+    "storage.container_downloads": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/containers/downloads",
+    "storage.service_directory": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept",
+    "storage.captures": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/evidence",
+    "compatibility_profile": "flowcept-managed-2",
+    "native_owner": "3884a624ca5b84ad36e773a8eca1b8dbde6b568154dfe758a04a8c2f24f7544c",
+    "flowcept_settings": "/data/clio-beta3-qualification/monitoring-podman/services/Server/flowcept/settings.yaml",
+    "persistence_owner": "collector"
+  },
+  "inference_tested": false
+}

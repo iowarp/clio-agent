@@ -240,4 +240,4 @@ and a slide-navigation GIF. The examples use synthetic planning data. Visible
 labels disclose accelerated agent waits; normal typing, artifact opening and
 preview navigation remain recorded interactions. Rejected takes are retained in
 the dated local capture archive rather than delivered. These examples describe
-the development build and do not imply that the feature has been released.
+the document workflows included in CLIO 0.9.5-beta.3.

@@ -1,0 +1,122 @@
+{
+  "status": "passed",
+  "host": "Server",
+  "head": "ccab983cbec95402750c36b190d69bb59a10c280",
+  "observations": [
+    {
+      "label": "active",
+      "revision": "1.0.0",
+      "mcp_pid": 3716382
+    },
+    {
+      "label": "queued",
+      "revision": "2.0.0",
+      "mcp_pid": 3717754
+    },
+    {
+      "label": "after-refusal",
+      "revision": "2.0.0",
+      "mcp_pid": 3718164
+    }
+  ],
+  "operation": {
+    "id": "347ec5539a834be39fec5c386a4ae9f3",
+    "label": "Qualification Reload",
+    "status": "applied",
+    "target": {
+      "scope": "workspace",
+      "workspace_id": "ws_455ff758089f"
+    },
+    "started_at": "2026-10-04T16:10:18.093358+00:00",
+    "revision": "695615fdf3fe43a49d7ece29c133628d",
+    "result": {
+      "installed": [
+        {
+          "id": "beta3-fleet-qualification",
+          "version": "2.0.0",
+          "title": "Beta 3 fleet qualification",
+          "display_name": "Beta 3 fleet qualification",
+          "description": "",
+          "scope": "workspace",
+          "root": "/data/clio-beta3-qualification/agent-runtime/fleet-02/workspace/.clio-agent/shared/agent-blueprints/beta3-fleet-qualification",
+          "root_path": "/data/clio-beta3-qualification/agent-runtime/fleet-02/workspace/.clio-agent/shared/agent-blueprints/beta3-fleet-qualification/AGENT.md",
+          "root_expert": "main",
+          "enabled": true,
+          "validation_errors": [],
+          "defaults": {},
+          "metadata": {
+            "layout": "agent_blueprint",
+            "body": "Explicit operator qualification.",
+            "compatibility": {},
+            "requires": {},
+            "mcp_servers": {
+              "reloadcheck": {
+                "args": [
+                  "-c",
+                  "from clio_agent.tools.servers.shell_server import shell_server; shell_server.run(transport='stdio')"
+                ],
+                "command": "/data/clio-beta3-qualification/agent-runtime/source/.venv/bin/python",
+                "env": {
+                  "CLIO_QUALIFICATION_REVISION": "2.0.0"
+                },
+                "transport": "stdio"
+              }
+            },
+            "a2ui_catalogs": null,
+            "includes": [],
+            "blueprint": {},
+            "workflow_state": null,
+            "install": {
+              "source": "/data/clio-beta3-qualification/agent-runtime/fleet-02/blueprint-source",
+              "source_id": "src_cf89988f0ab2",
+              "source_kind": "path",
+              "ref": "",
+              "commit": "",
+              "pinned_commit": "",
+              "installed_at": "2026-10-04T16:10:29.012237+00:00",
+              "scope": "workspace",
+              "checksum": "ce383370b10d080ea9b24627f80646a0b3aadb6dad09bd816dfa1613976da756"
+            },
+            "default_registry": {}
+          },
+          "definition_path": "/data/clio-beta3-qualification/agent-runtime/fleet-02/workspace/.clio-agent/shared/agent-blueprints/beta3-fleet-qualification/AGENT.md",
+          "kind": "blueprint",
+          "name": "Beta 3 fleet qualification",
+          "identity": "workspace::src_cf89988f0ab2::beta3-fleet-qualification",
+          "source_id": "src_cf89988f0ab2",
+          "blueprint_id": "beta3-fleet-qualification",
+          "install": {
+            "source": "/data/clio-beta3-qualification/agent-runtime/fleet-02/blueprint-source",
+            "source_id": "src_cf89988f0ab2",
+            "source_kind": "path",
+            "ref": "",
+            "commit": "",
+            "pinned_commit": "",
+            "installed_at": "2026-10-04T16:10:29.012237+00:00",
+            "scope": "workspace",
+            "checksum": "ce383370b10d080ea9b24627f80646a0b3aadb6dad09bd816dfa1613976da756"
+          },
+          "replaced": {
+            "previous_checksum": "e247e09a4ed2b452945a258c6f46016e16c04884b23a7b4df89ad1b149d6b39c",
+            "checksum": "ce383370b10d080ea9b24627f80646a0b3aadb6dad09bd816dfa1613976da756"
+          },
+          "runtime_checks": [
+            {
+              "namespace": "reloadcheck",
+              "status": "ready",
+              "tool_count": 1,
+              "workspace": "/data/clio-beta3-qualification/agent-runtime/fleet-02/workspace"
+            }
+          ]
+        }
+      ],
+      "skipped": []
+    },
+    "finished_at": "2026-10-04T16:10:38.194554+00:00"
+  },
+  "invalid_revision_refusal": "MCP reloadcheck could not initialize/list tools (MCPSpawnError); the previous blueprint revision was retained",
+  "retained_checksum": "ce383370b10d080ea9b24627f80646a0b3aadb6dad09bd816dfa1613976da756",
+  "inference_performed": false,
+  "packaged_transport_qualified": false,
+  "duration_seconds": 110.64
+}

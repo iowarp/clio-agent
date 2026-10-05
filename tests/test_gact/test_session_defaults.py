@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import _clear_session_model_refs, build_app
 from clio_agent.gact.session_defaults import SessionDefaultsStore
 
@@ -18,6 +19,13 @@ def _client(path: Path) -> TestClient:
 
 
 def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_path: Path) -> None:
+    # Defaults select actual installed choices; an unknown selection now fails
+    # before session creation instead of leaving a session without its tools.
+    for identifier in ("earthscope-review", "manual"):
+        source = tmp_path / identifier
+        source.mkdir()
+        (source / "AGENT.md").write_text(f"---\nid: {identifier}\ntitle: Test\n---\nTest")
+        install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     sessions_path = tmp_path / "sessions.json"
     client = _client(sessions_path)
 
