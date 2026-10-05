@@ -75,7 +75,7 @@ On Linux, choose the bundled `.deb` or `.rpm` for a local backend. The AppImage 
 
 ## Install script
 
-The script installs the backend, a terminal UI, a web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows), plus either [uv](https://docs.astral.sh/uv/) or Python 3.12 or newer with pip. It does not need git or Go.
+The script installs the backend, a terminal UI, a web UI bundle, and the `clio` command. It needs `curl` (or PowerShell on Windows), plus either [uv](https://docs.astral.sh/uv/) or Python 3.13 with pip. It does not need git or Go.
 
 <Tabs syncKey="os">
 <TabItem label="macOS and Linux">
@@ -195,7 +195,7 @@ If you open the web UI by a name other than `localhost`, such as a LAN address o
 If you only want the backend, for example to serve the API or to attach a desktop app, install it as a persistent uv tool:
 
 ```sh
-uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
+uv tool install --python 3.13 --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.24
 clio-agent serve
 ```
 

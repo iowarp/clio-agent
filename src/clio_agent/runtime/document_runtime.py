@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,7 @@ def _run(
 
 def _fingerprint() -> str:
     digest = hashlib.sha256()
+    digest.update(f"{sys.implementation.cache_tag}:{sysconfig.get_platform()}".encode())
     for name in ("pyproject.toml", "uv.lock", "package.json", "pnpm-lock.yaml"):
         digest.update((STACK_ROOT / name).read_bytes())
     return digest.hexdigest()[:20]

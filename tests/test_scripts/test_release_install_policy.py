@@ -8,6 +8,7 @@ LiteLLM wheel stays exact.
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import subprocess
 import tomllib
@@ -38,11 +39,11 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
 
     expected_commands = {
         "install/install.sh": (
-            "uv sync --extra argonne",
+            "uv sync --python 3.13 --extra argonne",
             '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync')",
+            "RunNative uv @('sync', '--python', '3.13')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
@@ -113,7 +114,7 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
     smoke_step = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
-    smoke = workflow.index("uv tool install --python 3.12 --no-cache", smoke_step)
+    smoke = workflow.index("uv tool install --python 3.13 --no-cache", smoke_step)
     version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
     publish = workflow.index("run: uv publish", version_check)
 
@@ -232,7 +233,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
-    registry_install = workflow.index("uv tool install --python 3.12 --no-cache", registry_job)
+    registry_install = workflow.index("uv tool install --python 3.13 --no-cache", registry_job)
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
@@ -247,7 +248,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     """User-facing registry installs enable the package's pinned prereleases."""
 
     command = (
-        f"uv tool install --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
+        f"uv tool install --python 3.13 --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
         f"--with {EXPECTED_FASTMCP_SLIM} "
         f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={DOCUMENTED_VERSION}"
     )
@@ -260,7 +261,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        f"uv tool install --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
+        f"uv tool install --python 3.13 --prerelease allow --with dspy==3.4.0 clio-agent=={DOCUMENTED_VERSION}"
     ) in _text("README.md")
 
 
@@ -523,7 +524,7 @@ def _verify_tag_step() -> str:
 def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
     """Run the real check script with ``uv version --short`` answering ``package_version``."""
 
-    bash = shutil.which("bash")
+    bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None, "the release check is a bash script"
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -535,12 +536,19 @@ def _run_tag_check(tmp_path: Path, tag: str, package_version: str) -> int:
     for name in ("github_env", "github_output"):
         (tmp_path / name).write_text("", encoding="utf-8")
     env = {
-        "PATH": f"{bin_dir.as_posix()}:/usr/bin:/bin",
+        **os.environ,
+        "PATH": f"{_bash_path(bin_dir)}:/usr/bin:/bin",
         "GITHUB_REF_NAME": tag,
-        "GITHUB_ENV": (tmp_path / "github_env").as_posix(),
-        "GITHUB_OUTPUT": (tmp_path / "github_output").as_posix(),
+        "GITHUB_ENV": _bash_path(tmp_path / "github_env"),
+        "GITHUB_OUTPUT": _bash_path(tmp_path / "github_output"),
     }
-    return subprocess.run([bash, script.as_posix()], env=env, check=False).returncode
+    return subprocess.run([bash, _bash_path(script)], env=env, check=False, timeout=15).returncode
+
+
+def _bash_path(path: Path) -> str:
+    """Use MSYS paths on Windows so drive-letter colons cannot split PATH entries."""
+    value = path.as_posix()
+    return f"/{value[0].lower()}{value[2:]}" if os.name == "nt" else value
 
 
 def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: Path) -> None:

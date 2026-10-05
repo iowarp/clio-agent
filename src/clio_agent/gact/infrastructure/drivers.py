@@ -424,7 +424,7 @@ def _relay_plan(
                 "tool",
                 "install",
                 "--python",
-                "3.12",
+                "3.13",
                 "--no-config",
                 f"clio-relay=={RELAY_VERSION}",
             ],
