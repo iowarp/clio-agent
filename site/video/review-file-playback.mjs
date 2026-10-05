@@ -13,15 +13,27 @@ try {
 const page = await browser.newPage();
 await page.setViewport({width: 1440, height: 1000});
 const errors = [];
+const mediaCancellations = [];
+const names = ['files-pdf-read', 'files-word-edit', 'files-office-review'];
 page.on('pageerror', error => errors.push(String(error)));
-page.on('requestfailed', request => errors.push(`${request.url()}: ${request.failure()?.errorText}`));
+page.on('requestfailed', request => {
+  const reason = request.failure()?.errorText;
+  const path = new URL(request.url()).pathname;
+  if (reason === 'net::ERR_ABORTED' && request.resourceType() === 'media' && names.some(name => path === `/media/${name}.mp4`)) {
+    // Seeking and navigating away cancel Chromium's range/preload requests.
+    // Every clip must still complete playback below, without a media error.
+    mediaCancellations.push({url: request.url(), reason});
+  } else {
+    errors.push(`${request.url()}: ${reason}`);
+  }
+});
 await page.goto(pageUrl, {waitUntil: 'networkidle0'});
 await page.select('starlight-theme-select select', 'light');
 await page.screenshot({path: resolve(destination, 'page-desktop.png'), fullPage: true});
 console.log('Page rendered; reviewing complete encoded clips');
 const results = [];
 for (const mode of ['embedded', 'fullscreen']) {
-  for (const name of ['files-pdf-read', 'files-word-edit', 'files-office-review']) {
+  for (const name of names) {
     const selector = `video:has(source[src="/media/${name}.mp4"])`;
     await page.$eval(selector, video => video.scrollIntoView({block: 'center'}));
     if (mode === 'fullscreen') {
@@ -96,7 +108,7 @@ await page.setViewport({width: 390, height: 844});
 await page.goto(pageUrl, {waitUntil: 'networkidle0'});
 await page.screenshot({path: resolve(destination, 'page-mobile.png'), fullPage: true});
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
-await writeFile(resolve(destination, 'review.json'), JSON.stringify({results, errors, mobileOverflow: overflow}, null, 2));
+await writeFile(resolve(destination, 'review.json'), JSON.stringify({results, errors, mediaCancellations, mobileOverflow: overflow}, null, 2));
 if (errors.length || overflow) throw new Error(JSON.stringify({errors, overflow}));
 } finally {
   await browser.close();
