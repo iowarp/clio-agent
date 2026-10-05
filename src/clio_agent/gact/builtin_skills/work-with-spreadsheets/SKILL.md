@@ -8,8 +8,9 @@ description: Create, edit and analyze Excel workbooks and CSV/TSV tables, preser
 Call `prepare_execution_runtime` and use the prepared Python environment, which
 contains `openpyxl`. Execute scripts with `python_argv` (uv selects the prepared
 Python). Use its reported host paths; a repository's `uv run` may
-select another environment. Use the returned output directory for artifacts and
-keep additional dependencies in task-owned environments.
+select another environment. Use the returned output directory for intermediate
+files; save requested deliverables outside `.tmp` in the active workspace. Keep
+additional dependencies in task-owned environments.
 
 Inspect a workbook with `prepare_document(path, action="inspect")`. For large
 files specify `sheet` and `cell_range`, such as `sheet="Budget"` and
@@ -37,8 +38,10 @@ inputs or formulas, call `prepare_document(output_path, action="recalculate")`.
 This creates a new XLSX copy using an isolated LibreOffice profile, preserves the
 input file and checks every formula cache plus error cells. Read `status`,
 `formula_count`, `issue_count`, and the bounded issue list. A failed manifest is
-not a checked workbook. Use the returned recalculated path as the delivery candidate
-and reopen it to confirm formulas and expected values.
+not a checked workbook. Reopen the returned recalculated path to confirm formulas
+and expected values. Copy those checked bytes to the requested final workspace
+destination outside `.tmp` before publishing. Do not resave that copy with
+`openpyxl`, which clears the calculated caches.
 
 Recalculation evaluates the workbook but does not prove its formulas are correct.
 Compare representative totals and edge cases with the task's intended calculation.
