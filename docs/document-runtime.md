@@ -172,10 +172,11 @@ subset for hosts without LibreOffice and is not full Office qualification.
   uv/pnpm edits, unchanged embedded image, preserved heading, one-page render,
   viewed workspace page pixels and `@`-picker-visible source/PDF paths.
 
-This is local implementation qualification. The Linux and Windows runtime paths
-and a live default-agent turn have passed. The cross-platform GitHub workflow has
-not run, including macOS/ARM acceptance, and these changes have not been released.
-Renderer provisioning and installation-time packages are implemented.
+The Linux and Windows runtime paths and a live default-agent turn passed locally.
+Renderer provisioning and installation-time packages are implemented. The new
+GitHub document workflow also passed on Linux, Windows and macOS ARM64 on 2026-10-05,
+including actual installer provisioning and full document conversion. These changes
+have not been released.
 
 ## Publication qualification on develop (2026-10-05)
 
@@ -189,9 +190,16 @@ pnpm and Node execution with workspace-local temporary storage. The desktop
 installer-command test passed after rebuilding incomplete local Rust cache entries.
 Batch preview options now override the call-wide default per item, with regression
 checks for a rejected item between accepted sources.
+A fresh default-agent Codex/Luna conversation on this base passed after strengthening
+publication guidance. All tool calls succeeded; independent checks verified the
+requested edits, preserved heading/image, actual viewed workspace page, and the PDF
+bound to the source artifact and visible through the file picker.
 
 The broader local Windows Python run is not qualified: it crashed with stack
 overflow and thread-exhaustion errors after 1,963 passing tests, with failures,
 errors and skips. A frontend worker also exhausted memory during broad UI tests.
 These results remain failed gates; focused passing checks do not replace them.
-The PRs are drafts pending clean broader qualification and cross-platform CI.
+The PRs are drafts pending clean broader qualification. The document installation
+matrix passed independently; it does not replace the broader suite. CI's new-helper
+exception-handler ratchet failure was corrected with typed operation errors, and
+all 15 helper tests passed again.

@@ -52,7 +52,7 @@ or visual tools are unavailable, report the concrete limitation and keep the
 editable source rather than calling its layout verified.
 
 Use `create_artifact(path=output_path, kind="report", pdf_preview=true)` to designate
-the final editable file and a version-bound PDF preview as artifacts. Clio's UI
+the final editable file and a version-bound PDF preview as artifacts. The UI
 requires this source-bound preview to open the Word artifact directly. A PDF from
 `prepare_document` is a review derivative; separately registering that PDF does
 not bind it to the editable artifact. Do not disable `pdf_preview` when a preview

@@ -172,7 +172,15 @@ def prepare(
             raise DocumentError(
                 "Source changed during preparation; derivatives are not verified against its current revision"
             )
-    except Exception as exc:  # noqa: BLE001 - preserve stage diagnostics even on library failures
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        LookupError,
+        TypeError,
+        SyntaxError,
+        BadZipFile,
+    ) as exc:
         manifest.update(
             {"status": "failed", "error_type": type(exc).__name__, "error": str(exc)[:4000]}
         )
