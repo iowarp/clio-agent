@@ -97,7 +97,7 @@ jobs:
           packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           sudo dpkg -i "${packages[0]}"
-          xvfb-run -a uv run --no-project --python 3.12 --with psutil \
+          xvfb-run -a uv run --no-project --python 3.13 --with psutil \
             scripts/smoke_desktop_package.py /usr/bin/clio-desktop --evidence-dir "$RUNNER_TEMP/startup-evidence"
       - name: Install NSIS and launch native Desktop with its compressed runtime
         if: runner.os == 'Windows'
@@ -108,7 +108,7 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
           $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -Wait -PassThru
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
-          uv run --no-project --python 3.12 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence"
+          uv run --no-project --python 3.13 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence"
       - name: Retain sanitized startup evidence
         if: always()
         uses: actions/upload-artifact@v4

@@ -94,6 +94,31 @@ def test_private_and_workspace_ancestor_sources_are_rejected(tmp_path: Path) -> 
             )
 
 
+@pytest.mark.parametrize(
+    "access,expected", [("read_only", "original"), ("editable", "working edit")]
+)
+def test_explicit_download_attachment_is_immutable_and_works_disconnected(
+    source_setup: tuple,
+    access: str,
+    expected: str,
+) -> None:
+    """Detached download permission selects bytes without requiring a remote connection."""
+    from clio_agent.gact.resource_custody import ResourceStore
+    from clio_agent.gact.storage.references import source_resource
+
+    store, _, adapter, _ = source_setup
+    record = transfer(source_setup)
+    record = record.model_copy(update={"download_access": access, "connected": False})
+    resources = ResourceStore(root=store.root.parent / "resources", max_resource_bytes=10000)
+    downloaded = Path(record.source.local_path) / "readme.txt"
+    downloaded.write_text("working edit")
+    resource = source_resource(store, resources, record, "readme.txt")
+    downloaded.write_text("later edit")
+    assert resources.content_path(resource).read_text() == expected
+    assert (adapter.root / "readme.txt").read_text() == "original"
+    assert resource.connected_source["id"] == record.source.id
+
+
 def test_apply_only_selected_changes_and_advances_baseline(source_setup: tuple) -> None:
     store, _, adapter, _ = source_setup
     record = transfer(source_setup)

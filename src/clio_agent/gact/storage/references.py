@@ -113,8 +113,8 @@ def source_resource(
 ) -> ResourceRecord:
     """Preserve source identity and exact bytes before a reference enters a conversation.
 
-    Read-only and working-copy references attach the approved immutable input.
-    Live writable sources are snapshotted at the user's explicit attach action.
+    Read-only and legacy working-copy references attach the approved immutable input.
+    Explicit editable downloads and live writable sources snapshot current bytes.
     No provider request or secret is needed on the model's resource read path.
     """
     source = record.source
@@ -128,8 +128,10 @@ def source_resource(
         expected = file_hash(linked_path)
     elif not source.local_path or source.materialization not in {"ready", "stale", "transferring"}:
         raise ValueError("Transfer this source before attaching its files")
-    elif not record.download_read_only:
-        if not record.connected:
+    elif not record.download_read_only and (
+        record.download_access == "editable" or source.mode == "write_enabled"
+    ):
+        if record.download_access is None and not record.connected:
             raise ValueError("Reconnect the live source before attaching a file")
         root = Path(source.local_path)
         expected = file_hash(safe_child(root, relative))
