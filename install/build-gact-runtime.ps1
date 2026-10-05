@@ -16,7 +16,7 @@
   The runtime self-describes via a generic manifest (<out>\runtime.json,
   iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
   what's inside:
-    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact", "--no-agent"]}
+    {"schema": 1, "exec": ["python/python.exe", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"]}
 
   Console-script exes are DELETED after install: they embed absolute
   build paths and break on relocation -- `-m clio_agent.gact` is the only
@@ -260,7 +260,7 @@ if (Test-Path $sitePkgs) {
 # some optional provider paths exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
 $precompiler = Join-Path $Source 'install/precompile_runtime.py'
-Invoke-Native -Exe $pyBin -Args @($precompiler, '--python-root', $pyRoot)
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -271,7 +271,7 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact', '--no-agent') } |
+$manifest = @{ schema = 1; exec = @($pyBinRel, '-I', '-B', '-m', 'clio_agent.gact', '--no-agent') } |
   ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
@@ -288,8 +288,8 @@ $reloc = Join-Path ([System.IO.Path]::GetTempPath()) ("gact-runtime-relocated-" 
 Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
-Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
-Invoke-Native -Exe $relocPy -Args @('-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-m', 'clio_agent.gact', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-I', '-B', '-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
 $relocUv = Join-Path $reloc 'bin\uv.exe'
 Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
@@ -350,7 +350,7 @@ try {
 $port = Get-Random -Minimum 24000 -Maximum 44000
 Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
 $srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
-  -ArgumentList @('-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+  -ArgumentList @('-I', '-B', '-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
 $bootWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $bootOk = $false
 foreach ($i in 1..30) {

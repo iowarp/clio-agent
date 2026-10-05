@@ -13,7 +13,7 @@
 # The runtime self-describes via a generic manifest (<out>/runtime.json,
 # iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
 # what's inside:
-#   {"schema": 1, "exec": ["python/bin/python3.13", "-m", "clio_agent.gact", "--no-agent"]}
+#   {"schema": 1, "exec": ["python/bin/python3.13", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"]}
 #
 # Console scripts are DELETED after install: their shims embed absolute
 # build paths and break on relocation — `-m clio_agent.gact` is the only
@@ -122,7 +122,7 @@ uv export --project "$CHECKOUT" --frozen --no-hashes --no-emit-project $EXPORT_E
 
 BUNDLE_SPEC="${SPEC}[$(echo "$BUNDLE_EXTRAS" | tr ' ' ',')]"
 echo "[build-gact-runtime] installing: $BUNDLE_SPEC (locked)"
-uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$BUNDLE_SPEC"
+uv pip install --python "$OUT/$PYBIN_REL" -I -B --constraint "$CONSTRAINTS" "$BUNDLE_SPEC"
 
 # Install the source-locked Web Search MCP adapter now.  Connecting the
 # recommended service must not build a second Python environment on first use.
@@ -135,7 +135,7 @@ WEB_MCP_PROJECT="$OUT/python/clio-kit-mcp-servers/web"
   exit 1
 }
 echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT"
+uv pip install --python "$OUT/$PYBIN_REL" -I -B --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT"
 rm -f "$CONSTRAINTS"
 
 # check_bundle_matches_lock.py is the automated proof this constraint actually
@@ -218,7 +218,7 @@ echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFOR
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
-  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"],
+  "exec": ["${PYBIN_REL}", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"],
   "env": {"PYTHONDONTWRITEBYTECODE": "1"}
 }
 EOF
@@ -227,7 +227,7 @@ echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr
 # The one-shot upgrade repair writes a fingerprint marker next to Python.
 # Prepare it in the ORIGINAL image before macOS seals the app; booting only
 # the relocated copy leaves first launch modifying a signed resource tree.
-PYTHONDONTWRITEBYTECODE=1 "$OUT/$PYBIN_REL" - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 "$OUT/$PYBIN_REL" -I -B - <<'PY'
 import sys
 from pathlib import Path
 from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
@@ -250,14 +250,14 @@ fi
 RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
-"$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
-"$RELOC/$PYBIN_REL" -c 'from clio_kit import cli; cli()' --help >/dev/null
+"$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --help >/dev/null
+"$RELOC/$PYBIN_REL" -I -B -c 'from clio_kit import cli; cli()' --help >/dev/null
 "$RELOC/bin/uv" --version >/dev/null
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))
 echo "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$PORT"
-"$RELOC/$PYBIN_REL" -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
+"$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
 SRV=$!
 BOOT_STARTED="$(date +%s)"
 BOOT_OK=""

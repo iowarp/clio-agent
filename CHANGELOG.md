@@ -36,6 +36,8 @@ TUI/HTTP surface aren't tracked here.
   which the pinned native core has no wheel.
 - Document caches include interpreter and host identity so runtime upgrades
   cannot reuse an incompatible virtualenv.
+- Bundled startup and package setup ignore host Python import paths and user
+  packages, keeping the shipped dependency versions effective on developer PCs.
 - Legacy source references retain immutable baseline bytes; explicit editable
   downloads snapshot current content without requiring a remote connection.
 - Generated environment documentation and browser/native navigation checks
