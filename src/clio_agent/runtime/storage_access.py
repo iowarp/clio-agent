@@ -4,9 +4,26 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
+from urllib.parse import quote
 
 from clio_agent import paths
+
+
+def _read_only_database_uri(database: PurePath) -> str:
+    """Encode a local SQLite URI without mistaking Win32 prefixes for a host."""
+    if isinstance(database, PureWindowsPath):
+        text = str(database)
+        if text.startswith("\\\\?\\UNC\\"):
+            text = "\\\\" + text[8:]
+        elif text.startswith("\\\\?\\"):
+            text = text[4:]
+        path = text.replace("\\", "/")
+        # SQLite accepts only empty/localhost URI authorities. Keep a UNC
+        # server in the pathname, rather than producing file://server/....
+        prefix = "file://" if path.startswith("//") else "file:///"
+        return prefix + quote(path, safe="/:") + "?mode=ro"
+    return database.as_uri() + "?mode=ro"
 
 
 def _source_records() -> list[dict]:
@@ -14,7 +31,7 @@ def _source_records() -> list[dict]:
     if not database.exists():
         return []
     try:
-        db = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=5)
+        db = sqlite3.connect(_read_only_database_uri(database), uri=True, timeout=5)
         try:
             rows = db.execute("SELECT body FROM records WHERE kind='source'").fetchall()
         finally:
