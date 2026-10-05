@@ -166,6 +166,13 @@ class BearerAuthMiddleware:
             await self._app(scope, receive, send)
             return
 
+        downloads = getattr(self._state, "session_export_downloads", None)
+        if downloads is not None and downloads.admits(scope.get("method"), scope.get("path", "")):
+            # The authenticated prepare endpoint mints a one-use capability
+            # for one ZIP. Browser downloads need no reusable bearer in URLs.
+            await self._app(scope, receive, send)
+            return
+
         supplied_token = _request_bearer_token(scope)
         if hmac.compare_digest(supplied_token, self._token):
             await self._app(scope, receive, send)

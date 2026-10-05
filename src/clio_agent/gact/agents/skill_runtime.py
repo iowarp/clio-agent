@@ -33,6 +33,7 @@ declaring expert's own pack root, mirroring how the agent rows were loaded.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -432,7 +433,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             duplicates_collapsed = len(requested_files) - len(deduped)
             requested_files = deduped
 
-        def _emit_loaded(size: int, bundled_file: str = "") -> None:
+        def _emit_loaded(content: str, bundled_file: str = "") -> None:
             # skill.loaded (#920): typed provenance for every load, on the
             # highway (durable trace + ARC + the served UI wire). Correlated to
             # the turn like every in-loop emitter, and GUARDED: capture must
@@ -453,7 +454,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "scope": ref.scope,
                 "path": ref.path,
                 "checksum": ref.checksum,
-                "size": size,
+                "size": len(content.encode("utf-8")),
+                "content": content,
+                "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "agent_id": agent_id,
             }
             if bundled_file:
@@ -525,7 +528,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 trace.event(
                     "SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file
                 )
-                _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+                _emit_loaded(content, bundled_file=requested_file)
                 sections.append(
                     f"=== File {index}/{len(requested_files)}: {requested_file} ===\n{content}"
                 )
@@ -549,7 +552,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             requested_file = requested_files[0]
             content = _read_one_bundled_file(requested_file)
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file)
-            _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+            _emit_loaded(content, bundled_file=requested_file)
             if duplicates_collapsed:
                 content += (
                     f"\n\n({duplicates_collapsed} duplicate file request"
@@ -598,7 +601,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                         capped = True
                         break
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
-        _emit_loaded(len(body.encode("utf-8")))
+        _emit_loaded(body)
         listing = (
             "\n\nBundled files (use file=... for one or files=[...] for a batch):\n"
             + "\n".join(f"- {name}" for name in bundled)
