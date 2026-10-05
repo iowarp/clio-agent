@@ -202,7 +202,7 @@ find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while
 # some optional provider paths exceed Windows' legacy path limit.
 echo "[build-gact-runtime] compiling portable startup bytecode"
-"$OUT/$PYBIN_REL" -I -B "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
+"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
   --python-root "$OUT/python"
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then

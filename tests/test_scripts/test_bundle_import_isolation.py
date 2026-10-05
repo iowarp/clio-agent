@@ -17,6 +17,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_bundle_helpers_use_the_resolved_checkout_in_ref_mode() -> None:
+    """Cloned-ref builds retain their helper source until portability checks finish."""
+    posix = (ROOT / "install/build-gact-runtime.sh").read_text(encoding="utf-8")
+    windows = (ROOT / "install/build-gact-runtime.ps1").read_text(encoding="utf-8")
+    assert '"$CHECKOUT/install/precompile_runtime.py"' in posix
+    assert "Join-Path $checkout 'install/precompile_runtime.py'" in windows
+    assert "Join-Path $checkout 'install/arc_smoke.py'" in windows
+    assert windows.index("Remove-Item -LiteralPath $cleanupTarget") > windows.index(
+        "relocated cold boot ready"
+    )
+
+
 @pytest.mark.parametrize("builder", ["build-gact-runtime.sh", "build-gact-runtime.ps1"])
 def test_bundle_manifest_ignores_host_python_imports(tmp_path: Path, builder: str) -> None:
     """Run the actual manifest's Python flags against a conflicting host module."""

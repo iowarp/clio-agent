@@ -79,7 +79,7 @@ def test_arc_smoke_is_hermetic(script: str) -> None:
     assert "$previousCorePort = $env:CLIO_CORE_PORT" in block
     assert "Remove-Item Env:CLIO_CORE_PORT" in block
     assert "$env:CLIO_CORE_PORT = $previousCorePort" in block
-    assert "-Args @('-I', '-B', (Join-Path $Source 'install/arc_smoke.py'))" in block
+    assert "-Args @('-I', '-B', (Join-Path $checkout 'install/arc_smoke.py'))" in block
 
 
 def test_arc_smoke_surfaces_its_failure(script: str) -> None:

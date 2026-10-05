@@ -154,7 +154,6 @@ if (-not (Test-Path $constraints) -or (Get-Item $constraints).Length -eq 0) {
 $bundleSpec = "$spec[$($BundleExtras -join ',')]"
 Write-Host "[build-gact-runtime] installing: $bundleSpec (locked)"
 Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $bundleSpec)
-if ($cleanupCheckout) { Remove-Item -LiteralPath $cleanupCheckout -Recurse -Force -ErrorAction SilentlyContinue }
 
 # Web Search is the recommended installer-selected service. Install its
 # source-locked adapter into the main relocatable runtime now, rather than
@@ -259,7 +258,7 @@ if (Test-Path $sitePkgs) {
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while
 # some optional provider paths exceed Windows' legacy path limit.
 Write-Host "[build-gact-runtime] compiling portable startup bytecode"
-$precompiler = Join-Path $Source 'install/precompile_runtime.py'
+$precompiler = Join-Path $checkout 'install/precompile_runtime.py'
 Invoke-Native -Exe $pyBin -Args @('-I', '-B', $precompiler, '--python-root', $pyRoot)
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
@@ -341,7 +340,7 @@ try {
   # NOT swallowed: on a degrade the helper prints the typed reason, the stack
   # from a wrapper-free re-run, and the daemon log. That output IS the gate's
   # diagnostic value, and piping it away once already cost a release cycle.
-  Invoke-Native -Exe $relocPy -Args @('-I', '-B', (Join-Path $Source 'install/arc_smoke.py'))
+  Invoke-Native -Exe $relocPy -Args @('-I', '-B', (Join-Path $checkout 'install/arc_smoke.py'))
 } finally {
   Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
   if ($null -eq $previousRuntimeStateDir) {
@@ -377,5 +376,14 @@ if (-not $bootOk) {
   throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds"
 }
 Write-Host ("[build-gact-runtime] relocated cold boot ready in {0:N2}s" -f $bootWatch.Elapsed.TotalSeconds)
+
+if ($cleanupCheckout) {
+  $cleanupRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+  $cleanupTarget = [System.IO.Path]::GetFullPath($cleanupCheckout)
+  if (-not $cleanupTarget.StartsWith((Join-Path $cleanupRoot 'clio-agent-ref-checkout-'))) {
+    throw "build-gact-runtime: unexpected temporary checkout cleanup target $cleanupTarget"
+  }
+  Remove-Item -LiteralPath $cleanupTarget -Recurse -Force
+}
 
 Write-Host "[build-gact-runtime] OK - portable runtime ready at $Out ($sizeAfter MB)"
