@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import gzip
 import hashlib
@@ -13,6 +14,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.types import Message as ASGIMessage
 
 from clio_agent.errors import ClioError
 from clio_agent.gact.artifacts.minting import mint_artifact
@@ -20,7 +22,10 @@ from clio_agent.gact.artifacts.records import ArtifactKind, Custody, IdentityEvi
 from clio_agent.gact.artifacts.registry import ArtifactRegistry
 from clio_agent.gact.auth import BearerAuthMiddleware
 from clio_agent.gact.messages import MessageStore
-from clio_agent.gact.routes.session_export import register_session_export_routes
+from clio_agent.gact.routes.session_export import (
+    _ExportFileResponse,
+    register_session_export_routes,
+)
 from clio_agent.gact.semantic_events import SemanticEvent
 from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 from clio_agent.gact.session_export import build_transcript
@@ -366,6 +371,28 @@ def test_download_expiry_and_capacity_remove_their_archives(tmp_path: Path) -> N
     pool._expire(path.rsplit("/", 1)[1])
     assert not first.exists()
     assert not pool.admits("GET", path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_interrupted_download_removes_its_temporary_archive(
+    tmp_path: Path, failure: type[BaseException]
+) -> None:
+    path = tmp_path / "large-export.zip"
+    path.write_bytes(b"zip" * 100_000)
+
+    async def receive() -> ASGIMessage:
+        return {"type": "http.request"}
+
+    async def send(message: ASGIMessage) -> None:
+        if message["type"] == "http.response.body":
+            raise failure("browser download closed")
+
+    with pytest.raises(failure, match="browser download closed"):
+        await _ExportFileResponse(path)(
+            {"type": "http", "method": "GET", "headers": []}, receive, send
+        )
+    assert not path.exists()
 
 
 def test_full_never_follows_a_workspace_junction(
