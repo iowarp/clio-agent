@@ -53,7 +53,7 @@ export default defineConfig({
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
 						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{
-							label: 'Files and sources', collapsed: false,
+							label: 'Files and sources', collapsed: true,
 							items: [
 								{ label: 'Overview', slug: 'docs/files' },
 								{ label: 'Attach files and folders', slug: 'docs/files/attach' },
@@ -65,7 +65,7 @@ export default defineConfig({
 						},
 						{
 							label: 'Widget gallery',
-							collapsed: false,
+							collapsed: true,
 							items: [
 								{ label: 'Introduction', slug: 'docs/widgets' },
 								{ label: 'Linked data', slug: 'docs/widgets/linked-data' },
@@ -74,7 +74,7 @@ export default defineConfig({
 							],
 						},
 						{
-							label: 'Marketplaces', collapsed: false,
+							label: 'Marketplaces', collapsed: true,
 							items: [
 								{ label: 'Find and inspect blueprints', slug: 'docs/marketplaces' },
 								{ label: 'Add, reload, and remove', slug: 'docs/marketplaces/manage' },

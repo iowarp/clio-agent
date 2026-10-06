@@ -1,0 +1,43 @@
+---
+import { ArrowRight, Download, FileText, FolderOpen, ListChecks } from 'lucide-react';
+
+interface Props { docs?: boolean; }
+const { docs = false } = Astro.props;
+const paths = [
+	{ icon: Download, title: 'Set up CLIO', body: 'Install the app and choose a model.', href: '/docs/install/' },
+	{ icon: FolderOpen, title: 'Bring your data', body: 'Attach files, folders or a remote source.', href: '/docs/files/' },
+	{ icon: FileText, title: 'Work with documents', body: 'Edit, preview and export reports and slides.', href: '/docs/working-with-files/' },
+	{ icon: ListChecks, title: 'Check a result', body: 'Follow tool calls, sources and artifacts.', href: '/docs/memory-and-evidence/' },
+];
+---
+
+<nav class:list={['task-links', 'not-content', { docs }]} aria-label="Choose a CLIO guide">
+	<p class="label">{docs ? 'Choose a starting point' : 'Start with your work'}</p>
+	<ul>
+		{paths.map(({ icon: Icon, title, body, href }) => (
+			<li><a href={href}>
+				<Icon className="task-icon" size={20} aria-hidden="true" />
+				<span><strong>{title}</strong><span class="description">{body}</span></span>
+				<ArrowRight className="arrow" size={16} aria-hidden="true" />
+			</a></li>
+		))}
+	</ul>
+</nav>
+
+<style>
+	.task-links { margin-block: 2.5rem; }
+	.task-links.docs { margin-block: 1.75rem 2.5rem; }
+	.label { margin: 0 0 0.75rem; color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+	ul { display: grid; gap: 0 1.5rem; margin: 0; padding: 0; list-style: none; }
+	li { min-width: 0; border-top: 1px solid var(--line); }
+	a { display: flex; gap: 0.75rem; align-items: flex-start; padding-block: 1rem; color: var(--ink); text-decoration: none; }
+	a > span { flex: 1; }
+	strong { font-size: 0.95rem; font-weight: 600; }
+	.description { display: block; margin-top: 0.25rem; font-size: 0.85rem; line-height: 1.5; color: var(--muted); }
+	a :global(.task-icon) { flex-shrink: 0; margin-top: 0.2rem; color: var(--accent); }
+	a :global(.arrow) { flex-shrink: 0; margin-top: 0.25rem; color: var(--muted); transition: transform var(--motion-fast); }
+	a:hover strong { color: var(--accent); }
+	a:hover :global(.arrow) { transform: translateX(3px); }
+	@media (min-width: 40rem) { ul { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+	@media (min-width: 64rem) { .task-links:not(.docs) ul { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+</style>

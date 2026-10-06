@@ -4,10 +4,13 @@ description: CLIO is an open-source AI workspace that finds scientific data, run
 ---
 
 import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import TaskLinks from '../../../components/TaskLinks.astro';
 
 CLIO is an open-source AI workspace for scientific data. You describe a question in plain language. CLIO finds the data, runs the analysis, shows you the results, and keeps a record of what it read, what it ran, and what it produced.
 
-It is built for researchers who work with real datasets and want to check how an answer was reached: geoscientists, climate and environmental scientists, and anyone who spends more time wrangling files than asking questions. You do not need to write code to use it, and you can read everything it did if you want to.
+<TaskLinks docs />
+
+New to CLIO? [Install it](/docs/install/), [connect a model](/docs/connect-a-model/), then follow [your first analysis](/tutorials/guides/first-analysis/). Already have a dataset? Attach it in a workspace and start a session there.
 
 ## How a session works
 
