@@ -9,6 +9,7 @@ import pytest
 
 from clio_agent.gact import document_tools
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.skill_runtime import effective_declared_skills
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.skills import SkillCatalog, read_skill_body
 from clio_agent.tools.file_policy import FileAccessPolicy
@@ -29,8 +30,14 @@ def test_default_office_skills_resolve_independently_of_user_directories(tmp_pat
     """A bare-session skill declaration resolves the packaged workflows."""
     agent = _builtin_main_agent()
     catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    resolutions = catalog.resolve_declared(agent.skills)
-    for resolution in resolutions.values():
+    resolutions = catalog.resolve_declared(effective_declared_skills(agent, catalog))
+    for skill_id in (
+        "work-with-pdfs",
+        "work-with-word",
+        "work-with-presentations",
+        "work-with-spreadsheets",
+    ):
+        resolution = resolutions[skill_id]
         assert resolution.status == "resolved"
         assert resolution.skill is not None
         assert resolution.skill.scope == "builtin"

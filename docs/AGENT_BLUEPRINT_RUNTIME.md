@@ -245,8 +245,12 @@ At runtime (#916):
   a bundled file, path-locked to the skill directory);
 - a tool-less **predict / chain_of_thought** Expert gets the resolved skill
   bodies compiled into its prompt (it has no tool loop to load with);
-- the ROOT Expert of the default registry Blueprint auto-declares
-  workspace-scope skills, so user-authored skills work in plain chat;
+- the built-in main agent and the ROOT Expert of the default registry Blueprint
+  discover workspace and shipped built-in skills from the installed inventory.
+  Workspace overrides lead the metadata list; no procedure names are selected
+  by an in-code allowlist. Custom Blueprint roots and children retain their own
+  explicit declarations. Global skills remain available through explicit
+  declarations rather than being imported into every default session;
 - every load emits a `skill.loaded` semantic event (id, scope, path, checksum,
   size, agent) on the turn; `resolved_skills` (runtime truth) and
   `skill_resolution` (row-load snapshot) ride the turn provenance/evidence.
@@ -255,6 +259,14 @@ Skills are NOT agents: a skill id used as an agent/delegation target is a
 typed `skill_not_delegatable` error. A skill whose frontmatter declares a
 slash command surfaces as that command (dispatching to `main`, with the
 declared template composed with the skill body).
+
+The default prompt asks the agent to inspect supplied references and workspace
+folders before requesting another data source. It chooses useful presentation
+from the active catalog's descriptions when answering an ordinary question;
+the person need not name a skill, widget or protocol. Document workflows are
+selected from the same installed metadata and loaded on demand. Presentation
+guidance also lives in the producer tool's short description so custom agents
+with that capability can use it without a mandatory named guide.
 
 Blueprints may package MCP descriptors under `tools/` as Markdown/frontmatter.
 Installing a Blueprint records descriptors but does not enable them

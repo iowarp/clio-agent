@@ -337,16 +337,12 @@ def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None
     from clio_agent.gact.catalog import _builtin_main_agent
 
     agent = _builtin_main_agent()
-    assert agent.skills == [
-        "work-with-pdfs",
-        "work-with-word",
-        "work-with-presentations",
-        "work-with-spreadsheets",
-    ]
+    assert agent.skills == []
     assert "view_image" in agent.tools
 
     catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    runtime = SkillRuntime(resolutions=catalog.resolve_declared(agent.skills))
+    declared = effective_declared_skills(agent, catalog)
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
     resolution = runtime.resolved["work-with-pdfs"]
     assert resolution.skill is not None and resolution.skill.scope == "builtin"
     assert "Call load_skill" in skills_prompt_block(runtime)
@@ -365,6 +361,72 @@ def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None
     assert "view_image" not in available_text
     assert "view_image" in requested_image
     assert "view_image" in available_image
+
+
+def _write_inventory_skill(root: Path, skill_id: str, description: str, body: str) -> Path:
+    """Write a real installed procedure for inventory and precedence checks."""
+    path = root / skill_id / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {skill_id}\ndescription: {description}\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_builtin_main_discovers_new_skills_without_a_name_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unfamiliar installed skill is discoverable, metadata-only, then loadable."""
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime, skills_prompt_block
+    from clio_agent.gact.catalog import _builtin_main_agent
+
+    builtins = tmp_path / "builtins"
+    _write_inventory_skill(builtins, "new-format", "Author the new format", "NEW FORMAT BODY")
+    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", builtins)
+    agent = _builtin_main_agent()
+    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    declared = effective_declared_skills(agent, catalog)
+    assert declared == ["new-format"]
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
+    prompt = skills_prompt_block(runtime)
+    assert "new-format: Author the new format" in prompt
+    assert "NEW FORMAT BODY" not in prompt
+    assert "NEW FORMAT BODY" in build_load_skill_tool(agent, runtime).func(skill_id="new-format")
+
+    # Removing an installation changes a fresh inventory; no mandatory guide lingers.
+    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", tmp_path / "absent")
+    fresh = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    assert effective_declared_skills(agent, fresh) == []
+
+
+def test_builtin_main_discovery_respects_workspace_precedence_and_expert_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workspace overrides win, while unrelated global skills and child scopes stay private."""
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime
+    from clio_agent.gact.catalog import _builtin_main_agent
+
+    builtins, workspace, home = tmp_path / "builtins", tmp_path / "workspace", tmp_path / "home"
+    _write_inventory_skill(builtins, "next-guide", "Shipped guide", "SHIPPED BODY")
+    _write_inventory_skill(builtins, "shared-procedure", "Shipped procedure", "SHIPPED PROCEDURE")
+    _write_inventory_skill(
+        workspace / ".agents" / "skills", "shared-procedure", "Local procedure", "LOCAL BODY"
+    )
+    _write_inventory_skill(home / ".codex" / "skills", "private-global", "Private", "PRIVATE BODY")
+    monkeypatch.setattr("clio_agent.gact.skills._BUILTIN_SKILLS_ROOT", builtins)
+    catalog = SkillCatalog(home=home, cwd=workspace)
+    agent = _builtin_main_agent()
+    declared = effective_declared_skills(agent, catalog)
+    assert declared == ["shared-procedure", "next-guide"]
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
+    assert "LOCAL BODY" in build_load_skill_tool(agent, runtime).func(skill_id="shared-procedure")
+    assert runtime.resolved["shared-procedure"].skill.scope == "workspace"
+
+    child = agent.model_copy(update={"id": "child", "parent_id": "main"})
+    custom_root = AgentDef(id="custom", title="Custom", metadata={"definition_kind": "blueprint"})
+    assert effective_declared_skills(child, catalog) == []
+    assert effective_declared_skills(custom_root, catalog) == []
 
 
 def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> None:

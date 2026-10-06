@@ -30,13 +30,13 @@ def build_create_a2ui_surface_tool() -> Any:
     ) -> dict[str, Any]:
         """Create or update an inline interactive view or widget in this conversation.
 
-        Reuse a ``surface_id`` from a prior result's ``session_surface_ids``
-        to revise it in place; call ``inspect_a2ui_surface`` if the id is missing.
+        Choose focused views from the active catalog to help answer the question.
+        Users need not ask for widgets; use evidence and retain units and identifiers.
+        Reuse a known ``surface_id`` to revise a view; inspect with ``inspect_a2ui_surface``.
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
         ``catalog.json#/components/<ExactComponentId>`` for its schema.
         Connect every component to ``id=root``; use a layout for several views.
-        A map can join tracks and expose chosen ``filterFields``.
         The renderer supplies selection, zoom, and export.
         """
 
