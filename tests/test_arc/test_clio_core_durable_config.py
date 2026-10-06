@@ -65,3 +65,31 @@ def test_a_user_config_that_forgets_on_restart_is_a_typed_error(tmp_path: Path) 
 
     assert caught.value.reason == "clio_core_not_durable"
     assert 'persistence_level: "temporary"' in str(caught.value)
+
+
+def test_adopting_a_volatile_daemon_cannot_report_a_durable_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An existing shared daemon's effective config overrides the requested config."""
+    from types import SimpleNamespace
+
+    from clio_agent.arc import clio_core_attach, clio_core_file_capacity, storage
+
+    requested = tmp_path / "durable.yaml"
+    requested.write_text(_VOLATILE_SEED, encoding="utf-8")
+    ensure_seeded_config_durable(requested)
+    effective = tmp_path / "volatile.yaml"
+    effective.write_text(_VOLATILE_SEED, encoding="utf-8")
+    monkeypatch.setattr(clio_core_file_capacity, "preflight_clio_core_config", lambda *a, **k: None)
+    monkeypatch.setattr(
+        storage, "ClioCoreStore", lambda **kwargs: SimpleNamespace(_config_path=str(effective))
+    )
+    try:
+        with pytest.raises(ArcStoreUnavailableError) as caught:
+            clio_core_attach.build_tracked_store(str(requested), backend="cte", data_dir=tmp_path)
+        assert caught.value.reason == "clio_core_not_durable"
+        state = clio_core_attach.attach_state_snapshot()
+        assert state.phase == clio_core_attach.ClioCoreAttachPhase.UNAVAILABLE
+        assert state.config_path == str(effective)
+    finally:
+        clio_core_attach.reset_attach_state()

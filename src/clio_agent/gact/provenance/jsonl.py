@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from clio_agent.gact.provenance.normalization import normalize_semantic_events
 from clio_agent.gact.provenance.protocol import ProviderReceipt
@@ -53,6 +53,10 @@ class JsonlProvenanceProvider:
     def close(self) -> None:
         """Drain pending JSONL writes."""
         self._backend.close()
+
+    def session_events(self, session_id: str) -> Iterator[dict[str, Any]]:
+        """Read complete session records for context recovery, without projection."""
+        return self._backend.session_events(session_id)
 
     def query_execution(
         self,

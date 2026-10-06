@@ -10,7 +10,7 @@ import json
 import queue
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterator
 
 from clio_agent.errors import ClioError
 
@@ -134,6 +134,35 @@ class FileSemanticTraceBackend:
         for path, cause in list(_TRACE_WRITE_FAILURES.items()):
             if path == self.path or self.path in path.parents:
                 raise TraceWriteError(path, cause)
+
+    def session_events(self, session_id: str) -> Iterator[dict[str, Any]]:
+        """Read this session's complete durable events in append order.
+
+        A truncated or corrupt trace fails explicitly; recovery must never silently
+        omit a context operation. Flush before reading so pending writes are visible.
+        """
+        from clio_agent.gact.semantic_events import SemanticEvent
+
+        self.flush()
+        path = self._path_for(
+            SemanticEvent(
+                event_type="trace.read", session_id=session_id, trace_id=f"session:{session_id}"
+            )
+        )
+        if not path.exists():
+            return
+        with path.open(encoding="utf-8") as stream:
+            for number, line in enumerate(stream, 1):
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict) or not event.get("event_type"):
+                        raise ValueError("Expected a semantic event")
+                except (ValueError, TypeError) as exc:
+                    raise TraceWriteError(
+                        path, f"Unreadable event at line {number}: {exc}"
+                    ) from exc
+                if event.get("session_id") == session_id:
+                    yield event
 
     def close(self) -> None:
         """Drain pending writes (the shared daemon writer lives for the process)."""

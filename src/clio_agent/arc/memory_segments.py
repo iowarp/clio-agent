@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, cast
 
 from clio_agent.arc.context_view import ViewSnapshot
-from clio_agent.arc.schema import SegmentKind
+from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.arc.search_companion import ContextSearchHit
 from clio_agent.arc.segments import OpLogger, SegmentStore
 from clio_agent.arc.working_set_fold import FoldingSegmentStore
@@ -36,6 +36,10 @@ class SegmentPlane:
     """The live context plane methods of ``ARCMemory`` (over ``self._segments``)."""
 
     _segments: SegmentStore
+
+    def restore_empty_context(self, session_id: str, scope: str, segments: list[Segment]) -> bool:
+        """Restore an absent scope atomically; never replace existing context."""
+        return self._segments.restore_empty(session_id, scope, segments)
 
     # ---- Live context plane (the segment store the ReAct loop reads from) ----
 

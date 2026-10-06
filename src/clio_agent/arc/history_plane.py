@@ -40,6 +40,24 @@ class HistoryPlane:
         with self._lock:
             return self._scopes.get((session_id, scope), dspy.History(messages=[]))
 
+    def restore_empty_context(self, session_id: str, scope: str, segments: list[Segment]) -> bool:
+        """Restore recorded context in History mode without overwriting a live scope."""
+        if any(s.session_id != session_id or s.scope != scope for s in segments):
+            raise ValueError("Recovery segments belong to another session or scope")
+        with self._lock:
+            key = (session_id, scope)
+            if self._scopes.get(key, dspy.History(messages=[])).messages or not segments:
+                return False
+            self._scopes[key] = dspy.History(messages=[msgspec.to_builtins(s) for s in segments])
+            self._generations[key] = next_generation()
+            high_water = max(
+                record["logical_time"]
+                for history in self._scopes.values()
+                for record in history.messages
+            )
+            self._clock = itertools.count(high_water + 1)
+            return True
+
     def append_segment(
         self,
         session_id: str,

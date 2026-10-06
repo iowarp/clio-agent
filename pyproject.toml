@@ -63,7 +63,7 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.6.0b3",
+    "clio-schemas==0.6.0b4",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -352,4 +352,4 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "91bfecf0eb6f1594bf805ff1629cfff1773a1aa7" }
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "cab116da42fdfd620c1c251cb83eca9df44dd162" }

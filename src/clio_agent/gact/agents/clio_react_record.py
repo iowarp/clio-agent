@@ -338,7 +338,7 @@ def _media(value: Any) -> ImagePart | DocumentPart | None:
             media_type, data = _split_data_url(str(getattr(media, "url", "")))
             return ImagePart(data=data, media_type=media_type)
 
-        return cached_media("image", value, image, lambda part: len(part.data))
+        return cached_media("image", value, image, lambda part: len(part.data or ""))
     if is_pdf(value):
 
         def document() -> DocumentPart:
@@ -348,7 +348,7 @@ def _media(value: Any) -> ImagePart | DocumentPart | None:
             )
             return DocumentPart(data=data, media_type=media_type or "application/pdf")
 
-        return cached_media("document", value, document, lambda part: len(part.data))
+        return cached_media("document", value, document, lambda part: len(part.data or ""))
     return None
 
 
@@ -394,6 +394,7 @@ class StepRecorder:
 
     def started(self, expert_span_id: str, inputs: Mapping[str, Any]) -> None:
         """Open the expert lifecycle on the highway."""
+        from clio_agent.gact.agents.context_recovery import context_identity
         from clio_agent.gact.runtime.globals import _emit_expert_lifecycle_event  # noqa: PLC0415
         from clio_agent.tools.mcp_runtime import wire_value  # noqa: PLC0415
 
@@ -403,7 +404,10 @@ class StepRecorder:
             expert_id=self.expert_id,
             expert_span_id=expert_span_id,
             status="running",
-            payload={"input": wire_value(dict(inputs), mode="gact_runtime")},
+            payload={
+                "input": wire_value(dict(inputs), mode="gact_runtime"),
+                "context": context_identity(self.arc, self.session, self.scope),
+            },
         )
 
     def user_message(self, message: Message) -> None:
@@ -411,14 +415,10 @@ class StepRecorder:
         self.head_id = self._write("user", user_to_record(message), 0, "")
 
     def carry_over(self, ledger: Sequence[Any]) -> None:
-        """Seed a scope new to the conversation with its earlier turns, once.
+        """Restore an absent scope from its recorded operations, once.
 
-        An agent with nothing recorded yet (the user switched the session's agent,
-        or its store changed) joins a conversation that already has turns: the
-        transcript's model context -- user and assistant text, the latest
-        compaction summary -- is recorded as the messages it was, and the agent is
-        told its tool details are not included. From then on the scope is
-        append-only like any other.
+        Transcript reconstruction is used only when no scope operations exist;
+        it preserves recorded tool parts and declares any missing information.
         """
         if self.arc is None or self.arc.has_segments(self.session, self.scope):
             return
@@ -429,17 +429,59 @@ class StepRecorder:
         rows = list(model_context_messages(list(ledger)))
         while rows and _field(rows[-1], "role") == "user":
             rows.pop()  # this turn's own message is recorded by the loop itself
-        carried = 0
-        for row in rows:
-            for kind, content in _carried(row):
-                self._write(kind, content, 0, "")
-                carried += 1
+        from clio_agent.gact.agents.context_recovery import (
+            context_identity,
+            recorded_context,
+            recovery_details,
+            transcript_context,
+        )
+
+        restored = recorded_context(self.session, self.scope, ledger)
+        if restored:
+            fold_steps([s for s in restored if s.status == "live"])
+            identity = context_identity(self.arc, self.session, self.scope)
+            if self.arc.restore_empty_context(self.session, self.scope, restored):
+                note = f"Restored {len(restored)} recorded context segments for {self.scope} from the durable trace, including tool inputs and results."
+                self._write(
+                    "user", {"text": note, "source": "earlier_turns", "actor": "algorithm"}, 0, ""
+                )
+                emit_injection(
+                    "earlier_turns", recovery_details(note, restored), agent_id=self.expert_id
+                )
+                from clio_agent.gact import context
+                from clio_agent.gact.runtime.globals import _emit_semantic_event
+
+                app = context.active_app()
+                if app is not None:
+                    _emit_semantic_event(
+                        app,
+                        self.session,
+                        "context.recovered",
+                        turn_id=self.turn_id,
+                        status="completed",
+                        payload={
+                            **identity,
+                            "source": "durable_trace",
+                            "restored_segments": len(restored),
+                        },
+                    )
+            return
+        restored = transcript_context(self.session, self.scope, rows)
+        carried = len(restored)
         if carried:
+            fold_steps(restored)
+            if not self.arc.restore_empty_context(self.session, self.scope, restored):
+                return
             note = (
-                f"The {carried} earlier messages of this conversation were carried over "
-                "from its transcript (their tool calls and results are not included)."
+                f"Reconstructed {carried} earlier context records from the saved transcript, "
+                "including recorded tool inputs and results. Provider continuation state is unavailable."
             )
-            self.injections([("earlier_turns", note)])
+            self._write(
+                "user", {"text": note, "source": "earlier_turns", "actor": "algorithm"}, 0, ""
+            )
+            emit_injection(
+                "earlier_turns", recovery_details(note, restored), agent_id=self.expert_id
+            )
 
     def injections(self, injections: Sequence[tuple[str, str]]) -> None:
         """Record CLIO's additions for this turn, each once.
@@ -629,29 +671,6 @@ def _token_estimate(content: Mapping[str, Any]) -> int:
 
 def _field(row: Any, name: str) -> Any:
     return row.get(name) if isinstance(row, Mapping) else getattr(row, name, None)
-
-
-def _carried(row: Any) -> list[tuple[str, dict[str, Any]]]:
-    """A transcript row as plane segments (text only; a compaction as its summary)."""
-    from clio_agent.gact.summarization_record import row_summarization  # noqa: PLC0415
-
-    record = row_summarization(row)
-    if record is not None and record.text:
-        return [("summary", {"text": record.text})]
-    role = _field(row, "role")
-    texts: list[str] = []
-    for part in _field(row, "parts") or []:
-        kind = _field(part, "type")
-        if kind == "text" and str(_field(part, "text") or "").strip():
-            texts.append(str(_field(part, "text")))
-    if not texts:
-        return []
-    text = "\n\n".join(texts)
-    if role == "user":
-        return [("user", {"text": text})]
-    if role == "assistant":
-        return [("thought", {"text": text, "thinking": []})]
-    return []
 
 
 def pending_turn_yield(calls: Sequence[ToolCallPart]) -> str:
