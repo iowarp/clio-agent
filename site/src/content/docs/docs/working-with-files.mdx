@@ -1,14 +1,14 @@
 ---
 title: Working with files
-description: Read PDFs, revise Word documents and slides, and check spreadsheet results in CLIO.
+description: Create and review complete reports and presentations, revise Office files, and inspect PDFs and spreadsheets in CLIO.
 ---
 
 import WidgetRecording from '../../../components/WidgetRecording.astro';
 
-Bring a document into your workspace, ask for a specific change, and review the result before sharing it. CLIO can work with PDFs, Word documents, PowerPoint decks and Excel workbooks. Office results keep their editable source alongside a saved PDF preview.
+Bring evidence or an existing document into your workspace, describe the result you need, and review it before sharing. CLIO can create complete Word reports and PowerPoint presentations, revise Office files and work with PDFs and Excel workbooks. Office results keep their editable source alongside a saved PDF preview.
 
 :::note[CLIO beta 3]
-These recordings show the document workflows included in CLIO 0.9.5-beta.3. They use real default-agent sessions with synthetic workshop files.
+The revision recordings below use real default-agent sessions from CLIO 0.9.5-beta.3 with synthetic workshop files. They demonstrate small edits; they are not examples of complete report or presentation creation.
 :::
 
 ## Start with a file
@@ -26,6 +26,61 @@ To read a PDF yourself, open the workspace canvas, choose **File explorer** from
   timingNote="A pause between actions is shortened."
   pointerGuide
 />
+
+## Create a report or presentation
+
+Start with the material you want CLIO to use and describe the audience and purpose.
+You do not need to select a document library or write a layout script yourself:
+
+> Turn the saved OPAL 1 analysis in sources/ into a complete Word report and a PowerPoint presentation for a fifteen-minute research meeting. Use the existing evidence and figures, keep the source uncertainties clear, and save the deliverables in outputs/. Keep sources unchanged.
+
+The document skills include separate references for library usage and design, plus
+runnable examples. The examples demonstrate a coherent theme, native headings,
+editable tables and charts, source captions, page numbers and speaker notes. Their
+sample data are fictional; CLIO must build your deliverable from your evidence.
+
+### Inspect the design references
+
+These reference files were built with CLIO's shipped document libraries and
+reviewed as PDF pages. They are fictional examples of document structure and
+layout, separate from the recorded agent sessions.
+
+| Reference | Editable source | PDF | Runnable builder |
+| --- | --- | --- | --- |
+| Two-page evidence report | [Word](/media/document-reference/reference-report.docx) | [Report PDF](/media/document-reference/reference-report.pdf) | [Report script](/media/document-reference/create-reference-report.mjs) |
+| Six-slide research briefing | [PowerPoint](/media/document-reference/reference-deck.pptx) | [Deck PDF](/media/document-reference/reference-deck.pdf) | [Deck script](/media/document-reference/create-reference-deck.mjs) |
+
+Both use the same [fictional source summary](/media/document-reference/reference-source.json).
+The builders run in the prepared JavaScript workspace, where `docx`, `pptxgenjs`
+and image dependencies resolve. Pass a task-owned output directory as their first
+argument. Adapt their composition to the evidence and audience rather than using
+their sample text as a finished deliverable.
+
+<details>
+<summary>See the reviewed report and slide overviews</summary>
+
+![Both pages of the fictional reference report](/media/document-reference/report-overview.png)
+
+![Six slides of the fictional reference presentation](/media/document-reference/deck-overview.png)
+
+</details>
+
+## Close the visual review loop
+
+Saving a document is the start of review. CLIO's document skills instruct the agent
+to reopen the editable file, convert it to PDF and render page images. Each render
+also provides labelled contact sheets containing up to six pages in a two-column,
+three-row grid. These help reveal inconsistent layout, pagination and spacing.
+
+The agent must inspect individual pages or slides for small labels, text wrapping,
+table splits, glyphs and cropping. A contact sheet cannot establish that fine detail
+is readable. When the source changes, CLIO should regenerate the preview and review
+the new images before publishing. If conversion or visual inspection is unavailable,
+it should explain that limitation rather than claim the layout is verified.
+
+You can review the published PDF beside the conversation, zoom for detail and
+download the original editable file. Rendering with LibreOffice can differ from
+Microsoft Office; open the source in your intended editor for final acceptance.
 
 ## Revise a Word document
 
