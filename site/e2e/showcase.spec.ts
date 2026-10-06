@@ -43,9 +43,30 @@ test('product showcase supports keyboard selection and usable image dialogs on d
 		await expect(page.locator('#ask')).not.toHaveAttribute('open', '');
 		await expect(page.locator('#delegate').getByRole('img')).toBeVisible();
 		await documents.click();
+		const reportEnlarge = showcase.getByRole('button', { name: /^View larger:/ });
+		await reportEnlarge.click();
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByRole('img')).toHaveAttribute('alt', /rendered first page open beside the answer/);
+		await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeInViewport();
+		await page.screenshot({ path: test.info().outputPath(`report-dialog-${width}.png`) });
+		await page.keyboard.press('Escape');
+		await expect(reportEnlarge).toBeFocused();
 		await showcase.getByRole('link', { name: 'Open the worked example' }).click();
-		await expect(page).toHaveURL(/#review-a-complete-opal-1-briefing$/);
-		await expect(page.getByRole('heading', { name: 'Review a complete OPAL 1 briefing' })).toBeInViewport();
+		await expect(page).toHaveURL(/\/docs\/examples\/reports-and-slides\/$/);
+		await expect(page.getByRole('heading', { name: 'Report and presentation example', exact: true })).toBeInViewport();
+		for (const filename of ['revised-report.docx', 'revised-report.pdf', 'revised-deck.pptx', 'revised-deck.pdf']) {
+			const response = await page.request.get(`/media/document-reference/${filename}`);
+			expect(response.ok()).toBe(true);
+			expect((await response.body()).length).toBeGreaterThan(1000);
+		}
+		await page.getByRole('main').getByRole('link', { name: 'Working with files', exact: true }).click();
+		await expect(page).toHaveURL(/\/docs\/working-with-files\/#create-a-report-or-presentation$/);
+		await expect(page.getByRole('main')).not.toContainText('OPAL');
+		await expect(page.getByRole('main').locator('video')).toHaveCount(3);
+		await page.getByRole('main').locator('video').nth(1).scrollIntoViewIfNeeded();
+		await page.screenshot({ path: test.info().outputPath(`word-guide-${width}.png`) });
+		await page.getByRole('main').locator('video').nth(2).scrollIntoViewIfNeeded();
+		await page.screenshot({ path: test.info().outputPath(`slides-guide-${width}.png`) });
 	}
 });
 

@@ -28,6 +28,13 @@ that only look like headings. Maintain a small type hierarchy, one restrained
 accent colour and aligned left edges. An internal report usually does not need
 a mostly empty cover page.
 
+When revising an existing report, reuse its actual heading and table styles. A
+document from another authoring library may have custom names rather than the
+built-in Word styles. Inspect its styles and a nearby section before inserting a
+new one; do not substitute bold body text or an unrelated table style just to
+avoid a missing-style error. Keep the inserted heading, explanation and table in
+the intended order, then verify that order in the rendered overview.
+
 Use section breaks when orientation or headers change. Add page numbers to a
 multi-page document. Keep headings with the following paragraph, enable widow
 control and keep captions beside their figures. Use deliberate page breaks only

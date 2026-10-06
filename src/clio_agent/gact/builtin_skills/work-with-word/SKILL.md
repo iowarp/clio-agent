@@ -13,8 +13,10 @@ For JavaScript creation, use `docx` only when the returned JavaScript status is
 ready, place the importing script in the returned JavaScript workspace, and run
 it with the returned `javascript.script_argv` (pnpm executes managed Node).
 
-For a new report, read `references/report-design.md` for content and layout
-decisions. When using JavaScript, read `references/docx-js.md` for the shipped
+For a new report, or when adding or reflowing report sections, read
+`references/report-design.md` for content and layout decisions. For template
+edits with Python, read `references/python-docx-editing.md` for style reuse and
+section insertion. When using JavaScript, read `references/docx-js.md` for the shipped
 library's units, styles, page fields and native table example. Load these files
 with this skill's returned ID and `file` argument; they are supporting guidance,
 not a required template or a substitute for the user's evidence.
@@ -36,7 +38,10 @@ supplied copy path and preserve the original.
 
 Create or edit with `python-docx` using the prepared interpreter. Prefer styles
 and native headings, lists and tables so the result remains editable. Inspect
-section dimensions and existing styles before modifying a template. Specify page
+section dimensions and existing styles before modifying a template. Imported
+documents may use custom heading and table styles: reuse the actual style objects
+from comparable content rather than assuming a built-in name exists or matches.
+Keep a new section's heading and content together in document order. Specify page
 size, margins and table widths deliberately. Replace text in individual runs when
 formatting must survive; assigning paragraph text replaces its runs. Preserve
 images, hyperlinks and fields that the task does not change. Do not recreate an

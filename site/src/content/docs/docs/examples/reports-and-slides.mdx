@@ -1,0 +1,77 @@
+---
+title: Report and presentation example
+description: A worked research briefing with editable Word and PowerPoint files, reviewed PDF previews, and reusable design references.
+---
+
+import WidgetRecording from '../../../../components/WidgetRecording.astro';
+
+This worked example shows how to review a complete report and presentation in
+CLIO. For the general workflow and prompts to adapt to your own files, see
+[Working with files](/docs/working-with-files/#create-a-report-or-presentation).
+
+## A research briefing
+
+The example uses saved analysis and figures from OPAL 1, a plant-growth research
+dataset. Its three-page Word report and eleven-slide meeting deck include speaker
+notes, an editable design table and a comparison chart. The report and slides
+preserve unresolved treatment labels and an unexplained early break in a vendor
+proxy, so the interpretation remains tied to the available evidence.
+
+The initial drafts were revised after visual review. This recording shows review
+and navigation of the saved results after those corrections.
+
+<WidgetRecording
+  name="files-opal-report-review-current"
+  title="Review a complete report and research briefing"
+  caption="Open the example's saved previews, navigate the report and slides, and inspect figure detail."
+  timingNote="Selected portions of a continuous review recording; idle pauses are omitted."
+  pointerGuide
+/>
+
+| Deliverable | Editable file | Reviewed PDF |
+| --- | --- | --- |
+| Three-page research report | [Word report](/media/opal1-document-review/OPAL1_research_meeting_report.docx) | [Report PDF](/media/opal1-document-review/OPAL1_research_meeting_report.pdf) |
+| Eleven-slide meeting briefing | [PowerPoint deck](/media/opal1-document-review/OPAL1_research_meeting_15min.pptx) | [Slides PDF](/media/opal1-document-review/OPAL1_research_meeting_15min.pdf) |
+
+<details>
+<summary>See the reviewed report and slide overviews</summary>
+
+![Three pages of the research report after layout corrections](/media/opal1-document-review/report-overview-1.png)
+
+![Slides 1–6 of the research briefing](/media/opal1-document-review/deck-overview-1.png)
+
+![Slides 7–11 of the research briefing](/media/opal1-document-review/deck-overview-2.png)
+
+</details>
+
+## Reusable design references
+
+These fictional reference files demonstrate document structure and layout. They
+were built with CLIO's shipped document libraries and reviewed as PDF pages.
+
+| Reference | Editable source | PDF | Runnable builder |
+| --- | --- | --- | --- |
+| Two-page evidence report | [Word](/media/document-reference/reference-report.docx) | [Report PDF](/media/document-reference/reference-report.pdf) | [Report script](/media/document-reference/create-reference-report.mjs) |
+| Six-slide research briefing | [PowerPoint](/media/document-reference/reference-deck.pptx) | [Deck PDF](/media/document-reference/reference-deck.pdf) | [Deck script](/media/document-reference/create-reference-deck.mjs) |
+
+Both use the same [fictional source summary](/media/document-reference/reference-source.json).
+The builders run in the prepared JavaScript workspace, where `docx`, `pptxgenjs`
+and image dependencies resolve. Pass a task-owned output directory as their first
+argument. Adapt their composition to your evidence and audience.
+
+The file-guide recordings revise these references. Their saved results are also
+available: [revised Word report](/media/document-reference/revised-report.docx)
+and [PDF](/media/document-reference/revised-report.pdf), plus the
+[revised PowerPoint briefing](/media/document-reference/revised-deck.pptx) and
+[PDF](/media/document-reference/revised-deck.pdf). The slide revision required a
+formatting correction after overview review; the downloads contain that corrected
+version with the original chart and editable tables.
+
+<details>
+<summary>See the reviewed design reference overviews</summary>
+
+![Both pages of the fictional reference report](/media/document-reference/report-overview.png)
+
+![Six slides of the fictional reference presentation](/media/document-reference/deck-overview.png)
+
+</details>

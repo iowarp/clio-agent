@@ -1,0 +1,52 @@
+{
+  "name": "files-sensor-pdf-read",
+  "source": "takes/sensor-pdf-reading-20261006-a.mp4",
+  "posterAt": 26.1,
+  "notes": "Selected native continuous browser footage. Idle inspection intervals are shortened. The file tree divider, scrolling and zoom are real interactions.",
+  "shots": [
+    {
+      "from": 0,
+      "to": 4,
+      "crop": {
+        "x": 830,
+        "y": 45,
+        "width": 448,
+        "height": 460
+      },
+      "caption": "Expand outputs in Files"
+    },
+    {
+      "from": 48,
+      "to": 56,
+      "caption": "Select the report PDF and expand the canvas",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    },
+    {
+      "from": 99.5,
+      "to": 111,
+      "caption": "Resize the file tree and scroll continuously",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    },
+    {
+      "from": 123,
+      "to": 128,
+      "caption": "Zoom in for table detail; controls stay in the upper bar",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    }
+  ]
+}

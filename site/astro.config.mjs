@@ -53,6 +53,10 @@ export default defineConfig({
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
 						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{
+							label: 'Worked examples', collapsed: true,
+							items: [{ label: 'Report and presentation', slug: 'docs/examples/reports-and-slides' }],
+						},
+						{
 							label: 'Files and sources', collapsed: true,
 							items: [
 								{ label: 'Overview', slug: 'docs/files' },
