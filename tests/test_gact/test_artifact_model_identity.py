@@ -9,7 +9,7 @@ model-visible structured result carries NOTHING. The trace shows the model obser
 ``GET /v1/sessions/{sid}/artifacts`` already held
 ``artifact_567f9d920a2b4f3aa9822cb50712d3f7`` for that exact file, with the
 ``resource_link`` arriving at part seq 59-61 — AFTER the answer at seq 58. The agent
-therefore cannot cite ``artifact://<artifact-id>`` (the ``clio.time-series.v1``
+therefore cannot cite ``artifact://<artifact-id>`` (the ``clio.chart.v1``
 ``dataUri`` grammar the visualize skill requires), honestly refuses to invent one, and
 the artifact-backed chart can never be built.
 
@@ -178,11 +178,11 @@ def test_tool_declared_artifacts_list_is_never_overwritten(boundary, tmp_path: P
 # --------------------------------------------------------------------------- #
 
 
-def test_model_artifact_uri_drives_a2ui_time_series_preview(boundary, tmp_path: Path) -> None:
-    """The whole point: the merged id builds a VALID ``clio.time-series.v1`` dataUri
+def test_model_artifact_uri_drives_a2ui_chart_preview(boundary, tmp_path: Path) -> None:
+    """The whole point: the merged id builds a VALID ``clio.data-table.v1`` dataUri
     and that dataUri resolves against the bounded table-preview route."""
 
-    from clio_schemas.a2ui.v0_9_1.bounded_components import TimeSeriesComponent
+    from clio_schemas.a2ui.v0_9_1.bounded_components import DataTableComponent
 
     client, _app, _wid, _sid, executor = boundary
     observed = json.loads(
@@ -192,9 +192,7 @@ def test_model_artifact_uri_drives_a2ui_time_series_preview(boundary, tmp_path: 
 
     # (a) the URI the model can now write validates against the TRUSTED catalog's
     #     dataUri grammar (``^artifact://artifact_[A-Za-z0-9_-]+$``).
-    component = TimeSeriesComponent(
-        id="root", dataUri=entry["uri"], xKey="time", yKeys=["east", "north", "up"]
-    )
+    component = DataTableComponent(id="root", dataUri=entry["uri"])
     assert component.dataUri == f"artifact://{entry['artifact_id']}"
 
     # (b) ...and the id inside it resolves to the minted artifact's real bytes.
@@ -291,7 +289,7 @@ def test_merge_annotates_a_non_object_result_without_losing_its_bytes() -> None:
     merged = merge_artifact_identity("plain tool text", entries)
 
     # A non-JSON-object result keeps its bytes verbatim and gains ONE visible note
-    # (the boundary's own ``[path-repair]`` idiom) — never a silent drop.
+    # (the boundary's own ``[clio: path_hint]`` idiom) — never a silent drop.
     # Sabotage: return model_text unchanged for the non-object shape -> red.
     assert merged.startswith("plain tool text\n[artifacts] ")
     assert json.loads(merged.split("[artifacts] ", 1)[1]) == {ARTIFACTS_RESULT_KEY: entries}

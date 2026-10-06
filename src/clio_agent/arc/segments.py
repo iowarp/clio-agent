@@ -3,7 +3,7 @@
 An ordered, scoped, mutable sequence of :class:`~clio_agent.arc.schema.Segment`s that the gact
 ReAct loop reads from on every iteration. The loop *writes* one segment per produced piece
 (thought / tool_call / observation) and *reads* the prompt back by rendering the live ordered
-set (see ``render_keys``). The context operations — ``append`` / ``insert`` / ``delete`` /
+set (``render``, folded into messages by ``clio_react_record.fold_steps``). The context operations — ``append`` / ``insert`` / ``delete`` /
 ``summarize`` / ``replace`` — mutate segments between renders, so an out-of-band edit changes
 the *next* prompt. That is the whole point of the live plane.
 
@@ -28,12 +28,12 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 import msgspec
-from sortedcontainers import SortedDict
 
-from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
+from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
     Segment,
@@ -42,8 +42,11 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_errors import ArcPersistError as ArcPersistError
+from clio_agent.arc.segment_errors import SegmentReadError as SegmentReadError
+from clio_agent.arc.segment_ids import ContextOpLogError, require_live
+from clio_agent.arc.segment_index import SegmentIndex as SegmentIndex
 from clio_agent.arc.storage import ARCStore
-from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
 
@@ -134,118 +137,6 @@ _SCOPE_SEP = "__"  # session_id <SEP> scope, in the store record name
 _SLASH_SUB = "~"  # scope's '/' replaced so the record name is one path segment
 
 
-def segments_to_keys(segments: list[Segment]) -> dict[str, Any]:
-    """Project an ordered list of LIVE segments into dspy's trajectory dict
-    (``thought_{i}`` / ``tool_name_{i}`` / ``tool_args_{i}`` / ``observation_{i}``).
-
-    ``i`` is the RENDER POSITION (not ``Segment.step``), recomputed so the dict is
-    gapless after deletes/summaries (stock dspy never has index gaps). A ``thought``
-    opens a new iteration; ``tool_call`` / ``observation`` attach to the current
-    one; a ``summary`` renders as its own ``observation_{i}``. ``system`` / ``user``
-    / ``tool_def`` are dspy's own framing — never in the trajectory dict.
-
-    Pure function shared by ``SegmentStore.render_keys`` and ``arc.replay`` so the
-    live store and a Trace-replay produce byte-identical trajectories.
-
-    A new iteration starts on a ``thought``/``summary`` OR whenever the slot a
-    segment needs is already filled in the current iteration — so consecutive
-    observations (from injection or edits) never overwrite each other, while the
-    normal ``thought -> tool_call -> observation`` flow renders exactly as stock dspy.
-    """
-    keys: dict[str, Any] = {}
-    idx = -1
-    filled: set[str] = set()
-    for seg in segments:
-        kind = seg.kind
-        if kind == "thought":
-            idx += 1
-            filled = {"thought"}
-            keys[f"thought_{idx}"] = seg.content.get("text", "")
-        elif kind == "tool_call":
-            if idx < 0 or "tool" in filled:
-                idx += 1
-                filled = set()
-            filled.add("tool")
-            keys[f"tool_name_{idx}"] = seg.content.get("name", "")
-            keys[f"tool_args_{idx}"] = seg.content.get("args", {})
-        elif kind in ("observation", "summary"):
-            if idx < 0 or "obs" in filled:
-                idx += 1
-                filled = set()
-            filled.add("obs")
-            keys[f"observation_{idx}"] = seg.content.get("text", "")
-        # system / user / tool_def: not part of the trajectory dict
-    return keys
-
-
-class SegmentIndex:
-    """Per-scope B-tree-style locator: ``(session, scope) -> SortedDict[logical_time
-    -> segment_id]`` so a scope's segments can be LOCATED in O(log N) by creation
-    ``logical_time`` (the immutable, store-unique creation clock).
-
-    This is a pure ACCELERATION structure built in parallel with the in-memory scope
-    lists. It is keyed by the creation ``logical_time`` (unique per segment), so the
-    id set it yields for a scope is exactly the set the scan over the scope list yields
-    — a property the parallel-consistency tests assert across the stress corpus. The
-    render/op paths still read via the scan; the index is not yet on the read path.
-
-    Thread-safety: all mutators/readers are called under the SegmentStore lock, so the
-    index itself takes no lock.
-    """
-
-    def __init__(self) -> None:
-        self._by_scope: dict[tuple[str, str], SortedDict] = {}
-
-    def _scope_map(self, session_id: str, scope: str) -> SortedDict:
-        key = (session_id, scope)
-        sd = self._by_scope.get(key)
-        if sd is None:
-            sd = SortedDict()
-            self._by_scope[key] = sd
-        return sd
-
-    def add(self, session_id: str, scope: str, seg: Segment) -> None:
-        """Index a segment by its creation ``logical_time`` (unique per segment)."""
-        self._scope_map(session_id, scope)[seg.logical_time] = seg.id
-
-    def bulk_load(self, session_id: str, scope: str, segs: list[Segment]) -> None:
-        """Index a whole freshly-loaded scope at once (cold-load path)."""
-        sd = self._scope_map(session_id, scope)
-        for s in segs:
-            sd[s.logical_time] = s.id
-
-    def locate_ids(
-        self,
-        session_id: str,
-        scope: str,
-        *,
-        lt_min: int | None = None,
-        lt_max: int | None = None,
-    ) -> list[str]:
-        """Locate the ids in a scope whose creation ``logical_time`` falls in the
-        inclusive ``[lt_min, lt_max]`` window (``None`` = unbounded), in logical-time
-        order. The ``irange`` is the O(log N) B-tree slice; an open window returns the
-        whole scope (still in clock order)."""
-        sd = self._by_scope.get((session_id, scope))
-        if sd is None:
-            return []
-        return [sd[lt] for lt in sd.irange(lt_min, lt_max)]
-
-    def remove(self, session_id: str, scope: str, seg: Segment) -> None:
-        """Forget a single segment (mirrors a non-poisoning drop of an un-encodable
-        segment from the scan, so the locator stays consistent with the scope list)."""
-        sd = self._by_scope.get((session_id, scope))
-        if sd is not None and sd.get(seg.logical_time) == seg.id:
-            del sd[seg.logical_time]
-
-    def drop_scope(self, session_id: str, scope: str) -> None:
-        """Forget a single scope's locator (mirrors SegmentStore.drop_scope)."""
-        self._by_scope.pop((session_id, scope), None)
-
-    def clear(self) -> None:
-        self._by_scope.clear()
-
-
 class SegmentStore:
     """Ordered, scoped, mutable live-context store. Thread-safe."""
 
@@ -295,6 +186,8 @@ class SegmentStore:
         self._index = SegmentIndex()
         # Store-wide monotonic logical clock, recovered past the persisted max.
         self._next_lt = 1
+        # Per-scope op generation (bumped by every op but append): see context_view.
+        self._generations: dict[tuple[str, str], int] = {}
 
     # ---- record naming -------------------------------------------------
 
@@ -330,21 +223,19 @@ class SegmentStore:
         """Return the in-memory segment list for a scope, loading it once.
 
         Always called under this scope's per-scope lock, so the scope's own entry in
-        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated. The shared
-        clock recovery below is done under the dedicated clock lock so it stays
-        serialized across scopes (lock order scope -> clock is honored)."""
+        ``_scopes``/``_loaded``/``_index`` is never concurrently mutated; the shared
+        clock is recovered past the loaded segments (:meth:`_recover_clock`)."""
         key = (session_id, scope)
         if key not in self._loaded:
             raw = self._store.get("segments", self._record_name(session_id, scope))
-            segs = decode_segments(raw) if raw else []
+            try:
+                segs = decode_segments(raw) if raw else []
+            except msgspec.DecodeError as exc:
+                raise SegmentReadError(session_id, scope) from exc
             self._scopes[key] = segs
             self._loaded.add(key)
             self._index.bulk_load(session_id, scope, segs)  # parallel locator
-            # recover the monotonic clock past anything persisted (shared -> clock lock)
-            with self._clock_lock:
-                for s in segs:
-                    if s.logical_time >= self._next_lt:
-                        self._next_lt = s.logical_time + 1
+            self._recover_clock(segs)
             logger.debug(
                 "segments: cold-load session=%s scope=%s loaded=%d next_lt=%d",
                 session_id,
@@ -354,50 +245,24 @@ class SegmentStore:
             )
         return self._scopes[key]
 
-    def _persist(
-        self, session_id: str, scope: str, *, just_written: list[Segment] | None = None
-    ) -> None:
-        """Encode + put the whole scope record. NON-POISONING: a segment that still fails
-        to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED from the
-        in-memory list and logged via ``runtime.trace`` (never silently), so it can NEVER
-        wedge the scope's future persists. ``just_written`` is what the current op produced; they
-        are the prime suspects and are dropped first."""
+    def _persist(self, session_id: str, scope: str) -> None:
+        """Encode + put the whole scope record; clio-core must accept it. On failure the
+        in-memory copy (changed before this call) is DISCARDED -- the next read reloads
+        clio-core's record -- and a typed :class:`ArcPersistError` is raised."""
         segs = self._scopes[(session_id, scope)]
         try:
             self._put_scope(session_id, scope, segs)
-            return
-        except Exception:  # noqa: BLE001,S110 - encode/put failed; isolate the offender below
-            pass
-        # Drop the just-written segment(s) first (the most likely offender), then any
-        # other segment that fails to encode in isolation, so the rest of the scope
-        # persists cleanly and never re-throws on the next op.
-        suspects = list(just_written or [])
-        dropped: list[str] = []
-        for seg in suspects:
-            if seg in segs and not self._segment_encodes(seg):
-                segs.remove(seg)
-                self._index_remove(session_id, scope, seg)
-                dropped.append(seg.id)
-        try:
-            self._put_scope(session_id, scope, segs)
-        except Exception:  # noqa: BLE001 - a non-just-written segment is also bad; isolate it
-            survivors = [s for s in segs if self._segment_encodes(s)]
-            for seg in segs:
-                if seg not in survivors:
-                    self._index_remove(session_id, scope, seg)
-                    dropped.append(seg.id)
-            segs[:] = survivors
-            self._put_scope(session_id, scope, segs)
-        if dropped:
-            trace.event(
-                "SEGMENT-DROP",
-                "scope=%s session=%s dropped=%d ids=%s (un-encodable content removed; "
-                "scope persisted without it, no durable wedge)",
-                scope,
-                session_id,
-                len(dropped),
-                dropped,
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
+            self._discard_scope(session_id, scope)
+            if isinstance(exc, LoopThreadStoreWrite):
+                raise  # a write from the event loop is a caller bug, typed as itself
+            raise ArcPersistError(session_id, scope, exc) from exc
+
+    def _discard_scope(self, session_id: str, scope: str) -> None:
+        """Drop the in-memory copy (changed, not persisted); the next read reloads clio-core."""
+        self._scopes.pop((session_id, scope), None)
+        self._loaded.discard((session_id, scope))
+        self._index.drop_scope(session_id, scope)
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
         """Encode the scope's segments and put the record (with the live search_text
@@ -420,19 +285,10 @@ class SegmentStore:
             search_text=search_text,
         )
 
-    @staticmethod
-    def _segment_encodes(seg: Segment) -> bool:
-        """Whether a single segment survives the strict msgpack encode in isolation."""
-        try:
-            encode_segments([seg])
-            return True
-        except Exception:  # noqa: BLE001 - this segment is the un-encodable offender
-            return False
-
-    def _index_remove(self, session_id: str, scope: str, seg: Segment) -> None:
-        """Drop a dropped segment from the per-scope locator so the index stays in sync
-        with the scan (the parallel-consistency invariant)."""
-        self._index.remove(session_id, scope, seg)
+    def _recover_clock(self, segs: Iterable[Segment]) -> None:
+        """Advance the shared clock past persisted segments (scope -> clock lock order)."""
+        with self._clock_lock:
+            self._next_lt = max([self._next_lt, *(s.logical_time + 1 for s in segs)])
 
     def _new_lt(self) -> int:
         """Issue the next monotonic logical tick. Guarded by its OWN tiny lock so the
@@ -577,14 +433,8 @@ class SegmentStore:
     @staticmethod
     def _order_for_position(segs: list[Segment], live: list[Segment], position: int) -> float:
         """Gap-allocated float order so a mid-insert never renumbers neighbours."""
-        if position <= 0:
-            lo = min((s.order for s in segs), default=1.0)
-            return lo - 1.0 if live else 1.0
-        if position >= len(live):
-            return max((s.order for s in segs), default=0.0) + 1.0
-        before = live[position - 1].order
-        after = live[position].order
-        return (before + after) / 2.0
+        orders = [s.order for s in segs]
+        return order_at(min(orders, default=None), max(orders, default=None), live, position)
 
     def delete(self, session_id: str, scope: str, ids: list[str]) -> int:
         """Tombstone live segments by id (render skips them). Tombstone-not-erase
@@ -592,6 +442,7 @@ class SegmentStore:
         number actually tombstoned."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            require_live(ids, {s.id for s in segs if s.status == "live"}, op="delete", scope=scope)
             target = set(ids)
             tombstoned: list[str] = []
             op_lt = 0
@@ -613,8 +464,6 @@ class SegmentStore:
                 self._finish_write(
                     session_id, scope, "delete", tombstoned=tombstoned, logical_time=op_lt
                 )
-            else:
-                logger.debug("segments: delete scope=%s matched no live ids=%s", scope, ids)
             return len(tombstoned)
 
     def summarize(
@@ -629,27 +478,23 @@ class SegmentStore:
         turn_id: str = "",
         expert_span_id: str = "",
         run_span_id: str = "",
+        position: int | None = None,
     ) -> Segment:
-        """summarize = delete(ids) + insert(summary at the first replaced position),
-        ATOMIC under the lock. The new Segment is ``kind="summary"`` with
-        ``derived_from=ids``. The caller produces ``summary_content`` (the LLM
-        call). context-compaction = ``summarize(all live ids)``. ``turn_id`` /
-        ``expert_span_id`` / ``run_span_id`` are optional correlation span ids
-        stamped on the summary segment."""
+        """summarize = delete(ids) + insert(summary at the first replaced position, or
+        at render ``position`` over the live segments), ATOMIC under the lock. The new
+        Segment is ``kind="summary"`` with ``derived_from=ids``; the caller produces
+        ``summary_content`` (the LLM call). The span ids are stamped on it."""
         summary_content = _coerce_content(summary_content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live(ids, live_ids, op="summarize", scope=scope)
             target = set(ids)
             replaced = [s for s in segs if s.id in target and s.status == "live"]
-            # Summary takes the position (order) of the first replaced segment so it
-            # renders where the range was; its step is the min replaced step.
-            if replaced:
-                first = min(replaced, key=lambda s: (s.order, s.logical_time))
-                order = first.order
-                step = min((s.step for s in replaced), default=-1)
-            else:
-                order = (max((s.order for s in segs), default=0.0)) + 1.0
-                step = -1
+            first = min(replaced, key=lambda s: (s.order, s.logical_time))  # the range's slot
+            at = self._order_for_position(segs, self._live_sorted(segs), position or 0)
+            order = first.order if position is None else at
+            step = min((s.step for s in replaced), default=-1)
             summary_lt = self._new_lt()
             tombstoned: list[str] = []
             for s in replaced:
@@ -734,14 +579,9 @@ class SegmentStore:
         content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
-            original = next((s for s in segs if s.id == target_id and s.status == "live"), None)
-            if original is None:
-                logger.debug(
-                    "segments: replace scope=%s matched no live id=%s (no-op)",
-                    scope,
-                    target_id,
-                )
-                return None
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live([target_id], live_ids, op="replace", scope=scope)
+            original = next(s for s in segs if s.id == target_id and s.status == "live")
             op_lt = self._new_lt()
             original.status = "tombstoned"
             original.tombstoned_at = op_lt  # replaced exactly when the new segment appears
@@ -819,6 +659,9 @@ class SegmentStore:
         """Log the applied op to the Trace, stamp ``trace_ref`` on written segments,
         then persist. Called under this scope's per-scope lock."""
         written = written or []
+        if op != "append":  # an op may rewrite the prefix: a new view generation
+            key = (session_id, scope)
+            self._generations[key] = next_generation()
         for seg in written:  # parallel locator: index every newly-written segment
             self._index.add(session_id, scope, seg)
         if logical_time is not None:
@@ -845,15 +688,10 @@ class SegmentStore:
                 if event_id:
                     for s in written:
                         s.trace_ref = event_id
-            except Exception:  # noqa: BLE001 - Trace logging must never break a context op
-                logger.warning(
-                    "segments: op_logger raised for op=%s scope=%s lt=%d (op still applied)",
-                    op,
-                    scope,
-                    lt,
-                    exc_info=True,
-                )
-        self._persist(session_id, scope, just_written=written)
+            except Exception as exc:  # noqa: BLE001 - re-raised typed; memory discarded
+                self._discard_scope(session_id, scope)  # changed in memory, not persisted
+                raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
+        self._persist(session_id, scope)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",
             op,
@@ -894,16 +732,6 @@ class SegmentStore:
             ]
             return sorted(visible, key=lambda s: (s.order, s.logical_time))
 
-    def render_keys(
-        self, session_id: str, scope: str, *, as_of: int | None = None
-    ) -> dict[str, Any]:
-        """``render`` projected into dspy's trajectory dict
-        (``thought_{i}`` / ``tool_name_{i}`` / ``tool_args_{i}`` / ``observation_{i}``).
-        This is exactly what the ``_format_trajectory`` override reads. See
-        :func:`segments_to_keys` for the projection algorithm.
-        """
-        return segments_to_keys(self.render(session_id, scope, as_of=as_of))
-
     def render_working_set(
         self, session_id: str, scope: str, *, as_of: int | None = None
     ) -> list[Segment]:
@@ -912,13 +740,8 @@ class SegmentStore:
         ``semantic_event``), which are part of ARC's complete freeze-anytime
         state but are NOT working-set context.
 
-        This is the target of the per-turn working-set reset and ``_maybe_autocompact``
-        — NOT a new prompt source. ``render`` / ``render_keys`` are UNCHANGED: the
-        prompt stays ``segments_to_keys(render(...))``, which is a kind-allowlist that
-        already ignores the new kinds, so the prompt is byte-identical whether or not
-        the new atoms are present. Until any writer emits the new kinds, this returns
-        exactly what ``render`` returns (so adopting it is behavior-preserving), and
-        excludes exactly the atoms once they exist.
+        This is compaction's target. The agent's context folds these kinds (see
+        ``clio_react_record.fold_steps``), which ignores any kind it does not model.
         """
         return [
             s for s in self.render(session_id, scope, as_of=as_of) if s.kind in WORKING_SET_KINDS
@@ -944,6 +767,17 @@ class SegmentStore:
             segs = self._segs(session_id, scope)
             pool = segs if include_tombstoned else [s for s in segs if s.status == "live"]
             return sorted(pool, key=lambda s: (s.order, s.logical_time))
+
+    def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
+        """The scope's live segments with their op generation (appends keep it)."""
+        with self._lock_for(session_id, scope):
+            live = self._live_sorted(self._segs(session_id, scope))
+            return ViewSnapshot(self._generations.get((session_id, scope), 0), tuple(live))
+
+    def has_segments(self, session_id: str, scope: str) -> bool:
+        """Whether anything was ever recorded in the scope (any status)."""
+        with self._lock_for(session_id, scope):
+            return bool(self._segs(session_id, scope))
 
     def locate_segment_ids(
         self,
@@ -1053,6 +887,7 @@ class SegmentStore:
             self._scopes.pop(key, None)
             self._loaded.discard(key)
             self._index.drop_scope(session_id, scope)
+            self._generations[key] = next_generation()  # erased: no reader keeps a prefix
             assert_store_write_off_loop("segments.delete", scope=scope)
             self._store.delete("segments", self._record_name(session_id, scope))
             logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)

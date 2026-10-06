@@ -273,6 +273,9 @@ class ProcessHygieneAudit:
     )
     _is_descendant: Callable[[int, int], bool] = is_descendant_of
     _is_dead: Callable[[int, Optional[float]], bool] = staticmethod(entry_is_dead)
+    # Forensics for a leaked child read the REAL process with that pid; an injected audit
+    # (fake pids) must not pick up whatever unrelated process has that pid on the runner.
+    _forensics: Callable[[int], str] = staticmethod(_leak_forensics)
 
     def __post_init__(self) -> None:
         self._baseline_clients: set[int] = set(self._snapshot_clients())
@@ -319,7 +322,7 @@ class ProcessHygieneAudit:
                     pid=pid,
                     name=name,
                     origin=self._child_origin.get(pid, "<unknown>"),
-                    detail=_leak_forensics(pid),
+                    detail=self._forensics(pid),
                 )
             )
         return AuditResult(client_leaks=tuple(client_leaks), child_leaks=tuple(child_leaks))

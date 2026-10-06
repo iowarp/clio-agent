@@ -109,8 +109,8 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     the user approves via /v1/sessions/{sid}/diffs/apply, which
     triggers apply_edit.
 
-    Returns ``{path, unified_diff, new_content, lines_added,
-    lines_removed}`` so GACT can later apply the accepted diff without
+    Returns the diff and authored content with ``applied: false`` and
+    ``requires_review: true``. GACT can later apply the accepted diff without
     trying to replay a patch.
     """
 
@@ -135,6 +135,8 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
         "new_content": new,
         "lines_added": added,
         "lines_removed": removed,
+        "applied": False,
+        "requires_review": True,
     }
 
 
@@ -148,7 +150,7 @@ def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     catalog ``write`` tag. The tool remains in the effective runtime catalog
     for audit and harness execution. It is model-visible only while the active
     session is in Plan mode, where the permission resolver limits it to the
-    recorded ``.clio/plans/*.md`` file. Outside Plan mode the model proposes a
+    recorded plan file in Agent-managed workspace state. Outside Plan mode the model proposes a
     reviewable edit and the approved ``/diffs/apply`` route owns this write.
 
     Designed for the GACT /diffs/apply path: when the user accepts

@@ -44,6 +44,11 @@ _CATALOGS = CatalogRegistry()
 def _session_client(tmp_path: Path) -> tuple[TestClient, str, Path]:
     sessions_path = tmp_path / "sessions.json"
     app = build_app(sessions_path=sessions_path)
+    # ws_default seeds root_path=os.getcwd() (workspaces.py _seed_default) --
+    # rebind it to this test's own tmp_path so a producer-tool call (e.g. a
+    # minted surface-definition artifact, #1533 S4) never writes through it
+    # into the real invocation cwd.
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     session = app.state.sessions.create(workspace_id="ws_default", title="A2UI")
     return TestClient(app), session.id, sessions_path
 
@@ -406,6 +411,135 @@ def test_complete_component_update_compacts_the_superseded_snapshot(tmp_path: Pa
     surface = response.json()["surfaces"][-1]
     assert surface["revision"] == 3
     assert surface["messages"] == [_create_message(), corrected]
+
+
+def test_fix_touching_fewer_ids_than_the_bad_update_still_folds_it_away(tmp_path: Path) -> None:
+    """G2 merge-gate finding (iowarp/gact-tui#513 comment 5937313752, #23):
+    the OLD compaction only dropped an earlier ``updateComponents`` whose
+    component-id set was a SUBSET of a later one's. A bad message that
+    defines a whole dashboard (``root`` + a sibling ``a``) is NOT a subset
+    of a fix that redefines only ``root`` -- ``{root, a}`` is not ``<=
+    {root}`` -- so the bad message survived in ``surface.messages``
+    forever, stranding the fix right next to it (reproduced twice against a
+    real server via ``GET /v1/sessions/{sid}/a2ui/surfaces``; the client
+    half of this bug is gact-tui#513). Materialization folds every
+    ``updateComponents`` message into ONE current definition per component
+    id, so a fix for one component never again needs to also resend its
+    unrelated siblings just to make the bad definition disappear.
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    bad_dashboard = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                # Use a valid but superseded definition under the current
+                # contract. Out-of-bounds gaps are rejected separately below.
+                {"id": "root", "component": "Grid", "gap": 12, "children": ["a"]},
+                {"id": "a", "component": "Text", "text": "A"},
+            ],
+        },
+    }
+    grid_fix = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 8, "children": ["a"]}],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), bad_dashboard, grid_fix]},
+    )
+
+    assert response.status_code == 200
+    surface = response.json()["surfaces"][-1]
+    assert surface["revision"] == 3
+    merged = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {"id": "root", "component": "Grid", "gap": 8, "children": ["a"]},
+                {"id": "a", "component": "Text", "text": "A"},
+            ],
+        },
+    }
+    assert surface["messages"] == [_create_message(), merged]
+
+
+def test_grid_gap_above_catalog_bound_is_rejected_without_persisting(tmp_path: Path) -> None:
+    """The newer contract rejects the invalid gap behind the historical fold bug."""
+    client, sid, _ = _session_client(tmp_path)
+    update = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 15, "children": []}],
+        },
+    }
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), update]},
+    )
+    assert response.status_code == 422
+    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+
+
+def test_message_revisions_are_present_and_monotonic_per_slot(tmp_path: Path) -> None:
+    """Coordinator design (2026-10-01, adversarial review of #1553/#513):
+    each stored message is stamped with the revision that produced its
+    CURRENT content, exposed in the wire projection as `message_revisions`
+    (parallel to `messages`, same length/order) -- a client needs this to
+    tell "this slot changed" from "this slot is unchanged" in O(1), never by
+    re-hashing the slot's full content on every reconcile. The merged
+    `updateComponents` slot is RE-stamped on every component change,
+    however small; every other slot (`createSurface`, each
+    `updateDataModel`) keeps the stamp it was created with.
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    grid_first = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 8, "children": []}],
+        },
+    }
+    status_update = {
+        "version": "v0.9.1",
+        "updateDataModel": {"surfaceId": "surface_1", "path": "/status", "value": "running"},
+    }
+    grid_second = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 10, "children": []}],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), grid_first, status_update, grid_second]},
+    )
+
+    assert response.status_code == 200
+    surface = response.json()["surfaces"][-1]
+    assert surface["revision"] == 4
+    assert len(surface["message_revisions"]) == len(surface["messages"]) == 3
+    assert "createSurface" in surface["messages"][0]
+    assert "updateComponents" in surface["messages"][1]
+    assert "updateDataModel" in surface["messages"][2]
+    # createSurface: stamped 1, never touched again. The merged
+    # updateComponents slot: re-stamped to 4 (grid_second's own revision),
+    # not 2 (grid_first's) -- it is the LATEST change that counts. The
+    # updateDataModel slot: stamped 3, its own and only revision.
+    assert surface["message_revisions"] == [1, 4, 3]
 
 
 def test_surface_ids_are_scoped_to_each_session(tmp_path: Path) -> None:
@@ -1031,7 +1165,7 @@ def test_root_agent_tool_documents_how_to_revise_an_existing_surface() -> None:
     compact_description = " ".join(tool.desc.split())
 
     assert "session_surface_ids" in compact_description
-    assert "``created``" in compact_description
+    assert "revise it in place" in compact_description
 
 
 def test_server_and_tool_reject_string_accessibility_before_persisting(
@@ -1268,7 +1402,7 @@ def test_server_rejects_out_of_range_map_coordinates(tmp_path: Path) -> None:
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
-def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
+def test_server_accepts_registered_csv_chart(tmp_path: Path) -> None:
     client, sid, _ = _session_client(tmp_path)
     chart = {
         "version": "v0.9.1",
@@ -1277,10 +1411,12 @@ def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
             "components": [
                 {
                     "id": "root",
-                    "component": "clio.time-series.v1",
+                    "component": "clio.chart.v1",
                     "dataUri": "artifact://artifact_series_1",
-                    "xKey": "time",
-                    "yKeys": ["east", "north", "up"],
+                    "preset": "trajectories",
+                    "xField": "time",
+                    "yField": "east",
+                    "entityField": "station",
                 }
             ],
         },
@@ -1296,7 +1432,7 @@ def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
     assert response.json()["surfaces"][-1]["state"] == "ready"
 
 
-def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
+def test_server_rejects_ambiguous_chart_sources(tmp_path: Path) -> None:
     client, sid, _ = _session_client(tmp_path)
     invalid = {
         "version": "v0.9.1",
@@ -1305,11 +1441,13 @@ def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
             "components": [
                 {
                     "id": "root",
-                    "component": "clio.time-series.v1",
-                    "series": [{"time": 1, "east": 2}],
+                    "component": "clio.chart.v1",
+                    "data": [{"time": 1, "east": 2}],
                     "dataUri": "artifact://artifact_series_1",
-                    "xKey": "time",
-                    "yKeys": ["east"],
+                    "preset": "trajectories",
+                    "xField": "time",
+                    "yField": "east",
+                    "entityField": "station",
                 }
             ],
         },
@@ -1322,7 +1460,7 @@ def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 422
-    assert "component=clio.time-series.v1 id=root" in response.json()["error"]["message"]
+    assert "component=clio.chart.v1 id=root" in response.json()["error"]["message"]
     assert "not valid under any of the given schemas" in response.json()["error"]["message"]
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 

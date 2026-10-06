@@ -226,6 +226,29 @@ def test_transport_for():
     assert str(transport_for(spec_from_declaration("n", "https://h/mcp")).url) == "https://h/mcp"
 
 
+def test_a_spawned_server_skips_the_fastmcp_banner_and_its_update_check():
+    """Measured live (2026-09-30): every FastMCP server start printed its banner and
+    fetched pypi.org to check for updates -- on the path between a message and its
+    first tool. A declaration that sets either keeps its own value."""
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+    assert stdio.env["FASTMCP_SHOW_SERVER_BANNER"] == "false"
+    assert stdio.env["FASTMCP_CHECK_FOR_UPDATES"] == "off"
+
+    declared = transport_for(
+        spec_from_declaration(
+            "ndp",
+            {
+                "command": sys.executable,
+                "args": ["-c", "pass"],
+                "env": {"FASTMCP_CHECK_FOR_UPDATES": "stable"},
+            },
+        )
+    )
+    assert declared.env["FASTMCP_CHECK_FOR_UPDATES"] == "stable"
+
+
 def test_transport_for_stdio_cwd(tmp_path):
     """stdio transports spawn in the given cwd; http transports ignore it."""
     work = tmp_path / "ws"
@@ -313,7 +336,9 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
         "ndp",
     ]
     assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
-    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(mcp_config.Path.home() / ".clio" / "mcp-runtime")
+    from clio_agent import paths
+
+    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(paths.user_cache_dir() / "mcp-runtime")
 
 
 def test_transport_for_prefers_bundled_clio_kit_over_ambient_shim(tmp_path, monkeypatch):
@@ -556,6 +581,10 @@ def test_transport_from_spec_uses_bundled_desktop_launcher(
     # This is the Windows desktop bundle contract.  On Linux the final command is
     # deliberately wrapped by setpriv for parent-death cleanup, which is covered by
     # the dedicated cross-platform tests below.
+    from clio_agent import paths
+
+    host_platform = paths._platform()
+    monkeypatch.setattr(paths, "_platform", lambda: host_platform)
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher",
@@ -610,6 +639,10 @@ def test_transport_from_spec_stdio_pdeathsig_wrapped_on_linux(
     list / call / reconnect), not just the agent path. Proving it inside the helper
     proves it for all of them at once.
     """
+    from clio_agent import paths
+
+    host_platform = paths._platform()
+    monkeypatch.setattr(paths, "_platform", lambda: host_platform)
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(
         "clio_agent.tools.mcp_config.shutil.which", lambda _name: "/usr/bin/setpriv"
@@ -625,6 +658,10 @@ def test_transport_from_spec_stdio_no_pdeathsig_off_linux(
 ) -> None:
     """Cross-platform guard: on Windows/macOS the stdio spawn is an unwrapped
     passthrough (setpriv is Linux-only), mirroring pdeathsig_wrapped_command."""
+    from clio_agent import paths
+
+    host_platform = paths._platform()
+    monkeypatch.setattr(paths, "_platform", lambda: host_platform)
     monkeypatch.setattr(sys, "platform", platform)
     transport = transport_from_spec({"transport": "stdio", "command": "uvx", "args": ["geo-mcp"]})
     assert transport.command == "uvx"

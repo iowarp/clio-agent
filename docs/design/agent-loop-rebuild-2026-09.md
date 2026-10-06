@@ -1,0 +1,1872 @@
+# Campaign: agent-loop rebuild — ClioReAct on DSPy 3.4, clio-core as the context system
+
+**Status:** APPROVED 2026-09-28 (owner). Phase 1 implemented on `feat/codex-sdk-stateful`
+(unit-tested; full-suite + live verification pending). Keep this doc updated as work lands.
+**Goal file:** this document is also the grounding for a `/goal` run (see the last section).
+
+## Why
+
+clio's agent loop is slow and its context is assembled rather than owned. Measured on a real
+multi-turn data-analysis session (one question: 39 min, 79 serial steps, 9.87M input tokens for
+93k output), with every cause verified in code:
+
+1. **Full resend every step.** The Codex SDK transport opened an ephemeral thread per LM call and
+   re-sent the whole rendered history (v0.7.0 had a Codex stateful delta: 2.95s vs 7.37s TTFT,
+   76.7% cached input; the Aug-2026 SDK rework removed it).
+2. **Serial tools.** One `asyncio.Lock` per MCP executor is held for the whole call and the
+   executor is shared per workspace (parent + children serialize); DSPy's loop runs a step's
+   calls one by one; cancel is never checked between iterations.
+3. **Context rebuilt per turn, not projected.** Every turn recomposes the system prompt, re-inlines
+   attached files, renders earlier turns as prose inside the new user message, wipes the working
+   set, and (mid-turn) glues steers and child results onto tool observations — no cross-turn
+   prefix reuse, and no record of what the agent actually saw.
+4. **clio already runs its own loop, pretending not to.** `instrumented_forward` is a modified copy
+   of `ReActV2.forward`, protected by hash pins on upstream code clio never runs.
+
+The campaign rebuilds the loop so clio owns it (approach B), clio-core is the single context
+system, providers are stateful where they can be, and tools run concurrently — measured on clio's
+own live-verification legs and marketplace agents, with the gact-tui UI verified.
+
+## Owner-settled principles (binding)
+
+- **Fail over fallback.** A typed error is preferred over any fallback. The ONLY sanctioned one:
+  the platform cannot run clio-core (not installable/present) → run on DSPy `History`, LOUD
+  (typed degraded mode, UI + doctor). clio-core erroring or lost mid-turn → typed turn failure.
+  Never a silent or mid-turn switch.
+- **clio-core keeps everything** as recorded events with role + actor: turns, summaries,
+  injections, edit ops, fixes, hook effects. Two projections over one log: the UI projection
+  (everything visible) and the agent-context projection (what the model sees); they may differ.
+- **Append-only by default**, maximize prefix reuse. Edits are first-class recorded ops (today
+  only compaction; soon algorithm- and human-driven add/remove). Injections (plan reminder, todos,
+  replan, task results, memory hits, files) are recorded once at the prefix edge and stay until an
+  op removes them; the UI shows them.
+- **Deterministic fixes** (arg repair, path grounding, circuit breaker, observation composition):
+  each a config switch; each firing recorded, UI-visible, and told to the model next to the result.
+- **Provider sessions span turns;** reset only on a recorded op or provider error (typed).
+- **Step anatomy:** thinking (provider payload, byte-exact) · text (what `next_thought` really is;
+  optional with tool calls, required on the final step = the answer) · tool calls → results.
+  **Decided 2026-09-29 (owner):** `next_thought` is optional for EVERY model when the step calls
+  tools — clio forces no shape on the model; anything the model outputs (thinking, text) is
+  displayed.
+- **`dspy extract`** = literally DSPy's extract, config-driven (steps > N, default 3, can
+  disable), recorded as an explicit amendment to `react-loop-completion-2026-09.md`.
+- **SDK providers are providers only** (Codex SDK, Claude Code SDK): no dynamicTools, no SDK tool
+  loop; identical code above the transport as for vLLM. SDK transports keep the text protocol
+  (one prompt string, no tools); native tool calls only on direct APIs.
+- **Keep DSPy** for signatures, adapters, the LM layer, BestOfN/Refine, optimizers and module
+  composition. Public DSPy API only; no hash pins on DSPy internals.
+
+## Design
+
+- **D1 — one log, projections.** Event vocabulary on the existing `_events` family (no fifth
+  store): user message · injection (actor = algorithm) · steer · model step (complete provider
+  response incl. thinking payload) · tool result (raw + model-facing) · child result · compaction
+  checkpoint · edit op (actor = human | algorithm) · fix fired · hook effect. The agent-context
+  projection is one function per agent scope, spanning turns; the UI projection is the same log
+  with everything visible.
+- **D2 — `ClioReAct(dspy.Module)`**, stateless. Per step: boundary (cancel? apply new events:
+  steers, child results, injections, ops) → context = project(clio-core) → `dspy.Predict` → record
+  the complete step → run tool calls concurrently → record results → end (no tool call = answer ·
+  submit · ask_user/plan_exit yield · optional extract). Hooks (BeforeModel/AfterModel/PreToolUse/
+  PostToolUse/Stop) apply at fixed step points and their effects are recorded. Differential test
+  against stock `dspy.ReActV2`.
+- **D3 — transport contract.** Prefix-stable rendering (render(log[0..n]) is a prefix of
+  render(log[0..n+1]) unless an op landed). Stateful where the provider is (Codex thread, Claude
+  session, Responses `previous_response_id`), prefix-cached where stateless. Thinking stored
+  byte-exact, sent back in provider format. Text vs native tool mode chosen from the transport's
+  declared capability — typed failure on mismatch.
+
+## Verified DSPy 3.4.0 facts (spike against installed code)
+
+- Stock `ReActV2`: history keeps only inputs/`next_thought`/`tool_calls`; tools sequential; no
+  tool call → forced `submit` (clio's contract forbids it) → do not use its loop.
+- Text mode: after call 0, calls are append-only beneath one byte-identical trailing message
+  (tools + "Respond with…"); `stateful_common.classify_delta` handles it.
+- `use_native_function_calling=True` silently drops to text when the LM lacks
+  `supports_function_calling` (`dspy/adapters/base.py`).
+- Native reasoning via `dspy.Reasoning` forces `reasoning_effort="low"` and drops the step's
+  visible text; with native tools the signature has zero outputs and the reminder names an empty
+  field.
+- Custom LMs via `forward/aforward` and `messages=` dicts are deprecated (removed in 3.5) →
+  migrate clio's custom transports to the Engine API.
+
+## Phases (stacked branches — each cut from the previous phase's branch; worktree; detailed sub-plan at start)
+
+0. **Environment + baseline.** `uv sync --extra dev`; clio-core daemon working (the full suite
+   needs it); Codex SDK signed in; gact-tui web built. Measure the baseline on unmodified
+   `develop` for every live case below.
+1. **Codex SDK stateful transport** (`feat/codex-sdk-stateful`, implemented): full suite green,
+   live-verify against the baseline.
+2. **`ClioReAct` + concurrent tools + cancellation at every boundary.** Delete: the ReActV2
+   subclass/`instrumented_forward` copy, `reactv2_upstream.py` pins, adapter class-name spoof,
+   async-tool ban, dead `trajectory`/`tools_called` reads, workflow-era leftovers
+   (`workflow_state` auto-inject, prose-parsed prior state, routing fields, planner LM, EarthScope
+   trace), the DSPy-history read fallback, the streamed→sync second run. Drop the per-executor MCP
+   call lock; observer/gate state per call.
+3. **clio-core as the context system.** Event vocabulary; cross-turn agent-context projection
+   (earlier turns as real messages, no prose blob in
+   `session_store._compile_session_conversation_history`, no per-turn wipe); injections, steers
+   and child results as events in their own role at the step boundary; compaction over what
+   clio-core holds (failing-first test for the suspected mid-turn loss); thinking payloads stored;
+   UI projection of injections/edits/fixes; the loud platform fallback, typed failure otherwise.
+4. **Fixes + hooks as recorded, configurable events** (`conf.resolve` switches documented via
+   `scripts/gen_env_reference.py`; defaults from the owner).
+5. **DSPy 3.4 upgrade** (Engine API transports) + thinking pass-back per provider + native tool
+   calls on direct transports + Codex direct stateful chain (owner logs in when reached).
+6. **Config-driven `dspy extract`** (+ contract amendment); relay onto MCP tasks per
+   `mcp-client-unification-2026-08.md` campaign 2 (owner decides timing).
+7. **Session bring-up off the first message** (`feat/session-bringup`).
+8. **clio-core fail-stop** (`feat/clio-core-failstop`): clio-core is the only context store and
+   nothing in its path falls back, degrades or drops. Every earlier verification is redone on
+   real clio-core.
+9. **BestOfN / Refine as runtime self-refinement** (goal of this campaign; see its section):
+   triggered on demand (subagent strategy, a per-turn tool, a user control), with an LM or user
+   judge. Refine's advice is owned by clio's loop, and every choice is recorded for long-term
+   optimization.
+
+## Phase 2 sub-plan (`feat/clio-react`, cut from `feat/codex-sdk-stateful`)
+
+Inventory taken 2026-09-28 against `feat/codex-sdk-stateful` (every item below was located in
+code; file:line in the phase report).
+
+**Add** `gact/agents/clio_react.py` — `ClioReAct(dspy.Module)`, constructor
+`(signature, tools, max_iters)` (the shape `builders.py` and tests use). One `dspy.Predict` over
+the react signature (task inputs + `history: dspy.History` + `tools` → `next_thought: str`,
+`tool_calls: dspy.ToolCalls`), built with public DSPy API only. Per step:
+
+1. boundary — cancel checked (typed `_TurnCancelled`); proactive compaction trigger;
+2. context — the ARC live plane folded BY STEP (one History event = thought + every tool call
+   of that step + their results, call ids preserved; a summary segment is its own event), static
+   task inputs folded once into the head. No ARC (no app/scope: unit tests, CLI) → the loop's own
+   History. An ARC read failure is a typed turn failure — the `reactv2_arc_history_read_failed`
+   fallback to DSPy's internal History is deleted;
+3. predict → record the step (ARC `step_open`, `react.step.completed`, spans, step thought);
+4. tool calls run CONCURRENTLY (one worker per call, each in a copy of the step's context);
+   results kept in call order; a terminal MCP refusal is classified directly from the call's
+   exception and re-raised after the step (no contextvar mark/pop), so async tools need no ban;
+   cancel checked before dispatch and after results;
+5. end: no tool call → `direct_response`; `submit` → its outputs; `ask_user`/`plan_exit` →
+   `*_yield`; `max_iters` (0 = unlimited) / `parse_error` / `context_window_exceeded`; a
+   `ClioError` closes the expert lifecycle `failed` and re-raises. Same events, Prediction fields
+   and termination reasons as today (the external contracts listed in the report).
+
+The turn engine runs the module ONCE in the forward executor (copied context, cancel checker);
+live text and thinking already stream through the LM's token hooks (`runtime/lm_activity`).
+
+**Delete** (same branch): `reactv2.py`, `reactv2_events.py`, `reactv2_upstream.py` and their
+hash pins; `runtime._retaining_react_cls`; the ARC read seam in the adapters
+(`HistoryPreparationMixin`'s override — image/PDF hydration stays); the `LenientChatAdapter`
+class-name spoof and the streamify path it exists for (`_try_streamed_forward`, dead stream
+listeners, the `llm.request.degraded` → sync second run in `turn_forward`, `stream_fallbacks`
+peeks for it); the streamed→blocking second LM call in `IOLoggingLM` (a streaming failure is a
+typed error, not a re-issue); the async-tool ban and refusal-marking wrapper; dead
+`trajectory`/`tools_called`-from-trajectory reads (`builders`, `turn.py`, `todos.py`,
+`evidence.py`, `messaging.py`, `_emit_blueprint_llm_failure`); the never-raised
+`_BlueprintTerminalWorkflowState` and its handlers; the prose-parsed `clio_prior_workflow_state`
+seed; the planner LM (built on every bind, used by nothing); the EarthScope `trace.hot` checks;
+the per-executor MCP `_call_lock` (per-namespace first-connect guard instead; elicitation
+correlation keeps its typed decline when concurrent calls on one client are ambiguous) and the
+one-call-at-a-time assumptions in the tool observer / artifact identity.
+
+**Tests:** ClioReAct differential vs stock `dspy.ReActV2` (scripted LM: identical message
+sequence for single-call steps; documented divergences: no forced submit, concurrent calls);
+concurrency (two slow tools in one step overlap; results in call order; one failing call doesn't
+stop the other); cancellation at each boundary; terminal-refusal escalation; the by-step ARC fold;
+the existing loop tests ported to `ClioReAct` (not kept against the deleted classes).
+
+Phase 3 then replaces the step 2 source with the cross-turn clio-core projection and moves
+steers/child results off tool observations.
+
+## Re-review of phases 1–2 against DSPy 3.4 (2026-09-29)
+
+**Why.** Phases 1–2 were built on DSPy 3.3.0b1's adapter path (`dspy.Predict` + `ChatAdapter`
+text protocol + `LenientChatAdapter` repairs + LiteLLM `CustomLLM` transports + an `IOLoggingLM`
+subclass). DSPy 3.4 — the version this campaign moves to — offers a better-fitting public surface.
+Facts below are cited against the 3.4.0 wheel (`dspy/…`, `lm15/` = `dspy/_vendor/lm15/…`).
+
+**3.4 facts that decide the design**
+
+- The adapter path still fights the owner principles: with native tools the model's free text
+  is dropped unless it parses into a text field (`adapters/base.py:157-175`); the adapter
+  silently falls back to text tool calls when the LM does not declare function calling
+  (`adapters/base.py:117-119`); tool inputs are detected only as exact `list[Tool]`
+  (`:497-505`); `dspy.Reasoning` still forces `reasoning_effort="low"` and deletes the field
+  (`adapters/types/reasoning.py:53-77`) and thinking signatures are lost (`lm15/providers/
+  openai_chat.py:383,522-531`); the "Respond with…" reminder moves, so the wire is not
+  append-only (`base.py:545` vs `chat_adapter.py:162`); hidden extra calls are on by default
+  (JSON fallback `chat_adapter.py:48,86-112`, `num_retries=3` `base_lm.py:94`, cache
+  `lm.py:209`).
+- The direct path fits: `lm(dspy.lm15.Request)` → `dspy.lm15.Response` with typed parts —
+  `TextPart`, `ToolCallPart`, `ToolResultPart` (content may be `ImagePart`/`DocumentPart`),
+  `ThinkingPart` with provider `ContinuationState` (Anthropic signatures, OpenAI encrypted
+  reasoning items) that round-trips (`lm15/types.py:227-252,570-760`,
+  `lm15/providers/anthropic.py:480-485,897-902`, `lm15/providers/openai.py:777-782,1135-1148`).
+- Custom transports are engines: `complete(Request)->Response`, `stream(Request)->events`,
+  `close()`, async twins, passed as `dspy.LM(model, engine=, async_engine=)`
+  (`clients/engines/base.py:23-36`, `clients/lm.py:65-114,217-218`); engines raise lm15
+  errors and DSPy owns retries (tutorial "custom_lm_engines"). `BaseLM.forward`/`aforward` and
+  `messages=` dicts are deprecated, removed in 3.5 (`clients/_deprecation.py:33-71`).
+- OpenAI-compatible endpoints (vLLM, ALCF, LM Studio, llama.cpp) are declared providers:
+  `dspy.lm15.register_provider(ProviderDefinition.chat(AccessPolicy(...), compat=
+  OpenAIChatCompat(...)))` (`lm15.py:108-185`); `dspy.LM` routes resolvable models to the
+  native lm15 engine, else LiteLLM (`clients/backend_selection.py:29-77`).
+- Streaming: engine events become chunks with `delta.content` / `reasoning_content` /
+  `tool_calls` on `settings.send_stream` (`clients/engines/streaming.py:15-62`,
+  `clients/execution.py:593-606`); `on_lm_start`/`on_lm_end` callbacks observe every call
+  (`utils/callback.py:104-133`).
+- lm15 ships `OpenAICodexLM` (Responses on the ChatGPT Codex backend; accepts a CLIO-held
+  callable credential + `account_id`, `lm15/providers/openai_codex.py:37-67`,
+  `lm15/providers/base.py:72-79`) — but it is stateless: no WebSocket, no
+  `previous_response_id` (`lm15/providers/openai.py:1045-1056,1345`). Its model-string route
+  reads `~/.codex/auth.json` (`lm15/router.py:919-920`, `lm15/auth.py:107`), so CLIO must pass a
+  constructed engine, never the model string. lm15's `claude_code` is HTTP with the CLI's
+  credential file — not usable under the owner's credential rule.
+
+**Measured:** `feat/clio-react` with only `dspy==3.4.0` pinned runs the full suite at 10033
+passed / 1 failed (the test pinning the 3.3 prerelease); 3.4 keeps the 3.3 surfaces working but
+warns that clio uses the deprecated ones — `messages=` dicts (`lm/io_logging.py`,
+`lm/hooked_lm.py`) and custom LMs via `BaseLM.forward` (`io_logging`, `hooked_lm`,
+`gact/goal.py`, `agents/builders.py`), all removed in 3.5. So 3.4 is not a breaking upgrade; the
+reason for 2b is the design fit below, not breakage.
+
+**Verdicts on phases 1–2**
+
+| Piece | Verdict |
+|---|---|
+| Loop semantics (termination, concurrent calls in call order, cancel at every boundary, refusal escalation, yields, no post-loop call), `StepRecorder`/highway events, ARC recording, one-run turn engine, `forward_error_info` | **KEEP** |
+| Every Phase 2 deletion (ReActV2 subclass + pins, streamify path, trajectory cell, planner LM, MCP call lock, workflow leftovers, dead optimizer decorator, duplicate lm.call) | **KEEP** (DSPy-independent) |
+| `ClioReAct` step = `Predict` + react signature + `ChatAdapter` text protocol; `fold_steps` → `dspy.History` events; `submit` args via text | **PORT**: one `lm(Request)` per step with native `tools`; context folded into typed `Message`s; text shown as written, thinking stored with its continuation and sent back as-is; `submit` stays a native tool for structured outputs |
+| `LenientChatAdapter` repairs + re-samples, `StrictGuidedJSONAdapter`'s JSON fallback, `runtime/lm_stream.AnswerFieldExtractor`, `claude_code_thinking_split` (all exist to parse the `[[ ## field ## ]]` protocol) | **DELETE** |
+| `HistoryAttachmentsMixin` promote step | **DELETE**; descriptor→bytes hydration moves to context building as `ImagePart`/`DocumentPart` |
+| `IOLoggingLM(dspy.LM)` | **PORT**: lm.call logging → `on_lm_end` callback reading the lm15 `Response`; token liveness + live lanes → a streaming helper over `send_stream`; its transient retry **DELETED** (DSPy owns retries; engines raise lm15 error types); `_process_completion`/truncation overrides do not run on the native path — replaced by typed engine results |
+| `HookedLM` (BeforeModel/AfterModel deny/synthesize/patch) | **PORT** to a wrapping engine (callbacks cannot deny or rewrite) |
+| Phase 1 Codex SDK transport (`sdk_transport` CustomLLM, `sdk_stream` LiteLLM chunks, `sdk_stateful` + `stateful_common` delta over rendered message dicts incl. the moving-reminder tolerance) | **PORT** to an engine pair: typed `Request` in, structural prefix compare on messages (the moving-tail tolerance is deleted — no adapter reminder exists), lm15 stream events out; thread-per-conversation, runtime/thread lifecycle, cached-token accounting, auto-compaction off, typed resets **KEEP** |
+| Claude Code SDK transport (`claude_code_litellm`/`_bridge`/`_blocking`, CustomLLM) | **PORT** to an engine pair; pool/reaper/bounds/cancel/audit **KEEP** |
+| Codex direct (`litellm_adapter`, `responses`, `stream_events`, `transport_sse`, `sessions`, retry half of `errors`) | **DELETE** in favour of a constructed `OpenAICodexLM(api_key=<CLIO credential>, account_id=…)` engine — **owner decision**: that drops WebSocket delta/`previous_response_id` (full resend each call, `prompt_cache_key` only) unless a custom WebSocket engine is kept |
+| `_cli_provider` registry, `custom_transports`, factory prefix/CustomLLM wiring, `lazy_tiktoken`/`tiktoken_vendored` (once no route uses LiteLLM) | **DELETE** |
+| `lm/factory`, `request_builder`, `dialect_wire`, catalog `litellm_prefix`, capabilities `endpoint.py` | **PORT** to engines / declared providers / `clients/capabilities.py` |
+| Everything else in `providers/` (OAuth/login UX, catalogs, handshakes, discovery, SDK process management) | **KEEP** (DSPy-independent) |
+
+Phase 2's tests that pin the adapter wire (`test_clio_react_wire_byte_equality`,
+`test_clio_react_fold`, the text-protocol parts of `test_clio_react*`) are re-derived on the typed
+`Request`; the ReActV2 differential becomes a semantic differential against 3.4 `ReActV2` with
+native function calling (same tool sequence and outputs for a scripted engine).
+
+**Owner decisions (2026-09-29):** 2b approved — the DSPy 3.4 upgrade is step 0 of the rebuild
+("that was meant to be step 0"). Live validation runs on the **Codex SDK only**; Claude Code is
+tested once development is done. Codex direct: **benchmark stateless (`OpenAICodexLM`) vs
+stateful (WebSocket continuation)** on latency and reported cache hits before choosing (needs
+the owner's Codex direct login). Guided output: **configurable, default off**. The web-fetch leg
+runs against a local `clio-web-search` container.
+
+**Revised phase order (approved)**
+
+- **2b (new, next): DSPy 3.4 + engines + the direct-Request loop.** Pin `dspy==3.4.0`; Codex SDK
+  and Claude Code SDK engines (stateful, structural deltas, a minimal text tool-call block because
+  those transports take one prompt string — declared by the engine, a malformed block is a visible
+  observation); declared providers for OpenAI-compatible endpoints; Codex direct per the owner's
+  decision; `ClioReAct` on `lm(Request)` with native tools; streaming and lm.call via the
+  send-stream bridge + callbacks; `HookedLM` as a wrapping engine; delete the rows marked DELETE.
+- **3** unchanged in goal, built on typed messages: the projection maps clio-core events to
+  `dspy.lm15` `Message`s; thinking continuation stored byte-exact.
+- **4** shrinks: the adapter repairs are deleted in 2b, not turned into switches; remaining fixes
+  (arg repair, path grounding, circuit breaker, observation composition) as recorded switches.
+- **5** shrinks to: Codex direct stateful chain if kept custom, per-provider thinking checks.
+- **6** unchanged.
+
+## Phase 2b sub-plan (`feat/dspy34-engines`, cut from `feat/clio-react`)
+
+- **A. Pin `dspy==3.4.0`** (the version-pin test follows); suite green.
+- **B. Engines** (`src/clio_agent/lm/engines/`), each an `Engine`/`AsyncEngine` pair
+  (`complete(Request)->Response`, `stream(Request)->events`, `close`), raising `dspy.lm15` errors
+  so DSPy owns retries:
+  - **B1 Codex SDK** — from `sdk_transport`/`sdk_stream`/`sdk_stateful`: one prompt rendered from
+    the typed `Request` (system + messages + tools); tools described in the prompt and called
+    through ONE fenced tool-call block the engine parses into `ToolCallPart`s (declared by the
+    engine; a malformed block becomes a visible error observation); SDK reasoning → thinking
+    deltas; usage with cached input; one thread per conversation, only the new messages sent
+    (structural prefix compare on `Request.messages`), typed resets.
+  - **B2 Claude Code SDK** — same shape from `claude_code_litellm`/`_bridge`/`_blocking`; pool,
+    reaper, bounds, cancel, audit kept.
+  - **B3 Codex direct** — an engine over the existing WebSocket transport (stateful); the stock
+    `OpenAICodexLM` (stateless) wired as a second engine for the owner's benchmark.
+  - **B4 LM construction** — `create_lm` builds `dspy.LM(model, engine=…, async_engine=…,
+    num_retries=<CLIO's transient-retry setting>, cache=False)`; OpenAI-compatible endpoints
+    (LM Studio, vLLM, llama.cpp, Ollama, ALCF) as declared providers; hooks
+    (BeforeModel/AfterModel) as a wrapping engine; lm.call logging as an `on_lm_end` callback.
+- **C. `ClioReAct` on `lm(Request)`** — native `FunctionTool`s from the step's `dspy.Tool`s
+  (`submit` is one of them); each step's `Response.message` recorded in CLIO's own codec (text,
+  tool calls, thinking with continuation); the context rebuilt as typed `Message`s from the ARC
+  plane (tool results as `ToolResultPart`, images/PDFs as `ImagePart`/`DocumentPart` hydrated
+  from descriptors); text and thinking streamed live through `send_stream` into the UI lanes.
+- **D. Delete** the rows marked DELETE in the re-review (lenient repairs/re-samples,
+  `IOLoggingLM`, the field-parsing stream extractor, the thinking-split parser, the promote step,
+  CustomLLM shims and registries, LiteLLM prefix wiring, nested retry layers; `lazy_tiktoken`/
+  `tiktoken_vendored` once no route uses LiteLLM). Guided output stays as a configurable
+  switch, default off.
+- **E. Tests** — engine contract tests per engine; the ClioReAct contract re-derived on the
+  typed request (append-only messages across steps); the differential against 3.4 `ReActV2`
+  with native function calling (same tool sequence and outputs for a scripted engine).
+- **F. Live** — Codex SDK only (owner), against the develop baseline.
+
+### B3 result: Codex direct, stateless vs stateful (2026-09-29, owner decision)
+
+Benchmark `opal-work/live/bench/codex_b3.py` (results `D:/t/bench/b3`): three `dspy.LM`
+candidates on `gpt-5.5`, reasoning effort `low`, driven with ClioReAct's request shape
+(append-only across steps and turns) over a deterministic lab toolset with realistic tool
+output sizes; 3 reps, candidates interleaved; a single multi-step turn, a four-turn
+conversation, and a return turn after a 12-minute idle gap. Every candidate answered every
+turn correctly.
+
+| four-turn conversation (medians) | Codex SDK engine | clio direct (WebSocket) | lm15 `OpenAICodexLM` (stateless HTTP) |
+|---|---|---|---|
+| TTFT (median / p90) | 1.92 / 4.13 s | **1.18 / 1.61 s** | 1.49 / 2.52 s |
+| call wall | 4.47 s | **4.21 s** | 5.15 s |
+| turn wall | **6.1 s** | 6.7 s | 8.7 s |
+| model calls (3 conversations) | **21** | 24 | 24 |
+| input tokens / call | 24,469 | 10,667 | 10,656 |
+| cache hit (cached / input) | 81% | 71% | 70% |
+| delta sends | 18/21 | 21/24 | 0 |
+
+- clio's stateful WebSocket beats lm15's stateless HTTP at equal cache hit rate and
+  correctness: TTFT -21% median / -36% p90, turns ~23% shorter. lm15 stateless is not adopted.
+- The SDK carries Codex's own ~14k-token base prompt on every call (2.3x the input); its
+  model took fewer steps here, so its turns finished first despite the slowest TTFT.
+- After the 12-minute gap: SDK continued its thread (98% cached), clio direct reconnected
+  typed (`session_evicted`) at 93% cached, lm15 89% cached.
+- Measured side facts: lm15's async transport pools its connection on the first event loop,
+  which the loop's per-step `asyncio.run` closes (a B4 item: one persistent LM loop);
+  `prompt_cache_key` alone did not make small stateless prompts cache.
+
+**Owner decision:** keep both transports. clio's direct WebSocket engine
+(`providers/codex/direct_engine.py`: lm15's payload and parser over a kept WebSocket with
+`previous_response_id`) replaces the old LiteLLM direct adapter; CLIO may read the local
+Codex CLI login (`~/.codex/auth.json`) when there is no CLIO sign-in; `CLIO_CODEX_TRANSPORT=sse`
+is an explicit stateless-HTTP mode, never a fallback. SDK vs direct is re-measured in the
+live legs before any removal.
+
+## Phase 3 sub-plan (`feat/context-projection`, cut from `feat/dspy34-engines`)
+
+### What the code does today (read 2026-09-29 at `9b0c3281`)
+
+- **Each turn starts from a blank working set.** `ClioReAct` calls `record.reset_working_set`
+  on every forward. That tombstones every live segment of `(session, scope)`, compaction
+  summaries included.
+- **Earlier turns reach the model only as prose.**
+  `session_store._compile_session_conversation_history` wraps the enriched question as
+  `Earlier turns … === Current request ===`. It keeps only text, thinking, error and
+  compaction parts, so earlier tool calls and results never cross a turn boundary. Hook
+  defer/resume then enriches that blob again, which nests the prose inside itself.
+- **Injections are concatenated into the question.** `turn_start_offloop` joins files,
+  resources, context refs, memory hits, task notifications, plan reminder, todos, replan and
+  the prose history. None of them is a recorded event, and the UI only sees a length difference.
+- **Steers and child results are glued onto the next MCP observation string** in
+  `tools/execution.py`. They are never drained on native tools, on steps with no tool call,
+  on failing calls or on `return_raw` calls.
+- **Mid-turn auto-compaction loses the turn's own work.** `compact_session_context`
+  summarizes the session *ledger*, which does not hold the in-flight assistant message yet.
+  It then tombstones every live segment, including this turn's steps. The model loses its own
+  tool results and sees earlier turns twice: once in the prose head, once as the
+  `[earlier context]` summary.
+- **Provider conversations cannot continue across turns.** The head message differs every
+  turn, so every turn opens with `prefix_mismatch` and a full resend.
+- **Smaller defects.** `user` and `system` segments written by `/context/ops` never reach the
+  model. `ContextCompiler` and `ContextRetriever` have no caller. The `/context/compact`
+  docstring is stale.
+- **ARC is present in every app turn.** When clio-core cannot start, `make_arc_store`
+  already degrades loudly and typed to `LocalFSStore`, running the same code paths. `arc is
+  None` only for a bare call with no app or react scope (the CLI, unit tests); then the
+  loop's own step list is its context.
+
+### What changes (in order; each step lands with its failing-first test, then a commit and push)
+
+1. **Failing-first tests** in `tests/test_gact/test_context_projection.py`:
+   - (a) A second turn on the same scope sees turn 1's real steps: messages, tool calls and
+     results.
+   - (b) The question carries no prose history.
+   - (c) A mid-turn auto-compaction keeps this turn's observations available to the model.
+   - (d) A steer at a native-tool step reaches the model as a user message at the next step
+     boundary, and the observation is left untouched.
+   - (e) Prefix stability: across steps and turns, render(n) is a prefix of render(n+1)
+     unless an op landed.
+   - (f) UI vs agent: every agent-visible event appears in the UI projection, and the UI
+     marks injections, compactions, steers and fixes by kind.
+2. **One working set across turns.** Delete `reset_working_set` and its call. The forward
+   records its user message as a `user` segment (actor `user`): the question text plus the
+   user's own attachments (files, resources, context refs) as typed parts. `fold_steps`
+   folds `user` segments, and `system` ops, in order. `_head` goes away because the head is
+   the first projected message. `arc is None` (the bare call) keeps the in-memory step list.
+3. **Delete the prose blob.** Remove `_compile_session_conversation_history` and its caller.
+   Defer/resume stores the user's text only.
+4. **Injections as recorded events.** A new kind `injection` holds
+   `{source, text, actor: "algorithm"}` for memory hits, task notifications, the plan
+   reminder, todos and replan. Each is recorded once, at the prefix edge before the turn's
+   user message, and again only when its content changes (todos are re-recited only after
+   they change). The fold renders an injection as a user-role message headed
+   `[clio: <source>]`. `turn_start_offloop` stops concatenating.
+5. **Steers and child results at the step boundary.** At the start of every step,
+   `ClioReAct` drains the loop inbox and records a `steer` (user role, actor `user`) or a
+   `child_result` (actor = the child agent) before projecting. Delete the drain from
+   `tools/execution.py`. An item still undrained when the loop goes idle becomes a new turn,
+   as today.
+6. **Compaction over what clio-core holds.** `compact_session_context` summarizes the
+   scope's own projection, meaning every live segment it will replace (this turn's steps
+   included), not the ledger. It replaces them with one `summary` through
+   `summarize_segments`, which is already a recorded op with `derived_from`. It still
+   writes the ledger checkpoint row for the UI, and the one-per-turn limit stays. Manual
+   compaction targets the session's primary agent scope explicitly, so it no longer ends in
+   `no_active_scope`. Fix the route docstring.
+7. **Provider conversations across turns.** The conversation key becomes
+   `(session, scope, model)` and a forward no longer releases it. It is released on session
+   release, on compaction and on undo/rewind/delete (all typed `ops_reset`), or on a provider
+   error. Turn 2 is then a delta send on Codex SDK, Codex direct and Claude Code; a test
+   covers this.
+8. **UI projection.** Injections, steers, child results and compaction become message parts
+   on `_events/m`, each carrying its actor and kind (per the gact-tui SPEC part types; add
+   `context_injection` if missing), and gact-tui web renders each as what it is.
+   Undo/rewind/delete in the ledger also record ops on the working set, so the two
+   projections agree.
+9. **Deletions.** Remove each of the following and prove it with a zero-reference grep:
+   - `reset_working_set`
+   - the prose blob and its helpers
+   - the observation-glued drains
+   - the dead `ContextCompiler` and `ContextRetriever`, with their tests
+   - `segments_to_keys` (the context route reads the projection instead)
+   - the stale docstrings
+   - the double enrichment of `enriched_text` on resume
+10. **Verify.**
+    - Full suite, lint and guards.
+    - Live multi-turn on Codex direct and SDK: turn 2 is a delta, and the cache share across
+      turns is reported.
+    - The web UI browser check comes with Phase 4's fix events (DoD 4).
+
+**Platform fallback (superseded 2026-10-01 by the Phase 8 History mode sub-plan; `LocalFSStore` is deleted):** the sanctioned loud
+fallback is the existing typed `LocalFSStore` degrade in `make_arc_store`. It runs the same
+projection code with clio-core search off, and is visible in the UI and in doctor. No
+separate DSPy `History` path is built, since that would be a second context system. Losing
+ARC mid-turn is a typed turn failure (`ContextReadError`).
+
+### Phase 3 progress (2026-09-29)
+
+**Landed on `feat/context-projection`** (`d375955d`, `51999a73`, `75dc84af`; full suite 9956 passed, lint/mypy/guards green): steps 1–7 of the sub-plan, the context-frame part of step 8, and undo/rewind rolling back the agent context.
+
+- **The working set spans turns.**
+  - The per-forward wipe is deleted.
+  - Each forward records its user message as a `user` segment, with media byte-exact.
+  - `fold_steps` projects `user` segments, so turn 2 sees turn 1's real steps and answer.
+  - A lost plane write is a typed turn failure (`ContextWriteError`), no longer a logged warning.
+- **The prose blob is deleted:** `_compile_session_conversation_history` is gone.
+- **One loop for every agent kind.**
+  - The prompt-only agent and the `predict` / `chain_of_thought` blueprints now run `ClioReAct` with no tools; their reasoning is the model's own thinking.
+  - This was needed because those modules never read clio-core, and without the prose blob they would have lost earlier turns.
+  - `ClioReAct` now keeps a DSPy module LM (`get_lm` / `set_lm`), and the variant wrapper forwards it. Before this fix, `dspy.BestOfN` / `Refine` over `ClioReAct` raised "Multiple LMs", so variant blueprints could not run.
+- **Injections are recorded additions.**
+  - `memory_search`, `task_results`, `plan_mode`, `todos` and `replan` return blocks. They are no longer concatenated into the question.
+  - The loop records each block once as a user-role message headed `[clio: <source>]` with `actor: algorithm`, ahead of the turn's user message. It records a block again only when its text changes.
+  - The context frame lists each injection as `kind: injection`.
+- **Steers and child results arrive at the step boundary.**
+  - `ClioReAct` drains the loop inbox before every model call. A steer becomes a user message; a child result becomes a `[clio: task_results]` addition.
+  - The executor no longer appends anything to tool results.
+- **Compaction runs over what clio-core holds.**
+  - It summarizes the scope's own projection, the running turn's steps included, and folds exactly those segments.
+  - A manual compaction compacts every live scope of the session.
+  - If nothing but a lone summary is live, compaction is a typed skip (`nothing_new_since_last_compaction`).
+- **Provider conversations continue across turns.**
+  - With the projection append-only across turns, turn 2 is a delta send on the kept Codex thread.
+  - Test: `test_a_later_turn_of_the_agent_continues_the_thread_with_only_the_new_message`.
+
+**Open:**
+- Step 8, the UI rendering of injections in gact-tui web; this lands with Phase 4's browser pass.
+- BestOfN run scopes (`agent#runN`) now persist across turns, but each run only continues its own line. Proposed: fork each run from the base scope, and record the winner's answer on the base scope.
+- **Undo / rewind follow the ledger:** each scope's working set is rebuilt as it stood before the first rolled-back turn (recorded ops; a rolled-back compaction's originals come back; a kept question keeps its user message).
+- `render_keys` (the old trajectory projection) is still on the context route and in the gact-tui SPEC; it goes with the UI-projection step.
+
+## Phase 4 sub-plan (`feat/recorded-fixes`, cut from `feat/context-projection`)
+
+### Owner decisions (2026-09-29)
+
+**Principle.** The harness works with the agent. It gives the agent freedom and a better environment, informs it, and never silently reinterprets what the agent meant. Every piece of data the harness hands the agent is an **injection**: recorded, visible in the UI, and told to the model.
+
+| Fix | Today | Decided |
+|---|---|---|
+| Oversize tool result | Head + tail JSON envelope; `limits.model_tool_result_chars` = 12000 | The full result goes to a file in the session workspace. The agent is told: "the result is too big; here are the first N chars (N configurable); the rest is in `<file>` for you to explore". |
+| Circuit breaker | Blocks after 2 transient failures (constant) | Configurable limit (default 3). When the limit is reached, the agent is told: "you have failed N times; consider an alternative route; this call will be blocked to prevent looping". The block itself is also told. |
+| Relative output paths | Resolved against the workspace root | Kept. This is semantics (CWD is the reference), not a repair, and is not an injection. |
+| Path-argument repair | Silently substitutes a unique basename match | **Removed.** The call fails with "`<arg>`: `<path>` not found. Did you mean `<match>`?", and the agent decides. |
+| Artifact identity / elicitation notes, tool-media relocation | Appended notes, not recorded | Recorded as injections. |
+| Hook effects (BeforeModel patch/route, AfterModel rewrite, PreToolUse modify/synthesize, PostToolUse rewrite/deny) | Only `hook.invoked` (trace-only) | Recorded as injections, with what changed. |
+
+**UI.** One special **`injection` message part**, used for every harness addition: turn additions (plan reminder, todos, replan, memory hits, task results), fix notices, hook effects and cleanup. gact-tui web and desktop render it with a vaccine/syringe icon, expandable to the exact text the agent got. `PARTS.md` and `SPEC.md` gain the kind.
+
+### Steps (each with its failing-first test, then commit and push)
+
+1. **The `injection` part.**
+   - Minted on `_events/m` by the turn minter with `{source, text, actor: "algorithm", call_id?}`.
+   - The loop mints one whenever it records an addition on the plane: turn injections, steers from CLIO, `task_results`.
+   - Test: every agent-visible `[clio: …]` message has an `injection` part in the UI projection (the UI-vs-agent test from phase 3 step 1f).
+2. **Fix notices as injections.** A tool-result note the harness adds is recorded as an `injection` tied to the call id, in the same text the model got. Test (fix-recorded-and-told): for each fix, the observation carries the note AND the UI has the injection.
+3. **Oversize results spill to a file.**
+   - The file goes under the session workspace's `.clio/tool-results/`.
+   - The agent is told the head N (`limits.model_tool_result_chars`) and the path.
+   - Delete the head/tail envelope.
+4. **Configurable circuit breaker** (`tools.circuit_breaker.failure_limit`, default 3), with the warning at the limit.
+5. **Path repair becomes a suggestion.** Delete the substitution and return the "did you mean" error.
+6. **Hook effects recorded as injections.**
+7. **gact-tui web.**
+   - Render `injection` (syringe icon, expandable).
+   - Remove the old `render_keys` context view in favour of the projection.
+   - Verify in the browser with the Claude in Chrome tools against a `CLIO_WEB_DIR` instance (DoD 4).
+
+### Phase 4 progress (2026-09-29)
+
+**Landed on `feat/recorded-fixes`**, in `f171629f`, `fc561d5f`, `81125901`, `7eb2139a`, `eab64725` and `47f9a3a5`:
+
+- **Path repair became a suggestion.** The call runs exactly as the agent asked. If it fails, the result (or the raised error, as a note) carries `[clio: path_hint]` listing the same-named files that do exist. The silent substitution is deleted. It could redirect an output file the agent meant to create.
+- **Circuit breaker.**
+  - Configured by `tools.circuit_breaker.failure_limit` / `CLIO_TOOL_FAILURE_LIMIT` (default 3; 0 turns it off).
+  - The failure that reaches the limit tells the agent to take an alternative route.
+  - A blocked call says what failed and why it was not run.
+- **Oversize results.**
+  - The full result goes to the session's tool-output folder.
+  - The agent gets the head (`limits.model_tool_result_chars`) plus the file path to explore.
+  - The head/tail envelope is deleted.
+  - Bounding runs on the calling thread, so the file lands in the session workspace.
+- **The `injection` part.**
+  - Every CLIO addition, and every note the harness adds to a tool call, is minted as `injection {source, text, call_id?}` with the exact text the agent got. This covers turn additions, the path hint, the circuit breaker, spilled results and hook effects.
+  - It serializes to v3 as `type: injection`.
+  - Tests:
+    - UI vs agent: every `[clio: …]` message the agent sees has an injection part.
+    - Fix recorded and told: every executor note is collected with its call id.
+- **Hooks.**
+  - PreToolUse changing or answering a call, and PostToolUse replacing or objecting to a result, are told to the agent in the result and recorded.
+  - BeforeModel route, patch or answer, and an AfterModel rewrite, are recorded for the user.
+- **gact-tui web** (`feat/injection-parts`, `91df1449`).
+  - It renders the `injection` block with a syringe icon, named in plain words and expandable to the exact text.
+  - The contract is documented in `contract/PARTS.md`.
+  - The block is a client-local schema (as `compaction` is). Adding it to `clio-schemas` needs a schema release, which is the owner's call.
+
+**Found live and fixed:**
+
+- **A Codex/Claude Code bind right after launch** answered 401 "models are being checked". The bind now waits, bounded, for the startup check. A Codex bind now checks the models itself when nothing has, as the Claude Code bind does.
+- **A regenerated plot failed a later turn.** Cross-turn history re-read an old `view_image` file whose hash had changed. `view_image` and `view_pdf` now snapshot the viewed bytes, and history reads the snapshot. Media that history can no longer show becomes a `[clio: media_unavailable]` note, never a failed turn.
+- **A Codex WebSocket 1012 (service restart) failed a turn** with a raw error. Before any output, the call reconnects and resends. Mid-reply, it is a clear `ServerError`.
+
+**Live, phase 3 tree, Codex direct (medians of one run; develop baseline in brackets):**
+
+| scenario | wall | model calls | cache share | full sends |
+|---|---|---|---|---|
+| earthscope | 216 s [397] | 18 [18] | 91% [62%] | 1 of 18 (the only turn-boundary resend is gone) |
+| deep-researcher | 1362 s [2538] | 164 | 88% [63%] | 10 of 164 |
+| data-semantics | 239 s [430] | 28 [34] | 76% [70%] | 4 of 28 |
+| opal | 1085 s | 50 | 93% | 3 of 50 |
+
+- **Factorio evals:** 21 failure lines [25].
+- **SDK transport on the same tree:** deep-researcher made one model call, never called a tool, and claimed "the delegation tool failed". This is the SDK text-protocol tool-use weakness seen earlier.
+
+**Open:**
+
+- The Go TUI rendering of `injection`, last per the owner.
+- ~~Removing `render_keys` from the context route and the SPEC.~~ Done (see below).
+- ~~The web UI browser verification (DoD 4).~~ Done (below).
+- Whether `injection` goes into a `clio-schemas` release.
+
+### Web UI verification (DoD 4), 2026-09-29
+
+**Setup.**
+- gact-tui web at `feat/injection-parts` (`91df1449`), served same-origin (`CLIO_WEB_DIR`) by `feat/recorded-fixes`.
+- Isolated instance (`live/serve_ui4.sh`, port 17995), driven in Chrome with the Claude in Chrome tools.
+- Model: Codex direct `gpt-6-sol`. Realistic prompts on the OPAL APPL-CORE export.
+- The automation window is not on screen, and the web client pauses its live stream for a hidden tab (`use-session-live-stream`, by design). The check therefore marks the page visible and dispatches `visibilitychange`, the event the client listens for. The same test against `develop` behaves identically.
+
+**Verified live, and again after reload:**
+
+| Item | Result |
+|---|---|
+| Thinking streams | The reasoning summary shows as a Thinking block (after fix `f190b47a`). |
+| Concurrent tool calls | One step's calls are grouped ("Bash +4"). |
+| Approvals | The approval card appears live; "Allow for session" continues the turn. |
+| Injections | "… gave the agent: Large result saved to a file" (syringe icon) shows live; expanded, it is the exact text the agent got. |
+| Steer | A steer queued mid-turn shows as a user message and changes the answer: "keep it short, and say how many plants" → "360 distinct plants". |
+| Final answer | Renders as the message body live, not as an activity row (after fix `de7d1a6f`). |
+| Multi-turn | A follow-up ("which of those measurements…") uses the earlier turn without re-asking. |
+| Cancel | Stop interrupts within about 3 s; the tool row shows "Interrupted". |
+| Compaction | The "Context summarized · Requested" checkpoint shows live; the next question is answered correctly from the summary with no tool call. |
+| Reload == live | 177 page-text lines each. The only difference is the steer's timestamp: live shows when it was sent, reload shows when it was consumed. |
+
+**Fixed during the check** (each with a failing-first test):
+- `99aa6dc6`: an agent new to the conversation starts from its earlier turns.
+- `de7d1a6f`: a part that changes after it streams reaches live clients whole. The promotion and annotations published a patch, which v3 turned into an empty block.
+- `f190b47a`: Codex direct asks for its reasoning summary.
+
+**Open findings:**
+- **gact-tui:**
+  - The composer label shows "Codex · SDK / Sol" after Direct / Sol is chosen, although the server binds `variant: direct`. The label resolves by model id.
+  - Activity titles show raw markdown (`**…**`).
+- **clio-core:** a hard-killed daemon leaves a partial `storage.bin`. The next start's capacity preflight refuses it and ARC degrades (loudly) to LocalFS. On Windows every forced stop does this.
+
+### After the UI check (2026-09-29)
+
+- **gact-tui findings fixed** (`feat/injection-parts`):
+  - `323a79b5`: the composer names the session's own transport. The server side is `b3cf96c3`: v3 sessions carry `model_transport`.
+  - `44a2afa5`: activity titles drop inline markdown.
+- **`render_keys` removed.**
+  - `eb9f50fe` (clio-agent) and `403b93fb` (gact-tui SPEC and clients): the context state carries `messages`, the scope folded exactly as the loop folds it (`context_view.context_messages`).
+  - `segments_to_keys`, `SegmentStore.render_keys` and `ARCMemory.render_segments_keys` are deleted, along with the tests of the dict's shape.
+  - A fidelity fuzz over `fold_steps` replaced them. It found a tool call with no open step losing its name and arguments; that is fixed.
+- **Folded history marks retired atoms** (`9c58dc7c`). `list_segments(include_tombstoned=True)` on the folding store listed compacted or deleted atoms as `live`. It was found by the live compaction probe.
+- **Live ARC probes** (`f03f49a9`).
+  - The `CLIO_RUN_LIVE` tests still called deleted ReActV2 methods. Being skipped, they had gone unnoticed since phase 2.
+  - They now drive `ClioReAct` with one real call over the folded plane. A live-marked test runs the operator's configured model, where it was pinned to the unit-test model.
+  - 62 of 62 pass on Codex direct: needle recall while present, gone after delete, as-of time travel, and a real auto-compaction.
+- **Docs** (`8a68f79d`): `docs/tui/08-semantics-and-lifecycle.md` describes the cross-turn context, injections and fix notes; `docs/providers/claude_code.md` notes the session carries over across turns.
+- **Operator notes** (`fcf95cce`) for `tools.circuit_breaker.failure_limit` and the spill limit.
+- **Full suite:**
+  - At `fcf95cce`: 9980 passed, 1 failed (the missing operator note, fixed in that commit), 100 skipped. The same ~100 skips have been there since phase 1: optional dependencies and platform- or live-gated tests.
+  - At `8a68f79d` (rerun with `-n 2` after the host stopped the first attempt for low memory): **9989 passed, 0 failed**, 100 skipped.
+    - The skips are all gated: 58 live (the 55 live ARC ones pass live on Codex direct, see above); 21 platform (Linux-only deploy / Landlock / setpriv, Windows symlink / POSIX bits); 9 relay configuration; 1 `flowcept` not installed.
+  - Guards (size ratchet, silent fallbacks, env reference) and ruff are green.
+
+### Deletion inventory (DoD 6), at `5913d866`
+
+**Lines, merge-base `c7a87d73` (develop) to each stacked branch:**
+
+| branch | files | + | − |
+|---|---|---|---|
+| `feat/codex-sdk-stateful` | 16 | 1,464 | 410 |
+| `feat/clio-react` | 149 | 5,778 | 7,674 |
+| `feat/dspy34-engines` | 262 | 11,941 | 21,126 |
+| `feat/context-projection` | 299 | 13,094 | 21,834 |
+| `feat/recorded-fixes` (the chain's tip) | 344 | 15,305 | 23,091 |
+
+At the tip: `src` +6,144 / −11,226; `tests` +8,891 / −11,402; the rest +270 / −463.
+
+**Zero-reference greps over `src tests scripts`:** `instrumented_forward`, `_RetainingReActV2`, `_RetainingReAct`, `reactv2_upstream`, `reset_working_set`, `_compile_session_conversation_history`, `segments_to_keys`, `render_keys`, `_format_trajectory`, `REPEATED_TRANSIENT_FAILURE_LIMIT`, `_repair_missing_file_arguments`, the ChatAdapter name spoof, the per-executor `_call_lock`.
+
+- `loop_inbox_drain` remains, as the new step-boundary drain: arrivals become their own user messages.
+- No `CLIO_*` variable or config key selects an old loop, trajectory or history path (`docs/ENVIRONMENT.md` checked).
+
+## Phase 7: session bring-up off the first message (`feat/session-bringup`, cut from `feat/recorded-fixes`)
+
+**Owner (2026-09-30):**
+- 248 s against 397 s is not enough; iowarp/clio-coder is much faster.
+- The start of a session is a big waste: CLIO waits for the first message to initialise the session and to start its MCP servers.
+- Start them early, and block only when a call needs a server that is still starting.
+- This supersedes the #1237 ruling ("activation mounts nothing eagerly").
+
+**Measured (earthscope, Phase 4 tree):** 78 s of the 206 s first turn passed before the first model call (`blueprint.resolve` 74 s):
+- The four declared servers mounted in a serial loop (`builders.py`), after the first message.
+- Each was spawned twice, once for a listing client and once for the persistent connection, at ~4 s per spawn through uv.
+- About 40 s went to discover-probe timeouts on a cold pandas server.
+- The launcher-cache file lock serializes cold spawns. It guards a real uv cache race (astral-sh/uv#11694) and stays.
+- Field report (Utah CHPC, via the patch-release session): "Setting up session" after every answered question. This is the same cost, because the idle reaper (120 s) closes the servers while the user answers.
+
+**What clio-coder does** (read at `4f03d2c`):
+- one long-lived agent per conversation;
+- the system prompt and tool list frozen per session;
+- MCP servers spawned on first use, from a 24 h disk listing cache;
+- about 8 tools, the rest behind a gateway tool;
+- reasoning `low` by default.
+
+**Landed:**
+- `7cd7e324`: a turn waits for tool listings, not connections. A server connects when a call needs it, and the executor's per-namespace connect joins concurrent callers.
+- `c13de240`: creating a session or activating a blueprint starts its servers (the blueprint's, plus always-load services) concurrently in the background, controlled by `tools.mcp.session_warmup` (default on).
+- `c8d07ffa`: every turn start kicks the warm-up, once per session at a time. This covers a resume after the reaper closed the servers.
+- `55cea154`: spawned FastMCP servers skip their banner and its pypi.org update check.
+
+**Result (earthscope, cold listing cache as the bench always has):**
+- `blueprint.resolve`: 74 s → 24 s.
+- First turn: 208 s → 166 s.
+- Run: 248 s → 222 s.
+- With a warm listing cache (normal use, 24 h), the first model call waits on no server at all.
+
+**Profiled on our own tree (owner, 2026-09-30: no more develop baselines; only semantics-preserving wins):**
+
+Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~2 s TTFT each) + tools 26 s + harness ~11 s.
+- Five steps were single `load_skill` calls. Five were one A2UI component schema each, followed by a 26–64 s decode of the surface JSON. The owner's `feat/a2ui-data-everywhere` branch targets both: multi-file `load_skill`, `$defs` inlining, `dataUri`.
+- One mid-chain call got 0 cached tokens despite a correct `prompt_cache_key` and `previous_response_id` delta. This is the server's cache; we count it per run.
+- Per-turn prologue: py-spy across all threads puts the YAML frontmatter parse of every blueprint, expert and pack at ~0.5 s per turn (now memoized on the text). The rest of the prologue is ~0.5–1 s: skill scans, blueprint metadata.
+- Model speed varies ~2x between identical runs (110 s vs 218 s), so single runs judge only model-independent phases.
+
+**Landed since:**
+- `c3cc7e93`: a session waiting on its user keeps its servers (`tools.mcp.hold_while_waiting_s`).
+- `7339ece0`: frontmatter memoized.
+- `f34dde7a`: an agent with tools is told once (an injection) that a step may call several. On its own this did not change the serial skill loads, because they were dependent fetches.
+- `4325474f`: clio-kit servers skip the shared uv-cache lock. clio-kit isolates its own cache and environments, so the lock only serialized their starts.
+- `28463f10`: one concurrent mount path for a turn and the warm-up.
+
+**Result:** turn start to first model call on a cold listing cache went from 28 s to 6.3 s (two runs: 6.39 and 6.33 s). Follow-up turns take 1–4 s.
+
+**Researched (progressive tool disclosure):**
+- Any mid-conversation tool-list change resets every stateful transport: Codex direct `prefix_mismatch`, and the Claude Code and Codex SDK sessions restart.
+- A disclosure design must therefore keep the tool list byte-identical: a category index plus stable `tool_info`/`call_tool` tools. That is the MCP client guidance too.
+- It removes the listing wait from the first call. It saves little TTFT while the cache hit rate is ~90%.
+- It waits on the owner's go-ahead.
+
+**Chain tip live run** (`feat/session-bringup` at `f0a1eaeb`, Codex direct, 2026-09-30):
+
+| Leg or agent | Result |
+|---|---|
+| Synthetic session, compaction, goal judge, stress | All pass (109 / 156 / 141 / 108 s) |
+| deep-researcher | 1435 s, 85 calls, 78% cached, normal end |
+| data-semantics | 351 s. Model time was 294 s of it over 25 calls: slower model service this session. Tools and harness took 11-17 s per turn. |
+| factorio-flat | 16 evaluator lines. 8 were a bench-harness bug (it read no agent from `agent_ref`), now fixed. The real 8 are `useful_clarification` (no question asked) and `focused_skill_and_delegation` (no skill loaded or delegation). `parallel_investigation` fanned out 7 children. |
+| opal | First turn hit the harness's 1 h cap. Child sessions ran several 400-550 s shell commands over the full export; nothing on this branch touches shell execution. |
+
+**Full suite on the tip:** 10014 passed. The only error is a pre-existing leaked background turn that surfaces with `-W error::PytestUnraisableExceptionWarning`: the Phase 4 tree leaks identically in the same subset. It is a turn that escapes the runner's shutdown drain, plus a ledger `ContextVar` reset from the wrong context when the abandoned coroutine is collected.
+
+**Web UI re-verified on the chain tip** (2026-09-30):
+- Setup: `live/serve_ui5.sh`, `feat/session-bringup` serving gact-tui `feat/injection-parts` at `be1f6451`, Codex direct. Driven in Chrome with the Claude in Chrome tools, the hidden-tab visibility override as in phase 4.
+- Verified live:
+  - thinking streams, with activity titles as plain text (no raw `**`);
+  - the composer names the bound transport ("Codex · Direct / Sol");
+  - the new `tool_use` injection row;
+  - concurrent tool calls grouped ("Bash +1");
+  - the approval card;
+  - a mid-turn steer shows as a user message and is honored ("File count: 135,086");
+  - Stop interrupts within 3 s, with "Interrupted" on the step;
+  - the page returns to idle ("No active work") after each turn, steer turns included;
+  - reload == live: 158 conversation lines each.
+- Differences, both cosmetic client-side items for gact-tui:
+  - The status bar's token counter shows the running total live and 0 after a reload.
+  - A thinking body can still show its raw `**heading**`; only the title was stripped.
+
+**Decisions and follow-ups (owner, 2026-09-30):**
+- **A2UI (`feat/a2ui-data-everywhere`): no rebase.** It reaches this chain through `develop` and is measured then.
+- **Codex SDK: fixed rather than dropped.**
+  - The runtime switches off every MCP server and plugin in the user's `config.toml` by name (`<table>.<name>.enabled=false`; Codex's `-c` splits on dots and keeps quotes, so names ride bare). An unreadable config or a dotted name is a typed failure.
+  - Live earthscope over the SDK ends every turn normally (`4780f2aa`).
+- **`injection` in clio-schemas:** `InjectionMessageBlock`, 0.5.2, iowarp/clio-schemas#18.
+- **Leaked test turn: fixed** (`2869c596`).
+  - Cause: the SDK suite's `StreamingASGITransport` never ran the ASGI lifespan, so the app's shutdown never drained turns.
+  - Its reproducing subset (3504 tests, run with unraisable warnings as errors) is now clean.
+- **Draft PRs:** clio-agent #1538-#1544, iowarp/gact-tui#510, iowarp/clio-schemas#18, iowarp/clio-kit#388. Merge after owner review.
+- **Tool-category index: not built.**
+  - The measured trade: every category costs an extra model round trip, about 2-3 s, in every conversation.
+  - It would save a first-call listing wait of about 6 s, which is 0 when listings are known and hidden by the background warm-up in real use.
+  - Round trips are the largest cost in the profile.
+- **Instead, exact listings** (`e07a614f` plus iowarp/clio-kit#388).
+  - `clio-kit mcp-server-identity <server>` prints the hash of a server's embedded source and lock in 0.3 s, starting nothing.
+  - A cached listing stored with that identity is reused at any age while it matches and dropped the moment it differs, replacing the 24 h TTL for clio-kit servers.
+
+**Next:**
+- One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
+- The reaper keeps a session's fleet while the session waits on a question.
+- Owner decisions: reasoning effort for tool-routing steps; a smaller tool set behind a gateway tool.
+
+## Phase 6: extract and BestOfN lines (`feat/react-extract`, cut from `feat/session-bringup`)
+
+### DSPy's extract, config-driven
+
+This follows the owner principle and amends `react-loop-completion-2026-09.md`. The code is in
+`gact/agents/clio_react_extract.py`.
+
+- **When it runs.** A loop that took more than `agents.react_extract.after_steps` model steps
+  (default 3; `agents.react_extract.enabled`, default on) ends one of two ways:
+  - `max_iters`, which has no answer at all;
+  - a direct answer on a signature that declares further outputs.
+- **What it does.** Literally DSPy's extract fills the missing outputs:
+  `ChainOfThought(inputs + missing outputs + trajectory)`.
+- **What it never does.**
+  - It never replaces the answer the model wrote, which the user already saw.
+  - `submit`, a yield, `context_window_exceeded`, a plain `question -> answer` direct answer and
+    a short loop never extract.
+- **What it records.** `expert.extract.completed` names the extracted fields in
+  `payload.extracted`.
+- **Who it serves.** Mostly long subagents handing their result to the parent; the main
+  agent rarely reaches it. The turn takes `pred.answer` as the final message, and the parent
+  reads the child's final message. So a child that hits its step cap now hands the parent a
+  summary extracted from its trajectory; before, it ended in `empty_response` with nothing
+  for the parent. Extra typed outputs reach the lifecycle event, not the parent's text.
+  This is why the extract is a config switch.
+- **Tests.** `tests/test_gact/test_clio_react_extract.py` covers each case above and the off switch.
+
+### BestOfN / Refine keep one conversation line
+
+Tries run on run-keyed scopes (`agent#runN`), which stops one try from seeing another.
+
+- **The problem.** Across turns, try N continued its *own* line from the previous call, a line
+  the user never saw.
+- **Fork.** As a try starts, its scope's previous line is retired (a recorded delete) and the
+  base scope's working set is copied in.
+- **Winner.** After selection, the winning try's new segments are appended to the base scope.
+  A winner that compacted its fork hands the base its whole working set instead.
+- **Code and tests.** `gact/agents/variant_lines.py`; `tests/test_gact/test_module_variant_lines.py`.
+- **Sabotage test.** The existing test now pins the new consequence of collapsing the run keys:
+  the base continues from the *losing* try's line.
+
+### Relay onto MCP tasks: not done in this campaign (owner confirmed 2026-09-30)
+
+`mcp-client-unification-2026-08.md` makes the relay work Campaign 2. The owner ruled that it
+is "a SEPARATE follow-on plan-execute process" with "its own kickoff, plan pass, and issue tree".
+It closes letters (b) and (c):
+
+- IOR, Darshan and ParaView artifact capture, proven on the clusters;
+- re-verification under production enforcement on both clusters;
+- the relay v1.7.0 release.
+
+None of it can be verified without the relay deployment and cluster access. The 9 relay
+configuration tests skip here for that reason. Nothing in this campaign blocks on it, and
+nothing in it changes the relay's current special path.
+
+### Rebase onto develop (2026-09-30, develop `96c3e6b2`)
+
+Develop moved 44 commits:
+
+- a2ui data by reference;
+- the clio-schemas 0.5.1 pin;
+- the `load_skill` `$defs` fix;
+- typed Claude Code / Codex plan-limit and safety-filter errors (#1529).
+
+The chain was rebased with `--update-refs`, and every commit subject is kept. Conflicts:
+
+| Where | Resolution |
+|---|---|
+| `stream_failures.py` | Develop's `_terminal_signal_error_info` and reason exports kept. The deleted streamed error path stays deleted: the chain's one `forward_error_info` already runs the terminal-signal check first. |
+| `streaming.py` | Develop's message change was inside the deleted `_try_streamed_forward`, so the deletion stands. |
+| `claude_code_litellm.py` (deleted) | Develop's `model=` on `plan_limit_from_rate_limit_event` is carried onto `claude_code_engine.py`. The engine's result path already uses `raise_classified_result_error`, so it gets develop's safety-refusal classification. |
+| `io_logging.py` (deleted) | Develop's "never retry a terminal signal" holds without it. DSPy 3.4 retries only its own retryable error types, and the managed-call boundary maps an engine's typed error to `LMUnexpectedError`, which is never retried. Develop's LiteLLM-shaped retry tests became tests through DSPy's real `error_boundary`. |
+| Tests | Develop's plan-limit and safety-refusal tests call `forward_error_info` (one `--fixup` autosquashed into the Phase 2 commit, so that branch is green too). |
+| Docs and ratchets | Develop's version (0.9.4.23) with the dspy 3.4.0 pin. |
+
+**Found after the rebase.** Develop's #1529 fix covered only the retry layer it knew
+(`io_logging`). On the chain, the Codex **SDK** engine mapped a plan-limit failure to
+`ServerError`, which DSPy retries. A hit window was re-issued with backoff and reached the
+user as a generic error. The direct engine already raised the terminal `CodexPlanLimitError`.
+The SDK engine now does the same: a failing-first test, autosquashed into the commit that
+introduced its error mapping. Develop's Codex LiteLLM-shaped retry test became a DSPy
+retry-rule test.
+
+**Claude Code engine, live on Sonnet (2026-09-30).** Both probes pass:
+
+- A mid-loop delta send continues the same SDK session with no 400.
+- With thinking on, call 1 streams thinking and call 2 is a delta on the same session. The
+  session holds the signed thinking blocks, so pass-back needs no re-send.
+- Adaptive thinking is the model's own choice. On an easy question with CLIO's short system
+  prompt, Sonnet does not think at all (verified on the bare CLI with the SDK's exact flags),
+  so the probe asks a question that needs reasoning.
+
+The chain is now strictly linear. Before the rebase, `feat/clio-react` held two commits the
+tip carried only in substance; it is now the rebased "load ClioReAct lazily" commit.
+
+| Branch | Commits over develop |
+|---|---|
+| `feat/codex-sdk-stateful` | 2 |
+| `feat/clio-react` | 4 |
+| `feat/dspy34-engines` | 15 |
+| `feat/context-projection` | 18 |
+| `feat/recorded-fixes` | 38 |
+| `feat/session-bringup` | 52 |
+| `feat/react-extract` | 54 |
+
+On the tip, `git diff --shortstat develop...` is 17,353 insertions and 23,408 deletions
+(`src/`: 7,025 and 11,408).
+
+## Phase 8: clio-core fail-stop (`feat/clio-core-failstop`, cut from `feat/react-extract`)
+
+**Why.** The owner's first principle is typed failure over fallback, and the only sanctioned
+fallback is DSPy `History` when the platform cannot run clio-core at all. The ARC layer was never
+audited against it. On 2026-09-30:
+
+- a benchmark silently ran on local files, because the clio-core file-tier preflight failed;
+- a read-only inventory then found 50 defects that can change the agent's context or lose data
+  in clio-core, 18 observability-only and 14 harmless. None is sanctioned.
+
+The test suite ran ARC on local files by default, so it proved nothing about clio-core. The
+guard `check_silent_fallbacks.py` reported 0 while 583 broad excepts were hidden from it by
+`noqa`.
+
+**Done so far (each with a failing-first test):**
+
+| Defect | Fix |
+|---|---|
+| Any clio-core init failure made local files the store (and `CLIO_ARC_STORE=local` was selectable) | clio-core is the only store: `ArcStoreUnavailableError` with a typed reason. `LocalFSStore`, the degrade record, its doctor row and every "set `CLIO_ARC_STORE=local`" remedy are deleted. |
+| clio-core kept nothing across a daemon restart: the seeded and harness configs left the file tier volatile | The file tier is `persistence_level: "temporary"`. Verified on iowarp-core 2.2.1: survives a clean restart, and a crash once the periodic flush has run. Existing seeded configs are upgraded in place; a non-durable user config is a typed error; a restart test does a real write, stop and read back. |
+| Release erased the session's `_events` family (event log and transcript atoms) whenever a durable trace was on, which is the default (`file`) | Release drops only the in-memory copy. The erase paths and the trace gate are deleted. |
+| A failed event persist was logged and still sent to trace and SSE (24 `blueprint.install.reason` lost in 11 live runs) | The persist failure raises. This surfaced blueprint install, uninstall and activation doing clio-core writes on the event loop; they now run off the loop. |
+| Context search on clio-core (no indexer chimod, #905) answered 200 with empty hits | `SearchUnavailableError`, and a typed 503 on the route. |
+| Doctor and status still offered a local mode | clio-core is always required; the local rows and skips are removed. |
+| A write clio-core refused left memory holding context clio-core never stored, or dropped the segment | A failed persist discards the scope's in-memory copy (the next read reloads clio-core) and raises `ArcPersistError`. |
+| A slow but healthy daemon was a hard failure: the post-attach probe after 10 s, every RPC after 30 s | A stall is a whole window in which the daemon makes **no progress** (neither its CPU time nor its I/O advances); a working daemon is waited for, up to `arc.liveness.max_wait_s` (600 s). |
+| Every store construction re-ran the post-attach probe, and a failure there released the process's attach and stopped the shared daemon | The probe runs once per attach. |
+| The daemon stop gave 3 s (1 s once the helper exited) then hard-killed, mid-flush under load: records lost or read back corrupted | The stop waits on the daemon's own progress and kills only a stalled daemon, loudly. A record survives an explicit stop and a normal process exit. |
+| `notify_tool_observer` swallowed observer failures, and the external-MCP route ran its observer on the event loop: its `tool.call.*` events were lost | Observer failures propagate; the route records off the loop. |
+| A finished child's result was consumed (written to clio-core) on the event loop: refused, and the swallow hid it, so the parent's next turn never saw it | Consumed on the turn executor. |
+| A misplaced decorator from the namespace change: `get()` lost its liveness guard and every tag lookup nested a pooled RPC (pool deadlock under concurrent first writes) | Fixed; a test pins that `tag()` is pure and every native op keeps its guard. |
+
+Store namespaces (`<ns>/<kind>` tags; the default empty namespace keeps existing keys) give every
+test its own namespace on the worker's private daemon.
+
+**The suite now runs on clio-core.** Every test runs ARC on its worker's private daemon, in its own
+namespace. A data dir is a namespace, and app lifespans never stop the worker's daemon.
+- 2026-10-01: **10,214 passed** in 21 min, the same time as on local files. The one failure is the
+  HPC MCP integration test, which passes alone; its MCP discovery probe uses fixed timeouts
+  (next item).
+- Several real bugs were hidden by the swallows and surfaced only once tests ran on clio-core:
+  the observer events, the child-result consumption, and the activation and install event writes.
+
+**Also done (2026-10-01):**
+
+| Defect | Fix |
+|---|---|
+| The MCP discovery probe failed a slow server on fixed timeouts | A timeout while the server's process tree is still working does not spend the retry budget, up to `tools.mcp.max_wait_s` (600 s). |
+| The seeded file tier was a fixed 50 GB (allocated up front on Windows), and the preflight then refused a smaller disk on the first run | The seed is 10% of the target disk's free space, clamped to 2–50 GB; an explicit `arc.cte.file_capacity` wins. |
+| The loop ran without ARC on its own in-memory step list, and `Prediction.messages`, the extract and BestOfN tries read that list | No plane is `NoContextStoreError` before any model call. The private step list is deleted: the model's input, `Prediction.messages`, the extract and the variant tries all read clio-core. |
+
+**Remaining.**
+
+- *The rest of the inventory:*
+  - the loud DSPy `History` mode (sub-plan below);
+  - context rebuilt from the transcript file;
+  - stale-id edits silently not applied;
+  - compaction failures swallowed;
+  - the Claude Code CLI's own auto-compaction not detected.
+- *The ratchet* counts `noqa`-hidden broad excepts per file.
+- *Then the proofs, on real clio-core:*
+  - an edit in clio-core reaches the agent on each transport and reaches the UI;
+  - the per-step cost of clio-core in the loop;
+  - a session survives a restart and a move to another machine;
+  - suites, the browser UI check and the live legs again.
+
+### Found live in the History mode browser check (2026-10-01)
+
+Fixed:
+- A History mode server still answered `/v1/health` 503: the `clio_core` daemon row read
+  "not listening" as down. Both clio-core rows now report the DEGRADED History row.
+- A CLIO-seeded config from before the disk-based sizing kept a fixed 50 GB tier; with
+  42 GB free the agent never started. An unallocated old seed that cannot fit is resized
+  in place.
+
+Fixed after the check (2026-10-01):
+- **The file-tier preflight refused a store clio-core was serving (second start failed)**
+  (`22b92b30`). Measured on iowarp-core 2.2.1 (Windows): 3 GB and 6 GB tiers both start at
+  1 GiB, and writing ~1.4 GB through the store grows the file to 2 GiB with every blob read
+  back. The capacity is a growth ceiling on every platform: a fresh tier needs its first chunk
+  plus the reserve, and an existing backing file is reused. The July rule ("Windows allocates
+  the full capacity") is deleted.
+- **The health `lm_provider` row probed LM Studio on a Codex-configured server** (`82b98356`):
+  with no bound LM, health and the CLI doctor now probe the boot config the agent is built from.
+- **`/v1/health` was 503 before clio-core started** (`4ebea3c3`): a daemon not listening is
+  down only after a failed attach, a lost daemon or a crash record; otherwise DEGRADED
+  `clio_core_starting`.
+- **The ReAct-step and expert-lifecycle emitters swallowed every failure** (`c9604c0c`):
+  removed, so an event clio-core cannot record fails the turn.
+- **The ratchet** (`8b914c46`): `check_noqa_swallows.py` counts BLE001/S110/E722 with
+  `noqa` ignored, per file, in CI. The baseline (558 in 226 files) only lowers.
+
+Open (next):
+- ~~The browser renders no live updates on this branch~~ — not a product bug. The automation
+  window was not on screen (`document.visibilityState === "hidden"`), and the web app by
+  design opens no live stream while hidden (`use-session-live-stream.ts`), catching up on
+  reconnect. Verified: the v3 SSE stream carries the whole turn, and every captured frame
+  reduces cleanly in the client's own `reduceTransportFrame`. Live UI checks need the browser
+  window visible.
+- The semantic trace writer drops an event on a write error (with the rest of the inventory).
+
+**The rest of the inventory, re-located in code (2026-10-01), in fix order.** Ranked by how
+directly each can change what the model sees; each fix lands with a failing-first test.
+1. *Claude Code CLI auto-compaction is invisible.* The engine handles `StreamEvent`,
+   `AssistantMessage`, `ResultMessage` and `RateLimitEvent`. Every other SDK message, including
+   the `SystemMessage` `compact_boundary`, returns `[]` with no audit. The engine keeps one CLI
+   session per conversation and sends deltas, so a CLI-side compaction changes the model's real
+   context behind clio-core. Fix: a `compact_boundary` resets the conversation (typed, audited);
+   an unknown message kind is audited.
+2. *Context ops on stale ids are silently not applied.* The fold store's `delete`, `summarize`
+   and `replace` (production, `working_set_fold.py`) skip ids that are not live with no log,
+   and `POST /context/ops` answers `applied: true, tombstoned_count: 0`. Fix: a typed
+   `StaleSegmentIdError`, 409 on the route.
+3. *The fold tolerates a broken record.* `fold_steps`:
+   - skips unknown kinds;
+   - turns an orphan observation into a `[earlier context]` user message;
+   - re-matches an unknown `call_id`;
+   - leaves a call with no result in the context;
+   - defaults missing ids and names.
+
+   It also runs outside the typed `ContextReadError` wrapper. Fix: typed failure for each case
+   (`ContextFoldError`). The recorder's failed-step note becomes a CLIO addition
+   (`turn_escalated`), not an orphan observation.
+   - Done (`dcea7e43`): `POST /context/ops` folds the plane as the op would leave it, and
+     refuses an incoherent edit (409 `context_fold_failed`, nothing applied).
+     `/context/state` and compaction report an unfoldable plane typed, never as an untyped
+     500. Internal writers (rollback, variant lines, compaction) operate on whole steps.
+4. *Compaction:*
+   - an empty LM summary replaces the working set;
+   - a manual compact during a turn folds clio-core and then discards the checkpoint
+     (`checkpoint_already_staged` is checked after the fold);
+   - the staged checkpoint lives only in memory, and a failed flush is audited and lost;
+   - auto-compaction never fires and audits nothing when real token counts are missing;
+   - an estimated prompt usage is used as if it were real.
+   - Done (`3c615186`):
+     - an empty LM summary is a typed `empty_summary`, applied before any fold;
+     - "already staged" is checked before the LM call and the fold;
+     - a failed automatic compaction fails the turn typed (`AutoCompactionFailedError`,
+       nothing folded);
+     - a missing token count is audited.
+   - **Superseded (owner, 2026-10-01):** Phase 11b records the summary where it happened, with the fold; no staging. Before: a failed flush of a staged checkpoint is still audited and the
+     checkpoint dropped. The #1339 review (F1) chose this so a turn whose answer is already
+     persisted never fails. The fold is in clio-core, but the transcript loses its compaction
+     marker, so the UI does not show the compaction and a rollback cannot find it. The
+     options are to fail the turn after its answer, or to keep the entry staged and surface
+     it until it lands.
+   - Done (`7599c811`): only a measured token count decides; an estimate is ignored and the
+     skip is audited.
+5. *Context silently rebuilt from the transcript file:*
+   - `carry_over` re-seeds any scope whose `list_segments` comes back empty, and a missing
+     clio-core record reads as empty (`if raw else []`);
+   - `materialize_ledger` repairs a divergent atom lane from the file, so the file wins over
+     clio-core;
+   - malformed ledger rows are skipped.
+
+   Read again on 2026-10-01: `carry_over` is by design. It seeds a scope only when clio-core
+   holds no records for it (a new scope, an agent switch, a variant try over an empty base).
+   A failed read now raises, and release no longer erases lanes.
+
+   The real defect is the *two transcript records* in clio-core mode, the file ledger and
+   clio-core's `_events/m` atom lane:
+   - the file is written synchronously, the atoms off the loop;
+   - when they diverge, `_repair_divergent_lane` re-mints the atoms from the file, so the
+     file wins.
+
+   Sub-plan (replace, don't keep both):
+   - In clio-core mode the atom lane is the transcript. Appends mint synchronously, off the
+     event loop, as the store requires. The file ledger is written only in History mode,
+     where it is the transcript.
+   - The repair and backfill paths are deleted, except a one-time migration of pre-atom
+     sessions, which is typed and audited.
+   - Malformed rows fail typed.
+6. *Highway wiring:*
+   - the trace writer drops events on write errors;
+   - `_set_app_arc` and `_wire_arc_op_logger` swallow wiring failures;
+   - `op_logger` failures are swallowed with "op still applied".
+
+   Done (`b33e6e1b`): the wiring raises, and a trace write failure is kept and raised typed
+   (`TraceWriteError`) by the next emit or flush. Done (`c4dd6868`): an op whose `arc.op`
+   record fails is not applied (`ContextOpLogError`).
+
+   Full suite after the inventory work: 10,310 passed (`72e3646a`); the noqa-hidden swallow
+   baseline is 554.
+
+Items 1–3 done: `c85ab687` (Claude Code CLI compaction), `2ac785b7` (stale ids), `dcea7e43`
+(strict fold).
+
+### History mode sub-plan (the one sanctioned fallback)
+
+This supersedes the Phase 3 note that made `LocalFSStore` the platform fallback; that store is
+deleted.
+
+**What the code does today (read 2026-10-01).**
+- A missing clio-core binding is classified `clio_core_binding_absent`, but it is treated like any
+  other init failure: `ClioAgent` cannot be built, the agent stays unready, and every turn gets a
+  503.
+- With no ARC, `_emit_semantic_event` raises "ARC-as-source violated" at about 25 unguarded call
+  sites. That covers turn start and finish, tool observation, LM calls, spawn and hooks. The live
+  highway (SSE, trace, hooks) is derived from ARC records.
+- The transcript works without ARC. The file `MessageStore` is written on every change, and
+  `materialize_ledger` serves it when ARC is absent. `StepRecorder.carry_over` already rebuilds
+  the model's prior turns from that ledger.
+- Several surfaces fail silently or misreport:
+  - compaction with no ARC reports an "empty transcript" skip;
+  - undo and rewind of the agent context are silent no-ops;
+  - the `arc` health row is `UNAVAILABLE`, so `/v1/health` returns 503 "service down".
+
+**Rules.**
+- *Trigger.* History mode is entered for one reason only: `clio_core_binding_absent`, the binding
+  cannot be imported on this platform. It is decided once, at boot, and recorded on
+  `app.state.context_mode`.
+- *Other failures stay typed.* Every other `ArcStoreUnavailableError` reason (spawn, attach,
+  durability, capacity, version) stays a typed init failure.
+- *No switching mid-session.* A session that had clio-core and loses it fails its turn, typed. A
+  session never switches modes.
+
+**Steps (each with its failing-first test, then a commit and push).**
+1. **Mode record.** `gact/history_mode.py` holds a typed `ContextMode`, plus `enter(reason)`, which
+   counts process-wide entries for the test guard. Boot asks the ARC build for its reason: on
+   `clio_core_binding_absent` it builds `ClioAgent(arc=None)` in History mode, and on any other
+   reason it fails as today. `ClioAgent` accepts `arc=None` only in History mode; its ARC stats
+   and history accessors answer typed.
+2. **Loop.** In History mode the loop's context is a DSPy `History`-backed message list for the
+   forward. It is seeded with the prior turns from the file ledger (the existing carry-over), the
+   injections and the head. It is appended with each step and its results, and read for the
+   request, `Prediction.messages` and the extract. Variant tries fork the list. With no ARC
+   outside History mode, the loop still raises `NoContextStoreError`.
+3. **Highway.** In History mode, events go straight to the semantic sink: SSE, trace and hooks
+   keep working, but nothing is durable. Each event carries `context_mode: "history"`. With no
+   ARC outside History mode, the emitter still raises.
+4. **Loud surfaces.**
+   - Health and doctor: the `arc` row becomes `DEGRADED`, with `context_mode: "history"`, the
+     reason and the remedy (install a platform build of iowarp-core). `HealthResponse` gets a
+     top-level `context_mode`. The `clio_core_attach` row says the same.
+   - The UI: a boot `context.mode` event; the web status bar shows a History-mode badge, and the
+     context panel says edits are unavailable.
+   - Context edits, compaction, undo/rewind of the agent context, and search: each answers a
+     typed `history_mode_unsupported` (409 on routes). None of them becomes a silent no-op or an
+     "empty" skip.
+5. **Test guard.** An autouse fixture fails any test that enters History mode unless the test is
+   marked `history_mode`. The marked tests cover only the basics:
+   - boot with the binding import blocked, giving a `DEGRADED` row and `context_mode: history`;
+   - a two-step tool turn;
+   - a second turn that sees the first through the ledger;
+   - the UI events arriving;
+   - edits and compaction refused, typed;
+   - every other init reason still failing, typed.
+
+## Phase 9: BestOfN / Refine as runtime self-refinement (goal of this campaign)
+
+Owner direction, 2026-09-30. BestOfN and Refine are DSPy "preparation" semantics: fixed when the
+program is built, applied to every call. We want them as the agent's own self-refinement: used on
+demand where a task is worth several tries, and recorded so the agent improves over time. The
+design follows from how they will be used.
+
+### How they work today (verified 2026-09-30)
+
+- **Trigger:** only a blueprint declaration,
+  `module: {kind, variant: best_of_n | refine, n, threshold, reward}`.
+  `wrap_module_variant` wraps the agent's module in DSPy's real `BestOfN` or `Refine`, and a
+  compiled LM judge scores each try against the declared reward.
+- **Tries:** each runs on its own clio-core scope (`agent#runN`). Phase 6 forks each try from
+  the base scope and appends the winner's line to it.
+- **BestOfN:** up to `n` sequential tries (fresh rollout id, `temperature=1.0`). It stops at
+  `threshold` and returns the best.
+- **Refine on a `react` agent is effectively a sequential BestOfN.** DSPy's Refine writes
+  per-predictor advice (`OfferFeedback`) after a try that falls short, and delivers it as a
+  `hint_` input by wrapping the adapter. `ClioReAct` has no named predictors and no adapter (each
+  step is one `lm(Request)`). So the advice is empty, never reaches the next try, and each
+  failed try costs one wasted feedback call. On `predict` / `chain_of_thought` agents it works
+  as designed.
+- **Why this went unnoticed:** the tests wrapped a stub inner module (`dspy.Predict` over
+  DummyLM), never the real loop.
+
+### Intended use
+
+1. **Subagent strategy.** The parent asks for it when the task merits it:
+   `spawn_agent(task, agent, strategy={variant, n, judge: "lm" | "user", rubric, threshold})`.
+   - The child is wrapped at build time (same wrapper, spec from the call).
+   - The parent receives the winner's final message plus `variant_selection`.
+2. **A single turn, by tool or user control.** Example: "write the email to Dana". The agent
+   calls `draft_alternatives(n=2, rubric)`, or the user asks for alternatives.
+   - The tries run **in parallel**, each on `main#runK`, forked from the conversation.
+   - The turn yields a `choice` question: the candidates side by side, "which one?", an optional
+     comment.
+   - With `best_of_n`, the pick's line continues the conversation.
+   - With `refine`, the comment becomes the advice for another try forked from the pick, until
+     the user accepts or `n` is reached.
+3. **The agent on itself.** The same tool at the model's initiative, with:
+   - a configured cap on `n`;
+   - an injection telling the user alternatives are being drafted;
+   - the cost shown.
+4. **Blueprint declaration: kept.** It's a good trigger for tests and for a narrow agent where
+   it's cheap and valuable. It is not the main path.
+
+### Design requirements
+
+- **clio owns Refine's advice.** The advice for the next try is a recorded injection on that
+  try's clio-core scope ("advice from the previous attempt: …"), shown in the UI and told to
+  the model, as with every harness addition. The source is either the LM feedback call, built
+  from the try's clio-core trajectory, or the user's comment.
+- **Human judge = pause and resume.** The tries are persisted on clio-core, the turn yields the
+  `choice` question, and the selection resumes on the answer. The wrapper becomes a small state
+  machine over clio-core, not one in-memory DSPy call.
+- **Parallel tries** for independent candidates. Each has its own scope, so nothing is shared.
+- **UI: the tries as tabs or a carousel** (gact-tui web, REUI components): one tab per try ("Draft 1 / 2 / 3")
+  with its score or "your pick". Each tab has the pick action and, for Refine, the comment box. Each tab
+  streams its try live while they run in parallel. The same block renders a finished run read-only on reload.
+- **Recorded, visible:** a `variant.try` event per try, `variant.selected` with scores or the
+  user's pick, and the advice as injection parts.
+- **Long-term self-refinement.** Every run leaves a preference record in clio-core: candidates,
+  judge scores or user pick, comment, advice, rubric.
+  - *Offline:* DSPy optimizers (GEPA / MIPRO / SIMBA) use that log to improve the agent's
+    instructions and demos.
+  - *Online:* advice that proved useful can be kept as a lesson and recalled for similar tasks,
+    as a recorded, visible injection, never a silent prompt change.
+
+### Phase 9 progress (`feat/variant-self-refine`, cut from `feat/clio-core-failstop`)
+
+- **Refine's advice reaches the next ClioReAct try** (`99fed16c`). Tested around the real loop
+  on real clio-core, Refine was a sequential BestOfN, and DSPy's feedback call could fail a try
+  (its output did not parse) and spend the try.
+  - For a `ClioReAct` inner, Refine now runs DSPy's BestOfN loop, and clio writes the advice:
+    one LM call reads the previous try from clio-core, and the advice is recorded on the next
+    try's scope as a CLIO addition (`variant_advice`).
+  - The wrapper records each try's score itself, so the winner's line no longer depends on
+    the reward function writing the ledger.
+  - A sabotage run without the advice turns the test red.
+- **`variant.try` and `variant.selected` are highway events** (`d0720271`), shown in the UI.
+- **A parent can spawn a subagent with a strategy** (`ac4a7b09`):
+  `spawn_agent_task(strategy={variant, n, rubric, threshold})`.
+  - Validated by the blueprint parser before any child exists (`invalid_strategy` otherwise).
+  - Carried in the child session's metadata and applied by the builder.
+  - Only the LM judge exists; a human judge is refused typed until the next step.
+- Next:
+  - `draft_alternatives` (parallel tries in one turn);
+  - the human judge as pause and resume over clio-core;
+  - the preference record;
+  - the tabs/carousel UI;
+  - live legs.
+
+### Tests (the real composition, never a stub)
+
+- BestOfN and Refine wrapped around the real `ClioReAct` on real clio-core, through a scripted
+  engine that records every request:
+  - BestOfN returns the best try, and that line continues the conversation;
+  - **Refine: the next try's request carries the advice.** Red today.
+- A sabotage run for each of these.
+- Live legs: a blueprint with `best_of_n` and one with `refine`; a subagent with a strategy; the
+  email case with a user pick through the web UI.
+
+## Final stretch to release (planned 2026-10-01, owner-approved)
+
+### Context
+The campaign (`docs/design/agent-loop-rebuild-2026-09.md`, branch `docs/agent-loop-rebuild`) has its
+phases 1–9 on one stacked, pushed branch chain ending at `feat/variant-self-refine` (`fd35e911`).
+Today's conversation changed the remaining scope:
+- **Codex SDK removed** (owner, 2026-10-01). Codex direct reading `~/.codex/auth.json` is the only
+  Codex path. The SDK can't do clio-owned compaction in-thread and is ~0% of traffic.
+- **clio-core is the data highway.** It holds everything. The agent context, UI, file traces,
+  provenance and search are views over it. The context view must be materialized (from the
+  start or the last compaction), appended per event, and invalidated only by recorded ops. It is
+  performance-critical.
+- **Compaction must stay visible and lossless.** The UI shows: messages → "Summarizing context"
+  (shimmer, auto|manual) → injection "Summarization" (≈3 lines) → next steps, the same live and
+  after reload. History stays searchable and recallable.
+- **Transcript file:** kept behind `transcript.file` (default on); nothing may depend on it.
+- **Merge/PR:** when everything is done.
+
+What exploration found today (verified, file:line in the explorer reports):
+- **No context view exists.** Every step re-folds the whole session (`working_set_fold._fold`: all
+  `_events/w/<span>` partitions, every scope and turn, retired atoms included). Each append does
+  2 more full folds and re-puts the whole partition (`_events/w` is not chunked → O(n²) bytes per
+  turn), plus a full-text search-companion put. A cold read scans the whole `segments` tag. There
+  is no anchor at the last compaction. Codex direct builds the full request 3× per step and
+  compares the prefix element by element.
+- **Compaction:**
+  - it summarizes ALL live ids, including the current user question (not kept verbatim);
+  - the auto row lands after the turn's answer (staged; F1 loss);
+  - there is no start event, so no shimmer;
+  - the row renders as its own block, not as an injection;
+  - the panel's `POST /context/compact` folds invisibly;
+  - search indexes the live fold only;
+  - no agent tool recalls compacted steps.
+- **SDK footprint:** about 3.5–3.8k lines to delete. Keep `openai-codex-cli-bin` (Windows sandbox,
+  direct model-list `client_version`) and the emitters in `sdk_audit.py` (direct imports them).
+  Direct already falls back to `~/.codex/auth.json`. Known bug: lm15 ignores `CODEX_HOME`, while the
+  readiness check honours it.
+- **Transcript flag** is implemented but uncommitted (13 tests pass, sabotage checked). With the
+  flag off, a failed whole-transcript replace can leave a truncated lane in clio-core.
+
+### Branches
+The chain continues. Each phase is cut from the previous tip in its own worktree, committed and
+pushed after every step, never merged:
+`feat/variant-self-refine` → `feat/codex-direct-only` → `feat/context-view` →
+`feat/compaction-visible` → (Phase 9 remainder on `feat/variant-self-refine-2`) → release checks.
+UI: `gact-tui` `feat/compaction-visible`, cut from `feat/history-mode-badge` (`be5c71f8`).
+
+### Step 0: housekeeping (on `feat/variant-self-refine`)
+- Stop the SDK tip server (port 17991) and its watch.
+- Finish the transcript flag:
+  - re-run `tests/test_gact` and `tests/test_docs` (`-n 3`, `CLIO_TEST_RUNTIME_ROOT=D:/t/rt`);
+  - ruff, mypy, ratchets;
+  - small commits and push.
+- Record in the doc that flipping the flag to off later needs an atomic `replace_session` in
+  clio-core (write the new lane generation, then swap). It is not needed for release because the
+  default stays on.
+- Write the final-stretch sub-plans (this plan) into the design doc, with the corrections:
+  - F1 superseded by Phase 11;
+  - the transcript-file decision;
+  - Codex direct only.
+
+### Phase 10: Codex direct only (`feat/codex-direct-only`)
+1. **Delete** `providers/codex/sdk_client.py`, `sdk_engine.py`, `sdk_discovery.py`, the SDK half of
+   `gact/routes/codex_variant.py`, the SDK block in `gact/provider_catalog.py`, `_codex_sdk_lm` in
+   `lm/factory.py`, the SDK refresh in `providers/model_discovery/*`, `CODEX_SDK_*` constants, and
+   `CodexSDKError`. Move the emitters in `sdk_audit.py` into a direct-owned module (renamed).
+2. **Remove the `codex_variant` field** and its plumbing (`config.py`, `gact/providers/*`,
+   `lm_spec`, `resolver`, `selection_store`). A persisted `codex_variant: sdk` gives a
+   plain-language config error ("the Codex SDK path was removed; delete codex_variant"). No silent
+   mapping.
+3. **Delete config keys** `providers.codex.stateful_capacity`, `limits.codex_sdk_progress_timeout_s`
+   and `CLIO_CODEX_VARIANT`. Regenerate `config.defaults.yaml`, `docs/ENVIRONMENT.md` and
+   `.env.example` (`scripts/gen_env_reference.py`, `config_key_notes.py`).
+4. **Packaging:**
+   - drop `openai-codex` from `pyproject.toml` and `uv.lock`;
+   - remove the codex lockstep group in `components/registry.py`, plus `verify_codex`'s SDK
+     discovery, `check_bundle_matches_lock.py`, `bump_provider_sdks.py` and the CI workflow
+     entry;
+   - keep `openai-codex-cli-bin`.
+5. **Fix the auth-path mismatch:** pass `codex_cli_auth_path()` (which honours `CODEX_HOME`) to
+   `OpenAICodexLM.from_codex_cli` in `direct_engine.default_wire`. Correct the stale "never reads
+   auth.json" docstrings.
+6. **Tests and docs:**
+   - delete the 4 SDK test files and their fixture; edit about 12 others;
+   - `docs/providers/codex.md` becomes direct-only;
+   - a failing-first test that a persisted `sdk` variant is a typed config error;
+   - a test that `CODEX_HOME` reaches the wire.
+7. **Live harness:** `live/*/user/config.yaml` → `codex_variant` removed,
+   `api_base: codex://direct`; drop `CLIO_CODEX_VARIANT=sdk` from `serve*.sh`.
+8. **gact-tui:** remove the `sdk` transport from the picker and provider-status (web and Go TUI).
+   The backend no longer reports it.
+
+DoD evidence: deletions ≫ additions; `rg -i "codex_sdk|openai_codex|codex://sdk"` returns 0 in
+src, tests and docs (historical design docs excepted).
+
+### Phase 11a: the context view (`feat/context-view`), measured first
+1. **Measure first.** Add a harness `scripts/bench_context_view.py` over real clio-core (private
+   daemon) that measures, at 100 / 1k / 10k atoms over many turns and scopes:
+   - warm context build per step;
+   - append cost (time, RPCs, bytes);
+   - cold first read after restart;
+   - Codex-direct request build per step.
+
+   Record the baseline in the doc.
+2. **`ContextView` per (session, scope)**, owned by `arc/working_set_fold.py` (new module
+   `arc/context_view.py`):
+   - holds the folded live messages from the anchor;
+   - is appended in the write path (append → O(1));
+   - recorded ops (delete, replace, summarize, rollback) rebuild it from the anchor;
+   - `read_steps`/`fold_steps` read the view; rehydrated media are cached by sha;
+   - `next order` comes from the view (no fold per append).
+3. **Anchor:**
+   - a summarize writes an anchor record per scope (the summary atom's id and lane position);
+   - cold rebuild reads snapshot + tail (from the anchor forward), not the whole history;
+   - `as_of` and tombstone reads keep the full-log path (rare: rollback and UI only).
+4. **Chunk the `_events/w` lane** with the existing `lane_chunking.chunk_for_append`, so an
+   append puts one chunk, not the whole partition.
+5. **Cold scan:** a per-session partition index record, replacing the full `segments`-tag scan
+   plus a get per record.
+6. **Search companion:**
+   - appended incrementally;
+   - indexes everything, live and compacted (marked);
+   - a refresh failure is a typed write failure (removes the swallow at `working_set_fold.py:493`).
+7. **Codex direct:**
+   - build the request once per step;
+   - prefix check by held length + hash instead of element-wise;
+   - register with `_SCOPE_REGISTRIES`, so a compaction is an `ops_reset`, not a
+     `prefix_mismatch`.
+8. **Tests:**
+   - view == full fold (property test over random op sequences, real clio-core);
+   - prefix stability;
+   - restart from the anchor;
+   - a sabotage check for each.
+
+   Re-run the bench and record before/after. The budget is decided from the numbers.
+
+### Phase 11b: compaction visible and lossless (`feat/compaction-visible`)
+1. **One operation.** Manual, auto and panel compactions all go through
+   `POST /v1/sessions/{sid}/compact?scope=`. Delete `POST /context/compact` and its client call in
+   gact-tui (`context-repository.ts:103`, `use-session-context.ts:25`).
+2. **What the model sees after, as one editable policy (owner, 2026-10-01).** The default is:
+   system prompt + summary + **the current user question verbatim** + new steps. The rule lives
+   in a single clearly named function, `compaction_policy.post_compaction_context(...)` in a new
+   `gact/compaction_policy.py`. It decides two things:
+   - which live ids are summarized;
+   - which are kept verbatim: the head question, optionally the last K turns or steps.
+
+   It is easy to swap for research. Parameters (`keep_head`, `keep_last_turns`, `keep_last_steps`)
+   resolve via `conf.resolve` (`compaction.keep.*`). Tests pin the default and one alternative
+   (last 2 turns kept), so experimenting never needs code changes outside this function.
+3. **Events:** `compaction.started`, `compaction.completed` and `compaction.failed`, each with
+   `trigger` (auto|manual), scope and turn/step. They are projected to v3 (`protocol/v3/event.py`)
+   and in `packages/core/src/v3`.
+4. **Recorded where it happened:**
+   - mid-turn (between ReAct steps), the summary is an injection part of the open turn at that step
+     (kind `summarization`: summary, replaced ids, trigger), minted together with the fold;
+   - between turns, it is its own row;
+   - no staging (`stage_checkpoint`/`flush_staged_checkpoint` deleted; F1 gone);
+   - a failed record is a typed compaction failure and nothing is folded.
+5. **Recall tool** (`recall_context`): search the session's own earlier steps, compacted ones
+   included, by query or by the summary's `derived_from` ids, byte-exact from clio-core. The
+   summary injection names the tool.
+6. **Undo and rewind** find the compaction by its recorded part.
+7. **gact-tui:**
+   - a "Summarizing context" shimmer row from `compaction.started` (badge Automatic/Requested);
+   - it becomes the injection "Summarization" (syringe; 3-line preview, Show more), reusing
+     `CompactionSummary`'s preview inside `HarnessInjection`;
+   - a failure is shown in place;
+   - reload renders the same.
+8. Fix the wrong `maybe_autocompact` docstring ("swallowed").
+9. **Tests:**
+   - real ClioReAct on real clio-core: after an auto-compaction, search finds a compacted step,
+     recall returns it byte-exact, and the next request = system + summary + question + new step;
+   - transcript order live == reload;
+   - a failed record leaves the context unfolded;
+   - the panel produces the same events and row.
+
+### Phase 9 remainder: in this release (owner, 2026-10-01), on `feat/variant-self-refine-2`, before the release checks
+**Purpose (owner):** BestOfN, Refine and the judges are there to **validate that clio's
+integration with DSPy is good and proper**. Each feature is therefore built on DSPy's own
+modules and contracts (`dspy.BestOfN`, `dspy.Refine`, reward functions, module composition) over
+`ClioReAct`, with no clio-side reimplementation of their semantics. Every test asserts DSPy's
+documented behaviour holds through the real composition: selection by reward, Refine's feedback
+reaching the next try, threshold stop and `N` attempts. A clio wrapper may only add recording and
+UI, never change the outcome DSPy would produce. Any place where clio has to work around DSPy is
+written up as an integration finding.
+- `draft_alternatives` (parallel tries in one turn).
+- The human judge as pause/resume over clio-core.
+- The preference record.
+- REUI tabs/carousel in gact-tui.
+- Live legs: a `best_of_n` blueprint, a `refine` blueprint, a subagent with a strategy, and the
+  email case with a user pick.
+
+### Release checks (all on the chain tip, Codex direct `gpt-6-sol`)
+1. **Full suite** on every phase branch (`-n 3`, never alongside live legs), plus ruff, mypy,
+   `check_file_size`, `check_silent_fallbacks`, `check_noqa_swallows` and `gen_env_reference
+   --check`.
+2. **Live legs** via `live/bench/suite.sh <tip worktree> final`:
+   - preflight, C, compaction, goal judge, B (local `clio-web-search` container), stress, A, D;
+   - marketplace agents: earthscope, deep-researcher, factorio-flat, data-semantics;
+   - OPAL exp67.
+
+   Compare with the recorded develop baselines (wall, steps, cache, quality checklist).
+3. **Browser check** of the gact-tui tip on real clio-core: thinking, concurrent tools,
+   injections, compaction shimmer → injection, fixes, steer, cancel, reload == live, History-mode
+   badge, variant tabs.
+   - This needs you to keep the Chrome window visible during the session.
+4. **Docs:**
+   - design-doc progress and results;
+   - `docs/providers/codex.md`;
+   - ENVIRONMENT;
+   - the RUNBOOK status.
+5. **DoD 6 evidence:** `git diff --shortstat origin/develop...tip`, plus the zero-reference greps.
+6. Ask the owner for merge/PR timing.
+
+### Verification
+Each step: a failing-first test, a sabotage check, the touched test files green, then commit and
+push. Each phase: the full suite plus guards. Phase 11a passes only on before/after bench numbers.
+Final: live legs, the browser check and DoD evidence recorded in the design doc.
+
+### Phase 11a design: the context view (2026-10-01)
+
+**Measured first** (`scripts/bench_context_view.py`, `d57ed9de`). N≈100, private clio-core daemon:
+
+| Measure | Result |
+|---|---|
+| Warm context build | 0.3 ms p50, but a read touches about 119 lane atoms for about 21 live segments |
+| Append, per atom | 33 ms p50; 3 RPCs and 2 full folds; 72 KB put on average, rising to 149 KB as the partition grows |
+| Cold first read | 17 RPCs; the scan downloads every session blob to read its name |
+| Codex request build | 2.7 builds per step |
+| Read after a compaction | 62 of the 95 atoms it touches are retired |
+
+The 1k/10k baseline run was stopped by the machine's memory guard (1k completed in 52.9 s; no numbers were saved). It will be re-measured on `037e66ec` (the unchanged baseline) together with the after-numbers.
+
+**Design.**
+1. **`ContextView`** (`arc/context_view.py`) is one object per (session, logical scope). It is owned by
+   `FoldingSegmentStore` and holds:
+   - the anchor: the latest summary atom of the scope, or none;
+   - the live atoms after the anchor in render order;
+   - `next_order`;
+   - a generation counter.
+
+   It is built lazily on first read.
+2. **Append** to a scope with a loaded view:
+   - `view.append(atom)` is O(1);
+   - `next_order` comes from the view, so the full fold with tombstoned atoms is gone;
+   - the atom is written to its partition's current chunk (step 4);
+   - the search companion appends the atom's text (step 6).
+
+   No full fold remains on the write path.
+3. **Ops:**
+   - `delete`, `replace`, `summarize`, `as_of` rollback and lane drops rebuild the affected scope's view from the anchor;
+   - a `summarize` moves the anchor to its summary atom and records it in the scope's anchor record;
+   - the rebuild uses the existing `_fold` restricted to atoms at or after the anchor.
+
+   One fold implementation remains, no second one.
+4. **Chunk the `_events/w/<span>` lane** with `lane_chunking.chunk_for_append`, as `_events` and `_events/m`
+   already are. An append puts one bounded chunk, not the whole partition.
+5. **Session index record** (`_events/w/_index`): it lists each partition and chunk with its scopes, its
+   min/max `logical_time`, and each scope's anchor (partition, chunk, `logical_time`). Updated on
+   partition/chunk creation and on summarize. A cold read gets the index (1 get), then only the chunks
+   holding the scope's atoms at or after its anchor. The whole `segments`-tag scan is gone from the read
+   path.
+6. **Search companion:**
+   - per scope, append-only text chunks covering every atom ever written, live or retired;
+   - a query result maps back to atom ids;
+   - retired atoms are marked compacted at query time from the view's tombstone set;
+   - a refresh failure is a typed write failure (removes the swallow at `working_set_fold.py:493`).
+7. **Messages cache:**
+   - `StepRecorder.read_steps` keeps the folded `Message` list per view generation;
+   - it re-folds only the open tail step when atoms are appended;
+   - rehydrated media are cached by sha256 per path (the integrity check is unchanged).
+8. **Codex direct:**
+   - build the request once per step and reuse it;
+   - the held-prefix check uses a running hash plus length instead of element-wise comparison;
+   - the engine registers with `_SCOPE_REGISTRIES` so a compaction resets as `ops_reset`.
+9. **Invariants (tests, on real clio-core):**
+   - view == full fold for random op sequences (append, delete, replace, summarize, as_of, restart);
+   - a cold read after restart == warm read;
+   - render(n) is a prefix of render(n+1) unless an op landed;
+   - each has a sabotage check.
+10. **Acceptance:**
+    - before/after bench at 1k/10k;
+    - warm read and append independent of history length (flat from 1k to 10k);
+    - a cold read touches only post-anchor chunks;
+    - the full suite is green.
+
+### Phase 11a progress (`feat/context-view`, 2026-10-01)
+
+**Commits:**
+- `9094c1b8`: owner modules `arc/memory_segments.py` and `arc/segment_index.py`.
+- `bc30b99f`: context view, chunked lane, session index, migration, search companion and cached loop read.
+- `bfcc0023`: Codex builds each request once, checks the prefix by hash, and resets on ARC ops.
+- `2a1dfe36`: bench and ratchets.
+
+**What landed:**
+- One fold (`arc/context_view.fold_atoms`) and a per-scope `ContextView` anchored at the last full summarize. An append is O(1); ops rebuild from the anchor.
+- The `_events/w/<span>` lane is chunked (`arc.ws_chunk_segments`, default 32).
+- `_events/w/_index` (`arc/lane_index.py`): a cold read fetches only the chunks after the anchor, with no scan.
+- A one-time typed migration of sessions stored without an index (`arc/lane_migration.py`).
+- An append-only search companion over every atom, live and retired (`arc/search_companion.py`). Retired atoms are marked compacted at query time, and failures are typed.
+- The cached loop read (`gact/agents/context_reader.py`) and the media cache (`gact/agents/media_cache.py`).
+
+**Tests:**
+- property tests on real clio-core: view == full fold across op sequences and restarts; cold == warm;
+- prefix and generation; anchor-only cold read; migration;
+- 11 sabotage checks, all red.
+
+**Smoke N=100, before → after:**
+
+| Measure | Before | After |
+|---|---|---|
+| Atoms touched per read | 119 | 0 |
+| Cold read | 17 calls / 301 KB | 8 calls / 77 KB |
+| KB put per append | 72–149 | 30–42 |
+| Codex request builds per step | 2.7 | 1.0 |
+| Pre-compaction atoms scanned after a compaction | 62 | 0 |
+
+Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap the independent puts.
+
+**Open:**
+- BM25 search is unavailable on clio-core 2.2.1 (#905): `search_context` raises `SearchUnavailableError`.
+- The session index is re-put per new chunk, so it grows O(chunks). Archiving pre-anchor entries is deferred because of a data-loss risk when a forward writes after a compaction.
+
+**Release gate (owner, 2026-10-01):** the 1k/10k before (`037e66ec`) / after benchmark runs once everything else is done. It is a release gate, not a per-phase step.
+
+**Release gates and test procedure (owner, 2026-10-01):**
+- **Deliverable:** one branch, `rework_agent`, over the current `develop`, containing all of this work (and the same for gact-tui). It has CI green, docs and deletion evidence done, and the live legs, marketplace agents and OPAL runs done on Codex direct against the baselines.
+- **Release gates, run once at the end on the final tip, before merge:**
+  - the Chrome-driven live verification of the UI (not per phase; the UI is covered by component, reducer and e2e tests until then);
+  - the 1k/10k context-view benchmark.
+
+  All other live verification is normal campaign work.
+- **Released with it (owner, 2026-10-01):** the base APPL-CORE pack.
+  - **How:** merge `clio-agent-marketplace` branch `feat/appl-core-pack` into `main` at release time.
+  - **What it contains:** the version without the handoff's APPL-specific skills; `appl-core-exports` and `appl-instruments` stay placeholders. The richer drafts in `opal-work/handoff/appl-skills-draft/` are not part of it.
+  - **Checked 2026-10-01 at `34cca15`:**
+    - it merges cleanly into `main`, which is 3 commits ahead (the `clio.chart.v1` change, not touching `appl-core`);
+    - it requires `clio_agent >= 0.9.4.19`;
+    - it has no Codex SDK or `codex_variant` references.
+- **Test procedure:** the broad suite runs on GitHub CI (`gh workflow run ci.yml --ref <branch>`), never locally. Locally, only the tests targeting the changed areas. The next phase starts without waiting for CI. A CI failure is fixed on the branch it belongs to, and the later phases are rebased onto the fix.
+
+### Known follow-ups recorded with the transcript flag
+- Turning `transcript.file` off later needs an atomic `replace_session` in clio-core (write the new lane generation, then swap); with the flag off a failed whole-transcript replace can leave a truncated lane. Not needed for release: the default stays on.
+- `SessionStore._legacy_interaction_at` (`sessions.py:566`) still reads the `messages/<sid>.json` mtime for old rows lacking `last_interaction_at`.
+
+## Remaining before release (live handoff -- updated continuously)
+
+### Where things are (2026-10-02)
+- **Deliverable:** one branch per repo, `rework_agent`, then one PR each into `develop` when the owner says. Built only by merges and rebases, never cherry-picks.
+- **clio-agent `rework_agent`:**
+  - started as Phase 1; phases 2–10 merged in succession (#1561–#1569);
+  - 11a (#1570), 11b (#1571) and the Phase 9 remainder (#1572), each rebased onto it first;
+  - fixes since, each a branch merged by PR:
+    - #1573: both progress-wait ceilings at 180 s;
+    - #1574: stale trace-writer imports and the route count;
+    - #1575: clio imports cleanly after `dspy` (a DSPy 3.4 lazy-anyio integration finding);
+    - #1576: variant tries kept in try order; drafting loaded lazily, so the app import does not load `dspy`.
+  - Combining also fixed a dropped compaction projector (the duplicate `semantic.event` key) and the `semantic_events.py` size cap (the writer moved to `semantic_trace_file.py`).
+- **gact-tui `rework_agent`:** `injection-parts`, then badge, codex-direct and compaction UI (#517–#519), then the variant tabs, rebased (#520). Typecheck, lint and targeted tests are green. CI is deferred by the owner.
+- **CI (clio-agent):**
+  - the first run (36944645064) failed on stale imports, the route count, draft order and the lazy-import guard, all fixed in #1574 and #1576;
+  - **run 36946126271 on `rework_agent` after #1576: green** (2026-10-02). Every later merge re-runs CI.
+
+### In flight
+- **Done (#1578): `transcript.file: false` is safe and real.**
+  - Replacing a transcript is atomic: a new generation under `_events/m/g/N`, then a pointer switch at `_events/m/gen`, then the old generation dropped. A failure before the switch leaves the old transcript intact, typed as `LaneReplaceError`.
+  - With the flag off, nothing reads `messages/`.
+  - The failed lane cleanup on delete is now typed (#1580).
+- **Done (#1581): progress signals and clio-core waits** (#1577, the parts not needing clio-core#1112).
+  - A per-wait `ProcessTreeWork` measures only the spawned MCP server.
+  - macOS-safe.
+  - Typed `clio_core_daemon_pid_unresolved`.
+  - `await_future` has no fixed bound, and `ClioCoreFutureTimeout` is a `TimeoutError` (never retried as a refusal).
+  - Daemon start is progress-based and adopted, never killed while starting.
+  - Stop no-progress window is 15 s, bounded by the desktop supervisor's 30 s shutdown window.
+  - Attach and preflight are progress-bounded.
+  - MCP connect, discovery, probe and reconnect use `wait_while_server_works`. New key `tools.mcp.no_progress_s`; the old timeout keys are removed and rejected typed.
+  - Finalize drains are progress-based.
+  - Left for #1112: the daemon's own watchdog in place of CPU+I/O.
+- **Done (#1582): timeout semantics** (#1577, the rest).
+  - Claude Code is bounded by inter-message idle; the connect is progress-based.
+  - No silent cut in `net_chokepoint`.
+  - A typed `permission_request_timeout`, and the model is told.
+  - LM Studio checks and loads are typed.
+  - Typed loop hand-offs (`gact/loop_handoff.py`).
+  - Provider probes tell slow from absent (`runtime/process_progress.py`).
+  - Codex WebSocket ping set explicitly.
+  - Blueprint git steps are progress-based.
+  - Left, with reasons: the table query (no in-engine progress signal) and the detached-server stop on Windows (needs an authenticated shutdown route).
+- **Done (#1583): CI round three.** The fake turn states needed `user_msg`, and the hygiene audit's leak forensics is now injectable (a latent flake: a real process on the runner had the fake pid).
+
+- **Done (#1584): Linux CI after #1581.**
+  - The first progress sample is taken before the native call takes the GIL (`wait_while_progressing` `start` hook).
+  - Stopping a suspended daemon was reported clean while it kept running untracked. A clean stop now requires the process gone, and the daemon is resumed after SIGTERM.
+  - New setting `arc.liveness.stop_no_progress_s`.
+- **Done (#1585):** the cumulative-work test's child burns CPU time, not wall time (a load-sensitive test).
+- **CI green on the `rework_agent` tip `1f454adc`** (run 36959115221, 2026-10-02), with every fix above.
+- **Live suite started on that tip, then stopped by the owner** (testing happens at the end; see the battery below).
+  - `preflight`, leg C and the goal judge passed.
+  - `leg_compaction` failed only on the old contract's checks; it is being updated.
+  - Leg B needs `WEB_REMOTE_URL`.
+
+- **Done: the latest develop merged into both `rework_agent` branches** (clio-agent #1587, gact-tui #522). Merges only, and the final PRs into develop are conflict-free.
+  - develop #1547 (`model_reply_unparseable`) handled an adapter parse failure that the new loop cannot have. Per the accepted ReAct-loop completion contract (2026-09-05), an empty no-call reply stays a direct response, not a typed error.
+  - gact-tui: the e2e fixture lacked `/variant-runs` (an error toast covered the controls in the mobile screenshot). The Windows mobile baseline was stale.
+- **Done (#1588): the last #1577 code items.**
+  - A graceful `serve` stop through the authenticated `POST /v1/server/shutdown` (the desktop bearer token), killed only after no progress, with a typed `kill_reason`. Also fixed: the client leaked when a stop landed during the boot attach.
+  - The table query is progress-based on its own thread's CPU (`artifacts.table_query_no_progress_s` / `max_wait_s`; the old timeout key is removed and rejected typed). The macOS per-thread path is untested.
+  - The stale Codex SDK docstrings are fixed.
+  - Only section 1 of #1577 remains, waiting on clio-core#1112.
+
+- **Done (#1589):** the env reference regenerated after combining (CI on 4343493f caught it).
+- **CI green on the clio-agent `rework_agent` tip `1a6e047d`** (run 36966592678, 2026-10-02), with every change, develop included.
+
+- **Night of 2026-10-02 (owner asleep; owner-only items in `opal-work/MORNING-DECISIONS.md`):**
+  - **Bloat pass (#1591):** net src +2,045 → +1,881. The comment/docstring share equals develop's; the growth is new code (mainly variants and the context lanes). Progress helpers consolidated into `runtime/progress.py`; dead code deleted.
+  - **DSPy lazy proxies generalized (#1590):** numpy and openai submodules broke after `import dspy` too. Fixed on DSPy main (#10520).
+  - **Native-attach timeout vs failure (#1592):** monotonic()'s Windows resolution made a full-window wait read as a failure; now perf_counter with a 90% tolerance. Reproduced 6 of 40, now 40 of 40.
+  - **CI green on the clio-agent tip** (run 36971260887).
+  - **PRs opened:** clio-agent #1593 and gact-tui #524 into develop.
+    - gact-tui #524 failed CI: an A2UI map surface renders twice (a real regression), and the `tui/internal/ui` file freeze. Being fixed.
+  - **Ready to merge into main:** clio-schemas #18 and marketplace #83 (CI green; listed for the owner).
+  - gact-tui #525: the double-mounted surface fixed (a latent bug also on develop: a surface awaiting a pending response showed in both the tray and the detached list); the Go file freeze back to 612; the Linux summarization baseline added.
+  - **MERGED INTO DEVELOP** after green PR CI: clio-agent #1593 (`1a2a4ccc`) and gact-tui #524 (`4177f167`).
+  - **Final verification running on develop.** Results go to `opal-work/reports/final-verification-2026-10-02.md`.
+  - **Final verification status (06:20 CDT): complete on develop `846abcd7`.** Report: `opal-work/reports/final-verification-2026-10-02.md`.
+    - 10 product bugs found live, all fixed into develop by PR with green CI: #1594 (clio-core PutBlob shrink), #1595 (rollout temperature on Codex), #1596 (Claude Code Windows command line), #1597 (Codex continuation after a pick), #1598 + #1601 (pre-rebuild sessions continue: legacy call ids, failed-turn notes), #1599 (auto-compaction thrash: typed skip + notice), #1600 (Codex in-stream overload retried), #1602 (Codex stream drop before output retried).
+    - PASS: B1-B9 targeted checks (details in the report); legs preflight, C, compaction 84/84, goal judge; D1 bench (warm read and append flat 1k -> 10k, cold read scans 0 pre-anchor atoms; 10k run 864 s -> 128 s).
+    - Scenarios vs develop baseline: earthscope 275/397 s, factorio 142/1818 s, deep 1276/2538 s, opal 894/1611 s; data re-measured on the final tip.
+    - Owner items: `opal-work/MORNING-DECISIONS.md` (Chrome UI check; schemas #18 and marketplace #83; Codex drop after visible output needs a DSPy stream reset; CI timing flakes).
+  - **Status at 10:15 CDT (2026-10-02): the PRs to main are open, not merged.**
+    - **iowarp/clio-agent#1604** (develop -> main, v0.9.4.24) and **iowarp/gact-tui#526** (develop -> main): CI green, mergeable. Develop CI green on `846abcd7`.
+    - **iowarp/clio-schemas#18** (0.5.2) and **iowarp/clio-agent-marketplace#83**: CI green, mergeable; these repos have no develop.
+    - Data scenario on `846abcd7`: 485 s vs 430 s baseline (the plot turn took more steps; all turns `end_turn`). Its stream audit showed the ReAct side calls (the post-answer extract) sharing the agent's Codex conversation key, forcing a full resend on the next main call (`prefix_mismatch`). **Fixed: #1603 merged into develop (`1048527a`)**, side calls run under their own key; it is part of #1604.
+    - **Branches cleaned (10:30 CDT):** every campaign branch already in develop was deleted (36 in clio-agent, 10 in gact-tui) and the phase PRs #1540-#1545 closed. What is left to review is the release PRs (#1604, gact-tui#526), schemas#18, marketplace#83, and one unfinished branch: `fix/transcript-replace-lean-atoms` (`720f5bcb`, wip, untested: mint lean part atoms on a transcript replace, so a message with a large metadata is not re-put once per part).
+    - **Release order (owner):** merge gact-tui#526 and tag; bump clio-agent's `external/gact-tui` pin to that tag; merge marketplace#83 and schemas#18, release 0.5.2 and bump the `clio-schemas` pin; merge clio-agent#1604.
+    - **Left for the owner:** the Chrome UI check (release gate); the merges above; filing the clio-core `PutBlob` shrink issue; a DSPy stream-reset proposal for drops after visible output.
+    - This doc lands in develop with #1538, so it ships with #1604.
+
+**Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
+
+**Evidence on the tip `1a6e047d` (CI run 36966592678, green):**
+- **The named Definition-of-done tests** are collected and unskipped, so they ran in that run (six shards, 0 failed):
+  - differential: `test_clio_react.py::test_differential_same_calls_results_and_outputs_as_stock_reactv2`;
+  - prefix stability: `test_context_projection.py::test_every_request_is_a_prefix_of_the_next_across_steps_and_turns` and `test_multiturn_prefix_cache.py::test_system_message_is_a_byte_prefix_across_turns`;
+  - UI vs agent: `test_injection_parts.py::test_every_clio_addition_the_agent_sees_is_shown_to_the_user`;
+  - fix recorded and told: `test_injection_parts.py::test_a_note_on_a_tool_call_is_shown_with_its_call` and `::test_the_executor_notes_what_it_tells_the_agent`.
+- **No dual paths:** `src` has 0 references to `instrumented_forward`, `_RetainingReActV2`, `reactv2_upstream`, `codex_sdk`, `openai_codex`, `codex://sdk`, `_PROMPT_RULES`, `stage_checkpoint`, `flush_staged_checkpoint` or `/context/compact`. `codex_variant` appears only in the validator that rejects it, typed.
+- **Deletions vs additions** (against develop, merged):
+  - whole branch +42,487 / −34,434;
+  - `src` +19,194 / −17,149.
+  - Neither meets deletions ≥ additions now. `src` met it until the 2026-10-02 work: the #1577 progress waits, variant closing, atomic transcript replace, typed delete cleanup, graceful shutdown and the thread-progress probe all added net code.
+
+**Owner decisions (all answered 2026-10-02 night; kept for history):**
+1. **Deletions ≥ additions** (it no longer holds even for `src`, see above): accept the net growth from the new features, or look for genuinely dead code to remove?
+2. **OK to post the DSPy upstream issue** about the lazy `anyio` proxy (stanfordnlp/dspy)?
+3. **Release clio-schemas 0.5.2** (#18), then bump the clio-agent pin.
+4. **When to open the PRs `rework_agent` → develop.** The final verification runs on them.
+- **Done (gact-tui #523):** in a browser, the version status shows the web build's own version and never calls the desktop updater; the desktop app is unchanged. The Windows baselines are regenerated; the Linux `workspace-desktop-dark` and `workspace-mobile-light-reduced` baselines need regenerating on CI (they pass within tolerance today).
+
+### Issues filed
+- **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
+- **iowarp/clio-agent#1577:** use #1112 when it ships, plus every bad timeout and signal from the audit.
+- **"The compaction issue" (deferred by the owner):** #1559 (prompt-file format with Jinja2) and #1560 (summaries: the 300-character evidence cut, a structured recall-aware prompt).
+
+### Still open (development and failure fixing)
+1. **`clio-schemas` release (owner):**
+   - iowarp/clio-schemas#18 (draft) adds the `injection` fields (`trigger`, `compaction_id`, `variants_id`, `try_index`) and the `notice` block, in 0.5.2, which is not yet released. It is checked against what `rework_agent` emits, with 105 tests passing.
+   - After the release, bump clio-agent's `clio-schemas==0.5.1` pin.
+   - Pre-existing gap: `agent_message`, `context_reference`, `mcp_app` and `resource` blocks are emitted but not modelled in clio-schemas.
+2. **Byte budget: closed, justified.** The light-ledger floor in `test_resident_ledgers` went from 1551 to 1587 (bound 1600). The wire already omits empty fields (`exclude_defaults`). The test estimates resident memory, and the in-memory `Part` carries every declared field. Each earlier additive field moved this floor the same way, and the test comment records each step.
+3. **gact-tui e2e:** the Linux baseline for `summarization-row-collapsed.png` is missing; `workspace-mobile-light-reduced` already fails on the base commit.
+4. **Phase 9 edges:**
+   - a new user message arrives instead of a pick;
+   - the drafts question is cancelled or expires (the run is left failed).
+5. **Deletions ≥ additions:**
+   - `src` meets it: +14,884 / −16,082;
+   - the whole branch does not: +33,595 / −32,457, because of new tests and docs.
+   - Owner to say which counts.
+6. **DSPy upstream issue** for the lazy `anyio` proxy: needs the owner's OK to post on stanfordnlp/dspy.
+7. **Whatever the next CI runs report:** fix on a branch off `rework_agent` and merge back by PR.
+
+### Final verification (run on the PR-ready `rework_agent`, right before the merge into develop)
+
+**Owner, 2026-10-02:**
+- Implementation and bug fixing come first. All testing and evaluation happens once, here; Codex can run it.
+- Live verification is **targeted**. For each behaviour this branch changed, check live what the tests cannot reach: real providers, real clocks and slow machines, real model behaviour, real UI, other OSes. The early adopters' scenarios (C) are a separate release check: their use cases must stay fast and correct.
+- A failed check is implementation work: a branch off `rework_agent`, merged back by PR, then that check re-runs.
+
+**Environment**
+- The live harness is `opal-work\live\` (not a git repo). Its `bench\{bench.sh,suite.sh,common.py}` map the `rework` tree to `clio-agent-live` and bind Codex direct. Update that worktree to the tip with `git checkout --detach origin/rework_agent && uv sync --all-extras --python 3.12`.
+- Codex direct signs in from `~/.codex/auth.json`, model `gpt-6-sol`.
+- Prompts are short and human (`[[realistic-test-prompts]]`). Each check names what to observe: transcript, SSE/v3 events, `/v1/sessions/{sid}/…` routes, clio-core records, stream audit, or the doctor.
+
+#### A. CI
+- **clio-agent:** `gh workflow run ci.yml --repo iowarp/clio-agent --ref rework_agent`. It runs Ubuntu only, Python 3.12/3.13 (last green tip `1f454adc`).
+- **gact-tui:** CI needs a PR into develop (open the final PR as a draft) plus `rework_agent:codex/rework-agent` for the e2e and visual jobs. Generate the Linux baselines `summarization-row-collapsed.png`, `workspace-desktop-dark` and `workspace-mobile-light-reduced`.
+- **Gaps CI does not cover:**
+  - Windows and macOS: the only Windows coverage is targeted local runs; macOS is untested (#1577 made the psutil probes macOS-safe on paper);
+  - the optional claude-code extra.
+
+#### B. Targeted live checks, one per changed behaviour
+
+**1. The loop: ClioReAct on DSPy 3.4, every provider.** The engines changed for every provider, but tests use a scripted engine.
+- On each of Codex direct, Claude Code, OpenRouter, ALCF (Sophia or Metis) and LM Studio, run a two-turn chat with a tool call: "list the files here", then "open the biggest one".
+- Observe: tool calls parsed, the answer streamed, turn 2 sees turn 1 as real messages, no typed provider errors, thinking shown where the provider has it.
+- OpenRouter and ALCF have never been run live in this campaign.
+
+**2. Codex direct stateful continuation.**
+- In a long multi-step turn, the stream audit `provider.stateful` rows should show deltas after the first call, cached input tokens (`prompt_tokens_details.cached_tokens`) rising, and a typed `ops_reset` right after a compaction, not `prefix_mismatch`.
+- A missing `~/.codex/auth.json` gives a plain sign-in error.
+- `CODEX_HOME` pointing elsewhere is honoured.
+- A persisted `codex_variant` gives the typed "removed" error.
+
+**3. Concurrency and control.**
+- Concurrent tool calls in one step.
+- Cancel in the middle of a long tool call: the turn stops within about 3 s and the transcript says so.
+- A steer in the middle of a turn arrives at the next step boundary, in its own role.
+- `ask_user` pauses and the answer resumes.
+
+**4. Token counting and auto-compaction.**
+- Compare the usage ledger (input, cached, output per call and per turn) with the provider's own reported usage over a few turns.
+- Set the auto-compaction threshold low (the `compaction.*` config) and drive a session past x%. The trigger must fire from measured counts (estimated counts are ignored) between steps, never inside one.
+- Observe:
+  - a "Summarizing context" event with trigger auto;
+  - the summarization injection at that step;
+  - the next request = system + summary + the head question verbatim + new steps;
+  - Codex resets with `ops_reset`.
+
+**5. Manual compaction: the session menu, and the context panel's "Compact now" with a scope.**
+- Expect the same events and record; the record sits between turns.
+- After a restart, the transcript is byte-equal.
+- **Quality:** read the summary against the transcript. Does it keep paths, columns, numbers and open questions? Can the agent continue the task from it? Ask "what were we doing and what's next?" after the compaction.
+- **Prompt file:** point `compaction.prompt_file` at a custom template and confirm the summarizer received it. A broken file gives a typed failure, the notice and a doctor row, with nothing folded.
+- **Recall:** "pull up the original messages that summary replaced" → `recall_context` returns them byte-exact. Search reports "unavailable" while clio-core#905 stands.
+
+**6. BestOfN and Refine (Phase 9 validates the DSPy integration).**
+- Give the base agent's prompt a line saying to use `draft_alternatives` when a request has several good answers. Then ask: "write an email to Dana about the delayed shipment".
+- **best_of_n, user judge:** parallel tries show as live tabs; the pick question appears; picking one continues the conversation from that draft.
+- **refine:** a comment on a pick gives a next try that carries the advice, until it is accepted.
+- **LM judge:** BestOfN keeps the highest score, and the threshold stops early.
+- **Spawn a subagent with a `strategy`.**
+- **Supersede, cancel, expiry:** send a new message instead of picking (the run shows superseded, and a late pick gets a 409), cancel the question, and let a short-expiry question run out.
+- The preference record holds all of it (`/v1/sessions/{sid}/variant-runs`), and a reload shows the same tabs.
+
+**7. Context system (11a).**
+- Long sessions stay fast: the 1k/10k benchmark (gate below), plus a real 2-hour session that keeps responsiveness.
+- An **old session from develop** (stored before the index) opens: the one-time migration runs, and its transcript and context are intact.
+- **History mode:** with clio-core unavailable, the badge shows, the doctor reports DEGRADED, and compaction or context routes return 409. Nothing silent.
+
+**8. Transcript file switch.**
+- With `transcript.file: false`, run a full session with undo, rewind, fork, compact and import, then restart: everything is intact and `messages/` is never created.
+- A failed replace (kill the daemon in the middle of an undo) leaves the old transcript intact with a typed error.
+- A session delete that fails its clio-core erase returns a 503, the session is kept, and the retry finishes.
+
+**9. MCP client and slow machines (#1577).**
+- **Cold MCP start:** a fresh `uv` cache for a clio-kit server takes minutes. It must not fail while it is working, and a truly hung server fails typed at the no-progress window.
+- **Slow daemon start:** throttle the machine; the daemon is waited for, never killed while starting.
+- **Stop:** no orphan `clio_run` is left after a stop, including a suspended daemon.
+- **A Claude Code answer longer than 3 minutes** completes; it is bounded by inter-message idle only.
+- **Permission request timeout:** the model is told "timed out" and the UI card resolves.
+- **A slow upstream through the sandbox network chokepoint** is relayed in full.
+- **LM Studio:** a model that loads slowly, and the "already loaded" check.
+- **Provider probes** on a cold machine report "slow" rather than "not installed" or "signed out".
+
+**10. Fixes recorded and told (Phase 4), and injections.**
+- A malformed tool argument is repaired, a path is grounded, the circuit breaker trips: each firing appears in the UI as an injection and the model is told next to the result.
+- Plan reminder and todo injections are recorded once.
+
+**11. Subagents and delegation.** One deep-research run checks alternative execution modes, division of labour, and child results at the step boundary.
+
+#### C. Early adopters' use cases (a release gate in their own right)
+These scenarios are the real workloads of CLIO's early adopters. Before a release they must be fast, work well and operate properly. They do not verify the new semantics; sections A and B do that, because this layer aims to serve other clients too.
+Run `bash live/bench/suite.sh rework <tag>` and compare with the develop baselines in `D:/t/bench/baseline-*` using `live/bench/report.py`. The scenarios are earthscope-single-agent, deep-researcher, factorio-flat (evals), data-semantics and OPAL exp67, the last via `live/drive.py` with the base APPL-CORE pack. The legs:
+- `preflight`, leg C and the goal judge passed on `1f454adc`.
+- `leg_compaction` is on the Phase 11b contract (#1586). Replaying the `1f454adc` evidence passed 28 of 28. The live run must confirm recall by compaction id and whole-row byte-equality.
+- Leg B needs `WEB_REMOTE_URL`, a local `clio-web-search` container.
+- Stress, plus legs A and D per `scripts/live_verification/RUNBOOK.md`.
+
+For OPAL, the quality checklist is: the DBL_MAX sentinel, the ghost band columns, unflagged empty rows, the RGB2 scale, clipping. The baseline is `runs/exp67-first-contact` (2348 / 427 / 308 s).
+
+#### D. Release gates (end only)
+1. **The 1k/10k context-view benchmark:** `scripts/bench_context_view.py --sizes 1000,10000` on `037e66ec` (before) and on the tip (after). Warm read and append must be flat from 1k to 10k, and a cold read must touch only the chunks after the anchor.
+2. **The Chrome UI check (owner):**
+   - thinking streaming;
+   - concurrent tools;
+   - injections;
+   - compaction (shimmer → Summarization injection; failure → notice);
+   - fixes;
+   - steer and cancel;
+   - variant tabs (pick, refine, closed states);
+   - the History-mode badge;
+   - reload == live.
+3. **Releases (owner):**
+   - clio-schemas 0.5.2 (iowarp/clio-schemas#18), then bump the clio-agent pin;
+   - the APPL pack's lint and tests against the tip, then merge marketplace `feat/appl-core-pack` into `main`;
+   - the two PRs `rework_agent` → `develop`.
+
+## Definition of done
+
+1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
+   zero errors; skips only the documented platform/live-gated ones. ruff, ruff format, mypy,
+   `scripts/check_file_size.py`, `scripts/check_silent_fallbacks.py`,
+   `scripts/gen_env_reference.py --check`. Failing-first tests for every bug fixed.
+2. New tests: ClioReAct differential vs stock ReActV2; projection prefix-stability; UI-vs-agent
+   projection; fix-recorded-and-told; Codex stateful (exists).
+3. Live, against the phase-0 baseline (isolated instance with `CLIO_USER_DIR`, Codex SDK,
+   realistic short human prompts): `scripts/live_verification` legs (synthetic session,
+   compaction, goal judge, web fetch, stress, deep researcher — per `RUNBOOK.md`),
+   clio-agent-marketplace `earthscope-single-agent` multi-turn session, `factorio-flat` behavioral
+   evals via its evaluator, `deep-researcher`, `data-semantics`. Report per turn: wall time,
+   steps, input/cached/output tokens, full vs delta sends, one provider thread per conversation.
+   Clearly faster, high cached share, no quality regression (eval scores / leg verdicts equal or
+   better).
+4. gact-tui web UI verified in a real browser (screenshots/GIF) — driven with the Claude in Chrome
+   tools against the isolated live instance started with `CLIO_WEB_DIR` pointing at a built
+   gact-tui `web/dist` (served same-origin by `gact/app.py`): thinking streams live; tool calls
+   and results render (concurrent too); injections, compaction checkpoints, edits and fixes
+   visible as such; a mid-turn steer lands as a user message; cancel stops a running turn
+   promptly; reload == live; a multi-turn follow-up reuses prior context without re-sending.
+5. Docs describe what IS: this doc updated per phase; stale docs fixed
+   (`docs/providers/claude_code.md`, `docs/tui/08-semantics-and-lifecycle.md`).
+6. **The old loop is gone.** A deletion inventory per phase (what was removed, with the grep
+   proving zero remaining references: `instrumented_forward`, `_RetainingReActV2`,
+   `reactv2_upstream`, the adapter name spoof, the prose history blob, the per-turn working-set
+   wipe, observation-glued steers/child results, the DSPy-history read fallback, the per-executor
+   call lock, workflow-era leftovers). No flag, env var or config key selects an old path.
+   `git diff --stat develop...` over the final branch shows deletions matching or exceeding
+   additions (tests included); if not, the report explains line by line why.
+
+## Rules
+
+- **Full replacement, one transition.** This is not an alternative loop behind a flag: no dual
+  paths, no old-vs-new switch, no compatibility shims, no "legacy" fallback kept alive. Each phase
+  deletes, in the same branch, the code it replaces; expect deletions to match or exceed additions
+  across the campaign. Phases STACK (each phase branch is cut from the previous phase's branch);
+  there is ONE merge, when the owner says, after which the old loop never exists again.
+- **The design is the source of truth.** Where existing code, docs or a client expect the
+  old behavior, the client/docs change to the design — never the reverse. Client priority:
+  the gact-tui web/desktop app first (verified in the browser), the terminal TUI last.
+  The campaign owns the whole stack: clio-agent AND gact-tui (web, desktop, TUI) change
+  together, in stacked branches, for the users that matter — non-CS scientists on the
+  web/desktop app.
+- Stacked phase branches in worktrees; **commit and push after every coherent step**; never
+  merge to develop/main or open PRs until the owner says (one merge at the end). Conventional commits; no
+  Claude/Co-Authored-By attribution line.
+- Read before changing (the relevant `docs/design/*` and the code path); keep DOES vs SHOULD
+  separate. No silent fallbacks, no deterministic decisions on model prose, no accretion into god
+  files, no ratchet raises.
+- Ask the owner for: Codex direct login, fix defaults, whether `next_thought` is required only for
+  non-thinking models, merge/PR timing, anything that contradicts this doc.
+
+## `/goal`
+
+```
+/goal Complete the clio agent-loop rebuild campaign exactly as specified in docs/design/agent-loop-rebuild-2026-09.md on branch docs/agent-loop-rebuild of iowarp/clio-agent (read it in full first, plus the docs it cites). Done means every item of its Definition of done holds with evidence: suite, lint and guards green on every phase branch; the ClioReAct differential, projection-stability, UI-vs-agent-projection and fix-recorded tests passing; live verification legs and marketplace agents (earthscope-single-agent, factorio-flat evals, deep-researcher, data-semantics) clearly faster than the develop baseline with no quality regression; the gact-tui web UI verified in a real browser for thinking streaming, concurrent tool calls, injections, compaction, fixes, steer, cancel and reload==live; docs updated; the old loop fully deleted (no flags, shims or dual paths; deletions >= additions; one stacked branch chain, one merge when the owner says). Commit and push every branch after each step, never merge, no Claude attribution. Pause and ask the owner for Codex direct login, fix defaults, the next_thought decision and merge/PR timing.
+```

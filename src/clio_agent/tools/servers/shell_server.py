@@ -249,7 +249,7 @@ def _windows_shell_backend() -> str:
     return normalized if normalized in {"powershell", "bash", "cmd"} else "powershell"
 
 
-def _shell_argv(command: str) -> list[str]:
+def _shell_argv(command: str, *, prepared_environment: dict[str, str] | None = None) -> list[str]:
     """Return a platform-appropriate shell invocation."""
 
     if os.name == "nt":
@@ -272,6 +272,10 @@ def _shell_argv(command: str) -> list[str]:
     shell = shutil.which("bash") or shutil.which("sh")
     if shell is None:
         raise RuntimeError("no POSIX shell found on PATH")
+    if prepared_environment:
+        from clio_agent.runtime.execution_environment import posix_command
+
+        command = posix_command(command, prepared_environment)
     return [shell, "-lc", command]
 
 
@@ -313,8 +317,10 @@ def _detect_shell_env() -> ShellEnvFacts:
             shell_label = "bash (Windows, e.g. Git Bash)"
         elif backend == "cmd" or not (shutil.which("pwsh.exe") or shutil.which("powershell.exe")):
             shell_label = "cmd.exe" if backend == "cmd" else "cmd.exe (PowerShell not on PATH)"
+        elif shutil.which("pwsh.exe"):
+            shell_label = "PowerShell Core (pwsh.exe)"
         else:
-            shell_label = "PowerShell"
+            shell_label = "Windows PowerShell (powershell.exe)"
         return ShellEnvFacts(
             is_windows=True,
             system_label=platform.system() or "Windows",
@@ -341,7 +347,7 @@ def _limits_text(limits: ShellLimits) -> str:
         f"max_output_bytes (default {limits.default_output_bytes}, at most "
         f"{limits.max_output_bytes}) and the whole result stays under "
         f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
-        f"stream is saved under .clio/{SPILL_DIRNAME}/ in the workspace (one "
+        f"stream is saved in the workspace's Agent-managed ``{SPILL_DIRNAME}/`` directory (one "
         "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
         "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
         "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
@@ -366,19 +372,31 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         else f"POSIX text tools ({tools}) are NOT available on this host's PATH."
     )
     if facts.is_windows:
+        is_bash = facts.shell_label.lower().startswith("bash")
+        invocation = (
+            "Windows drive paths in commands are translated to /mnt/<drive>/ for bash. "
+            if is_bash
+            else "The tool invokes PowerShell with -NoLogo -NoProfile -NonInteractive -Command. "
+            if "PowerShell" in facts.shell_label
+            else "The tool invokes cmd.exe with /d /s /c. "
+        )
         return (
             f"Run ONE local shell command on a {facts.system_label} host and return "
             f"stdout, stderr, and exit code. Commands execute under {facts.shell_label} "
-            "semantics (this is NOT a bash/POSIX shell). "
+            f"semantics{' (this is NOT a bash/POSIX shell)' if not is_bash else ''}. "
+            f"{invocation}"
             f"{tools_line} "
             "Do NOT assume WSL exists: do not invoke `wsl`, `wsl bash -c`, or POSIX "
             "pipelines to reach cut/sed/awk/grep — on a WSL-less host they fail, and the "
             "first `wsl` call boots a utility VM that stays resident holding gigabytes. "
-            "Paths use Windows conventions (drive letters, backslashes). For tabular, "
+            "Paths use Windows conventions (drive letters, backslashes) unless the bash "
+            "backend is active. For tabular, "
             "CSV, or columnar work (column selection, filtering, joins) use the pandas "
             "MCP tool when available instead of shell text pipelines — it is portable and "
-            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS; the "
-            f"command runs until it exits unless you pass timeout_s. {limits_text}"
+            "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS. "
+            "A command can retrieve public HTTPS data when network policy permits; "
+            "inspect its returned status and output before concluding access failed. "
+            f"The command runs until it exits unless you pass timeout_s. {limits_text}"
         )
     return (
         f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
@@ -387,8 +405,10 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
         "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
         "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS; the command runs until it exits unless you pass timeout_s. "
-        f"{limits_text}"
+        "CLIO_ALLOWED_ROOTS. "
+        "A command can retrieve public HTTPS data when network policy permits; "
+        "inspect its returned status and output before concluding access failed. "
+        f"The command runs until it exits unless you pass timeout_s. {limits_text}"
     )
 
 
@@ -431,7 +451,7 @@ async def bash(
     docstring is the developer reference. The command runs until it exits unless
     ``timeout_s`` is positive (or an operator ceiling applies) and the working
     directory must be inside ``CLIO_ALLOWED_ROOTS``. Output that does not fit the
-    result budget is spilled in full under ``.clio/tool-output/`` and excerpted
+    result budget is spilled in full under Agent-managed ``tool-output/`` state and excerpted
     (:mod:`clio_agent.tools.servers.shell_output`). A cancelled turn or a
     timeout kills the command's whole process tree.
     """
@@ -446,8 +466,9 @@ async def bash(
     max_chars = _SHELL_LIMITS.max_command_chars
     if len(command) > max_chars:
         next_action = (
-            "Write the script to a file in the workspace with your file-writing tool, then "
-            "run that file with a short command (for example `uv run python analysis.py`)."
+            "Split the script into shorter shell calls that write a file inside the workspace, "
+            "then run that file with a short command (for example `uv run python analysis.py`). "
+            "fs_propose_edit only stages a reviewable diff; it does not write the file."
         )
         return _error(
             "command_too_long",
@@ -482,7 +503,10 @@ async def bash(
         )
     try:
         safe_cwd = _resolve_cwd(cwd)
-        argv = _shell_argv(command)
+        from clio_agent.runtime.execution_environment import shell_environment
+
+        prepared = shell_environment(_spill_root(safe_cwd))
+        argv = _shell_argv(command, prepared_environment=prepared)
     except FilePolicyError as exc:
         return exc.to_result()
     except Exception as exc:  # noqa: BLE001
@@ -505,7 +529,15 @@ async def bash(
         pdeathsig=False,
     )
     run_argv = [confined.command, *confined.args]
-    run_env = {**os.environ, **confined.env_overlay} if confined.env_overlay else None
+    run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}
+    # Prepared scratch is already inside this workspace's writable territory.
+    run_env.update({key: prepared[key] for key in ("TEMP", "TMP", "TMPDIR") if key in prepared})
+    from clio_agent.paths import workspace_state_dir  # noqa: PLC0415
+
+    # Skills run in isolated uv environments and cannot import this resolver.
+    # Supply the bound workspace's canonical path, never an inherited host value
+    # or an explicit command subdirectory. The existing write fence still applies.
+    run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -567,7 +599,7 @@ def _spill_root(safe_cwd: Path) -> Path:
     """Where this call's spill files go: the session workspace root.
 
     The model reads spilled output with its workspace file tools, so the files
-    belong under the bound workspace's ``.clio`` root even when the command ran
+    belong under the bound workspace's Agent state root even when the command ran
     in an explicit sub-``cwd``. With no workspace bound (the app-less CLI path,
     whose fallback :func:`_resolve_cwd` already traces) the policy-validated cwd
     is used.

@@ -1,0 +1,8 @@
+{
+  "kind": "opal_live_export.v1",
+  "prompts": [
+    "Use the OPAL export connected to this session's workspace. What is this data? Read its self-description, onboard it with APPL-CORE, and show the recorded evidence and uncertainties. Keep the source unchanged.",
+    "Does the nickel treatment hurt growth in this experiment? Use the verified dataset views and distinguish observations from assumptions. Ask me if the export does not establish a treatment meaning or unit you need.",
+    "Show me the growth curves that support your answer. Keep the source identifiers and units inspectable, explain exclusions, and let me select a trajectory to inspect its underlying data."
+  ]
+}

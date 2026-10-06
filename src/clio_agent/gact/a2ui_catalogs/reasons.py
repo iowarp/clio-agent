@@ -324,6 +324,18 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "override of the earlier one"
         ),
     },
+    # Coordinator design (2026-10-01), F5/M3: materializing an updateComponents
+    # message folds it into the surface's ONE merged current-state message
+    # (gact/a2ui_component_fold.py) -- this caps that MERGED component count,
+    # not just one incoming message's own list (``validate_components``'s
+    # separate, per-message check).
+    "a2ui_component_limit_exceeded": {
+        "severity": "warning",
+        "detail": (
+            "the surface's merged component state would exceed MAX_A2UI_COMPONENTS "
+            "-- refused, the surface's existing components are left exactly as they were"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session

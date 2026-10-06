@@ -2,9 +2,12 @@
 
 The discovery layer intentionally stays process-scoped and single-flight.  This
 module adds the per-session boundary around a selected session's cold mount:
-bounded increasing-wait retries with a typed reason on every retried attempt and
-session-scoped progress events for the UI. It never installs an undeclared server
-and never exposes raw subprocess errors.
+bounded increasing-wait retries of a FAILED mount with a typed reason on every retried
+attempt, and session-scoped progress events for the UI. The connect itself has no fixed
+deadline: it waits while the server's own process tree works
+(:mod:`clio_agent.tools.mcp_server_progress`), so a slow start is never cut off and
+restarted, and a connect that stopped progressing is a terminal typed failure. It never
+installs an undeclared server and never exposes raw subprocess errors.
 
 A terminal failure raises to the existing typed tool-resolution boundary, where
 :func:`clio_agent.gact.agents.builders._resolve_requested_tools` records it in
@@ -22,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 #: Typed reason for one retried cold mount (queryable in logs/trace).
 MCP_MOUNT_RETRY_REASON = "mcp_mount_retry"
-
-MCP_MOUNT_TIMEOUT_MULTIPLIERS: tuple[float, ...] = (1.0, 3.0, 6.0)
 
 
 def mcp_mount_retry_delays_s() -> tuple[float, ...]:
@@ -51,41 +52,27 @@ def mcp_mount_retry_delays_s() -> tuple[float, ...]:
     )
 
 
-def mcp_mount_setup_timeout_s() -> float:
-    """The base per-namespace connect timeout when the executor exposes none.
-
-    Resolved from the SAME key the executor's own default comes from
-    (``tools.mcp.setup_timeout_s`` / ``CLIO_MCP_SETUP_TIMEOUT_S``), so this
-    boundary can never diverge from the timeout the live executor was built
-    with (there is one source for the semantic, not two).
-    """
-
-    from clio_agent import conf  # noqa: PLC0415
-
-    return conf.resolve(
-        "tools.mcp.setup_timeout_s",
-        env="CLIO_MCP_SETUP_TIMEOUT_S",
-        default=10.0,
-        cast=conf.as_float,
-    )
-
-
 def namespaces_requiring_preparation(
     tool_executor: Any,
     requested_tools: list[str],
     available_tools: Mapping[str, Any],
     declared_specs: Mapping[str, Any],
 ) -> set[str]:
-    """Return declared namespaces whose requested tools are absent or disconnected."""
+    """Return declared namespaces whose requested tools are not listed yet.
 
-    namespace_prepared = getattr(tool_executor, "is_namespace_prepared", None)
+    The first model call needs only the listing (a cached one counts); a server
+    connects when a call needs it, or earlier when the session's warm-up reaches it
+    (:mod:`clio_agent.gact.session_warmup`). So a turn never waits on a connection
+    it has not used yet.
+    """
+
+    del tool_executor
     needed: set[str] = set()
     for name in requested_tools:
         namespace, sep, bare = name.partition("_")
         if not sep or not bare or namespace not in declared_specs:
             continue
-        prepared = callable(namespace_prepared) and namespace_prepared(namespace)
-        if name not in available_tools or not prepared:
+        if name not in available_tools:
             needed.add(namespace)
     return needed
 
@@ -99,9 +86,15 @@ def mount_failure_reason(exc: BaseException) -> str:
 
 
 def _retryable_mount_error(exc: BaseException) -> bool:
-    """Return whether a cold mount can reasonably recover after a short wait."""
+    """Return whether a cold mount can reasonably recover after a short wait.
 
-    return not isinstance(exc, (FileNotFoundError, PermissionError, ValueError))
+    A connect that stopped progressing (:class:`NoProgressTimeout`) is not retried: it
+    already waited out its no-progress window, so a restart would only repeat it.
+    """
+
+    from clio_agent.tools.mcp_server_progress import NoProgressTimeout  # noqa: PLC0415
+
+    return not isinstance(exc, (FileNotFoundError, PermissionError, ValueError, NoProgressTimeout))
 
 
 def _namespace_title(namespace: str) -> str:
@@ -166,12 +159,14 @@ def mount_namespace_for_session(
     spec: Any,
     *,
     retry_delays_s: tuple[float, ...] | None = None,
+    connect: bool = True,
 ) -> Mapping[str, Any]:
     """Mount one declared namespace with bounded readiness semantics.
 
-    The first turn waits for this bounded preparation instead of immediately
-    failing while asynchronous discovery is still warming.  A terminal failure
-    is still raised to the existing typed tool-resolution boundary.
+    A turn lists (``connect=False``): the model call needs the tools, not the
+    connection. The session warm-up lists and connects, so the server is ready by
+    the time a call needs it. A terminal failure is still raised to the existing
+    typed tool-resolution boundary.
 
     Args:
         tool_executor: The live MCP executor receiving the mounted tools.
@@ -196,12 +191,6 @@ def mount_namespace_for_session(
     if retry_delays_s is None:
         retry_delays_s = mcp_mount_retry_delays_s()
     max_attempts = len(retry_delays_s) + 1
-    configured_setup_timeout = getattr(tool_executor, "_setup_timeout", None)
-    base_setup_timeout = (
-        float(configured_setup_timeout)
-        if configured_setup_timeout is not None
-        else mcp_mount_setup_timeout_s()
-    )
     for attempt in range(1, max_attempts + 1):
         phase = "launch"
         _publish_dependency_state(
@@ -217,6 +206,8 @@ def mount_namespace_for_session(
             if not callable(merger):
                 raise RuntimeError("live MCP executor cannot accept mounted tools")
             merger(namespace, mounted_tools)
+            if not connect:
+                break
             connector = getattr(tool_executor, "prepare_namespace", None)
             if not callable(connector):
                 raise RuntimeError("live MCP executor cannot prepare namespace connections")
@@ -228,10 +219,7 @@ def mount_namespace_for_session(
                 attempt=attempt,
                 max_attempts=max_attempts,
             )
-            multiplier = MCP_MOUNT_TIMEOUT_MULTIPLIERS[
-                min(attempt - 1, len(MCP_MOUNT_TIMEOUT_MULTIPLIERS) - 1)
-            ]
-            connector(namespace, timeout=base_setup_timeout * multiplier)
+            connector(namespace)  # progress-based: waits while the server works
         except Exception as exc:
             if attempt < max_attempts and _retryable_mount_error(exc):
                 delay = retry_delays_s[attempt - 1]
@@ -269,13 +257,61 @@ def mount_namespace_for_session(
                 reason=_classify_degrade_reason(exc),
             )
             raise
-        _publish_dependency_state(
-            namespace,
-            phase="connect",
-            state="ready",
-            attempt=attempt,
-            max_attempts=max_attempts,
-            tool_count=len(mounted_tools),
-        )
-        return mounted_tools
-    raise AssertionError("MCP readiness attempts exhausted without a result")
+        break
+    else:
+        raise AssertionError("MCP readiness attempts exhausted without a result")
+    _publish_dependency_state(
+        namespace,
+        phase="connect" if connect else "launch",
+        state="ready",
+        attempt=attempt,
+        max_attempts=max_attempts,
+        tool_count=len(mounted_tools),
+    )
+    return mounted_tools
+
+
+def mount_namespaces_for_session(
+    tool_executor: Any, specs: Mapping[str, Any], *, connect: bool
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, str]]:
+    """Mount several declared namespaces at the same time.
+
+    Each namespace goes through :func:`mount_namespace_for_session` on its own worker
+    (in a copy of the caller's context), so one slow server never delays another.
+
+    Returns:
+        ``(mounted, failures)``: the tools mounted per namespace, and a typed reason
+        per namespace that failed (logged; a later call tries it again).
+    """
+
+    import contextvars  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    if not specs:
+        return {}, {}
+    mounted: dict[str, Mapping[str, Any]] = {}
+    failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="clio-mount") as pool:
+        futures = {
+            namespace: pool.submit(
+                contextvars.copy_context().run,
+                mount_namespace_for_session,
+                tool_executor,
+                namespace,
+                spec,
+                connect=connect,
+            )
+            for namespace, spec in specs.items()
+        }
+        for namespace, future in futures.items():
+            try:
+                mounted[namespace] = future.result()
+            except Exception as exc:  # noqa: BLE001 - typed + named, never cached
+                failures[namespace] = mount_failure_reason(exc)
+                logger.warning(
+                    "mcp_mount_failed namespace=%s reason=%s error=%s",
+                    namespace,
+                    failures[namespace],
+                    exc,
+                )
+    return mounted, failures

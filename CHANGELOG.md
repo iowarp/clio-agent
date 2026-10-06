@@ -6,6 +6,280 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.3] — 2026-10-05
+
+### Added
+
+- Default-agent workflows for PDF, Word, PowerPoint and Excel, with document
+  skills, format-native inspection, creation/editing, rendered review and
+  spreadsheet recalculation. Editable outputs and version-bound PDF previews
+  are artifacts accessible from the workspace.
+- Managed Python/uv and Node/pnpm tools are explained in the default-agent
+  prompt. Installation provisions the locked document packages and Office
+  renderer; agent-facing intermediates stay in workspace `.tmp` directories.
+- Connected sources and reusable provider sign-in for local, SSH/SFTP, Google
+  Drive, Globus and GitHub data. Download and link permissions are independent,
+  and selected changes to originals pass through explicit review/publication.
+- Infrastructure and model lifecycle controls, native vLLM preparation,
+  configurable service storage, and independently selected Flowcept/CMF
+  provenance services.
+- Attention profiles and revision-bound evidence selections shared with
+  SPOTTER, transcript navigation and retry-safe reviewer follow-ups.
+- Marketplace identity, blueprint inspection/materialization, staged MCP
+  validation, separate draft/publish/reload actions, rollback and durable receipts.
+- Website guides and recorded file/source/productivity walkthroughs.
+
+### Fixed
+
+- Desktop bundles, remote installers, Docker images and release checks use
+  Python 3.13. Open-ended Python selection no longer chooses Python 3.14, for
+  which the pinned native core has no wheel.
+- Document caches include interpreter and host identity so runtime upgrades
+  cannot reuse an incompatible virtualenv.
+- Bundled startup and package setup ignore host Python import paths and user
+  packages, keeping the shipped dependency versions effective on developer PCs.
+- Legacy source references retain immutable baseline bytes; explicit editable
+  downloads snapshot current content without requiring a remote connection.
+- Generated environment documentation and browser/native navigation checks
+  match the integrated release behavior.
+
+Fresh Delta GPU inference and both OPAL demonstrations remain live acceptance
+work. Recorded replay and numerical parity do not constitute fresh inference.
+The pinned clio-core 2.2.1 wheels omit the optional search indexer. ARC persistence
+works; indexed segment searches report the missing-indexer limitation.
+
+## [0.9.5-beta.2] — 2026-10-03
+
+### Added
+
+- CLIO namespace layout for local and remote Agent configuration, state, data,
+  cache, workspace registration, and project sharing; explicit migration with
+  backups and rollback preserves legacy installations.
+- A2UI widget contracts from clio-schemas 0.5.3, linked selection, bounded table
+  export and raster queries, registered visual artifacts, and selection-aware
+  agent guidance.
+- New owl branding and supplied icons across desktop profiles, installers, and
+  the website, with interactive widget documentation and recorded walkthroughs.
+- Workspace MCP warmup prepares tools without creating a saved session.
+- **Enable beta updates** in Desktop Settings controls Agent and Desktop release
+  checks, with an instability warning and a saved opt-in or opt-out.
+- Checksum-verifying terminal Desktop installers for macOS and Windows.
+
+### Fixed
+
+- Remote deployments retain their Desktop SSH bridge, expose existing-agent
+  lifecycle choices, and preserve namespace-managed state through replacement
+  (#1612, #1613).
+- Prerelease package versions resolve to valid GitHub release install URLs (#1614).
+- Numbered beta updates are ordered correctly; draft releases are excluded and
+  stable users remain on stable releases. Desktop beta 1 needs one manual upgrade
+  to obtain the new channel-aware updater.
+- macOS bundles select a compatible Rasterio wheel and preserve the app signature
+  through first startup on macOS 14, 15 and 26. Fix BSD sed release-tag parsing.
+- Website logos use the supplied vector artwork and mobile navigation exposes
+  the full Docs index separately from the current page's headings.
+- Production SVG logo and wordmark filenames retain the image extension so
+  Desktop webviews and static servers display the supplied artwork correctly.
+- Website download labels match the stable installers; beta downloads have an
+  explicit link and instability warning.
+- Unchanged legacy interactive forms retain typed input across rerenders.
+- The entry composer stays temporary until first send; Settings navigation no
+  longer creates sessions. Failed sends reuse the created session while the
+  draft remains open.
+- Damaged A2UI ledgers report partial projections, and lost native ARC clients
+  are quarantined instead of silently continuing with corrupt context.
+- A standalone `clio.approval.v1` card (the agent's own yes/no question, not
+  bound to a real pending native permission) no longer 422s on Approve/Cancel.
+  `approval.respond` only routes to the permission gate when its `context`
+  structurally carries a `permission_id`; otherwise it delivers to the agent
+  like any other action, with its resolved context (e.g. `{"approved":
+  true}`) as the next turn's input. A `permission_id` that names no pending
+  permission still gets a typed 404, never a silent reroute (#1549 #28).
+
+## [0.9.5-beta.1] — 2026-10-02
+
+### Added
+
+- `POST /v1/server/shutdown`: the graceful stop of a server `clio_agent.serve` spawned
+  (hidden unless the process was started with `CLIO_SERVE_MANAGED=1`). It takes the
+  server's bearer in `Authorization` (loopback included; `401 authentication_required`
+  otherwise) and answers `202 {status: "stopping", exit_path}` like
+  `POST /v1/desktop/shutdown`. `serve.ensure_server` now starts the server with a
+  one-use `CLIO_AUTH_TOKEN`, so such a server also requires that bearer from
+  non-loopback peers (the token is in its owner-only credential record).
+- Compaction is visible: `compaction.started` / `compaction.completed` /
+  `compaction.failed` events (`session_id`, `compaction_id`, `scope`, `trigger`
+  `auto|manual`, `turn_id`; completed adds `message_id`, `part_id`,
+  `replaced_count`; failed adds `error {code, message}`, `message_id`, `part_id`),
+  served on the event stream and as typed v3 events.
+- A compaction is recorded as an `injection` part with `source: "summarization"`
+  (`text`, `trigger`, `compaction_id`; `metadata.derived_from`), mid-turn inside the
+  turn's assistant message, between turns as its own row. A failed one is a `notice`
+  part (`source: "compaction_failed"`, `text`, `code`, `compaction_id`, `trigger`) the
+  model is never told; v3 projects it as a `notice` block.
+- `POST /v1/sessions/{sid}/compact?scope=` compacts one agent scope; the response is
+  `{session_id, compacted, compactions: [...]}`.
+- The `recall_context` agent tool returns compacted steps byte-exact.
+- BestOfN / Refine on demand. The main agent has a `draft_alternatives(n, rubric,
+  strategy, judge)` tool: `best_of_n` tries run in parallel, each a real agent run on
+  its own clio-core scope (`<agent>#run<k>`); `refine` improves one draft at a time.
+  `n` is capped by `variants.max_n` (`CLIO_VARIANTS_MAX_N`, default 4). An `injection`
+  part (`source: variant_drafting`) tells the user drafts are being made.
+- A human judge (`judge: user`, also as a spawn `strategy` or blueprint `module.judge`):
+  the turn yields a `choice` question whose options are the drafts (`value`: the try's
+  scope id, `description`: its final text) and whose `metadata.variants_id` names the
+  run. Answer with `selected_options: [<draft id>]` (exactly one, else 422) and an
+  optional `answer` (the comment; for `refine` it becomes the next draft's advice).
+- GACT 0.3 frames for a run: `variant.try.upserted`, `variant.try.delta`,
+  `variant.selected` (from the `variant.try` / `variant.try.delta` / `variant.selected`
+  semantic events, all carrying `variants_id`); a try's other semantic events and
+  injection blocks carry `variants_id` / `try_index`.
+- A human-judged run that ends without a pick is a typed terminal state, recorded in
+  clio-core, never a generic `failed`: run `status` `superseded` (a new turn started
+  while the drafts question was pending: the user sent a new message instead),
+  `cancelled` (the question was dismissed) or `expired` (the pick's window ended), with
+  `closed_reason` `variant_pick_superseded|cancelled|expired`, `closed_at` and, when
+  superseded, `superseded_by_message_id` -- on `GET /v1/sessions/{sid}/variant-runs`
+  and on a new `variant.closed` event / v3 frame (entity `variants_id`; payload `status`,
+  `reason`, `question_id`, `closed_at`, `candidates: [{try_index, scope, text}]`,
+  `superseded_by_message_id`). A superseded question is `cancelled` with
+  `metadata.variant_resolution: "superseded"` and `metadata.superseded_by_message_id`;
+  a later answer to it is a 409 and nothing resumes. The session's `variant_pending`
+  pointer is cleared, and the next turn's agent gets an `injection`
+  (`source: variant_closed`) saying none of the drafts is in the conversation. The
+  preference record of a closed run keeps its candidates (`status`, no pick).
+- `draft_alternatives` takes `expiresInSeconds` (judge `user`; default none, as
+  `ask_user`): the pick's window. A `POST /messages` naming a drafts question in
+  `answers_question_id` is a 422 `drafts_question_needs_pick` (answer it with
+  `selected_options: [<draft id>]`).
+
+### Changed
+
+- `variant.try` is now emitted when a try starts (`running`) and ends (`completed` with
+  `text`, `tokens` and, when judged, `score`; or `failed` with `error`); every variant
+  event and `variant_selection` carries the run's `variants_id`. A variant try's
+  streamed text goes to its `variant.try.delta` tab, no longer into the turn's answer.
+- MCP and clio-core waits are progress-based (#1577). An MCP connect, listing or
+  `POST /v1/mcp/servers/{sid}/reconnect` waits while the server's own process tree
+  works, up to `tools.mcp.max_wait_s` (180 s); a `tools.mcp.no_progress_s` window
+  (default 30 s) with no answer and no server work is a typed failure. The reconnect
+  route's `504 mcp_reconnect_timeout` carries `details.reason` (`no_progress` or
+  `ceiling`) in place of `details.timeout_s`. A clio-core daemon still starting, a slow
+  write, the native attach and `initialize_cte` are waited for while the daemon
+  progresses (`arc.liveness.max_wait_s`); a daemon that cannot be located is
+  `clio_core_daemon_pid_unresolved`, a daemon still starting at the ceiling is
+  `clio_core_daemon_start_ceiling` and is left running for the next attach.
+- `POST /v1/artifacts/{id}/table-query` is progress-based (#1577): the query runs on
+  its own thread and is waited for while that thread consumes CPU, up to
+  `artifacts.table_query_max_wait_s` (180 s); a `artifacts.table_query_no_progress_s`
+  window (default 30 s) with no answer and no CPU work is a typed
+  `504 table_query_stalled` (`details.reason` `no_progress` or `ceiling`,
+  `details.waited_s`, `details.no_progress_s`), replacing `504 table_query_timeout`.
+  A client disconnect still cancels the query (`499 table_query_client_disconnected`).
+- `serve.stop_server` stops a server it spawned gracefully on every platform: it calls
+  `POST /v1/server/shutdown`, so the lifespan teardown runs (turn drain, clio-core client
+  release, flushes), and waits while the server's process tree progresses
+  (`arc.liveness.stop_no_progress_s` window, `arc.liveness.max_wait_s` ceiling). A server
+  that cannot be asked or stops progressing is killed and reported as `killed` with a
+  typed `kill_reason`; a stop no longer starts with terminate-then-kill. A stop that lands
+  during the boot clio-core attach waits for it, so the attached client is released.
+
+### Removed
+
+- `tools.mcp.setup_timeout_s`, `tools.mcp.cold_spawn_runaway_s`,
+  `tools.mcp.launcher_cache_lock_timeout_s` and `limits.mcp_reconnect_timeout_s` (and
+  their `CLIO_*` variables): replaced by the progress-based waits above. A leftover one
+  is a typed `config_key_removed` error naming where it is set.
+- `artifacts.table_query_timeout_s` (`CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`): replaced
+  by the progress-based table-query wait above. A leftover one is a typed
+  `config_key_removed` error.
+
+- `POST /v1/sessions/{sid}/context/compact` (use `POST /v1/sessions/{sid}/compact?scope=`),
+  the `session.compacted` event and the `compaction` part: new compactions never write
+  it, and a stored one is served as the summarization injection.
+- The Codex SDK transport. The `codex` provider's only transport is `direct`
+  (CLIO's own sign-in, else the Codex CLI login at `$CODEX_HOME/auth.json`):
+  the Codex catalog row has no `transports` list, its models carry no
+  `transport` tag and the row no `client` fact. A Codex `PUT /v1/providers/lm`
+  naming any `variant` (`direct` included) is a 422, and a Codex message model
+  reference naming one is a typed `400 model_transport_removed`. A leftover
+  `lm.codex_variant` / `CLIO_CODEX_VARIANT` is a typed `config_key_removed`
+  error naming where it is set; `providers.codex.stateful_capacity` and
+  `limits.codex_sdk_progress_timeout_s` are gone. The Codex user-updatable
+  component is the `openai-codex-cli-bin` runtime alone.
+- The `model_reply_unparseable` turn error (0.9.4.24): the agent loop reads the
+  model's reply typed, with no output-format parsing, so a reply with no tool call is
+  the answer, shown as written, and an unreadable text tool-call block goes back to
+  the model as a tool error it can correct.
+
+### Fixed
+
+- Without a CLIO sign-in, Codex direct reads the Codex CLI login from
+  `$CODEX_HOME/auth.json`; it read `~/.codex/auth.json` whatever `CODEX_HOME`
+  said.
+
+## [0.9.4.24] — 2026-09-30
+
+### Fixed
+
+- A turn whose model reply is neither a tool call nor a readable answer (for
+  example, the model announces its next step and stops) now ends with the
+  recoverable error `model_reply_unparseable` instead of `empty_response`.
+  `error_info.details` carries the raw reply (`raw_reply`), the parse message,
+  the exception type and the step index, so the trace shows what the model said.
+
+## [0.9.4.23] — 2026-09-30
+
+### Fixed
+
+- Deploying to a remote SSH host that already runs a healthy CLIO under a
+  different install root or version no longer stops it without asking. The
+  claim step now reports it as `found` (with its version and pid) instead of
+  silently replacing it; `POST /v1/infrastructure/services/clio_agent/actions`
+  fails with the typed `clio_deploy_version_conflict` reason (and a
+  `conflict` record) until the caller re-issues the action with
+  `configuration.on_conflict` set to `"connect"` (adopt it as-is) or
+  `"replace"` (stop it and install this desktop's version) (#1528).
+
+### Added
+
+- A2UI `clio.chart.v1`: charts from presets or an Altair / Vega-Lite spec,
+  rows from inline `data` or a `dataUri` narrowed with `dataQuery`
+  (clio-schemas 0.5.1).
+- Every data-carrying A2UI component (map, data table, workflow, code,
+  mermaid, diff) accepts inline values or a `dataUri`; map and table take
+  `dataQuery`, `*Field` column names and a `selectionField` for linked
+  selection.
+- `POST /v1/artifacts/{id}/table-query`: filter, aggregate, downsample, sort
+  and page a registered table; `columns` omitted returns all columns.
+- `create_a2ui_surface` accepts `components_path`, and every surface's final
+  definition is stored as an artifact (reported in the tool result).
+- `load_skill` accepts several `files` in one call; catalog skills list every
+  component on one generated line (description and signature).
+
+### Changed
+
+- Claim of an existing remote CLIO reports a different version as `found`
+  (with its version, pid and health) instead of stopping it; install/start
+  take a one-time `on_conflict: connect | replace`.
+- Provider plan limits and safety refusals reach the transcript as short,
+  typed messages (`claude_code_plan_limit`, `codex_plan_limit`,
+  `provider_safety_refusal`) and are never retried.
+
+### Removed
+
+- A2UI `clio.time-series.v1` (replaced by `clio.chart.v1`).
+
+## [0.9.4.22] — 2026-09-29
+
+No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.23
+(deploying CLIO to a remote computer no longer fails at the final connect step).
+
+## [0.9.4.21] — 2026-09-29
+
+No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.22
+(big screen zoom support and a What's new window after updates).
+
 ## [0.9.4.20] — 2026-09-27
 
 ## [0.9.4.19] — 2026-09-27

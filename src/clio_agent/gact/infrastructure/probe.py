@@ -22,6 +22,7 @@ from clio_agent.gact.infrastructure.runtime_probe import (
     local_runtime_facts,
     parse_probe,
 )
+from clio_agent.paths import user_data_dir
 
 CommandExecutor = Callable[[CommandSpec], Awaitable[CommandResult]]
 
@@ -94,6 +95,7 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         container_runtimes=runtimes,
         identity=identity,
         home=home,
+        agent_data_root=str(user_data_dir()),
         hostname=platform.node().split(".")[0],
     )
 
@@ -135,7 +137,9 @@ async def probe_target(
                 "$d=(Get-Command docker -ErrorAction SilentlyContinue);"
                 "$u=(Get-Command uv -ErrorAction SilentlyContinue);"
                 "$ready=$false;if($d){docker info *> $null;$ready=$LASTEXITCODE -eq 0};"
-                "$gpu='none';if(Get-Command nvidia-smi -ErrorAction SilentlyContinue){$gpu='nvidia'}"
+                "$gpu='none';if(Get-Command nvidia-smi -ErrorAction SilentlyContinue){"
+                "$names=nvidia-smi --query-gpu=name --format=csv,noheader 2>$null;"
+                "if($LASTEXITCODE -eq 0 -and $names){$gpu='nvidia'}}"
                 "elseif(Get-Command rocminfo -ErrorAction SilentlyContinue){$gpu='amd'};"
                 "Write-Output ('windows|'+$env:PROCESSOR_ARCHITECTURE+'|'+$gpu+'|'+"
                 "[int][bool]$d+'|'+[int]$ready+'|'+[int][bool]$u)",
@@ -148,12 +152,22 @@ async def probe_target(
             args=[
                 "-lc",
                 "os=$(uname -s); arch=$(uname -m); gpu=none; "
-                "command -v nvidia-smi >/dev/null 2>&1 && gpu=nvidia; "
-                '[ "$gpu" = none ] && command -v rocminfo >/dev/null 2>&1 && gpu=amd; '
+                "if nvgpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) "
+                '&& [ -n "$nvgpu" ]; then gpu=nvidia; fi; '
+                'if [ "$gpu" = none ] && rocminfo 2>/dev/null | grep -q "Name:.*gfx"; then gpu=amd; fi; '
                 "di=0; dr=0; uv=0; command -v docker >/dev/null 2>&1 && di=1; "
                 "docker info >/dev/null 2>&1 && dr=1; command -v uv >/dev/null 2>&1 && uv=1; "
                 'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"; '
-                + POSIX_RUNTIME_PROBE,
+                + POSIX_RUNTIME_PROBE
+                + '; agent_data="${CLIO_AGENT_DATA_DIR:-${CLIO_AGENT_HOME:+$CLIO_AGENT_HOME/data}}"; '
+                + 'agent_data="${agent_data:-${CLIO_USER_DIR:+$CLIO_USER_DIR/data}}"; '
+                + 'if [ -z "$agent_data" ]; then '
+                + 'if [ "$os" = Darwin ]; then agent_data="$HOME/Library/Application Support/clio-agent/data"; '
+                + 'else xdg_data="${XDG_DATA_HOME:-}"; '
+                + 'case "$xdg_data" in /*) ;; *) xdg_data="$HOME/.local/share" ;; esac; '
+                + 'agent_data="$xdg_data/clio-agent"; fi; fi; '
+                + 'case "$agent_data" in /*) ;; *) echo "Agent data root must be absolute" >&2; exit 75 ;; esac; '
+                + 'printf "clio-agent-data|%s\\n" "$agent_data"',
             ],
             timeout_seconds=60,
         )
@@ -178,5 +192,13 @@ async def probe_target(
         container_runtimes=runtimes,
         identity=identity,
         home=home,
+        agent_data_root=next(
+            (
+                line.split("|", 1)[1]
+                for line in result.stdout.splitlines()
+                if line.startswith("clio-agent-data|")
+            ),
+            "",
+        ),
         hostname=hostname,
     )

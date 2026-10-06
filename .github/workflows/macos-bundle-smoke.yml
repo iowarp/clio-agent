@@ -1,0 +1,89 @@
+name: macOS packaged startup
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - 'install/**'
+      - 'branding/clio/tauri.clio.conf.json'
+      - 'uv.lock'
+      - 'scripts/smoke_macos_bundle.py'
+      - '.github/workflows/macos-bundle-smoke.yml'
+  workflow_dispatch: {}
+
+jobs:
+  installer-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --no-project --python 3.13 --with pytest pytest -q -c install/tests/pytest.ini install/tests
+  build:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '9.15.9'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - uses: astral-sh/setup-uv@v5
+      - name: Build the portable backend from source
+        run: bash install/build-gact-runtime.sh external/gact-tui/desktop/src-tauri/gact-runtime
+        env:
+          CLIO_AGENT_SOURCE: ${{ github.workspace }}
+      - name: Build the CLIO macOS app from source
+        working-directory: external/gact-tui
+        run: |
+          printf '{"profile":"clio","brandingRoot":"%s/branding"}\n' "$GITHUB_WORKSPACE" > brand.config.local.json
+          pnpm install --frozen-lockfile=false
+          bash desktop/scripts/fetch-sidecar.sh aarch64-apple-darwin
+          pnpm --filter @clio/desktop run gen-brand-backend
+          cp "$GITHUB_WORKSPACE"/branding/clio/icons/* desktop/src-tauri/icons/
+          # No updater secret is needed to test the app's separate macOS signature.
+          printf '{"bundle":{"createUpdaterArtifacts":false}}\n' > "$RUNNER_TEMP/no-updater.json"
+          pnpm --filter @clio/desktop tauri build --target aarch64-apple-darwin --bundles dmg \
+            --config "$GITHUB_WORKSPACE/external/gact-tui/desktop/src-tauri/tauri.bundled.conf.json" \
+            --config "$RUNNER_TEMP/no-updater.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-source-dmg
+          path: external/gact-tui/desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 3
+  startup:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-source-dmg
+          path: package
+      - name: Mount, relocate, and boot the packaged app
+        run: |
+          mkdir "$RUNNER_TEMP/clio-image"
+          hdiutil verify package/*.dmg
+          hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
+          ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
+          hdiutil detach "$RUNNER_TEMP/clio-image"
+          uv run --no-project --python 3.13 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled

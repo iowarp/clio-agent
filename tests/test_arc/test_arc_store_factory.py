@@ -1,6 +1,6 @@
 """Tests for the ARC store factory + the clio-core backend (Thread B).
 
-Unit tests (binding-free) cover factory selection and graceful degradation.
+Unit tests (binding-free) cover factory selection and the typed init failure.
 The clio-core round-trip tests are marked ``integration`` (connect-or-spawn the shared
 iowarp-core runtime) so the default unit lane (``-m "not integration"``) stays
 binding-free.
@@ -20,9 +20,9 @@ from clio_agent.arc import clio_core_attach, runtime_stop, storage
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.storage import LocalFSStore, make_arc_store
+from clio_agent.arc.storage import make_arc_store
 
-# ---- unit: factory selection + graceful degradation (no binding needed) ----
+# ---- unit: factory selection + typed init failure (no binding needed) ----
 
 
 def test_clio_core_yaml_path_uses_yaml_safe_separators():
@@ -41,8 +41,9 @@ def test_default_clio_core_dir_honors_explicit_override(monkeypatch):
         cwd=storage.Path("C:/test-cwd"),
         env={"CLIO_ARC_CTE_DIR": "D:/custom-clio/cte"},
     )
-    monkeypatch.setattr(conf, "_STORE", store)
-    assert storage._default_cte_dir() == storage.Path("D:/custom-clio/cte")
+    with monkeypatch.context() as m:
+        m.setattr(conf, "_STORE", store)
+        assert storage._default_cte_dir() == storage.Path("D:/custom-clio/cte")
 
 
 def test_default_clio_core_dir_file_config_wins_over_env(monkeypatch, tmp_path):
@@ -59,8 +60,9 @@ def test_default_clio_core_dir_file_config_wins_over_env(monkeypatch, tmp_path):
     config_path = tmp_path / "cwd" / ".clio" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("arc:\n  cte:\n    dir: D:/config-clio/cte\n", encoding="utf-8")
-    monkeypatch.setattr(conf, "_STORE", store)
-    assert storage._default_cte_dir() == storage.Path("D:/config-clio/cte")
+    with monkeypatch.context() as m:
+        m.setattr(conf, "_STORE", store)
+        assert storage._default_cte_dir() == storage.Path("D:/config-clio/cte")
 
 
 def test_default_clio_core_file_capacity_file_config_wins_over_env(monkeypatch, tmp_path):
@@ -74,31 +76,33 @@ def test_default_clio_core_file_capacity_file_config_wins_over_env(monkeypatch, 
     config_path = tmp_path / "cwd" / ".clio" / "config.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text("arc:\n  cte:\n    file_capacity: 10GB\n", encoding="utf-8")
-    monkeypatch.setattr(conf, "_STORE", store)
-    assert storage._default_cte_file_capacity() == "10GB"
+    with monkeypatch.context() as m:
+        m.setattr(conf, "_STORE", store)
+        assert storage._default_cte_file_capacity() == "10GB"
 
 
 def test_default_clio_core_dir_falls_back_to_user_data(monkeypatch, tmp_path):
-    from clio_agent import conf
+    from clio_agent import conf, paths
 
     store = conf.ConfigStore(home=tmp_path / "home", cwd=tmp_path / "cwd", env={})
-    monkeypatch.setattr(conf, "_STORE", store)
-    monkeypatch.setattr("sys.platform", "linux")
-
-    from clio_agent import paths
-
-    monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path / "data")
-    assert storage._default_cte_dir() == tmp_path / "data" / "cte" / "hosts" / host_key()
+    with monkeypatch.context() as m:
+        m.setattr(conf, "_STORE", store)
+        m.setattr("sys.platform", "linux")
+        m.setattr(paths, "user_data_dir", lambda: tmp_path / "data")
+        assert storage._default_cte_dir() == tmp_path / "data" / "cte" / "hosts" / host_key()
 
 
-def test_factory_local(tmp_path):
-    store = make_arc_store(backend="local", data_dir=str(tmp_path))
-    assert isinstance(store, LocalFSStore)
+def test_there_is_no_local_backend_to_select(tmp_path, monkeypatch):
+    """clio-core is the only store: ``local`` (arg or env) is an unknown backend."""
+    with pytest.raises(ValueError, match="the only store is clio-core"):
+        make_arc_store(backend="local", data_dir=str(tmp_path))
+    from clio_agent import conf
 
-
-def test_factory_env_selects_local(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLIO_ARC_STORE", "local")
-    assert isinstance(make_arc_store(data_dir=str(tmp_path)), LocalFSStore)
+    only_env = conf.ConfigStore(home=tmp_path, cwd=tmp_path, env={"CLIO_ARC_STORE": "local"})
+    with monkeypatch.context() as m:
+        m.setattr(conf, "_STORE", only_env)
+        with pytest.raises(ValueError, match="the only store is clio-core"):
+            make_arc_store(data_dir=str(tmp_path))
 
 
 def test_factory_unknown_backend_raises():
@@ -106,49 +110,24 @@ def test_factory_unknown_backend_raises():
         make_arc_store(backend="bogus")
 
 
-def test_factory_clio_core_loud_degrades_to_localfs_on_init_failure(tmp_path, monkeypatch):
-    """clio-core binding/runtime unavailable at INIT -> LOUD degrade to LocalFS (#897).
-
-    Owner ruling: clio-core is the default, but a missing/failed init degrades to
-    LocalFS *loudly* (typed reason + log + doctor row), not by raising. The typed
-    reason is the load-bearing pin: it must reach the process-local record so the
-    doctor can surface a DEGRADED row.
-    """
-    from clio_agent.arc.init_degradation import (
-        arc_init_degradation_snapshot,
-        reset_arc_init_degradation,
-    )
-
-    reset_arc_init_degradation()
+def test_factory_clio_core_init_failure_is_typed_never_another_store(tmp_path, monkeypatch):
+    """clio-core binding/runtime unavailable at INIT -> a typed ArcStoreUnavailableError
+    carrying the classified reason (supersedes the #897 LocalFS degrade). The typed
+    reason is the load-bearing pin: blank it and this goes red."""
+    from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 
     def boom(*a, **k):
         raise ImportError("clio_cte_core_ext not built")
 
     monkeypatch.setattr(storage, "ClioCoreStore", boom)
-    store = make_arc_store(backend="cte", data_dir=str(tmp_path))
+    with pytest.raises(ArcStoreUnavailableError) as caught:
+        make_arc_store(backend="cte", data_dir=str(tmp_path))
 
-    assert isinstance(store, LocalFSStore)
-    record = arc_init_degradation_snapshot()
-    assert record is not None
-    # SABOTAGE PIN: swallow/blank the typed reason and this assertion goes red.
-    assert record.reason == "clio_core_binding_absent"
-    assert record.was_explicit is True
-    assert record.error_type == "ImportError"
-    reset_arc_init_degradation()
-
-
-def test_factory_explicit_local_records_no_degradation(tmp_path, monkeypatch):
-    """An explicit ``CLIO_ARC_STORE=local`` is a CHOICE, not a degrade — no record."""
-    from clio_agent.arc.init_degradation import (
-        arc_init_degradation_snapshot,
-        reset_arc_init_degradation,
-    )
-
-    reset_arc_init_degradation()
-    monkeypatch.setenv("CLIO_ARC_STORE", "local")
-    store = make_arc_store(data_dir=str(tmp_path))
-    assert isinstance(store, LocalFSStore)
-    assert arc_init_degradation_snapshot() is None
+    assert caught.value.reason == "clio_core_binding_absent"
+    assert caught.value.details["error_type"] == "ImportError"
+    snap = clio_core_attach.attach_state_snapshot()
+    assert snap.phase is clio_core_attach.ClioCoreAttachPhase.UNAVAILABLE
+    assert snap.reason == "clio_core_binding_absent"
 
 
 # ---- unit: shared clio-core runtime lifecycle (connect-or-spawn, binding-free) ----
@@ -251,7 +230,7 @@ def _isolate_clio_home(monkeypatch, tmp_path):
     # runtime_state_dir() honours CLIO_RUNTIME_STATE_DIR before Path.home(); the suite's
     # session-wide private-daemon isolation (tests/_cte_isolation.py) sets it, so these
     # registry unit tests must clear it to get their own per-test tmp registry.
-    monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
+    monkeypatch.setenv("CLIO_RUNTIME_STATE_DIR", str(tmp_path / "runtime-state"))
     monkeypatch.setattr(storage.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(storage, "_client_registered", False)
     monkeypatch.setattr(runtime_stop, "_runtime_shutdown_requested", False)
@@ -353,6 +332,7 @@ def test_live_pids_prunes_dead_and_reused(monkeypatch, tmp_path):
     assert not (reg / str(os.getpid())).exists()  # pruned (create-time mismatch)
 
 
+@pytest.mark.real_runtime_release
 def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     calls: list[int] = []
@@ -366,6 +346,7 @@ def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
     assert os.getpid() not in storage._live_client_pids()  # but we deregistered
 
 
+@pytest.mark.real_runtime_release
 def test_release_stops_daemon_when_last_and_is_idempotent(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     calls: list[int] = []
@@ -501,7 +482,7 @@ def test_clio_core_backs_the_live_segment_plane():
     sid, scope = "clio_core_live_s1", "agentA"
     arc.append_segment(sid, scope, "thought", {"text": "on CTE"}, step=0)
     arc.append_segment(sid, scope, "observation", {"text": "OBS_CLIO_CORE"}, step=0)
-    assert "OBS_CLIO_CORE" in str(arc.render_segments_keys(sid, scope))
+    assert "OBS_CLIO_CORE" in arc.render_segment_text(sid, scope)
     # a second ARCMemory over the same runtime sees the persisted segments
     arc2 = ARCMemory(store=make_arc_store(backend="cte"))
     assert len(arc2.render_segments(sid, scope)) == 2

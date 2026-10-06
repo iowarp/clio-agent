@@ -1,8 +1,7 @@
 """
 ClioAgent - Main Agent Host
-
 The process-level HOST for CLIO's runtime resources. ClioAgent owns the
-provider identity (``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter``), the tool
+provider identity (``_main_lm`` / ``_dspy_adapter``), the tool
 gateway + per-workspace executors, pack/blueprint discovery, the ARC memory
 plane, and the agent registry. It also carries the small chat-synthesis surface
 that the session-compaction summarizer reuses.
@@ -20,19 +19,18 @@ Usage:
     >>> stats = agent.get_arc_stats()
 """
 
-import contextvars
 import json
 import threading
 import time
 from collections.abc import Mapping
 from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List
+from typing import Any, Callable, Dict, List
 
 import dspy
 
-from clio_agent import conf
+from clio_agent import conf, paths
+from clio_agent.arc import history_mode
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import Conversation
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.blueprint_server_resolution import discover_blueprint_servers
@@ -40,7 +38,6 @@ from clio_agent.config import (
     LMProviderConfig,
     create_chat_adapter,
     create_lm,
-    create_planner_lm,
     has_explicit_model_override,
     list_lm_studio_models,
     load_config_from_env,
@@ -57,6 +54,10 @@ from clio_agent.gact.mcp_gateway_refresh import (
     refresh_declared_mcp_servers as _refresh_declared_mcp_servers,
 )
 from clio_agent.registry.registry import AgentRegistry
+from clio_agent.runtime.cancellation import (  # noqa: F401
+    cancellation_checker,
+    cancellation_requested,
+)
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -83,28 +84,6 @@ from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
-_CANCELLATION_CHECKER: contextvars.ContextVar[Callable[[], bool] | None] = contextvars.ContextVar(
-    "clio_cancellation_checker", default=None
-)
-
-
-@contextmanager
-def cancellation_checker(checker: Callable[[], bool] | None) -> Iterator[None]:
-    """Scope a cooperative cancellation checker to the current agent turn."""
-
-    token = _CANCELLATION_CHECKER.set(checker)
-    try:
-        yield
-    finally:
-        _CANCELLATION_CHECKER.reset(token)
-
-
-def cancellation_requested() -> bool:
-    """Return whether the active cooperative cancellation checker is set."""
-
-    checker = _CANCELLATION_CHECKER.get()
-    return bool(checker is not None and checker())
-
 
 class ClioAgent(dspy.Module):
     """CLIO Agent host: providers, tools, ARC, workspaces, and registry.
@@ -117,8 +96,7 @@ class ClioAgent(dspy.Module):
 
     Attributes:
         chat_agent: DSPy Predict with ChatAgentSignature (chat synthesis)
-        arc: ARC Memory instance
-        context_retriever: Context retrieval module
+        arc: ARC Memory instance (None in the loud History mode)
         _tool_definitions: preloaded tool defs from the boot listing pass
             (#932); None -> executors fall back to eager list_tools
         registry: Agent registry for discovery
@@ -151,7 +129,7 @@ class ClioAgent(dspy.Module):
     def __init__(
         self,
         verbose: bool = False,
-        data_dir: str = ".clio/agent",
+        data_dir: str | None = None,
         arc: ARCMemory | None = None,
         provider_config: LMProviderConfig | None = None,
         remote_mcp_federation: RemoteMcpFederation | None = None,
@@ -173,7 +151,7 @@ class ClioAgent(dspy.Module):
                 split). ``None`` mints a fresh ARC (the standalone CLI / test path that
                 owns no server-level ARC).
             provider_config: The default-profile provider config the agent binds its
-                ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` from. The gact
+                ``_main_lm`` / ``_dspy_adapter`` from. The gact
                 server supplies the config resolved off its authoritative
                 ``ProviderProfileStore`` default (design §9 step 9), so the main agent
                 and the store agree on ONE identity rather than each reading the
@@ -197,20 +175,9 @@ class ClioAgent(dspy.Module):
         self._relay_status = dict(relay_status or {})
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
-        # ARC and re-injects it on every bind) or mint one. The persistence backend comes
-        # from the factory: clio-core by default (the gold-standard, in-process tiered
-        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the clio-core
-        # binding/runtime is unavailable.
-        self.arc = (
-            arc
-            if arc is not None
-            else ARCMemory(
-                data_dir=f"{data_dir}/arc",
-                cache_capacity=1000,
-                store=make_arc_store(data_dir=f"{data_dir}/arc"),
-            )
-        )
-        self.context_retriever = ContextRetriever(self.arc)
+        # ARC and re-injects it on every bind) or mint one; None in History mode.
+        data_dir = data_dir if data_dir is not None else str(paths.arc_data_dir().parent)
+        self.arc = self._arc_for_mode(arc, data_dir=data_dir)
 
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
@@ -245,10 +212,10 @@ class ClioAgent(dspy.Module):
 
         if self.verbose:
             print(f"[ClioAgent] Provider: {self._provider_config.provider}")
-            print(f"[ClioAgent] Main/Planner model: {main_model}")
+            print(f"[ClioAgent] Main model: {main_model}")
             print(f"[ClioAgent] Expert model: {expert_model}")
 
-        # Bind the LM surface (``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter``).
+        # Bind the LM surface (``_main_lm`` / ``_dspy_adapter``).
         self.rebind_lms(self._provider_config)
 
         # Chat Agent: Predict for conversational responses. This keeps the
@@ -312,14 +279,13 @@ class ClioAgent(dspy.Module):
     def rebind_lms(self, provider_config: LMProviderConfig) -> None:
         """(Re)build the LM-dependent surface from a provider config.
 
-        The single writer for ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` /
-        ``_dspy_adapter``. Used by ``__init__`` and by the gact LM-bind hot-swap, so the
-        four fields are always rebuilt together (no partial/torn LM surface).
+        The single writer for ``_provider_config`` / ``_main_lm`` / ``_dspy_adapter``.
+        Used by ``__init__`` and by the gact LM-bind hot-swap, so the three fields are
+        always rebuilt together (no partial/torn LM surface).
         """
 
         self._provider_config = provider_config
         self._main_lm = create_lm(provider_config)
-        self._planner_lm = create_planner_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
     def _discover_pack_servers(
@@ -529,6 +495,10 @@ class ClioAgent(dspy.Module):
         blueprint_id = get_active_tool_blueprint_id().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             executor = executors.get(root)
             stale = executor is not None and getattr(executor, "closed", False)
             # #1236: a resident executor minted while the relay federation was
@@ -678,6 +648,10 @@ class ClioAgent(dspy.Module):
             return
         lock, _executors, leases = self._workspace_state()
         with lock:
+            if getattr(self, "_source_policy_changing", False):
+                raise RuntimeError(
+                    "CLIO is updating connected-data access; retry after setup finishes"
+                )
             leases[root] = leases.get(root, 0) + 1
         try:
             yield
@@ -957,13 +931,23 @@ class ClioAgent(dspy.Module):
 
         return str(value)
 
+    @staticmethod
+    def _arc_for_mode(arc: ARCMemory | None, *, data_dir: str) -> ARCMemory | None:
+        """The injected ARC, else a new clio-core one (typed error if it cannot come up),
+        else ``None`` in the loud History mode (no clio-core binding on the platform)."""
+        if arc is not None or history_mode.resolve().is_history:
+            return arc
+        store = make_arc_store(data_dir=f"{data_dir}/arc")
+        return ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000, store=store)
+
     def get_arc_stats(self) -> Dict[str, Any]:
-        """Get ARC memory statistics."""
-        return self.arc.get_cache_stats()
+        """Get ARC memory statistics (typed ``history_mode_unsupported`` in History mode)."""
+        return history_mode.require_arc(self.arc, "ARC statistics").get_cache_stats()
 
     def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get conversation history for session from ARC Memory."""
-        return self.arc.get_conversation_history(session_id, limit=limit)
+        arc = history_mode.require_arc(self.arc, "ARC conversation history")
+        return arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
         """Close persistent MCP tool executors, stop the namespace-discovery

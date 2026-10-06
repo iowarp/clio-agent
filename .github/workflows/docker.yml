@@ -6,18 +6,20 @@ on:
     paths:
       - "docker/**"
       - "branding/**"
+      - "external/gact-tui"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
     # Release images: the push-to-ghcr step is gated on a v* tag ref, but without
     # this trigger the workflow never RAN on tags - release images were silently
-    # never pushed (found on v0.6.0; a submodule gitlink bump also does not match
-    # the external/gact-tui/** path filter on branch pushes).
+    # never pushed (found on v0.6.0). The exact gitlink path above also ensures
+    # paired UI revisions are checked on branch pushes before release tagging.
     tags: ["v*"]
   workflow_dispatch: {}
   pull_request:
     paths:
       - "docker/**"
       - "branding/**"
+      - "external/gact-tui"
       - "external/gact-tui/**"
       - ".github/workflows/docker.yml"
 
@@ -68,7 +70,8 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
           tags: |
             type=match,pattern=v(.*),group=1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # A pre-release tag (vX.Y.Z-beta.N) never moves `latest`.
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
             type=ref,event=branch
             type=sha,format=short
       - name: Build and push

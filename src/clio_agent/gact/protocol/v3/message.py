@@ -6,9 +6,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from clio_schemas.attention_evidence import AttentionEvidenceInspection
+from pydantic import ValidationError
+
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.summarization_record import legacy_compaction_block
 from clio_agent.gact.tool_result_presentation import project_presentation
 
 if TYPE_CHECKING:
@@ -96,11 +100,22 @@ def _action_cards(part: Mapping[str, Any]) -> list[dict[str, Any]]:
                 projected_behavior["handle_id"] = str(behavior["handle_id"])
             if behavior.get("reason"):
                 projected_behavior["reason"] = str(behavior["reason"])
+            if behavior.get("kind") == "inspect_attention" and behavior.get("inspection"):
+                try:
+                    projected_behavior["inspection"] = AttentionEvidenceInspection.model_validate(
+                        behavior["inspection"]
+                    ).model_dump()
+                except ValidationError:
+                    projected_behavior["reason"] = "The finding has an invalid evidence receipt."
         projected.append(
             {
                 "id": str(action["id"]),
                 "label": str(action.get("label") or action["id"]),
-                "enabled": bool(action.get("enabled", True)),
+                "enabled": bool(action.get("enabled", True))
+                and (
+                    projected_behavior["kind"] != "inspect_attention"
+                    or "inspection" in projected_behavior
+                ),
                 "behavior": projected_behavior,
             }
         )
@@ -138,6 +153,8 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
     than silently disappearing or masquerading as prose.
     """
 
+    if part.get("type") == "compaction":  # stored before the summarization record
+        part = legacy_compaction_block(part)
     part_id = str(part.get("id") or "")
     part_type = str(part.get("type") or "unknown")
     metadata = _mapping(part.get("metadata"))
@@ -197,14 +214,6 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "detail": str(part.get("text") or ""),
             **common,
         }
-    if part_type == "compaction":
-        return {
-            "id": part_id,
-            "type": "compaction",
-            "summary": str(part.get("summary") or ""),
-            **({"auto": part["auto"]} if isinstance(part.get("auto"), bool) else {}),
-            **common,
-        }
     if part_type in {"task", "session_task", "task_notification"}:
         return {
             "id": part_id,
@@ -258,6 +267,34 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "revision": str(part.get("revision") or ""),
             "media_type": str(resolved.get("media_type") or "application/octet-stream"),
             "navigation": dict(navigation),
+            **common,
+        }
+    if part_type == "injection":
+        # Harness data the agent was given (plan reminder, todos, a path hint, ...):
+        # clients render it as what it is, never as model or user text.
+        return {
+            "id": part_id,
+            "type": "injection",
+            "source": str(part.get("source") or ""),
+            "text": str(part.get("text") or ""),
+            "call_id": str(metadata.get("call_id") or ""),
+            # A compaction's record (source "summarization"): who asked, and its id.
+            **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
+            **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
+            # An injection made inside a variant try (e.g. Refine advice) belongs to that tab.
+            **{k: metadata[k] for k in ("variants_id", "try_index") if k in metadata},
+            **common,
+        }
+    if part_type == "notice":
+        # A UI/provenance record the model was never told (a failed compaction).
+        return {
+            "id": part_id,
+            "type": "notice",
+            "source": str(part.get("source") or ""),
+            "text": str(part.get("text") or ""),
+            "code": str(part.get("code") or ""),
+            **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
+            **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
             **common,
         }
     if part_type == "action_card":

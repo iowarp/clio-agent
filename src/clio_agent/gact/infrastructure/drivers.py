@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import ntpath
 import posixpath
+from uuid import uuid4
 
 from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
@@ -29,7 +30,14 @@ from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.monitoring_services import (
+    MONITORING_SERVICES,
+    monitoring_definitions,
+    monitoring_plan,
+    monitoring_port,
+)
 from clio_agent.gact.infrastructure.plan import DriverPlan
+from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 
 __all__ = [
     "CLIO_AGENT_PORT",
@@ -49,7 +57,7 @@ CLIO_AGENT_PORT = 17_800
 # reach them at the host's address, so they are always reached through an SSH
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
 # loopback because they have no authentication (see model_runtimes).
-LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES})
+LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
 
 
 def clio_agent_version() -> str:
@@ -69,6 +77,13 @@ def service_connection_port(
 
     if service_id in MODEL_RUNTIME_SERVICES:
         return service_port(service_id, configuration or {}, variant_id)
+    if service_id in MONITORING_SERVICES:
+        return monitoring_port(service_id, configuration or {})
+    if service_id == "clio_agent":
+        value = (configuration or {}).get("port", str(CLIO_AGENT_PORT))
+        if not value.isdigit() or not 1024 <= int(value) <= 65535:
+            raise ValueError("Remote CLIO port must be between 1024 and 65535")
+        return int(value)
     return {"web_search": 8089, "clio_agent": CLIO_AGENT_PORT}.get(service_id)
 
 
@@ -170,6 +185,7 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
         model_runtime_definition("vllm", facts),
         model_runtime_definition("llama_cpp", facts),
         model_runtime_definition("ollama", facts),
+        *monitoring_definitions(facts),
         web_search,
         relay,
         clio_agent,
@@ -224,22 +240,44 @@ def build_driver_plan(
     target: InfrastructureTarget | None = None,
     owned: list[OwnedResource] | None = None,
     api_key: str | None = None,
+    on_conflict: str | None = None,
+    resolved_root: str | None = None,
 ) -> DriverPlan:
     """Compile one allowlisted lifecycle action into commands.
 
     ``owned`` is the service's ledger of what its deployment created; model
     runtimes remove exactly those resources on uninstall and reinstall.
     ``api_key`` is a keyed model server's deployment key (see
-    :mod:`clio_agent.gact.infrastructure.server_access`).
+    :mod:`clio_agent.gact.infrastructure.server_access`). ``on_conflict``
+    (``clio_agent`` only) is this ONE operation's answer to a found conflict
+    -- the caller must never read it back out of a persisted record and pass
+    it again; a fresh claim asks again every time. ``resolved_root``
+    overrides ``target.install_root`` when a prior ``connect`` adopted the
+    service under a different root than the target's configured one.
     """
 
     definitions = {row.id: row for row in service_definitions(facts)}
     definition = definitions.get(service_id)
     if definition is None:
         raise ValueError(f"Unknown managed service {service_id!r}")
+    if action == "delete_data" and not (
+        (service_id == "vllm" and variant_id.startswith("native-cuda"))
+        or service_id in MONITORING_SERVICES
+    ):
+        raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
+    if action == "verify" and service_id not in MONITORING_SERVICES:
+        raise ValueError("This service definition has no setup verification procedure")
+    if service_id in MONITORING_SERVICES:
+        return monitoring_plan(
+            service_id,
+            action,
+            configuration,
+            facts,
+            target or InfrastructureTarget(id=facts.target_id, label=facts.label, kind="local"),
+        )
     if service_id in MODEL_RUNTIME_SERVICES:
         # The model-runtime driver checks its own compatibility, so a missing
         # container runtime surfaces as the typed RuntimeUnavailableError.
@@ -259,7 +297,13 @@ def build_driver_plan(
     if service_id == "relay":
         return _relay_plan(action, configuration, target)
     if service_id == "clio_agent":
-        return _clio_agent_plan(action, target)
+        return _clio_agent_plan(
+            action,
+            target,
+            on_conflict=on_conflict,
+            resolved_root=resolved_root,
+            configuration=configuration,
+        )
 
     container = "clio-web-search"
     if action in {"status", "logs", "stop", "uninstall"}:
@@ -404,7 +448,7 @@ def _relay_plan(
                 "tool",
                 "install",
                 "--python",
-                "3.12",
+                "3.13",
                 "--no-config",
                 f"clio-relay=={RELAY_VERSION}",
             ],
@@ -463,18 +507,48 @@ def _ssh_destination(target: InfrastructureTarget | None) -> str:
     return f"{target.ssh.user.strip()}@{host}" if target.ssh.user.strip() else host
 
 
-def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> DriverPlan:
+def _clio_agent_plan(
+    action: str,
+    target: InfrastructureTarget | None,
+    *,
+    on_conflict: str | None = None,
+    resolved_root: str | None = None,
+    configuration: dict[str, str] | None = None,
+) -> DriverPlan:
     if target is None or target.kind != "ssh":
         raise ValueError("Remote CLIO deployment requires an SSH infrastructure target")
-    root = target.install_root.strip()
+    # A prior `connect` may have adopted this service under a root that
+    # differs from the target's configured one; lifecycle commands must act
+    # on where the process actually lives, not where a fresh install would go.
+    root = (resolved_root or target.install_root).strip()
+    configuration = configuration or {}
+    port = service_connection_port("clio_agent", configuration)
+    assert port is not None
+    if on_conflict not in {None, "connect", "replace", "update"}:
+        raise ValueError("Choose reconnect, update, or replace for the existing CLIO")
+    if on_conflict == "replace":
+        root = target.install_root.strip()
+    if on_conflict == "update":
+        root = configuration.get("conflict_root", "").strip()
+        if not root.startswith("/"):
+            raise ValueError("Updating requires the existing agent's absolute installation path")
 
     def launcher(script: str) -> CommandSpec:
-        return CommandSpec(program="bash", args=["-lc", LAUNCHER_PRELUDE + script, "clio", root])
+        return CommandSpec(
+            program="bash",
+            args=[
+                "-lc",
+                LAUNCHER_PRELUDE + 'export CLIO_PORT="$2"; ' + script,
+                "clio",
+                root,
+                str(port),
+            ],
+        )
 
     if action == "status":
-        return DriverPlan((status_command(root, CLIO_AGENT_PORT),), connection_port=CLIO_AGENT_PORT)
+        return DriverPlan((status_command(root, port),), connection_port=port)
     if action == "logs":
-        return DriverPlan((launcher('"$bin/clio" logs'),), connection_port=CLIO_AGENT_PORT)
+        return DriverPlan((launcher('"$bin/clio" logs'),), connection_port=port)
     if action == "stop":
         return DriverPlan((launcher('"$bin/clio" stop'),))
     if action == "uninstall":
@@ -488,22 +562,46 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
                 ),
             )
         )
-    commands: list[CommandSpec] = []
-    if action == "reinstall":
-        commands.extend(_clio_agent_plan("uninstall", target).commands)
     if action not in {"install", "reinstall", "start"}:
         raise ValueError(f"Unsupported CLIO lifecycle action {action!r}")
     version = clio_agent_version()
-    # Adopt this install's healthy server of this version, or stop any other
-    # CLIO on the port, before touching anything; never start beside one.
-    commands.append(claim_command(root, CLIO_AGENT_PORT, version))
+    # Claim the port FIRST, before this root's own state is touched: a
+    # reinstall's uninstall step (stop + rm -rf) must never run ahead of the
+    # conflict check, or a found conflict destroys this root's install for
+    # nothing while leaving the actual conflict on the port untouched (#1528
+    # review). Adopt this install's healthy server of this version, or stop
+    # any other CLIO on the port, only once claimed; never start beside one
+    # -- unless the person already chose "Replace it" for a found conflict
+    # (`on_conflict: "replace"`, an operation-scoped answer runtime.py never
+    # persists), which is the only case that may stop a CLIO this claim
+    # doesn't recognize as its own.
+    replace = on_conflict in {"replace", "update"}
+    commands: list[CommandSpec] = [
+        claim_command(
+            root, port, version, replace=replace, expected_pid=configuration.get("conflict_pid", "")
+        )
+    ]
+    if action == "reinstall":
+        commands.extend(
+            _clio_agent_plan(
+                "uninstall", target, resolved_root=resolved_root, configuration=configuration
+            ).commands
+        )
     if action in {"install", "reinstall"}:
         commands.append(install_command(root, version))
-    commands.append(launcher('"$bin/clio" start'))
+    launch = RemoteLaunch(
+        root,
+        port,
+        str(uuid4()),
+        configuration.get("keep_running") == "true",
+        configuration.get("desktop_id", ""),
+    )
+    commands.append(start_owned_command(launch))
     return DriverPlan(
         tuple(commands),
-        connection_port=CLIO_AGENT_PORT,
+        connection_port=port,
+        remote_launch=launch,
         teardown=lambda claim: teardown_command(
-            root, CLIO_AGENT_PORT, purge_root=not claim.existing_root
+            root, port, purge_root=not claim.existing_root, launch_token=launch.token
         ),
     )

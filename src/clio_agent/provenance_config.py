@@ -18,6 +18,7 @@ and mirrored by ``config.defaults.yaml`` (drift-tested by
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from clio_agent import conf
 
@@ -91,31 +92,20 @@ def kvnorm_join_enabled() -> bool:
     return "flowcept" in configured_provider_names()
 
 
-def native_durable_provenance_enabled() -> bool:
-    """Whether ARC may release its event log after native persistence."""
+def attention_capture_enabled() -> bool:
+    """Whether model calls declare attention ranges for the Flowcept connector."""
+    value = conf.resolve(
+        "provenance.attention",
+        env="CLIO_PROVENANCE_ATTENTION",
+        default=False,
+    )
+    # Preserve the established boolean while allowing enabled + files_dir in one
+    # YAML namespace. A files-only mapping does not opt the user into capture.
+    if isinstance(value, Mapping):
+        value = value.get("enabled", False)
+    return conf.as_bool(value) and "flowcept" in configured_provider_names()
 
-    names = configured_provider_names()
-    return "jsonl" in names or "factory" in names
 
-
-def durable_trace_backend_name() -> str:
-    """ARC's durable-trace decision, mirroring the provider ladder above.
-
-    ``"file"`` when a configured provider keeps a replayable NATIVE copy
-    (Flowcept alone is not permission to erase ARC history), ``"none"`` when
-    providers are explicitly configured without one, the verbatim legacy
-    backend name when only legacy settings exist, else the default
-    (``"file"``, matching the ``["jsonl"]`` provider default).
-    """
-
-    providers_file = conf.store().file_value("provenance.agentic.providers")
-    providers_env = os.environ.get("CLIO_PROVENANCE_PROVIDERS", "").strip()
-    if providers_file is not conf.UNSET or providers_env:
-        raw = providers_file if providers_file is not conf.UNSET else providers_env
-        names = {name.strip().lower() for name in conf.as_csv(raw)}
-        return "file" if names.intersection(_NATIVE_DURABLE) else "none"
-    legacy_file = conf.store().file_value("trace.backend")
-    legacy_env = os.environ.get("CLIO_SEMANTIC_TRACE_BACKEND", "").strip()
-    if legacy_file is not conf.UNSET or legacy_env:
-        return str(legacy_file if legacy_file is not conf.UNSET else legacy_env).strip().lower()
-    return "file"
+def response_id_join_enabled() -> bool:
+    """Whether model provenance retains the provider response join key."""
+    return kvnorm_join_enabled() or attention_capture_enabled()

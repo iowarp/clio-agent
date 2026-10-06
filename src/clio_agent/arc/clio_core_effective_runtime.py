@@ -62,7 +62,11 @@ def runtime_state_path(env: Mapping[str, str] | None = None) -> Path:
     override = (source.get("CLIO_RUNTIME_STATE_DIR") or "").strip()
     if override:
         return Path(override).expanduser()
-    return Path.home() / ".clio" / "hosts" / clio_core_config.host_key()
+    from clio_agent import paths  # noqa: PLC0415
+
+    current = paths.host_state_dir(source) / "core-hosts" / clio_core_config.host_key()
+    legacy = Path.home() / ".clio" / "hosts" / clio_core_config.host_key()
+    return legacy if legacy.exists() and not current.exists() else current
 
 
 def requested_config(store: conf.ConfigStore) -> tuple[str, str]:

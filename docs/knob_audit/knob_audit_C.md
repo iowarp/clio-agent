@@ -29,7 +29,6 @@ OK_REFLECTED | providers.codex.credential_home_capacity | src/clio_agent/provide
 OK_REFLECTED | providers.model_catalog_ttl_s | src/clio_agent/providers/model_discovery/overlay.py:151 | CLIO_MODEL_CATALOG_TTL_S | Seconds provider model catalog is served fresh before marked stale
 OK_REFLECTED | limits.agent_task_artifact_context_chars | src/clio_agent/gact/agent_task_artifacts.py:251 | CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS | Character bound on artifact content injected into commissioning parent
 OK_REFLECTED | limits.agent_task_output_digest_chars | src/clio_agent/gact/agents/agent_task_output_digest.py:50 | CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS | Threshold above which child output is digested instead of inlined
-OK_REFLECTED | limits.codex_sdk_progress_timeout_s | src/clio_agent/providers/codex_stream.py:43 | CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S | Max silence (seconds) for one Codex SDK exchange before timeout
 OK_REFLECTED | limits.context_inline_bytes | src/clio_agent/gact/runtime/constants.py:41 | CLIO_CTX_MAX_BYTES | Byte cap per attached file inlined into context injection
 OK_REFLECTED | limits.fs_read_bytes | src/clio_agent/tools/servers/fs_server.py:92 | CLIO_FS_MAX_READ_BYTES | Byte cap on a single read_file tool call
 OK_REFLECTED | limits.mcp_content_block_max_bytes | src/clio_agent/tools/mcp_results.py:48 | CLIO_MCP_CONTENT_BLOCK_MAX_BYTES | Byte cap on one MCP content block's decoded binary payload
@@ -125,7 +124,6 @@ OK_REFLECTED | artifacts.table_preview_max_rows | src/clio_agent/gact/routes/art
 OK_REFLECTED | artifacts.table_preview_max_source_bytes | src/clio_agent/gact/routes/artifact_table_preview.py:66 | CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES | Largest CSV artifact the table-preview route will read
 OK_REFLECTED | runtime.capture_reasoning | src/clio_agent/gact/usage.py:34 | CLIO_CAPTURE_REASONING | Whether per-call reasoning/chain-of-thought traces are persisted
 OK_REFLECTED | runtime.environment | src/clio_agent/config.py:536 | CLIO_ENVIRONMENT | Deployment environment label (dev/staging/prod)
-OK_REFLECTED | runtime.live_streaming | src/clio_agent/lm/adapters.py:50 | CLIO_LIVE_STREAMING | Stream top-level GACT turn answer live via dspy.streamify
 OK_REFLECTED | runtime.lm_token_liveness | src/clio_agent/lm/io_logging.py:86 | CLIO_LM_TOKEN_LIVENESS | Stream expert LM calls token-by-token for no-progress watchdog
 OK_REFLECTED | sandbox.enabled | src/clio_agent/runtime/sandbox.py:61 | CLIO_SANDBOX_ENABLED | Whether tool-execution sandboxing/confinement is applied
 OK_REFLECTED | paths.data_dir | src/clio_agent/runtime/status.py:206 | CLIO_DATA_DIR | Base directory for agent's on-disk data (ARC, sessions, etc.)
@@ -157,8 +155,6 @@ OK_UNREFLECTED | lm.api_base | src/clio_agent/config.py:532 | CLIO_LM_API_BASE |
 OK_UNREFLECTED | lm.model | src/clio_agent/config.py:533 | CLIO_LM_MODEL | Pins exact model identifier to use
 OK_UNREFLECTED | lm.max_tokens | src/clio_agent/config.py:582 | CLIO_LM_MAX_TOKENS | Overrides per-reply output token cap
 OK_UNREFLECTED | lm.temperature | src/clio_agent/config.py:570 | CLIO_LM_TEMPERATURE | Sampling temperature for main agentic LM calls
-OK_UNREFLECTED | lm.planner_temperature | src/clio_agent/config.py:573 | CLIO_LM_PLANNER_TEMPERATURE | Sampling temperature for deterministic action-planning calls
-OK_UNREFLECTED | lm.planner_max_tokens | src/clio_agent/config.py:579 | CLIO_LM_PLANNER_MAX_TOKENS | Token cap for lower-temperature planner/routing generations
 OK_UNREFLECTED | lm.top_p | src/clio_agent/config.py:585 | CLIO_LM_TOP_P | OpenAI-standard top-p sampling parameter
 OK_UNREFLECTED | lm.top_k | src/clio_agent/config.py:586 | CLIO_LM_TOP_K | Top-k sampling param via extra_body on llama.cpp/LM Studio
 OK_UNREFLECTED | lm.min_p | src/clio_agent/config.py:587 | CLIO_LM_MIN_P | Min-p sampling param via extra_body on llama.cpp/LM Studio
@@ -167,7 +163,7 @@ OK_UNREFLECTED | lm.thinking_budget | src/clio_agent/config.py:564 | CLIO_LM_THI
 OK_UNREFLECTED | lm.thinking_level | src/clio_agent/config.py:567 | CLIO_LM_THINKING_LEVEL | Provider-generic reasoning level (off/low/medium/high)
 OK_UNREFLECTED | lm.context_window | src/clio_agent/config.py:565 | CLIO_LM_CONTEXT_WINDOW | Override effective context window used by clio
 OK_UNREFLECTED | lm.claude_code_transport | src/clio_agent/config.py:545 | CLIO_CLAUDE_CODE_TRANSPORT | Claude Code transport selection (sdk)
-OK_UNREFLECTED | lm.codex_transport | src/clio_agent/config.py:540 | CLIO_CODEX_TRANSPORT | Codex transport selection (sdk)
+OK_UNREFLECTED | lm.codex_transport | src/clio_agent/config.py:540 | CLIO_CODEX_TRANSPORT | Codex direct wire selection (websocket or sse)
 OK_UNREFLECTED | tools.file_policy.allow_symlinks | src/clio_agent/tools/file_policy.py:120 | CLIO_ALLOW_SYMLINKS | Whether tool file reads/writes may traverse symlinks
 OK_UNREFLECTED | tools.file_policy.max_file_size_bytes | src/clio_agent/tools/file_policy.py:132 | CLIO_MAX_FILE_SIZE_BYTES | Byte-size cap on files a read/write tool call may touch
 OK_UNREFLECTED | tools.mcp.call_timeout_s | src/clio_agent/tools/execution.py:219 | CLIO_MCP_CALL_TIMEOUT_S | Runaway backstop seconds for synchronous MCP tool call
@@ -220,7 +216,7 @@ ENV_BARE | CLIO_COLLABORA_URL | src/clio_agent/gact/documents/editors.py:194 | n
 ENV_BARE | CLIO_GACT_PUBLIC_URL | src/clio_agent/gact/documents/editors.py:204 | n/a | Read twice (204, 209); document editor integration; no conf.resolve
 ENV_BARE | CLIO_ONLYOFFICE_JWT_SECRET | src/clio_agent/gact/documents/editors.py:243 | n/a | OnlyOffice secret; should use conf.resolve (secret tier)
 ENV_BARE | CLIO_DOCUMENT_TYPST_FONT | src/clio_agent/gact/documents/renditions.py:145 | n/a | Typst font path; no conf.resolve equivalent; should add
-ENV_BARE | CODEX_HOME | src/clio_agent/providers/codex_credential_home.py:158 | n/a | Third-party Codex SDK integration; read 3 times total across codebase
+ENV_BARE | CODEX_HOME | src/clio_agent/providers/codex/credentials.py:161 | n/a | The Codex CLI login home ($CODEX_HOME/auth.json) Codex direct reads without a CLIO sign-in; third-party variable, not a CLIO knob
 ENV_BARE | CODEX_HOME | src/clio_agent/runtime/lm_provider_probe.py:94 | n/a | CODEX_HOME duplicate read (third-party integration)
 ENV_BARE | CODEX_HOME | src/clio_agent/runtime/sandbox_codex.py:252 | n/a | CODEX_HOME duplicate read (third-party integration)
 ENV_BARE | FLOWCEPT_SETTINGS_PATH | src/clio_agent/gact/provenance/flowcept.py:191 | n/a | Flowcept provenance integration; third-party tool setup
@@ -253,8 +249,6 @@ HARDCODED | DEFAULT_ELICITATION_TIMEOUT_S | src/clio_agent/gact/elicitation_brid
 HARDCODED | DEFAULT_TIMEOUT_S | src/clio_agent/gact/permission_gate.py:49 | n/a | 600.0 seconds; permission approval timeout; should use conf.resolve
 HARDCODED | _DEFAULT_TIMEOUT_S | src/clio_agent/gact/runtime/ai_review.py:86 | n/a | 45.0 seconds; AI review verdict timeout; mirrors permissions.ai_review_timeout_s
 HARDCODED | _EGRESS_GATE_TIMEOUT_S | src/clio_agent/gact/runtime/grants.py:68 | n/a | 600.0 seconds; egress grant gate timeout; should use conf.resolve
-HARDCODED | DEFAULT_SDK_PROGRESS_TIMEOUT_S | src/clio_agent/providers/codex_stream.py:28 | n/a | 120.0 seconds; Codex SDK progress timeout; mirrors limits.codex_sdk_progress_timeout_s
-HARDCODED | DEFAULT_TURN_TIMEOUT_S | src/clio_agent/providers/codex_stream.py:32 | n/a | 180.0 seconds; Codex turn timeout; should use conf.resolve
 HARDCODED | _CONNECT_READ_TIMEOUT_S | src/clio_agent/runtime/net_chokepoint.py:57 | n/a | 30.0 seconds; network socket timeout; should use conf.resolve
 HARDCODED | _VERSION_PROBE_TIMEOUT_S | src/clio_agent/runtime/sandbox_codex.py:33 | n/a | 5.0 seconds; Codex version probe timeout; should use conf.resolve
 
@@ -263,9 +257,9 @@ HARDCODED | _VERSION_PROBE_TIMEOUT_S | src/clio_agent/runtime/sandbox_codex.py:3
 ## TOTALS
 
 ### Configuration via conf.resolve()
-- OK_REFLECTED (uses conf.resolve + in defaults.yaml): 103 keys
-- OK_UNREFLECTED (uses conf.resolve, NOT in defaults.yaml by design): 50 keys
-- **Subtotal: 153 conf.resolve() calls**
+- OK_REFLECTED (uses conf.resolve + in defaults.yaml): 102 keys
+- OK_UNREFLECTED (uses conf.resolve, NOT in defaults.yaml by design): 48 keys
+- **Subtotal: 150 conf.resolve() calls**
 
 ### Bare os.environ/os.getenv reads
 - ENV_SANCTIONED (deliberately exempted per conf.py lines 40–53): 11 reads

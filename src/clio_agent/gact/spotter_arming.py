@@ -85,6 +85,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
+from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.runtime import trace
 from clio_agent.tools.uv_launcher import (
     VENV_STATE_ENTRYPOINT_ABSENT,
@@ -305,7 +306,7 @@ def _declared_watcher_servers(
     except Exception as exc:  # noqa: BLE001 - discovery failure must not fail the route
         _record_skip(_SKIP_DISCOVERY_FAILED, blueprint_id, error=repr(exc))
         return {}, {}, cwd
-    blueprint = next((row for row in blueprints if row.id == blueprint_id), None)
+    blueprint = select_blueprint(blueprints, blueprint_id)
     if blueprint is None:
         _record_skip(_SKIP_BLUEPRINT_NOT_INSTALLED, blueprint_id)
         return {}, {}, cwd

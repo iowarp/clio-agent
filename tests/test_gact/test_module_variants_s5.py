@@ -14,7 +14,7 @@ Four layers are pinned:
   builds a REAL ``dspy.BestOfN``/``Refine`` wrapping the declared inner kind, selects by
   the compiled reward, and stamps the winning try's index + score.
 * **ARC-plane run keying** (``context.run_keyed_scope`` through the real
-  ``reactv2.arc_history_messages`` fold + the ``lm_activity``/``tool_observer``
+  ``clio_react_record.arc_scope`` + ``read_steps`` fold + the ``lm_activity``/``tool_observer``
   attribution seams) — two in-process tries of one module in one session read DISTINCT
   ARC partitions (sabotage: drop the ``react_run`` fold → try 2's fold contains try 1's
   trajectory → red), while every attribution reader keeps the BARE agent id.
@@ -34,7 +34,7 @@ from dspy.utils.dummies import DummyLM
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import module_variants as mv
-from clio_agent.gact.agents.reactv2 import arc_history_messages
+from clio_agent.gact.agents.clio_react_record import arc_scope, read_steps
 from clio_agent.gact.app import _build_blueprint_dspy_module, build_app
 from clio_agent.gact.expert_packs import parse_expert_file
 from clio_agent.gact.runtime.type_parsing import (
@@ -43,6 +43,9 @@ from clio_agent.gact.runtime.type_parsing import (
     parse_module_variant,
 )
 from clio_agent.gact.types import AgentDef
+from tests._scripted_engine import Reply, scripted_lm
+
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -553,12 +556,14 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
     try's output AND carries variant_selection across the boundary (#953 [5]/[9]/[10]).
     Sabotage: delete the wrap call → a single-shot Predict returns 'wordy first attempt' with
     no variant_selection → both asserts red."""
-    lm = DummyLM(
+    # The expert answers as the agent loop (plain text); the reward judge is a DSPy
+    # predictor (field format). One engine serves every rollout copy of the LM.
+    lm, _engine = scripted_lm(
         [
-            {"answer": "wordy first attempt"},
-            {"score": "0.3"},
-            {"answer": "second"},
-            {"score": "0.9"},
+            Reply(text="wordy first attempt"),
+            Reply(text="[[ ## score ## ]]\n0.3"),
+            Reply(text="second"),
+            Reply(text="[[ ## score ## ]]\n0.9"),
         ]
     )
     module = _build_variant_module(
@@ -605,9 +610,26 @@ def _variant_scope_ctx(arc_memory: ARCMemory) -> Iterator[None]:
             ctx.reset(tok)
 
 
+def _fold_active() -> list[Any]:
+    """The loop's context read for the active try: the plane ``arc_scope`` resolves
+    (run-keyed) folded by ``read_steps`` -- exactly what ``ClioReAct`` sends."""
+    arc_memory, session, scope = arc_scope()
+    assert arc_memory is not None, "no live plane resolved for the active react scope"
+    return read_steps(arc_memory, session, scope)
+
+
+def _thoughts() -> list[str]:
+    """The step texts of the active try's folded context (one per assistant message)."""
+    return [
+        "".join(getattr(p, "text", "") for p in m.parts if type(p).__name__ == "TextPart")
+        for m in _fold_active()
+        if m.role == "assistant"
+    ]
+
+
 def _write_thought(arc_memory: ARCMemory, text: str) -> None:
-    """Write a thought through the SAME run-keyed scope the writer (reactv2_events
-    _arc_scope) would compute for the active try."""
+    """Write a thought through the SAME run-keyed scope the writer
+    (``clio_react_record.arc_scope``) computes for the active try."""
     scope = ctx.run_keyed_scope(ctx.active_react_scope())
     arc_memory.append_segment(
         _SESSION,
@@ -621,7 +643,7 @@ def _write_thought(arc_memory: ARCMemory, text: str) -> None:
 
 def test_sequential_tries_read_distinct_arc_partitions(arc: ARCMemory) -> None:
     """Two in-process tries of one module in one session fold DISTINCT ARC partitions —
-    try 1's History fold never contains try 0's trajectory."""
+    try 1's context fold never contains try 0's trajectory."""
     gen = _variant_scope_ctx(arc)
     next(gen)
     try:
@@ -629,14 +651,12 @@ def test_sequential_tries_read_distinct_arc_partitions(arc: ARCMemory) -> None:
         t0 = ctx.set_react_run(0)
         _write_thought(arc, "TRY0-THOUGHT")
         # its OWN fold sees it (partition is real, not always-empty)
-        assert [m.get("next_thought") for m in (arc_history_messages() or [])] == ["TRY0-THOUGHT"]
+        assert _thoughts() == ["TRY0-THOUGHT"]
         ctx.reset(t0)
 
         # try 1 folds its own (empty) partition — clean, no try-0 bleed
         t1 = ctx.set_react_run(1)
-        try1_fold = arc_history_messages() or []
-        assert try1_fold == []
-        assert all("TRY0-THOUGHT" != m.get("next_thought") for m in try1_fold)
+        assert _fold_active() == []
         ctx.reset(t1)
     finally:
         next(gen, None)
@@ -657,7 +677,7 @@ def test_sabotage_dropping_run_fold_leaks_prior_try(
         ctx.reset(t0)
 
         t1 = ctx.set_react_run(1)
-        leaked = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        leaked = _thoughts()
         ctx.reset(t1)
     finally:
         next(gen, None)
@@ -700,14 +720,15 @@ class _ArcWritingInner(dspy.Module):
 
     def forward(self, **kwargs: Any) -> Any:
         run = ctx.active_react_run()
-        _ARC_OBS.append((run, [m.get("next_thought") for m in (arc_history_messages() or [])]))
+        _ARC_OBS.append((run, _thoughts()))
         arc_memory = ctx.active_app().state.arc
         scope = ctx.run_keyed_scope(ctx.active_react_scope())
         arc_memory.append_segment(
             ctx.active_react_session(),
             scope,
             "thought",
-            {"text": f"TRY{run}-THOUGHT"},
+            # Labelled by forward order (not ``run``), so a collapsed run key stays visible.
+            {"text": f"TRY{len(_ARC_OBS) - 1}-THOUGHT"},
             step=0,
             token_count=1,
         )
@@ -717,11 +738,11 @@ class _ArcWritingInner(dspy.Module):
 def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMemory) -> None:
     """Drive the BUILT variant program through the REAL dspy.BestOfN loop over an ARC-writing
     inner: each try's ``react_run`` is set by the production ``_RunKeyedModule.forward`` (not
-    hand-set), so try 1's History fold EXCLUDES try 0's trajectory and the two writes land in
+    hand-set), so try 1's context fold EXCLUDES try 0's trajectory and the two writes land in
     DISTINCT ARC partitions. This is the integration seam the piecewise tests above do not
     exercise (they set ``set_react_run`` manually). A full react inner is too heavy to drive
     deterministically under a stub LM, so this drives the minimal real path — the real BestOfN
-    loop + real _RunKeyedModule + real reactv2 fold + real ARCMemory."""
+    loop + real _RunKeyedModule + real clio_react_record fold + real ARCMemory."""
     _ARC_OBS.clear()
     wrapped = mv.wrap_module_variant(
         _ArcWritingInner(),
@@ -737,10 +758,10 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
         assert _ARC_OBS == [(0, []), (1, [])]
         # ...and the two writes are in DISTINCT run-keyed partitions.
         t0 = ctx.set_react_run(0)
-        fold0 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        fold0 = _thoughts()
         ctx.reset(t0)
         t1 = ctx.set_react_run(1)
-        fold1 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        fold1 = _thoughts()
         ctx.reset(t1)
         assert fold0 == ["TRY0-THOUGHT"]
         assert fold1 == ["TRY1-THOUGHT"]
@@ -748,14 +769,14 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
         next(gen, None)
 
 
-def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
+def test_sabotage_neutralizing_set_react_run_hands_the_base_a_losing_line(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Sabotage the single line wiring the variant loop to the keying plane: force
-    ``set_react_run`` to always bind run 0. Both tries then key to the same partition, so the
-    second try's real-loop fold accumulates try 0's trajectory — the silent cross-try model
-    -input contamination the discriminator prevents. Proves _RunKeyedModule's set_react_run is
-    load-bearing through the real forward."""
+    ``set_react_run`` to always bind run 0. Each try still forks (its predecessor's line is
+    retired), but both tries share one partition, so the line recorded on the base scope as
+    the winner's is the LAST try's -- here the loser's. Proves _RunKeyedModule's
+    set_react_run is load-bearing through the real forward."""
     _ARC_OBS.clear()
     orig_set = ctx.set_react_run
     monkeypatch.setattr(ctx, "set_react_run", lambda _idx: orig_set(0))
@@ -766,10 +787,30 @@ def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
     gen = _variant_scope_ctx(arc)
     next(gen)
     try:
-        lm = DummyLM([{"answer": "a0"}, {"score": "0.1"}, {"answer": "a1"}, {"score": "0.2"}])
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.9"}, {"answer": "a1"}, {"score": "0.2"}])
         with dspy.context(lm=lm):
             wrapped(question="q")
+        base_line = _thoughts()
     finally:
         next(gen, None)
-    # The SECOND forward saw the FIRST try's trajectory (leak) — red under the real fix.
-    assert _ARC_OBS[1][1] == ["TRY0-THOUGHT"]
+    # Try 0 won, but the base continues from try 1's line -- red under the real keying.
+    assert base_line == ["TRY1-THOUGHT"]
+
+
+def test_the_base_continues_from_the_winning_try_in_real_forward(arc: ARCMemory) -> None:
+    """The unsabotaged twin: try 0 wins, and its line is what the base scope continues."""
+    _ARC_OBS.clear()
+    wrapped = mv.wrap_module_variant(
+        _ArcWritingInner(),
+        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
+    )
+    gen = _variant_scope_ctx(arc)
+    next(gen)
+    try:
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.9"}, {"answer": "a1"}, {"score": "0.2"}])
+        with dspy.context(lm=lm):
+            wrapped(question="q")
+        base_line = _thoughts()
+    finally:
+        next(gen, None)
+    assert base_line == ["TRY0-THOUGHT"]

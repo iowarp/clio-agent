@@ -1,0 +1,78 @@
+# CLIO Desktop profile filesystem contract, including its native-layout compatibility boundary.
+# Current CLIO profile uses ai.iowarp.clio.desktop. Tauri owns its bundle-id WebView,
+# boot logs and settings roots; the installation-local Windows layout is not expressible
+# as a role root in contract 1.1. Managed content is <INSTDIR>/data on Windows,
+# falling back to LOCALAPPDATA/ai.iowarp.clio.desktop; elsewhere app_local_data_dir.
+# New Agent instances receive CLIO_AGENT_HOME=<managed>/clio-agent; existing
+# <managed>/clio-user continues through CLIO_USER_DIR until explicit migration.
+# Agent config/data/state/cache belong to the Agent manifest, not Desktop.
+# Runtime bundles, Agent caches and the CTE tier are disposable. Settings, sessions
+# and user data are retained unless the uninstaller's remove-data box is selected.
+# Existing GACT keychain services and SSH identity files are unchanged in this phase.
+# This manifest records the transitional native layout; role resources remain empty.
+schema: clio.filesystem/v1
+product: clio-desktop
+layout_version: 1
+env_prefix: CLIO_DESKTOP_
+
+roots:
+  linux:
+    config: "${XDG_CONFIG_HOME}/${PRODUCT}"
+    data: "${XDG_DATA_HOME}/${PRODUCT}"
+    state: "${XDG_STATE_HOME}/${PRODUCT}"
+    cache: "${XDG_CACHE_HOME}/${PRODUCT}"
+  macos:
+    config: "${HOME}/Library/Application Support/${PRODUCT}/config"
+    data: "${HOME}/Library/Application Support/${PRODUCT}/data"
+    state: "${HOME}/Library/Application Support/${PRODUCT}/state"
+    cache: "${HOME}/Library/Caches/${PRODUCT}"
+  windows:
+    config: "${APPDATA}/${PRODUCT}/config"
+    data: "${LOCALAPPDATA}/${PRODUCT}/data"
+    state: "${LOCALAPPDATA}/${PRODUCT}/state"
+    cache: "${LOCALAPPDATA}/${PRODUCT}/cache"
+
+# Desktop has no project directory. gact export and gact dump-bundle write to a path the user chooses.
+project:
+  root: null
+  registration: read-only
+  shared: []
+  local: []
+
+resources: []
+
+uninstall:
+  unknown: retain-and-report
+  project_directories: retain
+  borrowed_dependencies: retain
+  credentials: remove-owned
+
+# The gact binary is copied by `make install` (PREFIX defaults to ~/.local, mode 0755) and symlinked by the
+# developer target `make dev-install`. The Makefile has no uninstall target, so retain.
+# The WebView profile is Tauri's data directory for the identifier: Tauri forces data_local_dir()/<identifier>
+# on Linux and Windows (tauri 2.11.5, manager/webview.rs). It holds the WebView state and the boot log, and the
+# uninstall behaviour is unverified. The macOS locations are a guess and are not declared.
+#
+# Not expressible, so unlisted on purpose:
+#   The installation-local bundle (%LOCALAPPDATA%\Programs\CLIO Desktop on Windows, /usr paths from a .deb).
+#   $TMPDIR/gact-clio-shim.sh (fixed name, mode 0755) and gact-attachment-<id>-* directories from the emulator.
+#   The clio-agent install that the app runs through `curl | bash`, which belongs to clio-agent.
+native_artifacts:
+  - {id: gact-launcher-linux, platform: linux, kind: launcher, locator: "${HOME}/.local/bin/gact", uninstall: retain}
+  - {id: gact-launcher-macos, platform: macos, kind: launcher, locator: "${HOME}/.local/bin/gact", uninstall: retain}
+  - {id: webview-profile-linux, platform: linux, kind: webview-profile, locator: "${XDG_DATA_HOME}/ai.iowarp.clio.desktop", uninstall: retain}
+  - {id: webview-profile-windows, platform: windows, kind: webview-profile, locator: "${LOCALAPPDATA}/ai.iowarp.clio.desktop", uninstall: retain}
+
+legacy:
+  paths:
+    - {scope: home, path: .config/gact, action: report-only}
+    - {scope: home, path: .local/share/gact, action: report-only}   # renderer venv from scripts/file-renderers.sh
+    - {scope: home, path: .local/share/man/man1/gact.1, action: report-only}   # written by `gact man --install`
+  env:
+    - {name: GACT_CONFIG, kind: path}
+    - {name: GACT_AGENTS_PATH, kind: path}
+    - {name: GACT_DETACHED_PATH, kind: path}
+    - {name: GACT_THEME_FILE, kind: path}
+    - {name: GACT_PLUGINS_DIR, kind: path}
+    - {name: GACT_TUI_LATENCY_REPORT, kind: path}
+    - {name: CLIO_AUTH_TOKEN, kind: secret}   # placed in the sidecar's environment, and passed as --token by the desktop

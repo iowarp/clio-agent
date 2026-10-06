@@ -83,6 +83,7 @@ class FlowceptProviderConfig:
     include_events: tuple[str, ...] = ("*",)
     exclude_events: tuple[str, ...] = ("lm.token.delta", "thinking.*")
     check_safe_stops: bool = True
+    persistence_owner: str = "client"
 
     def __post_init__(self) -> None:
         if self.workflow_scope not in {"session", "process"}:
@@ -91,6 +92,8 @@ class FlowceptProviderConfig:
             raise ValueError("Flowcept campaign_scope must be session, workspace, or agent")
         if self.privacy not in {"metadata", "redacted", "full"}:
             raise ValueError("Flowcept privacy must be metadata, redacted, or full")
+        if self.persistence_owner not in {"client", "collector"}:
+            raise ValueError("Flowcept persistence_owner must be client or collector")
 
 
 def _stable_id(kind: str, value: str) -> str:
@@ -237,7 +240,7 @@ class FlowceptProvenanceProvider:
         self._runtime = self._flowcept_class(
             workflow_id=runtime_workflow_id,
             workflow_name="CLIO provenance transport",
-            start_persistence=True,
+            start_persistence=config.persistence_owner == "client",
             save_workflow=False,
             check_safe_stops=config.check_safe_stops,
         )
@@ -378,6 +381,12 @@ class FlowceptProvenanceProvider:
         response_id = str(payload.get("response_id") or "")
         if response_id:
             clio["response_id"] = response_id
+        # The attention declaration (token ranges + section labels, no content)
+        # is structural metadata too: it lets the Sources view work under every
+        # privacy mode. Present only when provenance.attention declared it.
+        attention = payload.get("attention")
+        if isinstance(attention, dict):
+            clio["attention"] = attention
         if self.config.privacy != "metadata":
             clio["payload"] = _safe_value(
                 event.payload,
@@ -504,6 +513,23 @@ class FlowceptProvenanceProvider:
             return
         self._closed = True
         self._runtime.stop()
+
+    def query_tasks(
+        self,
+        filter: dict[str, Any],
+        *,
+        projection: list[str] | None = None,
+        sort: list[tuple[str, int]] | None = None,
+        limit: int = 0,
+    ) -> list[dict[str, Any]] | None:
+        """Flowcept's own ``task_query`` (``None`` means the query itself failed)."""
+        return self._flowcept_class.db.task_query(
+            filter=filter, projection=projection, sort=sort, limit=limit
+        )
+
+    def query_workflows(self, filter: dict[str, Any]) -> list[dict[str, Any]] | None:
+        """Flowcept's own ``workflow_query`` (``None`` means the query itself failed)."""
+        return self._flowcept_class.db.workflow_query(filter=filter)
 
     def query_execution(
         self,

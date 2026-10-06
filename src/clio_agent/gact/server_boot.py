@@ -4,7 +4,7 @@ Two pieces of startup work used to make a freshly started server unable to answe
 ``/v1/health`` (ares, 2026-09-25: uvicorn bound 17800, zero health requests served,
 ``clio start`` gave up after ~90 s):
 
-* **ARC construction** (:func:`clio_agent.gact.runtime.globals._process_arc`) --
+* **ARC construction** (:func:`process_arc`) --
   clio-core connect-or-spawn plus a native client attach that can wait tens of
   seconds -- ran inline on the loop inside the deferred agent-construction task.
 * **The first doctor collection** is cold (~2-5 s), longer than the launcher's 1 s
@@ -26,18 +26,138 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from clio_agent import paths
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+
+async def prune_orphans_and_cache(app: FastAPI) -> None:
+    """Reap proven orphans before inspecting the liveness of cached MCP children."""
+    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
+    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
+
+    await _prime_orphan_scan_cache(app)
+    await boot_prune_off_loop()
+
+
+def reconcile_connected_storage(app: FastAPI) -> None:
+    """Recover interrupted source operations for the server's registered workspaces."""
+    storage = getattr(app.state, "connected_storage", None)
+    if storage is not None:
+        storage.reconcile({row.id: Path(row.root_path) for row in app.state.workspaces.list()})
+
+
+async def shutdown_connected_storage(app: FastAPI) -> None:
+    """Drain trusted source operations before the server tears down its runtime."""
+    storage = getattr(app.state, "connected_storage", None)
+    if storage is not None:
+        await storage.shutdown()
+
+
+def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
+    """Refresh provider discovery off the request path when enabled for this server."""
+    if not getattr(app.state, "refresh_provider_catalog_on_startup", False):
+        return None
+    from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
+        refresh_subscription_catalogs_at_startup,
+    )
+
+    task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
+    app.state.provider_catalog_startup_task = task
+    return task
+
+
 logger = logging.getLogger(__name__)
 
 
-async def _construct(app: "FastAPI") -> Any:
-    from clio_agent.gact.runtime.globals import _process_arc  # noqa: PLC0415 - import cycle
+_PROCESS_ARC_LOCK = threading.Lock()
 
-    return await asyncio.to_thread(_process_arc, app)
+
+def process_arc(app: "FastAPI") -> Any:
+    """Return the ONE ARCMemory for this clio-agent, constructing it once on first use.
+
+    ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
+    N clio-agents per node, one clio-core per node). The gact server OWNS that single
+    ARC's lifecycle so that every agent build/bind reuses the SAME instance.
+
+    Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
+    it; rebuilt only if the app has none yet (first build). ``None`` in History mode
+    (:mod:`clio_agent.arc.history_mode`): the platform cannot run clio-core.
+    """
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is not None:
+        return arc
+    with _PROCESS_ARC_LOCK:  # single-flight: the boot attach and a first event never race
+        arc = getattr(getattr(app, "state", None), "arc", None)
+        return arc if arc is not None else _construct_process_arc(app)
+
+
+def arc_for_first_event(app: Any, event_type: str, sid: str) -> Any:
+    """The process ARC for an event emitted before any exists.
+
+    Off the event loop it is obtained through the one construction door
+    (``server_boot.process_arc``, single-flight with the boot attach). On the loop clio-core
+    cannot be attached: a typed failure naming the event, never a bypass of ARC.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return process_arc(app)
+    raise RuntimeError(
+        f"ARC-as-source: semantic event {event_type!r} (session={sid!r}) was emitted on the "
+        "event loop before clio-core is attached; emit it off the loop"
+    )
+
+
+def _construct_process_arc(app: "FastAPI") -> Any:
+    from clio_agent.arc import history_mode  # noqa: PLC0415
+
+    mode = history_mode.resolve()
+    if mode.is_history:  # the platform has no clio-core: the loud History mode, decided once
+        _record_context_mode(app, mode)
+        return None
+    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    data_dir = str(paths.arc_data_dir())
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415 - import cycle
+
+    _set_app_arc(app, arc)
+    _record_context_mode(app, mode)
+    from clio_agent.gact.transcript_file import on_process_arc_bound  # noqa: PLC0415
+
+    on_process_arc_bound(app)  # transcript.file off: reconcile + metrics seed from the atoms
+    return arc
+
+
+def _record_context_mode(app: "FastAPI", mode: Any) -> None:
+    """Record which context mode this boot runs in (a trace-only boot event, sid ``""``)."""
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    summary = (
+        f"CLIO runs in History mode ({mode.reason}): context in memory only, nothing durable."
+        if mode.is_history
+        else "CLIO runs on clio-core."
+    )
+    _emit_semantic_event(
+        app,
+        "",
+        "context.mode",
+        status="completed",
+        summary=summary,
+        actor={"mechanism": "harness"},
+        payload=mode.as_dict(),
+    )
+
+
+async def _construct(app: "FastAPI") -> Any:
+    return await asyncio.to_thread(process_arc, app)
 
 
 async def process_arc_off_loop(app: "FastAPI") -> Any:
@@ -53,7 +173,8 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
         app: The GACT FastAPI app.
 
     Returns:
-        The ``ARCMemory`` stored on ``app.state.arc``.
+        The ``ARCMemory`` stored on ``app.state.arc``; ``None`` in the loud History mode
+        (:mod:`clio_agent.arc.history_mode`), decided once and cached like an ARC.
     """
     arc = getattr(app.state, "arc", None)
     if arc is not None:

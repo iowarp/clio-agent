@@ -1,17 +1,16 @@
 """Where spilled shell output lives, and its session-scoped retention (#1487).
 
 Oversize shell output (:mod:`clio_agent.tools.servers.shell_output`) is written
-under the workspace's CLIO-owned ``.clio`` root
-(:func:`clio_agent.paths.workspace_clio`, the root ``.clio/inputs`` and
-``.clio/plans`` share), in a per-session folder::
+under the workspace's Agent-managed state root
+(:func:`clio_agent.paths.workspace_state_dir`), in a per-session folder::
 
-    <workspace>/.clio/tool-output/<session_id>/<call-id>.<stream>.txt
+    <agent-state>/workspaces/<path-hash>/tool-output/<session_id>/<call-id>.<stream>.txt
 
 The session owns its spills: the session-delete path calls
 :func:`delete_session_spills`, which removes that folder and emits one typed log
 line. There is no timer and no TTL — a spill lives exactly as long as the
 session whose transcript cites it. The app-less CLI path has no session, so its
-spills land flat in ``.clio/tool-output/``.
+spills land flat in that workspace state's ``tool-output/`` directory.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
 
-#: Directory under the workspace ``.clio`` root that holds spilled tool output.
+#: Directory under the workspace's managed state that holds spilled tool output.
 SPILL_DIRNAME = "tool-output"
 #: Typed reason logged when a deleted session's spill folder is removed.
 SPILLS_DELETED_REASON = "session_deleted"
@@ -49,9 +48,9 @@ def _safe_session_id(session_id: str | None) -> str:
 def spill_directory(root: str | Path, *, session_id: str | None = None) -> Path:
     """Return where oversize shell output is spilled.
 
-    ``<root>/.clio/tool-output/<session_id>`` when a session owns the call, so
+    ``<workspace-state>/tool-output/<session_id>`` when a session owns the call, so
     deleting the session deletes its spills (:func:`delete_session_spills`);
-    ``<root>/.clio/tool-output`` for the app-less CLI path, which has no session.
+    ``<workspace-state>/tool-output`` for the app-less CLI path, which has no session.
     """
 
     base = paths.workspace_clio(root) / SPILL_DIRNAME

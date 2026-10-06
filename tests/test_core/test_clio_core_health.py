@@ -2,18 +2,15 @@
 
 The probe surfaces the effective ram ``capacity_limit`` the ARC clio-core backend will run
 with: a healthy bounded cap is READY, a ``0g`` (= 80%-DRAM) cap is DEGRADED with
-remediation, an unparseable cap is MISCONFIGURED, and the ``local`` backend yields no
-row. Assertions read real IntegrationStatus rows built from real on-disk config files.
+remediation, and an unparseable cap is MISCONFIGURED. Assertions read real IntegrationStatus rows built from real on-disk config files.
 """
 
 from __future__ import annotations
 
 from clio_agent.arc import clio_core_config
 from clio_agent.arc.clio_core_daemon import DaemonMemorySnapshot
-from clio_agent.arc.init_degradation import ArcInitDegradation
 from clio_agent.runtime.clio_core_health import (
     probe_clio_core_daemon_memory,
-    probe_clio_core_init_degradation,
     probe_clio_core_ram_cap,
 )
 from clio_agent.runtime.status import IntegrationState
@@ -33,66 +30,6 @@ def _daemon_snapshot(rss: int, *, live: int = 0, stale: int = 0, pid: int = 4321
         registered_client_count=live + stale,
         port=9413,
     )
-
-
-def _degrade_record(reason: str = "clio_core_binding_absent", was_explicit: bool = False):
-    return ArcInitDegradation(
-        reason=reason,
-        choice="cte",
-        was_explicit=was_explicit,
-        config_path="/tmp/cte.yaml",
-        error_type="ImportError",
-        error="clio_cte_core_ext not built",
-        data_dir="/tmp/arc",
-    )
-
-
-def test_init_degradation_row_names_cause_and_external_operator(tmp_path):
-    """A recorded init degrade surfaces a DEGRADED row naming the cause + external op (#897)."""
-    rows = probe_clio_core_init_degradation(record=_degrade_record())
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.name == "clio_core_init"
-    assert row.state is IntegrationState.DEGRADED
-    # SABOTAGE PIN: swallow/blank the typed reason and these assertions go red.
-    assert row.details["reason"] == "clio_core_binding_absent"
-    assert "external-operator" in row.summary
-    assert row.fallback == "local"
-
-
-def test_init_degradation_no_record_yields_no_row(monkeypatch):
-    """No degrade recorded this process -> no row (a healthy/local boot is silent).
-
-    ``record=None`` reads the LIVE process slot, which is process-global: the suite's
-    eager clio-core attach at session start (``tests/_cte_isolation.py``), or any earlier
-    ``make_arc_store`` in the same xdist worker, records a degrade there when its daemon
-    does not come up, and this test then saw that row. Establish the precondition this
-    test is about -- nothing recorded -- for this test only (restored afterwards, so the
-    worker's real record is untouched).
-    """
-    from clio_agent.arc import init_degradation  # noqa: PLC0415
-
-    monkeypatch.setattr(init_degradation, "_last_degradation", None)
-    assert probe_clio_core_init_degradation(record=None) == []
-
-
-def test_init_degradation_reads_the_live_process_record(monkeypatch):
-    """``record=None`` means the live slot: a degrade recorded there IS surfaced."""
-    from clio_agent.arc import init_degradation  # noqa: PLC0415
-
-    live = _degrade_record("clio_core_daemon_spawn_failed")
-    monkeypatch.setattr(init_degradation, "_last_degradation", live)
-    [row] = probe_clio_core_init_degradation(record=None)
-    assert row.details["reason"] == "clio_core_daemon_spawn_failed"
-
-
-def test_init_degradation_sabotage_ready_would_go_red():
-    """SABOTAGE guard: if the probe reported a recorded degrade as anything but DEGRADED."""
-    row = probe_clio_core_init_degradation(record=_degrade_record("clio_core_daemon_spawn_failed"))[
-        0
-    ]
-    assert row.state is IntegrationState.DEGRADED
-    assert row.details["reason"] == "clio_core_daemon_spawn_failed"
 
 
 # A LEGACY tier-present shape (pre-#906 files still in the wild): these probe
@@ -206,10 +143,6 @@ def test_probe_unparseable_cap_is_misconfigured(tmp_path):
     assert row.details["reason"] == "ram_cap_unparseable"
 
 
-def test_probe_local_backend_yields_no_row():
-    assert probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "local"}) == []
-
-
 def test_probe_default_backend_is_clio_core(tmp_path):
     """Unset CLIO_ARC_STORE defaults to cte, so a row is emitted."""
     cfg = _write_cte_yaml(tmp_path, "2GB")
@@ -264,10 +197,6 @@ def test_daemon_memory_sabotage_critical_would_go_green():
         env={"CLIO_ARC_STORE": "cte"}, snapshot=_daemon_snapshot(64 * 1024**2)
     )[0]
     assert ok.state is IntegrationState.READY
-
-
-def test_daemon_memory_local_backend_yields_no_row():
-    assert probe_clio_core_daemon_memory(env={"CLIO_ARC_STORE": "local"}) == []
 
 
 def test_daemon_memory_no_daemon_yields_no_row(monkeypatch):
@@ -333,16 +262,14 @@ def test_attach_row_unavailable_names_the_typed_reason():
     (row,) = probe_clio_core_attach(state=state)
     assert row.state is IntegrationState.DEGRADED
     assert row.required is True
-    assert row.fallback == "local"
     assert row.details["reason"] == "clio_core_client_attach_failed"
     assert "handshake failed" in row.summary
 
 
-def test_attach_row_absent_when_idle_or_local_chosen():
+def test_attach_row_absent_when_idle():
     from clio_agent.runtime.clio_core_health import probe_clio_core_attach
 
     assert probe_clio_core_attach(state=_attach_state("idle")) == []
-    assert probe_clio_core_attach(state=_attach_state("not_selected")) == []
 
 
 def test_attach_row_wired_into_the_clio_core_aggregate(monkeypatch):
@@ -351,7 +278,7 @@ def test_attach_row_wired_into_the_clio_core_aggregate(monkeypatch):
 
     clio_core_attach.mark_starting("/c/cte.yaml", 9413)
     try:
-        names = [row.name for row in probe_clio_core_health(env={"CLIO_ARC_STORE": "local"})]
+        names = [row.name for row in probe_clio_core_health(env={"CLIO_ARC_STORE": "cte"})]
     finally:
         clio_core_attach.reset_attach_state()
     assert "clio_core_attach" in names

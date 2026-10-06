@@ -288,6 +288,7 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         body: str,
         severity: str = "warning",
         stub_actions: Optional[list[Any]] = None,
+        attention_evidence: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Raise a notification/action card into YOUR PARENT session's transcript.
 
@@ -299,6 +300,12 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         ``[{"id", "label", "reason"}, ...]`` for future actions you want the UI to
         show but not yet wire (rendered disabled, with ``reason`` as the tooltip);
         bare strings (``["address", "remove"]``) work too as a shorthand.
+
+        For an attention finding, pass ``attention_evidence`` copied from the
+        inspection: response_id, capture_sha256, steps, resolved profile,
+        profile_revision, and uncertainty. CLIO verifies the receipt against
+        this parent's local capture before enabling "Inspect evidence". Attention
+        alone does not prove an attack or authorize quarantine.
 
         Only callable from a SPAWNED CHILD session (one with a live parent
         AgentTask) — calling this from a top-level/unspawned session returns a
@@ -346,6 +353,16 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         # narrowed non-None here (the None case early-returned above).
         assert app is not None
 
+        if attention_evidence is not None:
+            from clio_agent.gact.attention.finding_evidence import finding_attention_action
+
+            evidence_action, uncertainty = finding_attention_action(
+                app, task.parent_session_id, task.task_id, attention_evidence
+            )
+            actions.insert(0, evidence_action)
+            if uncertainty:
+                body = f"{body}\n\nUncertainty: {uncertainty}"
+
         # Branded emitter identity: the calling session's OWN activated Agent
         # Blueprint (e.g. "spotter-ai"), never the bare expert id -- the card
         # header reads as the PRODUCT ("SPOTTER AI"), not an internal expert
@@ -377,6 +394,11 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         )
         if skipped:
             result["skipped_stub_actions"] = skipped
+        if attention_evidence is not None:
+            result["attention_evidence"] = {
+                "available": evidence_action["enabled"],
+                "reason": evidence_action["behavior"].get("reason", ""),
+            }
         return result
 
     return native_tool(
@@ -402,6 +424,14 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
                 "description": (
                     "Optional future actions to show disabled: "
                     '[{"id", "label", "reason"}, ...] (bare strings also accepted).'
+                ),
+            },
+            "attention_evidence": {
+                "type": "object",
+                "description": (
+                    "Optional exact attention inspection receipt: response_id, capture_sha256, "
+                    "steps, resolved profile, profile_revision, uncertainty. Copy observed "
+                    "identities; never guess transcript coordinates."
                 ),
             },
         },

@@ -1,9 +1,6 @@
 """GACT v0.2 FastAPI application for CLIO.
 
-Exposes the GACT v0.2 contract surface. Most routes are 501 stubs
-today; they get wired one at a time in
-follow-on iterations against the spec at
-``gact-tui/contract/SPEC.md`` and the docs in ``docs/tui/``.
+Exposes the GACT contract documented in ``gact-tui/contract/SPEC.md``.
 
 Run via::
 
@@ -27,6 +24,8 @@ import logging
 import sys
 import time
 
+from clio_agent import paths
+
 # Process diagnostics (SIGUSR1 wedge/heap dump) extracted to gact/diagnostics.py
 # (#714 decomposition). Imported + re-exported here; ``_install_sigusr1_diagnostic``
 # is invoked at app import below so the handler is wired exactly as before, while
@@ -41,16 +40,41 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
+# numpy/pyarrow, on THIS thread (module import, i.e. whichever thread first
+# does `import clio_agent.gact.app` -- the main thread in every real entry
+# point and the overwhelming majority of tests), before ANYTHING else in the
+# process can race them. Root-caused (numpy-race follow-up to #1551): dspy's
+# own `dspy.utils.lazy_import._LazyModule._load()` calls
+# `spec.loader.exec_module(module)` directly on a brand-new module object,
+# bypassing Python's per-module import lock entirely. If numpy/pyarrow are
+# not ALREADY the real, fully-materialized module in `sys.modules` by the
+# time something calls `require("numpy")` (inside `import dspy`, which
+# `_construct_agent_async`'s executor thread runs off the main thread/event
+# loop), dspy inserts its own lazy PROXY into `sys.modules["numpy"]`; a
+# later *standard* `import numpy`, or pyarrow's C extension touching numpy,
+# both just find that proxy already "imported" and defer to its unlocked
+# `_load()`, which can then run concurrently with another thread doing the
+# same thing -- two independent executions of `numpy/__init__.py` mutating
+# numpy's C-level type registry at once (confirmed live via a
+# `sys.addaudithook` probe and a targeted repro: `ImportError:
+# numpy._core.multiarray failed to import` / `TypeError: data type 'bool'
+# not understood`, 15/15 runs with a naive ordering). Doing this inside
+# `build_app()` is NOT early enough -- a thread that started importing dspy
+# before `build_app()` was even called (observed: a prior test's still-
+# running agent-construction thread, since that executor is not joined
+# before its TestClient context exits) can still beat it there. Module
+# import time is the earliest point every caller (production entry point,
+# every test file importing `build_app`) shares, so it is the only point
+# that is not itself part of the race.
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.encoders import jsonable_encoder
-from fastapi.exceptions import RequestValidationError
+import numpy  # noqa: E402, F401
+import pyarrow  # noqa: E402, F401
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
@@ -58,7 +82,7 @@ from clio_agent.arc import loop_guard
 from clio_agent.gact import composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
-from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
+from clio_agent.gact.error_middleware import install_error_envelope, install_typed_error_handlers
 from clio_agent.gact.protocol.negotiation import install_protocol_negotiation
 from clio_agent.gact.runtime.rework_state import initialize_a2ui_store, initialize_session_defaults
 from clio_agent.gact.semantic_events import (
@@ -92,10 +116,8 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _ACTIVE_GACT_TURN_ID,
     _PROCESS_ARC,
     ARC_OP_EVENT_TYPE,
-    _active_lm_last_reasoning,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
-    _BlueprintTerminalWorkflowState,
     _build_semantic_event,
     _cancelled_error_info,
     _coerce_error_info,
@@ -117,7 +139,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _new_part_id,
     _new_question_id,
     _not_implemented,
-    _process_arc,
     _resolve_tool_session,
     _semantic_trace_id,
     _session_agent_id,
@@ -170,18 +191,15 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _context_file_access_error,
     _context_file_turn_provenance,
     _enrich_with_context_files,
-    _enrich_with_requested_memory_search,
     _estimate_context_tokens,
     _finalize_context_frame,
     _memory_search_request_from_message,
     _message_text_for_frame,
     _record_context_frame,
+    _requested_memory_search,
 )
-from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
-from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
-    _compile_session_conversation_history,
     _delete_session_context_files,
     _delete_session_messages,
     _extend_session_messages,
@@ -275,7 +293,7 @@ from clio_agent.gact._params import (  # noqa: E402,F401
 )
 from clio_agent.gact.agents import resolution as _resolution  # noqa: E402, F401
 
-# gact/agents/builders.py + agents/runtime.py -- expert/blueprint runtime engine;
+# gact/agents/builders.py -- expert/blueprint runtime engine;
 # the kept turn-handler dispatch wrappers below reach the builders through these.
 from clio_agent.gact.agents.builders import (  # noqa: E402,F401
     _active_base_agent_tool_executor,
@@ -333,11 +351,6 @@ from clio_agent.gact.agents.runners import (  # noqa: E402
     _run_prompt_user_agent,
     _run_tool_user_agent,
 )
-from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
-    _prediction_structured_metadata,
-    _retaining_react_cls,
-    _summarize_segments_llm,
-)
 from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
 
 # gact/delegation.py -- delegation + workflow-state derivation cluster.
@@ -357,7 +370,6 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
 from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
-    _extract_tools_called_from_trajectory,
     _is_bounded_tool_result,
     _propose_edit_diffs_from_pred,
     _tool_result_is_error,
@@ -425,6 +437,7 @@ from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
 from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
+from clio_agent.gact.routes.connected_storage import register_connected_storage_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
 )
@@ -524,7 +537,7 @@ from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
 # Transcript-memory search primitives (query normalization, excerpting, the
 # scope-controlled ranked search) + the shared message-excerpt projection moved
 # to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
-# (_enrich_with_requested_memory_search / _compile_session_conversation_history)
+# (_requested_memory_search)
 # and the memory routes (routes/memory.py) share one implementation. Re-exported
 # here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
 from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401
@@ -666,7 +679,6 @@ from clio_agent.gact.expert_packs import (
     validate_expert_hierarchy,
 )
 from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_and_notify_spotter
-from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
     _guard_direct_destructive_action,
@@ -675,42 +687,19 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
-from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
-from clio_agent.gact.skills import SkillNotDelegatableError
+from clio_agent.gact.skills import SkillNotDelegatableError as SkillNotDelegatableError
 
-# Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
-# gact/streaming.py: signature-compatible agent invocation, the DSPy streamify
-# pump + structured fallback ledger, stream-listener binding + streamability
-# gating, chunk/text extraction, and prediction rendering (trajectory / tools /
-# signature docstring). Re-exported here so existing
-# ``from clio_agent.gact.app import <name>`` callers + test seams stay green; in
-# particular the turn path + agents/builders import these via this module, and
-# ``_try_streamed_forward_compat`` resolves ``_try_streamed_forward`` back
-# through this re-export so the ``monkeypatch.setattr(
-# "clio_agent.gact.app._try_streamed_forward", ...)`` test seam keeps working.
+# Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
+# re-exported for ``from clio_agent.gact.app import <name>`` callers.
 from clio_agent.gact.streaming import (  # noqa: E402,F401
-    _REASONING_HEARTBEAT_S,
-    _agent_streaming_unsupported_reason,
-    _append_stream_listener,
-    _build_stream_listeners,
-    _chunk_reasoning_text,
-    _chunk_text,
-    _config_is_reasoning_model,
-    _describe_stream_exc,
     _extract_tools_called,
-    _format_react_trajectory,
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
     _record_stream_fallback,
-    _run_dynamic_agent_compat,
     _signature_prompt,
     _stream_fallback_payload,
     _stream_fallback_reasons,
-    _stream_response_prefix,
-    _StreamingOutputError,
-    _try_streamed_forward,
-    _try_streamed_forward_compat,
 )
 
 # gact/tool_observer.py -- tool-observer + live-assistant transcript cluster.
@@ -736,9 +725,9 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import TurnTranscriptRegistry
+from clio_agent.gact.transcript_file import boot_transcript_store
 from clio_agent.gact.types import (
     AgentDef,
-    ErrorEnvelope,
     ErrorInfo,
     Message,
     Part,
@@ -815,17 +804,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
     # off-loop). The direct Codex provider owns one durable credential file,
-    # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
-    # provider's IsolatedCodexHome there is nothing here for it to reap.
+    # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
-    from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
-    async def _reap_orphans_then_prune_mcp_cache() -> None:
-        await _prime_orphan_scan_cache(app)
-        await boot_prune_off_loop()
-
-    app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
+    app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
     app.state.registry_resync = _registry_resync.start_in_background(app)  # v15 S8, a thread
 
     task: Optional[asyncio.Task] = None
@@ -839,16 +821,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         agent_task = asyncio.create_task(_construct_agent_async(app))
         app.state.agent_construction_task = agent_task
 
-    provider_catalog_task: Optional[asyncio.Task] = None
-    if getattr(app.state, "refresh_provider_catalog_on_startup", False):
-        from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
-            refresh_subscription_catalogs_at_startup,
-        )
+    provider_catalog_task = server_boot.start_provider_catalog(app)
 
-        provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
-        app.state.provider_catalog_startup_task = provider_catalog_task
+    server_boot.reconcile_connected_storage(app)
 
     yield
+
+    await server_boot.shutdown_connected_storage(app)
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
     # does not stop that thread, and Python waits for executor workers at process
@@ -1002,7 +981,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         )
         # Drop the boot env-handoff (design §9 step 9): hand the ONE boot config to
         # ClioAgent instead of letting it read the environment a SECOND time. The
-        # main agent binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off
+        # main agent binds ``_main_lm`` / ``_dspy_adapter`` off
         # this exact config (credential included — the boot/default config is the
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.
@@ -1079,15 +1058,12 @@ from clio_agent.gact.scheduler_runtime import (  # noqa: E402,F401 - re-exported
 
 
 class ARCLike(Protocol):
-    """Structural interface for the ARC reference /v1/memory/stats
-    pulls from. Real ``ARCMemory`` matches it; tests pass a fake.
+    """The ARC the app wires (highway sink, op logger) and /v1/memory/stats reads
+    (``get_cache_stats``: hits / misses / hit_rate / capacity). ``ARCMemory`` matches it."""
 
-    ``get_cache_stats`` returns a dict with ``hits`` / ``misses`` /
-    ``hit_rate`` / ``capacity`` (see ``ARCMemory.get_cache_stats``).
-    """
-
-    def get_cache_stats(self) -> dict[str, Any]:  # pragma: no cover
-        ...
+    def get_cache_stats(self) -> dict[str, Any]: ...  # pragma: no cover
+    def set_highway_sink(self, sink: Any) -> None: ...  # pragma: no cover
+    def set_segment_op_logger(self, logger: Any) -> None: ...  # pragma: no cover
 
 
 def build_app(
@@ -1114,6 +1090,26 @@ def build_app(
     constructs a real ``ClioAgent`` and passes it here.
     """
 
+    # numpy/pyarrow, on THIS thread, before anything else: the FIRST thing
+    # this factory does, while it is still the only thing running in the
+    # process (no lifespan task, no executor thread exists yet). Root-caused
+    # (#1551 follow-up): `_construct_agent_async`'s `_build()` runs `import
+    # dspy` on a `run_in_executor` worker thread; `import dspy` transitively
+    # imports numpy. A probe (`sys.addaudithook` on the "import" event) and a
+    # targeted repro confirmed that thread's `import dspy` racing a second,
+    # independent `import numpy` on the main thread (previously
+    # `table_route_shared.import_table_engine_once`'s own first touch, at
+    # route-registration time, i.e. already DURING this same factory call)
+    # reproduces numpy's C extension corruption 15/15 runs -- ``ImportError:
+    # numpy._core.multiarray failed to import`` or a downstream ``TypeError:
+    # data type 'bool' not understood``. Importing both here, before
+    # `build_app` has done anything else, makes that race structurally
+    # impossible: every later importer (table-query's own route registration
+    # below, the agent-construction executor thread, anything else) finds a
+    # fully-initialized module already in ``sys.modules`` and never touches
+    # the C extension's own init path at all. See the `import litellm`
+    # pre-import a few lines into `_construct_agent_async` for the same
+    # pattern applied earlier to an analogous litellm race.
     app = FastAPI(
         title="CLIO GACT v0.2",
         version=GACT_BACKEND_VERSION,
@@ -1151,7 +1147,7 @@ def build_app(
     app.state.prompt_registry = PromptRegistry(
         sources=[
             PromptSource("global", prompt_write_root),
-            PromptSource("workspace", Path.cwd() / ".clio" / "prompts"),
+            PromptSource("workspace", paths.workspace_config_path(Path.cwd(), "prompts")),
         ],
         write_root=prompt_write_root,
     )
@@ -1161,13 +1157,14 @@ def build_app(
     # publishes; /v1/sessions/{sid}/events subscribers consume.
     app.state.bus = EventBus()
     initialize_a2ui_store(app, session_store_path.parent)
+    trace_root = (
+        paths.user_state_dir() / "traces"
+        if session_store_path.parent == paths.server_state_dir()
+        else session_store_path.parent
+    )
     app.state.semantic_trace_detail_level = _semantic_trace_detail_level()
-    app.state.semantic_trace_backend = build_trace_backend(
-        session_store_path.parent / "semantic_traces"
-    )
-    provenance_wiring.wire_artifact_provenance(
-        app, session_store_path.parent / "artifact_provenance"
-    )
+    app.state.semantic_trace_backend = build_trace_backend(trace_root / "semantic_traces")
+    provenance_wiring.wire_artifact_provenance(app, trace_root / "artifact_provenance")
     # ARC-as-source: the sink has NO arc live_consumer. ARC is the SOURCE now —
     # _emit_semantic_event routes each event through arc.record_semantic_event, which
     # folds the observer (on_semantic_event) INSIDE its record and then derives THIS
@@ -1185,22 +1182,9 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # Durable per-session message log (POST /messages writes, GET /messages reads);
-    # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
-    app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
-    # #1334 F2: placeholder for the reconciliation's _replace_session_messages write.
-    app.state.messages = {}
-    _reconcile_restart_interrupted_sessions(app)
-    # #770 C3: bounded eviction-audit trail (init before the resident set).
-    init_retention_state(app)
-    # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-
-    # DISCARD walk so the metrics wire stays byte-identical across a restart WITHOUT
-    # pinning every transcript in RAM.
-    app.state.metrics_counters = MetricsCounters()
-    seed_metrics_counters(app.state.message_store, app.state.metrics_counters)
-    # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
-    # boots empty (index only), materializes lazily. See gact.resident_ledgers.
-    app.state.messages = build_resident_ledger_set(app)
+    # Transcript store (the ``transcript.file`` switch, resolved once): the messages/
+    # file copy + its index, restart reconciliation, metrics seed, resident set.
+    boot_transcript_store(app, session_store_path.parent)
     composer_runtime.initialize_composer_state(app, session_store_path)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the
@@ -1507,7 +1491,7 @@ def build_app(
             prompt_root = pack.root / "prompts"
             if prompt_root.is_dir():
                 sources.append(PromptSource(f"{pack.scope}_pack", prompt_root))
-        sources.append(PromptSource("workspace", cwd / ".clio" / "prompts"))
+        sources.append(PromptSource("workspace", paths.workspace_config_path(cwd, "prompts")))
         if session_id:
             active_blueprint_path = _active_session_agent_blueprint_path(session_id)
             active_blueprint_id = _active_session_agent_blueprint_id(session_id)
@@ -1547,7 +1531,7 @@ def build_app(
             return prompt_write_root.parent / "session-prompts" / session_id
         if scope == "workspace":
             cwd = _prompt_workspace_root(workspace_id=workspace_id, session_id=session_id)
-            return cwd / ".clio" / "prompts"
+            return cwd / ".clio-agent" / "shared" / "prompts"
         if scope in {"global", "user", ""}:
             return prompt_write_root
         raise ValueError("scope must be global, workspace, or session")
@@ -2198,6 +2182,7 @@ def build_app(
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
     register_infrastructure_routes(app, session_store_path.parent)
+    register_connected_storage_routes(app)
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
     # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches
@@ -2245,55 +2230,7 @@ def build_app(
     # app, deps); the destructive-action guard + ledger replace travel on
     # ``deps`` and both publish message.deleted for SSE subscribers.
 
-    @app.exception_handler(HTTPException)
-    @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(request, exc: StarletteHTTPException) -> JSONResponse:
-        """Wrap HTTPExceptions in the v0.2 error envelope."""
-
-        if isinstance(exc.detail, dict) and "error" in exc.detail:
-            # Already an envelope (caller built one explicitly).
-            return JSONResponse(status_code=exc.status_code, content=exc.detail)
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error=error_code_for_status(exc.status_code),
-                message=str(exc.detail) if exc.detail else "",
-                recoverable=exc.status_code < 500,
-            )
-        )
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=envelope.model_dump(exclude_none=True),
-        )
-
-    @app.exception_handler(SkillNotDelegatableError)
-    async def _skill_not_delegatable(request, exc: SkillNotDelegatableError) -> JSONResponse:
-        """Typed 400 for a skill id used as an agent id (#918)."""
-        info = ErrorInfo(
-            error="skill_not_delegatable",
-            message=str(exc),
-            details={"skill_id": exc.skill_id, "skill_path": exc.path},
-            recoverable=True,
-        )
-        return JSONResponse(
-            status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
-        )
-
-    @app.exception_handler(RequestValidationError)
-    async def _validation_exception_handler(request, exc: RequestValidationError) -> JSONResponse:
-        """Wrap FastAPI request validation failures in the GACT envelope."""
-
-        envelope = ErrorEnvelope(
-            error=ErrorInfo(
-                error="validation_error",
-                message="Request validation failed.",
-                details={"errors": jsonable_encoder(exc.errors())},
-                recoverable=True,
-            )
-        )
-        return JSONResponse(
-            status_code=422,
-            content=envelope.model_dump(exclude_none=True),
-        )
+    install_typed_error_handlers(app)
 
     # The Exception backstop is registered by install_error_envelope above,
     # paired with the middleware it must agree with.

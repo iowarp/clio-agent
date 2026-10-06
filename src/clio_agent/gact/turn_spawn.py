@@ -452,10 +452,9 @@ def spawn_child_turn_threadsafe(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     if loop is None or running is loop:
         return spawn_child_turn(app, spec)
 
-    async def _call() -> AgentTask:
-        return spawn_child_turn(app, spec)
+    from clio_agent.gact.loop_handoff import call_on_loop  # noqa: PLC0415 - typed (#1577)
 
-    return asyncio.run_coroutine_threadsafe(_call(), loop).result(timeout=60)
+    return call_on_loop(loop, lambda: spawn_child_turn(app, spec), op="spawn_child_turn")
 
 
 def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optional["AgentTask"]:

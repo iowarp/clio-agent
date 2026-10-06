@@ -3,11 +3,9 @@
 The question this file answers: across a MULTI-TURN conversation, does an expert get
 a byte-stable cacheable prompt PREFIX, so the LM server's prefix cache keeps hitting?
 
-The decisive prefix-cache boundary is UPSTREAM of ARC. Known-verified facts (see
-``tests/test_arc/test_live_plane_byte_equality.py``): within a turn the ARC render is
-byte-for-byte the stock dspy ``_format_trajectory``; each ``forward()`` tombstones the
-prior working-set so the per-turn ReAct trajectory is fresh (this MATCHES native dspy);
-cross-turn history is prepended AS TEXT, identically with/without ARC. So the remaining
+The messages are append-only across turns: the agent's context is its ARC plane, which
+spans turns, and each request is a prefix of the next unless a recorded op landed
+(pinned by ``tests/test_gact/test_context_projection.py``). So the remaining
 prefix-cache risk lives in two places, both tested here:
 
 (a) the SYSTEM PROMPT (the dspy signature instructions = the literal system message,

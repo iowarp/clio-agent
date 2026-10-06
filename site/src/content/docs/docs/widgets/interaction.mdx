@@ -1,0 +1,45 @@
+---
+title: Human-agent interaction
+description: Carry a selection or a visual region into the next question.
+tableOfContents: false
+---
+
+import WidgetSectionTabs from '../../../../components/WidgetSectionTabs.astro';
+import WidgetRecording from '../../../../components/WidgetRecording.astro';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+<WidgetSectionTabs active="interaction" />
+
+The most useful answer is one a person can question again. CLIO lets a person point to evidence in a view and send that context back to the agent.
+
+<Tabs>
+<TabItem label="Select and reference">
+
+Select an observation with a click, drag a box around several, or Ctrl-click to select a trajectory. Shift-click adds or removes observations. **Reference this** attaches the selected records and current filters to your next question.
+
+<WidgetRecording name="clio-select-reference" title="Select observations. Ask when winds peaked." caption="A box selection near the Bahamas carries thirteen observations into the next question. Watch the question being typed and the real answer identifying both 160 kt peaks." timingNote="Recorded continuously at normal speed." pointerGuide />
+
+### What this unlocks
+
+Ask about a specific change or an unusual observation without describing where it is or copying its values. CLIO receives the data behind your selection.
+
+</TabItem>
+<TabItem label="Mark a visual region">
+
+Choose **Capture labelled regions**, draw a box, and add a comment. **Add region to message** carries the image and marked area into your request.
+
+
+<WidgetRecording name="clio-region-figure" title="Mark a region. Turn it into a figure." caption="Draw a box, add a comment, and open the attached image before asking for a PNG. The figure appears directly in the answer. Review it, ask for more detailed coastlines, then open the complete close-up with both peak UTC labels." timingNote="Actual agent work plays at 8× speed and typing at 2–3×; gestures and image opening play at normal speed." pointerGuide />
+
+[Download the generated figure](/media/dorian-bahamas-figure.png) · [Download the hurricane observations used in these recordings](/datasets/atlantic-hurricanes-noaa.csv)
+
+### What this unlocks
+
+Point to a spatial detail and ask CLIO to explain it, compare it, or make a new image from it. The marked region gives your words a visible location.
+
+</TabItem>
+</Tabs>
+
+## Try the controls
+
+Selection, filtering, reference, and region-capture controls are available in the sample widgets throughout these pages, wherever the view supports them.

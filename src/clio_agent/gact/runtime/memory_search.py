@@ -3,7 +3,7 @@
 CLIO's retained-transcript search powers two distinct surfaces that must score
 and excerpt identically:
 
-* the agent-run path -- ``_enrich_with_requested_memory_search`` in
+* the agent-run path -- ``_requested_memory_search`` in
   :mod:`clio_agent.gact.app` injects a requested memory search into a turn's
   context before the LM call; and
 * the memory routes -- ``GET /v1/memory/search`` and the agent-callable

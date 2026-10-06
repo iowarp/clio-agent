@@ -34,8 +34,8 @@ def _fresh_removed_record():
 def _runner(code: int | None, output: str):
     seen: dict[str, object] = {}
 
-    def run(argv: list[str], env: Mapping[str, str], timeout_s: float) -> tuple[int | None, str]:
-        seen.update(argv=argv, env=dict(env), timeout_s=timeout_s)
+    def run(argv: list[str], env: Mapping[str, str], window: float) -> tuple[int | None, str]:
+        seen.update(argv=argv, env=dict(env), window=window)
         return code, output
 
     return run, seen
@@ -44,12 +44,12 @@ def _runner(code: int | None, output: str):
 def test_a_child_that_reached_the_marker_returned() -> None:
     run, seen = _runner(0, "noise\nCLIO_NATIVE_PREFLIGHT_RETURNED\n")
     result = preflight.preflight_native_client(
-        _NATIVE, config_path="d.yaml", timeout_s=9, runner=run
+        _NATIVE, config_path="d.yaml", no_progress_s=9, runner=run
     )
     assert result.returned is True
     assert seen["env"]["CLIO_SERVER_CONF"] == "d.yaml"
     assert seen["env"]["CLIO_WAIT_SERVER"] == "0"  # the child never contacts the daemon
-    assert seen["timeout_s"] == 9
+    assert seen["window"] == 9
 
 
 @pytest.mark.parametrize(("code", "output"), [(1, "FATAL LoadFromFile bad conversion"), (0, "")])
@@ -58,7 +58,7 @@ def test_a_child_that_died_or_never_reached_the_marker_did_not_return(
 ) -> None:
     run, _ = _runner(code, output)
     result = preflight.preflight_native_client(
-        _NATIVE, config_path="d.yaml", timeout_s=9, runner=run
+        _NATIVE, config_path="d.yaml", no_progress_s=9, runner=run
     )
     assert result.returned is False
     assert result.exit_code == code
@@ -147,14 +147,14 @@ def test_a_module_without_native_code_needs_no_child() -> None:
 
     fake = SimpleNamespace(clio_init=lambda *_a: True, RuntimeMode=SimpleNamespace(kClient="k"))
     result = preflight.preflight_native_client(
-        fake, config_path="c.yaml", timeout_s=9, runner=_never
+        fake, config_path="c.yaml", no_progress_s=9, runner=_never
     )
     assert (result.returned, result.skipped_reason) == (True, "no_native_library")
 
 
 def test_the_child_imports_the_module_the_attach_calls() -> None:
     run, seen = _runner(0, "CLIO_NATIVE_PREFLIGHT_RETURNED")
-    preflight.preflight_native_client(_NATIVE, config_path="c.yaml", timeout_s=9, runner=run)
+    preflight.preflight_native_client(_NATIVE, config_path="c.yaml", no_progress_s=9, runner=run)
     source = seen["argv"][-1]
     assert "import_module('clio_cte_core_ext')" in source
 
@@ -162,3 +162,40 @@ def test_the_child_imports_the_module_the_attach_calls() -> None:
 def test_the_real_extension_has_a_native_origin() -> None:
     cte = pytest.importorskip("clio_cte_core_ext")
     assert preflight.native_origin(cte)
+
+
+def _child(source: str) -> list[str]:
+    return [__import__("sys").executable, "-c", source]
+
+
+def test_a_slow_but_working_child_is_waited_for_past_the_window() -> None:
+    """A slow interpreter start on a slow machine: the child works (CPU) for longer than
+    the no-progress window and still finishes; never cut off at a fixed bound.
+
+    **Sabotage:** ``subprocess.run(..., timeout=no_progress_s)`` -> killed at 0.3 s.
+    """
+    burn = (
+        "import time\n"
+        "end = time.monotonic() + 1.5\n"
+        "while time.monotonic() < end:\n"
+        "    pass\n"
+        "print('CLIO_NATIVE_PREFLIGHT_RETURNED', flush=True)\n"
+    )
+    code, output = preflight._run_child(_child(burn), dict(os.environ), 0.3)
+    assert code == 0
+    assert "CLIO_NATIVE_PREFLIGHT_RETURNED" in output
+
+
+def test_a_wedged_child_is_ended_at_the_window_and_reported() -> None:
+    """A child doing nothing (a wedged library load) ends after one no-progress window."""
+    import time  # noqa: PLC0415
+
+    started = time.monotonic()
+    code, output = preflight._run_child(
+        _child("import time; print('loading', flush=True); time.sleep(60)"),
+        dict(os.environ),
+        0.5,
+    )
+    assert code is None  # did not return
+    assert "loading" in output
+    assert time.monotonic() - started < 20.0

@@ -18,12 +18,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from clio_agent.config import LMProviderConfig
 
-from clio_agent.lm.io_logging import _io_logging_lm_cls
 from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
-from clio_agent.providers.codex.constants import (
-    LITELLM_PROVIDER_SDK as _CODEX_LITELLM_PREFIX_SDK,
-)
 from clio_agent.runtime import turn_lm_ledger
 
 _dspy_cache = None
@@ -61,8 +57,8 @@ def _dspy():
 def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
     """Construct a dspy.LM that emits an ``lm.call`` trace event per call.
 
-    Always uses the trace-emitting subclass so each call folds into the canonical
-    trace when a GACT turn is active; a cheap no-op otherwise (CLI/optimizer).
+    The LM carries the ``lm.call`` callback, so each call folds into the canonical
+    trace when a GACT turn is active (an audit row only otherwise: CLI/optimizer).
     """
     _dspy()  # ensure dspy is importable/configured before constructing the LM
     endpoint = urlparse(str(lm_kwargs.get("api_base") or ""))
@@ -73,8 +69,16 @@ def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
             "lm construction callers=%s",
             " <- ".join(frame.name for frame in traceback.extract_stack(limit=8)[:-1]),
         )
-    _warn_dropped_params(model=model, kwargs=lm_kwargs)
-    return _io_logging_lm_cls()(model=model, **lm_kwargs)
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415 - dspy stays lazy
+    from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
+
+    dspy = _dspy()
+    lm_kwargs.setdefault("num_retries", lm_retries())
+    if model.startswith("hosted_vllm/"):
+        from clio_agent.lm.attention_lm import attention_lm_class  # noqa: PLC0415
+
+        return attention_lm_class()(model=model, callbacks=[LM_CALL_TRACE], **lm_kwargs)
+    return dspy.LM(model=model, callbacks=[LM_CALL_TRACE], **lm_kwargs)
 
 
 def create_lm(config: LMProviderConfig) -> dspy.LM:
@@ -93,6 +97,10 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    if config.provider == "codex":
+        return _record_identity(_codex_direct_lm(config), config)
+    if config.provider == "claude_code":
+        return _record_identity(_claude_code_lm(config), config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
     # encode (see lm.lazy_tiktoken). MUST run before the provider import below,
     # which is the first ``import litellm`` in the server. Config-gated so an
@@ -107,7 +115,6 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         from clio_agent.lm.tiktoken_vendored import repair_vendored_rank_files  # noqa: PLC0415
 
         repair_vendored_rank_files()
-    _ensure_provider_registered(config)
     if _defer_tiktoken_enabled():
         # After litellm is imported (by the provider registration above): stop its
         # response-cost recount from re-materialising the ~40 MB cl100k vocab on the
@@ -118,11 +125,12 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
-    extras = build_request_kwargs(config, role="main")
+    extras = build_request_kwargs(config)
     connection = _connection_kwargs(config)
     lm = _construct_lm(
         model=model_name,
-        api_key=config.api_key,
+        # A keyless local server has no credential: an empty key is omitted, never sent.
+        **({"api_key": config.api_key} if config.api_key else {}),
         max_tokens=config.max_tokens or None,
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
@@ -134,20 +142,25 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         **connection,
         **extras,
     )
+    # Only the Anthropic Messages API takes images/documents inside a tool result;
+    # every chat-completions server takes text-only tool rows (lm15 refuses media there).
+    lm._clio_tool_result_media = (
+        "native" if _resolved_litellm_prefix(config) == "anthropic" else "user_message"
+    )
+    return _record_identity(lm, config)
+
+
+def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
+    """Tag the LM with its catalog identity and join the running turn's usage ledger."""
     # Keep the catalog identity on the LM so the generic stream tap can label
     # provider-native reasoning without inferring identity from a LiteLLM prefix.
     # Codex and Claude Code own their established stream semantics and are
     # explicitly excluded from the generic provider bridge.
     provider_id = config.provider_id or str(config.provider)
     try:
-        lm._clio_provider_id = provider_id  # type: ignore[attr-defined]
-        lm._clio_provider_config = replace(  # type: ignore[attr-defined]
-            config, provider_options=dict(config.provider_options)
-        )
-        lm._clio_reasoning_fallback = provider_id not in {  # type: ignore[attr-defined]
-            "codex",
-            "claude_code",
-        }
+        lm._clio_provider_id = provider_id
+        lm._clio_provider_config = replace(config, provider_options=dict(config.provider_options))
+        lm._clio_reasoning_fallback = provider_id not in {"codex", "claude_code"}
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
     # A per-forward LM reaches the running turn's usage rollup only via this.
@@ -155,30 +168,99 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     return lm
 
 
-def _ensure_provider_registered(config: LMProviderConfig) -> None:
-    """Register provider-specific LiteLLM hooks before constructing dspy.LM.
+def _claude_code_bare_model(config: LMProviderConfig) -> str:
+    """The Claude Code model id without any transport prefix a persisted value carries."""
+    return config.model.removeprefix("claude_code/").removeprefix("cc-")
 
-    Only CLI-backed providers need this today (they are LiteLLM CustomLLMs).
-    The import is gated on the provider so installs without the relevant
-    binary do not pay the import cost.
+
+def _claude_code_lm(config: LMProviderConfig) -> Any:
+    """Claude Code: a ``dspy.LM`` on the Claude Code SDK engine pair.
+
+    The thinking config is the engine's (fixed per LM, part of the session key); the
+    remaining generation kwargs stay on the LM for callers that build their
+    ``Request.config`` from them.
     """
-    if config.provider == "codex":
-        if config.codex_variant == "sdk":
-            from clio_agent.providers.codex.sdk_transport import (  # noqa: PLC0415
-                ensure_registered,
-            )
-        else:
-            from clio_agent.providers.codex.litellm_adapter import (  # noqa: PLC0415
-                ensure_registered,
-            )
+    import dspy  # noqa: PLC0415
 
-        ensure_registered()
-    elif config.provider == "claude_code":
-        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
-            ensure_registered,
-        )
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
+    from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
+    from clio_agent.providers.claude_code_engine import (  # noqa: PLC0415
+        AsyncClaudeCodeEngine,
+        ClaudeCodeEngine,
+    )
 
-        ensure_registered()
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'claude_code'")
+    bare = _claude_code_bare_model(config)
+    extras = build_request_kwargs(config)
+    thinking = extras.pop("claude_code_thinking", None)
+    generation = {k: v for k, v in extras.items() if not k.startswith("claude_code_")}
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    lm = dspy.LM(
+        f"claude_code/{bare}",
+        engine=ClaudeCodeEngine(bare, thinking=thinking),
+        async_engine=AsyncClaudeCodeEngine(bare, thinking=thinking),
+        cache=False,
+        num_retries=lm_retries(),
+        model_type="chat",
+        callbacks=[LM_CALL_TRACE],
+        **generation,
+    )
+    lm._clio_tool_result_media = "native"  # the engine sends tool-result media natively
+    return lm
+
+
+def _codex_direct_lm(config: LMProviderConfig) -> Any:
+    """Codex direct: a ``dspy.LM`` on the Codex direct engine pair (lm15 wire, kept WS).
+
+    The reasoning effort rides the request config (``reasoning_effort``); the
+    per-conversation ``prompt_cache_key`` is declared so the loop sends it.
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
+    from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
+    from clio_agent.providers.codex.direct_engine import (  # noqa: PLC0415
+        AsyncCodexDirectEngine,
+        CodexDirectEngine,
+        default_wire,
+    )
+
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'codex'")
+    bare = _codex_bare_model(config)
+    extras = build_request_kwargs(config)
+    effort = extras.pop("codex_reasoning_effort", None)
+    generation = {k: v for k, v in extras.items() if not k.startswith("codex_")}
+    if effort is not None:
+        generation["reasoning_effort"] = effort
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    wire = default_wire()
+    http = config.codex_transport == "sse"  # the operator's explicit no-WebSocket choice
+    lm = dspy.LM(
+        f"{_CODEX_LITELLM_PREFIX}/{bare}",
+        engine=CodexDirectEngine(bare, wire=wire, http=http),
+        async_engine=AsyncCodexDirectEngine(bare, wire=wire, http=http),
+        cache=False,
+        num_retries=lm_retries(),
+        model_type="chat",
+        callbacks=[LM_CALL_TRACE],
+        **generation,
+    )
+    lm._clio_prompt_cache_key = True
+    lm._clio_tool_result_media = "native"  # Responses tool outputs carry images and files
+    return lm
+
+
+def _codex_bare_model(config: LMProviderConfig) -> str:
+    """The Codex model id without any transport prefix a persisted value may carry."""
+    return (
+        config.model.removeprefix(f"{_CODEX_LITELLM_PREFIX}/")
+        .removeprefix("codex/")
+        .removeprefix("cg-")
+    )
 
 
 def _resolved_litellm_prefix(config: LMProviderConfig) -> str:
@@ -243,23 +325,11 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
             f"No model configured for LM provider {config.provider_id or config.provider!r}"
         )
     if config.provider == "codex":
-        # Strip a legacy/already-litellm-prefixed value defensively (a
-        # persisted config.model could in principle already carry either
-        # transport's prefix) before re-applying the CURRENT litellm-facing
-        # prefix for the BOUND transport (S1b: sdk vs direct).
-        bare = (
-            config.model.removeprefix(f"{_CODEX_LITELLM_PREFIX}/")
-            .removeprefix(f"{_CODEX_LITELLM_PREFIX_SDK}/")
-            .removeprefix("codex/")
-            .removeprefix("cg-")
-        )
-        prefix = (
-            _CODEX_LITELLM_PREFIX_SDK if config.codex_variant == "sdk" else _CODEX_LITELLM_PREFIX
-        )
-        return f"{prefix}/cg-{bare}"
+        # Strip an already-litellm-prefixed value (a persisted config.model may
+        # carry the direct prefix) before re-applying it.
+        return f"{_CODEX_LITELLM_PREFIX}/{_codex_bare_model(config)}"  # the engine LM's model
     if config.provider == "claude_code":
-        bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
-        return f"claude_code/cc-{bare}"
+        return f"claude_code/{_claude_code_bare_model(config)}"  # the engine LM's model
     return f"{_resolved_litellm_prefix(config)}/{config.model}"
 
 
@@ -268,46 +338,6 @@ def _is_argonne_sophia(config: LMProviderConfig) -> bool:
 
     parsed = urlparse(config.api_base)
     return config.provider == "argonne" and "/resource_server/sophia/" in parsed.path
-
-
-def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
-    """Create a lower-temperature LM for deterministic action planning.
-
-    Uses config.planner_temperature instead of config.temperature (item 1:
-    "planner and router determinism may set temperature explicitly, but only
-    when temperature is in the effective parameter set" —
-    :func:`~clio_agent.lm.request_builder.build_request_kwargs`'s
-    ``role="planner"`` still gates it).
-
-    Args:
-        config: LM provider configuration
-
-    Returns:
-        Configured dspy.LM instance with lower planner temperature
-    """
-    _ensure_provider_registered(config)
-    _resolve_lm_studio_model_if_needed(config)
-    model_name = _resolve_model_name(config)
-
-    connection = _connection_kwargs(config)
-    lm = _construct_lm(
-        model=model_name,
-        api_key=config.api_key,
-        max_tokens=config.planner_max_tokens or None,
-        model_type="chat",
-        cache=False,  # see create_lm — same rationale
-        **connection,
-        **build_request_kwargs(config, role="planner"),
-    )
-    # Stamp the effective planner sampling surface. Secondary inference from a
-    # planner call must not silently revert to the main LM's temperature/cap.
-    lm._clio_provider_config = replace(  # type: ignore[attr-defined]
-        config,
-        temperature=config.planner_temperature,
-        max_tokens=config.planner_max_tokens or 0,
-        provider_options=dict(config.provider_options),
-    )
-    return lm
 
 
 def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
@@ -323,89 +353,3 @@ def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
     if config.provider == "lm_studio" and not config.model.strip():
         models = list_lm_studio_models(base_url=config.api_base)
         config.model, _ = select_models_for_agents(models)
-
-
-#: Top-level OpenAI-shaped kwargs clio ever passes that a LiteLLM dialect
-#: validates against `get_supported_openai_params` before honoring. Nested
-#: `extra_body` contents (top_k, min_p, chat_template_kwargs, ...) are forwarded
-#: raw by OpenAI-compatible dialects and are never subject to that check, so
-#: they are intentionally not in this list.
-_CHECKED_PARAM_NAMES: tuple[str, ...] = (
-    "temperature",
-    "top_p",
-    "presence_penalty",
-    "frequency_penalty",
-    "stop",
-    "reasoning_effort",
-    "thinking",
-    "max_tokens",
-    "tools",
-    "tool_choice",
-    "parallel_tool_calls",
-    "response_format",
-    "n",
-    "seed",
-)
-
-#: LiteLLM ``CustomLLM`` transports clio owns end-to-end
-#: (`providers.codex.litellm_adapter`, `providers.codex.sdk_transport`,
-#: `providers.claude_code_litellm`). LiteLLM's provider registry does not know
-#: these as dialects -- `get_llm_provider`/`get_supported_openai_params` raise
-#: or return nonsense for them -- and their own `completion()` reads a small,
-#: fixed set of `optional_params` keys directly, ignoring everything else. The
-#: drop_params proactive check below does not apply to them.
-_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (
-    f"{_CODEX_LITELLM_PREFIX}/",
-    f"{_CODEX_LITELLM_PREFIX_SDK}/",
-    "claude_code/",
-)
-
-
-def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:
-    """Log, at WARNING, every optional kwarg LiteLLM's ``drop_params=True`` would drop.
-
-    LiteLLM exposes no reliable after-the-fact hook for an actual drop: its
-    ``drop_params`` machinery (``litellm/utils.py`` -- ``_get_non_default_params``
-    and the per-call-type ``get_optional_params*`` functions) just pops the
-    unsupported key with no callback or log line (verified against litellm
-    1.102.1's source). So this checks PROACTIVELY, at LM construction: for each
-    optional kwarg clio is about to pass, is it in this model/dialect's own
-    ``get_supported_openai_params()`` list? Anything not listed there WOULD be
-    silently dropped on the real call. A drop means one of clio's own
-    capability records is wrong for this endpoint/model (model-capabilities
-    plan, Part 2.4) -- these are bug signals, not expected noise.
-
-    Best-effort and purely diagnostic: any failure here (unmapped dialect,
-    litellm quirk) is logged at DEBUG and never raises -- this must never break
-    LM construction.
-    """
-    if model.startswith(_CUSTOM_TRANSPORT_PREFIXES):
-        return
-    present = [name for name in _CHECKED_PARAM_NAMES if name in kwargs]
-    if not present:
-        return
-    try:
-        import litellm  # noqa: PLC0415
-
-        bare_model, custom_llm_provider, _key, _base = litellm.get_llm_provider(
-            model, api_base=kwargs.get("api_base") or None
-        )
-        supported = set(
-            litellm.get_supported_openai_params(
-                model=bare_model, custom_llm_provider=custom_llm_provider
-            )
-            or []
-        )
-    except Exception as exc:  # noqa: BLE001 - a diagnostic must never break LM construction
-        logger.debug("drop_params check skipped for model=%s: %s", model, exc)
-        return
-    dropped = [name for name in present if name not in supported]
-    if dropped:
-        endpoint = urlparse(str(kwargs.get("api_base") or ""))
-        logger.warning(
-            "lm drop_params would silently drop params=%s model=%s endpoint_host=%s "
-            "-- one of clio's capability records is wrong for this endpoint/model",
-            dropped,
-            model,
-            endpoint.hostname or "default",
-        )

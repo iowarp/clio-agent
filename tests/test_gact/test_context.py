@@ -1,8 +1,7 @@
 """Unit tests for the single runtime-context module (clio_agent.gact.context).
 
 Covers the #714 migration's leaf module directly: dataclass construction +
-defaults, the mutable TrajectoryCell riding through copy_context() with identity
-preserved, the set/replace/reset round-trip restoring the prior layer, and the
+defaults, the set/replace/reset round-trip restoring the prior layer, and the
 executor-crossing round-trip (parent unaffected by a child copy's mutation).
 """
 
@@ -31,7 +30,6 @@ def test_runtime_context_defaults():
     assert rc.react_context_window == 0
     assert rc.blueprint_tool_rows is None
     assert rc.parent_span_id == ""
-    assert rc.trajectory_cell is None
 
 
 def test_runtime_context_construction():
@@ -43,19 +41,12 @@ def test_runtime_context_construction():
         react_context_window=4096,
         blueprint_tool_rows=[{"name": "x"}],
         parent_span_id="span",
-        trajectory_cell=ctx.TrajectoryCell(value={"k": "v"}),
     )
     assert rc.turn is turn
     assert rc.react_scope == "scope"
     assert rc.react_context_window == 4096
     assert rc.blueprint_tool_rows == [{"name": "x"}]
     assert rc.parent_span_id == "span"
-    assert rc.trajectory_cell is not None
-    assert rc.trajectory_cell.value == {"k": "v"}
-
-
-def test_trajectory_cell_default_none():
-    assert ctx.TrajectoryCell().value is None
 
 
 def test_set_app_session_round_trip():
@@ -113,7 +104,7 @@ def test_nested_react_layer_lifo_reset():
 
 
 def test_parent_span_nested_dance():
-    """Mirror the _RetainingReAct expert/step parent-span set/reset dance."""
+    """Mirror the ClioReAct expert/step parent-span set/reset dance."""
     expert_token = ctx.set_parent_span("EXPERT")
     try:
         assert ctx.active_parent_span_id() == "EXPERT"
@@ -127,32 +118,6 @@ def test_parent_span_nested_dance():
     finally:
         ctx.reset(expert_token)
     assert ctx.active_parent_span_id() == ""
-
-
-def test_trajectory_cell_mutation_and_publish():
-    cell = ctx.install_trajectory_cell()
-    assert ctx.active_trajectory() is None
-    assert cell.value is None
-    ctx.publish_trajectory({"trajectory": {"tool_name_0": "x"}, "input_args": {"q": "y"}})
-    # publish mutates the SAME cell in place.
-    assert cell.value == {"trajectory": {"tool_name_0": "x"}, "input_args": {"q": "y"}}
-    assert ctx.active_trajectory() == cell.value
-
-
-def test_publish_trajectory_noop_without_cell():
-    # Fresh default context has no cell; publish must be a no-op (not raise).
-    base_token = ctx._RUNTIME.set(ctx.RuntimeContext())
-    try:
-        assert ctx.active_trajectory() is None
-        ctx.publish_trajectory({"x": 1})
-        assert ctx.active_trajectory() is None
-    finally:
-        ctx._RUNTIME.reset(base_token)
-
-
-def test_install_trajectory_preseeded():
-    ctx.install_trajectory({"seed": True})
-    assert ctx.active_trajectory() == {"seed": True}
 
 
 def test_blueprint_tool_rows_stores_identity():
@@ -195,24 +160,6 @@ def test_set_turn_identity_bare_and_preserves_tool_session():
             ctx.reset(ts_token)
     finally:
         ctx._RUNTIME.reset(base_token)
-
-
-def test_trajectory_cell_rides_copy_context_identity_preserved():
-    """The cell installed in the parent is the SAME object the copied context sees,
-    so a mutation through the copy is visible to the parent (shared identity)."""
-    cell = ctx.install_trajectory_cell()
-    snapshot = contextvars.copy_context()
-
-    def _mutate_in_copy() -> object:
-        ctx.publish_trajectory({"from": "copy"})
-        return ctx.current().trajectory_cell
-
-    cell_seen_in_copy = snapshot.run(_mutate_in_copy)
-    # Same cell instance flows through the copy.
-    assert cell_seen_in_copy is cell
-    # The copy mutated the shared cell -> visible in the parent.
-    assert cell.value == {"from": "copy"}
-    assert ctx.active_trajectory() == {"from": "copy"}
 
 
 def test_executor_crossing_child_set_does_not_leak_to_parent():

@@ -25,8 +25,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -156,4 +159,72 @@ def install_error_envelope(app: FastAPI) -> None:
         return JSONResponse(
             status_code=500,
             content=unhandled_error_envelope(exc).model_dump(exclude_none=True),
+        )
+
+
+def install_typed_error_handlers(app: FastAPI) -> None:
+    """Register HTTP, request-validation, and skill errors in the GACT envelope."""
+    from clio_agent.gact.skills import SkillNotDelegatableError
+
+    @app.exception_handler(HTTPException)
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(request: object, exc: StarletteHTTPException) -> JSONResponse:
+        """Wrap HTTPExceptions in the v0.2 error envelope."""
+
+        if isinstance(exc.detail, dict) and "error" in exc.detail:
+            # Already an envelope (caller built one explicitly).
+            return JSONResponse(status_code=exc.status_code, content=exc.detail)
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error=error_code_for_status(exc.status_code),
+                message=str(exc.detail) if exc.detail else "",
+                recoverable=exc.status_code < 500,
+            )
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=envelope.model_dump(exclude_none=True),
+        )
+
+    @app.exception_handler(SkillNotDelegatableError)
+    async def _skill_not_delegatable(
+        request: object, exc: SkillNotDelegatableError
+    ) -> JSONResponse:
+        """Typed 400 for a skill id used as an agent id (#918)."""
+        info = ErrorInfo(
+            error="skill_not_delegatable",
+            message=str(exc),
+            details={"skill_id": exc.skill_id, "skill_path": exc.path},
+            recoverable=True,
+        )
+        return JSONResponse(
+            status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_handler(
+        request: object, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Wrap FastAPI request validation failures in the GACT envelope."""
+
+        envelope = ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message="Request validation failed.",
+                # Validation can fail on another field while its input still contains
+                # the entire credential-bearing body. Never echo raw inputs/context.
+                details={
+                    "errors": jsonable_encoder(
+                        [
+                            {key: row[key] for key in ("type", "loc", "msg") if key in row}
+                            for row in exc.errors()
+                        ]
+                    )
+                },
+                recoverable=True,
+            )
+        )
+        return JSONResponse(
+            status_code=422,
+            content=envelope.model_dump(exclude_none=True),
         )

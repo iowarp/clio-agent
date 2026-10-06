@@ -17,7 +17,6 @@ from clio_agent.gact.provenance.protocol import ProviderReceipt
 # this module's public surface is unchanged (#1247).
 from clio_agent.provenance_config import (  # noqa: F401 - re-exported public API
     configured_provider_names,
-    native_durable_provenance_enabled,
 )
 
 
@@ -184,6 +183,12 @@ def _flowcept_config() -> FlowceptProviderConfig:
             env="CLIO_FLOWCEPT_CHECK_SAFE_STOPS",
             default=True,
             cast=conf.as_bool,
+        ),
+        persistence_owner=conf.resolve(
+            "provenance.agentic.flowcept.persistence_owner",
+            env="CLIO_FLOWCEPT_PERSISTENCE_OWNER",
+            default="client",
+            cast=conf.as_str,
         ),
     )
 

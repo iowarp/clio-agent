@@ -66,12 +66,11 @@ Text delivery includes `stream_source`:
 
 | `stream_source` | Meaning |
 |---|---|
-| `live` | Delta arrived through the live `dspy.streamify` path. |
+| `live` | Delta arrived live from the provider through the LM token hooks (`runtime/lm_activity`). |
 | `batch` | Backend already had the final answer before live provider-token deltas could be emitted. |
 
-Live streaming is best-effort: chat answers, provider-backed expert
-synthesis, and registered user/skill agents attempt the live
-`dspy.streamify` path when the upstream DSPy/LiteLLM stack emits chunks.
+Every model call inside the agent loop streams its text and thinking live
+through the LM token hooks when the provider streams.
 Paths that cannot start a live stream mark completed text as
 `batch` with an explicit `stream_fallback.reason`; deterministic
 non-token summaries may also use batch fallback metadata because there

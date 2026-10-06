@@ -85,10 +85,22 @@ def test_trace_empty_session_returns_empty_events(tmp_path: Path) -> None:
 
 
 def test_trace_arc_unavailable_returns_typed_503(tmp_path: Path) -> None:
-    """A known session reports the established recoverable ARC degradation."""
-    app = build_app(sessions_path=tmp_path / "sessions.json", arc=None)
+    """A known session reports the established recoverable ARC degradation.
+
+    Since b80479ea the first semantic event attaches the process ARC, so the session is
+    created with an in-memory ARC and the app is then detached (clio-core not attached).
+    """
+    from clio_agent.arc.live import _MemoryStore
+    from clio_agent.arc.memory import ARCMemory
+    from clio_agent.gact.runtime.globals import _set_app_arc
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        arc=ARCMemory(data_dir=str(tmp_path / "arc"), store=_MemoryStore()),
+    )
     client = TestClient(app)
     sid = _session(client)
+    _set_app_arc(app, None)
 
     response = client.get(f"/v1/sessions/{sid}/trace")
 

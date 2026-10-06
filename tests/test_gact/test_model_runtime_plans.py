@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from clio_schemas.connected_resources import HostStorageLocations
 
 from clio_agent.gact.infrastructure.container_runtime import RuntimeUnavailableError
 from clio_agent.gact.infrastructure.drivers import (
@@ -15,10 +16,56 @@ from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_VERSION, VLLM_V
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     ContainerRuntimeFact,
+    InfrastructureTarget,
     OwnedResource,
     TargetFacts,
     TargetIdentity,
 )
+
+
+def test_configured_storage_is_recorded_and_reused_after_host_defaults_change() -> None:
+    facts = _facts("apptainer")
+    target = InfrastructureTarget(
+        id="ares", label="ares", kind="ssh", storage=HostStorageLocations(root="/data/clio")
+    )
+    installed = build_driver_plan(
+        service_id="ollama",
+        action="install",
+        variant_id="cpu",
+        configuration={"model": "tiny"},
+        facts=facts,
+        target=target,
+    )
+    assert installed.configuration["storage.model_cache"] == "/data/clio/models/ares/clio-ollama"
+    assert installed.configuration["storage.temporary"] == "/data/clio/tmp/ares/clio-ollama"
+    target.storage = HostStorageLocations(root="/other/new-default")
+    started = build_driver_plan(
+        service_id="ollama",
+        action="start",
+        variant_id="cpu",
+        configuration=installed.configuration,
+        facts=facts,
+        target=target,
+    )
+    run = _run(started.commands, "apptainer")
+    assert "/data/clio/models/ares/clio-ollama:/cache" in run.args
+    assert not any("/other/new-default" in arg for arg in run.args)
+
+
+def test_legacy_model_receipt_uses_recorded_cache_before_new_defaults() -> None:
+    from clio_agent.gact.infrastructure.model_runtimes import deployment_storage_configuration
+
+    target = InfrastructureTarget(id="ares", label="ares", kind="ssh", install_root="/old")
+    old_cache = "/different/previous-root/services/ares/clio-ollama/cache"
+    configuration = deployment_storage_configuration(
+        "ollama",
+        _facts("apptainer"),
+        target,
+        {"model": "tiny"},
+        [OwnedResource(kind="directory", ref=old_cache)],
+    )
+    assert configuration["storage.model_cache"] == old_cache
+    assert configuration["storage.service_directory"] == old_cache.removesuffix("/cache")
 
 
 def _facts(*usable: str, os: str = "linux", target_id: str = "ares") -> TargetFacts:
@@ -54,6 +101,21 @@ def _run(plan_commands: tuple[CommandSpec, ...], program: str) -> CommandSpec:
     )
 
 
+@pytest.mark.parametrize("runtime", ["docker", "podman", "apptainer"])
+def test_vllm_downloaded_model_is_mounted_read_only(runtime: str) -> None:
+    plan = build_driver_plan(
+        service_id="vllm",
+        action="install",
+        variant_id="cpu",
+        configuration={"model": "/data/models/downloaded", "container_runtime": runtime},
+        facts=_facts(runtime),
+    )
+    command = _run(plan.commands, runtime)
+    assert "/data/models/downloaded:/models/downloaded:ro" in command.args
+    assert command.args[command.args.index("--model") + 1] == "/models/downloaded"
+    assert "/data/models/downloaded" not in plan.configuration.get("storage.model_cache", "")
+
+
 def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     plan = build_driver_plan(
         service_id="ollama",
@@ -80,7 +142,7 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     assert "OLLAMA_NUM_PARALLEL=2" in args
     assert "OLLAMA_CONTEXT_LENGTH=4096" in args
     assert args[args.index("--volume") + 1] == (
-        "/home/alice/.local/share/clio/services/ares/clio-ollama/cache:/cache"
+        "/home/alice/.local/share/clio-agent/services/ares/clio-ollama/cache:/cache"
     )
     assert args[-2:] == [image, "serve"]
     assert plan.readiness is not None
@@ -98,6 +160,29 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     ]
     assert plan.connection_port == 11434
     assert plan.configuration is not None and plan.configuration["container_runtime"] == "docker"
+
+
+def test_model_cache_uses_the_target_agent_data_override() -> None:
+    facts = _facts("docker").model_copy(update={"agent_data_root": "/scratch/alice/agent-data"})
+    plan = build_driver_plan(
+        service_id="ollama",
+        action="install",
+        variant_id="cpu",
+        configuration={"model": "qwen2.5:0.5b"},
+        facts=facts,
+    )
+    args = _run(plan.commands, "docker").args
+    assert args[args.index("--volume") + 1] == (
+        "/scratch/alice/agent-data/services/ares/clio-ollama/cache:/cache"
+    )
+
+
+def test_model_cache_rejects_relative_agent_data_root() -> None:
+    facts = _facts("docker").model_copy(update={"agent_data_root": "relative"})
+    with pytest.raises(ValueError, match="must be absolute"):
+        build_driver_plan(
+            service_id="ollama", action="install", variant_id="cpu", configuration={}, facts=facts
+        )
 
 
 def test_ollama_requires_a_model_to_pull() -> None:
@@ -212,11 +297,11 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
         facts=_facts("apptainer"),
     )
 
-    service_dir = "/home/alice/.local/share/clio/services/ares/clio-ollama"
+    service_dir = "/home/alice/.local/share/clio-agent/services/ares/clio-ollama"
     pull = next(spec for spec in plan.commands if spec.program == "env")
     assert pull.args == [
-        f"APPTAINER_CACHEDIR={service_dir}/apptainer-cache",
-        f"APPTAINER_TMPDIR={service_dir}/apptainer-cache",
+        f"APPTAINER_CACHEDIR={service_dir}/tmp/apptainer-cache",
+        f"APPTAINER_TMPDIR={service_dir}/tmp/apptainer-cache",
         "apptainer",
         "pull",
         "--force",

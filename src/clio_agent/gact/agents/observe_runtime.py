@@ -99,8 +99,8 @@ def _excerpt_for_family(
 ) -> tuple[str, bool]:
     """Compose ONE bounded excerpt for a curated family from the semantic payload.
 
-    Curation is deliberate — a react step surfaces its thought + the tool it called
-    + the observation; an extract surfaces its output + the typed structured landing;
+    Curation is deliberate — a react step surfaces its thought + each tool call it
+    made with its observation; an extract surfaces its output + the typed structured landing;
     a delegation surfaces its stage + returned output. Everything else falls back to
     the event summary. Raw deltas are never surfaced.
     """
@@ -108,16 +108,16 @@ def _excerpt_for_family(
     parts: list[str] = []
     if family == "react.step":
         thought = str(inner.get("thought") or "").strip()
-        tool = str(inner.get("tool_name") or "").strip()
-        observation = inner.get("observation")
         if thought:
             parts.append(f"thought: {thought}")
-        if tool:
-            args = inner.get("tool_args")
-            args_s = _jsonish(args) if args else ""
-            parts.append(f"tool: {tool}({args_s})")
-        if observation not in (None, "", {}, []):
-            parts.append(f"obs: {_jsonish(observation)}")
+        for call in inner.get("tool_calls") or []:
+            if not isinstance(call, Mapping):
+                continue
+            args = call.get("args")
+            parts.append(f"tool: {call.get('name') or ''}({_jsonish(args) if args else ''})")
+            observation = call.get("observation")
+            if observation not in (None, "", {}, []):
+                parts.append(f"obs: {_jsonish(observation)}")
     elif family == "extract":
         output = str(inner.get("output") or "").strip()
         if output:

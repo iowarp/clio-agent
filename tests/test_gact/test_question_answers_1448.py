@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -20,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from tests.test_gact.test_resources import _upload, _workspace
+from tests.turn_signals import TERMINAL_STATUSES, wait_for_terminal_status
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -42,17 +42,15 @@ def harness(tmp_path: Path) -> Iterator[tuple[TestClient, _RecordingAgent]]:
         yield client, agent
 
 
-def _wait(predicate: Any, timeout: float = 8.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.02)
-    raise AssertionError("condition not reached")
+#: A resumed turn ends idle, or waiting on the user again while other questions are open.
+_SETTLED = frozenset({"waiting_user", *TERMINAL_STATUSES})
 
 
-def _idle(client: TestClient, sid: str) -> bool:
-    return client.get(f"/v1/sessions/{sid}").json()["status"] in {"idle", "waiting_user"}
+def _settled_after(client: TestClient, sid: str, cursor: int) -> str:
+    """Block on the resumed turn's own status event (never a wall-clock guess)."""
+    return wait_for_terminal_status(
+        client.app.state.bus, sid, after_event_id=cursor, statuses=_SETTLED
+    )
 
 
 def _ask(client: TestClient, sid: str, prompt: str, created_at: str = "") -> dict[str, Any]:
@@ -72,18 +70,21 @@ def test_each_answer_resumes_the_agent_while_other_questions_wait(
     first = _ask(client, sid, "Which account?")
     second = _ask(client, sid, "Which directory?")
 
+    cursor = client.app.state.bus.latest_event_id(sid)
     answered = client.post(
         f"/v1/sessions/{sid}/questions/{first['id']}/answer", json={"answer": "hochhalter"}
     )
     assert answered.status_code == 200, answered.text
-    _wait(lambda: len(agent.questions) == 1)
+    assert _settled_after(client, sid, cursor) in {"idle", "waiting_user"}
+    assert len(agent.questions) == 1
     assert agent.questions[0].endswith("Question: Which account?\nAnswer: hochhalter")
-    _wait(lambda: _idle(client, sid))
     session = client.get(f"/v1/sessions/{sid}").json()
     assert session["metadata"]["pending_user_question_id"] == second["id"]
 
+    cursor = client.app.state.bus.latest_event_id(sid)
     client.post(f"/v1/sessions/{sid}/questions/{second['id']}/answer", json={"answer": "/scratch"})
-    _wait(lambda: len(agent.questions) == 2)
+    assert _settled_after(client, sid, cursor) == "idle"
+    assert len(agent.questions) == 2
     assert agent.questions[1].endswith("Question: Which directory?\nAnswer: /scratch")
 
 
@@ -100,6 +101,7 @@ def test_a_composer_message_with_an_attachment_answers_the_question(
         client, workspace_id, name="stations.csv", content=b"id\nP123\n", media_type="text/csv"
     )
 
+    cursor = client.app.state.bus.latest_event_id(sid)
     accepted = client.post(
         f"/v1/sessions/{sid}/messages",
         json={
@@ -113,7 +115,8 @@ def test_a_composer_message_with_an_attachment_answers_the_question(
 
     assert accepted.status_code == 200, accepted.text
     message_id = accepted.json()["message_id"]
-    _wait(lambda: len(agent.questions) == 1)
+    assert _settled_after(client, sid, cursor) == "idle"
+    assert len(agent.questions) == 1
     assert agent.questions[0].endswith(
         "[Answer to agent question]\nQuestion: Which station list should I use?\n"
         "Answer:\nUse the attached list."

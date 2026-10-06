@@ -7,8 +7,11 @@ producer mistake comes back as a typed refusal dict, never an exception.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
@@ -16,6 +19,7 @@ from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_ca
 from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
+    build_inspect_a2ui_surface_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -27,6 +31,12 @@ BASIC_ID = basic_catalog_id()
 
 def _session(tmp_path: Path, monkeypatch: Any) -> tuple[Any, str]:
     app = build_app(sessions_path=tmp_path / "sessions.json")
+    # The store seeds "ws_default" with root_path=os.getcwd() (workspaces.py
+    # _seed_default) so a bare TUI boot always has something to render — but a
+    # producer-tool test must never write through that into the real
+    # repo/invocation cwd (e.g. a minted surface-definition artifact, #1533
+    # S4). Rebind it to this test's own tmp_path before any tool call runs.
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     session = app.state.sessions.create(workspace_id="ws_default", title="A2UI producer")
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: session.id)
@@ -101,6 +111,21 @@ def test_producer_round_trip_through_the_store(tmp_path: Path, monkeypatch: Any)
     )
     assert refused["ok"] is False
     assert refused["reason"] == "a2ui_surface_not_found"
+
+
+def test_inspect_surface_finds_prior_turn_definition(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    create = build_create_a2ui_surface_tool()
+    inspect = build_inspect_a2ui_surface_tool()
+    component = {"id": "root", "component": "Text", "text": "Original"}
+    create(surface_id="recipe", components=[component])
+
+    listed = inspect()
+    assert listed["total"] == 1
+    assert listed["surfaces"][0]["surface_id"] == "recipe"
+    assert inspect(surface_id="recipe")["components"] == [component]
+    assert inspect(surface_id="other")["reason"] == "a2ui_surface_not_found"
 
 
 def test_update_data_model_delete_true_omits_the_value_key(
@@ -539,6 +564,18 @@ def test_producer_tool_docstrings_are_at_most_ten_lines_with_no_prop_lore() -> N
             assert banned not in doc, f"{tool.name} docstring still names {banned!r}"
 
 
+def test_components_arg_description_says_data_uri_accepts_a_workspace_path() -> None:
+    """#1533: a ``dataUri``/``url``/``uri`` value may be authored as a plain
+    workspace path — the export boundary rewrites it to ``artifact://``
+    automatically before validation. Stated in the ``components`` arg
+    description (not the 10-line-capped docstring) for both tools."""
+
+    for tool in (build_create_a2ui_surface_tool(), build_update_a2ui_components_tool()):
+        description = tool.args["components"]["description"]
+        assert "workspace" in description
+        assert "artifact://" in description
+
+
 def test_every_producer_tool_builds_in_the_surfaces_domain() -> None:
     """Merge regression: ``native_tool`` made ``domain`` keyword-required on the
     release line while three producer builders never passed it, so building the
@@ -560,3 +597,570 @@ def test_every_producer_tool_builds_in_the_surfaces_domain() -> None:
     ):
         tool = build()
         assert getattr(tool.func, DOMAIN_ATTR) == "surfaces", tool.name
+
+
+# --------------------------------------------------------------------------- #
+# components_path: an alternative to inline components (#1533 S4)
+# --------------------------------------------------------------------------- #
+
+
+def test_create_with_both_components_and_components_path_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    (tmp_path / "components.json").write_text(
+        '[{"id": "root", "component": "Text", "text": "x"}]', encoding="utf-8"
+    )
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="both",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+        components_path="components.json",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_source_conflict"
+    assert app.state.a2ui_store.get(sid, "both") is None
+
+
+def test_create_with_neither_components_nor_components_path_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    result = build_create_a2ui_surface_tool()(surface_id="neither")
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_source_missing"
+
+
+def test_create_with_components_path_reads_the_workspace_json_file(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    (tmp_path / "surface.json").write_text(
+        '[{"id": "root", "component": "Text", "text": "from a file"}]', encoding="utf-8"
+    )
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="from-path", components_path="surface.json"
+    )
+
+    assert result.get("ok") is not False, result
+    assert result["rendered"] is True
+    surface = app.state.a2ui_store.get(sid, "from-path")
+    assert surface is not None
+    components = surface.messages[-1]["updateComponents"]["components"]
+    assert components == [{"id": "root", "component": "Text", "text": "from a file"}]
+
+
+def test_components_path_outside_the_workspace_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    outside = tmp_path.parent / "outside.json"
+    outside.write_text('[{"id": "root", "component": "Text", "text": "x"}]', encoding="utf-8")
+
+    result = build_create_a2ui_surface_tool()(surface_id="escape", components_path=str(outside))
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_path_unresolved"
+
+
+def test_components_path_naming_no_file_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="missing-file", components_path="does-not-exist.json"
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_path_unresolved"
+
+
+def test_components_path_that_is_not_valid_json_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    (tmp_path / "broken.json").write_text("not json {", encoding="utf-8")
+
+    result = build_create_a2ui_surface_tool()(surface_id="broken", components_path="broken.json")
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_path_invalid"
+
+
+def test_components_path_that_is_not_an_array_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    (tmp_path / "object.json").write_text(
+        '{"id": "root", "component": "Text", "text": "x"}', encoding="utf-8"
+    )
+
+    result = build_create_a2ui_surface_tool()(surface_id="not-array", components_path="object.json")
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_path_invalid"
+
+
+def test_components_path_with_a_non_object_entry_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """#1533 S4 adversarial review item 7: an array is not enough -- every
+    entry must itself be a component OBJECT, or this is a typed refusal
+    naming which index broke, never a downstream crash trying to treat a
+    string/number/null as a component dict."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    (tmp_path / "mixed.json").write_text(
+        '[{"id": "root", "component": "Text", "text": "x"}, "not-an-object", 42]',
+        encoding="utf-8",
+    )
+
+    result = build_create_a2ui_surface_tool()(surface_id="mixed", components_path="mixed.json")
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_path_invalid"
+    assert "[1, 2]" in result["detail"]
+
+
+def test_update_components_also_supports_components_path(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    build_create_a2ui_surface_tool()(
+        surface_id="upd", components=[{"id": "root", "component": "Text", "text": "first"}]
+    )
+    (tmp_path / "update.json").write_text(
+        '[{"id": "root", "component": "Text", "text": "second"}]', encoding="utf-8"
+    )
+
+    result = build_update_a2ui_components_tool()(surface_id="upd", components_path="update.json")
+
+    assert result.get("ok") is not False, result
+    surface = app.state.a2ui_store.get(sid, "upd")
+    assert surface is not None
+    components = surface.messages[-1]["updateComponents"]["components"]
+    assert components == [{"id": "root", "component": "Text", "text": "second"}]
+
+
+def test_update_components_with_both_components_and_components_path_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    build_create_a2ui_surface_tool()(
+        surface_id="upd2", components=[{"id": "root", "component": "Text", "text": "first"}]
+    )
+
+    result = build_update_a2ui_components_tool()(
+        surface_id="upd2",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+        components_path="anything.json",
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_components_source_conflict"
+
+
+# --------------------------------------------------------------------------- #
+# Every surface keeps its definition: a minted artifact linked to it (#1533 S4)
+# --------------------------------------------------------------------------- #
+
+
+def test_create_a2ui_surface_mints_a_definition_artifact(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="defined",
+        components=[{"id": "root", "component": "Text", "text": "hello"}],
+    )
+
+    assert result.get("ok") is not False, result
+    assert result["definition_artifact_id"].startswith("artifact_")
+    assert result["definition_artifact_uri"] == f"artifact://{result['definition_artifact_id']}"
+
+    record, version = app.state.artifact_registry.get_by_artifact_id(
+        result["definition_artifact_id"]
+    )
+    assert record.name == "defined.json"
+    assert version.producer["designation"] == "a2ui-surface-definition"
+    assert version.producer["surface_id"] == "defined"
+
+    stored_path = Path(version.path)
+    assert stored_path.is_file()
+    assert json.loads(stored_path.read_text(encoding="utf-8")) == [
+        {"id": "root", "component": "Text", "text": "hello"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "malicious_surface_id",
+    [
+        "../../../evil",
+        "../../evil",
+        "..",
+        "../outside",
+        "/etc/passwd",
+        "C:\\Windows\\evil",
+        "a/../../b",
+        "a\\..\\..\\b",
+    ],
+)
+def test_definition_artifact_never_escapes_the_workspace(
+    tmp_path: Path, monkeypatch: Any, malicious_surface_id: str
+) -> None:
+    """CRITICAL adversarial review defect: surface_id (a raw model-authored
+    string) was joined directly into the definition artifact's path
+    (``.clio/a2ui/{surface_id}.json``), so a value like ``../../../evil``
+    escaped the workspace entirely. The surface still creates successfully
+    (surface_id is never rejected outright); its definition artifact is
+    stored under a HASHED, safe name instead, always inside the workspace."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    outside_marker = tmp_path.parent / "evil.json"
+    outside_marker_existed_before = outside_marker.exists()
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id=malicious_surface_id,
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+    )
+
+    assert result.get("ok") is not False, result
+    artifact_id = result["definition_artifact_id"]
+    _record, version = app.state.artifact_registry.get_by_artifact_id(artifact_id)
+    stored_path = Path(version.path).resolve()
+
+    # The stored file is INSIDE the workspace root, never outside it.
+    assert stored_path.is_relative_to(tmp_path.resolve())
+    # Nothing was ever written at any traversal-escaped location.
+    assert outside_marker.exists() == outside_marker_existed_before
+    for evil_path in (
+        tmp_path.parent / "evil.json",
+        Path(malicious_surface_id.replace("\\", "/") + ".json"),
+    ):
+        if not str(evil_path).startswith(str(tmp_path)):
+            assert not evil_path.is_file()
+
+
+def test_definition_artifact_filename_is_hashed_for_a_traversal_surface_id(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="../../../evil",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+    )
+
+    assert result.get("ok") is not False, result
+    _record, version = app.state.artifact_registry.get_by_artifact_id(
+        result["definition_artifact_id"]
+    )
+    stored_path = Path(version.path)
+    from clio_agent.paths import workspace_state_dir
+
+    assert stored_path.parent == workspace_state_dir(tmp_path) / "a2ui"
+    assert stored_path.name.startswith("surface-")
+    assert stored_path.name != "evil.json"
+
+
+def test_definition_artifact_filename_is_stable_for_the_same_traversal_surface_id(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Re-applying the SAME (malicious) surface_id still dedups/version-chains
+    onto the same logical artifact -- the hash is a function of surface_id,
+    not randomized per call."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    first = build_create_a2ui_surface_tool()(
+        surface_id="../../../evil",
+        components=[{"id": "root", "component": "Text", "text": "v1"}],
+    )
+    second = build_update_a2ui_components_tool()(
+        surface_id="../../../evil",
+        components=[{"id": "root", "component": "Text", "text": "v2"}],
+    )
+
+    assert first.get("ok") is not False, first
+    assert second.get("ok") is not False, second
+    first_record, _ = app.state.artifact_registry.get_by_artifact_id(
+        first["definition_artifact_id"]
+    )
+    second_record, _ = app.state.artifact_registry.get_by_artifact_id(
+        second["definition_artifact_id"]
+    )
+    assert first_record.name == second_record.name
+
+
+def test_definition_file_name_allows_a_safe_surface_id_verbatim() -> None:
+    from clio_agent.gact.a2ui_producer._definition_artifact import _definition_file_name
+
+    assert _definition_file_name("my-surface_1") == "my-surface_1.json"
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    ["../evil", "a/b", "a\\b", "C:\\evil", "..", "", "a.b", "a b"],
+)
+def test_definition_file_name_hashes_anything_outside_the_safe_charset(unsafe: str) -> None:
+    from clio_agent.gact.a2ui_producer._definition_artifact import _definition_file_name
+
+    name = _definition_file_name(unsafe)
+    assert "/" not in name
+    assert "\\" not in name
+    assert ".." not in name
+    assert name.startswith("surface-")
+    assert name.endswith(".json")
+
+
+def test_updating_a_surfaces_components_remints_its_definition_artifact(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    first = build_create_a2ui_surface_tool()(
+        surface_id="redefine",
+        components=[{"id": "root", "component": "Text", "text": "v1"}],
+    )
+
+    second = build_update_a2ui_components_tool()(
+        surface_id="redefine",
+        components=[{"id": "root", "component": "Text", "text": "v2"}],
+    )
+
+    assert first["definition_artifact_id"] != second["definition_artifact_id"]
+    _record, version = app.state.artifact_registry.get_by_artifact_id(
+        second["definition_artifact_id"]
+    )
+    assert version.version == 2
+
+
+def test_reapplying_the_same_components_dedups_onto_the_existing_definition_artifact(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    same_components = [{"id": "root", "component": "Text", "text": "unchanged"}]
+    first = build_create_a2ui_surface_tool()(surface_id="stable", components=same_components)
+
+    second = build_update_a2ui_components_tool()(
+        surface_id="stable", components=list(same_components)
+    )
+
+    assert first["definition_artifact_id"] == second["definition_artifact_id"]
+
+
+def test_partial_update_definition_artifact_carries_the_full_merged_surface(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """MEDIUM adversarial review defect: update_a2ui_components upserts a
+    SUBSET of a multi-component surface, but the definition artifact used
+    to be minted from just that subset -- losing every OTHER component the
+    surface actually has. It must always record the full, live surface."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    build_create_a2ui_surface_tool()(
+        surface_id="multi",
+        components=[
+            {"id": "root", "component": "Column", "children": ["title"]},
+            {"id": "title", "component": "Text", "text": "Hello"},
+        ],
+    )
+
+    result = build_update_a2ui_components_tool()(
+        surface_id="multi",
+        components=[{"id": "title", "component": "Text", "text": "Updated"}],
+    )
+
+    assert result.get("ok") is not False, result
+    _record, version = app.state.artifact_registry.get_by_artifact_id(
+        result["definition_artifact_id"]
+    )
+    stored = json.loads(Path(version.path).read_text(encoding="utf-8"))
+    assert stored == [
+        {"id": "root", "component": "Column", "children": ["title"]},
+        {"id": "title", "component": "Text", "text": "Updated"},
+    ]
+
+
+def test_create_rejects_an_unattached_chart_instead_of_claiming_it_rendered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    result = build_create_a2ui_surface_tool()(
+        surface_id="unattached",
+        components=[
+            {"id": "root", "component": "Text", "text": "Map"},
+            {"id": "scatter", "component": "Text", "text": "Chart"},
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_validation_failed"
+    assert "scatter" in result["detail"]
+    assert "root Row, Column, Grid" in result["detail"]
+    assert app.state.a2ui_store.get(sid, "unattached") is None
+
+
+def test_create_accepts_a_layout_referencing_every_child(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    result = build_create_a2ui_surface_tool()(
+        surface_id="composed",
+        components=[
+            {"id": "root", "component": "Row", "children": ["map", "scatter"]},
+            {"id": "map", "component": "Text", "text": "Map"},
+            {"id": "scatter", "component": "Text", "text": "Chart"},
+        ],
+    )
+
+    assert result.get("ok") is not False, result
+    assert app.state.a2ui_store.get(sid, "composed") is not None
+
+
+def test_partial_update_adding_a_new_component_appends_to_the_merged_definition(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    build_create_a2ui_surface_tool()(
+        surface_id="growing",
+        components=[{"id": "root", "component": "Column", "children": []}],
+    )
+
+    result = build_update_a2ui_components_tool()(
+        surface_id="growing",
+        components=[
+            {"id": "root", "component": "Column", "children": ["extra"]},
+            {"id": "extra", "component": "Text", "text": "New"},
+        ],
+    )
+
+    assert result.get("ok") is not False, result
+    _record, version = app.state.artifact_registry.get_by_artifact_id(
+        result["definition_artifact_id"]
+    )
+    stored = json.loads(Path(version.path).read_text(encoding="utf-8"))
+    assert stored == [
+        {"id": "root", "component": "Column", "children": ["extra"]},
+        {"id": "extra", "component": "Text", "text": "New"},
+    ]
+
+
+def test_a_refused_update_never_mints_or_overwrites_the_definition_artifact(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """MEDIUM adversarial review defect: a refused (schema-invalid) batch
+    must not mint a new definition artifact -- nothing was actually applied
+    to the surface, so its recorded definition must not change either."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    created = build_create_a2ui_surface_tool()(
+        surface_id="guarded",
+        components=[{"id": "root", "component": "Text", "text": "v1"}],
+    )
+    original_definition_id = created["definition_artifact_id"]
+
+    refused = build_update_a2ui_components_tool()(
+        surface_id="guarded",
+        # Button with no required "child"/"action" -- fails catalog schema
+        # validation inside apply_messages.
+        components=[{"id": "root", "component": "Button"}],
+    )
+
+    assert refused["ok"] is False
+    assert refused["reason"] == "a2ui_validation_failed"
+    assert "definition_artifact_id" not in refused
+
+    surface = app.state.a2ui_store.get(sid, "guarded")
+    assert surface is not None
+    assert surface.messages[-1]["updateComponents"]["components"] == [
+        {"id": "root", "component": "Text", "text": "v1"}
+    ]
+    _record, version = app.state.artifact_registry.get_by_artifact_id(original_definition_id)
+    assert version.version == 1
+
+
+def test_new_components_path_and_definition_reasons_have_default_hints() -> None:
+    from clio_agent.gact.a2ui_producer._refusal import _DEFAULT_HINTS, KNOWN_REFUSAL_REASONS
+
+    for reason in (
+        "a2ui_components_source_conflict",
+        "a2ui_components_source_missing",
+        "a2ui_components_path_unresolved",
+        "a2ui_components_path_invalid",
+        "a2ui_definition_artifact_failed",
+    ):
+        assert reason in KNOWN_REFUSAL_REASONS
+        assert _DEFAULT_HINTS.get(reason)
+
+
+def test_component_limit_exceeded_has_an_actionable_hint_and_is_recorded(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """M3 (coordinator design, adversarial re-review): F5's merged-component
+    cap refusal must carry a concrete, actionable hint -- not the
+    un-actionable-retry pattern issue #1374 fixed -- and must land in the
+    session's own typed reason ledger, the same way its catalog-error
+    siblings (``a2ui_catalog_unknown``/``a2ui_catalog_not_producible``) do.
+    """
+
+    import clio_agent.gact.a2ui as a2ui_module
+    from clio_agent.gact.a2ui_producer._refusal import _DEFAULT_HINTS, KNOWN_REFUSAL_REASONS
+
+    monkeypatch.setattr(a2ui_module, "MAX_A2UI_COMPONENTS", 2)
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    create = build_create_a2ui_surface_tool()
+    update_components = build_update_a2ui_components_tool()
+
+    created = create(
+        surface_id="capped",
+        components=[{"id": "root", "component": "Text", "text": "one"}],
+    )
+    assert created["rendered"] is True
+
+    # "root" (1) + "overflow" (1) = 2, AT the cap -- still fine.
+    at_cap = update_components(
+        surface_id="capped",
+        components=[{"id": "overflow", "component": "Text", "text": "two"}],
+    )
+    assert at_cap["rendered"] is True
+
+    refused = update_components(
+        surface_id="capped",
+        components=[{"id": "overflow_2", "component": "Text", "text": "three"}],
+    )
+
+    assert refused["ok"] is False
+    assert refused["reason"] == "a2ui_component_limit_exceeded"
+    assert refused["reason"] in KNOWN_REFUSAL_REASONS
+    assert refused["hint"] == _DEFAULT_HINTS["a2ui_component_limit_exceeded"]
+    # Actionable: names a concrete next step, never a bare retry.
+    assert "reuse" in refused["hint"] or "delete_a2ui_surface" in refused["hint"]
+
+    reasons = app.state.a2ui_catalogs.session_reasons(sid)
+    recorded = [r for r in reasons if r["reason"] == "a2ui_component_limit_exceeded"]
+    assert len(recorded) == 1
+    assert recorded[0]["component_count"] == 3
+    assert recorded[0]["limit"] == 2

@@ -16,11 +16,6 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
-# CLIO_DATA_DIR  (str)  <- src/clio_agent/runtime/status.py
-# Base directory for the agent's on-disk data (ARC, sessions, etc.), default
-# ".clio/agent" under the workspace; relocates agent state.
-paths.data_dir: ".clio/agent"
-
 # CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Overrides the file path for the discovered-model catalog cache; set to
 # relocate it off the default user-data directory.
@@ -33,7 +28,8 @@ paths.data_dir: ".clio/agent"
 
 # CLIO_SESSIONS_PATH  (str)  <- src/clio_agent/gact/sessions.py
 # Full override path for the sessions.json registry file; unset defaults to
-# `<workspace>/.clio/agent/sessions.json`.
+# Agent state/server/sessions.json (existing legacy session stores remain
+# readable).
 # paths.sessions:  # default unset; resolved in code
 
 # CLIO_WEB_DIR  (str)  <- src/clio_agent/gact/app.py
@@ -55,16 +51,6 @@ runtime.capture_reasoning: true
 # Deployment environment label ("dev" default) threaded into LM config;
 # change to reflect staging/prod for environment-aware logging.
 runtime.environment: "dev"
-
-# CLIO_LIVE_STREAMING  (bool)  <- src/clio_agent/lm/adapters.py
-# Streams the top-level GACT turn's answer live via dspy.streamify instead
-# of blocking; disable per-model if streaming responses break.
-runtime.live_streaming: true
-
-# CLIO_LM_TOKEN_LIVENESS  (bool)  <- src/clio_agent/lm/io_logging.py
-# Streams expert LM calls token-by-token so each token refreshes the no-
-# progress watchdog; disable only if streaming plumbing misbehaves.
-runtime.lm_token_liveness: true
 
 # CLIO_SANDBOX_ENABLED  (bool)  <- src/clio_agent/runtime/sandbox.py
 # Whether tool-execution sandboxing/confinement is applied; disable only for
@@ -94,13 +80,8 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 
 # CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
 # Selects the Codex transport; "websocket" (default, with delta
-# continuation) or "sse" to force the automatic-fallback transport.
+# continuation) or "sse" to force the stateless HTTP transport.
 # lm.codex_transport:  # default unset; resolved in code
-
-# CLIO_CODEX_VARIANT  (str)  <- src/clio_agent/config.py
-# Selects which Codex transport a config binds: "direct" (default, CLIO
-# sign-in) or "sdk" (the local Codex app login).
-# lm.codex_variant:  # default unset; resolved in code
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -113,11 +94,6 @@ lm.context_window: 0
 # Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode;
 # disable if something depends on eager tiktoken load at boot.
 lm.defer_tiktoken: true
-
-# CLIO_DISABLE_JSON_ADAPTER_FALLBACK  (bool)  <- src/clio_agent/lm/adapters.py
-# Force-disables the JSON-adapter fallback for cloud providers that reject
-# response_format; set true if a provider 400s on it.
-lm.disable_json_adapter_fallback: false
 
 # CLIO_LM_GUIDED_OUTPUT  (bool)  <- src/clio_agent/lm/adapters.py
 # Switches to schema-constrained JSON output instead of the text
@@ -144,16 +120,6 @@ lm.lmstudio_flash_attention: true
 # Pins the exact model identifier to use; set when the provider default
 # model isn't the one you want.
 # lm.model:  # default unset; resolved in code
-
-# CLIO_LM_PLANNER_MAX_TOKENS  (int)  <- src/clio_agent/config.py
-# Token cap for the lower-temperature planner/routing generations; raise if
-# planner JSON output gets truncated.
-# lm.planner_max_tokens:  # default unset; resolved in code
-
-# CLIO_LM_PLANNER_TEMPERATURE  (float)  <- src/clio_agent/config.py
-# Sampling temperature for deterministic action-planning calls (default 0.3,
-# forced 0.0 for local reasoning profiles); lower for determinism.
-# lm.planner_temperature:  # default unset; resolved in code
 
 # CLIO_LM_PRESENCE_PENALTY  (float)  <- src/clio_agent/config.py
 # Sets the OpenAI-standard presence-penalty sampling parameter; tune for
@@ -214,7 +180,7 @@ providers.claude_code.max_concurrent_processes: 4.0
 # starting at once.
 providers.claude_code.max_precede_connects: 2.0
 
-# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
+# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_engine.py
 # Max live Claude Code stateful-session entries before LRU eviction; raise
 # on a host running many concurrent stateful sessions.
 providers.claude_code.stateful_capacity: 128.0
@@ -296,11 +262,6 @@ limits.agent_task_artifact_context_chars: 64000
 # sooner.
 limits.agent_task_output_digest_chars: 8000
 
-# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex/sdk_client.py
-# Max silence (seconds) for one Codex SDK exchange/event, resetting on every
-# progress event rather than a fixed clock; raise for long turns.
-limits.codex_sdk_progress_timeout_s: 120.0
-
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline
 # larger attachments, lower to bound prompt growth.
@@ -321,17 +282,7 @@ limits.lm_call_s: 1800.0
 # stalled; raise to tolerate slower generation, lower to catch it faster.
 limits.lm_inter_token_idle_s: 120.0
 
-# CLIO_LM_PARSE_RETRY_ATTEMPTS  (str)  <- src/clio_agent/lm/adapters.py
-# Overrides re-sample attempts after an unrecoverable structured-output
-# parse failure; reasoning models default to 2, others 0.
-# limits.lm_parse_retry_attempts:  # default unset; resolved in code
-
-# CLIO_LM_TRANSIENT_BACKOFF_S  (float)  <- src/clio_agent/lm/io_logging.py
-# Seconds to wait before re-issuing an LM call after a transient provider
-# failure; default 8s lets LM Studio JIT-reload a crashed model.
-limits.lm_transient_backoff_s: 8.0
-
-# CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/io_logging.py
+# CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/policy.py
 # Bounded retry count for a transient (non-parse) provider failure before
 # giving up; raise on a flaky provider connection.
 limits.lm_transient_retries: 2.0
@@ -341,14 +292,10 @@ limits.lm_transient_retries: 2.0
 # (image/audio/resource) before it's elided; raise for larger images.
 limits.mcp_content_block_max_bytes: 524288
 
-# CLIO_GACT_MCP_RECONNECT_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/mcp.py
-# Seconds bounding the connect+list-tools round-trip when reconnecting an
-# MCP server; raise for a slow-starting server.
-limits.mcp_reconnect_timeout_s: 15.0
-
 # CLIO_MODEL_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/tools/mcp_result_projection.py
-# Character bound on the model-facing MCP tool-result projection (head/tail
-# cut); distinct from limits.tool_result_chars.
+# Characters of a tool result shown to the model; a longer result is saved
+# to the session's tool-output folder and the agent gets this many head
+# characters plus the file path. Distinct from limits.tool_result_chars.
 limits.model_tool_result_chars: 12000
 
 # CLIO_PLAN_REVIEW_CHARS  (int)  <- src/clio_agent/gact/plan_review.py
@@ -441,6 +388,18 @@ agents.default_blueprint_id: "base-agent"
 # on first boot; set true for an offline deployment.
 agents.disable_default_registry_bootstrap: false
 
+# CLIO_REACT_EXTRACT_AFTER_STEPS  (int)  <- src/clio_agent/gact/agents/clio_react_extract.py
+# Model steps a ReAct loop must exceed before DSPy's extract may fill the
+# outputs it did not produce (a max_iters ending, or a signature's extra
+# outputs after a direct answer).
+agents.react_extract.after_steps: 3
+
+# CLIO_REACT_EXTRACT_ENABLED  (bool)  <- src/clio_agent/gact/agents/clio_react_extract.py
+# Runs DSPy's extract after a long ReAct loop to fill outputs the loop did
+# not produce; never replaces the model's own answer. Set false for the
+# strict one-call-per-step contract.
+agents.react_extract.enabled: true
+
 # CLIO_GOAL_JUDGE_MODEL  (str)  <- src/clio_agent/gact/goal.py
 # Model id for the separate cheap LLM-judge that evaluates an armed goal
 # condition; set a small/cheap model to keep judging inexpensive.
@@ -471,6 +430,12 @@ scheduler.min_interval_s: 60
 # times in; set to change the default zone new schedules use.
 # scheduler.timezone:  # default unset; resolved in code
 
+# CLIO_VARIANTS_MAX_N  (int)  <- src/clio_agent/gact/agents/variant_drafts.py
+# Most tries one BestOfN / Refine run may draft (draft_alternatives, a spawn
+# strategy); a larger request is capped to it. Each try is a full agent run,
+# so it bounds the cost.
+variants.max_n: 4
+
 # CLIO_WORKFLOW_STEP_INACTIVITY_S  (float)  <- src/clio_agent/gact/workflow_step_watch.py
 # No-activity window (seconds) before a declared-workflow step's child is
 # judged stalled; a long but active step never trips it.
@@ -479,8 +444,8 @@ workflows.step_inactivity_s: 120.0
 # ==========================================================================
 # GACT server
 # ==========================================================================
-# The GACT HTTP/SSE server: ledgers, auth, hooks, A2UI payload bounds and
-# context auto-compaction.
+# The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks,
+# A2UI payload bounds and context auto-compaction.
 
 # CLIO_A2UI_MAX_MESSAGE_BYTES  (int)  <- src/clio_agent/gact/a2ui.py
 # Byte ceiling on one encoded A2UI server-to-client message; raise only for
@@ -496,6 +461,27 @@ a2ui.max_string_chars: 16384
 # Fraction (0-1) of the model's context window that triggers proactive auto-
 # compaction; lower to compact earlier, raise to accumulate more.
 autocompact.pct: "0.85"
+
+# CLIO_COMPACTION_KEEP_HEAD  (bool)  <- src/clio_agent/gact/compaction_policy.py
+# Whether a compaction keeps the current user question verbatim after the
+# summary (mid-turn); turn off to summarize it too.
+compaction.keep.head: true
+
+# CLIO_COMPACTION_KEEP_LAST_STEPS  (int)  <- src/clio_agent/gact/compaction_policy.py
+# ReAct steps of the latest turn a compaction keeps verbatim after the
+# summary (0 = none); raise to keep the newest steps exact.
+compaction.keep.last_steps: 0
+
+# CLIO_COMPACTION_KEEP_LAST_TURNS  (int)  <- src/clio_agent/gact/compaction_policy.py
+# Whole earlier turns a compaction keeps verbatim after the summary (0 =
+# none); raise to keep recent turns exact at the cost of a larger context.
+compaction.keep.last_turns: 0
+
+# CLIO_COMPACTION_PROMPT_FILE  (str)  <- src/clio_agent/compaction_prompt.py
+# Markdown template the compaction summarizer gets ({transcript} required;
+# {focus}, {files} optional); unset uses the packaged default. Read at each
+# compaction.
+# compaction.prompt_file:  # default unset; resolved in code
 
 # CLIO_GACT_ALLOWED_HOSTS  (str)  <- src/clio_agent/gact/cors.py
 # Comma-separated host names (no ports) a request without a bearer token may
@@ -670,6 +656,11 @@ gact.live_edge_streaming: false
 # out-heavy turns.
 gact.loop_inbox.max_events: 64
 
+# CLIO_GACT_MEDIA_CACHE_BYTES  (int)  <- src/clio_agent/gact/agents/media_cache.py
+# Bytes of rehydrated tool media (viewed images, PDFs) kept for reuse across
+# context reads, least recently used first out; lower to bound memory.
+gact.media_cache_bytes: 67108864
+
 # CLIO_GACT_MAX_ACCEPTANCES_PER_SESSION  (int)  <- src/clio_agent/gact/message_intents.py
 # Per-session cap on retained message-acceptance records used for idempotent
 # POST replay; raise for clients that retry over long windows, lower to
@@ -742,6 +733,12 @@ hooks.stop_loop_cap: 8
 # before failing safe to human escalation; lower to fail fast.
 permissions.ai_review_timeout_s: "45.0"
 
+# CLIO_TRANSCRIPT_FILE  (bool)  <- src/clio_agent/gact/transcript_file.py
+# Keep the per-session messages/<sid>.json copy of every transcript next to
+# clio-core's atoms; set false to make clio-core the only transcript store
+# (not allowed in History mode, where the file is the only durable copy).
+transcript.file: true
+
 # ==========================================================================
 # ARC memory
 # ==========================================================================
@@ -804,9 +801,10 @@ arc.clio_core_write_retry.first_delay_s: 0.2
 arc.cte.disk_warn_fraction: 0.5
 
 # CLIO_ARC_CTE_FILE_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
-# Capacity string (e.g. "50GB") for clio-core's disk-backed file storage
-# tier; raise if the working set needs more durable disk space.
-arc.cte.file_capacity: "50GB"
+# Capacity (e.g. "20GB") of clio-core's disk file tier; unset, a fresh
+# install sizes it to 10% of the disk's free space (2-50 GB). Windows
+# allocates it up front.
+# arc.cte.file_capacity:  # default unset; resolved in code
 
 # CLIO_ARC_CTE_RAM_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Hard byte ceiling (e.g. "1GB") for clio-core's RAM working arena; raise
@@ -828,6 +826,12 @@ arc.liveness.backoff_initial_s: 2.0
 # lower to fail faster overall, raise to tolerate longer hiccups.
 arc.liveness.backoff_max_s: 15.0
 
+# CLIO_ARC_LIVENESS_MAX_WAIT_S  (float)  <- src/clio_agent/arc/daemon_progress.py
+# Ceiling (seconds) on waiting for a clio-core answer while the daemon is
+# visibly working (its CPU or I/O advancing); a daemon making no progress is
+# a stall well before this.
+arc.liveness.max_wait_s: 180.0
+
 # CLIO_ARC_LIVENESS_RETRIES  (int)  <- src/clio_agent/arc/rpc_liveness.py
 # Retry attempts after a clio-core RPC stalls (no response) before the store
 # is quarantined as runtime-lost; raise for a flakier daemon.
@@ -837,6 +841,12 @@ arc.liveness.retries: 3
 # Seconds one clio-core RPC may run with no response before it's treated as
 # a stalled zombie peer; raise for very large blob ops.
 arc.liveness.stall_after_s: 30.0
+
+# CLIO_ARC_LIVENESS_STOP_NO_PROGRESS_S  (float)  <- src/clio_agent/arc/runtime_stop.py
+# How long (seconds) a stopping clio-core daemon may make no progress (CPU
+# and I/O flat) before it is killed; keep it inside the desktop supervisor's
+# 30 s window.
+arc.liveness.stop_no_progress_s: 15.0
 
 # CLIO_ARC_LSM_COMPACTION_THRESHOLD  (int)  <- src/clio_agent/arc/memory.py
 # Memtable flushes accumulated before the ARC metrics LSM tree compacts into
@@ -854,20 +864,38 @@ arc.lsm_memtable_size: 1000
 # cost.
 arc.message_part_chunk_segments: 512
 
+# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/storage.py
+# clio-core namespace ARC records live under (tags <namespace>/<kind>);
+# empty keeps the bare tags. Set to keep two deployments on one clio-core
+# apart.
+# arc.namespace:  # default unset; resolved in code
+
+# CLIO_ARC_SEARCH_CHUNK_ATOMS  (int)  <- src/clio_agent/arc/search_companion.py
+# Atoms per append-only search-companion chunk of an agent scope before a
+# new chunk opens; raise to cut record count, lower to bound the text re-put
+# per append.
+arc.search_chunk_atoms: 16
+
 # CLIO_SERVER_CONF  (str)  <- src/clio_agent/arc/clio_core_liveness.py
 # Path to a clio-core server YAML config the port-resolution logic reads;
 # set to point liveness probing at a non-default config file.
 # arc.server_conf:  # default unset; resolved in code
 
 # CLIO_ARC_STORE  (str)  <- src/clio_agent/arc/storage.py
-# Selects the ARC persistence backend: "cte" (clio-core, default) or "local"
-# (plain files); use "local" for guaranteed on-disk durability.
+# The ARC store: "cte" (clio-core), the only store; any other value is a
+# typed configuration error.
 arc.store: "cte"
 
 # CLIO_ARC_STORE_CONFIG  (str)  <- src/clio_agent/arc/storage.py
 # Path to the clio-core CTE config used when arc.store is "cte"; set to
 # point ARC at a hand-authored multi-tier topology.
 # arc.store_config:  # default unset; resolved in code
+
+# CLIO_ARC_WS_CHUNK_SEGMENTS  (int)  <- src/clio_agent/arc/lane_writer.py
+# Working-set atoms held per on-disk chunk of an expert span's content lane
+# before rolling; an append re-puts only the active chunk, so lower bounds
+# bytes per append.
+arc.ws_chunk_segments: 32
 
 # ==========================================================================
 # Artifacts
@@ -925,6 +953,17 @@ artifacts.proposals_batch_max: 32
 # re-designating identical bytes is free.
 artifacts.proposals_per_turn: 8
 
+# CLIO_ARTIFACTS_TABLE_EXPORT_MAX_ROWS  (int)  <- src/clio_agent/gact/routes/artifact_table_export.py
+# Ceiling on the processed row count a table-export (current-view or full-
+# dataset) request may reach; past it the export is refused with a typed 413
+# rather than ever silently sampling a download.
+artifacts.table_export_max_rows: 2000000
+
+# CLIO_ARTIFACTS_TABLE_EXPORT_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/artifact_table_export.py
+# Wall-clock budget in seconds for one artifact table-export request,
+# resolution and streaming together; an overrun answers a typed 504.
+artifacts.table_export_timeout_s: 30.0
+
 # CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_ROWS  (int)  <- src/clio_agent/gact/routes/artifact_table_preview.py
 # Ceiling on rows returned by one artifact table-preview response; raise for
 # a denser chart, lower to shrink the JSON payload.
@@ -934,6 +973,46 @@ artifacts.table_preview_max_rows: 2000
 # Largest CSV artifact, in bytes, the table-preview route will read; the
 # file streams twice so this bounds latency, not memory.
 artifacts.table_preview_max_source_bytes: 268435456
+
+# CLIO_ARTIFACTS_TABLE_QUERY_CACHE_ENTRIES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Results the per-server artifact table-query LRU keeps, keyed on content
+# hash and canonical query; 0 disables caching.
+artifacts.table_query_cache_entries: 16
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Table-query executions allowed to run at once, sharing the process's
+# worker thread pool; a request beyond this bound queues rather than
+# starving other requests.
+artifacts.table_query_max_concurrency: 8
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_ROWS  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Ceiling on the limit one artifact table-query request may ask for; larger
+# requests are refused with a typed 400.
+artifacts.table_query_max_rows: 50000
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_SOURCE_BYTES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Largest CSV/Parquet artifact, in bytes, the table-query route will read;
+# projected columns load into memory, so this bounds latency and peak
+# memory.
+artifacts.table_query_max_source_bytes: 268435456
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_WAIT_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Ceiling (seconds) on waiting for an artifact table query whose thread is
+# still working; reaching it answers a typed 504 table_query_stalled (reason
+# ceiling).
+artifacts.table_query_max_wait_s: 180.0
+
+# CLIO_ARTIFACTS_TABLE_QUERY_NO_PROGRESS_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Seconds an artifact table query may go with no answer AND no CPU work on
+# its own thread before a typed 504 table_query_stalled; a query still
+# working is waited for.
+artifacts.table_query_no_progress_s: 30.0
+
+# CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Processed (pre-page) query results the per-server cache keeps; lets paging
+# through one large result reuse the same processed table instead of re-
+# reading it per page.
+artifacts.table_query_processed_cache_entries: 8
 
 # ==========================================================================
 # Workspace resources
@@ -1090,6 +1169,12 @@ resources.upload_chunk_bytes: 8388608
 # File-policy sandboxing, shell execution bounds and the MCP tool fleet's
 # discovery/cache/timeouts.
 
+# CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
+# Consecutive failures of one tool before CLIO blocks further calls to it
+# (the agent is warned at the limit and told why a call was blocked); 0
+# turns the breaker off.
+tools.circuit_breaker.failure_limit: 3
+
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 # Whether tool file reads/writes may traverse symlinks; set true only if a
 # workflow legitimately relies on symlinked paths.
@@ -1109,11 +1194,6 @@ tools.file_policy.max_file_size_bytes: "1073741824"
 # Runaway backstop seconds for one synchronous MCP tool call before it's
 # abandoned; not the real per-tool clock -- raise only if tools hit it.
 tools.mcp.call_timeout_s: 600.0
-
-# CLIO_MCP_COLD_SPAWN_RUNAWAY_S  (float)  <- src/clio_agent/tools/mcp_discovery.py
-# Generous backstop seconds for one MCP namespace's discovery/connect
-# attempt before it's marked unreachable; raise for slow cold spawns.
-tools.mcp.cold_spawn_runaway_s: 600.0
 
 # CLIO_MCP_CONNECT_MODE  (str)  <- src/clio_agent/tools/mcp_connection_era.py
 # MCP protocol-era negotiation mode; "auto" probes modern then falls to
@@ -1176,25 +1256,38 @@ tools.mcp.elicitation.agent_audience.timeout_s: 90.0
 # enable url elicitation for that server.
 # tools.mcp.elicitation.url_trusted_origins:  # computed at runtime: default
 
+# CLIO_MCP_HOLD_WHILE_WAITING_S  (float)  <- src/clio_agent/gact/session_warmup.py
+# Seconds a session waiting on its user (a question or plan approval) keeps
+# its MCP servers from the idle reaper, so the answer resumes without
+# starting them again.
+tools.mcp.hold_while_waiting_s: 1800.0
+
 # CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS  (int)  <- src/clio_agent/tools/mcp_runtime.py
 # Round cap on the modern-era InputRequiredResult retry loop for one tool
 # call; raise for tools needing many follow-up inputs.
 # tools.mcp.input_required_max_rounds:  # computed at runtime: DEFAULT_INPUT_REQUIRED_MAX_ROUNDS
-
-# CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S  (float)  <- src/clio_agent/tools/launcher_cache_lock.py
-# Generous runaway backstop while waiting on the shared uv-launcher cache
-# lock; fires only on a livelocked/unidentifiable holder.
-tools.mcp.launcher_cache_lock_timeout_s: 600.0
 
 # CLIO_MCP_LISTING_TTL_H  (float)  <- src/clio_agent/tools/listing_cache.py
 # Hours a cached MCP tool listing stays valid before a live relist is
 # forced; lower to pick up upstream tool changes sooner.
 tools.mcp.listing_ttl_h: 24.0
 
+# CLIO_MCP_MAX_WAIT_S  (float)  <- src/clio_agent/tools/mcp_server_progress.py
+# Ceiling (seconds) on waiting for an MCP server that is still visibly
+# starting (its own process tree working): connect, listing, reconnect; also
+# bounds one launcher-cache-lock holder (plus one no-progress window).
+tools.mcp.max_wait_s: 180.0
+
 # CLIO_MCP_MOUNT_RETRY_DELAYS_S  (list)  <- src/clio_agent/gact/mcp_readiness.py
 # Increasing waits (seconds, comma-separated) between an on-demand MCP
 # mount's retry attempts; list length is the retry budget.
 tools.mcp.mount_retry_delays_s: ["0.5", "1.5"]
+
+# CLIO_MCP_NO_PROGRESS_S  (float)  <- src/clio_agent/tools/mcp_server_progress.py
+# Seconds an MCP connect or listing may go with no answer AND no work in the
+# server's own process tree before it fails typed; a server still working is
+# waited for up to tools.mcp.max_wait_s.
+tools.mcp.no_progress_s: 30.0
 
 # CLIO_MCP_PROBE_TIMEOUT_RETRIES  (int)  <- src/clio_agent/tools/mcp_probe_hardening.py
 # Retries of the era-negotiation probe after a client-side timeout before
@@ -1207,10 +1300,12 @@ tools.mcp.probe_timeout_retries: 3
 # a caller that type-checks it).
 tools.mcp.response_cache_enabled: false
 
-# CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/gact/mcp_readiness.py
-# Seconds allowed for an MCP tool executor's startup handshake; raise for
-# servers with slow cold starts, lower to fail faster.
-tools.mcp.setup_timeout_s: 10.0
+# CLIO_MCP_SESSION_WARMUP  (bool)  <- src/clio_agent/gact/session_warmup.py
+# Start a session's MCP servers (its blueprint's and any always-load
+# service) in the background when the session is created or a blueprint is
+# activated, so the first message does not wait for them; set false to start
+# servers only when a turn needs them.
+tools.mcp.session_warmup: true
 
 # CLIO_MCP_SPAWN_DIET  (bool)  <- src/clio_agent/tools/spawn_diet.py
 # Enables the learned direct-interpreter spawn shortcut for clio-kit servers
@@ -1389,11 +1484,6 @@ relay.tool_surfaces_ttl_seconds: 300
 # Agentic provenance export (Flowcept/JSONL), the semantic trace backend and
 # debug/diagnostic knobs.
 
-# CLIO_DUMP_UNPARSEABLE  (str)  <- src/clio_agent/lm/adapters.py
-# Filesystem path to dump raw LM completions the adapter failed to parse;
-# set when diagnosing a model/adapter mismatch, else a no-op.
-# debug.dump_unparseable:  # default unset; resolved in code
-
 # CLIO_DEBUG  (str)  <- src/clio_agent/runtime/trace.py
 # Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high"
 # for per-call firehose logs, drop to "off" for quiet.
@@ -1463,6 +1553,12 @@ provenance.agentic.flowcept.exclude_events: ["lm.token.delta", "thinking.*"]
 # Glob patterns of event types Flowcept exports (default "*" = everything
 # not excluded); narrow to scope provenance to specific events.
 provenance.agentic.flowcept.include_events: ["*"]
+
+# CLIO_FLOWCEPT_PERSISTENCE_OWNER  (str)  <- src/clio_agent/gact/provenance/factory.py
+# Exactly one persistence owner: "client" for a standalone Flowcept client,
+# or "collector" when a managed collector persists records. Avoid duplicate
+# database writers.
+provenance.agentic.flowcept.persistence_owner: "client"
 
 # CLIO_FLOWCEPT_PRIVACY  (str)  <- src/clio_agent/gact/provenance/factory.py
 # Flowcept payload privacy level ("metadata" default, no raw content); relax
@@ -1555,6 +1651,25 @@ provenance.artifacts.provider: "native"
 # Max queued artifact-provenance events awaiting async dispatch; raise if a
 # slow provider causes drops under bursty activity.
 provenance.artifacts.queue_size: 4096
+
+# CLIO_PROVENANCE_ATTENTION  (str)  <- src/clio_agent/provenance_config.py
+# On vLLM calls, declare one token range per transcript section as
+# kv_transfer_params.ranges for vllm-attn-connector and record the labelled
+# ranges on the lm.call; powers the attention view. Only effective with
+# Flowcept configured.
+provenance.attention: "false"
+
+# CLIO_PROVENANCE_ATTENTION_FILES_DIR  (str)  <- src/clio_agent/gact/attention/files.py
+# Local copy of the attention connector's out_dir (same <workflow_id>/<file>
+# layout) for when CLIO does not run on the GPU node; the attention view
+# reads files there.
+# provenance.attention.files_dir:  # default unset; resolved in code
+
+# CLIO_PROVENANCE_ATTENTION_TOKENIZER  (str)  <- src/clio_agent/gact/attention/tokenizer_source.py
+# Local directory or Hugging Face id of the served model's tokenizer + chat
+# template (files only) for attention ranges; set for air-gapped nodes or
+# custom templates.
+# provenance.attention.tokenizer:  # default unset; resolved in code
 
 # CLIO_PROVENANCE_KVNORM  (bool)  <- src/clio_agent/provenance_config.py
 # Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance

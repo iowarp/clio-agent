@@ -187,6 +187,11 @@ def cleanup_test_runtime(
             current = root.lstat()
             if (current.st_dev, current.st_ino) != identity:
                 raise RuntimeError(f"test runtime identity changed before cleanup: {root}")
+            # POSIX unlink needs a writable parent, not a writable file. Storage
+            # fixtures deliberately protect every snapshot directory. Walk only
+            # this identity-checked run and never follow directory symlinks.
+            for directory, _, _ in os.walk(_removal_path(root), followlinks=False):
+                os.chmod(directory, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
             shutil.rmtree(_removal_path(root), onexc=_clear_readonly_and_retry)
             if root.exists() or root.is_symlink():
                 raise OSError(f"test runtime remained after cleanup: {root}")
@@ -201,4 +206,4 @@ def cleanup_test_runtime(
             last_error = exc
             if attempt + 1 < attempts:
                 time.sleep(retry_delay_seconds)
-    raise RuntimeError(f"could not remove test runtime: {root}") from last_error
+    raise RuntimeError(f"could not remove test runtime: {root}: {last_error}") from last_error

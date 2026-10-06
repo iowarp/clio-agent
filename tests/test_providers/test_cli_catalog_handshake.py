@@ -353,7 +353,7 @@ def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
         discovered=DiscoveredModel(id="some-obscure-model", raw={"_overlay_context_checked": True}),
         model=ModelCapabilities(model_key="some-obscure-model"),
         deployment=DeploymentCapabilities(
-            provider_id="codex", api_base="codex://sdk", model_id="some-obscure-model"
+            provider_id="codex", api_base="codex://direct", model_id="some-obscure-model"
         ),
     )
     out = asyncio.run(handshake.enrich_capabilities(checked_facts, _ctx()))
@@ -387,7 +387,7 @@ def test_enrich_capabilities_still_runs_the_cascade_for_a_non_overlay_profile(
         discovered=DiscoveredModel(id="gpt-5.5"),
         model=ModelCapabilities(model_key="gpt-5.5"),
         deployment=DeploymentCapabilities(
-            provider_id="codex", api_base="codex://sdk", model_id="gpt-5.5"
+            provider_id="codex", api_base="codex://direct", model_id="gpt-5.5"
         ),
     )
     out = asyncio.run(handshake.enrich_capabilities(unchecked_facts, _ctx()))

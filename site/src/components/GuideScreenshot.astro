@@ -1,0 +1,15 @@
+---
+const { name, alt, caption } = Astro.props as { name: string; alt: string; caption: string };
+---
+<figure class="guide-screenshot not-content">
+  <a href={`/media/${name}.jpg`} target="_blank" rel="noopener" aria-label={`Enlarge: ${alt}`}>
+    <img src={`/media/${name}.jpg`} alt={alt} loading="lazy" decoding="async" />
+  </a>
+  <figcaption>{caption} <a href={`/media/${name}.jpg`} target="_blank" rel="noopener">Enlarge screenshot ↗</a></figcaption>
+</figure>
+<style>
+  figure { margin: 1.5rem 0; }
+  img { display: block; width: 100%; height: auto; border: 1px solid var(--sl-color-gray-5); border-radius: .7rem; }
+  figcaption { padding: .7rem .15rem; color: var(--sl-color-gray-2); font-size: .85rem; line-height: 1.6; }
+  figcaption a { white-space: nowrap; margin-inline-start: .35rem; }
+</style>

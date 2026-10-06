@@ -3,27 +3,23 @@
 These lock the three fixes whose *wiring* (not the shared detector, proved in
 ``test_claude_code_stateful``) is the deliverable:
 
-* **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
-  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``CodexLLM`` custom handler,
-  NOT litellm's OpenAI handler. The litellm-facing prefix is ``codex_direct`` -- never
-  bare ``codex``, which collides with litellm's OWN native ``codex`` provider
-  (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`) -- and the clio-side
-  collision guard is the ``cg-`` namespace marker in
-  :func:`clio_agent.lm.factory._resolve_model_name`. **Sabotage:** drop the marker →
-  ``create_lm`` yields the bare ``codex_direct/gpt-5.6-sol`` → litellm routes it to
-  OpenAI → this test goes red.
+* **T1 — codex routing.** A codex model id that collides with a litellm-registered
+  OpenAI model name (``gpt-5.6-sol``) runs on clio's own Codex direct engine (an engine
+  LM LiteLLM never routes), the backend receives the bare id, and the model-string
+  prefix is ``codex_direct`` -- never bare ``codex``, which collides with litellm's OWN
+  native ``codex`` provider (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`).
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
-  (``_RetainingReActV2._maybe_autocompact`` → ``arc.summarize_segments``), the active
+  (``ClioReAct``'s per-step ``maybe_autocompact`` → ``arc.summarize_segments``), the active
   stateful scope must be flagged for a typed ``ops_reset`` so the
-  next send classifies precisely instead of the generic ``prefix_mismatch``.
+  next send is a precise typed reset instead of the generic ``prefix_mismatch``.
   **Sabotage:** unwire the ``note_prefix_reset_for_active_scope`` call → the next plan
   returns ``prefix_mismatch``/``delta`` → red.
 
-* **T3 — Tier-1-shaped delta.** The legacy ``ClioAgent.forward`` planner-loop
-  scope binding was deleted with the planner (#948 S4b); the delta mechanism it
-  relied on (append-only sends under an active ``stateful_scope`` classify as a
-  delta over the retained prefix) is pinned below on the Claude SDK registry.
+* **T3 — Tier-1-shaped delta.** ``ClioReAct.forward`` binds the stateful scope; the
+  delta mechanism it unlocks (append-only typed messages under an active scope
+  continue the kept conversation with only the new messages) is pinned below on the
+  Claude Code engine's conversation registry.
 """
 
 from __future__ import annotations
@@ -32,130 +28,142 @@ from typing import Any
 
 import dspy
 import pytest
+from dspy.lm15 import Message, Request
 
-from clio_agent.providers import claude_code_stateful as ccs
+from clio_agent.providers import claude_code_engine
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     note_prefix_reset_for_active_scope,
     stateful_scope,
 )
+from tests._scripted_engine import AsyncScriptedEngine, Reply, ScriptedEngine, calls
 
 
-def _m(*texts: str) -> list[dict[str, Any]]:
-    """A rendered chat-message list (the prefix-check operand)."""
-    return [{"role": "user", "content": t} for t in texts]
+def _r(*texts: str) -> Request:
+    """A request whose messages alternate user / assistant, starting with the user."""
+    messages = tuple(
+        Message.user(t) if i % 2 == 0 else Message.assistant(t) for i, t in enumerate(texts)
+    )
+    return Request(model="claude_code/m", messages=messages)
 
 
-def _key(scope: str) -> tuple[Any, ...]:
-    """A registry session key under ``scope`` (shape matches the real legs)."""
-    return (scope, "m", None, None)
+def _key(scope: str) -> tuple[str, ...]:
+    """A conversation key (session, scope, model, cwd, thinking) -- the engine's shape."""
+    return ("sess", scope, "m", "/w", "")
+
+
+def _prime(scope: str) -> None:
+    """Record a kept conversation the scope's forward drove (call 1 = full/first_call)."""
+    registry = claude_code_engine._CONVERSATIONS
+    assert registry.plan(_key(scope), _r("q"), "sys").reason == "first_call"
+    registry.opened(_key(scope), "sid-1", _r("q"), "sys")
 
 
 # --------------------------------------------------------------------------- #
 # T1 — V2+codex routing: the collision-avoidance marker reaches the transport. #
 # --------------------------------------------------------------------------- #
-def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A codex model whose id collides with an OpenAI model name still routes to clio's
-    own custom handler, never litellm's OpenAI dialect NOR litellm's own native
-    "codex" provider.
+def test_codex_colliding_model_reaches_clios_own_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A codex model whose id collides with an OpenAI model name still runs on clio's own
+    Codex direct engine, never LiteLLM's OpenAI dialect NOR LiteLLM's native "codex".
 
-    The regression pin for the V2+codex routing bug: ``gpt-5.6-sol`` is a litellm-
-    registered OpenAI chat model, so a bare ``codex_direct/gpt-5.6-sol`` risks being
-    hijacked to litellm's OpenAI handler. ``create_lm``'s ``cg-`` marker
-    (``_resolve_model_name``) is the guard: the resolved ``codex_direct/cg-gpt-5.6-sol``
-    reaches clio's ``CodexLLM`` custom handler instead. Removing the marker turns both
-    assertions red. Separately (not this test's sabotage target, but load-bearing): the
-    litellm-facing prefix itself must never be bare ``codex`` -- litellm ships its own
-    native ``codex`` provider (a real device-code OAuth flow against
-    auth.openai.com), so that name would silently route every turn there instead of
-    ever reaching this handler at all.
+    ``gpt-5.6-sol`` is (made) a LiteLLM-registered OpenAI chat model. The LM is an
+    engine LM, so LiteLLM never routes it; the backend receives the bare model id, and
+    the model-string prefix is "codex_direct" (never bare "codex").
     """
+    import json
+
     import litellm
+    from dspy.lm15 import Message, OpenAICodexLM, Request
 
     from clio_agent.config import LMProviderConfig, create_lm
-    from clio_agent.providers.codex import litellm_adapter as codex_litellm
+    from clio_agent.providers.codex import direct_engine
 
-    codex_litellm.ensure_registered()
-    litellm.utils.custom_llm_setup()
-    # The bare model id WOULD collide with a registered OpenAI model — that is the trap.
-    # Make the collision deterministic instead of trusting litellm's model catalog:
-    # the test session pins LITELLM_LOCAL_MODEL_COST_MAP=True (bundled map, no
-    # import-time network fetch), and the bundled map of the pinned litellm does not
-    # list gpt-5.6-sol while the remote one does. The routing defect this pins does
-    # not depend on which catalog knows the id, only on the id being in litellm's
-    # OpenAI collision set when create_lm resolves it.
     monkeypatch.setattr(
         litellm,
         "open_ai_chat_completion_models",
         set(litellm.open_ai_chat_completion_models) | {"gpt-5.6-sol"},
     )
-    assert "gpt-5.6-sol" in litellm.open_ai_chat_completion_models
+    monkeypatch.setattr(
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="t", account_id="a")
+    )
+    frames: list[dict[str, Any]] = []
 
-    cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")
-    resolved = create_lm(cfg).model
-    # The marker namespaces the id out of the OpenAI collision set, and the
-    # litellm-facing prefix is "codex_direct" (never litellm's native "codex").
-    assert resolved == "codex_direct/cg-gpt-5.6-sol"
+    class _Socket:
+        def __init__(self) -> None:
+            self._events: list[str] = []
 
-    reached: dict[str, Any] = {}
+        async def send(self, raw: str) -> None:
+            frames.append(json.loads(raw))
+            done = {"type": "response.completed", "response": {"id": "r1", "output": []}}
+            self._events = [
+                json.dumps({"type": "response.created", "response": {"id": "r1"}}),
+                json.dumps(
+                    {
+                        "type": "response.output_text.delta",
+                        "delta": "ok",
+                        "item_id": "m",
+                        "output_index": 0,
+                        "content_index": 0,
+                    }
+                ),
+                json.dumps(done),
+            ]
 
-    def _stub_completion(self: Any, *args: Any, **kwargs: Any) -> Any:
-        reached["model"] = kwargs.get("model") or (args[0] if args else None)
-        raise RuntimeError("REACHED-CODEX-TRANSPORT")
+        def __aiter__(self) -> Any:
+            return self
 
-    monkeypatch.setattr(codex_litellm.CodexLLM, "completion", _stub_completion)
+        async def __anext__(self) -> str:
+            if not self._events:
+                raise StopAsyncIteration
+            return self._events.pop(0)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message is asserted below
-        litellm.completion(
-            model=resolved,
-            messages=[{"role": "user", "content": "hi"}],
-            stream=False,
-        )
-    # NOT the OpenAI-hijack routing error; clio's CodexLLM handler WAS reached
-    # (litellm hands the custom handler the provider-prefix-stripped id — the ``cg-``
-    # marker survives so the handler's own ``removeprefix('cg-')`` recovers the real
-    # ``gpt-5.6-sol``).
-    assert "is not a valid LlmProviders" not in str(excinfo.value)
-    assert reached.get("model") == "cg-gpt-5.6-sol"
+        async def close(self) -> None:
+            return None
+
+    async def _connect(*_a: Any) -> _Socket:
+        return _Socket()
+
+    monkeypatch.setattr(direct_engine, "_connect", _connect)
+
+    lm = create_lm(LMProviderConfig(provider="codex", model="gpt-5.6-sol"))
+    assert lm.model == "codex_direct/gpt-5.6-sol"
+    lm(Request(model=lm.model, messages=(Message.user("hi"),)))
+    assert [f["model"] for f in frames] == ["gpt-5.6-sol"]
 
 
 # --------------------------------------------------------------------------- #
 # T2 — ops_reset: the shared hook flags the Claude SDK stateful registry.
 # --------------------------------------------------------------------------- #
 def test_note_prefix_reset_flags_claude_sdk_registry() -> None:
-    """The shared ARC-op hook flags the active Claude SDK scope.
+    """The shared ARC-op hook flags the conversations the active forward drove.
 
     An ARC compact/delete rewrites the prefix for whichever leg the active loop drives,
-    so the hook must mark its registered stateful registry. Its next plan over a
-    would-be-valid extension is then a typed ``ops_reset`` full send.
+    so the hook must reach every registered conversation registry. Its next plan over
+    a would-be-valid extension is then a typed ``ops_reset`` full send.
     """
-    ccs.stateful_registry().reset_for_tests()
+    registry = claude_code_engine._CONVERSATIONS
+    registry.clear_for_tests()
     with stateful_scope("s"):
-        # Prime a live Claude SDK session (call 1 = full/first_call).
-        ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
+        _prime("s")
         assert note_prefix_reset_for_active_scope("ops_reset") is True
-        plan, _handle = ccs.stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
-        )
-        assert plan.mode == "full"
-        assert plan.reason == "ops_reset"
-    ccs.stateful_registry().reset_for_tests()
+        send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
+        assert (send.handle, send.reason) == (None, "ops_reset")
+    registry.clear_for_tests()
 
 
 def test_note_prefix_reset_is_noop_off_scope() -> None:
-    """Off the V2 loop (no active scope) the hook is a safe no-op returning False."""
+    """Off the loop (no active scope) the hook is a safe no-op returning False."""
     assert active_stateful_scope() is None
     assert note_prefix_reset_for_active_scope("ops_reset") is False
 
 
-def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
+def test_maybe_autocompact_wires_ops_reset_through_the_loop(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A forced V2 auto-compaction flags ``ops_reset`` on the active scope's registries.
+    """A forced auto-compaction flags ``ops_reset`` on the active scope's registries.
 
-    Drives the real :func:`clio_agent.gact.compaction.maybe_autocompact` (the #1339
-    unification target -- ``_RetainingReActV2._maybe_autocompact`` is now a 3-line
-    delegation to it) with its ARC/runtime dependencies stubbed to trigger a real
+    Drives the real :func:`clio_agent.gact.compaction.maybe_autocompact` (the trigger
+    ``ClioReAct`` fires at every step boundary) with its ARC/runtime dependencies stubbed to trigger a real
     ``arc.summarize_segments`` (the History-prefix rewrite), then asserts the next
     Claude SDK send is a typed ``ops_reset``. Sabotage: delete the
     ``note_prefix_reset_for_active_scope`` call in ``compaction.py`` -> the next plan
@@ -177,9 +185,9 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
     from clio_agent.arc.live import _MemoryStore
     from clio_agent.arc.memory import ARCMemory
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.app import build_app
-    from clio_agent.gact.compaction import maybe_autocompact
+    from clio_agent.gact.compaction import AutoCompactionGuard, maybe_autocompact
     from clio_agent.gact.runtime import context_tokens as _ctok
     from clio_agent.gact.types import Message, Part
 
@@ -187,11 +195,16 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
         """Minimal compact agent (matches test_compaction.py's ``_CapturingAgent``)."""
 
         def _run_chat_agent(self, question: str, _session_id: str) -> str:
+            summary_scopes.append(active_stateful_scope())
             return "auto summary"
 
         def _call_with_transient_provider_retries(self, _label: str, call: Any) -> Any:
             return call()
 
+    # The summary is not a step of the agent's conversation: it runs outside the
+    # forward's stateful scope, so it never replaces the agent's kept conversation.
+    # Sabotage: drop ``outside_stateful_scope`` in ``compaction._summary`` -> ["s"] -> red.
+    summary_scopes: list[str | None] = []
     now = "2026-09-11T00:00:00+00:00"
     # This file lives outside tests/test_gact/, so it does not get that package's
     # conftest.py in-memory-ARC-by-default wrapper around build_app -- construct one
@@ -214,10 +227,15 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 
     arc = app.state.arc
     scope = "scope_auto"
-    arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
-    arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+    # one coherent step, as the recorder writes it: calls answered by call id
+    arc.append_segment(sid, scope, "thought", {"text": "working"})
+    for i, text in enumerate(("first live segment", "second live segment")):
+        call = {"id": f"call_{i}", "name": "t", "args": {}}
+        arc.append_segment(sid, scope, "tool_call", call)
+        obs = {"call_id": f"call_{i}", "text": text, "is_error": False}
+        arc.append_segment(sid, scope, "observation", obs)
 
-    monkeypatch.setattr(_events, "_arc_scope", lambda: (arc, sid, scope))
+    monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
     monkeypatch.setattr(_ctx, "active_react_context_window", lambda: 1000)
     monkeypatch.setattr(_ctok, "_last_prompt_tokens", lambda: 950)
     monkeypatch.setattr(_ctok, "_autocompact_threshold", lambda: 0.5)
@@ -231,53 +249,48 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 
     arc.summarize_segments = _spy_summarize  # type: ignore[method-assign]
 
-    ccs.stateful_registry().reset_for_tests()
+    registry = claude_code_engine._CONVERSATIONS
+    registry.clear_for_tests()
     with stateful_scope("s"):
-        ccs.stateful_registry().plan(session_key=_key("s"), scope_token="s", messages=_m("a", "b"))
+        _prime("s")
         app_token = _ctx.set_app(app)
         try:
-            maybe_autocompact()
+            maybe_autocompact(AutoCompactionGuard())
         finally:
             _ctx.reset(app_token)
         assert len(summarize_calls) == 1  # the op really fired
-        plan, _handle = ccs.stateful_registry().plan(
-            session_key=_key("s"), scope_token="s", messages=_m("a", "b", "c")
-        )
-        assert plan.mode == "full"
-        assert plan.reason == "ops_reset"
-    ccs.stateful_registry().reset_for_tests()
+        assert summary_scopes == [None], "the summary call ran outside the agent's scope"
+        assert active_stateful_scope() == "s", "the forward's scope is restored"
+        send = registry.plan(_key("s"), _r("q", "a", "b"), "sys")
+        assert (send.handle, send.reason) == (None, "ops_reset")
+    registry.clear_for_tests()
 
 
 # --------------------------------------------------------------------------- #
 # T3 — Tier-1-shaped stateful scope: append-only sends delta on call 2+.
 #
-# The legacy ``ClioAgent.forward`` planner-loop scope-binding test was deleted
-# with the planner (#948 S4b). Post-S4b the top-level orchestrator IS the reactv2
-# retention forward, whose ``with stateful_scope():`` (reactv2.py:193) is the
-# surviving equivalent binding. Two locks below:
-#   * ``test_reactv2_forward_binds_stateful_scope`` drives a REAL V2 forward and
-#     asserts the scope is active INSIDE the loop body — the sabotage guard on the
-#     orchestrator-level binding (remove the ``with`` and it goes red), restored
-#     in the new world to replace the deleted planner-loop guard.
+# The top-level orchestrator is ``ClioReAct``, whose ``forward`` binds
+# ``with stateful_scope():`` around its loop. Two locks below:
+#   * ``test_clio_react_forward_binds_stateful_scope`` drives a REAL forward and
+#     asserts the scope is active INSIDE the loop body (at the model call) and
+#     released after -- remove the ``with`` and it goes red.
 #   * ``test_tier1_shaped_forward_deltas_on_call_two`` pins the delta MECHANISM
 #     the binding unlocks, directly on the Claude SDK registry (append-only
 #     growing message list under an active scope).
 # --------------------------------------------------------------------------- #
-def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The V2 orchestrator forward binds a per-forward stateful scope for its LM sends.
+@pytest.mark.usefixtures("clio_core_plane")
+def test_clio_react_forward_binds_stateful_scope() -> None:
+    """``ClioReAct.forward`` binds a fresh per-forward stateful scope for its LM sends.
 
-    Post-#948-S4b the top-level orchestrator is the reactv2 retention forward, not the
-    deleted ``ClioAgent.forward`` planner. Its ``with stateful_scope():`` binding
-    (reactv2.py:193) is what makes consecutive append-only orchestrator LM sends
-    classify as prefix deltas. This drives a real V2 forward and asserts
-    ``active_stateful_scope()`` is non-None from INSIDE the loop body — the
-    orchestrator-level invariant the deleted planner test used to guard.
+    Its ``with stateful_scope():`` binding is what makes consecutive append-only
+    orchestrator LM sends classify as prefix deltas. This drives a real forward and
+    asserts ``active_stateful_scope()`` is non-None at every model call, stable
+    within one forward, distinct across forwards, and released afterwards.
 
-    Sabotage: remove ``with stateful_scope():`` in the reactv2 forward → the captured
-    scope is ``None`` → this test goes red.
+    Sabotage: remove ``with stateful_scope():`` in ``ClioReAct.forward`` → the
+    captured scope is ``None`` → this test goes red.
     """
-    from clio_agent.gact.agents import reactv2_events as _events
-    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.gact.agents.clio_react import ClioReAct
 
     class _Sig(dspy.Signature):
         question: str = dspy.InputField()
@@ -287,46 +300,55 @@ def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -
         """A tool."""
         return x
 
-    captured: dict[str, Any] = {}
+    captured: list[Any] = []
 
-    def _fake_instrumented_forward(agent: Any, **input_args: Any) -> Any:
-        # Runs where the real append-only V2 loop runs: under the forward's
-        # ``with stateful_scope():``. Record what the rail carries.
-        captured["scope"] = active_stateful_scope()
-        return dspy.Prediction(answer="ok")
+    class _Capturing(ScriptedEngine):
+        def _next(self, request: Any) -> Any:
+            # Runs where the real model call runs: inside the loop, under the
+            # forward's ``with stateful_scope():``. Record what the rail carries.
+            captured.append(active_stateful_scope())
+            return super()._next(request)
 
-    monkeypatch.setattr(_events, "instrumented_forward", _fake_instrumented_forward)
+    step = [calls(("_tool", {"x": "1"}), text="call"), Reply(text="ok")]
+    engine = _Capturing(step * 2)
+    lm = dspy.LM(
+        "scripted/model",
+        engine=engine,
+        async_engine=AsyncScriptedEngine(engine),
+        cache=False,
+        num_retries=0,
+    )
+    agent = ClioReAct(_Sig, tools=[_tool], max_iters=4)
+    with dspy.context(lm=lm):
+        first = agent(question="hi")
+        second = agent(question="again")
 
-    agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
-    pred = agent.forward(question="hi")
-
-    assert pred.answer == "ok"
-    # The forward bound a live stateful scope around the loop (unbinding → None).
-    assert captured["scope"] is not None
+    assert (first.answer, second.answer) == ("ok", "ok")
+    assert len(captured) == 4
+    assert all(scope is not None for scope in captured)
+    assert captured[0] == captured[1], "one forward = one scope across its calls"
+    assert captured[2] == captured[3]
+    assert captured[0] != captured[2], "each forward binds a fresh scope"
+    assert active_stateful_scope() is None, "the scope is released after the forward"
 
 
 # --------------------------------------------------------------------------- #
-def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A Tier-1-shaped forward with append-only sends deltas on call 2+ under the scope.
+def test_tier1_shaped_forward_deltas_on_call_two() -> None:
+    """A forward with append-only sends continues its conversation on call 2+.
 
     The mechanism the T3 binding unlocks: bound stateful scope + an append-only growing
-    message list ⇒ the second send is a delta over the retained prefix. Pinned on the
-    real Claude SDK registry.
+    message list => the second send carries only what the provider has not seen.
+    Pinned on the real Claude Code engine registry.
     """
-    monkeypatch.setattr(ccs, "stateful_delta_enabled", lambda: True)
-    ccs.stateful_registry().reset_for_tests()
-    reg = ccs.stateful_registry()
+    registry = claude_code_engine._CONVERSATIONS
+    registry.clear_for_tests()
     with stateful_scope("tier1"):
-        plan1, _h1 = reg.plan(session_key=_key("tier1"), scope_token="tier1", messages=_m("q", "a"))
-        assert plan1.mode == "full" and plan1.reason == "first_call"
-        # Call 2: the message list grew append-only (a Tier-1 planner step appended).
-        plan2, _h2 = reg.plan(
-            session_key=_key("tier1"), scope_token="tier1", messages=_m("q", "a", "b")
-        )
-        assert plan2.mode == "delta"
-        assert plan2.prefix_len == 2
-        assert plan2.messages == _m("b")  # only the appended tail is sent
-    ccs.stateful_registry().reset_for_tests()
+        _prime("tier1")
+        # Call 2: the provider's reply, then one appended user message.
+        send = registry.plan(_key("tier1"), _r("q", "a", "b"), "sys")
+        assert send.handle == "sid-1"
+        assert send.messages == (Message.user("b"),)  # only the appended tail is sent
+    registry.clear_for_tests()
 
 
 # --------------------------------------------------------------------------- #
@@ -334,11 +356,9 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
 # scope, and (unlike the pre-S2 scope-keyed design) a stateful_scope's exit
 # must NOT close the pool's connection — B1's whole point is that the SAME
 # client survives across every turn (every forward) of one session. The
-# #901 stateful-delta layer's own scope-keyed correctness (the AGENT-COPPER12
-# cross-conversation defect this used to guard) is untouched: see
-# test_claude_code_stateful.py / this file's T3 above for that guarantee —
-# it lives entirely in the registry pinned there, independent of which
-# physical client a query rides on.
+# kept conversations' correctness (the AGENT-COPPER12 cross-conversation defect
+# this used to guard) lives in the engine's conversation registry: see
+# test_claude_code_stateful.py / this file's T3 above.
 # --------------------------------------------------------------------------- #
 def test_stream_pool_isolates_by_gact_session_not_scope() -> None:
     """Distinct GACT sessions get distinct pooled connections; one session's

@@ -1,0 +1,502 @@
+# Agent filesystem contract; audited against the declared writers and isolated-home checks.
+# Contract 1.1 adoption. Legacy CLIO_USER_DIR preserves its old config/data/cache layout.
+# Explicit CLIO_PREFIX and remote managed roots may relocate the app and its role roots.
+# Core host coordination uses native state/core-hosts even when CLIO_AGENT_HOME isolates content.
+# Existing native-XDG user stores and Core supervision records remain active until explicit migration.
+# Legacy workspace data is retained until explicit migration; credentials remain file-0600.
+schema: clio.filesystem/v1
+product: clio-agent
+layout_version: 1
+env_prefix: CLIO_AGENT_
+roots:
+  linux:
+    config: ${XDG_CONFIG_HOME}/${PRODUCT}
+    data: ${XDG_DATA_HOME}/${PRODUCT}
+    state: ${XDG_STATE_HOME}/${PRODUCT}
+    cache: ${XDG_CACHE_HOME}/${PRODUCT}
+  macos:
+    config: ${HOME}/Library/Application Support/${PRODUCT}/config
+    data: ${HOME}/Library/Application Support/${PRODUCT}/data
+    state: ${HOME}/Library/Application Support/${PRODUCT}/state
+    cache: ${HOME}/Library/Caches/${PRODUCT}
+  windows:
+    config: ${APPDATA}/${PRODUCT}/config
+    data: ${LOCALAPPDATA}/${PRODUCT}/data
+    state: ${LOCALAPPDATA}/${PRODUCT}/state
+    cache: ${LOCALAPPDATA}/${PRODUCT}/cache
+project:
+  root: .clio-agent
+  registration: read-only
+  shared:
+  - path: shared
+    kind: directory
+  local:
+  - path: local
+    kind: directory
+    self_ignore: true
+resources:
+- id: user-config
+  role: config
+  path: config.yaml
+  uninstall: retain
+  export: nonsecret
+- id: mcp-config
+  role: config
+  path: mcp.yaml
+  uninstall: retain
+  export: nonsecret
+- id: hooks
+  role: config
+  path: hooks.json
+  uninstall: retain
+  export: nonsecret
+- id: hooks-trust
+  role: config
+  path: hooks.trust.json
+  uninstall: retain
+  export: never
+- id: prompts
+  role: config
+  path: prompts
+  uninstall: retain
+  export: explicit
+- id: commands
+  role: config
+  path: commands
+  uninstall: retain
+  export: explicit
+- id: experts
+  role: config
+  path: experts
+  uninstall: retain
+  export: explicit
+- id: expert-packs
+  role: config
+  path: expert-packs
+  uninstall: retain
+  export: explicit
+- id: model-catalog-overlay
+  role: config
+  path: model-catalog.d
+  uninstall: retain
+  export: nonsecret
+- id: agent-blueprints
+  role: config
+  path: agent-blueprints
+  uninstall: retain
+  export: explicit
+- id: agent-blueprint-sources
+  role: config
+  path: agent-blueprint-sources.json
+  uninstall: retain
+  export: nonsecret
+- id: workspaces
+  role: config
+  path: workspaces.json
+  uninstall: retain
+  export: never
+- id: agents
+  role: config
+  path: agents.json
+  uninstall: retain
+  export: explicit
+- id: sandbox-state
+  role: config
+  path: sandbox
+  uninstall: retain
+  export: never
+- id: provider-api-keys
+  role: config
+  path: provider_api_keys.json
+  uninstall: retain
+  export: never
+  sensitive: true
+- id: codex-credential
+  role: config
+  path: codex_credential.json
+  uninstall: retain
+  export: never
+  sensitive: true
+- id: mcp-oauth-tokens
+  role: config
+  path: mcp_oauth_tokens.json
+  uninstall: retain
+  export: never
+  sensitive: true
+- id: gact-server-pids
+  role: state
+  path: gact-server-*.pid
+  kind: glob
+  uninstall: retain
+  export: never
+- id: gact-server-pid-locks
+  role: state
+  path: gact-server-*.pid.lock
+  kind: glob
+  uninstall: retain
+  export: never
+- id: gact-server-logs
+  role: state
+  path: gact-server-*.log
+  kind: glob
+  uninstall: retain
+  export: never
+- id: cte-store
+  role: data
+  path: cte
+  uninstall: retain
+  export: explicit
+- id: model-limits
+  role: data
+  path: model_limits.json
+  uninstall: retain
+  export: never
+- id: model-limits-mismatches
+  role: data
+  path: model_limits.mismatches.jsonl
+  uninstall: retain
+  export: never
+- id: model-catalog
+  role: data
+  path: model_catalog.json
+  uninstall: retain
+  export: never
+- id: fetched-catalogs
+  role: cache
+  path: catalogs
+  uninstall: retain
+  export: never
+- id: mcp-listing-cache
+  role: cache
+  path: mcp_listing_cache.json
+  uninstall: retain
+  export: never
+- id: mcp-spawn-diet
+  role: cache
+  path: mcp_spawn_diet.json
+  uninstall: retain
+  export: never
+- id: mcp-uv-cache
+  role: cache
+  path: mcp-uv-cache
+  uninstall: retain
+  export: never
+- id: mcp-stdio-logs
+  role: cache
+  path: mcp-stdio
+  uninstall: retain
+  export: never
+- id: fastmcp-child
+  role: cache
+  path: fastmcp-child
+  uninstall: retain
+  export: never
+- id: locks
+  role: cache
+  path: locks
+  uninstall: retain
+  export: never
+- id: provenance-handoff
+  role: cache
+  path: provenance-handoff
+  uninstall: retain
+  export: never
+- id: server
+  role: state
+  path: server
+  uninstall: retain
+  export: explicit
+- id: traces
+  role: state
+  path: traces
+  uninstall: retain
+  export: explicit
+- id: workspace-state
+  role: state
+  path: workspaces
+  uninstall: retain
+  export: explicit
+- id: migration-receipts
+  role: state
+  path: migrations
+  uninstall: retain
+  export: never
+- id: plans
+  role: state
+  path: plans
+  uninstall: retain
+  export: explicit
+- id: core-hosts
+  role: state
+  path: core-hosts
+  uninstall: retain
+  export: never
+- id: arc
+  role: data
+  path: arc
+  uninstall: retain
+  export: explicit
+- id: resources
+  role: data
+  path: resources
+  uninstall: retain
+  export: explicit
+- id: app
+  role: data
+  path: app
+  uninstall: retain
+  export: never
+- id: services
+  role: data
+  path: services
+  uninstall: retain
+  export: never
+- id: mcp-runtime
+  role: cache
+  path: mcp-runtime
+  uninstall: retain
+  export: never
+- id: sandbox-cache
+  role: cache
+  path: sandbox
+  uninstall: retain
+  export: never
+- id: registry-staging
+  role: config
+  path: .clio-registry-staging
+  uninstall: retain
+  export: never
+- id: installer-pids
+  role: state
+  path: clio-server*.pid
+  kind: glob
+  uninstall: retain
+  export: never
+- id: installer-logs
+  role: state
+  path: clio-server*.log
+  kind: glob
+  uninstall: retain
+  export: never
+- id: launcher-tui-log
+  role: state
+  path: gact-stderr.log
+  uninstall: retain
+  export: never
+- id: installer-update-check
+  role: cache
+  path: .update-checked
+  uninstall: retain
+  export: never
+- id: variants
+  role: data
+  path: variants
+  uninstall: retain
+  export: never
+- id: install-backups
+  role: state
+  path: install-backups
+  uninstall: retain
+  export: never
+uninstall:
+  unknown: retain-and-report
+  project_directories: retain
+  borrowed_dependencies: retain
+  credentials: remove-owned
+credentials:
+  storage: file-0600
+native_artifacts:
+- id: bin-launcher-linux
+  platform: linux
+  kind: launcher
+  locator: ${HOME}/.local/bin/clio
+  uninstall: remove
+- id: bin-launcher-macos
+  platform: macos
+  kind: launcher
+  locator: ${HOME}/.local/bin/clio
+  uninstall: remove
+- id: clio-agent-blueprint-linux
+  platform: linux
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-blueprint-*
+  uninstall: retain
+- id: clio-agent-registry-resync-linux
+  platform: linux
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-registry-resync-*
+  uninstall: retain
+- id: clio-agent-component-update-linux
+  platform: linux
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-component-update-*
+  uninstall: retain
+- id: clio-agent-document-rendition-linux
+  platform: linux
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-document-rendition-*
+  uninstall: retain
+- id: clio-agent-codex-linux
+  platform: linux
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-codex-*
+  uninstall: retain
+- id: clio-agent-blueprint-macos
+  platform: macos
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-blueprint-*
+  uninstall: retain
+- id: clio-agent-registry-resync-macos
+  platform: macos
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-registry-resync-*
+  uninstall: retain
+- id: clio-agent-component-update-macos
+  platform: macos
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-component-update-*
+  uninstall: retain
+- id: clio-agent-document-rendition-macos
+  platform: macos
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-document-rendition-*
+  uninstall: retain
+- id: clio-agent-codex-macos
+  platform: macos
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-codex-*
+  uninstall: retain
+- id: clio-agent-blueprint-windows
+  platform: windows
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-blueprint-*
+  uninstall: retain
+- id: clio-agent-registry-resync-windows
+  platform: windows
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-registry-resync-*
+  uninstall: retain
+- id: clio-agent-component-update-windows
+  platform: windows
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-component-update-*
+  uninstall: retain
+- id: clio-agent-document-rendition-windows
+  platform: windows
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-document-rendition-*
+  uninstall: retain
+- id: clio-agent-codex-windows
+  platform: windows
+  kind: temp-entry
+  locator: ${OS_TEMP}/clio-agent-codex-*
+  uninstall: retain
+foreign_writes:
+- product: clio-kit
+  role: cache
+  path: mcp-environments
+  purpose: disk GC evicts stale MCP environments
+legacy:
+  paths:
+  - scope: project
+    path: .clio/agent
+    action: report-only
+  - scope: project
+    path: .clio/inputs
+    action: report-only
+  - scope: project
+    path: .clio/plans
+    action: report-only
+  - scope: project
+    path: .clio/tool-output
+    action: report-only
+  - scope: project
+    path: .clio/prompts
+    action: report-only
+  - scope: project
+    path: .clio/agent-blueprints
+    action: report-only
+  - scope: project
+    path: .clio/hooks.json
+    action: report-only
+  - scope: project
+    path: .clio/mcp.yaml
+    action: report-only
+  - scope: project
+    path: .clio/config.yaml
+    action: report-only
+  - scope: project
+    path: .clio-child-cache
+    action: report-only
+  - scope: home
+    path: .clio/hosts
+    action: report-only
+  - scope: home
+    path: .clio/plans
+    action: report-only
+  - scope: home
+    path: .clio/mcp-runtime
+    action: report-only
+  - scope: home
+    path: .local/share/clio/services
+    action: report-only
+  - scope: home
+    path: AppData/Local/CLIO/services
+    action: report-only
+  env:
+  - name: CLIO_USER_DIR
+    kind: path
+  - name: CLIO_RUNTIME_STATE_DIR
+    kind: path
+  - name: CLIO_ARC_CTE_DIR
+    kind: path
+  - name: CLIO_ARC_STORE_CONFIG
+    kind: path
+  - name: CLIO_SERVER_CONF
+    kind: path
+  - name: CLIO_SESSIONS_PATH
+    kind: path
+  - name: CLIO_MODEL_DB
+    kind: path
+  - name: CLIO_MODEL_CATALOG
+    kind: path
+  - name: CLIO_KIT_CACHE_DIR
+    kind: path
+  - name: CLIO_HOOKS_TRUST_STORE
+    kind: path
+  - name: CLIO_PROVENANCE_JSONL_PATH
+    kind: path
+  - name: CLIO_SEMANTIC_TRACE_PATH
+    kind: path
+  - name: CLIO_CMF_METADATA_PATH
+    kind: path
+  - name: CLIO_CMF_ARTIFACT_ROOT
+    kind: path
+  - name: CLIO_DATA_DIR
+    kind: deprecated
+  - name: CHI_SERVER_CONF
+    kind: deprecated
+  - name: CLIO_LM_API_KEY
+    kind: secret
+  - name: CLIO_ARGONNE_TOKEN
+    kind: secret
+  - name: ALCF_INFERENCE_TOKEN
+    kind: secret
+  - name: CLIO_RELAY_API_TOKEN
+    kind: secret
+  - name: CLIO_RELAY_FRP_TOKEN
+    kind: secret
+  - name: CLIO_RELAY_STCP_SECRET
+    kind: secret
+  - name: CLIO_AUTH_TOKEN
+    kind: secret
+  - name: CLIO_GACT_BEARER_TOKEN
+    kind: secret
+  - name: CLIO_ONLYOFFICE_JWT_SECRET
+    kind: secret
+  - name: CLIO_PREFIX
+    kind: path
+accepts_foreign:
+- writer: clio-kit
+  role: cache
+  path: mcp-runtime

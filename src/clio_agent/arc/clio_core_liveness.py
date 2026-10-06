@@ -24,13 +24,15 @@ A cheap **liveness gate** wrapped around every clio-core op (:class:`LivenessGat
   typed :class:`ClioCoreRuntimeLostError` *before* touching the binding. This shrinks the
   AV window from "any time the daemon can die" to "the daemon dies within the TTL
   race" — a residual honestly owned here and closed upstream by #722.
-* On the next op after quarantine the gate makes **one** guarded reconnect attempt
+* By default, the next op after quarantine makes **one** guarded reconnect attempt
   (rate-limited to once per TTL) through the injected reconnect seam — the existing
   connect-or-spawn path in :mod:`clio_agent.arc.storage`, which spawns + rebinds and
   itself fails loud if a fresh daemon never binds the port (clio-core#725: a stale
   pidfile is overwritten by that spawn, so we do not hand-delete runtime artifacts).
   Success leaves quarantine (a typed INFO audit record); failure stays quarantined
-  and re-raises the typed error.
+  and re-raises the typed error. ``ClioCoreStore`` disables in-process recovery:
+  the native binding can hold the GIL while a replacement daemon is starting, so
+  this server reports a required agent restart instead of freezing unrelated routes.
 
 This is a **fail-loud** surface, not a silent LocalFS fallback: backend selection
 stays the deliberate choice documented in :func:`clio_agent.arc.storage.make_arc_store`.
@@ -82,6 +84,10 @@ _DEFAULT_RUNTIME_PORT = 9413
 # gate's recovery can be REASON-AWARE without importing rpc_liveness (which imports this
 # module); rpc_liveness re-exports it.
 RPC_STALLED_REASON = "clio_core_rpc_stalled"
+# The ladder exhausted while the daemon process could not be located, so whether it was
+# progressing is unknown: not evidence of a stall. Recovers like a stall (a real RPC).
+DAEMON_PID_UNRESOLVED_REASON = "clio_core_daemon_pid_unresolved"
+_RPC_PROBE_RECOVERY_REASONS = frozenset({RPC_STALLED_REASON, DAEMON_PID_UNRESOLVED_REASON})
 
 # Recovery back-off TTL for an ``rpc_stalled`` quarantine. A zombie's RPC-level health
 # re-probe (:func:`clio_agent.arc.rpc_liveness.probe_rpc_health`) costs up to
@@ -218,7 +224,6 @@ class ClioCoreRuntimeLostError(ClioError):
             "recovery_actions": [
                 "restart_clio_core_daemon",
                 "run_clio_doctor",
-                "set_clio_arc_store_local",
                 "retry",
             ],
         }
@@ -237,7 +242,7 @@ class ClioCoreRuntimeLostError(ClioError):
 
 
 class LivenessGate:
-    """TTL-cached daemon-liveness gate with quarantine + one-shot guarded reconnect.
+    """TTL-cached daemon-liveness gate with quarantine and optional reconnect.
 
     Wrap every native clio-core op in :meth:`ensure_live`. It confirms the daemon is
     listening (cached for ``ttl_s``), quarantines the store and raises
@@ -252,6 +257,7 @@ class LivenessGate:
         probe: Injectable liveness probe ``(port) -> bool`` (defaults to a real TCP
             connect); the seam the tests drive to simulate daemon loss without an AV.
         ttl_s: Probe-cache TTL in seconds; ``None`` resolves the configured default.
+        auto_recover: Reconnect a quarantined native client in-process when true.
     """
 
     def __init__(
@@ -261,12 +267,14 @@ class LivenessGate:
         log_level: str = "error",
         probe: Callable[[int], bool] | None = None,
         ttl_s: float | None = None,
+        auto_recover: bool = True,
     ) -> None:
         self._config_path = config_path
         self._log_level = log_level
         self._probe = probe or _runtime_alive
         self._port = _resolve_runtime_port(config_path)
         self._ttl_s = _resolve_liveness_ttl_s() if ttl_s is None else float(ttl_s)
+        self._auto_recover = auto_recover
         self._lock = threading.RLock()
         self._last_ok_at: float | None = None  # monotonic of last confirmed-live probe
         self._last_recovery_at: float | None = None  # monotonic of last reconnect try
@@ -290,6 +298,7 @@ class LivenessGate:
                 "reason": self._reason,
                 "port": self._port,
                 "ttl_s": self._ttl_s,
+                "restart_required": self._quarantined and not self._auto_recover,
             }
 
     def ensure_live(
@@ -302,8 +311,8 @@ class LivenessGate:
         Fast path: a probe confirmed live within ``ttl_s`` returns immediately (one
         monotonic comparison). Otherwise a fresh probe runs; a dead daemon quarantines
         the store and raises. If already quarantined, one guarded recovery attempt is
-        made (rate-limited to once per recovery TTL); success leaves quarantine and
-        returns, failure stays quarantined and re-raises.
+        made (rate-limited to once per recovery TTL) when ``auto_recover`` is true;
+        otherwise the gate requires a process restart to establish a fresh client.
 
         Recovery is REASON-AWARE. A socket-loss quarantine
         (``clio_core_daemon_not_listening``) recovers through ``reconnect`` — the
@@ -327,6 +336,14 @@ class LivenessGate:
         """
         with self._lock:
             if self._quarantined:
+                if not self._auto_recover:
+                    raise ClioCoreRuntimeLostError(
+                        "clio-core was lost after this process attached. Restart the CLIO "
+                        "agent to establish a fresh native client; the store remains quarantined.",
+                        reason="clio_core_client_restart_required",
+                        port=self._port,
+                        details={"recovery_actions": ["restart_clio_agent", "run_clio_doctor"]},
+                    )
                 self._attempt_recovery(reconnect, rpc_probe)
                 return
             now = time.monotonic()
@@ -343,6 +360,11 @@ class LivenessGate:
                 "(clio-core#722).",
                 reason="clio_core_daemon_not_listening",
                 port=self._port,
+                details=(
+                    {"recovery_actions": ["restart_clio_agent", "run_clio_doctor"]}
+                    if not self._auto_recover
+                    else None
+                ),
             )
 
     def _recovery_ttl_s(self) -> float:
@@ -351,7 +373,11 @@ class LivenessGate:
         An ``rpc_stalled`` re-probe is expensive (a real RPC that may hang up to the
         health-probe window), so it is spaced far wider than a socket-loss reconnect.
         """
-        return _RPC_STALLED_RECOVERY_TTL_S if self._reason == RPC_STALLED_REASON else self._ttl_s
+        return (
+            _RPC_STALLED_RECOVERY_TTL_S
+            if self._reason in _RPC_PROBE_RECOVERY_REASONS
+            else self._ttl_s
+        )
 
     def _attempt_recovery(
         self,
@@ -378,7 +404,7 @@ class LivenessGate:
                 port=self._port,
             )
         self._last_recovery_at = now
-        if self._reason == RPC_STALLED_REASON:
+        if self._reason in _RPC_PROBE_RECOVERY_REASONS:
             self._recover_from_rpc_stall(rpc_probe)
             return
         self._recover_via_reconnect(reconnect)
@@ -454,7 +480,7 @@ class LivenessGate:
         self._last_ok_at = None
         logger.warning(
             "clio-core liveness: quarantining clio-core store "
-            "(reason=%s port=%s); ops raise ClioCoreRuntimeLostError until the daemon returns",
+            "(reason=%s port=%s); ops raise ClioCoreRuntimeLostError until recovery",
             reason,
             self._port,
         )

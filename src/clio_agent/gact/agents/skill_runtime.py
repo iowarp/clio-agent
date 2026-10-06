@@ -33,13 +33,15 @@ declaring expert's own pack root, mirroring how the agent rows were loaded.
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.skill_json_fragment import (
+    resolve_json_pointer_fragment,
+    resolve_json_pointer_fragments_shared,
+)
 from clio_agent.gact.skills import (
     SkillBodyUnreadableError,
     SkillCatalog,
@@ -176,6 +178,7 @@ def effective_declared_skills(
     )
     is_default = str(meta.get("agent_blueprint_id") or "") == DEFAULT_AGENT_BLUEPRINT_ID
     is_default_root = is_default and is_root
+    wants_a2ui_catalogs = _declares_a2ui_producer_tool(agent_def) or _is_root_agent(agent_def)
     if is_default_root:
         # Auto-declare the user's workspace skills first (so they lead the surface), then
         # clio's shipped built-in skills (the ``planning`` entry-skill) — both onto the
@@ -190,7 +193,17 @@ def effective_declared_skills(
                     and ref.id not in declared
                 ):
                     declared.append(ref.id)
-    wants_a2ui_catalogs = _declares_a2ui_producer_tool(agent_def) or _is_root_agent(agent_def)
+    if (
+        wants_a2ui_catalogs
+        and is_root
+        and str(meta.get("definition_kind") or "") == "builtin_main"
+        and "present-interactive-analysis" not in declared
+    ):
+        # A plain built-in root also gets A2UI producer tools. Give it the
+        # matching short decision guide, not only the schema catalog, so
+        # ordinary requests can discover editable widgets without naming them.
+        if any(ref.id == "present-interactive-analysis" for ref in catalog.discover()):
+            declared.append("present-interactive-analysis")
     if app is not None and session_id and wants_a2ui_catalogs:
         for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
             if skill_id not in declared:
@@ -310,6 +323,7 @@ def _declare_load_skill_structured_content(
     path: str,
     text: str,
     file: str = "",
+    files: list[str] | None = None,
     bundled_files: list[str] | None = None,
 ) -> None:
     """Declare ``load_skill``'s typed wire payload (P5 wire semantics — the
@@ -323,7 +337,12 @@ def _declare_load_skill_structured_content(
     )
 
     lines = len(text.splitlines())
-    label = f"file {file!r} from skill {skill_id!r}" if file else f"skill {skill_id!r}"
+    if files:
+        label = f"{len(files)} files from skill {skill_id!r}"
+    elif file:
+        label = f"file {file!r} from skill {skill_id!r}"
+    else:
+        label = f"skill {skill_id!r}"
     payload: dict[str, Any] = {
         "message": f"loaded {label} ({lines} line{'' if lines == 1 else 's'})",
         "skill_id": skill_id,
@@ -334,92 +353,11 @@ def _declare_load_skill_structured_content(
     }
     if file:
         payload["file"] = file
+    if files:
+        payload["files"] = files
     if bundled_files:
         payload["bundled_files"] = bundled_files
     declare_structured_content(payload)
-
-
-def _collect_ref_targets(node: Any) -> set[str]:
-    """Return every ``$ref`` string reachable under ``node`` (any nesting)."""
-
-    found: set[str] = set()
-    if isinstance(node, Mapping):
-        ref = node.get("$ref")
-        if isinstance(ref, str):
-            found.add(ref)
-        for value in node.values():
-            found.update(_collect_ref_targets(value))
-    elif isinstance(node, list):
-        for item in node:
-            found.update(_collect_ref_targets(item))
-    return found
-
-
-def _resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) -> str:
-    """Resolve an RFC 6901 JSON Pointer ``fragment`` against a bundled JSON file.
-
-    Returns the resolved node pretty-printed (2-space indent) plus one
-    trailing line naming the ``$ref`` targets it uses (e.g.
-    ``common_types.json#/$defs/Action``), so the model knows those are
-    standard shapes it does not need to load separately.
-
-    Raises:
-        ValueError: ``file_path`` does not end in ``.json`` (fragments are
-            JSON-only, never silently ignored); ``fragment`` is not an
-            absolute pointer (does not start with ``/``); or the pointer does
-            not resolve — the message names the available keys at the
-            nearest resolvable parent.
-    """
-
-    if not file_path.lower().endswith(".json"):
-        raise ValueError(
-            f"file {file_path!r} does not support a '#' fragment: JSON pointer "
-            "fragments are only supported for .json bundled files"
-        )
-    try:
-        document = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"bundled file {file_path!r} is not valid JSON: {exc}") from exc
-    if not fragment.startswith("/"):
-        raise ValueError(f"fragment {fragment!r} must be an absolute JSON pointer (start with '/')")
-    node: Any = document
-    walked: list[str] = []
-    for raw_part in fragment.split("/")[1:]:
-        part = raw_part.replace("~1", "/").replace("~0", "~")
-        if isinstance(node, Mapping) and part in node:
-            node = node[part]
-            walked.append(part)
-            continue
-        if isinstance(node, list):
-            index = int(part) if part.isdigit() else -1
-            if 0 <= index < len(node):
-                node = node[index]
-                walked.append(part)
-                continue
-        if isinstance(node, Mapping):
-            available: list[str] = sorted(node.keys())
-        elif isinstance(node, list):
-            available = [str(i) for i in range(len(node))]
-        else:
-            available = []
-        pointer_so_far = "/" + "/".join(walked)
-        raise ValueError(
-            f"JSON pointer {fragment!r} does not resolve in {file_path!r}: no "
-            f"{part!r} at {pointer_so_far!r}; available keys: {available}"
-        )
-    rendered = json.dumps(node, indent=2, sort_keys=False)
-    refs = sorted(_collect_ref_targets(node))
-    # Local refs (bare "#/...", relative to THIS document) are themselves
-    # loadable with another load_skill(..., file="catalog.json#/...") call;
-    # a ref into an external file (typically common_types.json) names a
-    # STANDARD shape this catalog does not define and this call cannot load.
-    local_refs = sorted(f"catalog.json{ref}" for ref in refs if ref.startswith("#/"))
-    standard_refs = sorted(ref for ref in refs if not ref.startswith("#/"))
-    if local_refs:
-        rendered += "\n\nLocal refs (load via file=): " + ", ".join(local_refs)
-    if standard_refs:
-        rendered += "\n\nStandard refs (not loadable here): " + ", ".join(standard_refs)
-    return rendered
 
 
 def _resolve_bundled_file(
@@ -459,7 +397,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     resolved = runtime.resolved
     agent_id = getattr(agent_def, "id", "?")
 
-    def load_skill(skill_id: str, file: str = "") -> str:
+    def load_skill(skill_id: str, file: str = "", files: Optional[list[str]] = None) -> str:
         skill_id = (skill_id or "").strip()
         res = resolved.get(skill_id)
         if res is None or res.skill is None:
@@ -469,6 +407,30 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             )
         ref = res.skill
         skill_dir = Path(ref.dir)
+
+        def _read_one_bundled_file(requested_file: str) -> str:
+            """Resolve + read ONE bundled file spec (``path`` or ``path#/fragment``)."""
+
+            file_path, has_fragment, fragment = requested_file.partition("#")
+            target = _resolve_bundled_file(skill_id, skill_dir, ref.extra_dirs, file_path)
+            try:
+                content = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
+            if has_fragment:
+                content = resolve_json_pointer_fragment(file_path, content, fragment)
+            return content
+
+        requested_files = [str(f).strip() for f in files if str(f).strip()] if files else []
+        if file:
+            requested_files.insert(0, file)
+        duplicates_collapsed = 0
+        if len(requested_files) > 1:
+            # A repeated request (e.g. two components both cited by id) is
+            # read/resolved once, not once per occurrence (#1533 S4).
+            deduped = list(dict.fromkeys(requested_files))
+            duplicates_collapsed = len(requested_files) - len(deduped)
+            requested_files = deduped
 
         def _emit_loaded(size: int, bundled_file: str = "") -> None:
             # skill.loaded (#920): typed provenance for every load, on the
@@ -516,23 +478,86 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 trace.event("SKILLS", "skill.loaded emit failed for %s: %s", skill_id, exc)
 
         if ref.layout != "skill_md":
-            if file:
+            if requested_files:
                 raise ValueError(
                     f"skill {skill_id!r} is a flat .md skill with no bundled directory"
                 )
-        elif file:
-            file_path, has_fragment, fragment = file.partition("#")
-            target = _resolve_bundled_file(skill_id, skill_dir, ref.extra_dirs, file_path)
-            try:
-                content = target.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
-            if has_fragment:
-                content = _resolve_json_pointer_fragment(file_path, content, fragment)
-            trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
-            _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
+        elif len(requested_files) > 1:
+            # Progressive disclosure, batched: several component schemas (or
+            # any other bundled files) in ONE call, clearly separated and
+            # labelled. Fragments that share ONE catalog document also share
+            # ONE copy of every $defs entry they reach (#1533 S4 adversarial
+            # review) — grouped below by their (bundled) file_path so the
+            # result stays proportional to what was actually requested,
+            # never requested-files times shared-defs. A whole-file request
+            # (no "#" fragment, or a non-JSON file) is read on its own, same
+            # as a lone file= call.
+            bodies: dict[int, str] = {}
+            grouped_by_document: dict[str, list[tuple[int, str]]] = {}
+            document_text_cache: dict[str, str] = {}
+            for index, requested_file in enumerate(requested_files):
+                file_path, has_fragment, fragment = requested_file.partition("#")
+                if not has_fragment or not file_path.lower().endswith(".json"):
+                    bodies[index] = _read_one_bundled_file(requested_file)
+                    continue
+                if file_path not in document_text_cache:
+                    target = _resolve_bundled_file(skill_id, skill_dir, ref.extra_dirs, file_path)
+                    try:
+                        document_text_cache[file_path] = target.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
+                grouped_by_document.setdefault(file_path, []).append((index, fragment))
+
+            definitions_blocks: list[str] = []
+            for file_path in sorted(grouped_by_document):
+                entries = grouped_by_document[file_path]
+                fragment_bodies, shared_block = resolve_json_pointer_fragments_shared(
+                    file_path, document_text_cache[file_path], [f for _, f in entries]
+                )
+                for (index, _fragment), body in zip(entries, fragment_bodies, strict=True):
+                    bodies[index] = body
+                if shared_block:
+                    definitions_blocks.append(f"### Shared by {file_path}\n{shared_block}")
+
+            sections: list[str] = []
+            for index, requested_file in enumerate(requested_files, start=1):
+                content = bodies[index - 1]
+                trace.event(
+                    "SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file
+                )
+                _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+                sections.append(
+                    f"=== File {index}/{len(requested_files)}: {requested_file} ===\n{content}"
+                )
+            if definitions_blocks:
+                sections.append("\n\n".join(definitions_blocks))
+            combined = "\n\n".join(sections)
+            if duplicates_collapsed:
+                combined += (
+                    f"\n\n({duplicates_collapsed} duplicate file request"
+                    f"{'' if duplicates_collapsed == 1 else 's'} collapsed to a single read each.)"
+                )
             _declare_load_skill_structured_content(
-                skill_id=skill_id, scope=ref.scope, path=ref.path, text=content, file=file
+                skill_id=skill_id,
+                scope=ref.scope,
+                path=ref.path,
+                text=combined,
+                files=requested_files,
+            )
+            return combined
+        elif requested_files:
+            requested_file = requested_files[0]
+            content = _read_one_bundled_file(requested_file)
+            trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file)
+            _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+            if duplicates_collapsed:
+                content += (
+                    f"\n\n({duplicates_collapsed} duplicate file request"
+                    f"{'' if duplicates_collapsed == 1 else 's'} for this same file collapsed "
+                    "to a single read.)"
+                )
+            _declare_load_skill_structured_content(
+                skill_id=skill_id, scope=ref.scope, path=ref.path, text=content, file=requested_file
             )
             return content
         # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
@@ -575,7 +600,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
         _emit_loaded(len(body.encode("utf-8")))
         listing = (
-            "\n\nBundled files (load with load_skill(skill_id, file=...)):\n"
+            "\n\nBundled files (use file=... for one or files=[...] for a batch):\n"
             + "\n".join(f"- {name}" for name in bundled)
             if bundled
             else ""
@@ -594,13 +619,32 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         desc=(
             "Load the full procedure of one of this expert's declared skills "
             "(see 'Skills available to you'). Call BEFORE performing the task "
-            "the skill covers; pass file=<bundled path> to read a bundled file."
+            "the skill covers. Progressive disclosure: for a generated catalog "
+            "skill, call with no file first (its index names every component "
+            "plus a compact signature); then, only if the index alone is not "
+            "enough, load one or several component schemas in ONE call with "
+            "file=<bundled path> or files=[<bundled path>, ...]. For a batch, "
+            "put all paths in files; an additional file is included in the same batch. Each JSON "
+            "fragment (file=...#/components/<Name>) comes back with the "
+            "catalog's own $defs inlined, so it fully explains that component."
         ),
         args={
             "skill_id": {"type": "string", "description": "Declared skill id to load."},
             "file": {
                 "type": "string",
-                "description": "Optional bundled file path inside the skill directory.",
+                "description": (
+                    "Optional bundled file path inside the skill directory. "
+                    "When files is also supplied, included first in the same batch."
+                ),
+            },
+            "files": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional: several bundled file paths to load in ONE call, "
+                    "each returned clearly separated and labelled. Any file argument "
+                    "is included first; repeated paths are read only once."
+                ),
             },
         },
     )

@@ -219,7 +219,7 @@ def resolve_accepted_params(
         import litellm  # noqa: PLC0415
 
         if custom_llm_provider in CLIO_CUSTOM_LITELLM_PROVIDERS:
-            # clio's OWN transport (codex_direct, codex_sdk, claude_code): once LiteLLM
+            # clio's OWN transport (codex_direct, claude_code): once LiteLLM
             # has set its custom handler up it answers the generic OpenAI list for the
             # key, a default that says nothing about the transport. Decided from clio's
             # own list, never LiteLLM's mutable registration state, so the answer does

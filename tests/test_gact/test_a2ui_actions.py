@@ -309,6 +309,125 @@ def test_permission_destination_resolves_in_scope_permission_only(tmp_path: Path
     assert app.state.permissions["perm_in_scope"]["status"] == "resolved"
 
 
+def test_permission_destination_unknown_permission_id_returns_typed_404(
+    tmp_path: Path,
+) -> None:
+    """A ``permission_id`` that IS present but names no pending permission
+
+    (unknown or already resolved/expired) must still reach
+    ``_deliver_permission`` and get its existing typed refusal -- never a
+    silent reroute to the agent lane (issue #1549 #28, design rule 2).
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [_create_message()]}
+    )
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers=HEADERS,
+        json={"message": _permission_action("surface_1", "perm_does_not_exist", "allow")},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["error"] == "not_found"
+    surface = app.state.a2ui_store.get(sid, "surface_1")
+    assert surface is not None
+    [record] = surface.actions
+    assert record["state"] == "failed"
+    assert record["reason"] == "not_found"
+
+
+def test_standalone_approval_without_permission_id_delivers_to_agent(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A ``clio.approval.v1`` card not bound to a real pending permission.
+
+    The sidecar names ``approval.respond``'s target lane as "permission",
+    but a standalone card (the agent's own yes/no question, never wired to a
+    tool-call permission) carries no ``permission_id`` at all -- that is
+    structurally NOT a permission response, so it must deliver as an
+    ordinary agent action instead of 422ing in ``_deliver_permission``
+    (issue #1549 #28; was gact-tui#514's merge-gate finding).
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [_create_message()]}
+    )
+    _stub_spawn(app, monkeypatch)
+    action = _event("approval.respond", "surface_1", {"approved": True}, "2026-09-17T00:00:00Z")
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions", headers=HEADERS, json={"message": action}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["destination"] == "agent"
+    assert body["delivery"] == "start"
+    assert body["state"] == "delivered"
+    message = next(m for m in reversed(app.state.messages[sid]) if m.role == "user")
+    assert message.metadata["a2ui_action_context"] == {"approved": True}
+
+
+def test_standalone_approval_cancel_without_permission_id_delivers_to_agent(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Symmetric to the approve case: ``{"approved": false}`` also reaches the agent."""
+
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [_create_message()]}
+    )
+    _stub_spawn(app, monkeypatch)
+    action = _event("approval.respond", "surface_1", {"approved": False}, "2026-09-17T00:00:00Z")
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions", headers=HEADERS, json={"message": action}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["destination"] == "agent"
+    assert body["delivery"] == "start"
+    message = next(m for m in reversed(app.state.messages[sid]) if m.role == "user")
+    assert message.metadata["a2ui_action_context"] == {"approved": False}
+
+
+def test_action_card_custom_event_unaffected_by_permission_routing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A ``clio.action-card.v1``-style custom event never comes near the
+
+    permission lane and keeps working exactly as before this fix (the G1b
+    regression requirement: "the action card is unaffected").
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [_create_message()]}
+    )
+    _stub_spawn(app, monkeypatch)
+    action = _event("workspace.summarize", "surface_1", {"scope": "all"}, "2026-09-17T00:00:00Z")
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions", headers=HEADERS, json={"message": action}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["destination"] == "agent"
+    assert body["delivery"] == "start"
+    message = next(m for m in reversed(app.state.messages[sid]) if m.role == "user")
+    assert message.metadata["a2ui_action_context"] == {"scope": "all"}
+
+
 # --------------------------------------------------------------------------- #
 # Run destination                                                             #
 # --------------------------------------------------------------------------- #

@@ -15,6 +15,10 @@ domain-tool budget (RULE 5), the same way ``load_skill`` and the child-delegatio
   deterministic-gate met?). There is deliberately NO ``set_goal`` / ``goal_clear`` tool: a
   goal is armed only by the user (/goal) or a declared skill-effect, never by the model
   (a self-armed halt is the self-grading anti-pattern, ⚑ RULE 1).
+* ``recall_context`` (Phase 11b) -- read back earlier context, compacted steps included,
+  byte-exact from clio-core;
+* ``draft_alternatives`` (Phase 9, tier-1 MAIN sessions only) — draft several answers
+  (BestOfN / Refine) and let the user or an LM judge pick one;
 * ``raise_alert_card`` (spotter-ai follow-on) — a GENERIC way for any spawned child agent
   to raise a notification/action card into its PARENT session's transcript. Auto-attached
   (not spotter-specific) so a spawned child never has to remember to declare it just to
@@ -46,6 +50,7 @@ from clio_agent.gact.a2ui_catalogs.activation import session_a2ui_producers_enab
 from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
+    build_inspect_a2ui_surface_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -56,8 +61,15 @@ from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.goal import build_goal_status_tool
 from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
+from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.resource_tools import build_resource_tools
+from clio_agent.gact.storage.setup_tool import (
+    build_connected_data_open_tool,
+    build_connected_data_status_tool,
+    build_connected_data_write_tool,
+)
 from clio_agent.gact.todos import build_write_todos_tool
+from clio_agent.gact.weather_tools import build_weather_forecast_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
 
 
@@ -105,6 +117,9 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
         # prefix vary with mutable workspace state, breaking the prompt-cache
         # stability the fixed order above exists to protect.
         *build_resource_tools(agent_def),
+        # Every agent can be compacted, so every agent can read back what a summary
+        # replaced (its last line names this tool). Read-only, own session only.
+        build_recall_context_tool(),
     ]
     declared = {str(name).strip() for name in (getattr(agent_def, "tools", None) or [])}
     if not (getattr(agent_def, "parent_id", "") or ""):
@@ -124,9 +139,23 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             ("update_a2ui_components", build_update_a2ui_components_tool),
             ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
             ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
+            ("inspect_a2ui_surface", build_inspect_a2ui_surface_tool),
         ):
             if a2ui_producers and name not in declared:
                 tools.append(build())
+        if a2ui_producers and "get_weather_forecast" not in declared:
+            tools.append(build_weather_forecast_tool())
         tools.append(build_refresh_provider_models_tool())
+        tools.append(build_connected_data_status_tool())
+        tools.append(build_connected_data_open_tool())
+        tools.append(build_connected_data_write_tool())
         tools.extend(build_memory_tools(agent_def))
+        # Phase 9: the main agent may draft alternatives of its answer (BestOfN /
+        # Refine on demand, judged by the user or an LM). Imported here: the drafting
+        # module needs dspy, which the server's app import must not load.
+        from clio_agent.gact.agents.variant_drafts import (  # noqa: PLC0415
+            build_draft_alternatives_tool,
+        )
+
+        tools.append(build_draft_alternatives_tool())
     return tools

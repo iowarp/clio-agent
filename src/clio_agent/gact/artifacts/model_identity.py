@@ -6,7 +6,7 @@ plus a ``resource_link`` part carrying ``artifact_id``. The **model** lane got
 nothing. The structured tool result the agent reads back names only the written
 path (``ndp_stage_resource`` → ``{"ok": true, "local_path": "...csv", ...}``), so an
 agent instructed to reference ``artifact://<artifact-id>`` — the grammar the trusted
-A2UI ``clio.time-series.v1`` ``dataUri`` requires, and the one
+A2UI ``clio.chart.v1`` ``dataUri`` requires, and the one
 ``GET /v1/artifacts/{id}/table-preview`` resolves — has no id to cite, honestly
 refuses to invent one, and the artifact-backed chart can never be built.
 
@@ -20,8 +20,7 @@ This module carries the SAME registry truth into the two model-facing places:
   into the structured result as an ``artifacts`` list;
 * **the turn's produced ``workflow_state``** — :func:`annotate_workflow_state_artifacts`
   stamps ``artifact_id`` / ``artifact_uri`` beside the path a section already
-  carries, so the next turn (which reads the prior state through
-  ``clio_prior_workflow_state``) can reuse the registered artifact instead of
+  carries, so a later turn can reuse the registered artifact instead of
   re-staging it.
 
 Raw truth only. Every entry is a registry-resolved :class:`ArtifactVersion` reached
@@ -95,7 +94,7 @@ def artifact_id_uri(artifact_id: str) -> str:
     """The id-addressed artifact URI (``artifact://artifact_<hex>``).
 
     This is the grammar the trusted A2UI catalog validates for a
-    ``clio.time-series.v1`` ``dataUri`` / ``clio.artifact.v1`` ``uri`` and the one
+    ``clio.chart.v1`` ``dataUri`` / ``clio.artifact.v1`` ``uri`` and the one
     the bounded table-preview route resolves. It is deliberately NOT the logical
     version URI (``artifact://<ws>/<name>@vN``) the ``resource_link`` part carries:
     that one addresses a version chain, this one addresses the immutable version.
@@ -263,7 +262,7 @@ def merge_artifact_identity(model_text: str, entries: list[dict[str, str]]) -> s
     (``create_artifact``) is returned untouched: the tool's own declaration wins.
     Any other shape (a bare string, a list, unparseable text) keeps its bytes and
     gains one trailing ``[artifacts]`` note — the same visible-annotation idiom the
-    boundary's ``[path-repair]`` note already uses, so the fact is never invisible.
+    boundary's ``[clio: path_hint]`` note already uses, so the fact is never invisible.
     """
 
     if not entries or not isinstance(model_text, str):

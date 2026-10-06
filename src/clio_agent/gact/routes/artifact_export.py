@@ -35,6 +35,7 @@ from clio_agent.gact.artifacts.export import (
     build_session_bundle,
     register_export_gc_roots,
 )
+from clio_agent.gact.routes.content_disposition import content_disposition
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -65,7 +66,7 @@ def _zip_response(bundle: ExportBundle, *, filename: str) -> Response:
     return Response(
         content=payload,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 

@@ -31,9 +31,9 @@ def _recorded(name: str) -> dict[str, Any]:
     return json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
 
 
-def test_the_registry_declares_exactly_the_three_sdks() -> None:
-    assert USER_UPDATABLE_COMPONENTS == {"openai-codex", "openai-codex-cli-bin", "claude-agent-sdk"}
-    assert PROVIDER_COMPONENTS["codex"].lockstep is True
+def test_the_registry_declares_exactly_the_codex_runtime_and_the_claude_sdk() -> None:
+    assert USER_UPDATABLE_COMPONENTS == {"openai-codex-cli-bin", "claude-agent-sdk"}
+    assert PROVIDER_COMPONENTS["codex"].distributions == ("openai-codex-cli-bin",)
 
 
 def test_windows_skips_claude_releases_without_a_windows_wheel() -> None:
@@ -58,19 +58,23 @@ def test_linux_gets_the_newest_claude_release() -> None:
 
 
 def test_prereleases_yanked_files_and_python_mismatches_are_not_installable() -> None:
-    payload = copy.deepcopy(_recorded("openai-codex"))
+    payload = copy.deepcopy(_recorded("openai-codex-cli-bin"))
     wheel = copy.deepcopy(payload["releases"]["0.157.1"][0])
     payload["releases"]["0.158.0rc1"] = [
-        {**wheel, "filename": "openai_codex-0.158.0rc1-py3-none-any.whl"}
+        {**wheel, "filename": "openai_codex_cli_bin-0.158.0rc1-py3-none-any.whl"}
     ]
     payload["releases"]["0.158.0"] = [
-        {**wheel, "filename": "openai_codex-0.158.0-py3-none-any.whl", "yanked": True}
+        {**wheel, "filename": "openai_codex_cli_bin-0.158.0-py3-none-any.whl", "yanked": True}
     ]
     payload["releases"]["0.159.0"] = [
-        {**wheel, "filename": "openai_codex-0.159.0-py3-none-any.whl", "requires_python": ">=3.14"}
+        {
+            **wheel,
+            "filename": "openai_codex_cli_bin-0.159.0-py3-none-any.whl",
+            "requires_python": ">=3.14",
+        }
     ]
     index = pypi.parse_release_index(
-        "openai-codex", payload, supported=WINDOWS, python_version="3.12.0"
+        "openai-codex-cli-bin", payload, supported=WINDOWS, python_version="3.12.0"
     )
     assert index.latest == "0.157.1"
 
@@ -78,7 +82,7 @@ def test_prereleases_yanked_files_and_python_mismatches_are_not_installable() ->
 def test_a_reply_without_releases_is_a_typed_failure() -> None:
     with pytest.raises(pypi.PyPILookupError) as caught:
         pypi.parse_release_index(
-            "openai-codex", {"info": {}}, supported=WINDOWS, python_version="3.12.0"
+            "openai-codex-cli-bin", {"info": {}}, supported=WINDOWS, python_version="3.12.0"
         )
     assert caught.value.code == "pypi_malformed"
 
@@ -103,19 +107,19 @@ def test_lookup_serves_the_cache_within_the_ttl_and_refetches_after(
 
     def _fetch(url: str) -> dict[str, Any]:
         fetched.append(url)
-        return _recorded("openai-codex")
+        return _recorded("openai-codex-cli-bin")
 
     clock = _Clock()
     lookup = pypi.ReleaseLookup(fetch=_fetch, clock=clock)
-    assert lookup.releases("openai-codex").latest == "0.157.1"
-    lookup.releases("openai-codex")
+    assert lookup.releases("openai-codex-cli-bin").latest == "0.157.1"
+    lookup.releases("openai-codex-cli-bin")
     assert len(fetched) == 1
-    lookup.releases("openai-codex", refresh=True)
+    lookup.releases("openai-codex-cli-bin", refresh=True)
     assert len(fetched) == 2
     clock.now += 61
-    lookup.releases("openai-codex")
+    lookup.releases("openai-codex-cli-bin")
     assert len(fetched) == 3
-    assert fetched[0].endswith("/openai-codex/json")
+    assert fetched[0].endswith("/openai-codex-cli-bin/json")
 
 
 def test_a_failure_is_cached_too_and_raised_typed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,7 +133,7 @@ def test_a_failure_is_cached_too_and_raised_typed(monkeypatch: pytest.MonkeyPatc
     lookup = pypi.ReleaseLookup(fetch=_fetch, clock=_Clock())
     for _ in range(2):
         with pytest.raises(pypi.PyPILookupError) as caught:
-            lookup.releases("openai-codex")
+            lookup.releases("openai-codex-cli-bin")
         assert caught.value.code == "pypi_unreachable"
     assert calls["n"] == 1
 
@@ -176,7 +180,7 @@ def local_index() -> Iterator[str]:
 def test_http_fetch_reads_the_json_api(monkeypatch: pytest.MonkeyPatch, local_index: str) -> None:
     monkeypatch.setattr(pypi, "index_url", lambda: local_index)
     lookup = pypi.ReleaseLookup()
-    assert lookup.releases("openai-codex").latest == "0.157.1"
+    assert lookup.releases("openai-codex-cli-bin").latest == "0.157.1"
 
 
 @pytest.mark.parametrize(
@@ -194,7 +198,7 @@ def test_http_fetch_failures_are_typed(
 def test_an_unreachable_index_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pypi, "index_url", lambda: "http://127.0.0.1:9")
     with pytest.raises(pypi.PyPILookupError) as caught:
-        pypi.ReleaseLookup().releases("openai-codex")
+        pypi.ReleaseLookup().releases("openai-codex-cli-bin")
     assert caught.value.code == "pypi_unreachable"
 
 
@@ -211,7 +215,7 @@ def _recorded_lookup() -> pypi.ReleaseLookup:
     return pypi.ReleaseLookup(fetch=lambda url: _recorded(url.rstrip("/").split("/")[-2]))
 
 
-def test_codex_reports_an_update_for_the_whole_lockstep_group(
+def test_codex_reports_an_update_for_the_codex_runtime(
     monkeypatch: pytest.MonkeyPatch, windows_tags: None
 ) -> None:
     monkeypatch.setattr(status, "installed_version", lambda _name: "0.147.0")
@@ -222,29 +226,9 @@ def test_codex_reports_an_update_for_the_whole_lockstep_group(
     assert wire["target_version"] == "0.157.1"
     assert [
         (c["distribution"], c["installed_version"], c["latest_version"]) for c in wire["components"]
-    ] == [
-        ("openai-codex", "0.147.0", "0.157.1"),
-        ("openai-codex-cli-bin", "0.147.0", "0.157.1"),
-    ]
+    ] == [("openai-codex-cli-bin", "0.147.0", "0.157.1")]
     assert wire["release_notes_url"].startswith("https://github.com/openai/codex")
     assert wire["error"] is None
-
-
-def test_the_lockstep_target_is_the_newest_version_every_member_can_install(
-    monkeypatch: pytest.MonkeyPatch, windows_tags: None
-) -> None:
-    """A newer openai-codex whose cli-bin has no wheel here is not offered."""
-    monkeypatch.setattr(status, "installed_version", lambda _name: "0.147.0")
-    codex = copy.deepcopy(_recorded("openai-codex"))
-    wheel = copy.deepcopy(codex["releases"]["0.157.1"][0])
-    codex["releases"]["0.158.0"] = [{**wheel, "filename": "openai_codex-0.158.0-py3-none-any.whl"}]
-
-    def _fetch(url: str) -> dict[str, Any]:
-        name = url.rstrip("/").split("/")[-2]
-        return codex if name == "openai-codex" else _recorded(name)
-
-    result = status.provider_component_status("codex", lookup=pypi.ReleaseLookup(fetch=_fetch))
-    assert result is not None and result.target_version == "0.157.1"
 
 
 def test_claude_on_windows_targets_the_newest_release_with_a_windows_wheel(

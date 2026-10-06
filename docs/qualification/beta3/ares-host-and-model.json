@@ -1,0 +1,93 @@
+{
+  "facts": {
+    "target_id": "ares-beta-3-node",
+    "label": "Ares beta-3 node",
+    "os": "linux",
+    "arch": "x86_64",
+    "accelerator": "none",
+    "docker_available": true,
+    "docker_installed": true,
+    "uv_available": true,
+    "transport_state": "connected",
+    "container_runtimes": [
+      {
+        "name": "docker",
+        "installed": true,
+        "usable": true,
+        "version": "29.1.3",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "podman",
+        "installed": true,
+        "usable": true,
+        "version": "3.4.4",
+        "reason": null,
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      },
+      {
+        "name": "apptainer",
+        "installed": false,
+        "usable": false,
+        "version": "",
+        "reason": "not_installed",
+        "failure": null,
+        "detail": "",
+        "rootless": false
+      }
+    ],
+    "identity": {
+      "uid": 1008,
+      "gid": 65534
+    },
+    "home": "/home/jcernudagarcia",
+    "agent_data_root": "/home/jcernudagarcia/.local/share/clio-agent",
+    "hostname": "ares-comp-27"
+  },
+  "model": {
+    "id": "776212351f94adc9aad41b4f",
+    "repository": "sshleifer/tiny-gpt2",
+    "requested_revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "revision": "5f91d94bd9cd7190a9f3216ff93cd1dd95f2c7be",
+    "destination": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/models/tiny-gpt2",
+    "state": "ready",
+    "phase": "Model available; choose a runtime to serve it",
+    "bytes_done": 4734064,
+    "bytes_total": 4734064,
+    "created_at": 1791100989.8084671,
+    "updated_at": 1791101009.3326955,
+    "error": null
+  },
+  "storage": {
+    "target_id": "ares-beta-3-node",
+    "host_label": "Ares beta-3 node",
+    "hostname": "ares-comp-27",
+    "requested": {
+      "root": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle",
+      "models": "",
+      "service_data": "",
+      "captures": "",
+      "temporary": ""
+    },
+    "effective": {
+      "root": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle",
+      "models": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/models",
+      "service_data": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/services",
+      "captures": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/captures",
+      "temporary": "/mnt/common/jcernudagarcia/clio-beta3-qualification/ares-comp-27/model-lifecycle/tmp"
+    },
+    "defaults": {
+      "root": "/home/jcernudagarcia/.local/share/clio-agent",
+      "models": "/home/jcernudagarcia/.local/share/clio-agent/models",
+      "service_data": "/home/jcernudagarcia/.local/share/clio-agent/services",
+      "captures": "/home/jcernudagarcia/.local/share/clio-agent/captures",
+      "temporary": "/home/jcernudagarcia/.local/share/clio-agent/tmp"
+    }
+  },
+  "allocation_id": "24356"
+}

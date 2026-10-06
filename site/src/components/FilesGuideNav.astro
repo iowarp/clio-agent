@@ -1,0 +1,18 @@
+---
+const { active } = Astro.props as { active: string };
+const sections = [
+  ['overview', 'Overview', '/docs/files/'],
+  ['attach', 'Attach', '/docs/files/attach/'],
+  ['reference', '@ references', '/docs/files/references/'],
+  ['connect', 'Connect sources', '/docs/files/connect/'],
+  ['mapping', 'Download or link', '/docs/files/download-or-link/'],
+  ['manage', 'Manage sources', '/docs/files/manage/'],
+];
+---
+<nav class="widget-section-tabs" aria-label="Files and sources guides">
+  {sections.map(([id, label, href]) => <a href={href} aria-current={active === id ? 'page' : undefined}>{label}</a>)}
+</nav>
+<style>
+  nav { flex-wrap: wrap; overflow-x: visible; }
+  nav a { padding: .5rem .7rem; }
+</style>

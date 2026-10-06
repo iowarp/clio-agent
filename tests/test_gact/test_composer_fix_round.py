@@ -103,9 +103,13 @@ def test_attachment_only_steer_reaches_the_model_and_settles(tmp_path: Path) -> 
         steer_id = accepted.json()["message_id"]
 
         with _active_turn(app, sid):
-            block = drain_active_session_inbox(app)
+            arrivals = drain_active_session_inbox(app)
 
-        assert USER_STEER_MARKER in block, "an attachment-only steer never reached the model"
+        assert [source for source, _ in arrivals] == ["steer"], (
+            "an attachment-only steer never reached the model"
+        )
+        block = arrivals[0][1]
+        assert USER_STEER_MARKER in block
         assert "evidence.md" in block, "the steer block does not reference the attached resource"
 
         settled = {row["id"]: row for row in _user_messages(client, sid)}[steer_id]
@@ -190,9 +194,9 @@ def test_a_cancelled_steer_is_never_surfaced_by_a_racing_drain(tmp_path: Path) -
             inbox_for(app, sid).put(event)
 
         with _active_turn(app, sid):
-            block = drain_active_session_inbox(app)
+            arrivals = drain_active_session_inbox(app)
 
-        assert block == "", "a cancelled steer was still surfaced to the model"
+        assert arrivals == [], "a cancelled steer was still surfaced to the model"
         assert not inbox_for(app, sid).peek_nonempty()
         assert app.state.message_intents.get_pending(sid, steer_id).state == "cancelled"  # type: ignore[union-attr]
 
@@ -825,7 +829,7 @@ def test_deleting_a_pending_steer_message_retires_its_intent(tmp_path: Path) -> 
         assert client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"] == []
 
         with _active_turn(app, sid):
-            assert drain_active_session_inbox(app) == ""
+            assert drain_active_session_inbox(app) == []
 
         retired = _projected(app, sid, "pending_steer.cancelled")
         assert retired and retired[0]["entity_id"] == steer_id

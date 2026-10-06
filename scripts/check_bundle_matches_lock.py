@@ -60,7 +60,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: The extras the bundled runtime installs. MUST equal ``BUNDLE_EXTRAS`` in
 #: install/build-gact-runtime.sh and .ps1 (a test enforces this).
-BUNDLE_EXTRAS: tuple[str, ...] = ("argonne", "desktop")
+BUNDLE_EXTRAS: tuple[str, ...] = ("argonne", "desktop", "flowcept")
 
 #: The targets clio-bundles.yml builds the BUNDLED variant for (its matrix
 #: excludes x86_64-apple-darwin and aarch64-pc-windows-msvc: iowarp-core ships no
@@ -77,7 +77,7 @@ BUNDLE_TARGETS: tuple[str, ...] = (
 BUNDLE_MACOSX_DEPLOYMENT_TARGET = "14.0"
 
 #: The bundled runtime's interpreter version (build-gact-runtime default).
-BUNDLE_PYTHON = "3.12"
+BUNDLE_PYTHON = "3.13"
 
 #: Installed distributions that are not lock-resolved packages:
 #: ``clio-agent`` is installed from the local checkout (the lock has no
@@ -91,11 +91,11 @@ LOCAL_PROJECTS = frozenset({"clio-agent", "web-mcp"})
 #: are listed by name in the check's output, never silently skipped.
 INTERPRETER_SEEDED = frozenset({"pip"})
 
-#: The ONLY user-updatable components: provider SDKs a runtime updates in place,
+#: The ONLY user-updatable components: provider components a runtime updates in place,
 #: past the lock, from the provider panel. MUST equal
 #: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
 #: test enforces this; this script is stdlib-only and cannot import it).
-USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex", "openai-codex-cli-bin", "claude-agent-sdk"})
+USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex-cli-bin", "claude-agent-sdk"})
 
 _RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
 
@@ -315,6 +315,10 @@ def resolve_bundle(project: Path) -> int:
                         BUNDLE_PYTHON,
                         "--python-platform",
                         target,
+                        # Rasterio source builds link to runner-local GDAL,
+                        # which cannot be assumed on a relocated Desktop install.
+                        "--only-binary",
+                        "rasterio",
                         str(requirements),
                         "-o",
                         str(Path(tmp) / f"{target}.txt"),

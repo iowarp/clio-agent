@@ -229,13 +229,16 @@
               "fs_apply_edit_write",
               "fs_propose_edit",
               "fs_read_file",
+              "prepare_document",
+              "prepare_document_runtime",
+              "prepare_execution_runtime",
               "shell_bash",
               "view_image",
               "view_pdf"
             ]
           },
           "prompt_resolution": {
-            "checksum": "be97f9edf62fe19554939dda2afaaf4224323d88a7542c3b485f562a1a9d73d3",
+            "checksum": "fdaef5a4ccf87fea4ed036c7502736dd2159234119447a3800ae0d5b46faaf27",
             "id": "clio.chat",
             "profile": "default",
             "scope": "builtin",

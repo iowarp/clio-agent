@@ -75,7 +75,7 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
-from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
+from clio_agent.gact.routes.codex_readiness import apply_codex_readiness_gate, await_startup_check
 from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
@@ -139,12 +139,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Codex."""
 
-        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
         from clio_agent.providers.codex.errors import (  # noqa: PLC0415
             CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not CodexCredentialStore().is_signed_in():
+        if not direct_signed_in():
             return (
                 "auth_required",
                 CODEX_AUTHENTICATION_ERROR_MESSAGE,
@@ -475,8 +475,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             if req.provider != "lm_studio" or req.context_length <= 0:
                 return
 
-            import requests  # noqa: PLC0415
-
             root = _lm_studio_api_root(req.api_base)
             if not root:
                 raise RuntimeError("LM Studio api_base is empty")
@@ -487,56 +485,15 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # box wedges when the backend serves them concurrently, so serialize.
             _lm_studio_parallel = int(req.parallel) if req.parallel and req.parallel > 0 else 1
 
-            def _already_loaded_with_requested_context() -> str:
-                try:
-                    response = requests.get(
-                        f"{root}/api/v1/models",
-                        headers=headers,
-                        timeout=10,
-                    )
-                    if response.status_code >= 400:
-                        return ""
-                    payload = response.json()
-                except Exception:  # noqa: BLE001 - unparseable instance response yields empty id
-                    return ""
+            from clio_agent.gact import lm_studio_load  # noqa: PLC0415
 
-                models = payload.get("models")
-                if not isinstance(models, list):
-                    return ""
-                for item in models:
-                    if not isinstance(item, dict):
-                        continue
-                    key = str(item.get("key") or "")
-                    loaded = item.get("loaded_instances")
-                    if not isinstance(loaded, list):
-                        continue
-                    for instance in loaded:
-                        if not isinstance(instance, dict):
-                            continue
-                        instance_id = str(instance.get("id") or "")
-                        if req.model not in {key, instance_id}:
-                            continue
-                        config = instance.get("config")
-                        if not isinstance(config, dict):
-                            continue
-                        try:
-                            loaded_context = int(config.get("context_length") or 0)
-                        except (TypeError, ValueError):
-                            loaded_context = 0
-                        try:
-                            loaded_parallel = int(config.get("parallel") or 0)
-                        except (TypeError, ValueError):
-                            loaded_parallel = 0
-                        # Reuse only if BOTH the context and the concurrency cap
-                        # already match what we'd load — otherwise a stale
-                        # parallel=4 instance would be kept and keep stalling.
-                        if loaded_context == req.context_length and (
-                            loaded_parallel == _lm_studio_parallel
-                        ):
-                            return instance_id
-                return ""
-
-            loaded_instance_id = _already_loaded_with_requested_context()
+            loaded_instance_id = lm_studio_load.loaded_instance_matching(
+                root,
+                headers,
+                model=req.model,
+                context_length=req.context_length,
+                parallel=_lm_studio_parallel,
+            )
             if loaded_instance_id:
                 _release_owned_lm_studio_instance(
                     app,
@@ -546,10 +503,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return
 
             _release_owned_lm_studio_instance(app, raise_on_error=True)
-            response = requests.post(
-                f"{root}/api/v1/models/load",
-                headers=headers,
-                json={
+            # Waited for while LM Studio stays responsive (no REST load progress exists).
+            response = lm_studio_load.load_model(
+                root,
+                headers,
+                {
                     "model": req.model,
                     "context_length": req.context_length,
                     # LM Studio's "Max Concurrent Predictions". The agent issues
@@ -567,7 +525,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "flash_attention": _lmstudio_flash_attention_enabled(),
                     "echo_load_config": True,
                 },
-                timeout=180,
             )
             if response.status_code >= 400:
                 raise RuntimeError(
@@ -629,6 +586,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ) from auth_exc
 
             is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
+            if is_codex or is_cc:
+                await await_startup_check(app)
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 provider_id=req.provider_id,
@@ -642,7 +601,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
                 codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
-                codex_variant=(req.variant or "direct").lower() if is_codex else "",  # type: ignore[arg-type]
             )
             if is_cc:
                 status, message, verified, default_model = _claude_code_readiness()
@@ -675,11 +633,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     cfg.model = default_model
             if is_codex:
                 await apply_codex_readiness_gate(cfg, req, _codex_readiness)
-            # Per-provider handshake: discover connectivity + per-model config and
-            # fold it into cfg — context-aware max_tokens (replacing the static ALCF
-            # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
-            # and the queryable chosen_context. Never block a bind on a handshake
-            # failure: fall back to the static config unchanged.
+            # Per-provider handshake folds per-model config into cfg (context-aware
+            # max_tokens, capability flags); a handshake failure keeps the static config.
             handshake_report = None
             try:
                 from clio_agent.providers.handshake import (  # noqa: PLC0415
@@ -726,7 +681,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # swaps cover the LM-dependent surface:
             #   * _provider_config   -> health/config surfaces the new provider
             #   * _main_lm           -> chat + answer synthesis use the new lm
-            #   * _planner_lm        -> planner runs with the new lm
             #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
             # The main agent binds these via ``dspy.context`` on every call; the
             # process-global dspy default is left untouched (design §5/§6).

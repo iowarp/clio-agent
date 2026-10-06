@@ -129,7 +129,7 @@ def test_enter_mode_effect_sets_plan_and_enforcement_applies(tmp_path: Path) -> 
     """Invoking a skill declaring effect enter_mode:plan sets session.mode=plan via the real
     path; the plan-mode reminder/enforcement machinery then applies."""
 
-    from clio_agent.gact.plan_mode import PLAN_MODE_REMINDER_MARKER, inject_plan_mode_reminder
+    from clio_agent.gact.plan_mode import PLAN_MODE_REMINDER_MARKER, plan_mode_reminder
 
     ws = tmp_path / "ws"
     _write_skill(
@@ -153,7 +153,7 @@ def test_enter_mode_effect_sets_plan_and_enforcement_applies(tmp_path: Path) -> 
     assert "skill effect" in out and "PLAN_BODY_MARKER." in out
     # The plan-mode enforcement machinery now applies to this session.
     fresh = app.state.sessions.get(sess.id)
-    reminder = inject_plan_mode_reminder(app, sess.id, fresh, "USER TURN")
+    reminder = plan_mode_reminder(app, sess.id, fresh)
     assert PLAN_MODE_REMINDER_MARKER in reminder
 
 

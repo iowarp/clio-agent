@@ -36,6 +36,7 @@ from clio_agent.gact.agents.blueprint_commission import (
     emit_commission_started,
     resolve_commission_target,
 )
+from clio_agent.gact.agents.module_variants import spawn_scope_with_strategy
 from clio_agent.gact.agents.spawn_completion import (
     completion_payload as _completion_payload,
 )
@@ -404,6 +405,7 @@ def build_spawn_runtime_tools(
         group_size: int = 0,
         input_task_ids: list[str] | None = None,
         blueprint_id: str | None = None,
+        strategy: dict | None = None,
     ) -> str:
         """Spawn one declared child through the invoker + emit the started wire
         parity. ``fanout_bound`` (> 0) caps how many of THIS parent's concurrent
@@ -435,6 +437,7 @@ def build_spawn_runtime_tools(
             )
             if target_scope is None:
                 target_scope = _execution_blueprint_child_scope(app, session_id, agent_def)
+            target_scope = spawn_scope_with_strategy(target_scope, strategy, agent_id=child_id)
             briefing, evidence_task_ids = resolve_input_task_evidence(
                 app, session_id, task, input_task_ids
             )
@@ -521,6 +524,7 @@ def build_spawn_runtime_tools(
         placement: str | None = None,
         input_task_ids: list[str] | None = None,
         blueprint_id: str | None = None,
+        strategy: dict | None = None,
     ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
@@ -534,7 +538,8 @@ def build_spawn_runtime_tools(
         critic that needs two researchers' complete material) without you ever
         holding their full text: each id must be one of your own spawned tasks
         and already finished, or the spawn is refused with a typed reason and no
-        child is created."""
+        child is created. For a task worth several tries pass strategy={variant:
+        "best_of_n"|"refine", n, rubric, threshold}: the child makes n tries, judged."""
 
         return _do_spawn(
             agent,
@@ -542,6 +547,7 @@ def build_spawn_runtime_tools(
             placement=placement,
             input_task_ids=input_task_ids,
             blueprint_id=blueprint_id,
+            strategy=strategy,
         )
 
     def wait_agent_tasks(task_ids: list[str]) -> str:
@@ -755,6 +761,7 @@ def build_spawn_runtime_tools(
                         group_size=group_size,
                         input_task_ids=input_task_ids,
                         blueprint_id=blueprint_id,
+                        strategy=(entry or {}).get("strategy") or None,
                     )
                 )
             )

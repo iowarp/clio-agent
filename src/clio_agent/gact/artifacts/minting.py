@@ -1,9 +1,4 @@
-"""Artifact identity hashing and minting for tool, harness, and pack outputs.
-
-The funnel emits durable artifact events, updates projections, and retains
-stat-pinned evidence when an output exceeds the streaming hash threshold. The
-model is never load-bearing here.
-"""
+"""Artifact identity hashing and minting for tool, harness, and pack outputs."""
 
 from __future__ import annotations
 
@@ -203,7 +198,11 @@ def _contained(path: Path, root: Path) -> bool:
         resolved = path.expanduser().resolve(strict=False)
     except OSError:
         return False
-    return _is_relative_to(resolved, root)
+    from clio_agent import paths  # noqa: PLC0415
+
+    return _is_relative_to(resolved, root) or _is_relative_to(
+        resolved, paths.workspace_state_dir(root).resolve()
+    )
 
 
 def artifact_name_for_path(path: str | Path) -> str:

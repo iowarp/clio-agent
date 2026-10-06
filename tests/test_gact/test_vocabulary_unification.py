@@ -23,6 +23,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._harness import emit_live_text, install_scripted_module
+
 from .test_turn_transcript_equivalence import (
     _build,
     _complete_turn,
@@ -54,13 +56,12 @@ def test_streaming_turn_emits_message_parts_and_no_transcript_twins(
     """A streamed provider-thinking + reasoning + answer turn: message.part.*
     only, no turn.text.delta / turn.trace.delta twins."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Weighing the options...", None, "provider_thinking:anthropic")
-        await emit_chunk("I should answer directly. ", None, "reasoning")
-        await emit_chunk("The answer ", None, "answer")
-        await emit_chunk("is 42.", None, "answer")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Weighing the options...", "", "provider_thinking:anthropic")
+        emit_live_text("I should answer directly. ", "", "reasoning")
+        emit_live_text("The answer ", "", "answer")
+        emit_live_text("is 42.", "", "answer")
         return _Pred(
             answer="The answer is 42.",
             selected_expert="code_expert",
@@ -69,7 +70,7 @@ def test_streaming_turn_emits_message_parts_and_no_transcript_twins(
             route_reason="planner selected code expert",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "vocab_stream", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]

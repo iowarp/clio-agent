@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from clio_agent.gact import blueprint_catalog as catalog_service
 from clio_agent.gact.routes import blueprint_catalog, catalog, interactions
 
 
@@ -64,9 +65,14 @@ async def test_catalog_discovery_does_not_block_other_requests(
     def discover(*args: Any, **kwargs: Any) -> list[Any]:
         entered.set()
         assert release.wait(5), "test did not release catalog discovery"
-        return [SimpleNamespace(to_wire=lambda: {"id": "test-blueprint"})]
+        return [
+            SimpleNamespace(
+                to_wire=lambda: {"id": "test-blueprint", "identity": "global::test::test-blueprint"}
+            )
+        ]
 
     monkeypatch.setattr(blueprint_catalog, "discover_agent_blueprints", discover)
+    monkeypatch.setattr(catalog_service, "discover_agent_blueprints", discover)
     monkeypatch.setattr(blueprint_catalog, "_runtime_workspace_catalog_cwd", lambda *a, **k: None)
     blueprint_catalog.register_blueprint_catalog_route(app)
 
@@ -87,7 +93,13 @@ async def test_catalog_discovery_does_not_block_other_requests(
             release.set()
             completed = await pending
         assert completed.status_code == 200
-        assert completed.json()["agent_blueprints"] == [{"id": "test-blueprint"}]
+        assert completed.json()["agent_blueprints"] == [
+            {
+                "id": "test-blueprint",
+                "identity": "global::test::test-blueprint",
+                "materialized": True,
+            }
+        ]
 
 
 @pytest.mark.asyncio

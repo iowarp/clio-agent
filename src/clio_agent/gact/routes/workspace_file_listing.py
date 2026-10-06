@@ -11,7 +11,6 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from clio_agent.gact.resource_materialization import MANAGED_INPUT_DIRECTORY
 from clio_agent.gact.resource_mime import detect_media_type
 from clio_agent.gact.routes.workspace_file_policy import (
     is_internal_workspace_file_directory,
@@ -123,7 +122,7 @@ async def collect_workspace_file_entries(
             relative = str(relative_path)
             if skip_workspace_file_directory(name):
                 continue
-            if relative_path == MANAGED_INPUT_DIRECTORY:
+            if relative_path == Path(".clio") / "inputs":
                 # Surfaced separately below as Sources/<resource_id>/<name>.
                 continue
             if exclude_service_storage and is_internal_workspace_file_directory(name):
@@ -165,6 +164,16 @@ async def collect_workspace_file_entries(
 
     await asyncio.to_thread(walk, root)
 
+    sources = getattr(app.state, "connected_storage", None)
+    if sources is not None:
+        from clio_agent.gact.storage.workspace_files import connected_file_entries
+
+        connected, sources_truncated = await asyncio.to_thread(
+            connected_file_entries, sources, workspace_id, max(0, remaining)
+        )
+        entries.extend(connected)
+        truncated = truncated or sources_truncated
+
     store = getattr(app.state, "resource_store", None)
     if store is None:
         return WorkspaceFileWalk(entries=entries, truncated=truncated)
@@ -174,7 +183,13 @@ async def collect_workspace_file_entries(
             continue
         source_path = Path(record.workspace_path).expanduser().resolve(strict=False)
         try:
-            source_relative = source_path.relative_to(resolved_root)
+            from clio_agent.paths import workspace_state_dir
+
+            if source_path.is_relative_to(resolved_root):
+                source_relative = source_path.relative_to(resolved_root)
+            else:
+                source_relative = source_path.relative_to(workspace_state_dir(root).resolve())
+                source_relative = Path(".clio-agent/local") / source_relative
             stat = source_path.stat()
         except (OSError, ValueError):
             continue
@@ -194,6 +209,37 @@ async def collect_workspace_file_entries(
             }
         )
     return WorkspaceFileWalk(entries=entries, truncated=truncated)
+
+
+def resolve_managed_input(app: Any, workspace_id: str, root: Path, path: str) -> Path | None:
+    """Resolve a virtual Files entry only for a registered source in this workspace."""
+    from clio_agent.paths import workspace_state_dir
+
+    sources = getattr(app.state, "connected_storage", None)
+    if sources is not None:
+        from clio_agent.gact.storage.workspace_files import resolve_connected_input
+
+        connected = resolve_connected_input(sources, workspace_id, path)
+        if connected is not None:
+            return connected
+
+    prefix = Path(".clio-agent/local")
+    requested = Path(path)
+    if not requested.is_relative_to(prefix) or ".." in requested.parts:
+        return None
+    storage = workspace_state_dir(root).resolve()
+    target = (storage / requested.relative_to(prefix)).resolve()
+    if not target.is_relative_to(storage / "inputs"):
+        return None
+    store = getattr(app.state, "resource_store", None)
+    if store is not None and any(
+        record.state == "ready"
+        and record.workspace_path
+        and Path(record.workspace_path).resolve() == target
+        for record in store.list(workspace_id)
+    ):
+        return target
+    return None
 
 
 __all__ = ["WorkspaceFileWalk", "collect_workspace_file_entries", "workspace_file_media_type"]

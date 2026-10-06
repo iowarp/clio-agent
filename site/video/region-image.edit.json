@@ -1,0 +1,19 @@
+{
+  "source":"takes/region-20261003-r12.limited.mp4",
+  "shots":[
+    {"from":0.2,"to":13.625,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"from":13.625,"to":17.486,"speed":2,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"from":17.486,"to":21.324,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"from":21.324,"to":106.764,"speed":8,"caption":"Actual agent work - 8x speed","crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"from":106.764,"to":111.55,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"from":111.55,"to":115.2},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":0.2,"to":1.5},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":1.5,"to":2.422,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":2.422,"to":10.88,"speed":3,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":10.88,"to":13.702,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":13.702,"to":75.492,"speed":8,"caption":"Actual agent review - 8x speed","crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-geographic-review2.limited.mp4","from":75.492,"to":77.3,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-result-fitted.limited.mp4","from":0.2,"to":2.35,"crop":{"x":205,"y":55,"width":1075,"height":775}},
+    {"source":"takes/region-20261003-r12-result-fitted.limited.mp4","from":2.35,"to":7.8}
+  ]
+}

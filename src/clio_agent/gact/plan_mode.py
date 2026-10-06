@@ -5,7 +5,7 @@ Owner module for the plan-mode PROMPT surface (P1.2 #1064) and the plan-file lif
 discarded (``builders.py``), so the model got ZERO signal it was in plan mode — and any signal
 placed in the system prompt is lost once the KV-cache prefix is compacted. This module
 re-injects the plan-mode contract into the model's *turn input* each turn (exactly like
-``enrichment.inject_pending_agent_task_notifications`` re-injects observe-later results), so it
+``enrichment.pending_task_notifications`` re-injects observe-later results), so it
 survives compaction without invalidating the prefix.
 
 **Plan-file lifecycle (P1.3 #1065).** clio owns the plan file's PATH, EXISTENCE, and GUIDANCE —
@@ -29,7 +29,7 @@ path.
 
 The block is SERVER grounding prepended to the turn input — never user text, never model output
 — so it carries a stable, greppable marker (:data:`PLAN_MODE_REMINDER_MARKER`, the #881 marker
-discipline). ``turn.py`` calls :func:`inject_plan_mode_reminder` from its enrichment step.
+discipline). ``turn.py`` calls :func:`plan_mode_reminder` from its enrichment step.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent import paths
 from clio_agent.gact.artifacts.observer_bridge import observer_call_id
 from clio_agent.gact.plan_review import ensure_owned_plan_directory, plan_review_content
 from clio_agent.gact.planning import (
@@ -78,20 +79,21 @@ _PLAN_SLUG_MAX_LEN = 60
 
 
 def _session_compaction_count(app: "FastAPI", sid: str) -> int:
-    """Return how many compaction summaries are in this session's live transcript.
+    """Return how many compaction records are in this session's live transcript.
 
-    A compaction (``POST /v1/sessions/{sid}/compact`` or the auto path) appends an assistant
-    message carrying a single ``compaction`` part (SPEC §4.5). Counting those parts gives a
-    monotonic "a compaction happened since the last full plan reminder" signal — the trigger to
-    re-inject the full contract (it would otherwise have been compacted out of the model's view).
+    Every compaction records a summarization injection (``gact.summarization_record``).
+    Counting them gives a monotonic "a compaction happened since the last full plan
+    reminder" signal -- the trigger to re-inject the full contract (it would otherwise
+    have been compacted out of the model's view).
     """
+    from clio_agent.gact.summarization_record import as_summarization  # noqa: PLC0415
 
-    count = 0
-    for msg in app.state.messages.get(sid, []) or []:
-        for part in getattr(msg, "parts", []) or []:
-            if getattr(part, "type", "") == "compaction":
-                count += 1
-    return count
+    return sum(
+        1
+        for msg in app.state.messages.get(sid, []) or []
+        for part in getattr(msg, "parts", []) or []
+        if as_summarization(part) is not None
+    )
 
 
 def _slugify(text: str) -> str:
@@ -154,14 +156,14 @@ def _session_plans_dir(app: "FastAPI", session: Any, *, fallback: Path) -> Path:
 
     active_root = str(get_active_tool_workspace_root() or "").strip()
     if active_root:
-        return (Path(active_root).expanduser() / ".clio" / "plans").resolve(strict=False)
+        return (paths.workspace_state_dir(active_root) / "plans").resolve(strict=False)
 
     workspace_id = str(getattr(session, "workspace_id", "") or "").strip()
     workspaces = getattr(app.state, "workspaces", None)
     workspace = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
     root_path = str(getattr(workspace, "root_path", "") or "").strip()
     if root_path:
-        return (Path(root_path).expanduser() / ".clio" / "plans").resolve(strict=False)
+        return (paths.workspace_state_dir(root_path) / "plans").resolve(strict=False)
     return fallback.resolve(strict=False)
 
 
@@ -183,12 +185,12 @@ def plan_file_exists(session: Any) -> bool:
     return path is not None and Path(path).exists()
 
 
-def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_text: str) -> str:
-    """Prepend the plan-mode reminder to this turn's input when the session is in plan mode.
+def plan_mode_reminder(app: "FastAPI", sid: str, session: Any) -> str:
+    """The plan-mode reminder as this turn's CLIO addition when the session is in plan mode.
 
-    Returns ``enriched_text`` unchanged for every non-plan mode (edit/architect) — the
-    attachment is scoped to ``plan`` for now (P1.2). In plan mode it prepends a reminder block
-    and advances a tiny suppression counter on ``session.metadata`` so the FULL contract is
+    Empty for every non-plan mode (edit/architect) — the addition is scoped to ``plan`` for
+    now (P1.2). In plan mode it returns a reminder block (recorded by the agent loop as its
+    own message) and advances a tiny suppression counter on ``session.metadata`` so the FULL contract is
     injected on the first plan turn, immediately after any compaction, and once per the active
     variant's ``full_interval`` turns (default :data:`clio_agent.gact.planning._DEFAULT_FULL_INTERVAL`);
     a one-line marker is injected on every turn in between. Because it rides the per-turn input
@@ -198,7 +200,7 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
 
     mode = str(getattr(session, "mode", "") or "")
     if mode != "plan":
-        return enriched_text
+        return ""
 
     metadata = getattr(session, "metadata", None)
     state = metadata.get(_PLAN_REMINDER_STATE_KEY) if isinstance(metadata, Mapping) else None
@@ -262,12 +264,8 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
             sid,
             guidance.full_interval,
         )
-    return (
-        _plan_mode_reminder_block(
-            full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
-        )
-        + "\n\n---\n\n"
-        + enriched_text
+    return _plan_mode_reminder_block(
+        full=full, plan_file=plan_file, exists=exists, guidance=guidance, playbook=playbook
     )
 
 
@@ -559,6 +557,10 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
         },
     )
     assistant_message_id = persist_paused_transcript(state)
+    # Retire the paused turn's ledger BEFORE the question becomes answerable: an
+    # answer arriving right after the status event starts the resume turn, whose
+    # transcript a late settle here would close.
+    settle_turn_transcript(state)
     record_user_question(app, question)
     updated = app.state.sessions.update(
         state.sid,
@@ -609,7 +611,6 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             },
         )
     )
-    settle_turn_transcript(state)
     return True
 
 

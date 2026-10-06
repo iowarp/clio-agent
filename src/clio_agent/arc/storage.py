@@ -1,42 +1,32 @@
 """Persistent record backends for ARC.
 
-This module defines the storage seam ARC records go through and the two concrete
-backends that implement it. It is the durable tier beneath the in-memory hot layer
-(``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does NOT do access-pattern-driven
-tier migration -- there is no hot/warm/cold/archive mover here.
+This module defines the storage seam ARC records go through and its one backend:
+clio-core. It is the durable tier beneath the in-memory hot layer (``LRUCache`` +
+``BTreeIndex`` in ``memory.py``).
 
 The seam -- :class:`ARCStore` (a ``Protocol``): ``put(kind, name, data, search_text=...)``
 / ``get(kind, name)`` / ``scan(kind, prefix)`` over opaque ``bytes`` keyed by
-``(kind, name)``. Any backend that satisfies it plugs in.
+``(kind, name)``.
 
-Backends:
-    - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
-      ``<kind>/<name>.msgpack`` record per key plus a ``<kind>/<name>.search``
-      plain-text companion for the degraded keyword-overlap search. Durable on
-      disk; no external process.
-    - :class:`ClioCoreStore` -- the clio-core CTE (Convergent Tiered Environment)
-      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped at
-      interpreter exit via ``atexit``). Its DRAM tier is the live working set backed by
-      a file tier; on-disk recovery is WIP, so for guaranteed disk durability today
-      prefer ``CLIO_ARC_STORE=local``.
-
-Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
-``"cte"`` is the default and degrades to ``LocalFSStore`` only LOUDLY (a typed reason)
-if its binding is absent or fails to init; ``LocalFSStore`` is a silent choice only
-when ``CLIO_ARC_STORE=local`` is selected explicitly.
+:class:`ClioCoreStore` -- the clio-core CTE (Convergent Tiered Environment) binding,
+connecting to a per-user daemon (connect-or-spawn, stopped at interpreter exit via
+``atexit``). clio-core is THE context store: :func:`make_arc_store` raises a typed
+:class:`~clio_agent.arc.init_degradation.ArcStoreUnavailableError` when it cannot be
+brought up; there is no other store.
 """
 
 import atexit
-import base64
 import contextlib
 import logging
 import os
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
+
+from clio_agent import paths
 
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
@@ -46,7 +36,9 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
-from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put
+from clio_agent.arc.batch_put import BatchPutError, PutRecord
+from clio_agent.arc.blob_frame import frame, unframe
+from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -73,6 +65,7 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
 )
 from clio_agent.arc.companion_policy import may_carry_companion
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
+from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
 
 # Per-RPC stall guard (#948 S4): every native op below runs through this so a ZOMBIE
@@ -85,6 +78,7 @@ from clio_agent.arc.rpc_liveness import (
 )
 from clio_agent.arc.runtime_crash import (
     clear_crash_record,
+    daemon_start_work,
     wait_for_spawned_daemon,
     watch_daemon_process,
 )
@@ -105,8 +99,8 @@ from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
-# The logical record families ARC persists (a directory per kind for LocalFSStore;
-# a namespace/key prefix for a clio-core-backed store). Single source of truth.
+# The logical record families ARC persists (a namespace/key prefix in clio-core).
+# Single source of truth.
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
@@ -125,9 +119,8 @@ class ARCStore(Protocol):
 
     A record is addressed by ``(kind, name)``: ``kind`` is one of :data:`ARC_KINDS`; ``name`` is the
     record stem (no extension). The store owns the physical layout and tiering, so ARC never touches
-    the filesystem directly. :class:`LocalFSStore` writes ``<data_dir>/<kind>/<name>.msgpack``; a
-    clio-core backend maps the same ``(kind, name)`` onto namespaced, multi-tier storage. This
-    Protocol is the seam where that backend plugs in.
+    the filesystem directly. clio-core maps ``(kind, name)`` onto namespaced, multi-tier
+    storage.
     """
 
     def put(
@@ -143,6 +136,14 @@ class ARCStore(Protocol):
 
         ``search_text`` (optional) is a plain-text projection of the record for BM25 semantic
         discovery (Thread D); a backend may index it. ``None`` drops any existing companion.
+        """
+        ...
+
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        """Put independent records together (no order between them).
+
+        Every record is attempted; a store that lost any raises
+        :class:`~clio_agent.arc.batch_put.BatchPutError` naming what was written.
         """
         ...
 
@@ -180,117 +181,6 @@ class ARCStore(Protocol):
         ...
 
 
-class LocalFSStore:
-    """Default :class:`ARCStore` backed by the local filesystem.
-
-    Lays records out as ``<data_dir>/<kind>/<name>.msgpack`` -- the historical
-    on-disk format ARC has always used, so existing data directories are read
-    unchanged. This is the extraction of the filesystem code that previously
-    lived inline in ``ARCMemory``; the LSM tree remains a separate subsystem.
-    """
-
-    def __init__(self, data_dir: str | Path):
-        self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._dirs: Dict[str, Path] = {kind: self.data_dir / kind for kind in ARC_KINDS}
-        for directory in self._dirs.values():
-            directory.mkdir(exist_ok=True)
-
-    def _dir(self, kind: str) -> Path:
-        try:
-            return self._dirs[kind]
-        except KeyError:
-            raise ValueError(f"unknown ARC kind {kind!r}; expected one of {ARC_KINDS}") from None
-
-    def put(
-        self,
-        kind: str,
-        name: str,
-        data: bytes,
-        *,
-        tier: str = "warm",
-        search_text: Optional[str] = None,
-    ) -> None:
-        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-            stream_audit("store.put", kind=kind, name=name, size=len(data))
-        directory = self._dir(kind)
-        (directory / f"{name}.msgpack").write_bytes(data)
-        # Plain-text companion sidecar for search (Thread D). ``.search`` so the
-        # ``*.msgpack`` scan never picks it up as a record.
-        companion = directory / f"{name}.search"
-        if search_text is not None:
-            companion.write_text(search_text, encoding="utf-8")
-        elif companion.exists():
-            companion.unlink()
-
-    def get(self, kind: str, name: str) -> Optional[bytes]:
-        path = self._dir(kind) / f"{name}.msgpack"
-        if not path.exists():
-            return None
-        return path.read_bytes()
-
-    def exists(self, kind: str, name: str) -> bool:
-        return (self._dir(kind) / f"{name}.msgpack").exists()
-
-    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
-        for path in self._dir(kind).glob(f"{prefix}*.msgpack"):
-            try:
-                data = path.read_bytes()
-            except OSError:
-                continue
-            yield path.stem, data
-
-    def delete(self, kind: str, name: str) -> None:
-        directory = self._dir(kind)
-        for suffix in (".msgpack", ".search"):
-            path = directory / f"{name}{suffix}"
-            if path.exists():
-                path.unlink()
-
-    def clear(self) -> None:
-        for directory in self._dirs.values():
-            for pattern in ("*.msgpack", "*.search"):
-                for path in directory.glob(pattern):
-                    path.unlink()
-
-    def supports_search(self) -> bool:
-        return False  # naive word-overlap, not BM25 (use ClioCoreStore for real ranking)
-
-    def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
-    ) -> list[tuple[str, float]]:
-        """Degraded fallback: rank by query-word overlap over the ``.search``
-        companions. Good enough for tests / non-clio-core deployments; ClioCoreStore does BM25."""
-        terms = {t for t in query_text.lower().split() if t}
-        if not terms:
-            return []
-        scored: list[tuple[str, float]] = []
-        for path in self._dir(kind).glob(f"{name_prefix}*.search"):
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore").lower()
-            except OSError:
-                continue
-            score = sum(1 for w in text.split() if w in terms)
-            if score > 0:
-                scored.append((path.stem, float(score)))  # .stem drops ".search"
-        scored.sort(key=lambda x: -x[1])
-        return scored[:k]
-
-
-# --------------------------------------------------------------------------- #
-# clio-core shared-runtime lifecycle (connect-or-spawn)
-#
-# clio-core's chimaera runtime is a host-global singleton: ONE runtime binds the RPC
-# port (default 9413) and serves many clients. ``chimaera_init(kClient, True)`` would
-# self-start an *embedded* runtime that dies with the caller and holds the port
-# exclusively (a second clio-agent process then FATALs). Instead it runs as a SHARED
-# standalone daemon: spawn once (``clio_run start``) iff none is up, then every client
-# attaches with ``chimaera_init(kClient, False)`` ("if no clio-core: spawn(); connect()").
-# --------------------------------------------------------------------------- #
-
-_RUNTIME_START_TIMEOUT_S = 30.0
-
-
 @contextlib.contextmanager
 def _runtime_spawn_lock() -> "Iterator[None]":
     """Host-global advisory lock serialising the spawn + refcount decisions.
@@ -324,7 +214,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
         raise RuntimeError(
             f"clio-core runtime launcher (clio_run) not found in "
             f"{iowarp_core.get_bin_dir()!r}; cannot spawn the shared clio-core daemon "  # type: ignore[attr-defined]
-            "(set CLIO_ARC_STORE=local to use the LocalFS backend)."
+            "(reinstall the iowarp-core package; run clio doctor)."
         )
     lib_dir = iowarp_core.get_lib_dir()  # type: ignore[attr-defined]
     env = os.environ.copy()
@@ -510,12 +400,30 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             return daemon_version.resolve_effective_config(
                 state, config_path, on_failure=_deregister_client
             )
+        starting = pidfile_live_pid(_daemon_pidfile())
         with runtime_stop.kill_spawned_daemon_on_failure():
-            _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-            wait_for_spawned_daemon(
-                port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
-            )
-        return config_path
+            if starting is None:
+                _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+                _wait_for_daemon_start(port, state)
+                return config_path
+            # A daemon still starting (left running at a ceiling) is adopted, not doubled.
+            _wait_for_daemon_start(_resolve_runtime_port(running), state)
+        return daemon_version.resolve_effective_config(
+            state, config_path, on_failure=_deregister_client
+        )
+
+
+def _wait_for_daemon_start(port: int, state: Path) -> None:
+    """Wait (progress-based, typed) for the pidfile daemon to bind ``port``."""
+    from clio_agent.arc.daemon_progress import no_progress_window_s  # noqa: PLC0415 - cycle
+
+    wait_for_spawned_daemon(
+        port,
+        alive=_runtime_alive,
+        state_dir=state,
+        work=daemon_start_work(pidfile_live_pid(_daemon_pidfile()), state / "clio-runtime.log"),
+        no_progress_s=no_progress_window_s(),
+    )
 
 
 class ClioCoreStore:
@@ -531,9 +439,11 @@ class ClioCoreStore:
     instance. See ``_ensure_runtime``.
 
     DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold tier
-    (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP upstream; for
-    guaranteed disk durability today, select the LocalFS backend (``CLIO_ARC_STORE=local``).
+    (:func:`default_cte_config_path`).
     """
+
+    _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
+    _attach_verified = False  # the post-attach probe ran (once per process attach)
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
     _init_lock = threading.Lock()
@@ -544,13 +454,17 @@ class ClioCoreStore:
         config_path: str = "",
         log_level: str = "error",
         init_settle_s: float = 0.5,
+        namespace: str = "",
     ) -> None:
         config_path = self._ensure_runtime(config_path, log_level, init_settle_s)  # effective
         import clio_cte_core_ext as cte  # noqa: PLC0415
 
         self._cte = cte
         self._client = cte.get_cte_client()
-        self._tag_ids = TagIds(cte)  # Tag(name) blocks with the GIL: once per kind
+        # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
+        # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
+        self._namespace = namespace
+        self._tag_ids = TagIds(cte, self.tag)  # Tag(name) blocks with the GIL: once per kind
         self._config_path = config_path
         self._log_level = log_level
         # 905: cached once, not re-read per call -- see supports_search() below.
@@ -558,16 +472,28 @@ class ClioCoreStore:
         # Liveness gate (#892): every op below routes through this before the native
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
-        self._gate = LivenessGate(config_path=config_path, log_level=log_level)
-        clio_core_attach.verify_post_attach(
-            self, on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level)
+        # Native CTE tag/read calls hold the GIL. After this client sees daemon
+        # loss, rebuilding its binding in-process can freeze unrelated HTTP work.
+        # Keep the store quarantined until the agent process is restarted.
+        self._gate = LivenessGate(
+            config_path=config_path, log_level=log_level, ttl_s=0.0, auto_recover=False
         )
+        # The probe proves the process's FRESH attach answers one real RPC; it runs once
+        # per attach. A later store must not re-probe: a failing re-probe would release
+        # the shared attach for every store. A daemon lost later is the liveness gate's job.
+        with type(self)._init_lock:
+            if not type(self)._attach_verified:
+                clio_core_attach.verify_post_attach(
+                    self,
+                    on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
+                )
+                type(self)._attach_verified = True
+        self._tag_ids.prewarm(ARC_KINDS)
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
             "fault-tolerant tiers (replication, erasure coding) are configured in the "
-            "CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for disk "
-            "durability today."
+            "CTE config via CLIO_ARC_STORE_CONFIG."
         )
 
     # NOTE: there is deliberately NO instance ``release()`` method. The shared clio-core
@@ -685,8 +611,9 @@ class ClioCoreStore:
     ) -> None:
         # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC,
         # on the async API (clio_core_async_ops) so a stalled daemon cannot hold the GIL.
-        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
-        payload = base64.b64encode(data)
+        # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
+        # its length because a shorter put can leave the old tail (``blob_frame``).
+        payload = frame(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
@@ -699,24 +626,56 @@ class ClioCoreStore:
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
+    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
+        """Put independent records concurrently on the async path (one stall-guarded
+        batch: every ``AsyncPutBlob`` -- bodies and search companions -- is issued, then
+        all are awaited). A stale-companion probe runs only for a record that can carry
+        one and has no text.
+
+        Raises:
+            BatchPutError: Some blob was lost after its bounded retry; the others of the
+                batch were written (named in the error).
+        """
+        blobs: list[tuple[str, bytes]] = []
+        stale: list[str] = []
+        for record in records:
+            payload = frame(record.data)
+            if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
+                stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
+            blobs.append((record.name, payload))
+            if record.search_text is not None:
+                blobs.append((record.name + _SEARCH_SUFFIX, record.search_text.encode("utf-8")))
+            elif may_carry_companion(kind, record.name):
+                stale.append(record.name + _SEARCH_SUFFIX)
+        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs)
+        for companion in stale:
+            guarded_store_rpc(self, "put", store_delete, self, kind, companion)
+        if lost:
+            written = [name for name, _ in blobs if name not in lost]
+            raise BatchPutError(kind, written, dict(lost))
+
+    def tag(self, kind: str) -> str:
+        """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
+        return f"{self._namespace}/{kind}" if self._namespace else kind
+
     @guard_store_op("get")
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        tag = self._cte.Tag(kind)
+        tag = self._cte.Tag(self.tag(kind))
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
-        return base64.b64decode(tag.GetBlob(name, size, 0))
+        return unframe(name, tag.GetBlob(name, size, 0))
 
     @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:
-        return self._cte.Tag(kind).GetBlobSize(name) > 0
+        return self._cte.Tag(self.tag(kind)).GetBlobSize(name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         # scan() is a generator: the decorator would guard only building it, not
         # iterating. Guard the ONE listing RPC inline; per-blob reads use guarded get().
         self._live()
         blobs = call_with_liveness(
-            lambda: list(self._cte.Tag(kind).GetContainedBlobs()),
+            lambda: list(self._cte.Tag(self.tag(kind)).GetContainedBlobs()),
             op_name="scan",
             port=self._gate.port,
             reconnect=self._reconnect,
@@ -743,7 +702,7 @@ class ClioCoreStore:
         # misclassified as a stalled peer; only a single hanging RPC trips the ladder.
         for kind in ARC_KINDS:
             blob_names = guarded_store_rpc(
-                self, "clear", lambda k: list(self._cte.Tag(k).GetContainedBlobs()), kind
+                self, "clear", lambda k: list(self._cte.Tag(self.tag(k)).GetContainedBlobs()), kind
             )
             for blob_name in blob_names:
                 guarded_store_rpc(self, "clear", store_delete, self, kind, blob_name)
@@ -769,7 +728,7 @@ class ClioCoreStore:
 
         blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
         results = self._client.SemanticSearch(
-            kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+            self.tag(kind), blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
         )
         out: list[tuple[str, float]] = []
         for r in results:
@@ -783,8 +742,9 @@ class ClioCoreStore:
 def make_arc_store(
     *,
     backend: Optional[str] = None,
-    data_dir: "str | Path" = ".clio/agent/arc",
+    data_dir: "str | Path | None" = None,
     config_path: str = "",
+    namespace: str | None = None,
 ) -> "ARCStore":
     """Build the ARC persistence backend.
 
@@ -792,35 +752,33 @@ def make_arc_store(
     is the tiering component that backs the canonical ARC store. Selection (first
     match wins): explicit ``backend`` arg, env ``CLIO_ARC_STORE``, default ``"cte"``.
 
-    LOUD DEGRADE (#897): if clio-core is missing or fails to init, the store degrades to
-    ``LocalFSStore`` **loudly** — a typed reason (:mod:`clio_agent.arc.init_degradation`), a
-    WARNING log line, and a doctor DEGRADED row — never silently, never by refusing to run. Only an
-    explicit ``=local`` (or ``backend="local"``) selects LocalFS as a *choice* with no degrade row.
-    INIT-time only (a mid-life daemon loss stays the #892 quarantine); clio-core is retried afresh
-    on the next boot (no sticky state).
+    clio-core is THE context store: an init failure raises
+    :class:`~clio_agent.arc.init_degradation.ArcStoreUnavailableError` (typed reason),
+    never another store (supersedes the #897 LocalFS degrade).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
+    data_dir = data_dir if data_dir is not None else paths.arc_data_dir()
     resolved = backend or conf.resolve(
         "arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str
     )
     choice = resolved.strip().lower()
-    if choice == "local":
-        from clio_agent.arc.init_degradation import warn_local_backend_selected  # noqa: PLC0415
-
-        warn_local_backend_selected()
-        clio_core_attach.mark_not_selected()
-        return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or conf.resolve(
             "arc.store_config", env="CLIO_ARC_STORE_CONFIG", default="", cast=conf.as_str
         )
         if not cfg:
             # Per-workspace ``.clio/core`` config if present, else the seeded default.
-            from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
-
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        # Attach (or loud degrade to LocalFS) with its typed state tracked for /v1/health.
-        return clio_core_attach.build_tracked_store(cfg, backend=backend, data_dir=data_dir)
-    raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")
+        ns = (
+            namespace
+            if namespace is not None
+            else conf.resolve(
+                "arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str
+            )
+        )
+        return clio_core_attach.build_tracked_store(
+            cfg, backend=backend, data_dir=data_dir, namespace=ns
+        )
+    raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; the only store is clio-core ('cte')")

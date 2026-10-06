@@ -146,7 +146,38 @@ from clio_agent.gact.app import build_app
 # context), owned by routes/side_sessions.py, registered from routes/sessions.py.
 # 279 -> 281: GET /v1/providers/support/restores + POST /v1/providers/support/restore (the
 # restore of provider support a runtime change removed), owned by routes/provider_support.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 281
+# 281 -> 282: POST /v1/artifacts/{id}/table-query (bounded filter/aggregate/downsample
+# over CSV/Parquet artifacts for charts), owned by routes/artifact_table_query.py,
+# registered from routes/artifact_extensions.py.
+# 282 -> 281: POST /v1/sessions/{sid}/context/compact deleted (Phase 11b): compaction is
+# ONE operation, POST /v1/sessions/{sid}/compact?scope= (routes/sessions.py).
+# 281 -> 282: GET /v1/sessions/{sid}/variant-runs (a session's BestOfN / Refine runs,
+# served from clio-core; Phase 9), owned by routes/variant_runs.py, registered from
+# routes/context.py.
+# 282 -> 283: POST /v1/server/shutdown (graceful stop of a server clio_agent.serve
+# spawned; same bearer contract as the desktop route), owned by routes/lifecycle.py.
+# 283 -> 284: POST /v1/artifacts/{id}/table-export (CSV/JSON/Parquet download of
+# the current view or full dataset), owned by routes/artifact_table_export.py.
+# 284 -> 285: POST /v1/artifacts/{id}/raster-query (bounded raster read and
+# resampling), owned by routes/artifact_raster_query.py.
+# 285 -> 286: Desktop-owned remote launch shutdown endpoint.
+# 286 -> 287: POST /v1/workspaces/{wid}/warmup prepares the draft workspace fleet
+# without a saved session, owned by routes/workspace_warmup.py.
+# 287 -> 289: attention availability and message selection routes.
+# 289 -> 293: host storage read/update, path inspection and durable inventory.
+# 293 -> 309: connected sources, transfers/reviews, folder uploads, references and trusted sign-in.
+# 309 -> 314: registry discovery, host model inventory/acquisition/cancel/retry.
+# 314 -> 318: authoring state, draft read, publish and explicit Reload alias.
+# 318 -> 319: bidirectional revision-bound attention lookup.
+# 319 -> 325: independent provenance connection, verification and restart-bound activation.
+# 325 -> 326: marketplace configuration save, separate from runtime Reload.
+# 326 -> 327: durable connected-CLIO marketplace operation history.
+# 327 -> 328: exact transcript content references for attention selection.
+# 328 -> 329: revision-bound A2UI image/structured content selection.
+# 329 -> 346 (beta-3 document integration): +17 document manifest/rendition,
+# review, working-copy and editor method pairs, all owned by routes/documents.py.
+# The integration inherited the infrastructure fingerprint without this surface.
+EXPECTED_ROUTE_METHOD_PAIRS = 346
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
@@ -179,7 +210,14 @@ def test_build_app_registers_expected_route_count() -> None:
     from starlette.routing import Route  # noqa: PLC0415
 
     app = build_app()
-    pairs = sum(len(r.methods or ()) for r in app.routes if isinstance(r, Route))
+    route_pairs = [
+        (route.path, method)
+        for route in app.routes
+        if isinstance(route, Route)
+        for method in route.methods or ()
+    ]
+    assert len(set(route_pairs)) == len(route_pairs), "duplicate (route, method) registrations"
+    pairs = len(route_pairs)
 
     assert pairs == EXPECTED_ROUTE_METHOD_PAIRS, (
         f"build_app() registered {pairs} (route, method) pairs, expected "

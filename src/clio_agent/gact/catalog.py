@@ -92,8 +92,22 @@ def _builtin_main_agent() -> AgentDef:
         specialization="orchestrator",
         module={"kind": "react"},
         prompt_id="clio.chat",
-        tools=sorted({*TOOL_CATALOG, "view_image", "view_pdf"}),
-        skills=["work-with-pdfs"],
+        tools=sorted(
+            {
+                *TOOL_CATALOG,
+                "view_image",
+                "view_pdf",
+                "prepare_document_runtime",
+                "prepare_execution_runtime",
+                "prepare_document",
+            }
+        ),
+        skills=[
+            "work-with-pdfs",
+            "work-with-word",
+            "work-with-presentations",
+            "work-with-spreadsheets",
+        ],
         metadata={
             "definition_kind": "builtin_main",
             "a2ui_catalogs": list(BUILTIN_MAIN_A2UI_CATALOGS),
@@ -207,7 +221,7 @@ def _command_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str]]:
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     return [
-        (cwd / ".clio" / "commands", "clio_workspace"),
+        (paths.workspace_config_path(cwd, "commands"), "clio_workspace"),
         (cwd / ".claude" / "commands", "claude_workspace"),
         (paths.user_config_dir_for(home, os.environ) / "commands", "clio_user"),
         (home / ".claude" / "commands", "claude_user"),

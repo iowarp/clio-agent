@@ -228,16 +228,16 @@ class TestCommittedDefaultsLayer:
 
     def test_env_overrides_committed_default(self, tmp_path):
         s = self._store_with_defaults(
-            tmp_path, 'arc.store: "cte"\n', env={"CLIO_ARC_STORE": "local"}
+            tmp_path, 'arc.store: "cte"\n', env={"CLIO_ARC_STORE": "fromenv"}
         )
-        assert s.resolve("arc.store", env="CLIO_ARC_STORE", default="INCODE") == "local"
+        assert s.resolve("arc.store", env="CLIO_ARC_STORE", default="INCODE") == "fromenv"
 
     def test_user_file_overrides_env_and_committed(self, tmp_path):
         s = self._store_with_defaults(
             tmp_path,
             'arc.store: "cte"\n',
             user="arc:\n  store: fromfile\n",
-            env={"CLIO_ARC_STORE": "local"},
+            env={"CLIO_ARC_STORE": "fromenv"},
         )
         assert s.resolve("arc.store", env="CLIO_ARC_STORE", default="INCODE") == "fromfile"
 
@@ -247,7 +247,7 @@ class TestCommittedDefaultsLayer:
             'arc.store: "cte"\n',
             user="arc:\n  store: fromuser\n",
             workspace="arc:\n  store: fromworkspace\n",
-            env={"CLIO_ARC_STORE": "local"},
+            env={"CLIO_ARC_STORE": "fromenv"},
         )
         assert s.resolve("arc.store", env="CLIO_ARC_STORE", default="INCODE") == "fromworkspace"
 
@@ -302,10 +302,10 @@ class TestCommittedDefaultsLayer:
         path = self._defaults_file(tmp_path, 'arc.store: "cte"\n')
         s = ConfigStore(home=tmp_path / "home", cwd=tmp_path / "cwd", env={}, defaults_path=path)
         assert s.resolve("arc.store", env="X", default="INCODE") == "cte"
-        path.write_text('arc.store: "local"\n', encoding="utf-8")
+        path.write_text('arc.store: "changed"\n', encoding="utf-8")
         assert s.resolve("arc.store", env="X", default="INCODE") == "cte"  # cached
         s.reload()
-        assert s.resolve("arc.store", env="X", default="INCODE") == "local"
+        assert s.resolve("arc.store", env="X", default="INCODE") == "changed"
 
 
 def test_module_level_resolve_uses_live_env(monkeypatch, tmp_path):

@@ -182,18 +182,23 @@ def test_llama_cpp_parameter_gate_never_sends_an_unsupported_field() -> None:
     assert "presence_penalty" not in (extras.get("extra_body") or {})
 
 
-def test_llama_cpp_stop_sequences_sent_when_accepted() -> None:
+def test_llama_cpp_stop_sequences_sent_when_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     _seed_llama_cpp()
+    monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>")
     extras = build_request_kwargs(_cfg("llama_cpp", "qwen3-8b-gguf"))
-    assert extras["stop"] == [
-        "[[ ## observation",
-        "[[ ## thought_",
-        "[[ ## tool_name_",
-        "[[ ## tool_args_",
-    ]
+    assert extras["stop"] == ["</s>"]
 
 
-def test_llama_cpp_stop_sequences_withheld_when_not_accepted() -> None:
+def test_no_stop_sequences_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _seed_llama_cpp()
+    monkeypatch.delenv("CLIO_LM_STOP_SEQUENCES", raising=False)
+    assert "stop" not in build_request_kwargs(_cfg("llama_cpp", "qwen3-8b-gguf"))
+
+
+def test_llama_cpp_stop_sequences_withheld_when_not_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>")
     _seed(
         provider_id="llama_cpp",
         api_base=_LLAMA_CPP_BASE,
@@ -452,7 +457,7 @@ def test_openrouter_off_is_not_sent_to_a_mandatory_reasoning_model() -> None:
         thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
     )
     extras = build_request_kwargs(_cfg("openrouter", "openai/gpt-oss-120b", thinking_level="off"))
-    assert "reasoning" not in extras["extra_body"]
+    assert "reasoning" not in extras.get("extra_body", {})
 
 
 def test_openrouter_top_k_gated_by_route_params() -> None:
@@ -730,30 +735,6 @@ def test_temperature_omitted_by_default_even_when_accepted() -> None:
         accepted_params=frozenset({"temperature"}),
     )
     extras = build_request_kwargs(_cfg("lm_studio", "m"))
-    assert "temperature" not in extras
-
-
-def test_planner_role_sends_planner_temperature_when_effective() -> None:
-    _seed(
-        provider_id="lm_studio",
-        api_base=_LM_STUDIO_BASE,
-        model_id="m",
-        dialect="lm_studio",
-        accepted_params=frozenset({"temperature"}),
-    )
-    extras = build_request_kwargs(_cfg("lm_studio", "m"), role="planner")
-    assert extras["temperature"] == 0.3  # LMProviderConfig.planner_temperature default
-
-
-def test_planner_role_omits_temperature_when_not_effective() -> None:
-    _seed(
-        provider_id="lm_studio",
-        api_base=_LM_STUDIO_BASE,
-        model_id="m",
-        dialect="lm_studio",
-        accepted_params=frozenset(),  # temperature NOT accepted
-    )
-    extras = build_request_kwargs(_cfg("lm_studio", "m"), role="planner")
     assert "temperature" not in extras
 
 

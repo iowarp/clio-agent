@@ -16,12 +16,9 @@ Correctness is asserted against the same in-memory truth the writer produced,
 and each phase is wall-clock-bounded so a pathological slowdown fails loudly
 instead of hanging.
 
-The clio-core runtime is process-global and DRAM-backed: data put by one
-``make_arc_store(backend="cte")`` is visible to the next within the same
-process, and ``clear()`` wipes ALL kinds for ALL sessions. To stay hermetic
-under a shared pytest process, every test namespaces its records with a
-unique-per-test session prefix, and the destructive ``clear()`` test owns its
-setup/teardown so it never races another test's data.
+Each test runs in its own clio-core namespace on the worker's private daemon:
+data put by one ``make_arc_store(backend="cte")`` is visible to the next in the
+same test, and ``clear()`` wipes every kind of that namespace only.
 
 Run:
     cd <worktree> && CLIO_ALLOWED_ROOTS="/tmp:$PWD" \
@@ -44,7 +41,7 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.replay import reconstruct_arc_segments
 from clio_agent.arc.schema import decode_segments, encode_segments
-from clio_agent.arc.segments import SegmentStore, segments_to_keys
+from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARC_KINDS, make_arc_store
 
 pytestmark = pytest.mark.integration
@@ -89,15 +86,10 @@ def _serialize_clio_core_global_daemon():
 
 
 def _clio_core_store():
-    """Build a real clio-core-backed ARCStore, skipping if the binding/runtime is
-    genuinely unavailable (graceful-degradation falls back to LocalFSStore, which
-    would make these "clio-core" tests silently test the wrong backend)."""
+    """The real clio-core-backed ARCStore in this test's own namespace (clio-core is
+    the only store: an unavailable runtime is a typed ArcStoreUnavailableError)."""
     store = make_arc_store(backend="cte")
-    if type(store).__name__ != "ClioCoreStore":
-        pytest.skip(
-            "clio-core backend unavailable (fell back to %s); "
-            "build iowarp-core to run the clio-core scale lane" % type(store).__name__
-        )
+    assert type(store).__name__ == "ClioCoreStore"
     return store
 
 
@@ -226,7 +218,7 @@ def test_clio_core_base64_binary_guard_at_scale():
 def test_clio_core_segment_store_big_scope_render_and_scan():
     """Drive the real SegmentStore over clio-core: write a long ReAct-shaped trajectory
     into one scope (so the whole scope batches into a single large CTE record),
-    then verify the dspy render is correct, a cold reload reconstructs it
+    then verify the render is correct, a cold reload reconstructs it
     identically, and scan_scopes finds the scope."""
     store = _clio_core_store()
     ss = SegmentStore(store)
@@ -244,16 +236,18 @@ def test_clio_core_segment_store_big_scope_render_and_scan():
 
     live = ss.render(sid, scope)
     assert len(live) == iters * 3
-    keys = ss.render_keys(sid, scope)
-    # gapless dspy projection over the whole big scope
-    assert keys["thought_0"] == "think0"
-    assert keys[f"thought_{iters - 1}"] == f"think{iters - 1}"
-    assert keys[f"observation_{iters - 1}"] == f"obs{iters - 1}"
-    assert len(keys) == iters * 4  # thought+tool_name+tool_args+observation per iter
+    # the whole big scope renders in write order: thought, tool_call, observation
+    assert [s.kind for s in live] == ["thought", "tool_call", "observation"] * iters
+    assert live[0].content == {"text": "think0"}
+    assert live[-3].content == {"text": f"think{iters - 1}"}
+    assert live[-1].content == {"text": f"obs{iters - 1}"}
+    proj = [(s.id, s.kind, s.content) for s in live]
+    text = ss.render_text(sid, scope)
 
     # Cold reload from the SAME clio-core runtime reconstructs byte-identically.
     ss2 = SegmentStore(make_arc_store(backend="cte"))
-    assert ss2.render_keys(sid, scope) == keys
+    assert [(s.id, s.kind, s.content) for s in ss2.render(sid, scope)] == proj
+    assert ss2.render_text(sid, scope) == text
     assert ss2.scan_scopes(sid) == [scope]
     assert ss2.scan_scopes(sid, "agentA/") == [scope]
 
@@ -288,7 +282,7 @@ def test_clio_core_segment_store_many_scopes_isolation():
         found = ss.scan_scopes(sid)
         assert found == sorted(scopes), f"session {sid} scope set wrong"
         for scope in scopes:
-            txt = str(ss.render_keys(sid, scope))
+            txt = ss.render_text(sid, scope)
             assert f"{sid}|{scope}|think" in txt
             # a different session's marker must not appear here
             other = sessions[(sessions.index(sid) + 1) % len(sessions)]
@@ -345,10 +339,8 @@ def test_clio_core_arcmemory_live_plane_ops_and_replay():
     arc.summarize_segments(sid, scope, second_iter_ids, {"text": "SUMMARY_1"})
 
     live_after = arc.render_segments(sid, scope)
-    keys_after = arc.render_segments_keys(sid, scope)
-    # only the string-valued keys (thought/observation/tool_name); tool_args are
-    # dicts (unhashable) and irrelevant to these text-presence checks
-    values = {v for v in keys_after.values() if isinstance(v, str)}
+    # each live segment's flattened text (tool_call -> ``name(json-args)``)
+    values = set(arc.render_segment_text(sid, scope).split("\n"))
     # deleted iteration's exact texts gone (compare exact values, not substrings:
     # "t1" is a substring of "t10".."t19", so substring checks would false-positive)
     assert "t0" not in values and "o0" not in values  # deleted iteration gone
@@ -359,7 +351,9 @@ def test_clio_core_arcmemory_live_plane_ops_and_replay():
 
     # The Trace replay must reconstruct the identical live render.
     replayed = reconstruct_arc_segments(events, scope_filter=scope)
-    assert segments_to_keys(replayed) == segments_to_keys(live_after)
+    assert [(s.id, s.kind, s.content) for s in replayed] == [
+        (s.id, s.kind, s.content) for s in live_after
+    ]
 
     # token attribution over the live set is well-formed
     tbk = arc.segment_tokens_by_kind(sid, scope)
@@ -398,7 +392,7 @@ def test_clio_core_repeated_arcmemory_construction_shares_runtime(tmp_path):
     assert build_s < 10.0, f"10 ARCMemory builds took {build_s:.1f}s (runtime re-init?)"
 
     # The marker written by arc0 is visible through a later instance.
-    assert "MARKER_REUSE" in str(instances[-1].render_segments_keys(sid, scope))
+    assert "MARKER_REUSE" in instances[-1].render_segment_text(sid, scope)
 
     # cleanup
     arc0._store.delete("segments", SegmentStore._record_name(sid, scope))

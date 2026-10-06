@@ -13,7 +13,7 @@
 # The runtime self-describes via a generic manifest (<out>/runtime.json,
 # iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
 # what's inside:
-#   {"schema": 1, "exec": ["python/bin/python3.12", "-m", "clio_agent.gact", "--no-agent"]}
+#   {"schema": 1, "exec": ["python/bin/python3.13", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"]}
 #
 # Console scripts are DELETED after install: their shims embed absolute
 # build paths and break on relocation — `-m clio_agent.gact` is the only
@@ -25,7 +25,7 @@
 #   CLIO_AGENT_SOURCE    local clio-agent checkout to install from instead
 #                        of the git ref (CI passes its own workspace so the
 #                        runtime is built from EXACTLY the released tree)
-#   CLIO_RUNTIME_PYTHON  python minor version (default: 3.12)
+#   CLIO_RUNTIME_PYTHON  python minor version (default: 3.13)
 #
 # Usage:
 #   ./build-gact-runtime.sh <output-dir>
@@ -36,7 +36,7 @@ set -euo pipefail
 
 OUT="${1:?usage: build-gact-runtime.sh <output-dir>}"
 REF="${CLIO_REF:-develop}"
-PYVER="${CLIO_RUNTIME_PYTHON:-3.12}"
+PYVER="${CLIO_RUNTIME_PYTHON:-3.13}"
 REPO_URL="git+https://github.com/iowarp/clio-agent.git"
 
 dir_size_mb() {
@@ -63,7 +63,7 @@ STAGING="$OUT/.uv-python-staging"
 echo "[build-gact-runtime] installing standalone CPython $PYVER"
 uv python install "$PYVER" --install-dir "$STAGING"
 # The staging dir holds the real versioned dist plus a bare-minor alias
-# (cpython-3.12-... -> cpython-3.12.13-...). Copy the real one.
+# (cpython-3.13-... -> cpython-3.13.13-...). Copy the real one.
 DIST="$(find "$STAGING" -maxdepth 1 -type d -name "cpython-${PYVER}.[0-9]*" | head -1)"
 [ -n "$DIST" ] || { echo "build-gact-runtime: no cpython dist under $STAGING" >&2; exit 1; }
 cp -a "$DIST" "$OUT/python"
@@ -110,7 +110,7 @@ trap '[ -z "$CLEANUP_CHECKOUT" ] || rm -rf "$(dirname "$CLEANUP_CHECKOUT")"' EXI
 # hardcoded clio-kit==2.10.6 (click>=8.3.3) broke against the locked click.
 # scripts/check_bundle_matches_lock.py BUNDLE_EXTRAS must equal this list
 # (tests/test_scripts/test_check_bundle_matches_lock.py enforces it).
-BUNDLE_EXTRAS="argonne desktop"
+BUNDLE_EXTRAS="argonne desktop flowcept"
 CONSTRAINTS="$OUT/.lock-constraints.txt"
 EXPORT_EXTRA_ARGS=""
 for extra in $BUNDLE_EXTRAS; do EXPORT_EXTRA_ARGS="$EXPORT_EXTRA_ARGS --extra $extra"; done
@@ -202,7 +202,7 @@ find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while
 # some optional provider paths exceed Windows' legacy path limit.
 echo "[build-gact-runtime] compiling portable startup bytecode"
-"$OUT/$PYBIN_REL" "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
+"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/precompile_runtime.py" \
   --python-root "$OUT/python"
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then
@@ -218,10 +218,26 @@ echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFOR
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
-  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"]
+  "exec": ["${PYBIN_REL}", "-I", "-B", "-m", "clio_agent.gact", "--no-agent"],
+  "env": {"PYTHONDONTWRITEBYTECODE": "1"}
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
+
+# The one-shot upgrade repair writes a fingerprint marker next to Python.
+# Prepare it in the ORIGINAL image before macOS seals the app; booting only
+# the relocated copy leaves first launch modifying a signed resource tree.
+PYTHONDONTWRITEBYTECODE=1 "$OUT/$PYBIN_REL" -I -B - <<'PY'
+import sys
+from pathlib import Path
+from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
+
+report = repair_bundled_runtime_bytecode()
+if report is not None and (report.errors or report.ambiguous_metadata):
+    raise SystemExit("build-gact-runtime: bundled bytecode verification failed")
+if not (Path(sys.prefix) / ".clio-bytecode-verified").is_file():
+    raise SystemExit("build-gact-runtime: bundled bytecode marker was not prepared")
+PY
 
 # --- 5. portability proof on the real object ----------------------------
 # A venv would leave a pyvenv.cfg pinning the build host's interpreter;
@@ -234,14 +250,14 @@ fi
 RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
-"$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
-"$RELOC/$PYBIN_REL" -c 'from clio_kit import cli; cli()' --help >/dev/null
+"$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --help >/dev/null
+"$RELOC/$PYBIN_REL" -I -B -c 'from clio_kit import cli; cli()' --help >/dev/null
 "$RELOC/bin/uv" --version >/dev/null
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))
 echo "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$PORT"
-"$RELOC/$PYBIN_REL" -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
+"$RELOC/$PYBIN_REL" -I -B -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
 SRV=$!
 BOOT_STARTED="$(date +%s)"
 BOOT_OK=""

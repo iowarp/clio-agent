@@ -55,6 +55,8 @@ def test_propose_edit_allows_new_file_under_write_policy(
     target = tmp_path / "new.txt"
 
     result = propose_edit(str(target), "hello\n")
+    assert result["applied"] is False
+    assert result["requires_review"] is True
 
     assert result["path"] == str(target.resolve())
     assert result["lines_added"] == 1
@@ -193,7 +195,7 @@ def test_gateway_apply_edit_write_respects_late_fallback_permission_gate(
 ) -> None:
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     target = tmp_path / "gated.txt"
-    executor = create_sync_tool_executor(get_gateway(), timeout=5.0, setup_timeout=5.0)
+    executor = create_sync_tool_executor(get_gateway(), timeout=5.0)
     seen: list[str] = []
 
     try:

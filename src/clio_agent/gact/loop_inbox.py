@@ -2,7 +2,7 @@
 
 A background child spawned in an EARLIER turn already surfaces on the parent's
 NEXT turn via the ``notify_pending`` observe-later feed (``enrichment
-.inject_pending_agent_task_notifications``). This module adds the complementary
+.pending_task_notifications``). This module adds the complementary
 *mid-turn* path: a child that finishes DURING the parent's turn drops a
 data-light :class:`InboxEvent` into the parent session's :class:`LoopInbox`, and
 the parent's next ReAct tool-observation boundary drains it — the completion is
@@ -513,22 +513,25 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
         inbox_for(app, sid).put(remaining)
 
 
-def drain_active_session_inbox(app: "FastAPI") -> str:
-    """Drain the ACTIVE session's inbox and return a composed model-facing block.
+def drain_active_session_inbox(app: "FastAPI") -> list[tuple[str, str]]:
+    """Drain the ACTIVE session's inbox into model-facing arrivals ``(source, text)``.
+
+    ``("steer", block)`` per user steer (the user's own message), then one
+    ``("task_results", block)`` for the finished children. The agent loop records
+    each at its next step boundary as a message of its own.
 
     The injected drain callable's body. Resolves the active session (the parent
     whose turn is running the tool call), drains its inbox, and for each event
     composes ONE block via :func:`enrichment._notify_block` — marking that
     completion consumed through the EXISTING once-gate
     (:func:`agent_tasks.consume_notification`) so a mid-turn drain and the
-    next-turn ``inject_pending_agent_task_notifications`` never double-surface the
+    next-turn ``pending_task_notifications`` never double-surface the
     same task. Publishes ONE lightweight progress event on the PARENT session so
     the no-progress watchdog counts the drain as liveness. Returns the composed
-    block, or ``""`` when there is nothing to surface.
+    arrivals, or ``[]`` when there is nothing to surface.
 
-    Self-guarding: this is called from the tool-executor hot path (via the
-    injected ``Callable``), so any failure is caught and logged with a typed
-    reason and returns ``""`` — a drain hiccup never breaks a tool call.
+    Self-guarding: this is called at every step boundary of the agent loop, so any
+    failure is caught and logged with a typed reason and returns ``[]``.
     """
 
     try:
@@ -536,13 +539,13 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
 
         sid = _ctx.active_session_id().strip()
         if not sid:
-            return ""
+            return []
         inbox = app.state.loop_inboxes.get(sid)
         if inbox is None:
-            return ""
+            return []
         events = inbox.drain()
         if not events:
-            return ""
+            return []
 
         # A user_message steer (#1036) is NOT a task: it MUST skip the once-gate
         # (consume_notification) and the delegation terminal entirely and surface a
@@ -649,11 +652,13 @@ def drain_active_session_inbox(app: "FastAPI") -> str:
         _publish_drain_progress(app, sid, len(events), surfaced)
 
         # Steers first (the user's most recent intent leads), then task results.
-        sections = [*steer_blocks, task_section]
-        return "\n\n".join(s for s in sections if s)
-    except Exception as exc:  # noqa: BLE001 - a drain must never break a tool call
+        arrivals = [("steer", block) for block in steer_blocks]
+        if task_section:
+            arrivals.append(("task_results", task_section))
+        return arrivals
+    except Exception as exc:  # noqa: BLE001 - a drain must never break the loop
         logger.warning("loop_inbox drain failed reason=drain_error err=%r", exc)
-        return ""
+        return []
 
 
 def _publish_drain_progress(app: "FastAPI", sid: str, drained: int, surfaced: int) -> None:
@@ -681,7 +686,7 @@ def _make_loop_inbox_drain(app: "FastAPI"):
     by ``runtime.app_state.resolve_tool_runtime`` into ``ToolRuntimeHooks``.
     """
 
-    def drain() -> str:
+    def drain() -> list[tuple[str, str]]:
         return drain_active_session_inbox(app)
 
     return drain

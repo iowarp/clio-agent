@@ -15,15 +15,15 @@ items, so ``pdf`` is added with its own evidence source
 list and stays unknown rather than guessed.
 
 The result is recorded by the refresh overlay (the ONE model-catalog cache:
-TTL, kept last-good list, typed staleness), exactly like the SDK transport's
-``model/list`` result.
+TTL, kept last-good list, typed staleness), exactly like every other provider's
+discovered list.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.credentials import CodexCredentialStore, direct_signed_in
 from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.codex.model_list import (
     CodexModelListError,
@@ -73,8 +73,7 @@ def _discovered_row(model: DirectModel) -> dict[str, Any]:
         "output_limit": None,
         "context_source": CODEX_SOURCE,
         **_capability_row(model),
-        # The SAME field names the SDK transport's rows use, so the codex
-        # thinking dialect reads both transports' rows identically.
+        # The field names the codex thinking dialect reads.
         "supported_reasoning_efforts": list(model.reasoning_efforts),
         "default_reasoning_effort": model.default_reasoning_effort,
     }
@@ -95,7 +94,7 @@ def discover_codex(
     """
 
     store = credential_store or CodexCredentialStore()
-    if not store.is_signed_in():
+    if not direct_signed_in(store):
         return ProviderDiscoveryResult(
             provider="codex",
             discovered=[],

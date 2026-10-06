@@ -64,6 +64,7 @@ from typing import Any
 
 from clio_agent import conf
 from clio_agent.arc.lane_chunking import chunk_for_append, lane_segments
+from clio_agent.arc.lane_generations import current_base
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.gact.types import Message
@@ -114,8 +115,9 @@ def _chunk_capacity() -> int:
 #     they exist for that message. A message whose envelope never landed (a crash before
 #     finalize) reassembles as a TYPED incomplete message, never a silently complete one.
 # ``atom_role == "retract"`` (``retracted_part_ids``) is honored by the reproducer as the
-# escape hatch for a sealed part that must not be served; no live path emits it (the
-# ledger only ever removes UNSEALED parts — pinned by tests).
+# escape hatch for a sealed part that must not be served. One live path emits it: a
+# compaction whose fold failed retracts the record it wrote first
+# (:func:`build_retract_atom`); a message whose every part is retracted is not served.
 PART_ATOM_SCHEMA_VERSION = 2
 ENVELOPE_AUTHORITY_INLINE = "inline"
 ENVELOPE_AUTHORITY_ATOM = "atom"
@@ -128,22 +130,17 @@ TRANSCRIPT_INCOMPLETE_REASON = "transcript_incomplete_no_envelope"
 
 
 def _compaction_identity(part_dump: dict[str, Any]) -> dict[str, str] | None:
-    """Return ``{msg_compact_id, memory_event_id}`` for a compaction part, else ``None``.
+    """``{compaction_id, trigger}`` for a compaction's record part, else ``None``.
 
-    A compaction part (SPEC §4.5 / §6.25, produced by the ``/compact`` route) carries
-    the synthetic-summary identity in its ``id`` (``msg_compact_*``) + ``metadata``
-    (``memory_event_id``). Captured so S5 can reproduce the compaction wire identity
-    (frozen surface 1.8). ``None`` for every non-compaction part (the finalize path
-    never produces one; only ``/compact`` does — both flow through the same persist
-    seam, so both are covered).
+    The queryable header of a summarization injection's atom (the part dump itself is
+    the reproduction source).
     """
-    if part_dump.get("type") != "compaction":
+    from clio_agent.gact.summarization_record import as_summarization  # noqa: PLC0415
+
+    record = as_summarization(part_dump)
+    if record is None or part_dump.get("type") != "injection":
         return None
-    meta = part_dump.get("metadata") or {}
-    return {
-        "msg_compact_id": str(part_dump.get("id") or ""),
-        "memory_event_id": str(meta.get("memory_event_id") or ""),
-    }
+    return {"compaction_id": record.compaction_id, "trigger": record.trigger}
 
 
 def _atom_content(
@@ -289,6 +286,57 @@ def build_sealed_part_atom(
     return content
 
 
+def build_retract_atom(
+    stub: Mapping[str, Any], part_ids: list[str], part_index: int
+) -> dict[str, Any]:
+    """A ``retract`` atom: the named parts of ``stub``'s message are never served.
+
+    Args:
+        stub: :func:`message_stub` of the message the parts belong to.
+        part_ids: The parts that must not be served.
+        part_index: The first retracted part's index (orders the atom in its group).
+    """
+
+    return {
+        "schema_version": PART_ATOM_SCHEMA_VERSION,
+        "envelope_authority": ENVELOPE_AUTHORITY_ATOM,
+        "atom_role": "retract",
+        "message_id": str(stub.get("id") or ""),
+        "part_id": "",
+        "part_index": part_index,
+        "created_at": str(stub.get("created_at") or ""),
+        "role": str(stub.get("role") or "assistant"),
+        "retracted_part_ids": list(part_ids),
+        "message_stub": dict(stub),
+        "part": None,
+    }
+
+
+def retracted_part_ids(atoms: list[dict[str, Any]]) -> set[str]:
+    """Every part id a ``retract`` atom in ``atoms`` names (a lane, or one message)."""
+
+    return {
+        str(pid)
+        for atom in atoms
+        if atom.get("atom_role") == "retract"
+        for pid in atom.get("retracted_part_ids") or []
+    }
+
+
+def fully_retracted(atoms: list[dict[str, Any]], retracted: set[str]) -> bool:
+    """Whether a message group is never served: every part it holds is retracted (a
+    compaction record whose fold failed), or it is only a retract marker.
+
+    ``retracted`` is lane-wide: a retract atom written after a message's envelope opens
+    its own group, so retraction is by part id, never by position.
+    """
+
+    parts = {str(a.get("part_id") or "") for a in atoms if a.get("part") is not None}
+    if not parts:
+        return all(a.get("atom_role") == "retract" for a in atoms)
+    return parts <= retracted
+
+
 def build_envelope_atom(message: Message) -> dict[str, Any]:
     """The trailing envelope atom: the authority for every message-level field."""
 
@@ -385,7 +433,9 @@ def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any
 # --------------------------------------------------------------------------- #
 
 
-def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
+def reproduce_message_wire(
+    atoms: list[dict[str, Any]], retracted: set[str] | None = None
+) -> dict[str, Any]:
     """Reconstruct ``Message.model_dump(exclude_none=True)`` from a message's atoms.
 
     The step-4 reproducibility gate (design §4.2): the reconstruction must equal the
@@ -397,6 +447,7 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
 
     Args:
         atoms: The ``content`` dicts of ONE message's atoms (any order).
+        retracted: Part ids retracted anywhere on the lane (never served).
 
     Returns:
         The reconstructed ``model_dump(exclude_none=True)`` dict.
@@ -406,7 +457,7 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
     """
     if not atoms:
         raise ValueError("reproduce_message_wire: no atoms for the message")
-    retracted: set[str] = set()
+    retracted = set(retracted or ())
     envelope_atom: dict[str, Any] | None = None
     latest_by_part: dict[str, dict[str, Any]] = {}
     for atom in atoms:  # lane order: the LAST atom of a part id wins (a reseal)
@@ -527,44 +578,54 @@ def _append_segment_raw(
         )
         segs.append(seg)
         store._index.add(session_id, scope, seg)
-        store._persist(session_id, scope, just_written=[seg])
+        store._persist(session_id, scope)
         return seg
 
 
-def append_part_atom(store: Any, session_id: str, content: dict[str, Any]) -> Segment:
+def append_part_atom(
+    store: Any, session_id: str, content: dict[str, Any], *, lane: str | None = None
+) -> Segment:
     """Append ONE atom ``content`` to the session's ``_events/m`` lane — THE atom writer
     seam (#1339): every mint path funnels through here, so it is the ONE place that
     resolves the lane's active chunk.
 
-    Reserves a slot in the active chunk (:func:`~clio_agent.arc.lane_chunking.chunk_for_append`,
+    The lane is written under its own scope lock, which a whole-lane replace
+    (:func:`~clio_agent.arc.lane_generations.replace_lane`) also holds, and lands in the
+    generation the lane's pointer names now (``lane=None``) -- or, for the replace's
+    own writer, in the new generation's base it was handed (``lane``). Reserves a slot
+    in that generation's active chunk (:func:`~clio_agent.arc.lane_chunking.chunk_for_append`,
     capacity :func:`_chunk_capacity`) and appends the atom there via the raw append
-    (§2.9). Used by the eager path (the per-turn minter seals one part at a time) and by
-    ``live_edge`` for its own explicit-scope sibling partition (unchunked, ``.../edge``).
+    (§2.9). Used by the eager path (the per-turn minter seals one part at a time), the
+    batch mints and the replace.
     """
 
-    scope = chunk_for_append(store, session_id, MESSAGE_PART_SCOPE, capacity=_chunk_capacity())
-    return _append_segment_raw(store, session_id, scope, MESSAGE_PART_KIND, content)
+    with store._lock_for(session_id, MESSAGE_PART_SCOPE):
+        base = lane if lane is not None else current_base(store, session_id, MESSAGE_PART_SCOPE)
+        scope = chunk_for_append(store, session_id, base, capacity=_chunk_capacity())
+        return _append_segment_raw(store, session_id, scope, MESSAGE_PART_KIND, content)
 
 
-def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list[Segment]:
+def mint_message_part_atoms(
+    arc: Any, session_id: str, message: Message, *, lane: str | None = None
+) -> list[Segment]:
     """Mint + durably append one message's ``message_part`` atoms to the canonical log.
 
     Builds the atoms (:func:`build_message_part_atoms`) and appends each through
-    :func:`append_part_atom` (the chunked writer seam). The atoms are written ALONGSIDE
-    the existing ``final_message`` / messages-store copy (dual-write); no reader
-    consumes them until S5.
+    :func:`append_part_atom` (the chunked writer seam), into the lane's current
+    generation or, from a whole-lane replace, into ``lane``.
 
     Args:
         arc: The process ARC memory (``ARCMemory``); its ``_segments`` store is used.
         session_id: Owning session.
         message: The persisted gact message to provision atoms for.
+        lane: The generation base a replace is writing (``None``: the current one).
 
     Returns:
         The appended segments (one per atom).
     """
     store = arc._segments
     return [
-        append_part_atom(store, session_id, content)
+        append_part_atom(store, session_id, content, lane=lane)
         for content in build_message_part_atoms(message)
     ]
 
@@ -572,7 +633,7 @@ def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list
 def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[str, Any]]]:
     """Read a session's persisted ``message_part`` atoms, grouped by ``message_id``.
 
-    Loads the ``_events/m`` lane — every present chunk, concatenated in append order
+    Loads the ``_events/m`` lane's current generation — every present chunk, concatenated in append order
     (:func:`~clio_agent.arc.lane_chunking.lane_segments`), re-reading from the store when
     the hot copy was evicted — the eviction+rehydration path the identity pin exercises —
     returning ``{message_id: [atom-content, ...]}`` with each group sorted into
@@ -587,7 +648,8 @@ def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[st
     """
     store = arc._segments
     groups: dict[str, list[dict[str, Any]]] = {}
-    for seg in lane_segments(store, session_id, MESSAGE_PART_SCOPE, include_tombstoned=True):
+    base = current_base(store, session_id, MESSAGE_PART_SCOPE)
+    for seg in lane_segments(store, session_id, base, include_tombstoned=True):
         content = seg.content
         groups.setdefault(str(content.get("message_id") or ""), []).append(content)
     for atoms in groups.values():

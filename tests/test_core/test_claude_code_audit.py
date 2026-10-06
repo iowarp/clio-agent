@@ -1,47 +1,43 @@
 """Tests for the #891 Claude Code stream-audit instrumentation.
 
-Covers the audit module (:mod:`clio_agent.providers.claude_code_audit`) in
-isolation AND end-to-end through the real streaming bridge
-(:func:`clio_agent.providers.claude_code_litellm._astream_sdk`): the new
+Covers the audit module (:mod:`clio_agent.providers.claude_code_audit`) in isolation
+AND end-to-end through the Claude Code engine over the real pooled transport
+(:class:`clio_agent.providers.claude_code_engine.AsyncClaudeCodeEngine`): the
 ``provider.call_started`` / ``provider.call_usage`` rows must be written when the
-existing ``CLIO_STREAM_AUDIT_LOG`` gate is on and must NOT be written when it is
-off (zero-overhead contract).
+``CLIO_STREAM_AUDIT_LOG`` gate is on and must NOT be written when it is off
+(zero-overhead contract).
 
-Sabotage check: deleting the ``emit_call_usage`` call in ``_astream_sdk`` (or its
-body) makes :func:`test_astream_sdk_emits_call_rows_when_gate_on` fail on the
-``provider.call_usage`` assertions — the emission is genuinely exercised, not
-mocked away.
+Sabotage check: deleting the engine's ``emit_call_usage`` call (or its body) makes
+:func:`test_engine_emits_call_rows_when_gate_on` fail on the ``provider.call_usage``
+assertions -- the emission is genuinely exercised, not mocked away.
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import sys
 from pathlib import Path
-from types import ModuleType
-from typing import Any, AsyncIterator
+from typing import Any
 
 import pytest
 
-from clio_agent.gact import context as _gact_ctx
-from clio_agent.providers import claude_code_litellm
+from clio_agent.providers import claude_code_engine
 from clio_agent.providers.claude_code_audit import (
     emit_call_started,
     emit_call_usage,
     prompt_prefix_fingerprint,
 )
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+from tests import _fake_claude_sdk as fake
 
 
 @pytest.fixture(autouse=True)
 def _clean_stream_pool() -> Any:
-    """Each test gets a fresh streaming client pool — the pooled default (#891)
-    would otherwise carry one test's fake SDK client into the next test's
-    differently-faked module (isinstance mismatch -> empty stream)."""
+    """Each test gets a fresh client pool and conversation registry."""
     _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
     yield
     _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
 
 
 def _read_rows(path: Path) -> list[dict[str, Any]]:
@@ -49,67 +45,6 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
-
-
-def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch, *, usage: dict[str, Any]) -> None:
-    """Install a minimal fake ``claude_agent_sdk`` that streams two tokens."""
-
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        def __init__(self) -> None:
-            self.content = [FakeTextBlock("Hello")]
-            self.usage = usage
-            self.stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        def __init__(self) -> None:
-            self.usage = usage
-            self.stop_reason = "end_turn"
-            self.result = "Hello"
-            self.is_error = False
-
-    class FakeClaudeAgentOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClaudeSDKClient:
-        def __init__(self, options: FakeClaudeAgentOptions) -> None:
-            self.options = options
-
-        async def connect(self) -> None:
-            return None
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> AsyncIterator[Any]:
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hel"}}
-            )
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "lo"}}
-            )
-            yield FakeAssistantMessage()
-            yield FakeResultMessage()
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
 
 def test_prompt_prefix_fingerprint_is_stable_and_prefix_sensitive() -> None:
@@ -209,140 +144,62 @@ def test_emit_call_usage_survives_colliding_usage_keys(
     assert row["usage_input_tokens"] == 5  # non-colliding key still flattened
 
 
-def _install_timed_fake_sdk(
-    monkeypatch: pytest.MonkeyPatch, *, connect_delay: float, events: list[tuple[str, float]]
-) -> None:
-    """Install a fake SDK whose connect/disconnect record entry times, so a test
-    can prove the per-call spawn/teardown falls inside the audit call window.
-    """
-    import time as _time
-
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        def __init__(self) -> None:
-            self.content = [FakeTextBlock("Hi")]
-            self.usage = {"input_tokens": 1, "output_tokens": 1}
-            self.stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        def __init__(self) -> None:
-            self.usage = {"input_tokens": 1, "output_tokens": 1}
-            self.stop_reason = "end_turn"
-            self.result = "Hi"
-            self.is_error = False
-
-    class FakeClaudeAgentOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClaudeSDKClient:
-        def __init__(self, options: FakeClaudeAgentOptions) -> None:
-            self.options = options
-
-        async def connect(self) -> None:
-            events.append(("connect_enter", _time.time()))
-            import asyncio as _asyncio
-
-            await _asyncio.sleep(connect_delay)
-
-        async def disconnect(self) -> None:
-            events.append(("disconnect_enter", _time.time()))
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> AsyncIterator[Any]:
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}
-            )
-            yield FakeAssistantMessage()
-            yield FakeResultMessage()
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-
 async def test_call_started_brackets_connect_and_usage_precedes_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # #891 finding, re-pinned for S2 (B1): the pooled per-GACT-session client no
-    # longer disconnects per call (it stays warm for the session's next turn),
-    # so this proves the SDK connect (cold-start, paid once for the session)
-    # falls INSIDE the [call_started -> call_usage] window (else it is misfiled
-    # as inter_call_gap), and that call_usage is recorded well before the
-    # session's eventual release/disconnect -- so usage survives even if that
-    # later teardown fails.
+    """#891, re-pinned for S2 (B1): the pooled per-GACT-session client stays warm
+    after a call, so this proves the SDK connect (cold-start, paid once per session)
+    falls INSIDE the [call_started -> call_usage] window (else it is misfiled as
+    inter_call_gap), and that call_usage is recorded before the session's eventual
+    release/disconnect -- so usage survives even if that later teardown fails."""
     from clio_agent import conf  # noqa: PLC0415
-    from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
-        _STREAM_CLIENT_POOL,
-        _reset_sessions_for_tests,
-    )
+    from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL  # noqa: PLC0415
 
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
     conf.reload()
-    _reset_sessions_for_tests()
-    events: list[tuple[str, float]] = []
     delay = 0.5
-    _install_timed_fake_sdk(monkeypatch, connect_delay=delay, events=events)
+    sdk = fake.install(monkeypatch, connect_delay=delay)
 
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    token = gact_context.set_session_id("sess-audit")
     try:
-        async for _ in claude_code_litellm._astream_sdk(
-            prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=3
-        ):
-            pass
+        await fake.drive(fake.request())
         # B1: the connection stays warm after the call -- release it explicitly
         # (mirrors a real session-end) to observe the disconnect ordering.
-        _STREAM_CLIENT_POOL.release("")
+        _STREAM_CLIENT_POOL.release("sess-audit")
     finally:
+        gact_context.reset(token)
         conf.reload()
-        _reset_sessions_for_tests()
 
     rows = _read_rows(audit)
     started = next(r for r in rows if r["stage"] == "provider.call_started")
     usage = next(r for r in rows if r["stage"] == "provider.call_usage")
-    connect_enter = next(t for name, t in events if name == "connect_enter")
-    disconnect_enter = next(t for name, t in events if name == "disconnect_enter")
+    connect_enter = next(t for name, t in sdk.events if name == "connect_enter")
+    disconnect_enter = next(t for name, t in sdk.events if name == "disconnect_enter")
 
     # Marker opens before connect begins; connect's 0.5 s lands inside the window.
-    # Tolerance 50ms, not 1ms: both stamps are sequential time.time() calls, and
-    # wall clock is NOT monotonic — an NTP slew inverted them by 1.5ms in a full
-    # suite run. A real misorder would be off by ~delay (500ms), so 50ms keeps
-    # 10x discrimination while being immune to clock adjustment.
+    # Tolerance 50ms: both stamps are sequential time.time() calls and wall clock is
+    # not monotonic; a real misorder would be off by ~delay (500ms).
     assert started["ts"] <= connect_enter + 0.05
     assert usage["ts"] - started["ts"] >= delay * 0.8
-    # Usage is recorded before the session's eventual teardown, so it survives
-    # a disconnect failure.
+    # Usage is recorded before the session's eventual teardown.
     assert usage["ts"] <= disconnect_enter + 0.05
 
 
-async def test_astream_sdk_emits_call_rows_when_gate_on(
+async def test_engine_emits_call_rows_when_gate_on(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    _install_fake_sdk(monkeypatch, usage={"input_tokens": 2, "output_tokens": 3})
+    fake.install(
+        monkeypatch,
+        reply=lambda: fake.answer("Hello", usage={"input_tokens": 2, "output_tokens": 3}),
+    )
 
-    chunks = [
-        chunk
-        async for chunk in claude_code_litellm._astream_sdk(
-            prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=7
-        )
-    ]
-    assert [c["text"] for c in chunks] == ["Hel", "lo", ""]  # bridge unaffected
+    response = await fake.drive(fake.request())
+    assert response.message.parts[0].text == "Hello"  # the call itself unaffected
 
     rows = _read_rows(audit)
     started = [r for r in rows if r["stage"] == "provider.call_started"]
@@ -351,316 +208,27 @@ async def test_astream_sdk_emits_call_rows_when_gate_on(
     assert len(usage) == 1
 
     s, u = started[0], usage[0]
-    assert s["call_index"] == 7
     assert s["transport"] == "sdk"
     assert s["provider"] == "claude_code_sdk"
-    assert s["prompt_chars"] == len("hello")
+    assert s["prompt_chars"] == len("[user]\nhello")
     assert s["prefix_2k_sha256"] and s["prefix_16k_sha256"]
-    # call_id correlates the started row with its usage row.
+    # call_id and call_index correlate the started row with its usage row.
     assert s["call_id"] == u["call_id"]
-    assert u["call_index"] == 7
+    assert s["call_index"] == u["call_index"]
     assert u["usage_input_tokens"] == 2
     assert u["usage_output_tokens"] == 3
     assert u["output_chars"] == len("Hello")
 
 
-async def test_astream_sdk_writes_no_call_rows_when_gate_off(
+async def test_engine_writes_no_call_rows_when_gate_off(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     audit = tmp_path / "audit.jsonl"
     monkeypatch.delenv("CLIO_STREAM_AUDIT_LOG", raising=False)
-    _install_fake_sdk(monkeypatch, usage={"input_tokens": 2, "output_tokens": 3})
+    fake.install(monkeypatch)
 
-    chunks = [
-        chunk
-        async for chunk in claude_code_litellm._astream_sdk(
-            prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=7
-        )
-    ]
-    assert [c["text"] for c in chunks] == ["Hel", "lo", ""]  # still produces output
+    response = await fake.drive(fake.request())
+    assert response.message.parts[0].text == "Answer"  # still produces output
 
     rows = _read_rows(audit)
     assert [r for r in rows if r["stage"] in ("provider.call_started", "provider.call_usage")] == []
-
-
-def _install_redacted_thinking_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fake SDK streaming the claude CLI >= 2.1.x REDACTED thinking shape.
-
-    Two ``thinking_delta`` events with EMPTY text plus an ``estimated_tokens``
-    count (thinking display "omitted"), then one real-text thinking delta, then a
-    normal text delta — so a single call exercises the redacted path AND proves
-    the real thinking lane is untouched beside it.
-    """
-
-    class FakeTextBlock:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    class FakeStreamEvent:
-        def __init__(self, event: dict[str, Any]) -> None:
-            self.event = event
-
-    class FakeAssistantMessage:
-        def __init__(self) -> None:
-            self.content = [FakeTextBlock("Hi")]
-            self.usage = {"input_tokens": 1, "output_tokens": 1}
-            self.stop_reason = "end_turn"
-
-    class FakeResultMessage:
-        def __init__(self) -> None:
-            self.usage = {"input_tokens": 1, "output_tokens": 1}
-            self.stop_reason = "end_turn"
-            self.result = "Hi"
-            self.is_error = False
-
-    class FakeClaudeAgentOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClaudeSDKClient:
-        def __init__(self, options: FakeClaudeAgentOptions) -> None:
-            self.options = options
-
-        async def connect(self) -> None:
-            return None
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            return None
-
-        async def receive_response(self) -> AsyncIterator[Any]:
-            yield FakeStreamEvent(
-                {
-                    "type": "content_block_delta",
-                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50},
-                }
-            )
-            yield FakeStreamEvent(
-                {
-                    "type": "content_block_delta",
-                    "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 20},
-                }
-            )
-            yield FakeStreamEvent(
-                {
-                    "type": "content_block_delta",
-                    "delta": {"type": "thinking_delta", "thinking": "mulling it over"},
-                }
-            )
-            yield FakeStreamEvent(
-                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "Hi"}}
-            )
-            yield FakeAssistantMessage()
-            yield FakeResultMessage()
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = FakeAssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
-    fake_sdk.ResultMessage = FakeResultMessage
-    fake_sdk.StreamEvent = FakeStreamEvent
-    fake_sdk.TextBlock = FakeTextBlock
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-
-async def test_astream_sdk_redacted_thinking_delta_emits_typed_reason(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """No-silent-fallback: a CoT-redacted thinking delta (empty text +
-    estimated_tokens — the claude CLI >= 2.1.x "omitted" display) must land a
-    typed ``provider_thinking_redacted`` reason with the token count, and one
-    ``trace.event`` per call naming the display='summarized' fix — never a
-    silent drop. Failing-first: before the fix these deltas were classified as
-    bare provider events and vanished without a trace."""
-    from clio_agent.runtime import trace as clio_trace
-
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    _install_redacted_thinking_fake_sdk(monkeypatch)
-
-    # Deterministic trace gating (EVENT_ON) + a handler pinned directly on the
-    # clio_agent logger, so the assertion survives propagate=False and any
-    # ambient CLIO_DEBUG value.
-    clio_trace.configure(level="low", install_handler=False)
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
-    logger = logging.getLogger("clio_agent")
-    logger.addHandler(handler)
-    try:
-        chunks = [
-            chunk
-            async for chunk in claude_code_litellm._astream_sdk(
-                prompt="hello", model="sonnet", timeout=5.0, cwd="/tmp/clio", call_index=11
-            )
-        ]
-    finally:
-        logger.removeHandler(handler)
-        clio_trace.configure(install_handler=False)
-
-    # The visible stream is unaffected: redacted deltas yield no text chunks.
-    assert [c["text"] for c in chunks] == ["Hi", ""]
-
-    rows = _read_rows(audit)
-    redacted = [r for r in rows if r.get("duplicate_reason") == "provider_thinking_redacted"]
-    assert [r["thinking_tokens_estimated"] for r in redacted] == [50, 20]
-    for row in redacted:
-        assert row["stage"] == "provider.normalized"
-        assert row["provider"] == "claude_code_sdk"
-        assert row["source_channel"] == "thinking_delta"
-        assert row["normalized_event"] == "turn.trace.delta"
-        assert row["chunk_len"] == 0
-        assert row["duplicate_suppressed"] is True
-        assert row["call_index"] == 11
-    # The REAL thinking delta beside them still flows to the thinking lane.
-    real = [
-        r
-        for r in rows
-        if r["stage"] == "provider.normalized"
-        and r.get("source_channel") == "thinking_delta"
-        and not r.get("duplicate_suppressed")
-    ]
-    assert [r["head"] for r in real] == ["mulling it over"]
-    # Exactly ONE trace.event per call, and it names the un-redaction fix.
-    messages = [rec.getMessage() for rec in records]
-    redaction_events = [m for m in messages if "provider_thinking_redacted" in m]
-    assert len(redaction_events) == 1
-    assert "summarized" in redaction_events[0]
-    assert "est_tokens=50" in redaction_events[0]
-
-
-def _capture_emit(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    """Capture every ``_emit_semantic_event`` call the SAME way
-    ``test_toolset_inventory.py`` does: ``_emit_redacted_thinking_trace_event``
-    (``claude_code_thinking_split.py``) does a lazy
-    ``from ...gact.runtime.globals import _emit_semantic_event`` per call, so
-    patching the module attribute is picked up on the next emit."""
-
-    captured: list[dict[str, Any]] = []
-
-    def _capture(app: Any, sid: str, event_type: str, **kw: Any) -> dict[str, Any]:
-        captured.append({"event_type": event_type, "session_id": sid, **kw})
-        return {}
-
-    monkeypatch.setattr("clio_agent.gact.runtime.globals._emit_semantic_event", _capture)
-    return captured
-
-
-async def test_astream_sdk_redacted_thinking_delta_reaches_durable_trace(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """No-silent-fallback (cleanup program ground rule, docs/design/system-cleanup-
-    2026-07.md): the redaction fact must reach the DURABLE session trace, not just
-    the opt-in stream-audit JSONL and the log-only ``trace.event`` WARNING (see the
-    sibling test above) -- otherwise "provider sent zero CoT" and "provider sent
-    CoT but it was fully redacted" are indistinguishable after the fact on
-    everything durable. Failing-first: before the fix no semantic event was ever
-    emitted for a redacted delta, so ``events`` below is empty on the pre-fix code.
-
-    Sabotage check: deleting the ``_emit_redacted_thinking_trace_event`` call in
-    ``note_redacted_thinking`` (or its body) makes this fail on the ``len(events)``
-    assertion — the emission is genuinely exercised, not mocked away.
-    """
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    _install_redacted_thinking_fake_sdk(monkeypatch)
-    captured = _capture_emit(monkeypatch)
-
-    app = object()
-    _gact_ctx.set_turn_identity(
-        app=app, session_id="sess_redact", turn_id="turn_redact", trace_id="trace_redact"
-    )
-    chunks = [
-        chunk
-        async for chunk in claude_code_litellm._astream_sdk(
-            prompt="hello", model="sonnet", timeout=5.0, cwd="/tmp/clio", call_index=21
-        )
-    ]
-    # The visible stream is unaffected by the durable-trace addition.
-    assert [c["text"] for c in chunks] == ["Hi", ""]
-
-    events = [e for e in captured if e["event_type"] == "provider.thinking.redacted"]
-    # Exactly ONE event for the call -- lean by design, not one per delta (two
-    # redacted deltas fired in this fixture).
-    assert len(events) == 1
-    event = events[0]
-    assert event["session_id"] == "sess_redact"
-    assert event["turn_id"] == "turn_redact"
-    assert event["trace_id"] == "trace_redact"
-    assert event["status"] == "completed"
-    payload = event["payload"]
-    assert payload["call_index"] == 21
-    assert payload["session_id"] == "sess_redact"
-    assert payload["provider"] == "claude_code_sdk"
-    assert payload["reason"] == "provider_thinking_redacted"
-    # The first redacted delta's own token estimate (matches the paired log line).
-    assert payload["thinking_tokens_estimated"] == 50
-
-
-async def test_astream_sdk_no_redaction_emits_no_durable_trace_event(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Negative case: an ordinary (non-redacted) stream must NOT synthesize a
-    ``provider.thinking.redacted`` event — the fix records a REAL degradation,
-    never a fabricated one, so a clean call and a redacted call stay
-    distinguishable in the durable trace."""
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    _install_fake_sdk(monkeypatch, usage={"input_tokens": 1, "output_tokens": 1})
-    captured = _capture_emit(monkeypatch)
-
-    app = object()
-    _gact_ctx.set_turn_identity(
-        app=app, session_id="sess_clean", turn_id="turn_clean", trace_id="trace_clean"
-    )
-    chunks = [
-        chunk
-        async for chunk in claude_code_litellm._astream_sdk(
-            prompt="hello", model="sonnet", timeout=5.0, cwd="/tmp/clio", call_index=22
-        )
-    ]
-    assert chunks  # the ordinary text stream still flows
-    assert [e for e in captured if e["event_type"] == "provider.thinking.redacted"] == []
-
-
-async def test_astream_sdk_redacted_thinking_without_turn_context_logs_skip_reason(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Off-turn calls (CLI / optimizer paths, no active GACT app/session) must
-    leave no event but always log a STRUCTURED reason — never a silent pass. This
-    is the exact scenario the sibling ``..._emits_typed_reason`` test already
-    exercises (no turn identity is ever set there); this test additionally proves
-    the new durable-trace attempt degrades loudly instead of silently."""
-    from clio_agent.runtime import trace as clio_trace
-
-    audit = tmp_path / "audit.jsonl"
-    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    _install_redacted_thinking_fake_sdk(monkeypatch)
-    captured = _capture_emit(monkeypatch)
-
-    clio_trace.configure(level="low", install_handler=False)
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
-    logger = logging.getLogger("clio_agent")
-    logger.addHandler(handler)
-    try:
-        # No _gact_ctx.set_turn_identity call — active_app() resolves to None.
-        _ = [
-            chunk
-            async for chunk in claude_code_litellm._astream_sdk(
-                prompt="hello", model="sonnet", timeout=5.0, cwd="/tmp/clio", call_index=23
-            )
-        ]
-    finally:
-        logger.removeHandler(handler)
-        clio_trace.configure(install_handler=False)
-
-    assert [e for e in captured if e["event_type"] == "provider.thinking.redacted"] == []
-    messages = [rec.getMessage() for rec in records]
-    skips = [m for m in messages if "provider.thinking.redacted skipped" in m]
-    assert len(skips) == 1
-    assert "reason=no_app_or_session" in skips[0]
-    assert "call=23" in skips[0]

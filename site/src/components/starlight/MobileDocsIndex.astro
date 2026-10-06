@@ -1,0 +1,54 @@
+---
+const { hasSidebar, toc } = Astro.locals.starlightRoute;
+---
+
+{hasSidebar && (
+	<div class:list={['docs-index-bar md:sl-hidden print:hidden', { 'without-toc': !toc }]}>
+		<button class="docs-index" popovertarget="starlight__sidebar">
+			Docs index
+		</button>
+	</div>
+)}
+
+<style>
+	.docs-index-bar {
+		position: fixed;
+		inset-block-start: var(--sl-nav-height);
+		inset-inline-start: 0;
+		z-index: calc(var(--sl-z-index-toc) + 1);
+		padding: 0.5rem 1rem;
+		height: var(--sl-mobile-toc-height);
+	}
+	.without-toc {
+		inset-inline-end: 0;
+		background: var(--paper);
+		border-block: 1px solid var(--line-control);
+	}
+	.docs-index {
+		height: calc(var(--sl-mobile-toc-height) - 1rem);
+		padding-inline: 0.75rem;
+		border: 1px solid var(--line-control);
+		border-radius: 0.5rem;
+		background: var(--paper);
+		color: var(--ink);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+	}
+	@media (max-width: 49.99rem) {
+		:global(html[data-has-sidebar]:not([data-has-toc])) {
+			--sl-mobile-toc-height: 3rem;
+		}
+		:global(mobile-starlight-toc summary) {
+			padding-inline-start: 8rem;
+		}
+		:global(mobile-starlight-toc .display-current) {
+			display: none;
+		}
+		:global(#starlight__sidebar) {
+			margin: 0;
+			max-height: calc(100dvh - var(--sl-nav-height));
+			padding-bottom: max(1rem, env(safe-area-inset-bottom));
+			overscroll-behavior: contain;
+		}
+	}
+</style>

@@ -21,8 +21,20 @@ calls :func:`dispatch_action` with the parsed pieces. Order, every call:
    wrapped so an unexpected raise durably fails the record BEFORE the same
    exception propagates (finding #2, BLOCKING).
 
+   The sidecar's ``destination: "permission"`` names the event's TARGET
+   lane, not an unconditional routing order: it only applies to a
+   particular action when that action's own ``context`` structurally
+   carries a ``permission_id`` (issue #1549 #28). A ``clio.approval.v1``
+   card the agent shows standalone — not bound to a real pending native
+   permission — carries no ``permission_id`` at all, so it falls back to
+   the plain agent lane with its resolved context (e.g. ``{"approved":
+   true}``) delivered as an ordinary action. A ``permission_id`` that IS
+   present but unknown/expired still reaches ``_deliver_permission`` and
+   gets its existing typed 404 — never a silent reroute.
+
 ⚑ No deterministic decision-making in core (.claude/CLAUDE.md #1): every
-branch below routes on the sidecar's DECLARED ``destination``/``operation``
+branch below routes on the sidecar's DECLARED ``destination``/``operation``,
+the structural PRESENCE of a ``permission_id`` in the action's own context,
 and the session's own STATE — never on the action's name or its prose.
 """
 
@@ -264,6 +276,18 @@ async def dispatch_action(
     source_component_id = str(action.get("sourceComponentId") or "")
     timestamp = str(action.get("timestamp") or "")
     destination = str(action.get("destination") or "agent")
+    if destination == "permission" and not str(context.get("permission_id") or ""):
+        # Issue #1549 #28: the sidecar names ``approval.respond``'s TARGET
+        # lane as "permission", but that only applies to an action actually
+        # bound to a real pending native permission. A standalone
+        # ``clio.approval.v1`` card (the agent asking a plain yes/no, never
+        # wired to a tool-call permission) carries no ``permission_id`` in
+        # its context at all -- structurally, not a permission response --
+        # so it falls back to the ordinary agent lane instead of 422ing in
+        # ``_deliver_permission``. A ``permission_id`` that IS present but
+        # unknown/expired is untouched by this check and still reaches
+        # ``_deliver_permission``'s existing typed 404 (no silent reroute).
+        destination = "agent"
     route = action.get("route")
     if not action.get("declared"):
         app.state.a2ui_catalogs.record_session_reason(
@@ -373,7 +397,12 @@ async def _deliver_permission(
         )
         persist_transition(app, failed)
         _publish(app, sid, failed)
-        raise _error(422, "validation_error", "approval.respond has an invalid action")
+        raise _error(
+            422,
+            "validation_error",
+            f"{record.action_name} has an invalid action "
+            "(context.action must be one of allow/deny/allow_session/allow_workspace)",
+        )
     pending = app.state.permissions.get(permission_id)
     scope = {sid, *descendant_session_ids(app, sid)}
     if pending is not None and str(pending.get("session_id") or "") not in scope:

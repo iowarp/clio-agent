@@ -66,6 +66,7 @@ def session_to_v3(session: Any) -> dict[str, Any]:
     optional = {
         "provider_id": model.get("provider_id"),
         "model_id": model.get("model_id"),
+        "model_transport": model.get("variant"),
         "effort": session_effort(metadata),
         "branch": metadata.get("branch") or metadata.get("git_branch"),
         "parent_session_id": getattr(session, "parent_session_id", ""),

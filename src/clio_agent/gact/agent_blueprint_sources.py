@@ -82,6 +82,7 @@ def blueprint_source_clone_timeout_s() -> float:
 def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     """Inspect a source, cloning remotes temporarily, and list its blueprints."""
 
+    from clio_agent.gact.blueprint_source_revision import inspect_revision
     from clio_agent.gact.routes.blueprint_candidates import (  # noqa: PLC0415
         agent_blueprint_candidates,
     )
@@ -99,14 +100,9 @@ def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     try:
         if source_path.exists():
-            try:
-                refreshed["commit"] = subprocess.check_output(
-                    ["git", "-C", str(source_path), "rev-parse", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-            except Exception:  # noqa: BLE001 - commit is optional display metadata
-                refreshed["commit"] = ""
+            refreshed["commit"] = inspect_revision(
+                source_path, pin=str(row.get("pinned_commit") or ""), fetched=False
+            )
             refreshed["available_blueprints"] = agent_blueprint_candidates(source_path)
             return refreshed
         with tempfile.TemporaryDirectory(prefix="clio-agent-blueprint-source-") as tmp:
@@ -128,9 +124,9 @@ def refresh_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
                     "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
                 },
             )
-            refreshed["commit"] = subprocess.check_output(
-                ["git", "-C", str(clone_target), "rev-parse", "HEAD"], text=True
-            ).strip()
+            refreshed["commit"] = inspect_revision(
+                clone_target, pin=str(row.get("pinned_commit") or ""), fetched=True
+            )
             refreshed["available_blueprints"] = agent_blueprint_candidates(clone_target)
             return refreshed
     except Exception as exc:  # noqa: BLE001 - source diagnostics belong on the source row
@@ -228,6 +224,9 @@ def upsert_agent_blueprint_source(row: Mapping[str, Any]) -> dict[str, Any]:
     persisted = dict(row)
     source_id = persisted.get("id")
     with _SOURCE_REGISTRY_LOCK:
+        from clio_agent.gact.blueprint_ledgers import set_source_forgotten
+
+        set_source_forgotten(sources_path().with_suffix(".removed.json"), str(source_id), False)
         rows = [item for item in load_agent_blueprint_sources() if item.get("id") != source_id]
         rows.append(persisted)
         save_agent_blueprint_sources(rows)
@@ -249,6 +248,9 @@ def delete_agent_blueprint_source(source_id: str) -> bool:
         kept = [row for row in rows if row.get("id") != source_id]
         if len(kept) == len(rows):
             return False
+        from clio_agent.gact.blueprint_ledgers import set_source_forgotten
+
+        set_source_forgotten(sources_path().with_suffix(".removed.json"), source_id, True)
         save_agent_blueprint_sources(kept)
     return True
 
@@ -256,8 +258,8 @@ def delete_agent_blueprint_source(source_id: str) -> bool:
 def source_install_cwd(app: Any, *, scope: str, workspace_id: str) -> Path:
     """Resolve the install directory for a source registration.
 
-    A workspace-scoped install writes ``<cwd>/.clio/agent-blueprints/<id>`` and
-    destroys whatever sits there, so an unresolvable workspace must be refused
+    A workspace-scoped install writes the Agent namespace's blueprint snapshots,
+    so an unresolvable workspace must be refused
     rather than substituted with the server process's own working directory
     (which is commonly the default workspace root).
 
@@ -328,14 +330,14 @@ def source_install_skip_ids(*, scope: str, cwd: Path, home: Path | None = None) 
     from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415 - avoid a cycle
         _install_root,
         _tree_checksum,
+        parse_agent_blueprint_root,
         read_install_metadata,
     )
 
     home = home or Path.home()
     skip: dict[str, str] = {}
-    if scope == "global":
-        for blueprint_id in read_uninstalled_tombstones(home=home, cwd=cwd):
-            skip[blueprint_id] = "user_uninstalled"
+    for blueprint_id in read_uninstalled_tombstones(home=home, cwd=cwd, scope=scope):
+        skip[blueprint_id] = "user_uninstalled"
     try:
         install_root = _install_root(home=home, cwd=cwd, scope=scope)
         installed_roots = sorted(install_root.iterdir()) if install_root.is_dir() else []
@@ -347,7 +349,12 @@ def source_install_skip_ids(*, scope: str, cwd: Path, home: Path | None = None) 
             continue
         recorded = str(read_install_metadata(installed).get("checksum") or "").strip()
         if recorded and recorded != _tree_checksum(installed):
-            skip.setdefault(installed.name, "local_edits_present")
+            from clio_agent.gact.blueprint_identity import identity_fields
+
+            identity = identity_fields(parse_agent_blueprint_root(installed, scope=scope))[
+                "identity"
+            ]
+            skip.setdefault(identity, "local_edits_present")
     return skip
 
 
@@ -365,9 +372,9 @@ def record_default_agent_blueprint_source(
     the catalog from the installed, source-matching snapshots instead of
     cloning the remote a second time during first-run bootstrap.
 
-    Discovery calls this on every invocation (including per-turn agent
-    resolution), so the ledger is rewritten only when the recorded row actually
-    changes — ``updated_at`` alone is not a change.
+    Discovery calls this on every invocation, including per-turn resolution.
+    Existing registrations belong to the user: preserve their name, pin, catalog
+    and last operation outcome. Explicit source refresh owns subsequent updates.
     """
 
     from clio_agent.gact.agent_blueprints import read_install_metadata  # noqa: PLC0415
@@ -392,8 +399,14 @@ def record_default_agent_blueprint_source(
 
     source_id = source_registry_id(source, ref)
     with _SOURCE_REGISTRY_LOCK:
+        from clio_agent.gact.blueprint_ledgers import forgotten_sources
+
+        if source_id in forgotten_sources(sources_path().with_suffix(".removed.json")):
+            return {}
         rows = load_agent_blueprint_sources()
         existing = next((row for row in rows if row.get("id") == source_id), {})
+        if existing:
+            return dict(existing)
         row = {
             **existing,
             "id": source_id,
@@ -411,8 +424,6 @@ def record_default_agent_blueprint_source(
             "install_scope": "global",
             "is_default": True,
         }
-        if existing and {**existing, "updated_at": now} == row:
-            return dict(existing)
         save_agent_blueprint_sources(
             [existing_row for existing_row in rows if existing_row.get("id") != source_id] + [row]
         )
@@ -424,6 +435,8 @@ def install_agent_blueprint_source(
     *,
     cwd: Path,
     scope: Literal["global", "workspace"] = "global",
+    strict: bool = False,
+    app: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Install every valid blueprint exposed by a refreshed marketplace source.
 
@@ -454,12 +467,16 @@ def install_agent_blueprint_source(
     try:
         result = install_agent_blueprint(
             source=source,
+            source_id=str(refreshed.get("id") or ""),
+            allow_pin_change=True,
+            resolved_commit=str(refreshed.get("commit") or ""),
             scope=scope,
             cwd=cwd,
             ref=str(refreshed.get("ref") or ""),
             pinned_commit=str(refreshed.get("pinned_commit") or ""),
-            skip_invalid=True,
+            skip_invalid=not strict,
             skip_blueprint_ids=source_install_skip_ids(scope=scope, cwd=cwd),
+            app=app,
         )
     except Exception as exc:  # noqa: BLE001 - persisted as an explicit source failure
         logger.warning("blueprint_source_install_failed source=%s error=%r", source, exc)
@@ -475,6 +492,7 @@ def install_agent_blueprint_source(
     refreshed["installed_blueprints"] = [
         {
             "id": str(item.get("id") or ""),
+            "identity": str(item.get("identity") or ""),
             "version": str(item.get("version") or ""),
             "scope": str(item.get("scope") or scope),
         }
@@ -492,5 +510,9 @@ def install_agent_blueprint_source(
             error=f"invalid blueprint entries were not installed: {skipped_ids}",
         )
     else:
-        refreshed.update(status="ready", error="")
+        refreshed.update(
+            status="ready",
+            error="",
+            reload_required=any(item.get("reason") == "local_edits_present" for item in skipped),
+        )
     return refreshed, {"installed": installed, "skipped": skipped}

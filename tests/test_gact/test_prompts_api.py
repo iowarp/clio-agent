@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests._harness import runner_module_builder
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -217,7 +218,6 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             json={
                 "name": "Workspace",
                 "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
             },
         ).json()["id"]
         saved = c.put(
@@ -235,7 +235,8 @@ def test_workspace_prompt_override_uses_workspace_root(tmp_path: Path) -> None:
             params={"workspace_id": wid},
         ).json()["prompt"]
 
-    assert (workspace / ".clio" / "prompts" / "clio.chat--default.md").exists()
+    assert (workspace / ".clio-agent" / "shared" / "prompts" / "clio.chat--default.md").exists()
+    assert not (workspace / ".clio").exists()
     assert prompt["text"] == "Workspace chat prompt."
     assert prompt["scope"] == "workspace"
 
@@ -314,19 +315,6 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
 
     seen: dict[str, Any] = {}
 
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> None:
-        del enriched_text, emit_chunk, kwargs
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
-        return None
-
     def fake_prompt_agent(
         base_agent: Any,
         agent_def: Any,
@@ -354,8 +342,10 @@ def test_user_agent_runtime_uses_resolved_prompt_profile(
             },
         )()
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_prompt_user_agent_module",
+        runner_module_builder(fake_prompt_agent),
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=object())
     with TestClient(app) as c:

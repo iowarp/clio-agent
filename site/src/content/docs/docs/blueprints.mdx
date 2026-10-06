@@ -1,0 +1,145 @@
+---
+title: Agent blueprints
+description: An agent blueprint is a folder of Markdown files that defines an agent, its experts, and its tools. Install one from the marketplace or write your own.
+---
+
+import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
+
+An agent blueprint defines one agent: its instructions, the expert agents it can call, the tools it uses, and its default model settings. It is a folder of Markdown files with a small amount of frontmatter, so you can read it, copy it, and edit it with any text editor.
+
+Each session runs exactly one blueprint. Starting a session with a different blueprint replaces the agent for that session; it does not stack on top of another one. The default "Standard agent" is itself a blueprint.
+
+## Folder layout
+
+<FileTree>
+
+- earthscope-single-agent/
+  - AGENT.md the blueprint's root definition
+  - experts/
+    - main.md the root expert
+  - skills/
+    - acquire-earthscope-gnss/
+      - SKILL.md a procedure the agent loads when it needs it
+  - catalogs/ optional interactive views the agent may produce
+  - README.md
+
+</FileTree>
+
+Other optional folders are `prompts/`, `profiles/`, and `commands/`. A marketplace repository holds one or more of these folders at its top level.
+
+- `AGENT.md` is the root definition. Its frontmatter is read by CLIO, and its body is documentation for people.
+- `experts/` holds one Markdown file per expert. An expert is one agent loop with its own prompt, tools, and optional model settings.
+- `skills/` holds procedures. A skill is a folder with a `SKILL.md` file. The agent sees each skill's name and description, and loads the full text only when the task calls for it.
+
+## AGENT.md
+
+This is a minimal blueprint, modeled on the Base Agent in the marketplace:
+
+```md title="my-agent/AGENT.md"
+---
+id: my-agent
+title: My Agent
+version: 0.1.0
+description: A general-purpose agent for the files in this workspace.
+root_expert: base
+blueprint:
+  format: agent-blueprint-v1
+experts:
+  - experts/base.md
+---
+
+# My Agent
+
+Notes for people: what this agent is for and how to try it.
+```
+
+The fields that matter most:
+
+| Field | Meaning |
+|---|---|
+| `id` | A stable identifier, unique among installed blueprints. |
+| `title`, `description`, `version` | What the interface shows. |
+| `root_expert` | The id of the expert that receives your messages. |
+| `blueprint.format` | `agent-blueprint-v1`. |
+| `experts` | The expert files, as paths relative to the blueprint folder. |
+| `mcp_servers` | Tool servers the blueprint needs. See [Tools and MCP servers](/docs/mcp-servers/). |
+| `defaults` | Default settings, for example `prompt_profile`, and optionally a provider and model. |
+| `requires` | A minimum CLIO version, for example `clio_agent: ">=0.9.4.17"`. |
+
+## Experts
+
+Each file in `experts/` has its own frontmatter. The root expert from the example above:
+
+```md title="my-agent/experts/base.md"
+---
+id: base
+title: Base Agent
+tier: 1
+role: orchestrator
+module:
+  kind: react
+signature:
+  inputs:
+    question:
+      description: The user's request.
+      type: string
+  outputs:
+    answer:
+      description: The final answer to the user's request.
+      type: string
+tools:
+  - shell_bash
+  - fs_read_file
+  - fs_propose_edit
+  - fs_apply_edit_write
+---
+
+You are a careful assistant working in the user's workspace. Inspect files
+before answering questions about them.
+```
+
+The body of an expert file is its system prompt. The `tools` list names the tools the expert may use.
+
+### Declared experts become child sessions
+
+A root expert can name the experts it may call. The marketplace's EarthScope blueprint does it like this:
+
+```md title="experts/main.md (frontmatter excerpt)"
+---
+id: main
+tier: 1
+module:
+  kind: react
+children:
+  - geospatial
+  - data
+  - analysis
+  - visualization
+---
+```
+
+Each child file names its parent with `parent: main`. When the agent decides to use an expert, CLIO starts it as a real child session with its own transcript, tools, and evidence. Several children can run in parallel.
+
+An agent can only call experts its blueprint declares. CLIO checks every parent-to-child call against the declared tree, and it rejects the rest. Invalid blueprints are caught when you validate or install them: duplicate expert ids, missing parents, cycles, and references to tools that do not exist. A broken expert shows as disabled with a diagnostic instead of failing silently.
+
+## Install, update, and remove
+
+Use [Marketplaces and blueprints](/docs/marketplaces/) for the illustrated browsing guide, and [Add, reload, and remove](/docs/marketplaces/manage/) for installation and update workflows.
+
+An installed blueprint is a recorded snapshot with its source, revision, and checksum. Reloading is an explicit update operation. CLIO validates the staged copy before replacing the existing installation; validation may start declared services to check their tools. Normal [permissions](/docs/permissions/) still apply when the agent runs.
+
+## Write your own
+
+<Steps>
+
+1. Copy a small blueprint, such as `base-agent` from the marketplace repository, into a new folder.
+
+2. Change `id`, `title`, and the expert prompt. Add the tools the expert needs, and any `mcp_servers` it depends on.
+
+3. Add the folder as a marketplace: put it in a Git repository or a local folder that has one blueprint folder at its top level, and use **Add marketplace** with that location.
+
+4. Install it, then start a session with it.
+
+</Steps>
+
+If you work from the HTTP API, the blueprint routes are `POST /v1/agent-blueprints/validate`, `POST /v1/agent-blueprints/install`, `POST /v1/agent-blueprints/{id}/update`, and `DELETE /v1/agent-blueprints/{id}`.

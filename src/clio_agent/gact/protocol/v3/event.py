@@ -15,6 +15,7 @@ from clio_agent.gact.protocol.v3.message import (
     subagent_from_part,
 )
 from clio_agent.gact.protocol.v3.session import session_to_v3
+from clio_agent.gact.protocol.v3.variant import project_variant_event
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
 # per-attempt, so the Session record cannot carry them) and must ride the v3
@@ -113,6 +114,8 @@ def _message_block_upsert(
 ) -> _Projection | None:
     del session
     part = _mapping(payload.get("part"))
+    if not part.get("id"):
+        return None  # a patch-only update: there is no block to project
     if part.get("type") in UNPROJECTED_PART_TYPES:
         # No 0.3 block exists for it; the frame passes through untranslated and a
         # 0.3 client ignores the 0.2 event type (see message.UNPROJECTED_PART_TYPES).
@@ -371,7 +374,26 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     return _Projection("subagent.upserted", projected, entity_id)
 
 
+#: Highway events served to v3 as their own typed events (payload: the event's payload).
+_COMPACTION_EVENTS = frozenset({"compaction.started", "compaction.completed", "compaction.failed"})
+
+
+def _semantic_event(event: Event, payload: dict[str, Any], session: Any) -> _Projection | None:
+    """A highway event served as its own typed v3 event, else ``None``.
+
+    A compaction's event becomes ``compaction.started|completed|failed``; a variant
+    run's tries and selection get their own frames (the try tabs). Every other semantic
+    event keeps its generic ``semantic.event`` envelope.
+    """
+    event_type = str(payload.get("event_type") or "")
+    if event_type not in _COMPACTION_EVENTS:
+        return project_variant_event(event, payload, session)
+    body = dict(_mapping(payload.get("payload")))
+    return _Projection(event_type, body, str(body.get("compaction_id") or "") or None)
+
+
 _EVENT_PROJECTORS: dict[str, _Projector] = {
+    "semantic.event": _semantic_event,
     "server.connected": _stream_live,
     "session.snapshot": _session_upsert,
     "session.status_changed": _session_upsert,

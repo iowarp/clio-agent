@@ -10,11 +10,40 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  filesystem-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # This consumer is public and the contract checker is private. Cross-repo
+      # action sharing does not grant access here; use a read-only repository token.
+      - name: Require access to the private contract checker
+        env:
+          CLIO_NS_TOKEN: ${{ secrets.CLIO_NAMESPACES_READ_TOKEN }}
+        run: |
+          if [ -z "$CLIO_NS_TOKEN" ]; then
+            echo "::error::Configure CLIO_NAMESPACES_READ_TOKEN with read-only Contents access to iowarp/clio-namespaces."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          repository: iowarp/clio-namespaces
+          ref: c7dceb98c106bbe696f0750103c024c956a6e16c
+          token: ${{ secrets.CLIO_NAMESPACES_READ_TOKEN }}
+          persist-credentials: false
+          path: .ci/clio-namespaces
+      - uses: ./.ci/clio-namespaces
+
   # Every job carries timeout-minutes just above its measured normal duration, so a
   # hang fails the job in minutes instead of running to GitHub's 6-hour limit. The
   # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,
   # with every thread's stack in the log; the job limit is the outer backstop.
   lint:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # Static checks, split from the test leg so they run in parallel with it
     # (measured ~2 min; they used to add that to the serial check job).
     runs-on: ubuntu-latest
@@ -72,10 +101,16 @@ jobs:
       # burned down).
       - name: "check: silent-fallback ratchet (BLE001, S110, E722) (#772)"
         run: uv run python scripts/check_silent_fallbacks.py
+      # The same rules with noqa IGNORED, per file (clio-core fail-stop): a file may not
+      # gain a hidden broad except; the recorded baseline only ratchets down.
+      - name: "check: noqa-hidden swallow ratchet, per file"
+        run: uv run python scripts/check_noqa_swallows.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
 
   check:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # The suite runs as 3 deterministic shards (tests/_sharding.py) per interpreter,
     # each on its own runner with one xdist worker per logical CPU. One 4-worker
     # runner took 23-29 min; the tests are CPU-bound (every gact test builds an app),
@@ -125,6 +160,8 @@ jobs:
           retention-days: 3
 
   coverage:
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     # Combines the shards' coverage per interpreter and enforces the floor.
     # Coverage floor lowered to 70 as the v0.5 merge brought in large under-tested
     # gact code; tracked in iowarp/clio-agent#31 to ratchet back up to 80% as the
@@ -171,8 +208,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv python install 3.12
-      - run: uv run --no-project --python 3.12 python scripts/check_bundle_matches_lock.py --resolve
+      - run: uv python install 3.13
+      - run: uv run --no-project --python 3.13 python scripts/check_bundle_matches_lock.py --resolve
 
   flowcept-integration:
     # The Flowcept live-runtime test is excluded from the main leg (integration
@@ -187,7 +224,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --python 3.12 --extra dev --extra flowcept
+      - run: uv sync --python 3.13 --extra dev --extra flowcept
       # Fail FAST if the extra did not yield an importable flowcept — otherwise
       # importorskip would skip the module and this job would go green having
       # tested nothing (the exact skip-rot it exists to prevent).

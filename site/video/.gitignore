@@ -1,0 +1,7 @@
+node_modules/
+public/takes/
+out/
+.capture-profile/
+.capture-commands/
+*.md5
+*-preview.edit.json

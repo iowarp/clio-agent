@@ -1,8 +1,8 @@
-# Weekly provider SDK bump: keep releases on the LATEST Codex and Claude Code SDKs.
+# Weekly provider component bump: keep releases on the LATEST Codex runtime and Claude Code SDK.
 #
 # The providers gate new models by client version (the ChatGPT backend hides a
 # model from Codex clients older than its minimal_client_version), so a release
-# that ships a lagging openai-codex / openai-codex-cli-bin / claude-agent-sdk
+# that ships a lagging openai-codex-cli-bin / claude-agent-sdk
 # hides models the user's account already serves. scripts/bump_provider_sdks.py
 # moves their pyproject floors + uv.lock to the newest final releases with a
 # wheel for every bundle target; this workflow opens (or refreshes) the bump PR

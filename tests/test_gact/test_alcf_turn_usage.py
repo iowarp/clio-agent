@@ -31,6 +31,8 @@ from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.usage import _snapshot_lm_history_index
 from clio_agent.runtime import turn_lm_ledger
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 _RECORDED = json.loads(
     (Path(__file__).parents[1] / "fixtures" / "alcf" / "metis_chat_stream.json").read_text(
         encoding="utf-8"
@@ -93,16 +95,12 @@ def _expert_forward(api_base: str) -> None:
 
     import dspy
 
-    from clio_agent.config import create_chat_adapter
+    from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.lm.hooked_lm import create_hooked_lm
 
-    class Answer(dspy.Signature):
-        question: str = dspy.InputField()
-        answer: str = dspy.OutputField()
-
     cfg = _metis_config(api_base)
-    with dspy.context(lm=create_hooked_lm(cfg), adapter=create_chat_adapter(cfg)):
-        dspy.Predict(Answer)(question="Which station?")
+    with dspy.context(lm=create_hooked_lm(cfg)):
+        ClioReAct("question -> answer", tools=[])(question="Which station?")
 
 
 def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> None:
@@ -111,10 +109,11 @@ def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> 
     lm = create_lm(_metis_config(metis))
     import dspy
 
-    from clio_agent.config import create_chat_adapter
+    from clio_agent.gact.agents.clio_react import ClioReAct
 
-    with dspy.context(lm=lm, adapter=create_chat_adapter(_metis_config(metis))):
-        dspy.Predict("question -> answer")(question="Which station?")
+    # The agent loop streams every call.
+    with dspy.context(lm=lm):
+        ClioReAct("question -> answer", tools=[])(question="Which station?")
 
     assert _MetisReplay.requests[-1]["stream"] is True
     assert _MetisReplay.requests[-1]["stream_options"] == {"include_usage": True}
@@ -122,10 +121,7 @@ def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> 
     assert (usage["prompt_tokens"], usage["completion_tokens"]) == (1874, 42)
 
 
-def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(
-    metis: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: None)
+def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(metis: str) -> None:
     app = _app()
     token = turn_lm_ledger.open_ledger()
     try:
@@ -142,11 +138,20 @@ def test_a_turn_on_a_per_forward_alcf_lm_rolls_up_its_tokens(
             agent_runtime={"model": {"provider_id": "argonne_metis", "model_id": "gpt-oss-120b"}},
         )
         # The forward runs on an executor thread under a copy of the turn context.
-        worker = threading.Thread(
-            target=contextvars.copy_context().run, args=(_expert_forward, metis)
-        )
+        errors: list[BaseException] = []
+
+        def _run() -> None:
+            try:
+                _expert_forward(metis)
+            except BaseException as exc:  # surfaced below: a failed forward fails the test
+                errors.append(exc)
+
+        worker = threading.Thread(target=contextvars.copy_context().run, args=(_run,))
         worker.start()
         worker.join(timeout=60)
+        assert not worker.is_alive(), "the expert forward did not finish"
+        if errors:
+            raise errors[0]
 
         roll_up_usage(state, SimpleNamespace(answer=state.answer_text))
     finally:

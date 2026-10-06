@@ -759,12 +759,6 @@ def test_builders_no_artifacts_prediction_passthrough():
     assert re.search(r"\bartifacts\s*=\s*(\[\]|\"\"|getattr)", src) is None
 
 
-def test_runtime_metadata_tuple_drops_artifacts():
-    src = Path("src/clio_agent/gact/agents/runtime.py").read_text(encoding="utf-8")
-    assert '("workflow_state", "evidence", "errors", "delegation")' in src
-    assert '"artifacts"' not in src
-
-
 def test_structured_field_specs_has_no_artifacts_entry():
     src = Path("src/clio_agent/gact/agents/builders.py").read_text(encoding="utf-8")
     # The injected structured spec dict declares ONLY workflow_state.

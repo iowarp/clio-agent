@@ -899,9 +899,11 @@ def test_composer_busy_context_only_steer_is_canonical_and_model_ready(
         with _gact_app_context(app):
             token = gact_context.set_session_id(session_id)
             try:
-                block = drain_active_session_inbox(app)
+                arrivals = drain_active_session_inbox(app)
             finally:
                 gact_context.reset(token)
+        assert [source for source, _ in arrivals] == ["steer"]
+        block = arrivals[0][1]
         assert "## Structured context references (server-resolved)" in block
         assert "authoritative steer context" in block
 

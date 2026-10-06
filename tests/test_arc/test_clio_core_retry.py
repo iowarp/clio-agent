@@ -237,4 +237,3 @@ def test_write_health_state_is_consistent_under_concurrent_writers(
 
 def test_write_health_is_absent_before_a_failure() -> None:
     assert probe_clio_core_write_health(env={"CLIO_ARC_STORE": "cte"}) == []
-    assert probe_clio_core_write_health(env={"CLIO_ARC_STORE": "local"}) == []

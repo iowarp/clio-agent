@@ -155,7 +155,7 @@ def test_real_record_path_trace_equals_events_projection(tmp_path: Path) -> None
     """The production flow: ``record_semantic_event`` persists ``_events`` AND (via the
     sink) writes the trace JSONL. Each JSONL line equals the projection of its matching
     ``_events`` segment — the trace is a derivation of the log, proven end to end."""
-    from clio_agent.gact.semantic_events import FileSemanticTraceBackend
+    from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
     trace_dir = tmp_path / "traces"
     backend = FileSemanticTraceBackend(trace_dir)
@@ -299,7 +299,7 @@ def test_routing_arc_op_through_record_forms_the_loop(tmp_path: Path) -> None:
 def _record_with_file_trace(tmp_path: Path, monkeypatch: Any) -> tuple[ARCMemory, Path]:
     """Record the sample events with the FILE trace backend wired (so #762 erase is
     armed) and return (arc, trace_dir)."""
-    from clio_agent.gact.semantic_events import FileSemanticTraceBackend
+    from clio_agent.gact.semantic_trace_file import FileSemanticTraceBackend
 
     set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
     trace_dir = tmp_path / "traces"
@@ -312,14 +312,14 @@ def _record_with_file_trace(tmp_path: Path, monkeypatch: Any) -> tuple[ARCMemory
 
 
 def test_backfill_roundtrip_is_lossless(tmp_path: Path, monkeypatch: Any) -> None:
-    """Scope 3c: ``_events`` -> [#762 erase] -> backfill-from-JSONL -> byte-equal
-    ``_events`` content. The trace is a lossless recovery source."""
+    """Scope 3c: backfill-from-JSONL reproduces ``_events`` byte-equal (the trace is a
+    lossless copy), and a release never erases clio-core's ``_events``."""
     arc, trace_dir = _record_with_file_trace(tmp_path, monkeypatch)
     original = _read_events_contents(arc, "s1")
     assert original  # holds the recorded events
 
-    arc.release_session("s1")  # #762: file backend => _events erased
-    assert _read_events_contents(arc, "s1") == []
+    arc.release_session("s1")
+    assert _read_events_contents(arc, "s1") == original
 
     result = backfill_events_from_trace(trace_dir / "s1.semantic.jsonl")
     report = verify_events_roundtrip(original, result)

@@ -24,6 +24,7 @@ from clio_agent.gact.a2ui_catalogs.reasons import (
     record_a2ui_catalog_reason,
     record_a2ui_catalog_reason_once,
 )
+from clio_agent.gact.blueprint_identity import select_blueprint
 from clio_agent.gact.protocol.constants import A2UI_V091
 
 if TYPE_CHECKING:
@@ -109,8 +110,8 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
                 detail=str(exc),
             )
             return None
-    match = next((row for row in blueprints if row.id == blueprint_id and row.enabled), None)
-    if match is None:
+    match = select_blueprint(blueprints, blueprint_id)
+    if match is None or not match.enabled:
         _record_once(app, session_id, "a2ui_blueprint_unresolved", blueprint_id=blueprint_id)
     return match
 

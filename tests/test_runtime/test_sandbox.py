@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastmcp import Client
@@ -249,7 +250,7 @@ def test_pdeathsig_fold_preserves_argv_exactly(
     from clio_agent.tools import mcp_config
 
     # Force the Linux + setpriv-present branch so the prefix actually appears.
-    monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+    monkeypatch.setattr(mcp_config, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(mcp_config.shutil, "which", lambda _n: "/usr/bin/setpriv")
     legacy = mcp_config.pdeathsig_wrapped_command("mytool", ["--x", "1"])
     confined = sandbox.wrap_confined(
@@ -260,7 +261,7 @@ def test_pdeathsig_fold_preserves_argv_exactly(
     assert confined.args[:3] == ["--pdeathsig", "SIGKILL", "--"]
 
     # Non-Linux: the helper is a passthrough, and so is the fold (byte-identical).
-    monkeypatch.setattr(mcp_config.sys, "platform", "win32")
+    monkeypatch.setattr(mcp_config, "sys", SimpleNamespace(platform="win32"))
     legacy_win = mcp_config.pdeathsig_wrapped_command("mytool", ["--x", "1"])
     confined_win = sandbox.wrap_confined(
         "mytool", ["--x", "1"], profile=sandbox.PROFILE_FLEET, pdeathsig=True
@@ -315,8 +316,11 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
         profile=sandbox.PROFILE_FLEET,
         state=_codex_active_state(),
     )
-    cache_dir = ws / sandbox.CHILD_CACHE_DIRNAME
-    assert cache_dir.is_dir()  # created best-effort under the ALREADY-writable territory
+    from clio_agent.paths import workspace_cache_dir
+
+    cache_dir = workspace_cache_dir(ws)
+    assert cache_dir.is_dir()
+    assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()
     for key in sandbox.CHILD_CACHE_DIR_ENV_KEYS:
         assert confined.env_overlay[key] == str(cache_dir)
     assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"

@@ -11,13 +11,12 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from urllib.parse import urlsplit
 
-import anyio
 import httpx
+from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
-    hand_over_parents,
     persist_created,
     remove_created,
 )
@@ -25,6 +24,7 @@ from clio_agent.gact.infrastructure.drivers import (
     LOOPBACK_ONLY_SERVICES,
     DriverPlan,
     build_driver_plan,
+    clio_agent_version,
     service_connection_port,
     service_definitions,
 )
@@ -40,8 +40,10 @@ from clio_agent.gact.infrastructure.models import (
     ServiceRecord,
     ServiceState,
     TargetFacts,
+    VersionConflictDetail,
 )
 from clio_agent.gact.infrastructure.probe import probe_target
+from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, stop_desktop_launches
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
 from clio_agent.gact.infrastructure.server_access import (
     ServerAccessMixin,
@@ -51,7 +53,9 @@ from clio_agent.gact.infrastructure.server_access import (
     settle_failed_launch,
     store_key,
 )
+from clio_agent.gact.infrastructure.service_observation import parse_observation
 from clio_agent.gact.infrastructure.service_readiness import observe_service, wait_until_ready
+from clio_agent.gact.infrastructure.service_settlement import settle_service
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import (
     InfrastructureTransportRegistry,
@@ -131,12 +135,26 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         self._credential_resolver = credential_resolver
         self._endpoint_reachable = endpoint_reachable or self._check_tcp_reachable
         self._http_transport = http_transport
+        self._remote_launches: dict[str, RemoteLaunch] = {}
+        self._exiting_desktops: set[str] = set()
+
+    async def stop_desktop_agents(self, desktop_id: str) -> list[str]:
+        """Stop this Desktop's launches while its SSH bridges can still carry commands."""
+
+        self._exiting_desktops.add(desktop_id)
+        return await stop_desktop_launches(
+            desktop_id, self._remote_launches, self.store, self._execute, self._target_locks
+        )
 
     async def _check_tcp_reachable(self, url: str) -> bool:
-        return await anyio.to_thread.run_sync(_tcp_reachable, url)
+        return await run_sync(_tcp_reachable, url)
 
     async def _execute_local(self, spec: CommandSpec) -> CommandResult:
-        return await anyio.to_thread.run_sync(_run_local, spec)
+        return await run_sync(_run_local, spec)
+
+    async def execute_on_target(self, target_id: str, spec: CommandSpec) -> CommandResult:
+        """Execute a server-generated host operation through the owning transport."""
+        return await self._execute(target_id, spec)
 
     async def _execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
         target = self.store.target(target_id)
@@ -203,6 +221,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             service.configuration = dict(refreshed.configuration)
             service.owned_resources = list(refreshed.owned_resources)
             service.access = refreshed.access
+            service.observation = refreshed.observation
+            service.recommended_variant = refreshed.variant_id
             service.effective_parameters = (
                 list(refreshed.effective_parameters) if service.state == "running" else []
             )
@@ -255,6 +275,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 facts=facts,
                 target=self.store.target(target_id),
                 owned=record.owned_resources,
+                resolved_root=record.resolved_root or None,
             )
             output: list[str] = []
             for spec in plan.commands:
@@ -262,6 +283,15 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 if result.exit_code not in spec.allowed_exit_codes:
                     return "unknown"
+            structured = parse_observation(output)
+            if structured is not None:
+                self.store.update_service(
+                    target_id,
+                    record.service_id,
+                    state=structured.service_state,
+                    observation=structured,
+                )
+                return structured.service_state
             observed = "\n".join(output).casefold()
             state: ServiceState = (
                 "running"
@@ -343,6 +373,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         created: list[OwnedResource] = []
         installed: ServiceRecord | None = None
         target_os = "linux"
+        # Set only when a `connect` answer adopts a `clio_agent` under a root
+        # other than the target's configured one (see the "found" handling
+        # below); threaded into `_settle_service` so it is what gets persisted.
+        resolved_root_update: str | None = None
         # The deployment key this operation made (install / reinstall), and the
         # one it replaces: a failure puts the right one back.
         previous_key = ""
@@ -359,19 +393,66 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 row.model_copy(update={"progress": f"Running {request.action}"})
             )
             installed = self.store.service(request.target_id, row.service_id)
+            if installed is not None and request.action in {"install", "reinstall"}:
+                previous_directory = installed.configuration.get("storage.service_directory")
+                requested_directory = request.configuration.get("storage.service_directory")
+                if (
+                    previous_directory
+                    and requested_directory
+                    and requested_directory != previous_directory
+                ):
+                    raise ValueError(
+                        "This deployment owns its existing storage directory. Changing its path "
+                        "requires an explicit data migration; reinstall cannot move or abandon it."
+                    )
+                if row.service_id in {"flowcept", "cmf"} and previous_directory:
+                    for field, default in (
+                        ("container_runtime", "docker"),
+                        ("image_storage", "engine"),
+                    ):
+                        previous = installed.configuration.get(field) or default
+                        requested = request.configuration.get(field) or previous
+                        if requested != previous:
+                            raise ValueError(
+                                "This deployment owns its container runtime and image storage. "
+                                "Remove its runtime and explicitly delete retained data before "
+                                "choosing a different engine or image store."
+                            )
+            # `on_conflict` answers exactly THIS operation's found-conflict
+            # question, if any. It must never be read back from a persisted
+            # record or merged forward -- a past "Replace"/"Connect" would
+            # otherwise silently decide a later, unrelated conflict (#1528
+            # review) -- so it is captured once here and stripped from every
+            # configuration dict before it can reach a merge, a driver plan's
+            # `configuration`, or `_settle_service`'s persisted record. A
+            # fresh claim runs, and can find (and ask about) a new mismatch,
+            # on every single install/reinstall/start.
+            on_conflict = request.configuration.get("on_conflict")
+            if "on_conflict" in request.configuration:
+                request = request.model_copy(
+                    update={
+                        "configuration": {
+                            k: v for k, v in request.configuration.items() if k != "on_conflict"
+                        }
+                    }
+                )
+            target_row = self.store.target(request.target_id)
             if installed is not None and request.action != "install":
                 # Lifecycle actions operate on what is installed: its variant,
                 # negotiated runtime and parameters, not the form's current
                 # state (empty after a reload). A reinstall keeps the installed
                 # variant and lets values the person typed override it.
                 typed = {k: v for k, v in request.configuration.items() if v.strip()}
+                installed_configuration = {
+                    k: v for k, v in installed.configuration.items() if k != "on_conflict"
+                }
                 request = request.model_copy(
                     update={
                         "variant_id": installed.variant_id,
                         "configuration": (
-                            {**installed.configuration, **typed}
+                            {**installed_configuration, **typed}
                             if request.action == "reinstall"
-                            else {**request.configuration, **installed.configuration}
+                            else {**request.configuration, **installed_configuration}
                         ),
                     }
                 )
@@ -384,9 +465,11 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 variant_id=request.variant_id,
                 configuration=request.configuration,
                 facts=catalog.facts,
-                target=self.store.target(request.target_id),
+                target=target_row,
                 owned=installed.owned_resources if installed else [],
                 api_key=api_key,
+                on_conflict=on_conflict,
+                resolved_root=(installed.resolved_root or None) if installed else None,
             )
             if api_key and request.action in {"install", "reinstall"}:
                 previous_key = load_key(request.target_id, row.service_id)
@@ -394,6 +477,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 made_key = True
             output: list[str] = []
             for index, spec in enumerate(plan.commands):
+                if plan.remote_launch and spec.args[1].startswith("# clio-deploy:start"):
+                    if plan.remote_launch.desktop_id in self._exiting_desktops:
+                        raise RuntimeError("Desktop is closing; remote deployment was cancelled")
+                    self._remote_launches[request.target_id] = plan.remote_launch
                 result = await self._execute(request.target_id, spec)
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 row = self.store.put_operation(
@@ -419,6 +506,59 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
                 claim = parse_claim(result.stdout) or claim
+                if claim is not None and claim.result == "found":
+                    if on_conflict == "connect":
+                        # The person chose to connect to the running CLIO
+                        # as-is; treat it like an exact-match adopt. If it
+                        # lives under a different root than this target's
+                        # configured one, remember the real root so later
+                        # stop/logs/uninstall act on the process actually
+                        # adopted, not on a fresh install's root.
+                        if (
+                            row.service_id == "clio_agent"
+                            and claim.owner
+                            and target_row is not None
+                            and claim.owner.strip() != target_row.install_root.strip()
+                        ):
+                            resolved_root_update = claim.owner.strip()
+                        break
+                    # Nothing was stopped or installed. Surface what was
+                    # found so the caller can ask "Connect" or "Replace"
+                    # instead of clio silently deciding either way. A
+                    # process that never answered its health check is never
+                    # a reason to stop it either: `health` says so, typed,
+                    # rather than clio guessing it is hung.
+                    health = claim.health or "unknown"
+                    progress = (
+                        (
+                            f"CLIO {claim.installed_version or '(unknown version)'} "
+                            f"is already running on this host (pid {claim.pid or 'unknown'})."
+                        )
+                        if health == "healthy"
+                        else (
+                            f"A CLIO-looking process is already on this host's port "
+                            f"(pid {claim.pid or 'unknown'}), but it isn't answering."
+                        )
+                    )
+                    self.store.put_operation(
+                        row.model_copy(
+                            update={
+                                "state": "failed",
+                                "progress": progress,
+                                "error": "clio_deploy_version_conflict",
+                                "conflict": VersionConflictDetail(
+                                    installed_version=claim.installed_version or "unknown",
+                                    pid=claim.pid or "",
+                                    health=health,
+                                    target_version=clio_agent_version(),
+                                    owner=claim.owner or "",
+                                    port=plan.connection_port or 17800,
+                                ),
+                                "logs": _bounded("\n".join(output)),
+                            }
+                        )
+                    )
+                    return
                 if claim is not None and claim.result == "adopted":
                     # The healthy server of this exact install and version
                     # keeps running; installing or starting again is not needed.
@@ -449,6 +589,22 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             # A reinstall replaces only the server; the image and caches stay
             # on the ledger, so both install and reinstall merge.
             owned = merge_owned(installed.owned_resources if installed else [], created)
+            if row.service_id == "clio_agent" and request.action in {
+                "install",
+                "start",
+                "reinstall",
+            }:
+                adopted = claim is not None and claim.result in {"found", "adopted"}
+                configuration = dict(request.configuration)
+                configuration.update(
+                    desktop_owned="false" if adopted else "true",
+                    version=(claim.installed_version or "unknown")
+                    if adopted and claim is not None
+                    else clio_agent_version(),
+                )
+                request = request.model_copy(update={"configuration": configuration})
+                if not adopted and plan.remote_launch:
+                    resolved_root_update = plan.remote_launch.root
             await self._settle_service(
                 row.service_id,
                 request.model_copy(
@@ -457,8 +613,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 plan.connection_port,
                 output,
                 owned,
+                resolved_root=resolved_root_update,
+                retain_record=plan.retain_record,
             )
-            if request.action == "uninstall" or (
+            if request.action in {"uninstall", "delete_data"} or (
                 request.action in {"install", "reinstall"} and not api_key
             ):
                 # Uninstall removes the key; a keyless (shareable) install drops an old one.
@@ -529,13 +687,29 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         adopted server was already running, so it is left alone.
         """
 
+        if plan and plan.failure_cleanup:
+            try:
+                for spec in plan.failure_cleanup:
+                    result = await self._execute(target_id, spec)
+                    if result.exit_code not in spec.allowed_exit_codes:
+                        return (
+                            f"Cleanup incomplete; retained data: {result.stderr or result.stdout}"
+                        )
+                return "Stopped the owned operation; retained its environment, model cache and evidence."
+            except (OSError, RuntimeError) as exc:
+                return f"Cleanup incomplete; retained data: {exc}"
         if created:
 
             async def execute(spec: CommandSpec) -> CommandResult:
                 return await self._execute(target_id, spec)
 
             return (await remove_created(execute, target_id, created, target_os))[1]
-        if plan is None or plan.teardown is None or claim is None or claim.result == "adopted":
+        if (
+            plan is None
+            or plan.teardown is None
+            or claim is None
+            or claim.result in {"adopted", "found"}
+        ):
             return "Nothing this deploy started needed cleaning up."
         try:
             result = await self._execute(target_id, plan.teardown(claim))
@@ -548,67 +722,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             return f"Cleanup failed: {(result.stderr or result.stdout).strip()}"
         return "Cleaned up what this deploy started."
 
-    async def _settle_service(
-        self,
-        service_id: str,
-        request: ServiceActionRequest,
-        connection_port: int | None,
-        output: list[str],
-        owned: list[OwnedResource] | None = None,
-    ) -> None:
-        previous = self.store.service(request.target_id, service_id)
-        if request.action == "uninstall":
-            if previous is not None:
-                hand_over_parents(self.store, request.target_id, previous)
-            self.store.delete_service(request.target_id, service_id)
-            return
-        state: ServiceState = previous.state if previous else "unknown"
-        if request.action in {"install", "reinstall", "start"}:
-            state = "running"
-        elif request.action == "stop":
-            state = "stopped"
-        elif request.action == "status" and output:
-            observed = output[-1].strip().casefold()
-            state = (
-                "running"
-                if "running" in observed
-                else "stopped"
-                if "exited" in observed
-                else "unknown"
-            )
-        connection_url = previous.connection_url if previous else None
-        strategy: ConnectionStrategy | None = previous.connection_strategy if previous else None
-        if connection_port and state == "running":
-            try:
-                connection_url, strategy = await self._resolve_connection(
-                    request.target_id,
-                    connection_port,
-                    service_id=service_id,
-                    previous_url=connection_url,
-                    previous_strategy=strategy,
-                    wait_for_direct=request.action in {"install", "reinstall", "start"},
-                )
-            except (OSError, RuntimeError, ValueError):
-                connection_url = previous.connection_url if previous else None
-                strategy = previous.connection_strategy if previous else None
-        record = self.store.put_service(
-            ServiceRecord(
-                id=f"{request.target_id}:{service_id}",
-                service_id=service_id,
-                target_id=request.target_id,
-                variant_id=request.variant_id,
-                configuration=request.configuration,
-                state=state,
-                connection_url=connection_url,
-                connection_strategy=strategy,
-                owned_resources=owned
-                if owned is not None
-                else (previous.owned_resources if previous else []),
-                access=previous.access if previous else None,
-            )
-        )
-        if state == "running" and request.action in {"install", "reinstall", "start", "status"}:
-            await self._refresh_effective(request.target_id, record)
+    _settle_service = settle_service
 
     async def _resolve_connection(
         self,

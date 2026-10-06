@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import __version__ as clio_agent_version
+from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.agent_tasks import seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event
@@ -114,6 +115,12 @@ def test_workspace_v3_uses_short_server_label_and_keeps_path_secondary(
 def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
     tmp_path: Path,
 ) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "AGENT.md").write_text(
+        "---\nid: earthscope-flat\ntitle: EarthScope (Flat / Haiku)\nversion: 0.1.0\n---\nReview"
+    )
+    install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
 
     workspace_response = client.post(

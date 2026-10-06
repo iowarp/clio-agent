@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent import paths
 from clio_agent.gact.app import build_app
 from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
@@ -313,7 +314,10 @@ def test_resumable_upload_computes_server_identity_and_survives_restart(tmp_path
         assert (
             workspace_copy
             == (
-                tmp_path / "workspace" / ".clio" / "inputs" / str(record["id"]) / "notes.md"
+                paths.workspace_state_dir(tmp_path / "workspace")
+                / "inputs"
+                / str(record["id"])
+                / "notes.md"
             ).resolve()
         )
         assert workspace_copy.read_bytes() == content
@@ -326,7 +330,13 @@ def test_resumable_upload_computes_server_identity_and_survives_restart(tmp_path
             for entry in client.get(f"/v1/workspaces/{workspace_id}/files").json()["entries"]
             if entry.get("resource_id") == record["id"]
         )
-        assert source_entry["path"] == f".clio/inputs/{record['id']}/notes.md"
+        assert source_entry["path"] == f".clio-agent/local/inputs/{record['id']}/notes.md"
+        assert (
+            client.get(
+                f"/v1/workspaces/{workspace_id}/files/read", params={"path": source_entry["path"]}
+            ).content
+            == content
+        )
         assert source_entry["display_path"] == f"Sources/{record['id']}/notes.md"
         assert source_entry["type"] == "file"
         assert source_entry["internal"] is False
@@ -1270,7 +1280,7 @@ def test_ready_resource_copies_to_another_agent_owned_workspace(tmp_path: Path) 
         assert copied["workspace_id"] == destination_workspace
         assert copied["sha256"] == source["sha256"]
         copied_path = Path(str(copied["workspace_path"]))
-        assert copied_path.is_relative_to(tmp_path / "destination")
+        assert copied_path.is_relative_to(paths.workspace_state_dir(tmp_path / "destination"))
         assert copied_path.read_bytes() == b"%PDF-1.4\nsource"
         assert copied_path != Path(str(source["workspace_path"]))
 

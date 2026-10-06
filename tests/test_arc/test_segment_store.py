@@ -1,9 +1,9 @@
 """Unit tests for the ARC live-context SegmentStore.
 
-Covers the four ops (append/insert/delete/summarize), the dspy-shaped render,
-as-of-T reads, persistence/reload, scope isolation, op-logging, and token
-attribution. The byte-equality / mutation-propagation acceptance tests against a
-real dspy render live in test_live_plane_byte_equality.py.
+Covers the ops (append/insert/delete/summarize/replace), the ordered live render
+(``render`` / ``render_text``), as-of-T reads, persistence/reload, scope isolation,
+op-logging, and token attribution. How the agent's context is folded from the
+render is tested with ``clio_react_record.fold_steps`` in tests/test_gact.
 """
 
 from __future__ import annotations
@@ -12,15 +12,42 @@ import msgspec
 import pytest
 
 from clio_agent.arc.schema import Segment, decode_segment, decode_segments, encode_segments
-from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import ARC_KINDS, LocalFSStore
+from clio_agent.arc.segments import SegmentReadError, SegmentStore
+from clio_agent.arc.storage import ARC_KINDS
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 SID = "sess-1"
 SCOPE = "agentA/expertB"
 
 
 def _store(tmp_path):
-    """A SegmentStore over a fresh LocalFSStore, recording every logged op."""
+    """A SegmentStore over a fresh recording every logged op."""
     logged: list[dict] = []
 
     def op_logger(op, session_id, scope, **kw):
@@ -28,7 +55,7 @@ def _store(tmp_path):
         logged.append(ev)
         return ev
 
-    return SegmentStore(LocalFSStore(str(tmp_path)), op_logger=op_logger), logged
+    return SegmentStore(_clio_core(str(tmp_path)), op_logger=op_logger), logged
 
 
 def _iteration(ss, sid, scope, step, thought, tool, args, obs):
@@ -42,22 +69,30 @@ def test_segments_kind_in_arc_kinds():
     assert "segments" in ARC_KINDS
 
 
-def test_append_renders_gapless_dspy_dict(tmp_path):
+def test_invalid_segment_scope_has_typed_read_error(tmp_path) -> None:
+    store = _clio_core(str(tmp_path))
+    segments = SegmentStore(store)
+    store.put("segments", segments._record_name(SID, SCOPE), msgspec.msgpack.encode(42))
+    with pytest.raises(SegmentReadError) as caught:
+        segments.list_segments(SID, SCOPE)
+    assert caught.value.error_type == "clio_core_segments_invalid"
+
+
+def test_append_renders_in_write_order_content_preserved(tmp_path):
     ss, _ = _store(tmp_path)
     _iteration(ss, SID, SCOPE, 0, "think0", "grep", {"q": "x"}, "obs0")
     _iteration(ss, SID, SCOPE, 1, "think1", "finish", {}, "done")
-    keys = ss.render_keys(SID, SCOPE)
-    assert list(keys.keys()) == [
-        "thought_0",
-        "tool_name_0",
-        "tool_args_0",
-        "observation_0",
-        "thought_1",
-        "tool_name_1",
-        "tool_args_1",
-        "observation_1",
+    assert [(s.kind, s.step, s.content) for s in ss.render(SID, SCOPE)] == [
+        ("thought", 0, {"text": "think0"}),
+        ("tool_call", 0, {"name": "grep", "args": {"q": "x"}}),  # args dict preserved
+        ("observation", 0, {"text": "obs0"}),
+        ("thought", 1, {"text": "think1"}),
+        ("tool_call", 1, {"name": "finish", "args": {}}),
+        ("observation", 1, {"text": "done"}),
     ]
-    assert keys["tool_args_0"] == {"q": "x"}  # dict preserved, not re-parsed
+    assert ss.render_text(SID, SCOPE) == "\n".join(
+        ["think0", 'grep({"q":"x"})', "obs0", "think1", "finish({})", "done"]
+    )
 
 
 def test_append_orders_monotonically(tmp_path):
@@ -73,22 +108,9 @@ def test_delete_tombstones_absent_from_render_present_in_store(tmp_path):
     _iteration(ss, SID, SCOPE, 0, "think0", "grep", {}, "obs0")
     o0 = [s for s in ss.list_segments(SID, SCOPE) if s.kind == "observation"][0]
     assert ss.delete(SID, SCOPE, [o0.id]) == 1
-    assert "obs0" not in str(ss.render_keys(SID, SCOPE))  # gone from the prompt
+    assert "obs0" not in ss.render_text(SID, SCOPE)  # gone from the live render
     tombstoned = ss.list_segments(SID, SCOPE, include_tombstoned=True)
     assert any(s.id == o0.id and s.status == "tombstoned" for s in tombstoned)  # kept for replay
-
-
-def test_delete_renumbers_gaplessly(tmp_path):
-    ss, _ = _store(tmp_path)
-    _iteration(ss, SID, SCOPE, 0, "t0", "a", {}, "o0")
-    _iteration(ss, SID, SCOPE, 1, "t1", "b", {}, "o1")
-    # delete the whole first iteration
-    first = [s for s in ss.list_segments(SID, SCOPE) if s.step == 0]
-    ss.delete(SID, SCOPE, [s.id for s in first])
-    keys = ss.render_keys(SID, SCOPE)
-    # surviving iteration renumbers to idx 0 — no gap
-    assert list(keys.keys()) == ["thought_0", "tool_name_0", "tool_args_0", "observation_0"]
-    assert keys["thought_0"] == "t1"
 
 
 def test_summarize_replaces_range_with_summary(tmp_path):
@@ -97,7 +119,7 @@ def test_summarize_replaces_range_with_summary(tmp_path):
     _iteration(ss, SID, SCOPE, 1, "drop", "b", {}, "dropobs")
     drop = [s for s in ss.list_segments(SID, SCOPE) if s.step == 1]
     summary = ss.summarize(SID, SCOPE, [s.id for s in drop], {"text": "SUMMARY"})
-    rendered = str(ss.render_keys(SID, SCOPE))
+    rendered = ss.render_text(SID, SCOPE)
     assert "SUMMARY" in rendered
     assert "drop" not in rendered and "dropobs" not in rendered  # originals gone from prompt
     assert "keep" in rendered  # untouched range stays
@@ -110,7 +132,9 @@ def test_summarize_all_is_context_compaction(tmp_path):
     _iteration(ss, SID, SCOPE, 1, "t1", "b", {}, "o1")
     live_ids = [s.id for s in ss.render(SID, SCOPE)]
     ss.summarize(SID, SCOPE, live_ids, {"text": "EVERYTHING"})
-    assert ss.render_keys(SID, SCOPE) == {"observation_0": "EVERYTHING"}
+    assert [(s.kind, s.content) for s in ss.render(SID, SCOPE)] == [
+        ("summary", {"text": "EVERYTHING"})
+    ]
 
 
 def test_insert_at_position(tmp_path):
@@ -118,7 +142,7 @@ def test_insert_at_position(tmp_path):
     ss.append(SID, SCOPE, "thought", {"text": "first"})
     ss.append(SID, SCOPE, "thought", {"text": "third"})
     ss.insert(SID, SCOPE, 1, "thought", {"text": "second"})
-    texts = list(ss.render_keys(SID, SCOPE).values())
+    texts = [s.content["text"] for s in ss.render(SID, SCOPE)]
     assert texts == ["first", "second", "third"]
 
 
@@ -136,22 +160,22 @@ def test_as_of_returns_pre_edit_view(tmp_path):
     snapshot = max(s.logical_time for s in ss.list_segments(SID, SCOPE))
     obs = [s for s in ss.list_segments(SID, SCOPE) if s.kind == "observation"][0]
     ss.delete(SID, SCOPE, [obs.id])
-    assert "o0" not in str(ss.render_keys(SID, SCOPE))  # current: gone
-    assert "o0" in str(ss.render_keys(SID, SCOPE, as_of=snapshot))  # as-of-T: present
+    assert "o0" not in ss.render_text(SID, SCOPE)  # current: gone
+    assert "o0" in ss.render_text(SID, SCOPE, as_of=snapshot)  # as-of-T: present
 
 
 def test_persistence_reload(tmp_path):
     ss, _ = _store(tmp_path)
     _iteration(ss, SID, SCOPE, 0, "t0", "a", {"k": 1}, "o0")
-    before = ss.render_keys(SID, SCOPE)
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path)))  # cold store, same backend dir
-    assert reloaded.render_keys(SID, SCOPE) == before
+    before = [(s.id, s.kind, s.content) for s in ss.render(SID, SCOPE)]
+    reloaded = SegmentStore(_clio_core(str(tmp_path)))  # cold store, same backend dir
+    assert [(s.id, s.kind, s.content) for s in reloaded.render(SID, SCOPE)] == before
 
 
 def test_logical_time_recovered_after_reload(tmp_path):
     ss, _ = _store(tmp_path)
     last = ss.append(SID, SCOPE, "thought", {"text": "x"})
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path)))
+    reloaded = SegmentStore(_clio_core(str(tmp_path)))
     nxt = reloaded.append(SID, SCOPE, "thought", {"text": "y"})
     assert nxt.logical_time > last.logical_time  # clock not reset to 1
 
@@ -160,7 +184,7 @@ def test_scope_isolation(tmp_path):
     ss, _ = _store(tmp_path)
     ss.append(SID, "agentA/x", "thought", {"text": "in-x"})
     ss.append(SID, "agentA/y", "thought", {"text": "in-y"})
-    assert "in-y" not in str(ss.render_keys(SID, "agentA/x"))
+    assert "in-y" not in ss.render_text(SID, "agentA/x")
     assert sorted(ss.scan_scopes(SID)) == ["agentA/x", "agentA/y"]
     assert ss.scan_scopes(SID, "agentA/") == ["agentA/x", "agentA/y"]
     ss.append("other-sess", "agentA/x", "thought", {"text": "other"})
@@ -186,7 +210,7 @@ def test_tokens_by_kind(tmp_path):
 def test_apply_dispatch_and_unknown_op(tmp_path):
     ss, _ = _store(tmp_path)
     ss.apply("append", SID, SCOPE, kind="thought", content={"text": "via-apply"})
-    assert "via-apply" in str(ss.render_keys(SID, SCOPE))
+    assert "via-apply" in ss.render_text(SID, SCOPE)
     with pytest.raises(ValueError, match="unknown segment op"):
         ss.apply("frobnicate", SID, SCOPE)
 
@@ -196,7 +220,7 @@ def test_release_drops_memory_keeps_store(tmp_path):
     ss.append(SID, SCOPE, "thought", {"text": "persisted"})
     assert ss.release(SID) == 1
     # reload from the same backend: data survived the in-memory release
-    assert "persisted" in str(ss.render_keys(SID, SCOPE))
+    assert "persisted" in ss.render_text(SID, SCOPE)
 
 
 # ---- schema extension (additive, msgspec back-compatible) ------------------
@@ -295,7 +319,7 @@ def test_replace_swaps_content_in_render(tmp_path):
     orig = ss.append(SID, SCOPE, "observation", {"text": "before"}, step=0)
     new = ss.replace(SID, SCOPE, orig.id, {"text": "after"})
     assert new is not None
-    rendered = str(ss.render_keys(SID, SCOPE))
+    rendered = ss.render_text(SID, SCOPE)
     assert "after" in rendered and "before" not in rendered
     # replacement renders in the ORIGINAL's slot (same order), 1:1 provenance
     assert new.order == orig.order
@@ -321,11 +345,11 @@ def test_replace_as_of_recovers_pre_replace_view(tmp_path):
     snapshot = max(s.logical_time for s in ss.list_segments(SID, SCOPE))
     ss.replace(SID, SCOPE, orig.id, {"text": "REPLACED"})
     # current view: replaced
-    assert "REPLACED" in str(ss.render_keys(SID, SCOPE))
-    assert "ORIGINAL" not in str(ss.render_keys(SID, SCOPE))
+    assert "REPLACED" in ss.render_text(SID, SCOPE)
+    assert "ORIGINAL" not in ss.render_text(SID, SCOPE)
     # as-of-T (before the replace tick): the original is recoverable
-    assert "ORIGINAL" in str(ss.render_keys(SID, SCOPE, as_of=snapshot))
-    assert "REPLACED" not in str(ss.render_keys(SID, SCOPE, as_of=snapshot))
+    assert "ORIGINAL" in ss.render_text(SID, SCOPE, as_of=snapshot)
+    assert "REPLACED" not in ss.render_text(SID, SCOPE, as_of=snapshot)
 
 
 def test_replace_can_rekind_the_slot(tmp_path):
@@ -338,12 +362,15 @@ def test_replace_can_rekind_the_slot(tmp_path):
     assert new2 is not None and new2.kind == "observation"
 
 
-def test_replace_no_live_target_is_noop(tmp_path):
+def test_replace_no_live_target_fails_typed(tmp_path):
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
     ss, logged = _store(tmp_path)
     ss.append(SID, SCOPE, "thought", {"text": "x"})
     n_before = len(logged)
-    assert ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"}) is None
-    assert len(logged) == n_before  # no op logged for a no-op replace
+    with pytest.raises(StaleSegmentIdError):
+        ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"})
+    assert len(logged) == n_before  # nothing applied, nothing logged
 
 
 def test_replace_via_apply_dispatch(tmp_path):
@@ -351,7 +378,7 @@ def test_replace_via_apply_dispatch(tmp_path):
     orig = ss.append(SID, SCOPE, "thought", {"text": "old"})
     out = ss.apply("replace", SID, SCOPE, target_id=orig.id, content={"text": "new"})
     assert out is not None and out.content == {"text": "new"}
-    assert "new" in str(ss.render_keys(SID, SCOPE))
+    assert "new" in ss.render_text(SID, SCOPE)
 
 
 # ---- correlation span ids (turn_id / expert_span_id / run_span_id) ----------

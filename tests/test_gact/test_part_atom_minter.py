@@ -166,7 +166,7 @@ def test_streamed_text_part_seals_exactly_one_atom_with_the_full_text(tmp_path: 
     transcript.append_text_delta("main", "answer", "world")
     transcript.close_open_text()
 
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     atoms = _atoms_on_lane(arc, "sess1")
     assert len(atoms) == 1
     assert atoms[0]["atom_role"] == "part"
@@ -181,7 +181,7 @@ def test_streamed_text_part_seals_exactly_one_atom_with_the_full_text(tmp_path: 
 # --------------------------------------------------------------------------- #
 
 
-def test_whitespace_only_and_discarded_parts_never_seal(tmp_path: Path) -> None:
+def test_whitespace_only_parts_never_seal(tmp_path: Path) -> None:
     arc = _arc(tmp_path)
     app = _fake_app(arc)
     minter = open_turn_minter(app, "sess2", "turn2")
@@ -191,11 +191,7 @@ def test_whitespace_only_and_discarded_parts_never_seal(tmp_path: Path) -> None:
     transcript.append_text_delta("main", "answer", "   ")
     transcript.close_open_text()
 
-    # Discarded retry: the abandoned attempt never closes, so it never seals either.
-    transcript.append_text_delta("main", "reasoning", "abandoned attempt")
-    assert transcript.discard_open_text() is True
-
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     assert _atoms_on_lane(arc, "sess2") == []
     minter.close()
 
@@ -218,7 +214,7 @@ def test_seal_sequence_matches_finalize_with_a_dropped_part_in_the_middle(tmp_pa
     transcript.append_text_delta("main", "answer", "second")
     transcript.close_open_text()  # seals live: sequence 2 (the drop never counted)
 
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     sealed_sequence = {a["part_id"]: a["part"]["sequence"] for a in _atoms_on_lane(arc, "sess3")}
     assert len(sealed_sequence) == 2
 
@@ -243,14 +239,14 @@ def test_tool_call_seals_on_its_result_carrying_a_presentation_delta(tmp_path: P
 
     call_part = transcript.append_part(_tool_call("call_x", "tc_x"))
     assert call_part is not None
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     assert _atoms_on_lane(arc, "sess4") == []  # not final yet: no result
 
     # A presentation delta mutates the SAME live object in place, before the result.
     call_part.presentation = {"summary": "reading README.md", "blocks": []}
 
     transcript.append_part(_tool_result("call_x", "tr_x"))  # seals the tool_call now
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
 
     atoms = _atoms_on_lane(arc, "sess4")
     assert len(atoms) == 1  # only the tool_call sealed; its result did not (no match)
@@ -290,7 +286,7 @@ def test_seal_never_touches_the_store_under_the_transcript_lock(tmp_path: Path) 
     elapsed = time.monotonic() - started
     assert elapsed < 0.05, f"append_part() blocked on the store: {elapsed:.3f}s"
 
-    assert minter.drain(timeout=5.0)  # the slow mints DID land, off the caller's thread
+    assert minter.drain()  # the slow mints DID land, off the caller's thread
     assert len(_atoms_on_lane(arc, "sess5")) == 2
     minter.close()
 
@@ -332,7 +328,7 @@ def test_loop_never_blocks_while_a_mint_is_stuck(tmp_path: Path) -> None:
     assert ticks == 50, "the loop stalled while the minter thread was blocked on the store"
 
     release.set()
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     minter.close()
 
 
@@ -362,7 +358,7 @@ def test_finalize_mints_exactly_the_unsealed_remainder(
     transcript.close_open_text()  # seal #1 (live)
     transcript.append_part(_tool_call("call_z", "tc_z"))
     transcript.append_part(_tool_result("call_z", "tr_z"))  # seal #2 (live, the tool_call)
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     live_call_count = len(calls)
     assert live_call_count == 2  # the tool_result itself never seals live
 
@@ -465,7 +461,7 @@ def test_envelope_atom_is_the_sole_authority_for_message_level_fields(tmp_path: 
 
     transcript.append_text_delta("main", "answer", "hello")
     transcript.close_open_text()
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
 
     frozen = transcript.finalize()
     message = Message(
@@ -604,7 +600,7 @@ def test_crash_without_envelope_reassembles_as_typed_incomplete(tmp_path: Path) 
 
     transcript.append_text_delta("main", "answer", "partial answer before crash")
     transcript.close_open_text()
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     # Never finalize; never mint_remainder / the envelope — simulate a hard crash.
     minter.close()
 
@@ -651,7 +647,7 @@ def test_mint_failure_mid_turn_is_audited_and_recovered_at_finalize(
     transcript.close_open_text()  # seal #1: succeeds
     transcript.append_text_delta("main", "answer", "second thought")
     transcript.close_open_text()  # seal #2: raises inside the minter thread
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
 
     job_failed = [fields for stage, fields in audits if stage == "transcript.job_failed"]
     assert any(f["reason"] == PART_ATOM_SEAL_FAILED for f in job_failed)
@@ -813,7 +809,7 @@ def test_paused_transcript_persists_only_the_remainder(
 
     minter = turn_minter(app, session.id)
     assert minter is not None
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
 
     calls: list[str] = []
     real_append = part_atom_minter.append_part_atom
@@ -1075,7 +1071,7 @@ def test_a_mutation_after_the_seal_is_reminted_by_the_remainder(tmp_path: Path) 
     assert call_part is not None
     call_part.presentation = {"summary": "running", "blocks": [{"id": "b1", "text": "partial"}]}
     transcript.append_part(_tool_result("call_z", "tr_z"))  # seals the tool_call HERE
-    assert minter.drain(timeout=5.0)
+    assert minter.drain()
     assert [
         a["part"]["presentation"]["blocks"][0]["text"] for a in _atoms_on_lane(arc, "sess_reseal")
     ] == ["partial"]
@@ -1106,3 +1102,51 @@ def test_a_mutation_after_the_seal_is_reminted_by_the_remainder(tmp_path: Path) 
         [message.model_dump(exclude_none=True)], [reloaded[0].model_dump(exclude_none=True)]
     )
     assert report.empty, report.pretty()
+
+
+# --------------------------------------------------------------------------- #
+# #1577: the finalize drain waits while the ARC writes progress (no fixed 5 s)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _no_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An in-memory ARC has no clio-core daemon: only completed jobs are progress."""
+    from clio_agent.arc import daemon_progress
+
+    def unresolved() -> float:
+        raise daemon_progress.DaemonPidUnresolved("in-memory store")
+
+    monkeypatch.setattr(daemon_progress, "daemon_work", unresolved)
+
+
+def test_a_drain_of_slow_but_progressing_jobs_completes_past_the_window(
+    tmp_path: Path, _no_daemon: None
+) -> None:
+    """Jobs that keep landing (0.2 s apart, 1 s in all) outlast a 0.4 s window: the drain
+    still completes, because each landing job is progress.
+
+    **Sabotage:** a fixed ``wait_for(..., timeout=no_progress_s)`` -> the drain fails.
+    """
+    minter = part_atom_minter.PartAtomMinter(session_id="s-slow", turn_id="t", arc=None)
+    landed: list[int] = []
+    for n in range(5):
+        minter.enqueue(f"job:{n}", lambda n=n: (time.sleep(0.2), landed.append(n)))
+    assert minter.drain(no_progress_s=0.4)
+    assert landed == [0, 1, 2, 3, 4]
+    minter.close()
+
+
+def test_a_stuck_job_fails_the_barrier_typed(tmp_path: Path, _no_daemon: None) -> None:
+    """A job that never lands (no progress for a whole window) fails the finalize
+    barrier typed -- never a silent proceed with a half-written transcript."""
+    minter = part_atom_minter.PartAtomMinter(session_id="s-stuck", turn_id="t", arc=None)
+    release = threading.Event()
+    minter.enqueue("job:stuck", lambda: release.wait(30))
+    try:
+        with pytest.raises(part_atom_minter.MinterDrainStalled) as info:
+            minter.barrier(no_progress_s=0.3)
+        assert info.value.error_type == part_atom_minter.MINTER_DRAIN_TIMEOUT
+    finally:
+        release.set()
+    minter.close()

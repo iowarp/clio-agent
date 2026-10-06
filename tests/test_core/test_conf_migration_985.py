@@ -166,34 +166,35 @@ class TestTraceDetailLevel:
 
 
 class TestStatusDataDir:
-    """``paths.data_dir`` / ``CLIO_DATA_DIR`` via RuntimeProbe (config_store injected)."""
+    """RuntimeProbe follows the shared Agent namespace resolver."""
 
     def test_default(self, tmp_path):
+        from clio_agent import paths
         from clio_agent.runtime.status import RuntimeProbe
 
         probe = RuntimeProbe(env={}, config_store=_store(tmp_path))
         base, source = probe._data_dir()
-        assert base == Path(".clio/agent")
-        assert source == "default:.clio/agent"
+        assert base == paths.user_data_dir(env={})
+        assert source == "clio-agent filesystem contract"
 
     def test_env_override(self, tmp_path):
         from clio_agent.runtime.status import RuntimeProbe
 
-        env = {"CLIO_DATA_DIR": str(tmp_path / "from_env")}
+        env = {"CLIO_AGENT_DATA_DIR": str(tmp_path / "from_env")}
         probe = RuntimeProbe(env=env, config_store=_store(tmp_path, env=env))
         base, source = probe._data_dir()
         assert base == tmp_path / "from_env"
-        assert source == "env:CLIO_DATA_DIR"
+        assert source == "clio-agent filesystem contract"
 
-    def test_file_wins_over_env(self, tmp_path):
+    def test_retired_config_knob_cannot_override_namespace(self, tmp_path):
         from clio_agent.runtime.status import RuntimeProbe
 
-        env = {"CLIO_DATA_DIR": str(tmp_path / "from_env")}
+        env = {"CLIO_AGENT_DATA_DIR": str(tmp_path / "from_env")}
         store = _store(tmp_path, user={"paths": {"data_dir": str(tmp_path / "from_file")}}, env=env)
         probe = RuntimeProbe(env=env, config_store=store)
         base, source = probe._data_dir()
-        assert base == tmp_path / "from_file"
-        assert source == "config:paths.data_dir"
+        assert base == tmp_path / "from_env"
+        assert source == "clio-agent filesystem contract"
 
 
 class TestStatusApiBase:

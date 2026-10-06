@@ -1,124 +1,223 @@
-# CLIO Install Page Image Manifest
+# CLIO Site Shot List
 
-> **Status (2026-07-09):** the landing-page product screenshots are now **committed
-> directly under `site/assets/`** (`hero.png`, `desktop-shell.png`, `shots/1-5.png`)
-> and are served from there by `.github/workflows/pages.yml`. They used to be staged
-> at deploy from `external/gact-tui/apps/web/screenshots/audit/`, but gact-tui #235
-> stopped committing those run-output captures, which broke the Pages deploy. The
-> current set is a **generic product-feature** selection (conversation, tool calls,
-> MCP catalog, file preview, diff, streaming) — deliberately not tied to any single
-> use case. The per-slot *intent* below still holds; refresh the images in place when
-> the product UI changes. The `Source:` paths below are historical and no longer exist.
+This is the list of product screenshots for the public site (`site/`, served at clio.iowarp.ai). Each entry says where the image goes, what the app must show, how to get there, and the file to save it as. The site leads with the desktop app, so every shot is taken in the desktop app unless the entry says otherwise. The terminal interface needs no shots.
 
-This is the curated screenshot set for a clean CLIO install/download page.
-These are product images, not QA evidence dumps. Only use screenshots that show
-the current CLIO visual system, real conversation context, and concrete outputs
-such as generated plots, rendered Markdown, image previews, or diffs.
+Save each file at the path given. If a file with that name already exists, replace it; its page picks up the new image with no code change. Entries marked **new slot** need a small code change to place the image, so mention them in the pull request that adds them.
 
-Do not use old terminal screenshots, debug rails, error traces, provider setup
-screens, or fixture screenshots that expose bugs already fixed in the current
-interfaces.
+## How to shoot
 
-## Current Public Set
+| Setting | Value |
+|---|---|
+| App | The CLIO desktop app on the current release, bundled build |
+| Window | 1440 × 900, not maximized, title bar visible for shots marked "window"; content area only otherwise |
+| Scale | 2× (Retina or 200% display scaling); save as PNG |
+| Theme | Dark, for every shot, so the set matches the site |
+| Model | A capable hosted model; the model chip in the composer will be visible, so use one you are happy to show |
+| Workspace and session names | Plain names a user would choose, such as "Ground motion" or "Fire season". Never release or test names like "Release v0.9.2 qualification" or "candidate". |
+| Status bar | Close or hide anything that shows "Unavailable", errors, or debug counters |
 
-All paths below are relative to the `clio-agent` repository.
+Avoid in every shot:
 
-### 1. Hero: Live EarthScope/NDP Workflow With Plot Output
+- error states, retries, and provider setup failures
+- raw JSON or debug panels
+- personal data such as paths with your user name, email addresses, or API keys
+- notification badges and empty states, unless the entry asks for them
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/ndp-earthscope-live-final.png`
-- Use for: first viewport hero image.
-- Why: Current CLIO web shell, real scientific workflow, visible session
-  conversation, generated GNSS plot artifact, and file preview rail.
-- Caveat: This is the best current hero, but a fresher retake with a denser
-  final answer and the plot more central would be better.
+## One story, one session
 
-### 2. Artifact Preview: Scientific Plot Inspection
+Shots 1 through 5 come from **one** session, so the overview tells a single continuous story:
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/ndp-earthscope-live-artifact-preview.png`
-- Use for: carousel slide immediately after the hero.
-- Why: Same visual theme as the hero and still anchored to the EarthScope/NDP
-  workflow. Shows a generated plot file in context.
+- **Blueprint:** EarthScope (the multi-expert one, `earthscope-gnss-region`)
+- **Workspace:** "Ground motion"
+- **Session:** "Palm Springs stations"
+- **First prompt:**
+  > Find the five EarthScope GNSS stations nearest Palm Springs, California, show them on a map, and wait for me to choose one.
+- **Then:** choose one station on the map and confirm.
+- **Follow-up:**
+  > Plot the east, north, and up position of that station over its full record and tell me how much to trust the data.
 
-### 3. Markdown Output: Rendered Report Preview
+Let the run finish before you take shots 2 through 5.
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/overnight-real-markdown-preview.png`
-- Use for: "reports and evidence" feature tile.
-- Why: Shows rendered Markdown with a table and checklist-style content rather
-  than a raw text block.
+## Overview page
 
-### 4. Image Output: Workspace Image Preview
+### 1. Hero: the chart
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/overnight-real-image-preview.png`
-- Use for: "generated artifacts" feature tile.
-- Why: Demonstrates binary/image preview support in the same current web shell.
+- **File:** `site/src/assets/captures/earthscope-chart.png`
+- **Where:** first screen of the overview, beside the headline
+- **Show:**
+  - the session with the interactive time-series chart fully in view, east, north, and up series
+  - the "N evenly sampled rows from M total" label visible
+  - the hover tooltip open on one point
+  - the left sidebar with the workspace and session names
+- **Frame:** content area, no title bar
 
-### 5. Diff Output: Review Proposed Edits
+### 2. Ask: choosing on the map
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/overnight-real-file-editor-diff.png`
-- Use for: "review changes before applying" feature tile.
-- Why: Shows a meaningful code diff pane, not just a generic file list.
+- **File:** `site/src/assets/captures/earthscope-map.png`
+- **Where:** overview section 01 Ask, and the first tutorial
+- **Show:**
+  - the "response needed" question with the interactive map
+  - five labeled stations, with one selected and highlighted in the location list
+  - the confirm control visible
+- **Frame:** content area
 
-### 6. Streaming Conversation: Live Response State
+### 3. Delegate: experts in parallel
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/overnight-real-streaming-final.png`
-- Use for: secondary carousel slide.
-- Why: Shows live conversation output in the current shell.
-- Caveat: Use only after the richer artifact/Markdown/diff images. It is
-  useful but less visually interesting.
+- **File:** `site/src/assets/captures/factorio-report.png` (keep the name even though the content changes)
+- **Where:** overview section 02 Delegate
+- **Show:**
+  - the transcript where the expert child agents have completed, each with its completion time and green check
+  - the resulting report artifact open in the side panel, with the Preview, Versions, and Lineage tabs visible
+- **Frame:** content area
 
-### 7. Desktop Shell: Native App Framing
+### 4. Watch: the timeline
 
-- Source: `external/gact-tui/apps/web/screenshots/audit/desktop-linux-xvfb-chat-clio-18190-attached-1440.png`
-- Use for: desktop download card or native app section.
-- Why: Current CLIO-branded native shell.
-- Caveat: It is an empty/starting state. Do not use it as the hero. Retake with
-  the EarthScope/NDP workflow or a generated artifact before using prominently.
+- **File:** `site/src/assets/captures/agent-gantt.png`
+- **Where:** overview section 03 Watch
+- **Show:**
+  - the observability dock on the Gantt tab
+  - the main agent, at least two child agents, and their tool calls as bars over time
+  - the transcript on the left showing the final answer
+- **Frame:** content area
 
-## Do Not Use
+### 5. Verify: the evidence
 
-These are valuable QA fixtures, but they are not public product imagery:
+- **File:** `site/src/assets/captures/provenance-evidence.png`
+- **Where:** overview section 04 Verify, and the first tutorial
+- **Show:**
+  - the observability dock on the Evidence tab, listing "Read by agent" files, Changed files, and Artifacts
+  - one artifact expanded so its content hash shows
+- **Frame:** content area
 
-- `external/gact-tui/screenshots/*`
-  - Mostly older TUI generations with stale visual language or old bugs.
-- `external/gact-tui/visual_loop/screenshots/semantic_*.png`
-  - Regression fixtures. Many are intentionally narrow, debug-heavy, or focused
-    on a single control state.
-- `external/gact-tui/visual_loop/screenshots/tui-live-streaming-fixed-final.png`
-  - Current enough for QA, but GACT-branded and generic. Retake with CLIO brand
-    and a real workflow before public use.
-- `external/gact-tui/apps/web/screenshots/audit/debug-rail-*.png`
-  - Internal operator surfaces, not first-impression product shots.
-- `external/gact-tui/apps/web/screenshots/audit/brand-*.png`
-  - Branding QA shots, not workflow/product evidence.
-- Any screenshot showing repeated routing errors, provider setup failures,
-  unsupported-agent errors, raw JSON walls, or redacted debug payloads.
+### 6. Continue: earlier work
 
-## Retakes Still Needed
+- **File:** `site/src/assets/captures/deep-search.png`
+- **Where:** overview section 05 Continue
+- **How:**
+  - Start a **new** session in the same workspace.
+  - Ask: "Last week I looked at a GNSS station near Palm Springs. Which one was it, and what did we conclude?"
+- **Show:**
+  - the memory search tool call expanded, with its matches from the earlier session
+  - the answer that names the station
+- **Frame:** content area
 
-The current set is usable for drafting the install page, but the release-quality
-set should add two fresh captures:
+### 7. Desktop app window (new slot)
 
-1. CLIO-branded TUI running an EarthScope/NDP workflow.
-   - Must show a real prompt, streamed work, final answer, and files/artifacts.
-   - Must not show GACT branding, raw event dumps, or stale debug phrasing.
+- **File:** `site/src/assets/captures/desktop-window.png`
+- **Where:**
+  - the Desktop app card in the overview's Interfaces section
+  - the top of the Install page
+- **Show:** the whole desktop window, title bar included, on a plain desktop background, with the finished session from shots 1 through 5 visible.
+- **Frame:** window
 
-2. Native desktop app running the same EarthScope/NDP workflow.
-   - Must show the conversation plus generated plot or Markdown artifact.
-   - Must avoid empty states, settings panels, and routing/provider errors.
+## Docs pages (all new slots)
 
-## Page Order
+### 8. First launch: choose a model
 
-1. Hero: `ndp-earthscope-live-final.png`
-2. Install cards: CLI install command, desktop downloads, Docker
-3. Carousel:
-   - `ndp-earthscope-live-artifact-preview.png`
-   - `overnight-real-markdown-preview.png`
-   - `overnight-real-image-preview.png`
-   - `overnight-real-file-editor-diff.png`
-   - `overnight-real-streaming-final.png`
-4. Desktop section:
-   - `desktop-linux-xvfb-chat-clio-18190-attached-1440.png` only as a temporary
-     native-shell placeholder.
+- **File:** `site/src/assets/docs/first-launch-provider.png`
+- **Where:** Connect a model, top
+- **Show:** the model provider dialog that appears the first time the desktop app starts, with the provider list open.
+- **Frame:** window
 
-Keep the page language user-facing. Do not name internal release tracks,
-issue numbers, "six paths", debugging history, or implementation details.
+### 9. Models settings
+
+- **File:** `site/src/assets/docs/settings-models.png`
+- **Where:** Connect a model, "Change the model later"
+- **Show:** Settings, Models page, with a provider selected and **Apply provider and model** visible.
+
+### 10. New session
+
+- **File:** `site/src/assets/docs/new-session.png`
+- **Where:** Sessions and modes
+- **Show:** the New session dialog with the **Agent blueprint** list open and EarthScope highlighted.
+
+### 11. Composer controls
+
+- **File:** `site/src/assets/docs/composer-controls.png`
+- **Where:** Sessions and modes, "Choose how the agent works"
+- **Show:** the composer with the Execution mode menu open, showing Execute, Plan, and Deep research.
+- **Crop:** the composer area only
+
+### 12. Permission prompt
+
+- **File:** `site/src/assets/docs/permission-prompt.png`
+- **Where:** Permissions and sandbox
+- **Show:** a pending permission request for a file write, with Allow once, Deny, Allow for session, and Allow for workspace visible.
+- **How:** set the confirmation policy to Ask first, then ask the agent to save a summary to a file.
+
+### 13. Diff review
+
+- **File:** `site/src/assets/docs/diff-review.png`
+- **Where:** Permissions and sandbox, and Memory and evidence
+- **Show:** a proposed file change open in the diff view, with **Apply change** and **Reject change** visible.
+
+### 14. Marketplace
+
+- **File:** `site/src/assets/docs/marketplace.png`
+- **Where:** Agent blueprints
+- **Show:** Settings, **Marketplaces & blueprints**, on the Marketplaces tab, with the default marketplace expanded and several blueprints listed, one with an **Install** button.
+
+### 15. MCP tools
+
+- **File:** `site/src/assets/docs/mcp-tools.png`
+- **Where:** Tools and MCP servers
+- **Show:** the **MCP tools** settings page with one connected server and the **Connect MCP** button visible.
+
+### 16. Timeline and Context tabs
+
+- **Files:**
+  - `site/src/assets/docs/observability-timeline.png`
+  - `site/src/assets/docs/observability-context.png`
+- **Where:** Memory and evidence
+- **Show:** the observability dock on the Timeline tab, then the same session on the Context tab.
+
+## Tutorials
+
+Each tutorial lists its shots in a `Captures needed` or `Captures to refresh` note at the end of the page. Save them in `site/src/assets/tutorials/<tutorial-slug>/`. A draft tutorial goes live once its shots exist.
+
+### Your first analysis (published; refresh)
+
+Use the same session as shots 1 through 5.
+
+- The New session dialog with the **Agent blueprint** list open and EarthScope selected.
+- The map after you choose a station, with the confirm control visible.
+- The time-series chart for that same station.
+- The Evidence tab for the same run, with the artifacts expanded to show content hashes.
+- The artifact view with the **Versions** and **Lineage** tabs.
+
+### Run CLIO fully offline with LM Studio (draft)
+
+- Settings > **Models** with **LM Studio** selected and **Apply provider and model** visible.
+- The LM Studio window with the local server running and a model loaded.
+- The composer model chip showing LM Studio and the model name.
+- A finished answer to the workspace-files question, with the tool calls visible.
+
+### Install a blueprint from the marketplace (draft)
+
+- The **Marketplaces** tab with the default marketplace expanded and an **Install** button visible.
+- The **Installed** tab after the install, with the actions menu open.
+- The **View details** dialog.
+- The New session dialog with the **Agent blueprint** list open.
+- The session header showing the blueprint name.
+- The **Add marketplace** dialog.
+
+### Give CLIO a new tool with an MCP server (draft)
+
+- The **MCP tools** page with the **Connect MCP** button.
+- The **Connect an MCP service** dialog filled in for a local command.
+- The service detail dialog on its **Tools** tab.
+- A session transcript showing the tool call and its result.
+- The permission request for the tool call.
+
+### Run the CLIO workspace on a server with Docker (draft)
+
+This is the one set taken outside the desktop app.
+
+- A terminal showing `docker compose up clio-web` with the container running.
+- The web interface open in a browser on another computer, with the address bar visible.
+- The `host_not_allowed` error, and the same page working after `CLIO_GACT_ALLOWED_HOSTS` is set.
+- The Models settings page showing the provider taken from the environment variables.
+
+## After you add shots
+
+See `site/README.md`, sections "Add a tutorial" and "Refresh product captures".

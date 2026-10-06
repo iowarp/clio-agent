@@ -34,6 +34,7 @@ def home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setattr(paths, "user_data_dir", lambda: home / "data")
+    monkeypatch.setattr(paths, "host_state_dir", lambda: home / "state")
     monkeypatch.setattr(conf, "_STORE", conf.ConfigStore(home=home, cwd=tmp_path / "cwd", env={}))
     monkeypatch.setattr(clio_core_config.socket, "gethostname", lambda: "desk")
     return home
@@ -53,14 +54,16 @@ def _legacy_store(home: Path, *, port: int | None = None) -> Path:
     (legacy / "conf" / "runtime.conf").write_bytes(b"conf")
     (legacy / "storage.bin_node0").write_bytes(b"\x00" * 4096)
     (legacy / "metadata.log").write_bytes(b"log")
-    (legacy / "cte.yaml").write_bytes(
-        (
-            f"networking:\n  port: {port or _free_port()}\n"
-            f'runtime:\n  conf_dir: "{(legacy / "conf").as_posix()}"\n'
-            f'storage:\n  - path: "{(legacy / "storage.bin").as_posix()}"\n'
-            f'metadata_log_path: "{(legacy / "metadata.log").as_posix()}"\n'
-            "capacity_limit: 50GB\n"
-        ).encode()
+    (legacy / "cte.yaml").write_text(
+        clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
+            core_port=port or _free_port(),
+            conf_dir=(legacy / "conf").as_posix(),
+            file_tier=(legacy / "storage.bin").as_posix(),
+            file_capacity="50GB",
+            ram_budget="1GB",
+            metadata_log=(legacy / "metadata.log").as_posix(),
+        ),
+        encoding="utf-8",
     )
     return legacy
 
@@ -82,7 +85,7 @@ def test_a_fresh_upgrade_moves_the_old_store_into_this_hosts_dir(
     assert (host_dir / "storage.bin").as_posix() in text
     assert (host_dir / "conf").as_posix() in text
     assert (host_dir / "metadata.log").as_posix() in text
-    assert "capacity_limit: 50GB" in text
+    assert 'capacity_limit: "50GB"' in text
     assert f"{legacy.as_posix()}/storage.bin" not in text
     assert f"reason={CTE_STORE_MIGRATED}" in caplog.text
 
@@ -93,11 +96,12 @@ def test_an_already_migrated_store_is_left_alone(
     legacy = _legacy_store(home)
     host_dir = legacy / "hosts" / "desk"
     host_dir.mkdir(parents=True)
-    (host_dir / "cte.yaml").write_text("networking:\n  port: 9413\n", encoding="utf-8")
+    seeded = (legacy / "cte.yaml").read_text(encoding="utf-8")
+    (host_dir / "cte.yaml").write_text(seeded, encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         cfg = Path(clio_core_config.default_cte_config_path())
 
-    assert cfg.read_text(encoding="utf-8") == "networking:\n  port: 9413\n"
+    assert cfg.read_text(encoding="utf-8") == seeded
     assert (legacy / "storage.bin_node0").exists()
     assert "migrat" not in caplog.text
 

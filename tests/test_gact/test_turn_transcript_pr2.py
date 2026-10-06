@@ -32,13 +32,14 @@ from clio_agent.gact.transcript import (
     TurnTranscript,
 )
 from clio_agent.gact.types import Part
-from tests.turn_signals import wait_for_terminal_status
+from tests._harness import emit_live_text, install_scripted_module
+from tests.turn_signals import TERMINAL_STATUSES, wait_for_terminal_status
 
 from .conftest import complete_turn
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake (tests that monkeypatch
-# ``_try_streamed_forward`` are unaffected).
+# test's ``build_app(agent=...)`` host fake (the streamed tests install their own
+# scripted module, which streams through the LM token hooks).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -196,98 +197,6 @@ def test_was_closed_live_covers_closed_and_dropped_parts() -> None:
     assert all(p.id != dropped_id for p in transcript.snapshot())
 
 
-GEOSPATIAL_NARRATION = (
-    "Three ndp children are now running for Los Angeles, San Diego, and Seattle. "
-    "Each runs the full discover, so I'll wait with a longer budget to collect "
-    "their ranked station counts."
-)
-
-
-def test_same_field_restream_without_discard_duplicates_content() -> None:
-    """D15 root-cause pin: TWO ``append_text_delta`` calls for the SAME still-open
-    ``(agent_id, field)`` concatenate into ONE part -- correct for a legitimate
-    same-field continuation (more tokens of the SAME answer), but exactly the
-    mechanism that produced the live duplicate (sess_539d24da07bf part
-    part_2b645566433b: one 224-char next_thought paragraph, twice, 472 chars
-    total). Characterizes the vulnerability :meth:`TurnTranscript.discard_open_text`
-    exists to close off at the LM transient-retry boundary."""
-
-    transcript, _ = _make_transcript()
-    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
-    # An abandoned attempt's retry re-streams the SAME text from scratch, through
-    # a brand-new field extractor with no memory of the first attempt -- and lands
-    # on the SAME still-open part because (agent_id, field) hasn't changed.
-    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
-    transcript.close_open_text()
-
-    parts = [p for p in transcript.snapshot() if p.type == "text"]
-    assert len(parts) == 1
-    assert parts[0].text == GEOSPATIAL_NARRATION + GEOSPATIAL_NARRATION
-
-
-def test_discard_open_text_prevents_retry_duplication() -> None:
-    """D15 fix: calling ``discard_open_text`` at the retry boundary (what
-    ``lm_activity.note_lm_retry_reset`` does, from
-    ``lm.io_logging.IOLoggingLM.__call__``'s transient-retry loop) abandons the
-    failed attempt's contribution BEFORE the retry streams, so the retry's fresh
-    text is the part's ONLY content -- the fix for the duplication characterized
-    above."""
-
-    transcript, publisher = _make_transcript()
-    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
-    abandoned_id = transcript.current_stream_part_id
-    assert abandoned_id is not None
-
-    discarded = transcript.discard_open_text()
-    assert discarded is True
-    # Never published as closed/completed -- it never counted.
-    assert not any(evt == "message.part.completed" for evt, _ in publisher.events)
-    # Idempotent: nothing open the second time.
-    assert transcript.discard_open_text() is False
-
-    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
-    retry_id = transcript.current_stream_part_id
-    assert retry_id is not None
-    assert retry_id != abandoned_id  # the retry opens a genuinely fresh part
-    transcript.close_open_text()
-
-    parts = [p for p in transcript.snapshot() if p.type == "text"]
-    assert len(parts) == 1
-    assert parts[0].text == GEOSPATIAL_NARRATION  # exactly once, not doubled
-    assert all(p.id != abandoned_id for p in transcript.snapshot())
-
-
-def test_discard_open_text_is_noop_when_nothing_open() -> None:
-    """The common case: most transient failures happen before any field starts
-    streaming, so there is nothing to discard -- must be a safe, cheap no-op."""
-
-    transcript, publisher = _make_transcript()
-    assert transcript.discard_open_text() is False
-    assert publisher.events == []
-
-
-def test_discard_open_text_on_frozen_ledger_is_audited_not_silent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A retry landing after the turn already settled must not silently corrupt
-    the frozen ledger -- audited as a late op, same discipline as every other
-    post-freeze mutation this module rejects (mirrors
-    ``test_abandon_freezes_without_closing_or_publishing``'s late-op assertion)."""
-
-    audits: list[tuple[str, dict[str, Any]]] = []
-    monkeypatch.setattr(
-        "clio_agent.gact.transcript.stream_audit",
-        lambda stage, **fields: audits.append((stage, fields)),
-    )
-    transcript, _ = _make_transcript()
-    transcript.append_text_delta("main", "next_thought", GEOSPATIAL_NARRATION)
-    transcript.abandon()
-
-    assert transcript.discard_open_text() is False
-    late_ops = [f["op"] for stage, f in audits if stage == "transcript.late_op"]
-    assert late_ops == ["discard_open_text"]
-
-
 def test_raw_streamed_text_concatenates_across_agents_fields_and_thinking() -> None:
     """The whole-turn concat the timeout/streaming-failure partials report —
     byte-identical to the legacy ``streamed_assistant_buffer`` join."""
@@ -403,23 +312,30 @@ def test_stream_tap_appends_through_the_ledger(
     streamed part id (fold/reload identity)."""
 
     seen: dict[str, Any] = {}
+    built: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("streamed ")
-        transcript = app.state.turn_transcripts.get(sid)
+    def streamed_forward(session_id: str, **kwargs: Any) -> Any:
+        del kwargs
+        app = built["app"]
+        emit_live_text("streamed ")
+        transcript = app.state.turn_transcripts.get(session_id)
         assert transcript is not None
+        # The tap schedules the delta onto the turn loop; wait for the ledger to
+        # open the streamed part before reading it mid-turn.
+        deadline = time.monotonic() + 10.0
+        while transcript.current_stream_part_id is None and time.monotonic() < deadline:
+            time.sleep(0.01)
         seen["mid_turn_alias_is_ledger"] = (
-            app.state.live_assistant_parts[sid] is transcript.live_parts_alias()
+            app.state.live_assistant_parts[session_id] is transcript.live_parts_alias()
         )
         seen["message_id"] = transcript.message_id
         seen["open_part_id"] = transcript.current_stream_part_id
-        await emit_chunk("answer")
+        emit_live_text("answer")
         return _Pred(answer="streamed answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    app = _build(tmp_path, "tap", _Pred)  # agent unused: streamed path intercepts
+    install_scripted_module(monkeypatch, streamed_forward)
+    app = _build(tmp_path, "tap", _Pred)  # agent unused: the scripted module runs
+    built["app"] = app
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
         assistant = complete_turn(client, sid, "stream please")
@@ -443,16 +359,17 @@ def test_failed_finalize_still_settles_the_ledger(
     monkeypatch.setattr("clio_agent.gact.app._enrich_cancellation_error_info", _boom)
 
     transcripts: dict[str, Any] = {}
+    built: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("partial ")
-        transcripts["turn"] = app.state.turn_transcripts.get(sid)
+    def streamed_forward(session_id: str, **kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("partial ")
+        transcripts["turn"] = built["app"].state.turn_transcripts.get(session_id)
         return _Pred(answer="partial answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "envelope", _Pred)
+    built["app"] = app
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
         cursor = app.state.bus.latest_event_id(sid)
@@ -474,12 +391,11 @@ def test_failed_finalize_still_settles_the_ledger(
             lambda app, sid, error_info: error_info,
         )
 
-        async def clean_forward(
-            app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-        ) -> Any:
+        def clean_forward(**kwargs: Any) -> Any:
+            del kwargs
             return _Pred(answer="recovered", selected_expert="main")
 
-        monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", clean_forward)
+        install_scripted_module(monkeypatch, clean_forward)
         assistant = complete_turn(client, sid, "again")
         assert assistant["stop_reason"] == "end_turn"
         assert app.state.turn_transcripts.get(sid) is None
@@ -497,14 +413,19 @@ def test_late_chunk_after_settle_is_rejected_and_never_repopulates_legacy_dicts(
 
     taps: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        taps["emit"] = emit_chunk
-        await emit_chunk("live ")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        from clio_agent.runtime import lm_activity
+
+        # The turn's bound chunk publisher: what the LM token tap schedules onto
+        # the turn loop. Kept so the test can call it after the turn settled.
+        emitter = lm_activity._LIVE_CHUNK_EMITTER.get()
+        assert emitter is not None
+        taps["emit"] = emitter[1]
+        emit_live_text("live ")
         return _Pred(answer="live answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     audits: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
         "clio_agent.gact.transcript.stream_audit",
@@ -559,29 +480,50 @@ class _AskUserThenAnswerAgent:
         return _Pred(answer=f"resumed: {question[-20:]}", selected_expert="main")
 
 
+@pytest.mark.parametrize("disk", ["fast", "slow"])
 def test_ask_user_pause_persists_activity_and_resume_has_a_distinct_turn(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, disk: str
 ) -> None:
     """Pause and resume retain every observed part exactly once, even on reload.
 
     The paused assistant is durable before the answer, rather than relying on
-    process-local carry dictionaries which disappear on restart.
+    process-local carry dictionaries which disappear on restart. ``slow`` delays
+    every message-store write, as a loaded machine does: the test must wait on the
+    turn's own signals, never on how long a write usually takes.
     """
+
+    if disk == "slow":
+        from clio_agent.gact.messages import MessageStore
+
+        def _slowed(method: Any) -> Any:
+            def slow(self: Any, *args: Any, **kwargs: Any) -> Any:
+                time.sleep(0.3)  # a loaded disk, not a bound
+                return method(self, *args, **kwargs)
+
+            return slow
+
+        for name in ("append", "extend", "replace_session"):
+            monkeypatch.setattr(MessageStore, name, _slowed(getattr(MessageStore, name)))
 
     agent = _AskUserThenAnswerAgent()
     app = _build(tmp_path, "askuser", agent)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
+        # Wait on the turn's own status events, never a wall-clock guess: under load a
+        # turn takes as long as it takes (see tests/turn_signals.py).
+        cursor = app.state.bus.latest_event_id(sid)
         ack = client.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "inspect data"}]},
         )
         assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if client.get(f"/v1/sessions/{sid}").json()["status"] == "waiting_user":
-                break
-            time.sleep(0.05)
+        paused_status = wait_for_terminal_status(
+            app.state.bus,
+            sid,
+            after_event_id=cursor,
+            statuses=frozenset({"waiting_user", *TERMINAL_STATUSES}),
+        )
+        assert paused_status == "waiting_user"
         session = client.get(f"/v1/sessions/{sid}").json()
         assert session["status"] == "waiting_user"
 
@@ -597,28 +539,26 @@ def test_ask_user_pause_persists_activity_and_resume_has_a_distinct_turn(
         assert sid not in app.state.live_assistant_parts
 
         question_id = session["metadata"]["pending_user_question_id"]
+        cursor = app.state.bus.latest_event_id(sid)
         answered = client.post(
             f"/v1/sessions/{sid}/questions/{question_id}/answer",
             json={"answer": "use column value"},
         )
         assert answered.status_code == 200, answered.text
-
-        deadline = time.monotonic() + 5.0
-        assistant = None
-        while time.monotonic() < deadline:
-            msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            settled = [
-                m
-                for m in msgs
-                if m["role"] == "assistant"
-                and m["id"] != paused_msg_id
-                and not m.get("metadata", {}).get("live")
-            ]
-            if settled:
-                assistant = settled[-1]
-                break
-            time.sleep(0.05)
-        assert assistant is not None, "resume turn did not settle"
+        # The terminal status is published only after the resume turn's assistant
+        # message is persisted; polling GET /messages raced the durable store write
+        # (the in-memory ledger is appended just before the store).
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
+        msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        settled = [
+            m
+            for m in msgs
+            if m["role"] == "assistant"
+            and m["id"] != paused_msg_id
+            and not m.get("metadata", {}).get("live")
+        ]
+        assert settled, "resume turn did not settle"
+        assistant = settled[0]
 
         assert assistant["id"] != paused_msg_id
         persisted = app.state.message_store.load_session(sid)

@@ -20,11 +20,14 @@ out-of-territory write as ``EROFS`` / ``EACCES`` / ``WinError 5``; the floor let
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Optional
+
+from clio_agent import paths
 
 logger = logging.getLogger(__name__)
 
@@ -307,8 +310,6 @@ def _child_cache_env(
         and int(state.details.get("landlock_abi") or 0) < 2
         and profile == PROFILE_FLEET
     ):
-        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
-
         fastmcp_home = paths.user_cache_dir() / "fastmcp-child"
         try:
             fastmcp_home.mkdir(parents=True, exist_ok=True)
@@ -325,7 +326,7 @@ def _child_cache_env(
             "FASTMCP_HOME": str(fastmcp_home),
             "FASTMCP_CHECK_FOR_UPDATES": "off",
         }
-    cache_dir = Path(str(write_roots[0])).expanduser() / CHILD_CACHE_DIRNAME
+    cache_dir = paths.workspace_cache_dir(str(write_roots[0]))
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -413,8 +414,22 @@ def wrap_confined(
         )
 
     cmd: str = command
+    from clio_agent.runtime.storage_access import require_storage_fence  # noqa: PLC0415
+
+    try:
+        require_storage_fence(
+            resolved_state.mechanism,
+            resolved_state.active,
+            tuple(Path(root) for root in write_roots),
+        )
+    except PermissionError as exc:
+        raise SandboxCompositionError(str(exc)) from exc
     arg_list: list[str] = list(args)
     env_overlay: dict[str, str] = {}
+    # Distributor OAuth secrets belong only to the trusted setup owner.
+    for key in ("CLIO_STORAGE_GOOGLE_CLIENT_SECRET", "CLIO_STORAGE_GLOBUS_CLIENT_SECRET"):
+        if key in os.environ:
+            env_overlay[key] = ""
     popen_kwargs: dict[str, Any] = {}
     net_child_id = ""
 

@@ -300,9 +300,10 @@ def blueprint_mcp_servers(
         if verbose:
             print(f"[ClioAgent] blueprint discovery failed: {exc}")
         return {}
-    for blueprint in blueprints:
-        if blueprint.id != blueprint_id:
-            continue
+    from clio_agent.gact.blueprint_identity import select_blueprint
+
+    selected = select_blueprint(blueprints, blueprint_id)
+    for blueprint in [selected] if selected is not None else []:
         servers = blueprint_server_map(blueprint, workspace_root=cwd)
         if servers:
             return {blueprint.id: servers}

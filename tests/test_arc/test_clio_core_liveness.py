@@ -206,6 +206,25 @@ def test_reconnect_recovers_and_leaves_quarantine():
     assert reconnected["n"] == 1
 
 
+def test_native_client_can_require_process_restart_after_loss() -> None:
+    reconnects = 0
+
+    def reconnect() -> None:
+        nonlocal reconnects
+        reconnects += 1
+
+    gate = LivenessGate(probe=lambda _port: False, ttl_s=0.0, auto_recover=False)
+    with pytest.raises(ClioCoreRuntimeLostError) as first:
+        gate.ensure_live(reconnect)
+    assert first.value.details["recovery_actions"] == ["restart_clio_agent", "run_clio_doctor"]
+    with pytest.raises(ClioCoreRuntimeLostError) as exc:
+        gate.ensure_live(reconnect)
+    assert exc.value.details["reason"] == "clio_core_client_restart_required"
+    assert exc.value.details["recovery_actions"] == ["restart_clio_agent", "run_clio_doctor"]
+    assert gate.status()["restart_required"] is True
+    assert reconnects == 0
+
+
 def test_reconnect_failure_stays_quarantined_and_typed():
     """A reconnect that raises keeps the store quarantined and re-raises typed."""
 
@@ -350,10 +369,42 @@ def test_doctor_reports_quarantined_gate():
     assert rows[0].details["reason"] == "clio_core_store_quarantined"
 
 
+def test_doctor_reports_agent_restart_for_native_client() -> None:
+    rows = probe_clio_core_liveness(
+        snapshot=[
+            {
+                "quarantined": True,
+                "reason": "clio_core_daemon_not_listening",
+                "port": 9413,
+                "restart_required": True,
+            }
+        ]
+    )
+    assert rows[0].details["restart_required"] is True
+    assert "agent restarts" in rows[0].summary
+    assert "Restart the CLIO agent" in rows[0].next_action
+
+
 def test_doctor_reports_healthy_gate():
     rows = probe_clio_core_liveness(snapshot=[{"quarantined": False, "reason": "", "port": 9413}])
     assert len(rows) == 1
     assert rows[0].state is IntegrationState.READY
+
+
+def test_doctor_live_gate_reports_daemon_loss_before_next_arc_operation(monkeypatch):
+    """Health must not call a stale gate healthy after the daemon disappears."""
+    monkeypatch.setattr(
+        "clio_agent.arc.clio_core_liveness.liveness_snapshot",
+        lambda: [{"quarantined": False, "reason": "", "port": 23490}],
+    )
+    monkeypatch.setattr("clio_agent.arc.clio_core_liveness._runtime_alive", lambda _port: False)
+
+    rows = probe_clio_core_liveness()
+
+    assert len(rows) == 1
+    assert rows[0].state is IntegrationState.DEGRADED
+    assert rows[0].details["reason"] == "clio_core_daemon_lost"
+    assert rows[0].endpoint == "127.0.0.1:23490"
 
 
 def test_doctor_no_gate_no_row():

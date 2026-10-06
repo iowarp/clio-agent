@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
+from clio_schemas.connected_resources import HostStorageLocations
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 from clio_agent.gact.infrastructure.server_parameters import ServerParameter
@@ -106,6 +107,7 @@ class InfrastructureTarget(BaseModel):
     label: str
     kind: TargetKind
     install_root: str = ""
+    storage: HostStorageLocations = Field(default_factory=HostStorageLocations)
     ssh: SshRoute | None = None
     transport_state: TransportState = "disconnected"
     auto_reconnect: bool = True
@@ -233,6 +235,7 @@ class TargetFacts(BaseModel):
     container_runtimes: list[ContainerRuntimeFact] = Field(default_factory=list)
     identity: TargetIdentity = Field(default_factory=TargetIdentity)
     home: str = ""
+    agent_data_root: str = ""
     #: The target's short hostname: per-host state (service directories on a
     #: home shared by many nodes, Apptainer instance logs) is namespaced by it.
     hostname: str = ""
@@ -246,6 +249,7 @@ class ServiceConfigurationField(BaseModel):
     placeholder: str = ""
     required: bool = False
     options: list[str] = Field(default_factory=list)
+    variants: list[str] = Field(default_factory=list)
 
 
 class ServiceVariant(BaseModel):
@@ -298,11 +302,38 @@ class ServiceAccess(BaseModel):
     verified: bool = False
 
 
+class ServiceObservation(BaseModel):
+    """Independent observed capabilities; package installation is never capture proof."""
+
+    definition_version: str = "1"
+    configuration_revision: str = ""
+    phase: Literal["not_installed", "installing", "stopped", "running", "failed", "interrupted"]
+    installed: bool = False
+    running: bool = False
+    serving: bool = False
+    worker_alive: bool = False
+    provenance_ingesting: bool = False
+    attention_verified: bool = False
+    evidence_directory: str = ""
+    effective_artifacts: dict[str, str] = Field(default_factory=dict)
+    error: str | None = None
+    observed_at: float = 0
+
+    @property
+    def service_state(self) -> ServiceState:
+        """Project process state for older clients without claiming readiness."""
+        if self.running:
+            return "running"
+        if self.phase == "not_installed":
+            return "not_installed"
+        return "stopped" if self.installed else "unknown"
+
+
 class ManagedServiceDefinition(BaseModel):
     """Catalog projection for one CLIO-managed service."""
 
     id: str
-    category: Literal["model_runtime", "scientific_service", "remote_access"]
+    category: Literal["model_runtime", "scientific_service", "remote_access", "monitoring"]
     label: str
     description: str
     recommended_variant: str
@@ -324,6 +355,8 @@ class ManagedServiceDefinition(BaseModel):
     supports_api_key: bool = False
     #: Who can use the installed deployment (absent when nothing is installed).
     access: ServiceAccess | None = None
+    definition_version: str = "1"
+    observation: ServiceObservation | None = None
 
 
 class ManagedServiceCatalog(BaseModel):
@@ -348,7 +381,16 @@ class ServiceRecord(BaseModel):
     effective_parameters: list[EffectiveParameter] = Field(default_factory=list)
     #: Who can use it; the key itself lives only in the secret store.
     access: ServiceAccess | None = None
+    #: Set only for `clio_agent`, only when a claim's `on_conflict: "connect"`
+    #: adopted a healthy process under a root other than the owning
+    #: infrastructure target's configured `install_root` (from the claim's
+    #: own `owner`, i.e. that process's actual install prefix). Empty means
+    #: "use the target's configured install_root" -- the common case.
+    #: Lifecycle commands (stop/logs/uninstall/start) must act on this root
+    #: when set, not the target's, or they miss the process they adopted.
+    resolved_root: str = ""
     updated_at: str = Field(default_factory=utc_now)
+    observation: ServiceObservation | None = None
 
 
 class ServiceActionRequest(BaseModel):
@@ -357,9 +399,51 @@ class ServiceActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target_id: str = "local"
-    action: Literal["install", "start", "status", "stop", "logs", "reinstall", "uninstall"]
+    action: Literal[
+        "install",
+        "start",
+        "status",
+        "stop",
+        "logs",
+        "reinstall",
+        "uninstall",
+        "delete_data",
+        "verify",
+    ]
     variant_id: str
     configuration: dict[str, str] = Field(default_factory=dict)
+
+
+class DesktopExitRequest(BaseModel):
+    """The single Desktop instance whose owned remote launches should stop."""
+
+    desktop_id: str = Field(min_length=1, max_length=100)
+
+
+class VersionConflictDetail(BaseModel):
+    """A CLIO-looking process the claim step found but left running untouched.
+
+    Set only when ``error`` is ``clio_deploy_version_conflict``: an
+    ``install``/``reinstall``/``start`` on ``clio_agent`` found something on
+    the conventional port that is not this exact install and version, and
+    the request did not say how to proceed (``configuration`` carries no
+    ``on_conflict``). Nothing was stopped or installed. ``health`` is
+    ``healthy`` when it answered its own health check (``installed_version``
+    is then a real version), or ``unresponsive``/``unknown`` when it did not
+    answer or could not be asked -- never a reason to have stopped it. The
+    caller re-issues the same action with ``configuration.on_conflict`` set
+    to ``"connect"`` (adopt it as-is; only meaningful when ``healthy``) or
+    ``"replace"`` (stop it and install this desktop's version).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    installed_version: str
+    pid: str
+    health: Literal["healthy", "unresponsive", "unknown"] = "unknown"
+    target_version: str = ""
+    owner: str = ""
+    port: int = 17800
 
 
 class InfrastructureOperation(BaseModel):
@@ -373,6 +457,7 @@ class InfrastructureOperation(BaseModel):
     progress: str = "Queued"
     logs: str = ""
     error: str | None = None
+    conflict: VersionConflictDetail | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 
@@ -400,6 +485,8 @@ class ExternalServiceConnection(BaseModel):
     reachable: bool | None = None
     checked_at: str | None = None
     created_at: str = Field(default_factory=utc_now)
+    configuration: dict[str, str] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommandSpec(BaseModel):

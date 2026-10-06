@@ -15,6 +15,10 @@ on:
           ref this workflow run was launched from.
         required: true
         type: string
+      verify_macos:
+        description: Boot the existing release DMG on macOS 14, 15 and 26 before publication
+        type: boolean
+        default: false
 
 env:
   PNPM_VERSION: "9.15.9"
@@ -68,6 +72,8 @@ jobs:
           bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" \
             install/install.sh \
             install/install.ps1 \
+            install/desktop.sh \
+            install/desktop.ps1 \
             install/clio \
             install/clio.cmd \
             install/clio.ps1 \
@@ -292,9 +298,9 @@ jobs:
         # present + >=3.11 for tomllib) rather than assuming a runner-ambient
         # python; the script itself has zero third-party dependencies.
         run: |
-          external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12 \
+          external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.13 \
             scripts/check_bundle_matches_lock.py \
-            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12
+            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.13
       - name: Verify bundled runtime matches uv.lock (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
@@ -421,9 +427,18 @@ jobs:
           // in tags/assets and encode N as numeric SemVer build metadata
           // internally. Tauri's Windows bundlers reject nonnumeric metadata.
           const maintenance = releaseVersion.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+          // A beta (vX.Y.Z-beta.N) builds as the numeric pre-release X.Y.Z-N:
+          // the MSI bundler accepts only a numeric pre-release identifier.
+          // Any other pre-release form is refused here, before a long build.
+          const beta = releaseVersion.match(/^(\d+\.\d+\.\d+)-beta\.(\d+)$/);
+          if (releaseVersion.includes("-") && !beta) {
+            throw new Error(`invalid CLIO release version: ${releaseVersion} (pre-releases are vX.Y.Z-beta.N)`);
+          }
           const tauriVersion = maintenance
             ? `${maintenance[1]}+${maintenance[2]}`
-            : releaseVersion;
+            : beta
+              ? `${beta[1]}-${beta[2]}`
+              : releaseVersion;
 
           const isObject = (value) =>
             value !== null && typeof value === "object" && !Array.isArray(value);
@@ -548,6 +563,8 @@ jobs:
           tauri_version="$release_version"
           if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
             tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
+          elif [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
+            tauri_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
           fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
@@ -564,6 +581,8 @@ jobs:
           stage_name() {
             local base
             base="$(basename "$1")"
+            # Match GitHub's upload filename normalization before hashing.
+            base="${base// /.}"
             base="${base//$tauri_version/$release_version}"
             case "$base" in
               *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-${{ matrix.target }}.app.tar.gz.sig" ;;
@@ -645,9 +664,46 @@ jobs:
           cd "$RUNNER_TEMP/clio-desktop-stage"
           bash "$uploader" "$GITHUB_REF_NAME" ./*
 
+  macos-startup:
+    name: macOS packaged startup · ${{ matrix.os }}
+    # Explicit status check also permits dispatch after the build jobs are skipped.
+    if: >-
+      !cancelled() && (github.event_name == 'push' || inputs.verify_macos) &&
+      !contains(needs.*.result, 'failure')
+    needs: desktop
+    permissions:
+      # GitHub exposes draft releases only to tokens with push access.
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: astral-sh/setup-uv@v5
+      - name: Verify and boot the release DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p package "$RUNNER_TEMP/clio-image"
+          gh release download "$RELEASE_TAG" --pattern '*aarch64-bundled.dmg' --dir package
+          gh release download "$RELEASE_TAG" --pattern 'SHA256SUMS.aarch64-apple-darwin.bundled.txt' --dir package
+          (cd package && grep 'aarch64-bundled.dmg$' SHA256SUMS.*.txt | shasum -a 256 --check)
+          hdiutil verify package/*.dmg
+          hdiutil attach package/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/clio-image"
+          ditto "$RUNNER_TEMP/clio-image/CLIO Desktop.app" "$RUNNER_TEMP/CLIO Desktop.app"
+          hdiutil detach "$RUNNER_TEMP/clio-image"
+          uv run --no-project --python 3.13 scripts/smoke_macos_bundle.py "$RUNNER_TEMP/CLIO Desktop.app" --bundled
+
   release-check:
     name: release completeness
-    needs: [release, desktop, web, tui, installers]
+    needs: [release, desktop, web, tui, installers, macos-startup]
     # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
     # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
     # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
@@ -667,7 +723,7 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Generate signed Tauri update manifest
         env:
           GH_TOKEN: ${{ github.token }}
@@ -712,14 +768,14 @@ jobs:
         # client sees). Also refused when any build leg failed or was
         # cancelled on a tag push, even if its assets happen to be present;
         # re-running the failed legs re-runs this job. On workflow_dispatch
-        # the build legs are skipped, so this is the rescue path for a draft
-        # whose missing asset was fixed by hand. github_release.py leaves an
+        # the build legs are skipped, but any requested macOS verification
+        # must still pass. This also supports drafts repaired by hand.
+        # github_release.py leaves an
         # already-published release untouched (the escape hatch never steals
         # latest) and never marks an older version or a pre-release latest.
         id: publish
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (!contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
+          !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/github_release.py publish --tag "$TAG"

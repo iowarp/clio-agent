@@ -30,6 +30,7 @@ import pytest
 
 from clio_agent import conf
 from clio_agent.arc.lane_chunking import chunk_scope, lane_scopes, lane_segments
+from clio_agent.arc.lane_generations import current_base, generation_base
 from clio_agent.arc.loop_guard import (
     guard_hits,
     register_server_loop,
@@ -330,7 +331,7 @@ def test_legacy_oversized_lane_rolls_on_next_append_chunk_one_never_re_put(
 # --------------------------------------------------------------------------- #
 
 
-def test_has_atoms_is_exactly_one_get(
+def test_has_atoms_is_exactly_two_gets(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
 ) -> None:
     monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "2")
@@ -342,7 +343,7 @@ def test_has_atoms_is_exactly_one_get(
     fresh_segments = arc._segments.__class__(store, search_indexed=lambda scope: True)
     store.get_calls = 0
     assert has_atoms(type("A", (), {"_segments": fresh_segments})(), SID) is True
-    assert store.get_calls == 1
+    assert store.get_calls == 2  # the lane's generation pointer + its chunk 1
 
 
 def test_warm_assemble_costs_zero_gets(
@@ -445,14 +446,15 @@ def test_repair_across_a_chunk_family_drops_every_chunk_no_orphan_survives(
 
     assert result is not None
     assert [m.id for m in result] == ["new0", "new1"]
-    # The re-minted family is EXACTLY chunk 1 (2 messages under capacity 2) -- no
-    # chunk 2/3 survives in the scope list.
-    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) == [MESSAGE_PART_SCOPE]
-    # And provably gone, not merely unreachable by the dense walk: a direct read of
-    # the old chunk 2/3 scopes (bypassing lane_scopes' walk-stops-at-first-gap
-    # shortcut) finds zero segments, live or tombstoned.
-    assert arc._segments.list_segments(SID, chunk2, include_tombstoned=True) == []
-    assert arc._segments.list_segments(SID, chunk3, include_tombstoned=True) == []
+    # The repair is a whole-lane replace: the re-minted family is a NEW generation,
+    # EXACTLY its chunk 1 (2 messages under capacity 2).
+    new_base = generation_base(MESSAGE_PART_SCOPE, 1)
+    assert current_base(arc._segments, SID, MESSAGE_PART_SCOPE) == new_base
+    assert lane_scopes(arc._segments, SID, new_base) == [new_base]
+    # And the old generation is provably gone, not merely unreachable by the dense
+    # walk: a direct read of each old chunk scope finds zero segments.
+    for old_chunk in (MESSAGE_PART_SCOPE, chunk2, chunk3):
+        assert arc._segments.list_segments(SID, old_chunk, include_tombstoned=True) == []
 
 
 def test_arc_working_set_untouched_across_a_roll(
@@ -493,9 +495,11 @@ def test_edge_survives_drop_lane(
 # --------------------------------------------------------------------------- #
 
 
-def test_backfill_after_trace_enabled_release_reassembles_from_retained_file(
+def test_release_keeps_the_atom_lane_and_the_transcript_reassembles_from_clio_core(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, hermetic_conf: None
 ) -> None:
+    """A release (even with the durable trace on) keeps the whole atom lane in clio-core,
+    so the transcript reassembles from clio-core -- no backfill from a file."""
     monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "1")
     set_config("trace.backend", "file")
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
@@ -504,14 +508,13 @@ def test_backfill_after_trace_enabled_release_reassembles_from_retained_file(
         mint_message_part_atoms(arc, SID, m)
     assert len(lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE)) == 3
 
-    arc.release_session(SID)  # trace-enabled erase: the WHOLE ``_events`` family, atoms incl.
-    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) == []
+    arc.release_session(SID)
+    assert len(lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE)) == 3
 
     app = _fake_app(arc, message_store=_FakeMessageStore(messages))
     result = materialize_ledger(app, SID)
     assert result is not None
     assert [m.id for m in result] == [m.id for m in messages]
-    assert lane_scopes(arc._segments, SID, MESSAGE_PART_SCOPE) != []  # re-minted
 
 
 def test_erase_then_mint_then_read_shows_every_new_atom(

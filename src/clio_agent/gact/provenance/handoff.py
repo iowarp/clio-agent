@@ -31,7 +31,7 @@ from typing import Any
 import yaml
 
 from clio_agent import conf, paths
-from clio_agent.provenance_config import configured_provider_names
+from clio_agent.provenance_config import attention_capture_enabled, configured_provider_names
 
 #: No agentic provenance provider is configured, so there is no store to query.
 PROBLEM_NO_AGENTIC_PROVIDER = "provenance_agentic_disabled"
@@ -189,7 +189,11 @@ def build_provenance_handoff(app: Any, *, workspace_root: Path | None) -> Proven
         else:
             problems.append(HandoffProblem(PROBLEM_WORKSPACE_UNRESOLVED))
 
-    document = {"provenance": {"agentic": agentic, "artifacts": artifacts}}
+    document: dict[str, Any] = {"provenance": {"agentic": agentic, "artifacts": artifacts}}
+    capture_root = _text("provenance.attention.files_dir", "CLIO_PROVENANCE_ATTENTION_FILES_DIR")
+    if attention_capture_enabled() and capture_root:
+        # Dotted keys preserve the existing boolean provenance.attention setting.
+        document["provenance.attention.files_dir"] = str(Path(capture_root).expanduser().resolve())
     return ProvenanceHandoff(document=document, problems=tuple(problems))
 
 

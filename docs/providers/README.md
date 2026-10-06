@@ -38,16 +38,16 @@ Three ways, in increasing scope:
    `CLIO_LM_API_BASE`, `CLIO_LM_MODEL`, `CLIO_LM_API_KEY` (and the
    provider-specific knobs documented per-provider).
 3. **Programmatic** (Python). Construct an `LMProviderConfig` and pass
-   it to `create_lm()` / `create_planner_lm()`.
+   it to `create_lm()`.
 
 ## How a provider call lands
 
 ```
 user prompt
   ↓
-ClioAgent.action_planner          (dspy.Predict with AgentActionSignature)
+blueprint ReAct agent             (resolved per turn)
   ↓
-dspy.context(lm=self._planner_lm)  (per-request LM scope)
+dspy.context(lm=route.lm)         (per-request LM scope)
   ↓
 dspy.LM.forward()                 (LiteLLM-compatible model string)
   ↓
@@ -66,23 +66,6 @@ that do not use those providers.
 
 - [Codex](codex.md) — uses your Codex subscription
 - [Claude Code](claude_code.md) — uses your Claude subscription
-
-## Local reasoning model profiles
-
-CLIO applies a planner-specific profile for known local reasoning GGUFs
-served through LM Studio or Ollama. For Qwopus/Qwen-style model ids
-(`qwopus`, `qwen3`, `qwen-3`, `qwen35`, `qwen-3.5`), the planner LM is
-made deterministic and gets at least 4096 planner tokens even if the
-general answer cap is lower. This keeps hidden reasoning tokens from
-starving the planner's required JSON action output.
-
-Validated baseline:
-
-- `qwopus3.5-9b-v3` via LM Studio ROCm
-- 32k context loaded
-- direct LM Studio smoke: `LMSTUDIO_QWOPUS_OK`
-- CLIO smoke: `CLIO_QWOPUS_OK`
-- 26,056-token prompt push: `CTX32K_QWOPUS_OK`
 
 ## Authoring a new provider
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import _clear_session_model_refs, build_app
 from clio_agent.gact.session_defaults import SessionDefaultsStore
 
@@ -18,6 +19,13 @@ def _client(path: Path) -> TestClient:
 
 
 def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_path: Path) -> None:
+    # Defaults select actual installed choices; an unknown selection now fails
+    # before session creation instead of leaving a session without its tools.
+    for identifier in ("earthscope-review", "manual"):
+        source = tmp_path / identifier
+        source.mkdir()
+        (source / "AGENT.md").write_text(f"---\nid: {identifier}\ntitle: Test\n---\nTest")
+        install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     sessions_path = tmp_path / "sessions.json"
     client = _client(sessions_path)
 
@@ -329,3 +337,24 @@ def test_v3_session_reports_unknown_cost_as_null_not_zero() -> None:
     assert row["tokens_input"] == 300
     assert row["tokens_output"] == 90
     assert row["cost_usd"] is None
+
+
+def test_v3_session_names_the_bound_model_transport() -> None:
+    """A multi-transport provider's variant reaches the client: the model id alone is ambiguous."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    def _session(variant: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id="sess_transport",
+            title="t",
+            workspace_id="ws",
+            status="idle",
+            metadata={},
+            model={"provider_id": "codex", "model_id": "gpt-6-sol", "variant": variant},
+            parent_session_id="",
+        )
+
+    assert session_to_v3(_session("direct"))["model_transport"] == "direct"
+    assert "model_transport" not in session_to_v3(_session(""))

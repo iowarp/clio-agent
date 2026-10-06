@@ -197,22 +197,16 @@ def test_bare_resolve_imports_are_discovered_as_resolved_knobs() -> None:
     """``from clio_agent.conf import resolve`` call sites are conf knobs too.
 
     Regression: the walker only matched attribute calls (``conf.resolve``), so
-    the three config.py knobs resolved via a bare imported ``resolve(...)``
+    knobs resolved via a bare imported ``resolve(...)`` (``lm.policy.lm_retries``)
     were silently absent from both artifacts.
     """
     resolved, _ = _collect_root()
     by_env = {r.env: r for r in resolved}
-    for name in (
-        "CLIO_LM_TOKEN_LIVENESS",
-        "CLIO_LM_TRANSIENT_RETRIES",
-        "CLIO_LM_TRANSIENT_BACKOFF_S",
-    ):
-        assert name in by_env, f"{name} (bare resolve() call) missing from resolved knobs"
-    liveness = by_env["CLIO_LM_TOKEN_LIVENESS"]
-    # The bare-imported ``cast=as_bool`` must map to the bool label, not "str".
-    assert liveness.type_ == "bool"
-    assert liveness.default == "true"
-    assert liveness.key == "runtime.lm_token_liveness"
+    retries = by_env.get("CLIO_LM_TRANSIENT_RETRIES")
+    assert retries is not None, "CLIO_LM_TRANSIENT_RETRIES (bare resolve() call) missing"
+    # The bare-imported ``cast=as_float`` must map to the float label, not "str".
+    assert retries.type_ == "float"
+    assert retries.key == "limits.lm_transient_retries"
 
 
 def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
@@ -252,17 +246,13 @@ def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
         assert record.default == default, f"{name} default {record.default!r} != {default!r}"
 
 
-def test_status_data_dir_and_api_base_are_config_first() -> None:
-    """``runtime/status.py`` resolves ``CLIO_DATA_DIR`` / ``CLIO_API_BASE`` config-first.
-
-    Regression (#985 move 1): both were read through an injected ``self.env`` mapping
-    (env-only). They now resolve file → env → default through ``conf`` and must be
-    discovered as configured knobs, not env-only.
-    """
+def test_status_api_base_is_config_first_and_data_uses_namespaces() -> None:
+    """API config remains config-first; the retired data knob cannot mask native roots."""
     resolved, env_only = _collect_root()
     by_env = {r.env: r for r in resolved}
     env_names = {e.env for e in env_only}
-    for name, key in (("CLIO_DATA_DIR", "paths.data_dir"), ("CLIO_API_BASE", "runtime.api_base")):
+    assert "CLIO_DATA_DIR" not in by_env
+    for name, key in (("CLIO_API_BASE", "runtime.api_base"),):
         assert name in by_env, f"{name} missing from resolved knobs after migration"
         assert name not in env_names, f"{name} must no longer be env-only"
         assert by_env[name].key == key
@@ -334,6 +324,8 @@ _RETIRED_ENV_SWITCHES = (
     "CLIO_TRANSCRIPT_PROJECTION",
     "CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS",
     "CLIO_LM_ROUTER_TEMPERATURE",
+    "CLIO_LM_PLANNER_TEMPERATURE",
+    "CLIO_LM_PLANNER_MAX_TOKENS",
 )
 
 

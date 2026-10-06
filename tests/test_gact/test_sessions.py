@@ -7,8 +7,6 @@ and resilience to corrupted on-disk state.
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -130,10 +128,12 @@ def test_update_patches_fields_and_bumps_updated_at(
     assert interacted.last_interaction_at > original_interaction
 
 
-def test_legacy_session_recovers_last_interaction_from_message_ledger(tmp_path: Path) -> None:
+def test_legacy_session_interaction_time_waits_for_the_transcript_store(tmp_path: Path) -> None:
+    """A row older than ``last_interaction_at`` reads "" until the transcript store's
+    boot settles it (file mtime or last atom message -- test_transcript_replace_atomic);
+    the registry itself never reads a transcript (no ``messages/`` stat here)."""
+
     sessions_path = tmp_path / "sessions.json"
-    messages_path = tmp_path / "messages"
-    messages_path.mkdir()
     sessions_path.write_text(
         json.dumps(
             {
@@ -147,15 +147,41 @@ def test_legacy_session_recovers_last_interaction_from_message_ledger(tmp_path: 
             }
         )
     )
-    ledger = messages_path / "sess_legacy.json"
-    ledger.write_text("[]")
-    observed = datetime(2026, 8, 22, 18, 21, tzinfo=timezone.utc).timestamp()
-    os.utime(ledger, (observed, observed))
 
-    session = SessionStore(path=sessions_path).get("sess_legacy")
-
+    store = SessionStore(path=sessions_path)
+    session = store.get("sess_legacy")
     assert session is not None
-    assert session.last_interaction_at == "2026-08-22T18:21:00+00:00"
+    assert session.last_interaction_at == ""
+    assert [row.id for row in store.sessions_without_interaction_time()] == ["sess_legacy"]
+
+    store.settle_interaction_times({"sess_legacy": "2026-08-22T18:21:00+00:00"})
+    assert store.get("sess_legacy").last_interaction_at == "2026-08-22T18:21:00+00:00"
+    assert store.sessions_without_interaction_time() == []
+    reloaded = SessionStore(path=sessions_path).get("sess_legacy")
+    assert reloaded is not None
+    assert reloaded.last_interaction_at == "2026-08-22T18:21:00+00:00"
+
+
+def test_settle_keeps_an_interaction_time_set_meanwhile(tmp_path: Path) -> None:
+    sessions_path = tmp_path / "sessions.json"
+    sessions_path.write_text(
+        json.dumps(
+            {
+                "sess_legacy": {
+                    "id": "sess_legacy",
+                    "workspace_id": "ws",
+                    "title": "legacy",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "updated_at": "2026-08-23T03:00:00+00:00",
+                }
+            }
+        )
+    )
+    store = SessionStore(path=sessions_path)
+    live = store.update("sess_legacy", message_count=3)
+    assert live is not None and live.last_interaction_at
+    store.settle_interaction_times({"sess_legacy": "2026-08-22T18:21:00+00:00"})
+    assert store.get("sess_legacy").last_interaction_at == live.last_interaction_at
 
 
 def test_update_unknown_returns_none(mem_store: SessionStore) -> None:
@@ -249,3 +275,31 @@ def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     # And the record actually landed on disk.
     reloaded = SessionStore(path=tmp_path / "sessions.json")
     assert reloaded.count() == 1
+
+
+class _RecordFailed(RuntimeError):
+    pass
+
+
+def _failing_observer(event_type: str, _session: object) -> None:
+    raise _RecordFailed(event_type)
+
+
+def test_a_session_whose_creation_cannot_be_recorded_is_not_created(store: SessionStore) -> None:
+    """The lifecycle record is clio-core's: a failure is the caller's error, never a log
+    line, and no session exists that clio-core has no record of."""
+    store.set_lifecycle_observer(_failing_observer)
+
+    with pytest.raises(_RecordFailed, match="session.created"):
+        store.create(workspace_id="ws_default", title="unrecorded")
+
+    assert store.list() == []
+    assert SessionStore(path=store._path).list() == []
+
+
+def test_a_deletion_that_cannot_be_recorded_is_the_callers_error(store: SessionStore) -> None:
+    sess = store.create(workspace_id="ws_default", title="t")
+    store.set_lifecycle_observer(_failing_observer)
+
+    with pytest.raises(_RecordFailed, match="session.deleted"):
+        store.delete(sess.id)

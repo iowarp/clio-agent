@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.4.20"
+version = "0.9.5b3"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -37,26 +37,24 @@ classifiers = [
 ]
 
 dependencies = [
+    # Runtime preparation must also work for pip-installed Clio without a host uv.
+    "uv>=0.8,<1",
+    "truststore==0.10.4",
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
     # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
-    "dspy==3.3.0b1",
+    "dspy==3.4.0",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.102.1",
-    # The Codex provider has two transports (S1b): "direct" calls the Codex
-    # backend itself over HTTP/WebSocket (providers/codex/, no CLI/SDK), and
-    # "sdk" restores the official openai_codex Python SDK against the user's
-    # OWN CODEX_HOME (default ~/.codex) so the Codex runtime owns its own
-    # login/refresh -- CLIO never reads or writes auth.json.
+    # The Codex runtime. The Codex LM provider calls the Codex backend directly
+    # over HTTP/WebSocket (providers/codex/) and runs no CLI, but it presents
+    # this distribution's version as its model list's client_version, and the
+    # Windows shell sandbox (runtime/sandbox_codex.py) spawns the bundled codex
+    # binary as its enforcement rung.
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound. The backend gates new models by client version, so
     # runtimes update this in place past the lock from the provider panel, and
     # the provider-sdk-bump workflow moves the floor + lock weekly.
-    "openai-codex>=0.157.1",
-    # The bundled codex binary stays a DIRECT dependency because the Windows
-    # shell sandbox (runtime/sandbox_codex.py) spawns it as its enforcement
-    # rung -- unrelated to either LM provider transport. User-updatable in
-    # lockstep with openai-codex (which pins it exactly).
     "openai-codex-cli-bin>=0.157.1",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
@@ -65,7 +63,7 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.4.1",
+    "clio-schemas==0.6.0b3",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -78,6 +76,9 @@ dependencies = [
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",
+    # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
+    # transitively (matplotlib/pyarrow); declared now that first-party code imports it.
+    "numpy>=1.24.0",
     "rich>=14.2.0",
     "prompt-toolkit>=3.0.0",
     "sortedcontainers>=2.4.0",
@@ -118,6 +119,10 @@ dependencies = [
     # (already present transitively via fastmcp/dspy; declared so the SDK
     # does not lean on someone else's dependency tree).
     "httpx>=0.27.0",
+    # Connected storage uses file APIs, never an implicit FUSE mount.
+    "fsspec>=2025.9.0",
+    "paramiko>=3.5.0",
+    "globus-sdk>=4.6.0",
     # Scheduler local-timezone / DST correctness (#1081, P4.3). ``tzdata`` ships the
     # IANA zone database (zoneinfo has no system db on Windows); ``tzlocal`` resolves
     # the system's local IANA zone name so "0 9 * * *" fires at 9am LOCAL, DST-correct
@@ -132,6 +137,12 @@ dependencies = [
     "python-pptx>=1.0.2,<2",
     "odfpy>=1.4.1,<2",
     "pypdf>=5.1.0,<7",
+    "xarray>=2024.10",
+    "zarr>=3",
+    "rasterio>=1.4",
+    "pillow>=10",
+    "gdrive-fsspec>=0.4.1",
+    "globusfs==0.2.1",
 ]
 
 [project.optional-dependencies]
@@ -276,6 +287,8 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
+    "real_runtime_release: the test exercises release_runtime_client itself (the harness no-op is skipped)",
+    "history_mode: the test may enter the loud DSPy History mode (every other test fails if it does)",
     "integration: marks tests requiring full-stack/external runtime behavior",
     "marketplace: reads shipped packs from the pinned external/clio-agent-marketplace submodule; FAILS (never skips) with the fix when the checkout is missing (tests/_marketplace.py)",
     "real_dependency_installer: exercises providers.dependencies' installer itself (subprocess stubbed); exempt from the suite-wide no-real-install guard",
@@ -337,3 +350,6 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp>=2.0.0"]
+
+[tool.uv.sources]
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "91bfecf0eb6f1594bf805ff1629cfff1773a1aa7" }

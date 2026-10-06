@@ -1,11 +1,6 @@
 """clio-core CTE config generation + capacity resolution (owner module).
 
-This module owns the default clio-core CTE configuration that ARC's clio-core backend
-seeds under the OS data dir: a self-managed DRAM↔disk hierarchy (DRAM hot tier,
-score 1.0; file cold tier, score 0.0). It was split out of
-:mod:`clio_agent.arc.storage` so the capacity policy (how big the RAM hot tier is
-allowed to grow) has a single home instead of being bolted onto the storage
-god-file (owner-module discipline, iowarp/clio-agent#774/#890).
+Owns ARC CTE configuration and capacity policy under Agent data roots.
 
 Why the RAM cap matters (#890): clio-core reads a tier ``capacity_limit`` of
 ``"0g"`` as *"default to 80% of total system DRAM"*. With the ram hot tier set to
@@ -56,9 +51,9 @@ from pathlib import Path
 
 import yaml
 
+from clio_agent.arc import clio_core_durability as _durability
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
-    migrate_legacy_runtime_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,11 +86,8 @@ def runtime_state_dir() -> Path:
     This is where the connect-or-spawn lifecycle keeps its coordination state: the
     spawn lock (``clio-runtime.lock``), the daemon pidfile (``clio-runtime.pid``), the
     client refcount registry (``clio-runtime.clients/``), and the daemon log
-    (``clio-runtime.log``). Default: ``~/.clio/hosts/<host>`` (:func:`host_key`), one
-    directory per machine, shared by every clio-agent process on that machine and by
-    no process on another. A home directory shared over NFS (a cluster's login and
-    compute nodes) therefore never lets one node's pidfile, lock or client registry
-    stand for another node's daemon.
+    (``clio-runtime.log``). Native Agent state/core-hosts/<host> is shared by every
+    Agent on this machine. Existing ~/.clio/hosts/<host> remains readable.
 
     ``CLIO_RUNTIME_STATE_DIR`` overrides it (explicit selection, not a degrade): a
     process family that must NOT share the host daemon (the test suite's hermetic
@@ -103,27 +95,35 @@ def runtime_state_dir() -> Path:
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
-    Returns:
-        The state directory path (guaranteed to exist).
+    Returns the state directory, creating it if absent.
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
     if override:
         state = Path(override).expanduser()
         state.mkdir(parents=True, exist_ok=True)
         return state
-    state = Path.home() / ".clio" / "hosts" / host_key()
+    from clio_agent import paths  # noqa: PLC0415
+
+    state = paths.host_state_dir() / "core-hosts" / host_key()
+    legacy = Path.home() / ".clio" / "hosts" / host_key()
+    # Preserve the pre-host compatibility migration for known Agent bookkeeping.
+    # The helper refuses live/shared state and never moves Core-owned files.
+    from clio_agent.arc.clio_core_host_migration import (
+        migrate_legacy_runtime_state,  # noqa: PLC0415
+    )
+
+    migrate_legacy_runtime_state(Path.home() / ".clio", legacy)
+    if legacy.exists() and not state.exists():
+        logger.warning("Using legacy Core supervision records; migrate paths after stopping CLIO")
+        state = legacy
     state.mkdir(parents=True, exist_ok=True)
-    # One-time move of the pre-host-key bookkeeping (~/.clio/clio-runtime.*).
-    migrate_legacy_runtime_state(Path.home() / ".clio", state)
     return state
 
 
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
-# is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
-# are declared so the backend is ready for clio-core's cross-restart data recovery
-# when it lands upstream (today that recovery is WIP, so durability rides the file
-# trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
+# is the cold spill target, durable across daemon restarts (``restart``, the metadata log
+# and ``persistence_level``; see :mod:`clio_agent.arc.clio_core_durability`).
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
@@ -186,6 +186,7 @@ compose:
         bdev_type: "file"
         capacity_limit: "{file_capacity}"
         score: 1.0
+        persistence_level: "temporary"
     dpe:
       dpe_type: "max_bw"
     performance:
@@ -284,29 +285,27 @@ def _default_cte_dir() -> Path:
     return paths.user_data_dir() / "cte" / "hosts" / host_key()
 
 
-def _default_cte_file_capacity() -> str:
-    """Return the default clio-core CTE file-tier capacity.
-
-    The INTENDED semantic (owner ruling 2026-07-13, #906) is an UNBOUNDED
-    final layer — ``capacity_limit`` bounds intermediate tiers only, because a
-    final layer that fills makes writes fail (``PutBlob`` rc=13, proven live
-    on the #893 gate) instead of spilling. clio-core cannot express that yet:
-    ``core_config.cc`` rejects ``capacity_limit`` = 0 for non-ram tiers ("only
-    'ram' tier supports 0"), so the default stays a LARGE bound until upstream
-    supports an unbounded final layer. The boot check warns when the final
-    layer is too small to absorb even one full hot-tier spill.
+def _default_cte_file_capacity(target_dir: Path | None = None) -> str:
+    """The clio-core CTE file-tier capacity: an explicit ``arc.cte.file_capacity`` wins;
+    otherwise, when seeding into ``target_dir``, sized to fit that disk (a fixed 50 GB
+    failed a first run on a smaller disk -- see ``clio_core_file_capacity``). clio-core
+    cannot express an unbounded final layer yet (``capacity_limit`` 0 is ram-only, #906).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
 
-    return (
-        conf.resolve(
-            "arc.cte.file_capacity",
-            env="CLIO_ARC_CTE_FILE_CAPACITY",
-            default="50GB",
-            cast=conf.as_str,
-        ).strip()
-        or "50GB"
-    )
+    explicit = conf.resolve(
+        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
+    ).strip()
+    if explicit:
+        return explicit
+    return _fc.seeded_file_capacity(target_dir) if target_dir is not None else "50GB"
+
+
+def _seeded_capacity_fits(cfg: Path, capacity: str) -> None:
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
+
+    _fc.ensure_seeded_capacity_fits(cfg, capacity)
 
 
 def _default_cte_ram_capacity() -> str:
@@ -380,7 +379,10 @@ def default_cte_config_path() -> str:
         migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
-    if not cfg.is_file():
+    if cfg.is_file():
+        _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
+        _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
+    else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:
             raise ValueError(f"memory budget must be > 0, got {budget!r}")
@@ -389,7 +391,7 @@ def default_cte_config_path() -> str:
                 core_port=_default_cte_core_port(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
-                file_capacity=_default_cte_file_capacity(),
+                file_capacity=_default_cte_file_capacity(cte_dir),
                 ram_budget=budget,
                 metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
             ),

@@ -1,9 +1,8 @@
-"""Describe failed turns (streamed and non-streamed) for traces and users.
+"""Describe a failed turn for traces and users.
 
-A missing Codex sign-in or a missing Claude Code SDK is not a transport
-hiccup: the non-streaming retry would fail the same way, so streaming surfaces
-the stable user-facing message instead of degrading. Every other failure is
-described by its real (unwrapped) cause.
+A refused sign-in or a missing Claude Code SDK surfaces as its stable
+user-facing message; a provider HTTP error as the provider's own words; every
+other failure by its real cause.
 """
 
 from __future__ import annotations
@@ -21,20 +20,21 @@ from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     contains_codex_authentication_error,
 )
-
-# Leaf-scan order for an exception group that matched nothing at the top
-# level. The top-level check already recurses for Claude Code (its detector
-# walks ``.exceptions``) but not for Codex auth, so a group holding both
-# kinds of leaf reports the Claude Code message.
-CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
-    CODEX_AUTHENTICATION_ERROR_MESSAGE,
-    CLAUDE_CODE_SIGNED_OUT_MESSAGE,
-    CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-)
+from clio_agent.providers.terminal_signal import find_terminal_signal, recover_message
+from clio_agent.providers.terminal_signal_catalog import TERMINAL_PROVIDER_SIGNALS
 
 #: ``details.reason`` of a ``provider_error`` whose provider refused the
 #: sign-in (#1454): the client offers that provider's sign-in action.
 PROVIDER_AUTH_REQUIRED_REASON = "provider_auth_required"
+
+#: ``details.reason`` values a caller can see from
+#: :data:`clio_agent.providers.terminal_signal_catalog.TERMINAL_PROVIDER_SIGNALS`
+#: (kept here too, as stable public re-exports for callers that only need the
+#: string, not the table) -- unconditional on the turn's configured provider,
+#: see :func:`turn_failure_message`.
+CLAUDE_CODE_PLAN_LIMIT_REASON = "claude_code_plan_limit"
+CODEX_PLAN_LIMIT_REASON = "codex_plan_limit"
+PROVIDER_SAFETY_REFUSAL_REASON = "provider_safety_refusal"
 
 
 def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str | None:
@@ -115,37 +115,51 @@ def _auth_error_info(provider_id: str, message: str, details: dict[str, Any]) ->
     )
 
 
-def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
-    """The typed error for a turn whose streamed provider call failed.
+def _terminal_signal_error_info(exc: BaseException, details: dict[str, Any]) -> Any | None:
+    """The typed ``provider_error`` for any registered terminal signal, or ``None``.
+
+    ONE lookup against :data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` replaces a per-signal chain of
+    ``if <signal>_message(exc): ...`` -- adding a new terminal signal to the
+    table (a new provider module's :class:`TerminalProviderSignal`) needs no
+    change here.
 
     Args:
-        state: The turn's ``TurnState`` (its user message names the provider).
-        exc: The ``_StreamingOutputError`` the streaming pump raised; its
-            ``__cause__`` is the provider's own exception.
-        partial_answer: Text the stream already showed ("" when none).
+        exc: The exception the turn's provider call raised (searched
+            regardless of the turn's configured provider -- see
+            :func:`turn_failure_message`).
+        details: The caller's base ``ErrorInfo.details`` (extended, not
+            replaced).
 
     Returns:
-        The :class:`~clio_agent.gact.types.ErrorInfo` for the failed turn.
+        The :class:`~clio_agent.gact.types.ErrorInfo`, or ``None`` when ``exc``
+        carries no registered terminal signal.
     """
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is None:
+        return None
+    signal, node = found
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
-    original = exc.__cause__ or exc
-    details = {
-        "original_error": type(original).__name__,
-        "partial_output": bool(partial_answer),
-        "stream_source": ("live" if partial_answer else "batch"),
-    }
-    provider_id = _turn_provider_id(state)
-    auth = provider_auth_failure(original, provider_id=provider_id)
-    if auth is not None:
-        return _auth_error_info(provider_id, auth, details)
-    return ErrorInfo(error="provider_error", message=str(exc), details=details, recoverable=True)
+    return ErrorInfo(
+        error="provider_error",
+        message=recover_message(node, signal.marker),
+        details={
+            **details,
+            "reason": signal.reason,
+            "provider_id": signal.provider_id,
+            "provider_label": provider_label(signal.provider_id),
+            "recovery_actions": list(signal.recovery_actions),
+            **signal.extra_details(node),
+        },
+        recoverable=True,
+    )
 
 
 def _provider_error_leaf(exc: BaseException) -> Any | None:
     """The first ``dspy.LMProviderError`` carrying an HTTP status in ``exc``'s tree.
 
-    Walks exception groups (``streamify``'s task group) and explicit causes.
+    Walks exception groups and explicit causes.
     """
     from dspy.utils.exceptions import LMProviderError  # noqa: PLC0415
 
@@ -200,10 +214,7 @@ def provider_failure_message(exc: BaseException, *, provider_label: str) -> str 
 
     A provider that answered with an HTTP error (404 no endpoint, 429 rate
     limit, 402 billing, ...) is the real, final answer for this request: the
-    user needs the provider's own words, not the streaming wrapper
-    ("live streaming failed before emitting output: ExceptionGroup[...]").
-    The full unwrapped detail still goes to the trace via
-    :func:`describe_stream_exc`.
+    user needs the provider's own words, not a wrapper around them.
 
     Args:
         exc: The exception raised by a streamed provider call.
@@ -223,10 +234,17 @@ def provider_failure_message(exc: BaseException, *, provider_label: str) -> str 
 def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -> str:
     """The user-facing message for a failed turn, streamed or not.
 
-    The one formatter both failure paths share: a provider HTTP error is the
-    provider's own words on one line (:func:`provider_failure_message`),
-    labelled with the configured provider, or with the provider the error
-    names when none is configured; any other failure keeps ``otherwise``.
+    The one formatter both failure paths share: any registered terminal
+    provider signal (:data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` -- a Claude Code or Codex plan/usage-limit
+    hit, a Claude Code safety-filter refusal, ...) is CLIO's own clean
+    sentence recovered from the exception tree regardless of ``provider_id``
+    (#1529 -- one of these can surface a turn after the session's configured
+    provider has already moved on, and the user still needs to know what
+    actually happened); otherwise a provider HTTP error is the provider's own
+    words on one line (:func:`provider_failure_message`), labelled with the
+    configured provider, or with the provider the error names when none is
+    configured; any other failure keeps ``otherwise``.
 
     Args:
         exc: The exception the turn's provider call raised.
@@ -237,79 +255,67 @@ def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -
     Returns:
         The message the failed turn's error carries.
     """
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is not None:
+        signal, node = found
+        return recover_message(node, signal.marker)
     leaf = _provider_error_leaf(exc)
     named = provider_id or str(getattr(leaf, "provider", "") or "")
     message = provider_failure_message(exc, provider_label=provider_label(named))
     return message if message is not None else otherwise
 
 
-def agent_forward_error_info(state: Any, exc: BaseException) -> Any:
-    """The typed ``agent_error`` for a non-streamed forward that raised.
+def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
+    """The typed error for a turn whose forward raised.
 
     Args:
-        state: The turn's ``TurnState``; its accepted user message records
-            the provider the turn ran on (``effective_model``).
+        state: The turn's ``TurnState``; its accepted user message records the
+            provider the turn ran on (``effective_model``).
         exc: The exception the forward raised.
+        partial_answer: Answer text the turn already showed ("" when none).
 
     Returns:
-        The :class:`~clio_agent.gact.types.ErrorInfo` for the failed turn.
+        A ``provider_error`` for a refused sign-in, a known CLI-provider failure or
+        a provider HTTP error (in the provider's own words); ``agent_error`` for
+        anything else.
     """
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
+    terminal = _terminal_signal_error_info(exc, {"original_error": type(exc).__name__})
+    if terminal is not None:
+        return terminal
     provider_id = _turn_provider_id(state)
+    details: dict[str, Any] = {
+        "original_error": type(exc).__name__,
+        "partial_output": bool(partial_answer),
+    }
     auth = provider_auth_failure(exc, provider_id=provider_id)
     if auth is not None:
-        return _auth_error_info(provider_id, auth, {"original_error": type(exc).__name__})
+        return _auth_error_info(provider_id, auth, details)
+    known = cli_provider_stream_failure(exc, provider_id=provider_id)
+    if known is not None:
+        return ErrorInfo(error="provider_error", message=known, details=details, recoverable=True)
+    provider_message = turn_failure_message(exc, provider_id=provider_id, otherwise="")
+    if provider_message:
+        return ErrorInfo(
+            error="provider_error", message=provider_message, details=details, recoverable=True
+        )
     return ErrorInfo(
         error="agent_error",
-        message=turn_failure_message(
-            exc, provider_id=provider_id, otherwise=f"agent.forward raised: {exc}"
-        ),
-        details={"original_error": type(exc).__name__},
+        message=f"agent.forward raised: {exc}",
+        details=details,
         recoverable=True,
     )
 
 
-def describe_stream_exc(exc: BaseException, *, provider_id: str) -> str:
-    """Format a streaming exception for logging, UNWRAPPING ``ExceptionGroup``.
-
-    ``streamify`` runs the agent forward inside an anyio task group, so a failure
-    surfaces as ``ExceptionGroup`` whose ``str()`` is only the opaque wrapper
-    ("unhandled errors in a TaskGroup (1 sub-exception)"); the real cause lives
-    in ``.exceptions``. Recurse into the leaves so the captured detail names the
-    actual provider/transport error instead of the wrapper. A known CLI-provider
-    failure anywhere in the tree is returned as its stable user-facing message.
-
-    Args:
-        exc: The exception raised by a streamed provider call.
-        provider_id: The configured provider's catalog id (scopes the
-            CLI-provider messages, see :func:`cli_provider_stream_failure`).
-
-    Returns:
-        The user-facing CLI-provider message, or ``Type: detail`` (groups as
-        ``Group[leaf; leaf]``).
-    """
-    known = cli_provider_stream_failure(exc, provider_id=provider_id)
-    if known is not None:
-        return known
-    group = getattr(exc, "exceptions", None)
-    if group:
-        leaves = [describe_stream_exc(sub, provider_id=provider_id) for sub in group]
-        for message in CLI_PROVIDER_FAILURE_MESSAGES:
-            if message in leaves:
-                return message
-        return f"{type(exc).__name__}[{'; '.join(leaves)}]"
-    return f"{type(exc).__name__}: {exc}"
-
-
 __all__ = [
-    "CLI_PROVIDER_FAILURE_MESSAGES",
+    "CLAUDE_CODE_PLAN_LIMIT_REASON",
+    "CODEX_PLAN_LIMIT_REASON",
+    "PROVIDER_SAFETY_REFUSAL_REASON",
     "PROVIDER_AUTH_REQUIRED_REASON",
     "provider_auth_failure",
-    "streamed_turn_error_info",
     "cli_provider_stream_failure",
-    "describe_stream_exc",
-    "agent_forward_error_info",
+    "forward_error_info",
     "provider_failure_message",
     "provider_label",
     "turn_failure_message",

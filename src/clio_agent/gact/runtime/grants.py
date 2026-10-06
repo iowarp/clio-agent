@@ -90,7 +90,7 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 GRANTED_ROOTS_CONFIG_KEY = "granted_write_roots"
 
 #: How long a deny-mode egress prompt blocks the chokepoint connection thread before a typed
-#: timeout denial (mirrors the tool gate's ``DEFAULT_TIMEOUT_S``).
+#: timeout denial (mirrors ``permission_timeout.PERMISSION_REQUEST_TIMEOUT_S``).
 _EGRESS_GATE_TIMEOUT_S = 600.0
 
 #: Bound on DISTINCT concurrently-pending deny-mode egress prompts (review finding 4): a flood

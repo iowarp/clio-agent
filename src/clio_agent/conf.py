@@ -76,7 +76,7 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 _USER_CONFIG_RELPATH = ("clio-agent", "config.yaml")
-_WORKSPACE_CONFIG_RELPATH = (".clio", "config.yaml")
+_WORKSPACE_CONFIG_RELPATH = (".clio-agent", "shared", "config.yaml")
 
 # The committed base-layer defaults document, shipped inside the wheel next to
 # this module (``src/clio_agent/config.defaults.yaml``). Generated + drift-tested
@@ -229,6 +229,17 @@ def _read_flat_defaults(path: Path) -> dict[str, Any]:
     return {str(key): value for key, value in data.items()}
 
 
+def _lookup(document: Mapping[str, Any], key: str) -> Any:
+    """The dotted-path value ``key`` in ``document``, or ``_UNSET``."""
+    node: Any = document
+    for part in key.split("."):
+        if isinstance(node, Mapping) and part in node:
+            node = node[part]
+        else:
+            return _UNSET
+    return node
+
+
 class ConfigStore:
     """Lazily-loaded, cached merge of the user + workspace config files.
 
@@ -295,23 +306,42 @@ class ConfigStore:
         # Python 3.12's Path() selects WindowsPath/PosixPath by os.name AT CALL
         # TIME — Path.cwd() under a patched os.name raises NotImplementedError
         # on the other OS. reload() and __init__ always run unpatched.
+        user_path, workspace_path = self._layer_paths()
+        user = _read_yaml_mapping(user_path) if user_path is not None else {}
+        legacy = workspace_path.parent.parent.parent / ".clio" / "config.yaml"
+        workspace = _deep_merge(_read_yaml_mapping(legacy), _read_yaml_mapping(workspace_path))
+        return _deep_merge(user, workspace)
+
+    def _layer_paths(self) -> tuple[Path | None, Path]:
+        """The (user, workspace) config file paths; user is ``None`` with no resolvable home."""
         cwd = self._cwd or self._cwd_snapshot
-        user: dict[str, Any] = {}
-        try:
-            user_dir = self._user_dir_snapshot
-            if user_dir is None:
-                raise RuntimeError("no home directory was resolvable at store construction")
-        except RuntimeError as exc:
+        user_dir = self._user_dir_snapshot
+        if user_dir is None:
             # No resolvable home directory — e.g. on Windows, ``Path.home()``
             # raises when USERPROFILE/HOME are absent from the environment
             # (scrubbed test envs, hardened services). The per-user config
             # layer is then explicitly absent: emit the reason (no silent
             # fallback) and resolve from workspace file → env → default.
-            logger.debug("user config layer skipped: no home directory resolvable (%s)", exc)
-        else:
-            user = _read_yaml_mapping(user_dir / _USER_CONFIG_RELPATH[-1])
-        workspace = _read_yaml_mapping(cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH))
-        return _deep_merge(user, workspace)
+            logger.debug("user config layer skipped: no home directory resolvable at construction")
+            return None, cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH)
+        return user_dir / _USER_CONFIG_RELPATH[-1], cwd.joinpath(*_WORKSPACE_CONFIG_RELPATH)
+
+    def where_set(self, key: str, *, env: str) -> list[str]:
+        """Every place that sets ``key``: each config file holding it, then ``env``.
+
+        Used to name exactly where a REMOVED key still lives, so the error tells
+        the user what to delete. Each entry is human-readable (a file path, or
+        ``"the environment variable <env>"``); empty when nothing sets it.
+        """
+        found: list[str] = []
+        if _lookup(self.data, key) is not _UNSET:
+            # Only now re-read the layers one by one, to name the file(s) holding it.
+            for path in self._layer_paths():
+                if path is not None and _lookup(_read_yaml_mapping(path), key) is not _UNSET:
+                    found.append(str(path))
+        if (self._env_map().get(env) or "").strip():
+            found.append(f"the environment variable {env}")
+        return found
 
     @property
     def data(self) -> dict[str, Any]:
@@ -348,13 +378,7 @@ class ConfigStore:
 
     def file_value(self, key: str) -> Any:
         """Return the dotted-path value from the file layer, or ``_UNSET``."""
-        node: Any = self.data
-        for part in key.split("."):
-            if isinstance(node, Mapping) and part in node:
-                node = node[part]
-            else:
-                return _UNSET
-        return node
+        return _lookup(self.data, key)
 
     def resolve(
         self,

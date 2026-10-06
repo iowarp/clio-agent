@@ -1,0 +1,151 @@
+---
+/**
+ * Site header for every page (overview, docs, tutorials).
+ *
+ * Extends Starlight's default header with the three primary destinations
+ * (Overview, Docs, Tutorials) and a Download call to action, keeping
+ * Starlight's own search, social links, and theme switch.
+ */
+import Search from '@astrojs/starlight/components/Search.astro';
+import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import MobileDocsIndex from './MobileDocsIndex.astro';
+import { primaryNav, isActiveNav } from '../../lib/nav';
+
+const path = Astro.url.pathname;
+---
+
+<div class="header">
+	<div class="title-wrapper sl-flex">
+		<SiteTitle />
+		<nav class="primary-nav sl-flex" aria-label="Primary">
+			{
+				primaryNav.map((item) => (
+					<a
+						href={item.href}
+						class:list={{ 'home-link': item.href === '/' }}
+						aria-current={isActiveNav(item, path) ? 'page' : undefined}
+					>
+						{item.label}
+					</a>
+				))
+			}
+		</nav>
+	</div>
+	<div class="sl-flex print:hidden">
+		<Search />
+	</div>
+	<div class="sl-hidden md:sl-flex print:hidden right-group">
+		<div class="sl-flex social-icons">
+			<SocialIcons />
+		</div>
+		<ThemeSelect />
+		<a class="download-cta" href="/#download">Download</a>
+	</div>
+</div>
+
+<MobileDocsIndex />
+
+<style>
+	@layer starlight.core {
+		.header {
+			display: flex;
+			gap: var(--sl-nav-gap);
+			justify-content: space-between;
+			align-items: center;
+			height: 100%;
+		}
+
+		.title-wrapper {
+			overflow: clip;
+			padding: 0.25rem;
+			margin: -0.25rem;
+			min-width: 0;
+			align-items: center;
+			gap: 2rem;
+		}
+
+		.primary-nav {
+			gap: 1.5rem;
+			align-items: center;
+		}
+		/* On phones the logo already links home; keep Docs and Tutorials reachable from every page. */
+		@media (max-width: 49.99rem) {
+			.title-wrapper {
+				gap: 1.25rem;
+			}
+			.primary-nav {
+				gap: 1rem;
+			}
+			.primary-nav .home-link {
+				display: none;
+			}
+		}
+		.primary-nav a {
+			color: var(--ink-soft);
+			text-decoration: none;
+			font-size: var(--sl-text-sm);
+			padding-block: 0.4rem;
+			border-bottom: 1px solid transparent;
+			transition: color var(--motion-fast) var(--motion-ease);
+		}
+		.primary-nav a:hover {
+			color: var(--ink);
+		}
+		.primary-nav a[aria-current='page'] {
+			color: var(--ink);
+			border-bottom-color: var(--accent);
+		}
+
+		.right-group,
+		.social-icons {
+			gap: 1rem;
+			align-items: center;
+		}
+		.social-icons::after {
+			content: '';
+			height: 2rem;
+			border-inline-end: 1px solid var(--sl-color-gray-5);
+		}
+
+		.download-cta {
+			background: var(--accent);
+			color: var(--on-accent);
+			font-size: var(--sl-text-sm);
+			font-weight: 600;
+			text-decoration: none;
+			padding: 0.45rem 0.9rem;
+			border-radius: var(--radius);
+			transition: filter var(--motion-fast) var(--motion-ease);
+		}
+		.download-cta:hover {
+			filter: brightness(1.1);
+		}
+
+		@media (min-width: 50rem) {
+			:global(:root[data-has-sidebar]) {
+				--__sidebar-pad: calc(2 * var(--sl-nav-pad-x));
+			}
+			:global(:root:not([data-has-toc])) {
+				--__toc-width: 0rem;
+			}
+			.header {
+				--__sidebar-width: max(0rem, var(--sl-content-inline-start, 0rem) - var(--sl-nav-pad-x));
+				--__main-column-fr: calc(
+					(
+							100% + var(--__sidebar-pad, 0rem) - var(--__toc-width, var(--sl-sidebar-width)) -
+								(2 * var(--__toc-width, var(--sl-nav-pad-x))) - var(--sl-content-inline-start, 0rem) -
+								var(--sl-content-width)
+						) / 2
+				);
+				display: grid;
+				grid-template-columns:
+					minmax(calc(var(--__sidebar-width) + max(0rem, var(--__main-column-fr) - var(--sl-nav-gap))), auto)
+					1fr
+					auto;
+				align-content: center;
+			}
+		}
+	}
+</style>

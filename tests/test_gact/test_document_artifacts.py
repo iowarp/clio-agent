@@ -210,6 +210,39 @@ def test_native_comments_and_malformed_archives_are_bounded(tmp_path: Path) -> N
         extract_native_comments(unsafe)
 
 
+def test_working_copy_reloads_from_long_canonical_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep actual manifest IO working beyond Windows MAX_PATH after a restart."""
+    from clio_agent import paths
+    from clio_agent.gact.documents.store import DocumentStore
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    document = root / "brief.docx"
+    _docx(document)
+    state_root = tmp_path.joinpath(*(["canonical-document-state-" + "x" * 32] * 5))
+    assert len(str(state_root)) > 260
+
+    def workspace_state(cwd: str | Path | None = None) -> Path:
+        return state_root
+
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
+        _workspace_id, session_id = _workspace_session(client, root)
+        first = _pin(client, session_id, document.name)
+        monkeypatch.setattr(paths, "workspace_agent_dir", workspace_state)
+        created = client.post(
+            f"/v1/artifacts/{first['artifact_id']}/working-copies",
+            json={"session_id": session_id, "provider": "native", "auto_checkpoint": False},
+        )
+        assert created.status_code == 200, created.text
+        working_copy = created.json()
+        restored = DocumentStore(cast(FastAPI, client.app)).get_working_copy(working_copy["id"])
+        assert restored is not None
+        assert Path(restored.path).read_bytes() == document.read_bytes()
+        assert Path(restored.path).is_relative_to(root / "artifacts" / "document-working-copies")
+
+
 def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     root.mkdir()
@@ -217,8 +250,11 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
     _docx(document)
 
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
-        _workspace_id, session_id = _workspace_session(client, root)
+        workspace_id, session_id = _workspace_session(client, root)
         first = _pin(client, session_id, document.name)
+        assert first["media_type"] == document_format(document.name).mime_type
+        listing = client.get(f"/v1/sessions/{session_id}/artifacts").json()
+        assert listing["artifacts"][0]["versions"][0]["media_type"] == first["media_type"]
         created = client.post(
             f"/v1/artifacts/{first['artifact_id']}/working-copies",
             json={
@@ -229,6 +265,29 @@ def test_working_copy_save_mints_revision_and_stale_save_conflicts(tmp_path: Pat
         )
         assert created.status_code == 200, created.text
         working_copy = created.json()
+        editable_path = Path(working_copy["path"])
+        assert editable_path.is_relative_to(root / "artifacts" / "document-working-copies")
+        listing = client.get(
+            f"/v1/workspaces/{workspace_id}/files?include_hidden=true&exclude_service_storage=true"
+        ).json()
+        assert str(editable_path.relative_to(root)) in {row["path"] for row in listing["entries"]}
+        from clio_agent import paths
+        from clio_agent.gact.documents.store import DocumentStore
+
+        manifest = (
+            paths.workspace_agent_dir(root)
+            / "documents"
+            / "working-copies"
+            / working_copy["id"]
+            / "manifest.json"
+        )
+        from clio_agent.platform_paths import win_extended_path
+
+        assert Path(win_extended_path(manifest)).is_file()
+        assert not (editable_path.parent / "manifest.json").exists()
+        restored = DocumentStore(cast(FastAPI, client.app)).get_working_copy(working_copy["id"])
+        assert restored is not None
+        assert restored.path == working_copy["path"]
         _docx(Path(working_copy["path"]), "@clio revise the title")
         updated = get_document_store(cast(FastAPI, client.app)).checkpoint(working_copy["id"])
 
@@ -366,7 +425,7 @@ def test_collabora_wopi_locks_guard_editor_saves(tmp_path: Path) -> None:
     assert conflicting.status_code == 409
     assert conflicting.headers["X-WOPI-Lock"] == "lock-a"
     assert blocked_save.status_code == 409
-    assert saved.status_code == 200
+    assert saved.status_code == 200, saved.text
     assert saved.headers["X-WOPI-ItemVersion"]
     assert released.status_code == 200
 
