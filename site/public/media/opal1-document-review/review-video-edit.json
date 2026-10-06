@@ -1,0 +1,15 @@
+{
+  "source": "takes/opal-documents-final-review-03.mp4",
+  "provenance": "Selected intervals from one continuous native browser recording. Existing deliverables are reviewed and opened; this is not a creation recording.",
+  "shots": [
+    {"from": 20, "to": 56, "speed": 4, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Ask CLIO to review the saved deliverables · 4×"},
+    {"from": 305, "to": 313, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Editable report and eleven-slide deck, with saved PDF previews"},
+    {"from": 431.5, "to": 440, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Open the report and enlarge its saved preview"},
+    {"from": 443, "to": 452, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Review the source figures and their caveats"},
+    {"from": 466, "to": 477, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Zoom to inspect labels and figure detail"},
+    {"from": 490, "to": 496, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "The third page retains evidence and unresolved questions"},
+    {"from": 810.8, "to": 819.8, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Navigate the deck: recorded groups and study design"},
+    {"from": 821.4, "to": 828, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "The native PowerPoint comparison chart remains editable"},
+    {"from": 829.3, "to": 836.5, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Keep measurement limits and comparison populations clear"}
+  ]
+}
