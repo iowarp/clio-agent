@@ -713,3 +713,26 @@ def test_archive_keeps_all_answered_questions_beyond_attention_limit(
     assert len(interactions) == 105
     assert interactions[-1]["source"]["invocation_id"] == "call104"
     assert interactions[-1]["payload"]["answer_metadata"]["answer"] == "Answer 104"
+
+
+def test_archive_retains_resolved_permissions_only_from_its_session(
+    export_app: tuple[FastAPI, str, str],
+) -> None:
+    """Permission decisions retain their tool correlation after leaving the live tray."""
+    app, sid, _ = export_app
+    app.state.permissions = {
+        "p": {
+            "id": "p",
+            "session_id": sid,
+            "status": "resolved",
+            "action": "allow_workspace",
+            "created_at": "2026-10-05T00:00:00Z",
+            "tool_call": {"call_id": "approved-call", "tool_name": "shell_bash"},
+        },
+        "other": {"id": "other", "session_id": "other", "status": "pending"},
+    }
+    interactions = build_transcript(app, sid)["interactions"]
+    assert len(interactions) == 1
+    assert interactions[0]["id"] == "permission:p"
+    assert interactions[0]["status"] == "answered"
+    assert interactions[0]["source"]["invocation_id"] == "approved-call"

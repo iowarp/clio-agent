@@ -599,14 +599,21 @@ def _interaction_wire(row: PendingInteraction) -> dict[str, Any]:
     return wire
 
 
-def recorded_question_interactions(app: FastAPI, session_id: str) -> list[dict[str, Any]]:
-    """Project every retained question for an archive, without attention-lane caps."""
+def recorded_session_interactions(app: FastAPI, session_id: str) -> list[dict[str, Any]]:
+    """Project retained questions and permissions without live attention-lane caps."""
     questions = getattr(app.state, "user_questions", {})
-    return [
+    permissions = getattr(app.state, "permissions", {})
+    rows = [
         _interaction_wire(_question_interaction(app, question))
         for question in sorted(questions.values(), key=lambda question: question.created_at)
         if question.session_id == session_id
     ]
+    rows.extend(
+        _interaction_wire(_permission_interaction(app, permission))
+        for permission in permissions.values()
+        if str(permission.get("session_id") or "") == session_id
+    )
+    return sorted(rows, key=lambda row: row["created_at"])
 
 
 def _question_from_interaction_id(app: FastAPI, interaction_id: str) -> UserQuestion | None:
