@@ -1,0 +1,190 @@
+{
+  "source": "takes/slides-generation-20261006-take1.mp4",
+  "name": "files-sensor-slide-generation",
+  "posterAt": 5,
+  "shots": [
+    {
+      "from": 0.3,
+      "to": 15.95,
+      "speed": 3,
+      "crop": {
+        "x": 285,
+        "y": 220,
+        "width": 765,
+        "height": 430
+      },
+      "caption": "Ask for six slides, a comparison chart and speaker notes · typing 3×"
+    },
+    {
+      "from": 15.95,
+      "to": 19.5,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Send the request to CLIO"
+    },
+    {
+      "from": 77,
+      "to": 81.8,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO reads the source notes · idle waits omitted"
+    },
+    {
+      "from": 154,
+      "to": 164,
+      "speed": 3,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO writes and runs the deck builder · 3×"
+    },
+    {
+      "from": 242,
+      "to": 248,
+      "speed": 2,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO prepares the preview and publishes the first draft · 2×"
+    },
+    {
+      "from": 270,
+      "to": 286,
+      "speed": 3,
+      "crop": {
+        "x": 285,
+        "y": 680,
+        "width": 765,
+        "height": 175
+      },
+      "caption": "Ask CLIO to fix the first draft’s contrast and spacing · typing 3×"
+    },
+    {
+      "from": 286,
+      "to": 291,
+      "crop": {
+        "x": 285,
+        "y": 680,
+        "width": 765,
+        "height": 175
+      },
+      "caption": "Review the complete correction request before sending"
+    },
+    {
+      "from": 309,
+      "to": 314,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Submit the actual correction request"
+    },
+    {
+      "from": 350,
+      "to": 355,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO inspects the reported layout problems"
+    },
+    {
+      "from": 577,
+      "to": 595,
+      "speed": 3,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "After reviewing its render, CLIO corrects the cover text · 3×"
+    },
+    {
+      "from": 891,
+      "to": 898,
+      "crop": {
+        "x": 290,
+        "y": 35,
+        "width": 750,
+        "height": 720
+      },
+      "caption": "CLIO reviews the corrected deck and checks its speaker notes"
+    },
+    {
+      "from": 917,
+      "to": 930,
+      "speed": 2,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "The corrected PowerPoint and PDF arrive · 2×"
+    },
+    {
+      "from": 930,
+      "to": 935.5,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Open the PowerPoint that CLIO generated"
+    },
+    {
+      "from": 991,
+      "to": 1013,
+      "speed": 2,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Open its PDF preview · 2×; idle pauses omitted"
+    },
+    {
+      "from": 1013,
+      "to": 1022,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Briefly review the cover and comparison chart"
+    },
+    {
+      "from": 1030,
+      "to": 1036.6,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Check the next steps; the PowerPoint includes editable charts and notes"
+    }
+  ]
+}

@@ -54,7 +54,19 @@ test('product showcase supports keyboard selection and usable image dialogs on d
 		await showcase.getByRole('link', { name: 'Open the worked example' }).click();
 		await expect(page).toHaveURL(/\/docs\/examples\/reports-and-slides\/$/);
 		await expect(page.getByRole('heading', { name: 'Report and presentation example', exact: true })).toBeInViewport();
-		await expect(page.getByRole('main').locator('video')).toHaveCount(3);
+		await expect(page.getByRole('main').locator('video')).toHaveCount(5);
+		for (const name of ['files-sensor-word-generation', 'files-sensor-slide-generation']) {
+			await expect(page.locator(`video:has(source[src="/media/${name}.mp4"])`)).toBeVisible();
+			const response = await page.request.get(`/media/${name}.mp4`);
+			expect(response.ok()).toBe(true);
+			expect(response.headers()['content-type']).toContain('video/mp4');
+		}
+		await expect(page.getByRole('main')).toContainText('CLIO creates the files during the recorded runs');
+		for (const filename of ['Sensor_Summary_Team_Report.docx', 'Sensor_Summary_Team_Report.pdf', 'sensor_team_briefing.pptx', 'sensor_team_briefing.pdf']) {
+			const response = await page.request.get(`/media/document-generation/${filename}`);
+			expect(response.ok()).toBe(true);
+			expect((await response.body()).length).toBeGreaterThan(1000);
+		}
 		for (const filename of ['revised-report.docx', 'revised-report.pdf', 'revised-deck.pptx', 'revised-deck.pdf']) {
 			const response = await page.request.get(`/media/document-reference/${filename}`);
 			expect(response.ok()).toBe(true);

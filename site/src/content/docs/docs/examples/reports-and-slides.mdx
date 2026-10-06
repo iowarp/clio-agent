@@ -1,6 +1,6 @@
 ---
 title: Report and presentation example
-description: Ask for a report or presentation, revise an existing file, and review complete examples with editable downloads.
+description: Watch CLIO generate a Word report and PowerPoint from source notes, then download the actual outputs.
 ---
 
 import WidgetRecording from '../../../../components/WidgetRecording.astro';
@@ -10,18 +10,58 @@ finished file, then ask for changes in the same conversation. For help with
 opening previews and downloading files, see
 [Working with files](/docs/working-with-files/).
 
-## Ask for a report or presentation
+## Generate a report
 
-Reference your source files and give CLIO a purpose and length. You can also
-provide a template or name the sections you need. For example:
+These two recordings start in fresh conversations with source notes and a
+summary of fictional sensor readings. CLIO creates the files during the recorded
+runs. Each clip shows the request, agent activity and file arrival, followed by a
+brief look at the result.
 
-> Create a Word report and a PowerPoint presentation from these notes and figures for a fifteen-minute team meeting. Explain the findings and uncertainties, include source captions and speaker notes, and keep the source files unchanged.
+Put the [sample notes](/media/document-generation/sensor-notes.md) and
+[sample summary](/media/document-generation/sensor-summary.json) in a `sources`
+folder in your workspace, then ask:
+
+> Use the sensor notes and summaries in sources/ to create a polished two-page Word report for our team meeting. Include a comparison chart, the limitations and next steps. Save the editable report and a PDF preview. Clearly label the sample data fictional.
+
+<WidgetRecording
+  name="files-sensor-word-generation"
+  title="From a request to a generated Word report"
+  caption="Send a prompt, watch CLIO build and review the report, then open the newly generated file."
+  timingNote="Selected portions of one continuous fresh-generation recording. Typing and work are accelerated where labelled; idle waits are omitted."
+  pointerGuide
+/>
+
+Download the actual recorded output:
+[Word report](/media/document-generation/Sensor_Summary_Team_Report.docx) ·
+[Report PDF](/media/document-generation/Sensor_Summary_Team_Report.pdf).
+
+## Generate a presentation
+
+Use the same source files and describe the audience, length and content you need:
+
+> Use the sensor notes and summaries in sources/ to create a six-slide team briefing. Include a comparison chart, key limitations and next steps, with speaker notes. Save an editable PowerPoint and a PDF preview. Clearly label the sample data fictional.
+
+<WidgetRecording
+  name="files-sensor-slide-generation"
+  title="From a request to a generated PowerPoint"
+  caption="Watch CLIO create the deck, respond to a layout correction, and publish the corrected PowerPoint and PDF."
+  timingNote="Selected portions of one continuous fresh-generation recording, including the actual correction request. Accelerated sections are labelled; idle waits are omitted."
+  pointerGuide
+/>
+
+The first draft needed better cover contrast and more space below the final
+heading. The recording includes the follow-up request and CLIO's correction.
+Download the corrected [PowerPoint](/media/document-generation/sensor_team_briefing.pptx)
+and [Slides PDF](/media/document-generation/sensor_team_briefing.pdf).
 
 Open the result and check the wording, tables, figures and layout. Ask for any
 corrections, then review the updated version before sharing it. Download the
 editable document if you want to continue in Word or PowerPoint.
 
-## Revise an existing file
+## More examples
+
+<details>
+<summary>Revise an existing report or presentation</summary>
 
 These recordings use fictional sensor observations. Download a reference file
 below, add it to a message, and adapt the request to your own work.
@@ -84,7 +124,10 @@ and [presentation](/media/document-reference/reference-deck.pdf).
 
 </details>
 
-## A research briefing
+</details>
+
+<details>
+<summary>Review a saved research briefing</summary>
 
 The example uses saved analysis and figures from OPAL 1, a plant-growth research
 dataset. Its three-page Word report and eleven-slide meeting deck include speaker
@@ -116,5 +159,7 @@ and navigation of the saved results after those corrections.
 ![Slides 1–6 of the research briefing](/media/opal1-document-review/deck-overview-1.png)
 
 ![Slides 7–11 of the research briefing](/media/opal1-document-review/deck-overview-2.png)
+
+</details>
 
 </details>
