@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
+from contact_sheets import make_contact_sheets
 from inspection import (
     MAX_TEXT_CHARS,
     inspect_document,
@@ -79,8 +80,12 @@ def render(source: Path, output: Path, *, pages: str = "", dpi: int = 120) -> di
             "page_count": document.page_count,
             "selected_pages": selected,
             "images": images,
+            "contact_sheets": make_contact_sheets(images, output),
             "dpi": dpi,
-            "visual_review": "pending: call view_image on relevant page images or view_pdf on the rendition",
+            "visual_review": (
+                "pending: inspect contact sheets for consistency, then individual page images "
+                "for fine text and detailed layout; revise the source and render again after fixes"
+            ),
         }
 
 

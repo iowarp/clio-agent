@@ -13,6 +13,20 @@ For JavaScript creation, use `docx` only when the returned JavaScript status is
 ready, place the importing script in the returned JavaScript workspace, and run
 it with the returned `javascript.script_argv` (pnpm executes managed Node).
 
+For a new report, read `references/report-design.md` for content and layout
+decisions. When using JavaScript, read `references/docx-js.md` for the shipped
+library's units, styles, page fields and native table example. Load these files
+with this skill's returned ID and `file` argument; they are supporting guidance,
+not a required template or a substitute for the user's evidence.
+
+`examples/create-reference-report.mjs` is a runnable, fictional two-page report
+with a chart, native table, headings and page numbers. Load it with the same
+skill ID and `file` argument. Copy it into the prepared JavaScript workspace
+before running; its sample data demonstrate composition, not user findings.
+Keep builders in task-owned workspace files and execute them with a short
+command. Split large writes rather than embedding a whole report builder in one
+shell command.
+
 For an existing `.docx`, call `prepare_document(path, action="inspect")` and read
 the returned content derivative through bounded file reads. This extracts body
 paragraphs and tables in order. It does not establish pagination, floating-object
@@ -27,6 +41,21 @@ size, margins and table widths deliberately. Replace text in individual runs whe
 formatting must survive; assigning paragraph text replaces its runs. Preserve
 images, hyperlinks and fields that the task does not change. Do not recreate an
 existing document from extracted text to perform a small edit.
+
+For a new report, develop the complete content from the supplied evidence before
+formatting. Establish the reader, purpose, main conclusion and source limitations.
+Choose the length from the material and the user's intended use. A report needs
+connected explanation, supported findings and useful figures or tables where the
+evidence calls for them. A short sample, outline or placeholder is not a completed
+report. Never invent results to fill pages.
+
+Use a coherent heading hierarchy, readable body text around 11–12 points and
+deliberate paragraph spacing. Add page numbers to a multi-page report. Keep figure
+captions with their figures, preserve image proportions and use sufficiently
+detailed source images. Include units and source identifiers with quantitative
+evidence. Repeat table headers across pages and prevent isolated headings and
+large accidental blank gaps. A restrained report should get its visual quality
+from typography, alignment and clear evidence rather than decorative boxes.
 
 `python-docx` does not provide every OOXML feature. For tracked changes, complex
 fields, native comments or unsupported objects, inspect the relevant package XML
@@ -44,10 +73,18 @@ verified copy automatically. The runtime inventory reports its status and accept
 `CLIO_DOCUMENT_SOFFICE` for an installed portable executable. Rendering uses a
 fresh profile and produces a separate PDF and page PNGs.
 
-Inspect every material output page using `view_image`, or the rendition using
-`view_pdf` when exposed. Check wrapping, table splits, image placement, glyphs and
-headers/footers. After a change, regenerate the rendition and inspect the new
-images. Extraction and rendering are distinct from visual review. If conversion
+Close the loop before delivery: save the native source, convert it to PDF, render
+page images, look at those images, fix problems in the source, and repeat until
+the current output is readable and well composed. `prepare_document(...,
+action="render")` returns both full page `images` and labelled `contact_sheets`
+with up to six pages in a two-column, three-row grid. Inspect every sheet for
+consistency and pagination, then inspect every individual page for fine text, figure
+labels, table splits, wrapping, glyphs and headers/footers. An overview cannot
+establish that small details are legible. Use `view_image`, or `view_pdf` when
+exposed. After a change, regenerate the rendition and inspect the new images.
+Do not publish after looking only at contact sheets. Finish the individual-page
+review and resolve layout defects first. Extraction and rendering are distinct
+from visual review. If conversion
 or visual tools are unavailable, report the concrete limitation and keep the
 editable source rather than calling its layout verified.
 
