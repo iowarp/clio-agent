@@ -50,10 +50,12 @@ decorative illustrations or flatten body text into an image.
 ## Finish with a page review
 
 Reopen the DOCX to check structure and retained objects. Render it and inspect
-every material page, including the last page. Check heading orphans, unexpected
-blank pages, table splits, small labels, clipped text, image placement and
-headers/footers. Review paragraph quality as well as overflow. Revise the native
-source and regenerate its preview; an old PDF cannot verify a new DOCX.
+the page overviews, including the last page's flow. Look for heading orphans,
+unexpected blank pages, table splits, clipped text and misplaced images. Use what
+the overview shows to choose individual pages for detail review; check small labels
+or headers/footers when they are unclear at overview scale. There is no requirement
+to open every page individually. Review paragraph quality as well as overflow.
+Revise the native source and regenerate its preview; an old PDF cannot verify a new DOCX.
 
 Publish the editable source with its version-bound preview. A PDF is useful for
 reading, but does not replace the requested Word document.

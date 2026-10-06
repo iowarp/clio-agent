@@ -58,9 +58,11 @@ images. Do not render an entire slide into a picture to hide layout problems.
 ## Review what the audience sees
 
 Reopen the PPTX and check slide content, order, notes and required native objects.
-Render and inspect every slide. Check composition, text fit, overlap, contrast,
-cropping, chart labels and image quality. Bounds checks cannot detect all text
-overflow. Revise weak slides as well as broken ones, then regenerate the preview.
+Render and inspect the slide overviews for composition, text fit, overlap,
+contrast, cropping and image quality. Choose individual slides for closer review
+based on unclear chart labels or suspected problems in the overview, rather than
+opening every slide by default. Bounds checks cannot detect all text overflow.
+Revise weak slides as well as broken ones, then regenerate and review the preview.
 
 Publish the editable deck with its version-bound preview. Distinguish local
 LibreOffice rendering from a check in Microsoft PowerPoint.

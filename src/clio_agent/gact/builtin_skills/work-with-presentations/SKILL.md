@@ -58,7 +58,7 @@ suited to the content. Around 30–36 point titles and 18–24 point body text a
 useful starting sizes for a widescreen meeting deck. Prefer a few readable points
 and a meaningful visual to dense paragraphs or repeated default bullet layouts.
 Keep a cover simple. Avoid generic slogans, blank slides and filler added merely
-to reach a slide count. Inspect all slides and revise weak composition as well as
+to reach a slide count. Review the slide overviews and revise weak composition as well as
 clipping or overlap before publishing.
 
 For a small edit, change the relevant runs or shapes with `python-pptx`. A
@@ -72,12 +72,14 @@ and slide PNGs. For a long deck, render it in explicit page ranges. Close the lo
 before delivery: save the native deck, convert it to PDF, render slide images,
 look at them, fix the native source and repeat. The render returns `contact_sheets`
 with up to six slides in a two-column, three-row grid alongside full `images`.
-Inspect every sheet for theme and compositional consistency. Review individual
-slides, without skipping any, with `view_image`, or the rendition with `view_pdf` when available, for
-small text, chart labels, overlap, cropping, text fit, contrast and image aspect
-ratio. Contact sheets cannot verify fine detail. Regenerate and inspect previews
-after fixing the source. Do not publish after looking only at contact sheets:
-finish individual-slide review and resolve layout defects first. PDF conversion may differ from
+Inspect every sheet for theme and compositional consistency. Based on what the
+overviews show, choose individual slides for closer review when text or chart
+labels are too small to assess, or overlap, cropping, text fit, contrast or image
+proportions are unclear. Use `view_image`, or `view_pdf` when available, to resolve
+those questions. Opening every individual slide is not required when the overview
+provides enough evidence. Regenerate and review the overviews after fixing the
+source, inspecting details as needed. Resolve visible defects and uncertainties
+before publishing. PDF conversion may differ from
 PowerPoint, so distinguish local rendered review from acceptance in PowerPoint.
 
 Clio uses bundled LibreOffice or provisions a private verified copy when rendering.

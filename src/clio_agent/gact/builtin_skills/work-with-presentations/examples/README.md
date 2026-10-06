@@ -11,7 +11,8 @@ context and uncertainty. It is a design example, not a real experiment.
    output directory. It writes `reference-deck.pptx` and `reference-source.json`.
 4. Reopen the deck to check all six slides, tables, chart and notes. Call
    `prepare_document` with `action="render"` on it. Inspect the six-slide contact
-   sheet, then each of the six individual images for wrapping and fine detail.
+   sheet, then choose individual slides for closer review when the overview shows
+   unclear text or possible layout problems.
 5. Revise the native builder, regenerate and repeat if needed. Publish the final
    editable deck with its source-bound PDF preview.
 

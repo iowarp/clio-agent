@@ -11,7 +11,8 @@ headings and tables, captions and page numbering. It is not a real experiment.
    output directory. It writes `reference-report.docx`, `reference-chart.png` and
    `reference-source.json` there.
 4. Reopen the DOCX, then call `prepare_document` with `action="render"` on it.
-   Inspect its contact sheet and both individual page images. Fonts and renderer
+   Inspect its contact sheet, then choose individual pages for closer review when
+   the overview shows unclear text or possible layout problems. Fonts and renderer
    changes can change pagination; the checked reference renders as two pages.
 5. Fix the native builder, regenerate and repeat if the layout needs work. Publish
    the final editable DOCX with its source-bound PDF preview.

@@ -83,8 +83,8 @@ def render(source: Path, output: Path, *, pages: str = "", dpi: int = 120) -> di
             "contact_sheets": make_contact_sheets(images, output),
             "dpi": dpi,
             "visual_review": (
-                "pending: inspect contact sheets for consistency, then individual page images "
-                "for fine text and detailed layout; revise the source and render again after fixes"
+                "pending: inspect contact sheets, then choose individual pages for closer review "
+                "where the overview leaves text or layout unclear; revise and render again after fixes"
             ),
         }
 

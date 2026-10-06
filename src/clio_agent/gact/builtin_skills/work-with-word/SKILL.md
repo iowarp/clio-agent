@@ -78,13 +78,14 @@ page images, look at those images, fix problems in the source, and repeat until
 the current output is readable and well composed. `prepare_document(...,
 action="render")` returns both full page `images` and labelled `contact_sheets`
 with up to six pages in a two-column, three-row grid. Inspect every sheet for
-consistency and pagination, then inspect every individual page for fine text, figure
-labels, table splits, wrapping, glyphs and headers/footers. An overview cannot
-establish that small details are legible. Use `view_image`, or `view_pdf` when
-exposed. After a change, regenerate the rendition and inspect the new images.
-Do not publish after looking only at contact sheets. Finish the individual-page
-review and resolve layout defects first. Extraction and rendering are distinct
-from visual review. If conversion
+consistency and pagination. Based on what the overviews show, decide which
+individual pages need closer inspection: small or unclear text, figure labels,
+suspected table splits, wrapping, glyphs or header/footer problems. Use `view_image`,
+or `view_pdf` when exposed, to resolve those questions. Opening every individual
+page is not required when the overview provides enough evidence. After a change,
+regenerate the rendition and review the new overviews, inspecting details as needed.
+Resolve visible defects and uncertainties before publishing. Extraction and
+rendering are distinct from visual review. If conversion
 or visual tools are unavailable, report the concrete limitation and keep the
 editable source rather than calling its layout verified.
 
