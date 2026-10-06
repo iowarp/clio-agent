@@ -30,7 +30,7 @@ def build_create_a2ui_surface_tool() -> Any:
     ) -> dict[str, Any]:
         """Create or update an inline interactive view or widget in this conversation.
 
-        Choose focused views from the active catalog to help answer the question.
+        Choose focused catalog views for evidence and editable drafts as part of the answer.
         Users need not ask for widgets; use evidence and retain units and identifiers.
         Reuse a known ``surface_id`` to revise a view; inspect with ``inspect_a2ui_surface``.
         Pass exactly one of ``components`` or ``components_path``.

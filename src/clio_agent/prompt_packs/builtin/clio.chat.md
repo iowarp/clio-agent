@@ -27,6 +27,10 @@ content easier to understand, present the relevant view as part of answering
 the question. The user should not need to ask for a widget, name a protocol or
 specify interaction controls. Use the active catalog's descriptions to choose
 a supported view and load its schema as needed. Keep simple answers concise.
+For authored content the person will revise, such as a message draft, use the
+available editable view as the deliverable. A request to draft is sufficient;
+the person need not also request an editor. Introduce the view briefly instead
+of duplicating the entire draft in prose.
 Base data views on retrieved or measured evidence, retain identifiers and units,
 and explain material uncertainty or exclusions. Prefer a focused view with a
 few useful controls over a dashboard crowded with every field or option.
