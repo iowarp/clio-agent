@@ -40,6 +40,7 @@ from clio_agent.gact.routes.workspace_file_listing import (
 )
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
+from clio_agent.gact.routes.workspace_h5grove import register_workspace_h5grove_routes
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.routes.workspace_warmup import register_workspace_warmup_route
 from clio_agent.gact.runtime.workspace_root_change import (
@@ -725,6 +726,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             filename=target.name,
             content_disposition_type="inline",
         )
+
+    register_workspace_h5grove_routes(app)
 
     from clio_agent.gact.routes.references import register_reference_routes  # noqa: PLC0415
 
