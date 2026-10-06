@@ -103,15 +103,17 @@ The session header also has actions to fork a session, compact its history, shar
 
 Open the session's sidebar menu and choose **Export session**, then **Download transcript HTML**. The default is one **Transcript HTML file** with everything needed to read the conversation: tool inputs and outputs, recorded intermediate steps, loaded skill instructions, traces, child-agent work and supported saved views. Styles, scripts and captured images are embedded; there are no companion skill or data files.
 
-<WidgetRecording name="clio-session-export" title="Read and inspect an exported session" caption="Real Opal 1 exports: read the single-file Transcript, inspect its skills and results, then find the files included with Effects." formatLabel="Screenshot walkthrough" timingNote="Four actual archive states with reading pauses; this is an explanation made from screenshots, not a continuous interaction recording." />
+<WidgetRecording name="clio-session-export" title="Read and inspect an exported session" caption="Real Opal 1 exports: follow Activity, expand a skill at its original call, read a command and its recorded result, enlarge a saved plot, and find included files." formatLabel="Screenshot walkthrough" timingNote="Five actual archive states with reading pauses; this is an explanation made from screenshots, not a continuous interaction recording." />
 
-[View the short GIF (0.8 MB)](/media/clio-session-export.gif). The video above provides playback controls and a full-screen view.
+[View the short GIF (1.1 MB)](/media/clio-session-export.gif). The video above provides playback controls and a full-screen view.
+
+The review uses the same conversation, **Activity** groups and tool controls as CLIO. Open Activity to follow the recorded work; choose **Full activity view** to inspect every retained step. A skill's **Show more** opens its saved instructions at the call that loaded them. Commands show their inputs and results together, including recorded failures. Nothing is rerun when you inspect it.
 
 The two toggles add files to that same review:
 
 | Export | What your recipient receives |
 |---|---|
-| Transcript (default) | One self-contained HTML file. Read the full recorded work and expand **Show loaded skill instructions** wherever a skill was used. |
+| Transcript (default) | One self-contained HTML file. Read the full recorded work, expand skill instructions in Activity, and inspect supported saved views. |
 | Effects | A ZIP with the visual transcript plus skill files, full traces, the session's referenced and produced artifacts, and recorded input files. Follow file links to inspect the actual saved inputs and outputs. Editable documents and their previews remain separate files. |
 | Full | Effects plus the registered workspace folders as they exist when you export. This can be much larger. |
 
@@ -121,10 +123,10 @@ Send the Transcript HTML directly; your recipient opens that one file in a brows
 
 | In the review | What you can do |
 |---|---|
-| **Conversation & activity** | Follow questions, recorded intermediate steps, tool requests and results in their original positions, then read the answer. Long results have their own scroll area and page controls. Complete saved output is embedded in Transcript; Effects and Full also offer **Open complete saved output** to open its file. |
+| **Conversation & activity** | Follow questions, answers, intermediate steps, tool inputs and results in their original positions. Use the same Activity controls, **Show more** and complete-result views as the live conversation. Complete saved output is embedded in Transcript; Effects and Full also include its file. |
 | **Results** | Inspect supported saved views, filter captured tables and charts, and click an image to enlarge it. These are saved results; asking the agent to change them requires a live session. |
 | **Files** | Search the included files. Effects and Full provide the editable outputs and their saved previews as separate files. |
-| **Evidence & skills** | Read the skill instructions loaded during the run and inspect the exact tool records. Raw JSON and recording limitations are kept here, separate from the conversation. |
+| **Evidence & skills** | Use a supplementary index of loaded skills and exact tool records, or check recording coverage. Skill instructions remain available at their original calls in the conversation. Raw records are here when you need them. |
 
 The HTML contains its viewer resources, skill instructions and a readable document. If your browser blocks scripts or cannot start the interactive views, the conversation, activity, skills and captured images remain readable.
 

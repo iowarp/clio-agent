@@ -143,6 +143,8 @@ def recorded_skills(
 
 
 def _session_transcript(app: FastAPI, sid: str) -> dict[str, Any]:
+    from clio_agent.gact.routes.interactions import recorded_question_interactions
+
     session = app.state.sessions.get(sid)
     if session is None:
         raise KeyError(sid)
@@ -191,6 +193,7 @@ def _session_transcript(app: FastAPI, sid: str) -> dict[str, Any]:
         "semantic_events": events,
         "tool_records": tools,
         "loaded_skills": skills,
+        "interactions": recorded_question_interactions(app, sid),
         "recording": {"source": source, "issues": issues},
     }
 

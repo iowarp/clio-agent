@@ -11,6 +11,7 @@ import zipfile
 from typing import Any
 
 from clio_agent.gact.session_export_document import CSS, document_body, embedded_evidence, escape
+from clio_agent.gact.session_export_projection import archive_transcript_views
 
 
 def _page(title: str, body: str, *, stylesheet: str = "", scripts: tuple[str, ...] = ()) -> str:
@@ -97,9 +98,22 @@ def write_archive_review(
         )
         return
     javascript = str(visual_review["javascript"])
+    # Keep the native viewer inside the one HTML without embedding its large
+    # uncompressed bundle. This is ordinary inline code after decompression;
+    # no companion asset requests or new network permissions are introduced.
+    packed_viewer = base64.b64encode(gzip.compress(javascript.encode(), mtime=0)).decode()
+    loader = (
+        "new Response(new Blob([Uint8Array.from(atob("
+        + json.dumps(packed_viewer)
+        + "),c=>c.charCodeAt(0))]).stream().pipeThrough(new DecompressionStream('gzip')))"
+        ".text().then(source=>(0,eval)(source)).catch(error=>{"
+        "document.getElementById('archive-status').textContent="
+        "'Interactive review could not start; the saved document remains readable. '+error;});"
+    )
     stylesheet = str(visual_review["stylesheet"])
     data = {
         "transcript": transcript,
+        "transcript_views": archive_transcript_views(transcript),
         "manifest": manifest,
         "snapshot": snapshot,
         "embedded_tool_outputs": embedded_outputs,
@@ -119,7 +133,7 @@ def write_archive_review(
     )
     write(
         "index.html",
-        _page(title, body, stylesheet=stylesheet, scripts=(bootstrap, javascript)).encode(),
+        _page(title, body, stylesheet=stylesheet, scripts=(bootstrap, loader)).encode(),
     )
 
 

@@ -1,13 +1,16 @@
 WEBVTT
 
-00:00.000 --> 00:04.000
-Transcript: one HTML with the recorded work.
+00:00:00.000 --> 00:00:04.000
+Follow the same transcript and Activity groups
 
-00:04.000 --> 00:09.000
-Read the actual loaded instructions inside the HTML.
+00:00:04.000 --> 00:00:09.000
+Show more: instructions at the original skill call
 
-00:09.000 --> 00:14.000
-Enlarge a captured result to inspect it.
+00:00:09.000 --> 00:00:14.000
+See the command and its recorded result together
 
-00:14.000 --> 00:18.000
-Effects adds the files, skills and full traces.
+00:00:14.000 --> 00:00:19.000
+Enlarge a saved result for closer inspection
+
+00:00:19.000 --> 00:00:23.000
+Effects adds actual files; Full adds the workspace
