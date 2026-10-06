@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import html
 import io
+import json
 import re
 import zipfile
 from typing import Any
@@ -117,6 +119,30 @@ def test_script_free_images_use_captured_bytes_and_active_content_is_escaped() -
     assert "<script>bad()" not in rendered
     assert "&lt;script&gt;" in rendered
     assert "data:image/png;base64,iVBORfake" in rendered
+
+
+def test_embedded_viewer_is_losslessly_compressed_with_no_companion_files() -> None:
+    transcript, manifest = recorded_work()
+    javascript = "const text='</script> UTF-8: café';\n" * 10000
+    target = io.BytesIO()
+    with zipfile.ZipFile(target, "w") as archive:
+        write_archive_review(
+            archive,
+            transcript,
+            manifest,
+            {
+                "javascript": javascript,
+                "stylesheet": "",
+                "snapshot": {},
+            },
+        )
+        rendered = archive.read("index.html").decode()
+        scripts = re.findall(r"<script>(.*?)</script>", rendered, re.S)
+        packed = re.search(r'atob\(("[A-Za-z0-9+/=]+")\)', scripts[1])
+        assert packed is not None
+        assert gzip.decompress(base64.b64decode(json.loads(packed[1]))).decode() == javascript
+        assert len(rendered) < len(javascript) / 2
+        assert archive.namelist() == ["index.html"]
 
 
 def test_workspace_media_redirect_uses_captured_bytes_without_reading_originals() -> None:

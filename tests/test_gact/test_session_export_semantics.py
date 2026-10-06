@@ -687,3 +687,29 @@ def test_review_summary_uses_real_validator_and_correlates_the_saved_message(
         },
     )
     assert result["degradations"]
+
+
+def test_archive_keeps_all_answered_questions_beyond_attention_limit(
+    export_app: tuple[FastAPI, str, str],
+) -> None:
+    """Historical question answers remain at their tools, without the live tray's cap."""
+    from clio_agent.gact.types import UserQuestion
+
+    app, sid, _ = export_app
+    app.state.user_questions = {}
+    for index in range(105):
+        question = UserQuestion(
+            id=f"q{index}",
+            session_id=sid,
+            prompt=f"Question {index}",
+            status="answered",
+            answer=f"Answer {index}",
+            created_at="2026-10-05T00:00:00Z",
+            updated_at="2026-10-05T00:01:00Z",
+            metadata={"invocation_id": f"call{index}", "tool_name": "ask_user"},
+        )
+        app.state.user_questions[question.id] = question
+    interactions = build_transcript(app, sid)["interactions"]
+    assert len(interactions) == 105
+    assert interactions[-1]["source"]["invocation_id"] == "call104"
+    assert interactions[-1]["payload"]["answer_metadata"]["answer"] == "Answer 104"
