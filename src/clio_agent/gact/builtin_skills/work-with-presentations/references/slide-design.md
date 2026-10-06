@@ -13,6 +13,10 @@ quantitative findings. Put detailed references and presenter context in notes,
 but keep caveats that change the conclusion visible. Never invent results,
 quotations or decorative metrics to fill a layout.
 
+Keep each comparison's population explicit. A median across all observations on
+each date and a median change among paired subjects are different summaries;
+showing them together must not imply that they came from the same sample.
+
 ## Define one visual system
 
 Use the reference deck's conventions when editing. For a new deck, choose an
@@ -25,6 +29,10 @@ Use theme defaults or shared builder constants so typography stays coherent.
 Align title positions, figure edges and footers. Give content room to breathe
 without leaving the slide mostly empty. Design quality comes from hierarchy,
 composition and meaningful evidence, not repeated rounded cards or decoration.
+Check the rendered theme effects as well as assigned colours. Some libraries
+inherit shadows or bevels from the default Office theme even when a builder only
+sets fill and line properties. Remove unintended effects for a flat composition;
+do not assume that a plain shape declaration renders without them.
 
 ## Choose the layout from the content
 
