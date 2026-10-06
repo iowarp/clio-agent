@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent import conf
 from clio_agent.arc import history_mode
-from clio_agent.gact.routes.runtime_settings import register_runtime_settings_routes
+from clio_agent.gact.routes.session_defaults import register_session_defaults_routes
 from clio_agent.gact.runtime_settings import (
     RuntimeSettingsError,
     UpdateRuntimeSettings,
@@ -131,7 +131,7 @@ def test_routes_validate_types_and_do_not_expose_invalid_yaml(
     monkeypatch.chdir(tmp_path)
     conf.reload()
     app = FastAPI()
-    register_runtime_settings_routes(app)
+    register_session_defaults_routes(app)
     with TestClient(app) as client:
         initial = client.get("/v1/settings/runtime")
         assert initial.status_code == 200
