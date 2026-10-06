@@ -1,4 +1,4 @@
-"""``create_a2ui_surface`` — create or revise a trusted A2UI surface (S4)."""
+"""``create_a2ui_surface`` â€” create or revise a trusted A2UI surface (S4)."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def build_create_a2ui_surface_tool() -> Any:
 
         Choose focused catalog views for evidence and editable drafts as part of the answer.
         Users need not ask for widgets; use evidence and retain units and identifiers.
-        Reuse a known ``surface_id`` to revise a view; inspect with ``inspect_a2ui_surface``.
+        Use ``session_surface_ids`` to find a view and revise it in place; ``inspect_a2ui_surface`` reads it.
         Pass exactly one of ``components`` or ``components_path``.
         Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
         ``catalog.json#/components/<ExactComponentId>`` for its schema.
