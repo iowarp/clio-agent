@@ -472,6 +472,7 @@ from clio_agent.gact.routes.provider_models_refresh import (
 )
 from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
+from clio_agent.gact.routes.runtime_settings import register_runtime_settings_routes  # noqa: E402
 from clio_agent.gact.routes.sandbox_setup import register_sandbox_setup_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
@@ -2073,6 +2074,7 @@ def build_app(
     # index and resume text travel on ``deps``.
     register_sessions_routes(app, deps)
     register_session_defaults_routes(app)
+    register_runtime_settings_routes(app)
 
     # ---- /v1/sessions/{sid}/messages + /v1/messages (BBB9/BBB10/BBB27) ---
     # The session message ledger -- the turn-entry POST, the list/get reads,
