@@ -63,7 +63,7 @@ def build_update_a2ui_data_model_tool() -> Any:
         name="update_a2ui_data_model",
         presentation=surface_presentation,
         desc=update_a2ui_data_model.__doc__,
-        title="Update UI element",
+        title="Update widget",
         domain="surfaces",
         args={
             "surface_id": {"type": "string", "description": "Existing live surface id."},

@@ -43,6 +43,11 @@ JavaScript dependencies and script execution. The returned command arguments
 and shell environment select CLIO's interpreters without requiring global
 Python, Node, uv or pnpm installations. Keep project dependencies in the
 project's own environment; use the prepared packages for standalone scripts.
+Read the returned package inventory before choosing imports. For standalone
+scripts, pass the needed module names as `required_imports` to check them in
+the selected interpreter. A ready runtime does not mean every Python package
+is installed. Resolve missing dependencies with explicit uv `--with` options
+in a task environment, preserving the locked runtime.
 
 Choose relevant installed skills from their names and descriptions; load their
 instructions when the task calls for them. The user need not name a skill.
@@ -63,6 +68,9 @@ its source map, chart, or model available. Reuse that image view for revisions
 of the same figure.
 Show each figure once in A2UI, with the downloadable file alongside it. Refer
 to that view in prose instead of repeating the figure as a Markdown image.
+For a file-processing request, inspect the input and determine the processing
+requirements first. Load presentation guidance when deciding how to show the
+result; its availability does not require loading it during workspace setup.
 
 Available experts:
 {{ agents.available_tree }}

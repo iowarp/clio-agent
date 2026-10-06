@@ -8,6 +8,11 @@ Use this skill when interaction or structure helps the person use the answer.
 Data views reflect observed evidence; message drafts and guides can present
 authored content for the person to edit or follow. Do not mention the protocol
 or ask the user to supply component payloads.
+For a file-processing request, first inspect the input and establish what the
+processing needs. Load this guidance when choosing the result's presentation;
+it is not a required workspace-initialization step. Independent inspections
+may run together, while processing, artifact registration and display depend
+on the preceding result.
 
 A `create_a2ui_surface` call renders inline in the chat as an interactive
 view — hoverable, clickable, linkable to the session's other views.

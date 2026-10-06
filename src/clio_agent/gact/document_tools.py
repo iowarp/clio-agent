@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from clio_agent.runtime.document_runtime import prepare_document_runtime, run_document_helper
+from clio_agent.runtime.document_runtime import (
+    inspect_python_imports,
+    prepare_document_runtime,
+    run_document_helper,
+)
 from clio_agent.tools.execution import get_active_tool_workspace_root
 from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -21,7 +25,7 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
     """Build the runtime-preparation tool with execution-host inventory."""
     from clio_agent.gact.agents.tool_instrumentation import native_tool
 
-    def prepare_runtime() -> dict[str, Any]:
+    def prepare_runtime(required_imports: list[str] | None = None) -> dict[str, Any]:
         """Prepare Clio's locked document runtime and report verified executable paths,
         packages, native converter availability, fonts, skill locations and workspace.
 
@@ -29,16 +33,48 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
         Node/pnpm, or automatically prepares their locked local equivalents.
         The shell receives these tools after preparation. Use returned commands
         for standalone scripts; preserve project-owned dependency environments.
+        The package list is exhaustive for the managed stack, not a promise that
+        arbitrary modules exist. Pass required_imports to check the modules your
+        standalone script will import before running it. Missing modules need explicit
+        uv --with dependencies; do not install them into the locked managed environment.
         """
-        return prepare_document_runtime(_workspace())
+        imports = required_imports or []
+        runtime = prepare_document_runtime(_workspace())
+        if execution:
+            # Font files and PATH overlays can consume the bounded result before
+            # its commands appear. The overlay is already published to shell tools;
+            # full paths remain available from document-specific discovery.
+            runtime = {
+                key: value
+                for key, value in runtime.items()
+                if key not in {"font_files", "shell_environment"}
+            }
+        runtime["dependency_guidance"] = (
+            "Only listed packages and successful required_imports checks are verified. "
+            "For missing task dependencies, use uv run --no-project --python with the "
+            "returned interpreter and explicit --with distribution options before python. "
+            "Do not change the locked managed environment."
+        )
+        if imports:
+            checks = inspect_python_imports(Path(runtime["python"]), imports)
+            runtime["required_imports"] = checks
+            if any(check["status"] != "ready" for check in checks.values()):
+                runtime["status"] = "missing_dependencies"
+        return runtime
 
     return native_tool(
         prepare_runtime,
         name="prepare_execution_runtime" if execution else "prepare_document_runtime",
         domain="workspace",
-        title="Prepare execution runtime" if execution else "Prepare document tools",
+        title="Get execution environment" if execution else "Prepare document tools",
         desc=prepare_runtime.__doc__,
-        args={},
+        args={
+            "required_imports": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional Python module names to verify in the selected interpreter.",
+            }
+        },
         presentation="fields:status,os,architecture,python_version,node_version",
     )
 
