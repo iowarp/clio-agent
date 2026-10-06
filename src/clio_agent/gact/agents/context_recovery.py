@@ -126,7 +126,7 @@ def transcript_records(row: Any) -> list[tuple[str, dict[str, Any]]]:
                 ("user", {"text": text, "actor": "algorithm", "source": field(part, "source")})
             )
         elif kind == "tool_call":
-            detail = next(telemetry, {})
+            detail: Mapping[str, Any] = next(telemetry, {})
             args = field(part, "input")
             if args is None:
                 args = detail.get("args")

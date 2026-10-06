@@ -55,20 +55,22 @@ def _binary(archive: bytes, name: str) -> bytes:
     """Read only the expected executable; never extract archive paths or links."""
     expected = "gh.exe" if name.startswith("windows") else "gh"
     if name.endswith(".zip"):
-        with zipfile.ZipFile(io.BytesIO(archive)) as package:
-            members = [
+        with zipfile.ZipFile(io.BytesIO(archive)) as zip_package:
+            zip_members = [
                 m
-                for m in package.infolist()
+                for m in zip_package.infolist()
                 if m.filename.endswith("/bin/" + expected) or m.filename == "bin/" + expected
             ]
-            if len(members) != 1 or members[0].file_size > _MAX_BYTES:
+            if len(zip_members) != 1 or zip_members[0].file_size > _MAX_BYTES:
                 raise ValueError("GitHub CLI archive has no unique bounded executable")
-            return package.read(members[0])
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as package:
-        members = [m for m in package.getmembers() if m.name.endswith("/bin/gh") and m.isfile()]
-        if len(members) != 1 or members[0].size > _MAX_BYTES:
+            return zip_package.read(zip_members[0])
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar_package:
+        tar_members = [
+            m for m in tar_package.getmembers() if m.name.endswith("/bin/gh") and m.isfile()
+        ]
+        if len(tar_members) != 1 or tar_members[0].size > _MAX_BYTES:
             raise ValueError("GitHub CLI archive has no unique bounded executable")
-        stream = package.extractfile(members[0])
+        stream = tar_package.extractfile(tar_members[0])
         if stream is None:
             raise ValueError("GitHub CLI executable could not be read")
         return stream.read()
@@ -158,7 +160,7 @@ def run_github_cli(
         encoding="utf-8",
         errors="replace",
         timeout=120,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
     )
     # A provider error must never turn a grant into transcript content.
     if token:
