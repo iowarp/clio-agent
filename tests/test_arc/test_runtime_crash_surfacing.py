@@ -29,14 +29,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from _cte_isolation import isolate_cte_env  # noqa: E402
 
 
-def test_isolate_cte_env_sets_unique_shm_user(tmp_path: Path) -> None:
+def test_isolate_cte_env_sets_unique_shm_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Each isolated run exports its own USER: private shm namespace per daemon."""
 
+    # CI reproduced reuse of a free port before a daemon bound it. Namespace
+    # isolation must hold even when the two port selections are identical.
+    monkeypatch.setattr("_cte_isolation.reserve_port_block", lambda: 22475)
     env_a: dict[str, str] = {"USERNAME": "jaime"}
     env_b: dict[str, str] = {"USERNAME": "jaime"}
     isolate_cte_env(tmp_path / "run-a", env_a)
     isolate_cte_env(tmp_path / "run-b", env_b)
 
+    assert env_a["CLIO_CORE_PORT"] == env_b["CLIO_CORE_PORT"]
     assert env_a.get("USER"), "isolate_cte_env must export USER for shm namespacing"
     assert env_b.get("USER")
     assert env_a["USER"] != env_b["USER"], "two runs must not share an shm namespace"
