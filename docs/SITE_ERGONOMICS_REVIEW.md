@@ -82,3 +82,30 @@ that acceptance. Recording provenance and edit instructions are in
 `site/video/edits/files-20261006/README.md`; originals, corrected files, playback
 evidence, rejected attempts and verified hashes are archived in
 `D:/Libraries/Videos/clio_recordings/2026-10-06-files-video-refresh`.
+
+## File-guide scope correction
+
+Working with files now describes the file viewer: opening a file, reading its
+preview, asking about it, and opening or downloading the original. It keeps one
+PDF-reader recording. Attach/reference setup links to the existing Files and
+sources guides. The repeated report-authoring and internal conversion,
+contact-sheet and agent-inspection procedures were removed from this user guide.
+
+The report and presentation worked example owns the authoring prompt and both
+Office revision recordings. Fictional starting/revised files remain downloadable;
+their builder scripts are in an optional disclosure. The OPAL briefing remains
+an explicitly named research example. Document task links now open the authoring
+page, and the viewer/example cross-links no longer target a removed section.
+
+Sequential local validation: `pnpm build` generated 73 pages with all internal
+links valid; `pnpm check` reported zero errors/warnings and five existing hints;
+one `product showcase` Playwright case passed with one worker, including both
+desktop/phone routes, one viewer video, three example videos and all four revised
+downloads. Build/check used a 768 MiB Node heap cap; the browser case used 1 GiB.
+
+Both live articles and six desktop/phone captures of the viewer and moved
+recordings were visually reviewed. The encoded media is unchanged: this is a
+documentation correction, not a rerecording. Captures, validation logs, review
+notes and verified SHA-256 checksums are archived in
+`D:/Libraries/Videos/clio_recordings/2026-10-06-docs-file-guide`. The later website
+redesign remains queued; no public deployment is included.

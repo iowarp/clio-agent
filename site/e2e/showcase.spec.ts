@@ -54,19 +54,21 @@ test('product showcase supports keyboard selection and usable image dialogs on d
 		await showcase.getByRole('link', { name: 'Open the worked example' }).click();
 		await expect(page).toHaveURL(/\/docs\/examples\/reports-and-slides\/$/);
 		await expect(page.getByRole('heading', { name: 'Report and presentation example', exact: true })).toBeInViewport();
+		await expect(page.getByRole('main').locator('video')).toHaveCount(3);
 		for (const filename of ['revised-report.docx', 'revised-report.pdf', 'revised-deck.pptx', 'revised-deck.pdf']) {
 			const response = await page.request.get(`/media/document-reference/${filename}`);
 			expect(response.ok()).toBe(true);
 			expect((await response.body()).length).toBeGreaterThan(1000);
 		}
-		await page.getByRole('main').getByRole('link', { name: 'Working with files', exact: true }).click();
-		await expect(page).toHaveURL(/\/docs\/working-with-files\/#create-a-report-or-presentation$/);
-		await expect(page.getByRole('main')).not.toContainText('OPAL');
-		await expect(page.getByRole('main').locator('video')).toHaveCount(3);
-		await page.getByRole('main').locator('video').nth(1).scrollIntoViewIfNeeded();
+		await page.getByRole('main').locator('video').nth(0).scrollIntoViewIfNeeded();
 		await page.screenshot({ path: test.info().outputPath(`word-guide-${width}.png`) });
-		await page.getByRole('main').locator('video').nth(2).scrollIntoViewIfNeeded();
+		await page.getByRole('main').locator('video').nth(1).scrollIntoViewIfNeeded();
 		await page.screenshot({ path: test.info().outputPath(`slides-guide-${width}.png`) });
+		await page.getByRole('main').getByRole('link', { name: 'Working with files', exact: true }).click();
+		await expect(page).toHaveURL(/\/docs\/working-with-files\/$/);
+		await expect(page.getByRole('main')).not.toContainText('OPAL');
+		await expect(page.getByRole('main').locator('video')).toHaveCount(1);
+		await page.screenshot({ path: test.info().outputPath(`file-viewer-guide-${width}.png`) });
 	}
 });
 
