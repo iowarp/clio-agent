@@ -20,6 +20,7 @@ from clio_agent.gact.artifacts.records import (
     Mechanism,
 )
 from clio_agent.gact.artifacts.registry import get_registry
+from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_stack.process import (
     DocumentError,
     find_native,
@@ -71,17 +72,17 @@ def _source_path(
         from clio_agent.gact.artifacts.cas import CASStore
 
         candidate = CASStore(workspace_root).blob_path(version.sha256)
-        if candidate.is_file():
+        if os.path.isfile(win_extended_path(candidate)):
             if sha256_file(candidate) != version.sha256:
                 raise RenditionError("artifact bytes failed their immutable hash check")
             target = temporary_root / Path(name).name
-            shutil.copyfile(candidate, target)
+            shutil.copyfile(win_extended_path(candidate), win_extended_path(target))
             return target
     if version.path:
         candidate = Path(version.path)
-        if candidate.is_file():
+        if os.path.isfile(win_extended_path(candidate)):
             target = temporary_root / Path(name).name
-            shutil.copyfile(candidate, target)
+            shutil.copyfile(win_extended_path(candidate), win_extended_path(target))
             if version.sha256 and sha256_file(target) != version.sha256:
                 raise RenditionError("artifact bytes failed their immutable hash check")
             return target
@@ -198,11 +199,11 @@ def find_pdf_rendition(
         ):
             continue
         retained = CASStore(workspace_root).blob_path(derived.sha256) if derived.sha256 else None
-        if retained is None or not retained.is_file():
+        if retained is None or not os.path.isfile(win_extended_path(retained)):
             retained = Path(derived.path) if derived.path else None
         if (
             retained is not None
-            and retained.is_file()
+            and os.path.isfile(win_extended_path(retained))
             and derived.sha256
             and sha256_file(retained) == derived.sha256
         ):
@@ -241,11 +242,11 @@ def _render_pdf(
         retained_hash = existing.version.sha256 or ""
         if not retained_hash:
             raise RenditionError("Retained PDF preview has no immutable checksum")
-        if not target.is_file() or sha256_file(target) != retained_hash:
+        if not os.path.isfile(win_extended_path(target)) or sha256_file(target) != retained_hash:
             from clio_agent.gact.artifacts.cas import CASStore
 
             retained = CASStore(workspace_root).blob_path(retained_hash)
-            if not retained.is_file():
+            if not os.path.isfile(win_extended_path(retained)):
                 retained = Path(existing.version.path)
             _copy_preview(retained, target, retained_hash)
         return RenditionResult(
@@ -268,6 +269,7 @@ def _render_pdf(
         _copy_preview(rendered, target)
     ingested = ingest_identity(target, workspace_root=workspace_root)
     output_name = f"{record.name}.v{version.version}.pdf"
+    call_id = f"document-rendition:{version.artifact_id}:{ingested.evidence.sha256}"
     outcome = mint_artifact_outcome(
         app,
         session_id,
@@ -278,6 +280,7 @@ def _render_pdf(
         mechanism=Mechanism.HARNESS,
         producer={
             "designation": "document-rendition",
+            "call_id": call_id,
             "source_artifact_id": version.artifact_id,
             "source_sha256": version.sha256,
             "converter": converter,
@@ -293,6 +296,32 @@ def _render_pdf(
     rendered_record = app.state.artifact_registry.get(record.workspace_id, output_name)
     if rendered_record is None:
         raise RenditionError("rendered artifact record was not indexed")
+    from clio_agent.gact.artifacts.transform_types import EdgeEvidence, EdgeRole, ProvEdge
+    from clio_agent.gact.artifacts.transforms import record_transform
+
+    record_transform(
+        app,
+        session_id,
+        tool_name="Render PDF preview",
+        args={"source_artifact_id": version.artifact_id, "converter": converter},
+        call_id=call_id,
+        ok=True,
+        result=None,
+        minted=[outcome.version],
+        workspace_id=record.workspace_id,
+        turn_id=f"document-rendition:{version.artifact_id}",
+        used_edges=[
+            ProvEdge(
+                role=EdgeRole.USED,
+                evidence=EdgeEvidence.HASH_PAIR if version.sha256 else EdgeEvidence.SCHEMA_ARG,
+                artifact_id=version.artifact_id,
+                sha256=version.sha256,
+                name=record.name,
+                version=version.version,
+                path=version.path,
+            )
+        ],
+    )
     return RenditionResult(
         record=rendered_record,
         version=outcome.version,
@@ -304,14 +333,14 @@ def _render_pdf(
 def _copy_preview(source: Path, target: Path, expected_sha256: str = "") -> None:
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     try:
-        shutil.copyfile(source, temporary)
+        shutil.copyfile(win_extended_path(source), win_extended_path(temporary))
         if expected_sha256 and sha256_file(temporary) != expected_sha256:
             raise RenditionError("retained preview changed while restoring its workspace copy")
-        os.replace(temporary, target)
+        os.replace(win_extended_path(temporary), win_extended_path(target))
     except OSError as exc:
         raise RenditionError(f"Could not save the workspace PDF preview: {exc}") from exc
     finally:
-        temporary.unlink(missing_ok=True)
+        Path(win_extended_path(temporary)).unlink(missing_ok=True)
 
 
 __all__ = [

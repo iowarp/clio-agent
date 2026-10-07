@@ -95,7 +95,7 @@ or visual tools are unavailable, report the concrete limitation and keep the
 editable source rather than calling its layout verified.
 
 Use `create_artifact(path=output_path, kind="report", pdf_preview=true)` to designate
-the final editable file and a version-bound PDF preview as artifacts. The UI
+the final editable artifact with a version-bound PDF preview. The UI
 requires this source-bound preview to open the Word artifact directly. A PDF from
 `prepare_document` is a review derivative; separately registering that PDF does
 not bind it to the editable artifact. Do not disable `pdf_preview` when a preview
@@ -105,5 +105,9 @@ opens the saved PDF when the source artifact is selected; users can still downlo
 or edit the original. Check `pdf_previews` for conversion failures. A preview is
 not visual review. Name the published artifact in the final response; Clio shows
 its artifact card. Do not format local filesystem paths as Markdown links.
+Publish and name the requested editable document. Keep PDFs made only for review
+or display as derivatives; do not separately register or list them as deliverables.
+Publish a separate PDF only when the user asked for that output. In `used`, cite
+the actual source documents or data, not the review PDF derived from this output.
 Cite supplied sources and distinguish
 user content from assumptions introduced while drafting.

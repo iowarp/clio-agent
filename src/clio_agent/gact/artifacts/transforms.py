@@ -48,10 +48,12 @@ from clio_agent.gact.artifacts.environment import (
 )
 from clio_agent.gact.artifacts.records import ArtifactVersion
 from clio_agent.gact.artifacts.transform_edges import (
+    EdgeScan,
     contributing_workspace_ids,
     detect_authority_edges,
     detect_used_edges,
 )
+from clio_agent.gact.artifacts.transform_generated import generated_edges as _generated_edges
 from clio_agent.gact.artifacts.transform_types import (
     AgentRole,
     EdgeEvidence,
@@ -148,6 +150,20 @@ def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]
         if isinstance(raw_instrument, dict)
         else Instrument()
     )
+    used = _edges(payload.get("used"))
+    notes = [dict(n) for n in (payload.get("notes") or []) if isinstance(n, dict)]
+    if instrument.tool.rsplit(".", 1)[-1] == "create_artifact":
+        # Older scanners mistook registration's output paths for consumed inputs.
+        # Explicit used refs and authority/egress edges retain their own channels.
+        output_refs = [edge for edge in used if edge.path and edge.arg and edge.arg != "used"]
+        if output_refs:
+            used = [edge for edge in used if edge not in output_refs]
+            notes.append(
+                {
+                    "reason": "registration_output_refs_not_inputs",
+                    "artifact_ids": [edge.artifact_id for edge in output_refs],
+                }
+            )
     return TransformRecord(
         call_id=call_id,
         event_id=str(payload.get("event_id") or ""),
@@ -162,13 +178,13 @@ def transform_from_payload(payload: dict[str, Any]) -> Optional[TransformRecord]
         environment=environment_from_payload(payload.get("environment")),
         replay=replay,
         replay_reason=str(payload.get("replay_reason") or ""),
-        used=_edges(payload.get("used")),
+        used=used,
         generated=_edges(payload.get("generated")),
         started_at=str(payload.get("started_at") or ""),
         ended_at=str(payload.get("ended_at") or ""),
         annotation=str(payload.get("annotation") or ""),
         candidates=[str(c) for c in (payload.get("candidates") or []) if c],
-        notes=[dict(n) for n in (payload.get("notes") or []) if isinstance(n, dict)],
+        notes=notes,
     )
 
 
@@ -274,50 +290,6 @@ def _now_iso() -> str:
     return _iso_from_epoch(time.time())
 
 
-def _generated_edges(
-    minted: list[ArtifactVersion], *, call_id: str = "", fence_proven: bool = False
-) -> list[ProvEdge]:
-    """Project the versions minted this call to ``generated`` edges.
-
-    ``fence_proven`` (B6 #980) stamps the per-edge lease-window → fence_proven upgrade on
-    every generated edge when an active OS fence proved this call's output territory exclusive
-    by construction (``transform_exclusivity.generated_fence_proven``). Identity evidence
-    (``hash-pair`` / ``schema-arg``) is unchanged — the marker is a separate attribution axis.
-
-    A version whose recorded producing ``call_id`` is a DIFFERENT call than ``call_id``
-    was not appended by this call: the mint deduped this call's byte-identical output
-    onto an existing version (W&B same-sha dedup, owner decision #966.3 — the dedup
-    no-op deliberately emits no artifact event). The edge is still true provenance —
-    this call really re-wrote the bytes — but it carries ``note="same_sha_dedup"`` so
-    the trace distinguishes a re-production from a fresh mint (no-silent-fallback:
-    without the note, a deduped re-run is indistinguishable from a v1 mint on the
-    trace, the exact ambiguity behind the 2026-08-05 ndp re-run investigation).
-    Versions with no recorded producing call (reconcile / pack / harness producers)
-    are never stamped — precision over recall (#966.10).
-    """
-    edges: list[ProvEdge] = []
-    for version in minted:
-        producing_call = str((version.producer or {}).get("call_id") or "")
-        deduped = bool(call_id) and bool(producing_call) and producing_call != call_id
-        note = "" if version.sha256 else "stat_pinned"
-        if deduped:
-            note = "same_sha_dedup"
-        edges.append(
-            ProvEdge(
-                role=EdgeRole.GENERATED,
-                evidence=(EdgeEvidence.HASH_PAIR if version.sha256 else EdgeEvidence.SCHEMA_ARG),
-                artifact_id=version.artifact_id,
-                sha256=version.sha256,
-                name="",
-                version=version.version,
-                path=version.path,
-                note=note,
-                fence_proven=fence_proven,
-            )
-        )
-    return edges
-
-
 def _declared_generated_versions(
     app: "FastAPI", *, tool_name: str, args: dict[str, Any], result: Any
 ) -> list[ArtifactVersion]:
@@ -403,11 +375,13 @@ def record_transform(
     started_at: Optional[float] = None,
     agent_id: str = "",
     serving_child_id: str = "",
+    used_edges: list[ProvEdge] | None = None,
 ) -> Optional[TransformRecord]:
     """Build, emit (trace-only), and fold one :class:`TransformRecord` (owner #966.6).
 
     ``minted`` are the generated versions the mint seam produced this call (for
-    ``generated`` edges). Used edges are detected from ``args``; authority edges
+    ``generated`` edges). Used edges are detected from ``args`` unless the caller
+    supplies authoritative ``used_edges``; authority edges
     from ``result``. The record is emitted as ``artifact.transform.recorded``
     (TRACE-ONLY — NOT on the SSE wire, per the S2 split) and folded into the
     registry projection. Returns the record, or ``None`` when it cannot be keyed.
@@ -425,18 +399,22 @@ def record_transform(
     # job's root_path — computed here (the caller HAS ``app``) and threaded into the
     # detector so it keeps its acyclic position. ``None`` → same-workspace-only.
     allowed_workspace_ids = contributing_workspace_ids(app, workspace_id)
-    used_scan = _detect_used_edges(
-        app,
-        sid,
-        args=args,
-        workspace_id=workspace_id,
-        turn_id=turn_id,
-        trace_id=trace_id,
-        call_started_at=started_at,
-        allowed_workspace_ids=allowed_workspace_ids,
-        call_id=call_id,
-        tool_name=tool_name,
-        allow_external_inputs=ok,
+    used_scan = (
+        EdgeScan(used_edges, [])
+        if used_edges is not None
+        else _detect_used_edges(
+            app,
+            sid,
+            args=args,
+            workspace_id=workspace_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            call_started_at=started_at,
+            allowed_workspace_ids=allowed_workspace_ids,
+            call_id=call_id,
+            tool_name=tool_name,
+            allow_external_inputs=ok,
+        )
     )
     authority_scan = detect_authority_edges(
         app, tool_name=tool_name, result=result, workspace_id=workspace_id

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact.artifacts.proposals import parse_proposals, promote_proposals
 
 if TYPE_CHECKING:
-    from clio_agent.gact.agents.types import AgentDef
+    from clio_agent.gact.types import AgentDef
 
 
 def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
@@ -147,7 +147,10 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "and/or exact source URLs) so its lineage graph "
             "shows its real inputs. "
             "Word, PowerPoint and Excel deliverables automatically get a version-bound "
-            "PDF artifact for the Clio viewer. Set pdf_preview=false to omit it, or "
+            "PDF preview for the Clio viewer, retained in lineage rather than shown "
+            "as another deliverable. Publish and name the requested editable file. "
+            "Do not separately register or list review PDFs unless the user asked "
+            "for a PDF deliverable. Set pdf_preview=false to omit it, or "
             "pdf_preview=true to request a preview for another supported document format. "
             "In a batch, each item's pdf_preview overrides the call's default. "
             "A missing converter is reported in pdf_previews without discarding the source. "
