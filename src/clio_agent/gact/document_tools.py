@@ -63,8 +63,10 @@ def build_prepare_document_tool() -> Any:
         """Inspect or render a workspace document, or recalculate an XLSX copy.
 
         Source files remain unchanged. Read the returned manifest and bounded content
-        derivative. Rendering produces PNG pages but does not perform visual review:
-        use view_image or view_pdf when available. Long PDFs/decks require pages such
+        derivative. Rendering produces full PNG pages and labelled six-page contact
+        sheets. Inspect the overviews for consistency and full pages for fine detail
+        with view_image or view_pdf; rendering alone does not perform visual review.
+        Long PDFs/decks require pages such
         as '1-5,8'; large workbooks require a sheet and cell_range such as 'A1:D20'.
         Recalculation checks cached formulas and errors, not business correctness.
         """

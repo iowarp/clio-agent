@@ -1,0 +1,66 @@
+{
+  "reviewed_outputs": [
+    {
+      "source": "OPAL1_research_meeting_report.docx",
+      "source_sha256": "dbc596e23990c208b67151b5a5898213498bd5e3620ce158c534dfb7e9631afe",
+      "pdf": "OPAL1_research_meeting_report.pdf",
+      "pdf_sha256": "c027ce3139137a2e9ebf6a40b907abfe90ea4d6f5858d927bd77a3255cf769f7",
+      "pages": 3,
+      "overview_review": "reviewed",
+      "detail_pages_reviewed": [
+        2,
+        3
+      ],
+      "review_basis": "overview plus closer review of labels, pagination and comparison semantics",
+      "renderer": "LibreOffice 26.2.6",
+      "microsoft_office_acceptance": "not performed"
+    },
+    {
+      "source": "OPAL1_research_meeting_15min.pptx",
+      "source_sha256": "fb373da5ff32ba0753180a5941ffa33ba6568661489a4501aba530ac0a8b7086",
+      "pdf": "OPAL1_research_meeting_15min.pdf",
+      "pdf_sha256": "a4879da732bfe932f8474bd285d2ec28880b2825c322590f1dbdbf659d131754",
+      "pages": 11,
+      "overview_review": "reviewed",
+      "detail_pages_reviewed": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "review_basis": "overview plus closer review of labels, pagination and comparison semantics",
+      "renderer": "LibreOffice 26.2.6",
+      "microsoft_office_acceptance": "not performed"
+    }
+  ],
+  "native_checks": {
+    "slides": 11,
+    "native_tables": 1,
+    "speaker_note_parts": 11,
+    "editable_text_objects": 173,
+    "report_figures": 2,
+    "report_pages": 3
+  },
+  "review_policy": "Overview review is required. Individual-page review is selected by the model from uncertainty or suspected issues in the overview.",
+  "video": {
+    "creation_take": "Interrupted, incomplete, excluded",
+    "source": "One continuous native CLIO browser recording",
+    "scope": "Review and preview navigation of existing deliverables after layout revision",
+    "file": "files-opal-report-review.mp4",
+    "duration_seconds": 76.067
+  },
+  "validation": {
+    "microsoft_office_acceptance": "not performed",
+    "site_pages_built": 72,
+    "final_single_regression": "1 passed",
+    "focused_prior_tests": 111,
+    "internal_links": "valid"
+  }
+}
