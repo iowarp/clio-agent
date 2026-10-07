@@ -18,6 +18,8 @@ task-owned project; retain that project's manifest and lockfile.
 For a new deck, read `references/slide-design.md` for narrative, theme and layout
 decisions. When using JavaScript, read `references/pptxgenjs.md` for the shipped
 library's layout units, reusable theme, image sizing and speaker notes example.
+For Python edits to an existing deck, read `references/python-pptx-editing.md`
+to preserve text-run formatting, native objects and speaker notes.
 Load these files with this skill's returned ID and `file` argument. Adapt the
 guidance to the user's audience and evidence; do not copy the sample as a finished
 presentation.
@@ -61,7 +63,10 @@ Keep a cover simple. Avoid generic slogans, blank slides and filler added merely
 to reach a slide count. Review the slide overviews and revise weak composition as well as
 clipping or overlap before publishing.
 
-For a small edit, change the relevant runs or shapes with `python-pptx`. A
+For a small edit, change the relevant text runs with `python-pptx`; assigning
+`shape.text` or `paragraph.text` rebuilds the runs and can discard their font,
+size and colour. Preserve the template's run formatting and inspect the changed
+slide in the rendered overview. A
 `pptxgenjs` builder creates new decks; it does not provide a general importer for
 editing an existing deck. Unsupported objects need scoped OOXML edits or a
 preservation-aware tool. Reopen the generated file and check slide count, content,
@@ -90,7 +95,9 @@ do not establish visual quality. Designate the requested editable `.pptx` with
 Name the published artifact in the final response; Clio shows its artifact card.
 Do not format local filesystem paths as Markdown links.
 This registers the editable deck and a version-bound PDF artifact for Clio's
-viewer. Check `pdf_previews` for failures; a saved preview is not visual review.
+viewer. Before claiming a preview is available, confirm a successful entry in
+the publication result's `pdf_previews`; correct a missing or failed binding.
+A saved preview is not visual review.
 A separately registered review PDF does not bind to the editable deck. Keep
 `pdf_preview=true` on the source call, or on its batch item, when a preview is
 requested; the publication workflow creates that relationship.

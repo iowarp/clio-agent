@@ -359,6 +359,71 @@
 	padding-block: 0;
 }
 
+/* A readable product demonstration, with shared Base UI tab behavior. */
+.product-showcase {
+	min-width: 0;
+	gap: 1.25rem;
+}
+.product-showcase .showcase-tabs {
+	width: 100%;
+	height: auto;
+	justify-content: flex-start;
+	border-bottom: 1px solid var(--line);
+	padding: 0 0 0.25rem;
+}
+.showcase-tabs [role='tab'] {
+	flex: 0 1 auto;
+	gap: 0.5rem;
+	padding: 0.65rem 1rem;
+	font-size: 0.95rem;
+}
+.showcase-tabs [role='tab'][data-active]::after {
+	background-color: var(--accent);
+	bottom: -0.3rem;
+}
+.showcase-copy {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem 2rem;
+	margin-bottom: 1rem;
+}
+.showcase-copy h2 {
+	margin: 0;
+	font-family: var(--font-body);
+	font-size: 1.1rem;
+	font-weight: 600;
+	line-height: 1.4;
+	color: var(--ink);
+}
+.showcase-copy p {
+	margin: 0.3rem 0 0;
+	font-size: 0.95rem;
+	line-height: 1.55;
+	color: var(--muted);
+}
+.showcase-copy a {
+	display: inline-flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 0.9rem;
+	font-weight: 600;
+	color: var(--accent);
+	text-decoration: none;
+}
+.showcase-copy a:hover { text-decoration: underline; }
+@media (max-width: 49.99rem) {
+	.showcase-copy { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+	.showcase-tabs [role='tab'] { flex: 1; padding-inline: 0.5rem; font-size: 0.85rem; }
+}
+
+/* Docs keep a readable article column and a quiet, compact guide index. */
+:root[data-has-sidebar] { --sl-sidebar-width: 17rem; }
+:root[data-has-sidebar] h1#_top { font-size: clamp(2rem, 4vw, 2.75rem); line-height: 1.15; }
+.sidebar-content .large { font-size: 0.9rem; }
+.sidebar-content a { padding-block: 0.3rem; }
+
 /* Links styled as buttons inside islands must not inherit prose underlines. */
 [data-slot='button'] {
 	text-decoration: none;

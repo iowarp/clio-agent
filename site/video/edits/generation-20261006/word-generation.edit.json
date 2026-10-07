@@ -1,0 +1,145 @@
+{
+  "source": "takes/word-generation-20261006-take2.mp4",
+  "name": "files-sensor-word-generation",
+  "posterAt": 5.5,
+  "shots": [
+    {
+      "from": 0.3,
+      "to": 17.8,
+      "speed": 3,
+      "crop": {
+        "x": 285,
+        "y": 220,
+        "width": 765,
+        "height": 430
+      },
+      "caption": "Ask for a two-page report from the source notes · typing 3×"
+    },
+    {
+      "from": 17.8,
+      "to": 20.3,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Send the request to CLIO"
+    },
+    {
+      "from": 100.5,
+      "to": 105,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO inspects the workspace · idle waits omitted"
+    },
+    {
+      "from": 143,
+      "to": 148,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Allow the source-file reads"
+    },
+    {
+      "from": 214,
+      "to": 227,
+      "speed": 3,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "CLIO writes and runs the report builder · 3×"
+    },
+    {
+      "from": 276,
+      "to": 282,
+      "speed": 2,
+      "crop": {
+        "x": 290,
+        "y": 35,
+        "width": 750,
+        "height": 510
+      },
+      "caption": "The report is created; CLIO prepares its preview · 2×"
+    },
+    {
+      "from": 363,
+      "to": 370,
+      "speed": 2,
+      "crop": {
+        "x": 290,
+        "y": 35,
+        "width": 750,
+        "height": 510
+      },
+      "caption": "CLIO corrects the requested review page range · 2×"
+    },
+    {
+      "from": 389,
+      "to": 400,
+      "speed": 2,
+      "crop": {
+        "x": 290,
+        "y": 35,
+        "width": 750,
+        "height": 650
+      },
+      "caption": "CLIO reviews the rendered pages and registers the file · 2×"
+    },
+    {
+      "from": 420,
+      "to": 439,
+      "speed": 3,
+      "crop": {
+        "x": 290,
+        "y": 35,
+        "width": 750,
+        "height": 510
+      },
+      "caption": "The answer and generated files arrive · 3×"
+    },
+    {
+      "from": 443,
+      "to": 450,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Open the Word file that CLIO just generated"
+    },
+    {
+      "from": 457,
+      "to": 461,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Expand its PDF preview · idle pauses omitted"
+    },
+    {
+      "from": 531,
+      "to": 546.15,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Briefly review both pages; download the editable Word file"
+    }
+  ]
+}

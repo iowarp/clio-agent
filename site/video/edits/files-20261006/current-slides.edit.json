@@ -1,0 +1,78 @@
+{
+  "name": "files-sensor-slide-revision",
+  "source": "takes/sensor-slide-revision-20261006-a.mp4",
+  "posterAt": 49,
+  "notes": "Real Luna revision and operator-requested correction after the overview exposed lost text-run styling. The native chart, two tables and six slides survive. The source artifact was republished with its version-bound PDF. Final preview navigation is a separate continuous recording of those corrected saved files. Cuts omit idle waits; no generated response, still-image motion or fabricated result.",
+  "shots": [
+    {
+      "from": 1,
+      "to": 24,
+      "crop": {
+        "x": 320,
+        "y": 240,
+        "width": 800,
+        "height": 420
+      },
+      "caption": "Reference the deck and describe the final-slide revision"
+    },
+    {
+      "from": 1285,
+      "to": 1294,
+      "crop": {
+        "x": 285,
+        "y": 230,
+        "width": 760,
+        "height": 480
+      },
+      "caption": "Visual review caught lost formatting; the revision was corrected"
+    },
+    {
+      "source": "takes/sensor-slide-preview-20261006-b.mp4",
+      "from": 0.5,
+      "to": 5.8,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Open the corrected six-slide preview"
+    },
+    {
+      "source": "takes/sensor-slide-preview-20261006-b.mp4",
+      "from": 5.8,
+      "to": 12,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Review the chart and revised recommendations"
+    },
+    {
+      "source": "takes/sensor-slide-preview-20261006-b.mp4",
+      "from": 12,
+      "to": 18,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Check the text hierarchy and Open in choices"
+    },
+    {
+      "source": "takes/sensor-slide-preview-20261006-b.mp4",
+      "from": 18,
+      "to": 23.2,
+      "crop": {
+        "x": 0,
+        "y": 0,
+        "width": 1278,
+        "height": 870
+      },
+      "caption": "Keep the PowerPoint file or open its saved PDF preview"
+    }
+  ]
+}

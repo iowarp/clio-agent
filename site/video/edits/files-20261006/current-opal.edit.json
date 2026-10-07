@@ -1,0 +1,15 @@
+{
+  "name": "files-opal-report-review-current",
+  "source": "takes/opal-report-review-current-20261006-a.mp4",
+  "posterAt": 27,
+  "notes": "Continuous native review of already saved, previously revised OPAL files. This is not a new-generation claim. Cuts omit idle pauses and an overscroll corrected in the raw take. The three-page report and eleven-slide editable deck are the actual published example files.",
+  "shots": [
+    {"from": 9.8, "to": 16, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Read the saved three-page report in the full-height canvas"},
+    {"from": 48.3, "to": 54.3, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Inspect figures and source captions at readable size"},
+    {"from": 108.8, "to": 114.8, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Review limitations and provenance before sharing"},
+    {"from": 115.4, "to": 121.5, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Open the saved eleven-slide meeting briefing"},
+    {"from": 170.1, "to": 176.2, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Check the study design and unresolved label meanings"},
+    {"from": 176.4, "to": 182.8, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Read the comparison chart and its uncertainty caveat"},
+    {"from": 182.9, "to": 188.5, "crop": {"x": 0, "y": 0, "width": 1278, "height": 870}, "caption": "Keep the editable deck or open its saved PDF preview"}
+  ]
+}

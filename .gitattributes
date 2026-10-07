@@ -24,3 +24,7 @@ tests/fixtures/a2ui_client_metadata/**   text eol=lf
 
 # Attention fixtures are real SafeTensors files checked against a recorded sha256.
 *.safetensors  binary
+
+# Recorded document-generation inputs are downloadable byte-for-byte evidence.
+site/public/media/document-generation/sensor-notes.md      -text whitespace=cr-at-eol
+site/public/media/document-generation/sensor-summary.json  -text

@@ -1,177 +1,58 @@
 ---
 title: Working with files
-description: Create and review complete reports and presentations, revise Office files, and inspect PDFs and spreadsheets in CLIO.
+description: Open files beside the conversation, read previews, and download or open the original in another app.
 ---
 
 import WidgetRecording from '../../../components/WidgetRecording.astro';
 
-Bring evidence or an existing document into your workspace, describe the result you need, and review it before sharing. CLIO can create complete Word reports and PowerPoint presentations, revise Office files and work with PDFs and Excel workbooks. Office results keep their editable source alongside a saved PDF preview.
+Open a file beside the conversation to read it, check a result, or ask for a
+change. This guide covers the file viewer. To bring in new material or choose
+what CLIO should use, see [Files and sources](/docs/files/).
 
-:::note[CLIO beta 3]
-The revision recordings below use real default-agent sessions from CLIO 0.9.5-beta.3 with synthetic workshop files. They demonstrate small edits; they are not examples of complete report or presentation creation.
-:::
+## Open a file
 
-## Start with a file
-
-Put the file inside your workspace folder. Type `@` in a message and choose its name from **Workspace files**. The reference tells CLIO which file you mean; add the change you want and anything it should preserve.
-
-![Choosing a Word document from the workspace reference picker](/media/files-reference-picker.png)
-
-To read a PDF yourself, open the workspace canvas, choose **File explorer** from **Add to canvas**, and select the file. Expand the canvas for a larger view. The PDF viewer also offers zoom and paged navigation.
+Open **Files** in the workspace canvas and select a file. You can also open a
+file from its attachment or reference in the conversation. Choose **Preview**
+to read it, and expand the canvas when you need more space.
 
 <WidgetRecording
-  name="files-pdf-read"
+  name="files-sensor-pdf-read"
   title="Open and read a PDF"
-  caption="Select the workshop notes in File explorer, then expand the canvas to read the page."
-  timingNote="A pause between actions is shortened."
+  caption="Select a report in Files, expand the canvas and scroll through its pages. The recording uses a fictional sensor report."
+  timingNote="Selected portions of a continuous recording; idle pauses are shortened."
   pointerGuide
 />
 
-## Create a report or presentation
+## Read the preview
 
-Start with the material you want CLIO to use and describe the audience and purpose.
-You do not need to select a document library or write a layout script yourself:
+Scroll through PDF pages and document slides continuously. Use the zoom controls
+in the upper toolbar for small text or figure detail; the page count is at the
+bottom. Images fit the available space and can be opened fullscreen.
 
-> Turn the saved OPAL 1 analysis in sources/ into a complete Word report and a PowerPoint presentation for a fifteen-minute research meeting. Use the existing evidence and figures, keep the source uncertainties clear, and save the deliverables in outputs/. Keep sources unchanged.
+Word documents and PowerPoint presentations can have a saved PDF preview for
+reading inside CLIO. The editable file remains available to open or download.
+If a preview is unavailable, download the original and open it in your editor.
 
-The document skills include separate references for library usage and design, plus
-runnable examples. The examples demonstrate a coherent theme, native headings,
-editable tables and charts, source captions, page numbers and speaker notes. Their
-sample data are fictional; CLIO must build your deliverable from your evidence.
+## Ask about the file
 
-### Review a complete OPAL 1 briefing
+Type **@** in your message and select the file, then say what you want to know or
+change. For example: “Explain the chart on page 2” or “Shorten the conclusion and
+keep the tables.” See [@ references](/docs/files/references/) for finding files
+and adding them to a message.
 
-The OPAL 1 example contains a three-page report and an eleven-slide meeting deck
-with speaker notes, an editable design table and a comparison chart. It uses the
-saved OPAL 1 analysis and figures. The report and slides preserve the unresolved
-treatment labels and the unexplained early break in the vendor proxy; they do not
-claim a confirmed nickel effect.
+After a revision, open the updated result and check the change. For saved
+artifacts, **Versions** shows earlier results and **Lineage** shows the inputs
+and steps behind them.
 
-The initial drafts were revised after visual review. The recording below shows
-review and navigation of the saved results after those corrections.
+## Open or download the original
 
-<WidgetRecording
-  name="files-opal-report-review"
-  title="Review a complete report and research briefing"
-  caption="Review the OPAL 1 deliverables, open their saved previews, navigate the report and slides, and inspect figure detail."
-  timingNote="Selected portions of a continuous review recording; accelerated intervals are labelled."
-  pointerGuide
-/>
+Use **Download file** in the toolbar to keep the original file. For an Office
+document, **Open in** offers its PDF preview and available editors. In Desktop,
+this can include Word, PowerPoint or Excel when installed. In the browser,
+**Copy path** copies the path of an editable working copy.
 
-| Deliverable | Editable file | Reviewed PDF |
-| --- | --- | --- |
-| Three-page research report | [Word report](/media/opal1-document-review/OPAL1_research_meeting_report.docx) | [Report PDF](/media/opal1-document-review/OPAL1_research_meeting_report.pdf) |
-| Eleven-slide meeting briefing | [PowerPoint deck](/media/opal1-document-review/OPAL1_research_meeting_15min.pptx) | [Slides PDF](/media/opal1-document-review/OPAL1_research_meeting_15min.pdf) |
+Open **File actions** (the three dots) for **Copy to another workspace** and
+**File information**.
 
-<details>
-<summary>See the reviewed OPAL 1 overviews</summary>
-
-![Three pages of the OPAL 1 report after layout corrections](/media/opal1-document-review/report-overview-1.png)
-
-![Slides 1–6 of the OPAL 1 research briefing](/media/opal1-document-review/deck-overview-1.png)
-
-![Slides 7–11 of the OPAL 1 research briefing](/media/opal1-document-review/deck-overview-2.png)
-
-</details>
-
-### Inspect the design references
-
-These reference files were built with CLIO's shipped document libraries and
-reviewed as PDF pages. They are fictional examples of document structure and
-layout, separate from the recorded agent sessions.
-
-| Reference | Editable source | PDF | Runnable builder |
-| --- | --- | --- | --- |
-| Two-page evidence report | [Word](/media/document-reference/reference-report.docx) | [Report PDF](/media/document-reference/reference-report.pdf) | [Report script](/media/document-reference/create-reference-report.mjs) |
-| Six-slide research briefing | [PowerPoint](/media/document-reference/reference-deck.pptx) | [Deck PDF](/media/document-reference/reference-deck.pdf) | [Deck script](/media/document-reference/create-reference-deck.mjs) |
-
-Both use the same [fictional source summary](/media/document-reference/reference-source.json).
-The builders run in the prepared JavaScript workspace, where `docx`, `pptxgenjs`
-and image dependencies resolve. Pass a task-owned output directory as their first
-argument. Adapt their composition to the evidence and audience rather than using
-their sample text as a finished deliverable.
-
-<details>
-<summary>See the reviewed report and slide overviews</summary>
-
-![Both pages of the fictional reference report](/media/document-reference/report-overview.png)
-
-![Six slides of the fictional reference presentation](/media/document-reference/deck-overview.png)
-
-</details>
-
-## Close the visual review loop
-
-Saving a document is the start of review. CLIO's document skills instruct the agent
-to reopen the editable file, convert it to PDF and render page images. Each render
-also provides labelled contact sheets containing up to six pages in a two-column,
-three-row grid. These help reveal inconsistent layout, pagination and spacing.
-
-The agent uses the overviews to decide which individual pages or slides need a
-closer look. Small or unclear labels, suspected wrapping, table splits, glyphs or
-cropping call for detail review; opening every page is not required. When the
-source changes, CLIO should regenerate the preview and review the new overviews,
-inspecting details as needed before publishing. If conversion or visual inspection is unavailable,
-it should explain that limitation rather than claim the layout is verified.
-
-You can review the published PDF beside the conversation, zoom for detail and
-download the original editable file. Rendering with LibreOffice can differ from
-Microsoft Office; open the source in your intended editor for final acceptance.
-
-## Revise a Word document
-
-Be explicit about both the edit and the parts that should survive:
-
-> Move the review to Wednesday at 10:00. Keep the diagram and one-page layout. Save a revised Word document and publish it with its PDF preview.
-
-CLIO reads the existing file, makes the change, renders the result and publishes the revised document. Open the resulting artifact to inspect its saved PDF preview. In this example, the diagram stays in place and the review date changes.
-
-<WidgetRecording
-  name="files-word-edit"
-  title="Make a revision and review the result"
-  caption="Choose the source, ask for a date change, then open the revised Word artifact and its saved preview."
-  timingNote="Agent waiting intervals are accelerated and labeled; typing and opening the result remain at normal speed."
-  pointerGuide
-/>
-
-## Update slides and a workbook
-
-A follow-up can refer to more than one file. Here the workshop deck receives the same date change, while the budget workbook changes Review from two hours to three. The revised workbook retains its formulas; its checked totals become eight hours and 200.
-
-<WidgetRecording
-  name="files-office-review"
-  title="Check slides and spreadsheet totals"
-  caption="A real follow-up edits the deck and workbook, then opens their published PDF previews for review."
-  timingNote="Agent waiting intervals are accelerated and labeled. The examples contain synthetic planning data."
-  pointerGuide
-/>
-
-<details>
-<summary>Replay the slide navigation</summary>
-
-![The recorded PDF viewer advances from the revised first slide to the second slide](/media/files-slide-navigation.gif)
-
-</details>
-
-| File | Useful requests | What to review |
-| --- | --- | --- |
-| PDF | Read or extract content, inspect pages, create a report | Page layout, images and extracted text |
-| Word (`.docx`) | Revise text, preserve a template, create a report | Headings, tables, images and pagination |
-| PowerPoint (`.pptx`) | Update a deck or create slides | Every slide, including text placement and images |
-| Excel (`.xlsx`) | Change cells, keep formulas, create a workbook | Recalculated values, formulas and printed sheet layout |
-
-The model and the document's structure affect what can be preserved. Ask CLIO to inspect and explain any unsupported object or rendering failure before you treat the result as ready.
-
-## Keep the editable result
-
-The preview is for reading. The artifact retains the Word document, deck or workbook that produced it. Use the artifact's download action for that editable source; in the desktop app, a configured document editor can open an editable working copy. Make another request to produce a further revision, then review its new preview.
-
-Each saved preview belongs to a particular source version. If conversion fails, the editable artifact remains available and CLIO reports the failure. A separate PDF export can also be useful for sharing, but it does not replace the editable file.
-
-![A revised Word artifact open beside its conversation](/media/files-word-preview.png)
-
-## Draft a message to accompany it
-
-Ask for an email draft when you need to explain the changes to a colleague. The [Message draft widget](/docs/widgets/message-draft/) lets you compare alternatives and edit recipients, subject and body. Copy the draft or open it in your mail composer for review and sending. This is a handoff to your composer; CLIO's draft widget does not send the email.
-
-See the [human-agent interaction gallery](/docs/widgets/interaction/) for other ways to review a choice, and [Memory and evidence](/docs/memory-and-evidence/) for how CLIO records the files and actions behind a result.
+For a complete authoring and revision walkthrough, continue to the
+[report and presentation example](/docs/examples/reports-and-slides/).

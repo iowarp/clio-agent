@@ -1,0 +1,115 @@
+{
+  "captured_on": "2026-10-06",
+  "ui_head": "0e843b3f9c3afa4436f6c66743c2b9eb654da97b",
+  "runtime_head_at_capture": "cd39b9cbc5289f20e71734d555f7f8b95065caaf",
+  "provider": "Codex/Luna",
+  "source": "Actual continuous browser recordings of fresh CLIO generation from notes and JSON only",
+  "word": {
+    "accepted_take": "word-generation-20261006-take2.mp4",
+    "native_artifact": "artifact_c6e35496d8544a10bfd374846ac71274",
+    "seconds": 66.233333,
+    "workspace": "ws_47f787f1f605",
+    "pages": 2,
+    "session": "sess_179e7cbda4ec"
+  },
+  "slides": {
+    "accepted_take": "slides-generation-20261006-take1.mp4",
+    "seconds": 93.9,
+    "pages": 6,
+    "session": "sess_1ddabdfe5b9c",
+    "workspace": "ws_eb392323efd4",
+    "speaker_notes": 6,
+    "published_pdf_artifact": "artifact_b281973b5403424d85a8398607d8accc",
+    "submitted_corrections": 1,
+    "native_artifact": "artifact_2f3c7cfb69ef4e0cbf4fb25a94dc5607",
+    "native_charts": 1
+  },
+  "review": {
+    "player_errors": 0,
+    "mobile_overflow": false,
+    "desktop_and_phone_light_dark": true,
+    "native_desktop_acceptance": false,
+    "slide_details_visually_reviewed": [
+      1,
+      3,
+      6
+    ],
+    "native_office_acceptance": false,
+    "word_pages_visually_reviewed": 2,
+    "slide_overview_visually_reviewed": 6,
+    "complete_embedded_and_fullscreen_playback": true
+  },
+  "checks": {
+    "workers": 1,
+    "type_errors": 0,
+    "internal_links": "valid",
+    "existing_hints": 5,
+    "sequential": true,
+    "focused_browser_cases": 1,
+    "astro_pages": 73,
+    "type_warnings": 0
+  },
+  "archive": "D:/Libraries/Videos/clio_recordings/2026-10-06-document-generation",
+  "published": [
+    {
+      "file": "site/public/media/files-sensor-slide-generation.jpg",
+      "bytes": 109255,
+      "sha256": "31e6919c66574edd90defcdf2e8075f7a34eb73e08d6c549ec0a308725919204"
+    },
+    {
+      "file": "site/public/media/files-sensor-slide-generation.mp4",
+      "bytes": 3070057,
+      "sha256": "36dd14c807164ad8843e76aa48a84ccad2fe759554b3fb31d155b865c68b125d"
+    },
+    {
+      "file": "site/public/media/files-sensor-slide-generation.vtt",
+      "bytes": 1341,
+      "sha256": "3c379624e13fb7648ca1873c63a001d406261a551f58b60ec8d44abc9e455390"
+    },
+    {
+      "file": "site/public/media/files-sensor-word-generation.jpg",
+      "bytes": 108262,
+      "sha256": "809e22b162fdfa5f9263233c0dc186ae567d07cf24b09738346ac301f45b5ad4"
+    },
+    {
+      "file": "site/public/media/files-sensor-word-generation.mp4",
+      "bytes": 2251410,
+      "sha256": "82ea25c4ef2778bf0ccaad61a26b5b46a590b89ce784828196a10528448347b7"
+    },
+    {
+      "file": "site/public/media/files-sensor-word-generation.vtt",
+      "bytes": 956,
+      "sha256": "1653cb038b8656b7301e673867716ec18dd622c41fd8ddcf8b379f32b7f17a7d"
+    },
+    {
+      "file": "site/public/media/document-generation/Sensor_Summary_Team_Report.docx",
+      "bytes": 58709,
+      "sha256": "a529b8983e378d22cf8257a3261cf162c179196858bf92b28ea1c843842a0835"
+    },
+    {
+      "file": "site/public/media/document-generation/Sensor_Summary_Team_Report.pdf",
+      "bytes": 134675,
+      "sha256": "14008383de2a6a4fafbeceb3025e75b7e33e8805e86c5a538e303fd096a0c306"
+    },
+    {
+      "file": "site/public/media/document-generation/sensor_team_briefing.pdf",
+      "bytes": 86923,
+      "sha256": "38f0feabc46f713c4f2ea7d022a5b0efa887dcabe94545cd826a625524f84f5e"
+    },
+    {
+      "file": "site/public/media/document-generation/sensor_team_briefing.pptx",
+      "bytes": 54232,
+      "sha256": "01dd8911854df6017909b248176e401368fb0f790ad374a9356bddbc65d44ce4"
+    },
+    {
+      "file": "site/public/media/document-generation/sensor-notes.md",
+      "bytes": 1295,
+      "sha256": "655e7b096c15d1121c13996e341480341c1d64f4203c3e44eb012ec6669b92a9"
+    },
+    {
+      "file": "site/public/media/document-generation/sensor-summary.json",
+      "bytes": 433,
+      "sha256": "c1408994d7d963c77b4f60ec03e4e0649eaa9ead65938c23a46afc1d361058f5"
+    }
+  ]
+}
