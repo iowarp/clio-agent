@@ -16,9 +16,41 @@ Exit status is 0 when clio-core backs ARC, 1 otherwise.
 
 from __future__ import annotations
 
+import argparse
+import secrets
+import socket
 import sys
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
+
+_CORE_PORT_FLOOR = 20_000
+_CORE_PORT_CEILING = 32_000
+_CORE_PORT_SPAN = 5
+
+
+def _free_core_port_block() -> int:
+    """Find five free endpoints below the Linux and Windows ephemeral ranges.
+
+    The daemon binds adjacent RPC/transport endpoints. Checking only its base
+    port can leave a half-started daemon when a neighboring endpoint is busy.
+    Probes close before startup; avoiding ephemeral ports prevents outgoing
+    connections from taking an adjacent endpoint in that interval.
+    """
+    choices = _CORE_PORT_CEILING - _CORE_PORT_FLOOR - _CORE_PORT_SPAN + 1
+    for _ in range(400):
+        base = _CORE_PORT_FLOOR + secrets.randbelow(choices)
+        with ExitStack() as probes:
+            try:
+                for offset in range(_CORE_PORT_SPAN):
+                    probe = probes.enter_context(socket.socket())
+                    if sys.platform == "win32":
+                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                    probe.bind(("0.0.0.0", base + offset))  # noqa: S104 - temporary bind probe
+            except OSError:
+                continue
+            return base
+    raise RuntimeError("no free five-port block below the ephemeral range for the ARC smoke")
 
 
 def _dump_runtime_log() -> None:
@@ -37,6 +69,16 @@ def _dump_runtime_log() -> None:
 
 def main() -> int:
     """Return 0 when clio-core backs ARC, 1 when it cannot be brought up."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reserve-core-port", action="store_true")
+    if parser.parse_args().reserve_core_port:
+        try:
+            print(_free_core_port_block())
+        except RuntimeError as exc:
+            print(f"arc-smoke: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     from clio_agent.arc.init_degradation import ArcStoreUnavailableError
     from clio_agent.arc.storage import make_arc_store
 

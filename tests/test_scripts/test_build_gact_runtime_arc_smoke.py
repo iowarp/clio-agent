@@ -15,13 +15,69 @@ say nothing about the image, without weakening what it asserts.
 from __future__ import annotations
 
 import re
+import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from install import arc_smoke
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "install" / "build-gact-runtime.ps1"
 HELPER = REPO_ROOT / "install" / "arc_smoke.py"
+
+
+def test_core_port_probe_rejects_a_busy_neighbor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A free base cannot hide a busy transport endpoint at base + 3."""
+    blocked_base = arc_smoke._free_core_port_block()
+    with socket.socket() as occupied:
+        occupied.bind(("0.0.0.0", blocked_base + 3))
+        occupied.listen()
+        free_base = arc_smoke._free_core_port_block()
+        choices = iter((blocked_base, free_base))
+        monkeypatch.setattr(arc_smoke.secrets, "randbelow", lambda _limit: next(choices) - 20_000)
+        assert arc_smoke._free_core_port_block() == free_base
+    # Every temporary probe, including those before the failed neighbor, closes.
+    with socket.socket() as released:
+        released.bind(("0.0.0.0", blocked_base))
+
+
+def test_core_port_probe_fails_when_no_complete_block_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhaustion must fail the build rather than return a partially usable block."""
+    blocked_base = arc_smoke._free_core_port_block()
+    with socket.socket() as occupied:
+        occupied.bind(("0.0.0.0", blocked_base))
+        occupied.listen()
+        monkeypatch.setattr(arc_smoke.secrets, "randbelow", lambda _limit: blocked_base - 20_000)
+        with pytest.raises(RuntimeError, match="no free five-port block"):
+            arc_smoke._free_core_port_block()
+
+
+def test_isolated_port_cli_leaves_the_whole_block_available(script: str) -> None:
+    """The relocated interpreter can probe without importing or starting ARC."""
+    done = subprocess.run(
+        [sys.executable, "-I", "-B", str(HELPER), "--reserve-core-port"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    )
+    base = int(done.stdout.strip())
+    assert 20_000 <= base <= 32_000 - 5
+    probes: list[socket.socket] = []
+    try:
+        for offset in range(5):
+            probe = socket.socket()
+            probes.append(probe)
+            probe.bind(("0.0.0.0", base + offset))
+    finally:
+        for probe in probes:
+            probe.close()
+    assert "'--reserve-core-port'" in _arc_smoke_block(script)
 
 
 @pytest.fixture(scope="module")
@@ -73,9 +129,9 @@ def test_arc_smoke_is_hermetic(script: str) -> None:
     block = _arc_smoke_block(script)
     assert "$env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')" in block
     assert "Remove-Item Env:CLIO_RUNTIME_STATE_DIR" in block, "the smoke leaks its state dir"
-    assert "[System.Net.IPAddress]::Loopback, 0" in block
-    assert "$env:CLIO_CORE_PORT = [string]$coreListener.LocalEndpoint.Port" in block
-    assert "$coreListener.Stop()" in block
+    assert "$env:CLIO_CORE_PORT = [string](Invoke-Native -Exe $relocPy" in block
+    assert "'--reserve-core-port'" in block
+    assert "[System.Net.IPAddress]::Loopback, 0" not in block
     assert "$previousCorePort = $env:CLIO_CORE_PORT" in block
     assert "Remove-Item Env:CLIO_CORE_PORT" in block
     assert "$env:CLIO_CORE_PORT = $previousCorePort" in block
@@ -85,10 +141,15 @@ def test_arc_smoke_is_hermetic(script: str) -> None:
 def test_arc_smoke_surfaces_its_failure(script: str) -> None:
     """The smoke's output must reach the build log, not ``Out-Null``."""
     block = _arc_smoke_block(script)
-    invoke = block.index("install/arc_smoke.py")
-    assert "Out-Null" not in block[invoke : invoke + 200], (
-        "the ARC smoke is swallowing its diagnostic output again"
+    # The port probe also names this helper. Require the standalone ARC startup
+    # invocation and inspect its entire line, excluding the preceding setup.
+    invoke = re.search(
+        r"(?m)^[ \t]*Invoke-Native -Exe \$relocPy -Args "
+        r"@\('-I', '-B', \(Join-Path \$checkout 'install/arc_smoke\.py'\)\)([^\r\n]*)$",
+        block,
     )
+    assert invoke is not None, "the relocated ARC initialization is missing"
+    assert not invoke.group(1).strip(), "the ARC smoke is redirecting its diagnostic output"
 
 
 def test_arc_smoke_cleans_up_after_itself(script: str) -> None:
@@ -102,8 +163,6 @@ def test_helper_recovers_the_traceback_and_the_daemon_log(tmp_path: Path) -> Non
     stack and the daemon log, not a bare ``exit 1``: run the helper against a config
     clio-core refuses (no durable tier)."""
     import os
-    import subprocess
-    import sys
 
     config = tmp_path / "cte.yaml"
     config.write_text(

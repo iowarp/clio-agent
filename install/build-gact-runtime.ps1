@@ -324,11 +324,9 @@ try {
   $env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')
   # Private state also needs a private RPC endpoint: otherwise a developer's
   # running daemon on 9413 is mistaken for an unversioned smoke-owned daemon.
-  $coreListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-  $coreListener.Start()
-  try {
-    $env:CLIO_CORE_PORT = [string]$coreListener.LocalEndpoint.Port
-  } finally { $coreListener.Stop() }
+  # clio-core binds five adjacent endpoints. Probe the complete block below
+  # OS ephemeral ranges so outgoing connections cannot take a neighbor.
+  $env:CLIO_CORE_PORT = [string](Invoke-Native -Exe $relocPy -Args @('-I', '-B', (Join-Path $checkout 'install/arc_smoke.py'), '--reserve-core-port'))
   New-Item -ItemType Directory -Path $smokeUser -Force | Out-Null
   New-Item -ItemType Directory -Path $env:CLIO_RUNTIME_STATE_DIR -Force | Out-Null
   # Diagnostic only: never fail the build because free space could not be read.
