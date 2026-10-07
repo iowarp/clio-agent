@@ -27,6 +27,8 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Selecting a blueprint after session or workspace warm-up waits for the current
+  preparation to finish, avoiding an idle-session data-access error.
 - Windows bundle checks probe all five clio-core endpoints below the OS ephemeral
   range, preventing adjacent-port collisions during the relocated ARC startup check.
 - Editable Word and PowerPoint outputs retain review PDFs as version-bound derivatives

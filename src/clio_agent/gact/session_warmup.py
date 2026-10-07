@@ -17,11 +17,14 @@ Config: ``tools.mcp.session_warmup`` / ``CLIO_MCP_SESSION_WARMUP`` (default on).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
-from contextlib import ExitStack
-from typing import Any
+from contextlib import AbstractContextManager, ExitStack
+from typing import Any, cast
+
+from clio_agent.gact.warmup_revision import start_revision_warmup
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +51,10 @@ def session_warmup_enabled() -> bool:
     )
 
 
-def start_session_warmup(app: Any, sid: str, *, trigger: str) -> threading.Thread | None:
-    """Start ``sid``'s servers on a background thread; return it (``None`` when off).
+def start_session_warmup(
+    app: Any, sid: str, *, trigger: str
+) -> threading.Thread | asyncio.Task[None] | None:
+    """Start ``sid``'s servers under its runtime revision (``None`` when off).
 
     Args:
         app: The GACT app (its ``state.agent`` owns the workspace fleets).
@@ -65,14 +70,12 @@ def start_session_warmup(app: Any, sid: str, *, trigger: str) -> threading.Threa
         if sid in _inflight:
             return None  # already warming; this caller joins it through the executor
         _inflight.add(sid)
-    thread = threading.Thread(
-        target=_warm_and_release,
-        args=(app, sid, trigger),
+    return start_revision_warmup(
+        app,
+        lambda: _warm_and_release(app, sid, trigger),
         name=f"clio-warmup-{sid}",
-        daemon=True,
+        finished=lambda: _release(sid),
     )
-    thread.start()
-    return thread
 
 
 def _release(sid: str) -> None:
@@ -195,7 +198,7 @@ def hold_session_fleet(app: Any, sid: str) -> None:
         if sid in _holds:
             return
         stack = ExitStack()
-        stack.enter_context(lease(root))
+        stack.enter_context(cast(AbstractContextManager[None], lease(root)))
         timer = threading.Timer(hold_while_waiting_s(), release_session_fleet, args=(sid,))
         timer.daemon = True
         _holds[sid] = (stack, timer)
