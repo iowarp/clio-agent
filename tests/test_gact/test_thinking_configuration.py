@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.gact.providers.bind_configuration import (
@@ -122,3 +122,55 @@ async def test_actual_model_change_still_runs_readiness_and_forced_handshake(
     assert not thinking_only
     assert cfg.model == "gpt-6-sol"
     assert calls == ["readiness", ("gpt-6-sol", {"force": True})]
+
+
+@pytest.mark.asyncio
+async def test_handshake_failure_is_logged_and_retains_static_configuration(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app, _, req = _bound()
+
+    async def handshake(context: Any, **kwargs: Any) -> None:
+        raise RuntimeError("Discovery unavailable")
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", handshake)
+    cfg, thinking_only = await prepare_bind_configuration(
+        app,
+        req.model_copy(update={"model": "gpt-6-sol"}),
+        lambda: ("ready", "", True, "gpt-6-luna"),
+        lambda: ("ready", "", True, ""),
+    )
+    assert not thinking_only
+    assert cfg.model == "gpt-6-sol"
+    assert app.state.lm_handshake_report is None
+    assert "reason=lm_handshake_failed" in caplog.text
+    assert caplog.records[-1].exc_info is not None
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_is_logged_and_preserves_the_typed_http_error(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = FastAPI()
+
+    def unavailable_key() -> str:
+        raise RuntimeError("Authentication unavailable")
+
+    monkeypatch.setattr(
+        "clio_agent.gact.providers.bind_configuration._resolve_argonne_runtime_api_key",
+        unavailable_key,
+    )
+    with pytest.raises(HTTPException) as caught:
+        await prepare_bind_configuration(
+            app,
+            LMProviderRequest(
+                provider="argonne", api_base="https://argonne.example/v1", model="some-model"
+            ),
+            lambda: ("ready", "", True, ""),
+            lambda: ("ready", "", True, ""),
+        )
+    assert caught.value.status_code == 401
+    assert caught.value.detail["error"]["error"] == "argonne_auth_required"
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert "reason=argonne_auth_required" in caplog.text
+    assert caplog.records[-1].exc_info is not None

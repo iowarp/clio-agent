@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from clio_agent.config import LMProviderConfig
 
 Readiness = Callable[[], tuple[str, str, bool, str]]
+logger = logging.getLogger(__name__)
 
 
 def _thinking_configuration(app: FastAPI, req: LMProviderRequest) -> LMProviderConfig | None:
@@ -96,7 +98,8 @@ async def prepare_bind_configuration(
         auth_exc: Exception | None
         try:
             resolved_api_key = _resolve_argonne_runtime_api_key()
-        except Exception as exc:  # noqa: BLE001 - auth failure captured in auth_exc and surfaced
+        except Exception as exc:
+            logger.exception("Provider authentication failed reason=argonne_auth_required")
             resolved_api_key = ""
             auth_exc = exc
         else:
@@ -186,7 +189,8 @@ async def prepare_bind_configuration(
             force=True,
         )
         cfg.apply_handshake(handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0)
-    except Exception:  # noqa: BLE001 - handshake failure recorded as a None report
+    except Exception:
+        logger.exception("Provider discovery failed reason=lm_handshake_failed")
         handshake_report = None
     app.state.lm_handshake_report = handshake_report
     return cfg, False
