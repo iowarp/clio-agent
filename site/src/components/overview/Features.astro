@@ -1,90 +1,58 @@
 ---
-/** The numbered capability sections, each beside its product capture. */
-import { ArrowRight } from 'lucide-react';
+/** Retain the five worked capability examples without five full-height blocks. */
+import { ArrowRight, ChevronDown, GitBranch, History, Search, ShieldCheck, Timer } from 'lucide-react';
 import SectionHeading from './SectionHeading.astro';
 import Capture from './Capture';
 import { features } from '@/data/overview';
 import { captureImage } from '@/lib/captures';
 
+const icons = [Search, GitBranch, Timer, ShieldCheck, History];
 const rows = await Promise.all(features.map(async (f) => ({ ...f, capture: await captureImage(f.image) })));
 ---
 
-<div class="features not-content">
-	{
-		rows.map((f, i) => (
-			<section class:list={['feature', { flip: i % 2 === 1 }]} aria-labelledby={f.id}>
-				<div class="text">
-					<SectionHeading
-						id={f.id}
-						number={String(i + 1).padStart(2, '0')}
-						label={f.label}
-						title={f.title}
-						emphasis={f.emphasis}
-					/>
-					<p class="body">{f.body}</p>
-					{f.example && <p class="example">{f.example}</p>}
-					<a class="more" href={f.link.href}>
-						{f.link.label} <ArrowRight aria-hidden="true" size={16} />
-					</a>
-				</div>
-				<div class="media">
+<section class="features not-content" aria-labelledby="workflow">
+	<SectionHeading id="workflow" label="The workflow" title="From a question to" emphasis="an answer you can check." />
+	<div class="examples">
+		{rows.map((f, i) => {
+			const Icon = icons[i];
+			return <details name="clio-workflow" id={f.id} open={i === 0}>
+				<summary>
+					<Icon aria-hidden="true" size={20} />
+					<span class="label">{f.label}</span>
+					<span class="title">{f.title} {f.emphasis}</span>
+					<ChevronDown className="chevron" aria-hidden="true" size={16} />
+				</summary>
+				<div class="detail">
+					<div>
+						<p class="body">{f.body}</p>
+						{f.example && <p class="example">{f.example}</p>}
+						<a class="more" href={f.link.href}>{f.link.label} <ArrowRight aria-hidden="true" size={16} /></a>
+					</div>
 					<Capture client:visible image={f.capture} alt={f.alt} caption={f.caption} />
 				</div>
-			</section>
-		))
-	}
-</div>
+			</details>;
+		})}
+	</div>
+</section>
 
 <style>
-	.features {
-		display: grid;
-		gap: clamp(4rem, 9vw, 7rem);
-		padding-block: clamp(4rem, 8vw, 6rem);
-	}
-	.feature {
-		display: grid;
-		gap: 2rem;
-		align-items: center;
-	}
-	@media (min-width: 64rem) {
-		.feature {
-			grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-			gap: 3.5rem;
-		}
-		.feature.flip .text {
-			order: 2;
-		}
-	}
-	.body {
-		margin: 1.25rem 0 0;
-		font-size: 1.05rem;
-		line-height: 1.65;
-		color: var(--ink-soft);
-	}
-	.example {
-		margin: 1.25rem 0 0;
-		padding-inline-start: 1rem;
-		border-inline-start: 2px solid var(--copper);
-		font-family: var(--font-display);
-		font-style: italic;
-		font-size: 1.15rem;
-		line-height: 1.5;
-		color: var(--ink);
-	}
-	.more {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		margin-top: 1.5rem;
-		font-weight: 600;
-		color: var(--ink);
-		text-decoration: none;
-	}
-	.more :global(svg) {
-		color: var(--accent);
-		transition: transform var(--motion-fast) var(--motion-ease);
-	}
-	.more:hover :global(svg) {
-		transform: translateX(3px);
-	}
+	.features { padding-block: 3rem; border-top: 1px solid var(--line); }
+	.examples { margin-top: 1.75rem; }
+	details { border-top: 1px solid var(--line); scroll-margin-top: calc(var(--sl-nav-height) + 1rem); }
+	details:last-child { border-bottom: 1px solid var(--line); }
+	summary { display: flex; align-items: center; gap: 0.85rem; padding: 1.1rem 0; cursor: pointer; list-style: none; }
+	summary::-webkit-details-marker { display: none; }
+	summary :global(svg) { flex-shrink: 0; color: var(--accent); }
+	summary:hover .title { color: var(--accent); }
+	.label { width: 5.5rem; flex-shrink: 0; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+	.title { flex: 1; font-size: 1rem; font-weight: 500; color: var(--ink); }
+	summary :global(.chevron) { color: var(--muted); transition: transform var(--motion-fast); }
+	details[open] summary :global(.chevron) { transform: rotate(180deg); }
+	.detail { display: grid; gap: 1.5rem; padding-block: 0.25rem 1.75rem; }
+	.body { margin: 0; line-height: 1.6; color: var(--ink-soft); }
+	.example { margin: 1rem 0 0; padding-inline-start: 0.75rem; border-inline-start: 2px solid var(--copper); font-size: 0.95rem; line-height: 1.5; color: var(--ink); }
+	.more { display: inline-flex; align-items: center; gap: 0.4rem; margin-top: 1rem; font-size: 0.95rem; font-weight: 600; color: var(--accent); text-decoration: none; }
+	.more:hover { text-decoration: underline; }
+	@media (min-width: 64rem) { .detail { grid-template-columns: minmax(0, 4fr) minmax(0, 8fr); gap: 2rem; } }
+	@media (max-width: 39.99rem) { summary { flex-wrap: wrap; gap: 0.5rem 0.75rem; } .label { flex: 1; } .title { flex-basis: 100%; order: 4; padding-left: 2rem; } }
 </style>

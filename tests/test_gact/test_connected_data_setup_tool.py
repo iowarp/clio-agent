@@ -42,8 +42,11 @@ def test_tool_only_returns_approved_owner_workspace_sources(
     )
     monkeypatch.setattr(setup_tool.context, "active_app", lambda: app)
     monkeypatch.setattr(setup_tool.context, "active_session_id", lambda: "s")
-    # Reading the auth owner would be a bug, even just to expose its internals.
-    service.auth = None  # type: ignore[assignment]
+
+    def private_token(*args: object, **kwargs: object) -> str:
+        raise AssertionError("Status must not obtain a credential")
+
+    monkeypatch.setattr(service.auth, "token", private_token)
     result = setup_tool.connected_data_status()
     assert [row["id"] for row in result["sources"]] == [source.source.id]
     serialized = json.dumps(result)
@@ -51,9 +54,19 @@ def test_tool_only_returns_approved_owner_workspace_sources(
     assert result["sources"][0]["local_path"] is None
     assert result["sources"][0]["materialization"] == "not_materialized"
     presentation = ToolPresentation.model_validate(setup_tool.setup_presentation({}, result, None))
-    assert presentation.blocks[0].target == "connected_data"
-    assert presentation.blocks[0].uri == service.store.clio_id
-    assert presentation.blocks[0].workspace_id == "w"
+    assert presentation.blocks[0].type == "markdown"
+    assert not any(block.type == "link" for block in presentation.blocks)
+    assert "Inputs" in presentation.blocks[0].text
+    assert result["workspace_folders"] == [
+        {"path": str(tmp_path), "role": "primary", "access": "workspace"}
+    ]
+    assert {account["provider"] for account in result["accounts"]} == {
+        "github",
+        "google_drive",
+        "globus",
+    }
+    assert all(not account["authenticated"] for account in result["accounts"])
+    assert result["accounts"][1]["login_action"]["name"] == "data_source/login/google_drive"
 
 
 def test_missing_session_fails_without_guessing_a_workspace(

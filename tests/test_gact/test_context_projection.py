@@ -244,8 +244,8 @@ def test_a_scope_new_to_the_conversation_starts_from_its_earlier_turns(arc: ARCM
             [
                 (
                     "text",
-                    "[clio: earlier_turns]\nThe 2 earlier messages of this conversation were "
-                    "carried over from its transcript (their tool calls and results are not included).",
+                    "[clio: earlier_turns]\nReconstructed 2 earlier context records from the saved transcript, "
+                    "including recorded tool inputs and results. Provider continuation state is unavailable.",
                 )
             ],
         ),

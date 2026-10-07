@@ -209,8 +209,11 @@ def _about_the_model(decision: Decision[bool]) -> bool:
 
 def _capabilities(effective: EffectiveCapabilities) -> list[dict[str, Any]]:
     tags: list[dict[str, Any]] = []
+    # Tools describe what this integration can use, including its text adapter;
+    # native calling remains a separate runtime fact with the same provenance.
+    if effective.tool_use.value is True:
+        tags.extend(_tags(["tool_calling"], effective.tool_use))
     for name, decision in (
-        ("tool_calling", effective.tools),
         ("parallel_tool_calls", effective.parallel_tool_calls),
         ("structured_output", effective.structured_output),
     ):

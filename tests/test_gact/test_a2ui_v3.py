@@ -115,7 +115,7 @@ def test_surface_tool_presentation_uses_the_surface_as_its_qualifying_subject() 
     )
 
     assert presentation == {
-        "action": "Generate UI element",
+        "action": "Generate widget",
         "subject": "surface",
         "status": "succeeded",
         "summary": "",

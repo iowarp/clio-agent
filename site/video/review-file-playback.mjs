@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 // Play every complete encoded clip at normal speed in its real page, then fullscreen.
 // Decoded-frame callbacks cover the complete motion; half-second samples preserve
 // the whole timeline for visual review, alongside the browser's error telemetry.
-const destination = resolve('out/files-playback-review');
+const destination = resolve(process.env.DEMO_REVIEW_DIRECTORY ?? 'out/files-playback-review');
 const pageUrl = process.env.DEMO_PAGE_URL ?? 'http://127.0.0.1:4107/docs/working-with-files/';
 await mkdir(destination, {recursive: true});
 const browser = await puppeteer.launch({headless: true, executablePath: process.env.DEMO_CHROME_PATH});
@@ -14,14 +14,19 @@ const page = await browser.newPage();
 await page.setViewport({width: 1440, height: 1000});
 const errors = [];
 const mediaCancellations = [];
-const names = ['files-pdf-read', 'files-word-edit', 'files-office-review'];
+const names = process.env.DEMO_MEDIA_NAMES
+  ? process.env.DEMO_MEDIA_NAMES.split(',').map(name => name.trim()).filter(Boolean)
+  : ['files-sensor-pdf-read', 'files-sensor-word-revision', 'files-sensor-slide-revision'];
+if (!names.length || names.some(name => !/^[a-z0-9-]+$/.test(name))) throw new Error('Invalid media names');
 page.on('pageerror', error => errors.push(String(error)));
 page.on('requestfailed', request => {
   const reason = request.failure()?.errorText;
   const path = new URL(request.url()).pathname;
-  if (reason === 'net::ERR_ABORTED' && request.resourceType() === 'media' && names.some(name => path === `/media/${name}.mp4`)) {
+  if (reason === 'net::ERR_ABORTED' && request.resourceType() === 'media'
+    && new URL(request.url()).origin === new URL(pageUrl).origin
+    && /^\/media\/[a-z0-9-]+\.mp4$/.test(path)) {
     // Seeking and navigating away cancel Chromium's range/preload requests.
-    // Every clip must still complete playback below, without a media error.
+    // Requested clips must still complete playback below, without a media error.
     mediaCancellations.push({url: request.url(), reason});
   } else {
     errors.push(`${request.url()}: ${reason}`);
@@ -106,8 +111,16 @@ for (const mode of ['embedded', 'fullscreen']) {
 }
 await page.setViewport({width: 390, height: 844});
 await page.goto(pageUrl, {waitUntil: 'networkidle0'});
+const pageMedia = await page.$$eval('video source[src]', sources => sources.map(source => source.src));
 await page.screenshot({path: resolve(destination, 'page-mobile.png'), fullPage: true});
 const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
+await page.select('starlight-theme-select select', 'dark');
+await page.screenshot({path: resolve(destination, 'page-mobile-dark.png'), fullPage: true});
+await page.setViewport({width: 1440, height: 1000});
+await page.screenshot({path: resolve(destination, 'page-desktop-dark.png'), fullPage: true});
+for (const cancellation of mediaCancellations) {
+  if (!pageMedia.includes(cancellation.url)) errors.push(`Unexpected cancelled media: ${cancellation.url}`);
+}
 await writeFile(resolve(destination, 'review.json'), JSON.stringify({results, errors, mediaCancellations, mobileOverflow: overflow}, null, 2));
 if (errors.length || overflow) throw new Error(JSON.stringify({errors, overflow}));
 } finally {

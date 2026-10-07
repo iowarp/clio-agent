@@ -14,6 +14,7 @@ from clio_agent.runtime.document_runtime import (
     prepare_document_runtime,
     prepare_office_runtime,
 )
+from clio_agent.runtime.github_cli import ensure_github_cli
 
 
 def install_document_runtime(workspace: Path, *, cache_root: Path | None = None) -> dict[str, Any]:
@@ -25,6 +26,12 @@ def install_document_runtime(workspace: Path, *, cache_root: Path | None = None)
     office = prepare_office_runtime()
     result["native_tools"]["soffice"] = {"status": "available", "path": office}
     result["capabilities"]["office_render_recalculate"] = "available"
+    github = ensure_github_cli()
+    result["native_tools"]["gh"] = {
+        "status": "available",
+        "path": str(github),
+        "authentication": "clio_account",
+    }
     receipt = (
         (cache_root or paths.user_cache_dir() / "document-runtime")
         / result["runtime_id"]

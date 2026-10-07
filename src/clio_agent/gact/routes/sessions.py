@@ -39,6 +39,7 @@ from clio_agent.gact.routes._body import NonObjectBodyError, json_body
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_creation import register_session_creation_route
+from clio_agent.gact.routes.session_export import register_session_export_routes
 from clio_agent.gact.routes.session_question_helpers import (
     normalize_question_options,
     pending_user_questions,
@@ -64,7 +65,6 @@ from clio_agent.gact.types import (
     TurnAttempt,
     UpdateSessionRequest,
     UserQuestion,
-    Workspace,
 )
 from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
@@ -598,34 +598,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
 
-    @app.get("/v1/sessions/{sid}/export")
-    async def export_session(sid: str) -> dict[str, Any]:
-        """SPEC §6.x — dump a session + its messages as a single
-        portable JSON blob. Useful for sharing analyses, archiving,
-        replay. Round-trips through POST /v1/sessions/import.
-        """
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        msgs = app.state.messages.get(sid, [])
-        ws = app.state.workspaces.get(sess.workspace_id)
-        return {
-            "version": "1",
-            "session": Session(**sess.to_wire()).model_dump(exclude_none=True),
-            "workspace": (Workspace(**ws.to_wire()).model_dump(exclude_none=True) if ws else None),
-            "messages": [m.to_wire() for m in msgs],  # #731: slim, arrival-ordered parts
-            "context_files": [dict(row) for row in app.state.context_files.get(sid, {}).values()],
-        }
+    register_session_export_routes(app)
 
     @app.post("/v1/sessions/import", response_model=Session)
     async def import_session(blob: dict[str, Any]) -> Session:

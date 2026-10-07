@@ -1,0 +1,49 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:05.300
+Ask for six slides, a comparison chart and speaker notes · typing 3×
+
+00:00:05.300 --> 00:00:08.867
+Send the request to CLIO
+
+00:00:08.867 --> 00:00:13.667
+CLIO reads the source notes · idle waits omitted
+
+00:00:13.667 --> 00:00:17.000
+CLIO writes and runs the deck builder · 3×
+
+00:00:17.000 --> 00:00:20.000
+CLIO prepares the preview and publishes the first draft · 2×
+
+00:00:20.000 --> 00:00:25.367
+Ask CLIO to fix the first draft’s contrast and spacing · typing 3×
+
+00:00:25.367 --> 00:00:30.667
+Review the complete correction request before sending
+
+00:00:30.667 --> 00:00:35.700
+Submit the actual correction request
+
+00:00:35.700 --> 00:00:40.733
+CLIO inspects the reported layout problems
+
+00:00:40.733 --> 00:00:46.733
+After reviewing its render, CLIO corrects the cover text · 3×
+
+00:00:46.733 --> 00:00:53.733
+CLIO reviews the corrected deck and checks its speaker notes
+
+00:00:53.733 --> 00:01:00.433
+The corrected PowerPoint and PDF arrive · 2×
+
+00:01:00.433 --> 00:01:07.500
+Open the PowerPoint that CLIO generated
+
+00:01:07.500 --> 00:01:18.500
+Open its PDF preview · 2×; idle pauses omitted
+
+00:01:18.500 --> 00:01:27.567
+Briefly review the cover and comparison chart
+
+00:01:27.567 --> 00:01:33.900
+Check the next steps; the PowerPoint includes editable charts and notes

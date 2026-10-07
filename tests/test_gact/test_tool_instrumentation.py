@@ -616,6 +616,15 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
             "connected_data_status": {},
+            # Invalid source locations and missing source records refuse before
+            # permission prompts, account access or network operations. They
+            # must still record the exact executed inputs and failure result.
+            "connected_data_connect": {
+                "provider": "github",
+                "root": "not-a-repository",
+                "label": "Missing repository",
+            },
+            "github_cli": {"source_id": "missing-source", "arguments": ["repo", "view"]},
             "connected_data_open": {"source_id": "missing-source"},
             "connected_data_write": {
                 "source_id": "missing-source",

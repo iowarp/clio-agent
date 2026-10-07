@@ -177,7 +177,11 @@ from clio_agent.gact.app import build_app
 # 329 -> 346 (beta-3 document integration): +17 document manifest/rendition,
 # review, working-copy and editor method pairs, all owned by routes/documents.py.
 # The integration inherited the infrastructure fingerprint without this surface.
-EXPECTED_ROUTE_METHOD_PAIRS = 346
+# 346 -> 348: GET/PATCH /v1/settings/runtime, owned by routes/runtime_settings.py
+# and composed through the existing Settings route registrar.
+# 348 -> 352 (campaign integration): visual export POST, bounded capture GET,
+# prepare-download POST and one-use download GET, owned by routes/session_export.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 352
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

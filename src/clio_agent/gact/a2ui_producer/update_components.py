@@ -109,7 +109,7 @@ def build_update_a2ui_components_tool() -> Any:
         name="update_a2ui_components",
         presentation=surface_presentation,
         desc=update_a2ui_components.__doc__,
-        title="Update UI element",
+        title="Update widget",
         domain="surfaces",
         args={
             "surface_id": {"type": "string", "description": "Existing live surface id."},

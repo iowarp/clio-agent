@@ -4,6 +4,28 @@ This is the list of product screenshots for the public site (`site/`, served at 
 
 Save each file at the path given. If a file with that name already exists, replace it; its page picks up the new image with no code change. Entries marked **new slot** need a small code change to place the image, so mention them in the pull request that adds them.
 
+## Current homepage captures, 2026-10-06
+
+The homepage now leads with a full-width, tabbed OPAL showcase below the headline.
+These entries explicitly use **browser captures**, in light mode at 1440 × 1000
+and 1× scale. They show a development review, not a published Desktop release.
+The source settings detail uses a 1000 × 620 browser viewport so its account
+rows remain readable in the guide.
+
+| File | Slot | Recorded behavior |
+| --- | --- | --- |
+| `site/src/assets/captures/opal-figure-viewer.png` | Figures | A complete six-panel OPAL plant-area figure, with dates, units and IQR bands. Treatment doses remain unconfirmed. |
+| `site/src/assets/captures/opal-report-review.png` | Documents | Review of an existing three-page Word report and eleven-slide PowerPoint deck, with a saved PDF preview beside the conversation. |
+| `site/src/assets/captures/opal-review-evidence.png` | Evidence | The same document review's tool calls, source documents and artifacts. |
+| `site/public/media/source-accounts.png` | Connect sources guide | Global account sign-in, separate from workspace data attachment. All accounts are signed out. |
+
+See `site/src/assets/captures/README.md` for source commits and capture metadata,
+and `docs/SITE_ERGONOMICS_REVIEW.md` for rendered review and test evidence.
+The EarthScope chart is no longer in the hero. The five older workflow examples
+are retained in expandable rows, with their original session captions. The
+numbered shot list below is an older refresh plan, not a description of one
+continuous session currently shown by the homepage.
+
 ## How to shoot
 
 | Setting | Value |

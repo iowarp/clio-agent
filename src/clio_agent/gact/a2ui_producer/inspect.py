@@ -79,7 +79,7 @@ def build_inspect_a2ui_surface_tool() -> Any:
     return native_tool(
         inspect_a2ui_surface,
         name="inspect_a2ui_surface",
-        title="Inspect UI element",
+        title="Inspect widget",
         domain="surfaces",
         presentation="text",
         read_only=True,

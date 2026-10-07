@@ -1,0 +1,47 @@
+---
+import Showcase from './Showcase';
+import { captureImage } from '@/lib/captures';
+import figure from '@/assets/captures/opal-figure-viewer.png';
+import report from '@/assets/captures/opal-report-review.png';
+import evidence from '@/assets/captures/opal-review-evidence.png';
+
+const items = await Promise.all([
+	{
+		id: 'figures' as const,
+		label: 'Figures',
+		title: 'Read the figure. Check the interpretation.',
+		description: 'Open a result at full size, with its axes, units and uncertainty intact.',
+		href: '/docs/widgets/linked-data/',
+		link: 'Explore linked data',
+		image: figure,
+		alt: 'CLIO’s full-size image viewer showing six OPAL plant growth curves with units, dates and interquartile bands',
+		caption: 'Development preview: OPAL plant area by recorded label. The bands show interquartile ranges; the labels are not confirmed treatment doses.',
+	},
+	{
+		id: 'documents' as const,
+		label: 'Documents',
+		title: 'Review a report beside the conversation.',
+		description: 'Keep editable Word and PowerPoint files, and inspect their rendered PDF previews.',
+		href: '/docs/examples/reports-and-slides/',
+		link: 'Open the worked example',
+		image: report,
+		alt: 'A CLIO session reviewing a three-page OPAL Word report with the rendered first page open beside the answer',
+		caption: 'Development preview: a real review session publishing an existing three-page Word report and an 11-slide deck with PDF previews. The example includes the editable files and a recording.',
+	},
+	{
+		id: 'evidence' as const,
+		label: 'Evidence',
+		title: 'Follow the files and steps behind a result.',
+		description: 'Inspect recorded tool calls, source documents and output artifacts in the same workspace.',
+		href: '/docs/memory-and-evidence/',
+		link: 'Understand the evidence',
+		image: evidence,
+		alt: 'CLIO’s Evidence panel beside the OPAL review, showing 21 tool calls, two source documents and two artifacts',
+		caption: 'Development preview: the same document review, with its recorded evidence open. Sources and artifacts are separate; the source filenames remain inspectable.',
+	},
+].map(async (item) => ({ ...item, image: await captureImage(item.image) })));
+---
+
+<section class="not-content" aria-label="Inside the CLIO workspace">
+	<Showcase client:load items={items} />
+</section>

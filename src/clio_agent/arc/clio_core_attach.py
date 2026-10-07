@@ -222,6 +222,15 @@ def build_tracked_store(
         raise failure from exc
     # The daemon's config, when this process adopted it (first config wins).
     effective = getattr(store, "_config_path", "") or cfg
+    # Validating the requested file is insufficient when a shared daemon adopted
+    # another file. Never label an existing volatile daemon as durable.
+    try:
+        require_durable_config(effective)
+    except ArcStoreUnavailableError as refused:
+        mark_unavailable(
+            refused.reason, str(refused), effective, storage._resolve_runtime_port(effective)
+        )
+        raise
     mark_attached(effective, storage._resolve_runtime_port(effective))
     return store
 

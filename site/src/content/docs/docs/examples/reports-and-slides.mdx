@@ -1,0 +1,165 @@
+---
+title: Report and presentation example
+description: Watch CLIO generate a Word report and PowerPoint from source notes, then download the actual outputs.
+---
+
+import WidgetRecording from '../../../../components/WidgetRecording.astro';
+
+Describe the audience, the material to use and the result you need. Review the
+finished file, then ask for changes in the same conversation. For help with
+opening previews and downloading files, see
+[Working with files](/docs/working-with-files/).
+
+## Generate a report
+
+These two recordings start in fresh conversations with source notes and a
+summary of fictional sensor readings. CLIO creates the files during the recorded
+runs. Each clip shows the request, agent activity and file arrival, followed by a
+brief look at the result.
+
+Put the [sample notes](/media/document-generation/sensor-notes.md) and
+[sample summary](/media/document-generation/sensor-summary.json) in a `sources`
+folder in your workspace, then ask:
+
+> Use the sensor notes and summaries in sources/ to create a polished two-page Word report for our team meeting. Include a comparison chart, the limitations and next steps. Save the editable report and a PDF preview. Clearly label the sample data fictional.
+
+<WidgetRecording
+  name="files-sensor-word-generation"
+  title="From a request to a generated Word report"
+  caption="Send a prompt, watch CLIO build and review the report, then open the newly generated file."
+  timingNote="Selected portions of one continuous fresh-generation recording. Typing and work are accelerated where labelled; idle waits are omitted."
+  pointerGuide
+/>
+
+Download the actual recorded output:
+[Word report](/media/document-generation/Sensor_Summary_Team_Report.docx) ·
+[Report PDF](/media/document-generation/Sensor_Summary_Team_Report.pdf).
+
+## Generate a presentation
+
+Use the same source files and describe the audience, length and content you need:
+
+> Use the sensor notes and summaries in sources/ to create a six-slide team briefing. Include a comparison chart, key limitations and next steps, with speaker notes. Save an editable PowerPoint and a PDF preview. Clearly label the sample data fictional.
+
+<WidgetRecording
+  name="files-sensor-slide-generation"
+  title="From a request to a generated PowerPoint"
+  caption="Watch CLIO create the deck, respond to a layout correction, and publish the corrected PowerPoint and PDF."
+  timingNote="Selected portions of one continuous fresh-generation recording, including the actual correction request. Accelerated sections are labelled; idle waits are omitted."
+  pointerGuide
+/>
+
+The first draft needed better cover contrast and more space below the final
+heading. The recording includes the follow-up request and CLIO's correction.
+Download the corrected [PowerPoint](/media/document-generation/sensor_team_briefing.pptx)
+and [Slides PDF](/media/document-generation/sensor_team_briefing.pdf).
+
+Open the result and check the wording, tables, figures and layout. Ask for any
+corrections, then review the updated version before sharing it. Download the
+editable document if you want to continue in Word or PowerPoint.
+
+## More examples
+
+<details>
+<summary>Revise an existing report or presentation</summary>
+
+These recordings use fictional sensor observations. Download a reference file
+below, add it to a message, and adapt the request to your own work.
+
+| Example | Starting file | Revised file | Revised preview |
+| --- | --- | --- | --- |
+| Two-page evidence report | [Word report](/media/document-reference/reference-report.docx) | [Revised Word report](/media/document-reference/revised-report.docx) | [Report PDF](/media/document-reference/revised-report.pdf) |
+| Six-slide briefing | [PowerPoint deck](/media/document-reference/reference-deck.pptx) | [Revised PowerPoint deck](/media/document-reference/revised-deck.pptx) | [Slides PDF](/media/document-reference/revised-deck.pdf) |
+
+### Revise a report
+
+Say what should change and what should stay. This request updates the report's
+recommendations while keeping its existing structure:
+
+> Make the next steps request calibration records and a review of the raw readings. Keep the headings, tables, figure and theme. Save a revised Word document and PDF preview, and preserve the original.
+
+<WidgetRecording
+  name="files-sensor-word-revision"
+  title="Make a revision and review the result"
+  caption="Reference a report, revise its recommendations, then review the Word artifact and saved PDF."
+  timingNote="Selected portions of a continuous recording; accelerated waiting intervals are labelled."
+  pointerGuide
+/>
+
+### Revise a presentation
+
+Reference the deck and describe the change. For example:
+
+> Revise the final recommendations and speaker notes to make clear which findings still need calibration and raw readings. Keep the theme, charts and editable tables. Save a revised PowerPoint file and PDF preview.
+
+<WidgetRecording
+  name="files-sensor-slide-revision"
+  title="Revise and review a themed presentation"
+  caption="Revise a six-slide briefing, correct formatting after review, and inspect its PDF preview. Charts and tables stay editable."
+  timingNote="Selected portions of continuous recordings of the revision and corrected result; idle pauses are omitted."
+  pointerGuide
+/>
+
+The revised downloads include the corrections shown in the recordings. Compare
+them with the starting files to see how the text and layout changed.
+
+<details>
+<summary>Compare the starting report and presentation layouts</summary>
+
+![Both pages of the fictional reference report](/media/document-reference/report-overview.png)
+
+![Six slides of the fictional reference presentation](/media/document-reference/deck-overview.png)
+
+</details>
+
+<details>
+<summary>Source data and scripts for the fictional examples</summary>
+
+The [fictional source summary](/media/document-reference/reference-source.json),
+[report builder](/media/document-reference/create-reference-report.mjs) and
+[presentation builder](/media/document-reference/create-reference-deck.mjs)
+are available if you want to explore how the starting files were made. Their
+PDFs are also available: [report](/media/document-reference/reference-report.pdf)
+and [presentation](/media/document-reference/reference-deck.pdf).
+
+</details>
+
+</details>
+
+<details>
+<summary>Review a saved research briefing</summary>
+
+The example uses saved analysis and figures from OPAL 1, a plant-growth research
+dataset. Its three-page Word report and eleven-slide meeting deck include speaker
+notes, an editable design table and a comparison chart. The report and slides
+preserve unresolved treatment labels and an unexplained early break in a vendor
+proxy, so the interpretation remains tied to the available evidence.
+
+The initial drafts were revised after visual review. This recording shows review
+and navigation of the saved results after those corrections.
+
+<WidgetRecording
+  name="files-opal-report-review-current"
+  title="Review a complete report and research briefing"
+  caption="Open the example's saved previews, navigate the report and slides, and inspect figure detail."
+  timingNote="Selected portions of a continuous review recording; idle pauses are omitted."
+  pointerGuide
+/>
+
+| Deliverable | Editable file | Reviewed PDF |
+| --- | --- | --- |
+| Three-page research report | [Word report](/media/opal1-document-review/OPAL1_research_meeting_report.docx) | [Report PDF](/media/opal1-document-review/OPAL1_research_meeting_report.pdf) |
+| Eleven-slide meeting briefing | [PowerPoint deck](/media/opal1-document-review/OPAL1_research_meeting_15min.pptx) | [Slides PDF](/media/opal1-document-review/OPAL1_research_meeting_15min.pdf) |
+
+<details>
+<summary>See the reviewed report and slide overviews</summary>
+
+![Three pages of the research report after layout corrections](/media/opal1-document-review/report-overview-1.png)
+
+![Slides 1–6 of the research briefing](/media/opal1-document-review/deck-overview-1.png)
+
+![Slides 7–11 of the research briefing](/media/opal1-document-review/deck-overview-2.png)
+
+</details>
+
+</details>

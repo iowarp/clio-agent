@@ -76,6 +76,53 @@ class _StubBindAgent(_RebindLMStub, SimpleNamespace):
     """SimpleNamespace-style agent stub that survives the hot-swap rebind."""
 
 
+def test_thinking_put_updates_live_default_without_discovery_or_catalog_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real PUT publishes the new effort and preserves unchanged discovery facts."""
+    from clio_agent.config import LMProviderConfig
+
+    cfg = LMProviderConfig(
+        provider="openai",
+        api_base="https://bound.example/v1",
+        model="one",
+        api_key="saved-key",
+        thinking_level="medium",
+    )
+    existing = _StubBindAgent(arc=ARCMemory(data_dir=str(tmp_path / "arc")), _provider_config=cfg)
+    _install_stub_factories(monkeypatch)
+    probes: list[Any] = []
+
+    async def unexpected_handshake(*args: Any, **kwargs: Any) -> None:
+        probes.append((args, kwargs))
+        raise AssertionError("Thinking alone must not run provider discovery")
+
+    monkeypatch.setattr("clio_agent.providers.handshake.run_handshake", unexpected_handshake)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=existing)
+    snapshot = {"providers": [], "authoritative": "live_handshake"}
+    with TestClient(app) as client:
+        app.state.provider_catalog = snapshot
+        response = client.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "openai",
+                "provider_id": "openai",
+                "api_base": cfg.api_base,
+                "model": "one",
+                "thinking_level": "low",
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["thinking_level"] == "low"
+        assert response.json()["thinking_level_source"] == "user"
+        assert app.state.agent._provider_config.thinking_level == "low"
+        assert app.state.agent._provider_config.api_key == "saved-key"
+        assert cfg.thinking_level == "medium"
+        assert app.state.provider_profiles.default.thinking_level == "low"
+        assert app.state.provider_catalog is snapshot
+        assert probes == []
+
+
 def _install_stub_factories(monkeypatch: pytest.MonkeyPatch, *, create_lm: Any = None) -> None:
     """Stub the LM factories + handshake so a bind needs no network."""
 

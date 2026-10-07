@@ -1,0 +1,24 @@
+{
+  "provenance": "Fictional sample for layout demonstration; not a real field trial.",
+  "units": "arbitrary units",
+  "observations": [
+    {
+      "station": "A",
+      "count": 12,
+      "baseline": 18,
+      "followup": 16
+    },
+    {
+      "station": "B",
+      "count": 12,
+      "baseline": 17,
+      "followup": 24
+    },
+    {
+      "station": "C",
+      "count": 12,
+      "baseline": 18,
+      "followup": 19
+    }
+  ]
+}

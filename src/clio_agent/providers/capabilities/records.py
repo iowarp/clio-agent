@@ -316,6 +316,9 @@ class EndpointCapabilities:
     server_version: Fact[str] = field(default_factory=_unknown_field)
     accepted_params: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     thinking_controls: Fact[frozenset[str]] = field(default_factory=_unknown_field)
+    #: CLIO-owned tool transport, independent of a model's native tool support.
+    #: Text adapters carry calls in the prompt; native adapters use function tools.
+    tool_calling_mode: Fact[Literal["native", "text"]] = field(default_factory=_unknown_field)
     structured_output_modes: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     multi_model: bool = False
     #: Invalidation key (brief 5.6): changes when the server itself changes

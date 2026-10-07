@@ -9,6 +9,7 @@ import pytest
 
 from clio_agent.gact import document_tools
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.skill_runtime import effective_declared_skills
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.skills import SkillCatalog, read_skill_body
 from clio_agent.tools.file_policy import FileAccessPolicy
@@ -25,12 +26,53 @@ def test_default_document_tools_are_available_without_vision() -> None:
     assert not {"prepare_document", "prepare_document_runtime"} & set(gateway)
 
 
+def test_execution_discovery_reports_missing_imports_and_keeps_commands_visible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prepared toolchain is not advertised as ready for an unavailable import."""
+    inventory = {
+        "status": "ready",
+        "python": "managed-python",
+        "python_argv": ["uv", "run", "--no-project", "--python", "managed-python", "python"],
+        "packages": {"numpy": {"version": "locked", "import": "numpy"}},
+        "font_files": [f"C:/Windows/Fonts/font-{index}.ttf" for index in range(150)],
+        "font_families": ["Arial"],
+        "shell_environment": {"PATH": "prepared tool paths;" * 500},
+    }
+    monkeypatch.setattr(document_tools, "_workspace", lambda: tmp_path)
+    monkeypatch.setattr(document_tools, "prepare_document_runtime", lambda root: inventory)
+
+    def probe(python: Path, modules: list[str]) -> dict[str, dict[str, str]]:
+        assert python == Path("managed-python")
+        assert modules == ["numpy", "cv2"]
+        return {"numpy": {"status": "ready"}, "cv2": {"status": "missing"}}
+
+    monkeypatch.setattr(document_tools, "inspect_python_imports", probe)
+    tool = document_tools.build_prepare_execution_runtime_tool()
+    result = tool.func(required_imports=["numpy", "cv2"])
+    assert result["status"] == "missing_dependencies"
+    assert result["required_imports"]["cv2"]["status"] == "missing"
+    assert result["python_argv"] == inventory["python_argv"]
+    assert "font_files" not in result
+    assert inventory["font_files"]
+    assert "shell_environment" not in result
+    assert inventory["shell_environment"]
+    assert "--with" in result["dependency_guidance"]
+
+
 def test_default_office_skills_resolve_independently_of_user_directories(tmp_path: Path) -> None:
     """A bare-session skill declaration resolves the packaged workflows."""
     agent = _builtin_main_agent()
     catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    resolutions = catalog.resolve_declared(agent.skills)
-    for resolution in resolutions.values():
+    resolutions = catalog.resolve_declared(effective_declared_skills(agent, catalog))
+    for skill_id in (
+        "work-with-pdfs",
+        "work-with-word",
+        "work-with-presentations",
+        "work-with-spreadsheets",
+    ):
+        resolution = resolutions[skill_id]
         assert resolution.status == "resolved"
         assert resolution.skill is not None
         assert resolution.skill.scope == "builtin"

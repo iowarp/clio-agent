@@ -68,3 +68,7 @@ the table directly. Keep provenance for supplied data and label introduced assum
 A separately registered review PDF does not bind to the editable workbook. Keep
 `pdf_preview=true` on the source call, or on its batch item, when a print preview
 is requested; the publication workflow creates that relationship.
+Publish and name the requested editable workbook. Keep PDFs made only for review
+or display as derivatives; do not separately register or list them as deliverables.
+Publish a separate PDF only when requested. In `used`, cite the actual source
+documents or data, not the review PDF derived from this output.

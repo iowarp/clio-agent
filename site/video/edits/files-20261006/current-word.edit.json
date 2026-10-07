@@ -1,0 +1,86 @@
+{
+  "name": "files-sensor-word-revision",
+  "source": "takes/sensor-word-revision-20261006-c.mp4",
+  "posterAt": 57,
+  "notes": "Selected native footage from one real Luna revision. Cuts remove idle waits and diagnostic tool details; no response or result is fabricated. Input and result remain at normal speed. The original take and rejected prior attempts are preserved in the archive.",
+  "shots": [
+    {
+      "from": 1,
+      "to": 4.5,
+      "crop": {
+        "x": 320,
+        "y": 240,
+        "width": 800,
+        "height": 420
+      },
+      "caption": "Reference an existing report"
+    },
+    {
+      "from": 21,
+      "to": 42,
+      "crop": {
+        "x": 320,
+        "y": 240,
+        "width": 800,
+        "height": 420
+      },
+      "caption": "Describe the revision and what to preserve"
+    },
+    {
+      "from": 420,
+      "to": 444,
+      "speed": 8,
+      "caption": "Agent working - selected waiting interval at 8x",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    },
+    {
+      "from": 662,
+      "to": 674,
+      "crop": {
+        "x": 300,
+        "y": 45,
+        "width": 820,
+        "height": 650
+      },
+      "caption": "Editable Word file and reviewed PDF are published"
+    },
+    {
+      "from": 682,
+      "to": 694,
+      "caption": "Open the Word artifact and enlarge its saved preview",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    },
+    {
+      "from": 727.5,
+      "to": 735,
+      "caption": "Scroll to the revised recommendations",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    },
+    {
+      "from": 747,
+      "to": 751.5,
+      "caption": "Use Open in for the PDF, Word download or Copy path",
+      "crop": {
+        "width": 1278,
+        "height": 870,
+        "y": 0,
+        "x": 0
+      }
+    }
+  ]
+}

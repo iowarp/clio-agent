@@ -9,6 +9,7 @@ from clio_agent.gact.artifacts.cas import CASStore, ingest_identity
 from clio_agent.gact.artifacts.lineage import build_lineage
 from clio_agent.gact.artifacts.records import Custody
 from clio_agent.gact.provenance.protocol import ProviderReceipt
+from clio_agent.platform_paths import win_extended_path
 
 if TYPE_CHECKING:
     from clio_schemas import ArtifactVersion
@@ -38,7 +39,7 @@ class NativeArtifactStore:
         if workspace_root is None or version.custody is not Custody.CAS or not version.sha256:
             return None
         blob = CASStore(workspace_root).blob_path(version.sha256)
-        return blob if blob.is_file() else None
+        return blob if Path(win_extended_path(blob)).is_file() else None
 
 
 class NativeArtifactProvenanceProvider:

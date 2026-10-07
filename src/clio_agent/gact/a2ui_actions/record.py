@@ -39,7 +39,14 @@ ActionState = Literal["received", "delivered", "consumed", "failed"]
 
 #: Every delivery lane a record can be routed through.
 ActionDelivery = Literal[
-    "start", "steer", "resolve_question", "permission", "run_cancel", "run_retry", "rejected"
+    "start",
+    "steer",
+    "resolve_question",
+    "permission",
+    "run_cancel",
+    "run_retry",
+    "client_ui",
+    "rejected",
 ]
 
 #: The transcript part type this module owns (sibling of ``"a2ui"``).

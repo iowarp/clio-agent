@@ -21,8 +21,8 @@ disclosure would be a dead end for them: they get the resolved skill *bodies*
 compiled into their prompt (:func:`skill_bodies_context`) — the declaration is
 explicit and per-expert, so the cost is opted into (declaration-only, §3.6).
 
-**Default-expert auto-declaration** (§3.6): the ROOT expert of the default
-registry blueprint auto-declares workspace-scope skills
+**Default-expert auto-declaration** (§3.6): the built-in main agent and the ROOT
+expert of the default registry blueprint auto-declare workspace and built-in skills
 (:func:`effective_declared_skills`) so user-authored skills work in plain
 chat without editing the blueprint.
 
@@ -33,6 +33,7 @@ declaring expert's own pack root, mirroring how the agent rows were loaded.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -155,8 +156,8 @@ def effective_declared_skills(
     app: "FastAPI | None" = None,
     session_id: str = "",
 ) -> list[str]:
-    """The expert's declared skill ids — plus, for the default-registry ROOT
-    expert only, every workspace-scope skill (auto-declaration, §3.6), so
+    """The expert's declared skill ids — plus, for a built-in main or default-registry
+    ROOT expert, every workspace and built-in skill (auto-declaration, §3.6), so
     user-authored skills work in plain chat -- plus, for any expert that
     declares a producer tool or is itself a root agent (S4), this session's
     producible A2UI catalog skill ids (``app``/``session_id`` unavailable —
@@ -178,32 +179,23 @@ def effective_declared_skills(
     )
     is_default = str(meta.get("agent_blueprint_id") or "") == DEFAULT_AGENT_BLUEPRINT_ID
     is_default_root = is_default and is_root
+    is_builtin_root = is_root and str(meta.get("definition_kind") or "") == "builtin_main"
     wants_a2ui_catalogs = _declares_a2ui_producer_tool(agent_def) or _is_root_agent(agent_def)
-    if is_default_root:
+    if is_default_root or is_builtin_root:
         # Auto-declare the user's workspace skills first (so they lead the surface), then
-        # clio's shipped built-in skills (the ``planning`` entry-skill) — both onto the
-        # default-registry ROOT expert so plain chat can invoke them without editing the
-        # blueprint. Built-ins are appended AFTER workspace so a user skill of the same id
+        # clio's shipped built-in skills. Plain chat discovers installed procedures by
+        # metadata, without a skill-name allowlist in code or the default prompt.
+        # Built-ins are appended AFTER workspace so a user skill of the same id
         # (which shadows the built-in in resolution) also leads it in the declared list.
+        discovered = catalog.discover()
         for wanted_scope in ("workspace", "builtin"):
-            for ref in catalog.discover():
+            for ref in discovered:
                 if (
                     ref.scope == wanted_scope
                     and ref.layout != "unreadable"
                     and ref.id not in declared
                 ):
                     declared.append(ref.id)
-    if (
-        wants_a2ui_catalogs
-        and is_root
-        and str(meta.get("definition_kind") or "") == "builtin_main"
-        and "present-interactive-analysis" not in declared
-    ):
-        # A plain built-in root also gets A2UI producer tools. Give it the
-        # matching short decision guide, not only the schema catalog, so
-        # ordinary requests can discover editable widgets without naming them.
-        if any(ref.id == "present-interactive-analysis" for ref in catalog.discover()):
-            declared.append("present-interactive-analysis")
     if app is not None and session_id and wants_a2ui_catalogs:
         for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
             if skill_id not in declared:
@@ -275,6 +267,7 @@ def skills_prompt_block(runtime: SkillRuntime) -> str:
     lines = [
         "## Skills available to you",
         "These are procedures/rubrics you are expected to FOLLOW for the tasks they cover. "
+        "Choose relevant skills from their descriptions; the user need not name them. "
         "Call load_skill for ordinary skills before applying them. Skills marked child-task "
         "must be run with spawn_skill_task so delegation remains explicit and observable.",
     ]
@@ -432,7 +425,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             duplicates_collapsed = len(requested_files) - len(deduped)
             requested_files = deduped
 
-        def _emit_loaded(size: int, bundled_file: str = "") -> None:
+        def _emit_loaded(content: str, bundled_file: str = "") -> None:
             # skill.loaded (#920): typed provenance for every load, on the
             # highway (durable trace + ARC + the served UI wire). Correlated to
             # the turn like every in-loop emitter, and GUARDED: capture must
@@ -453,7 +446,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "scope": ref.scope,
                 "path": ref.path,
                 "checksum": ref.checksum,
-                "size": size,
+                "size": len(content.encode("utf-8")),
+                "content": content,
+                "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "agent_id": agent_id,
             }
             if bundled_file:
@@ -525,7 +520,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 trace.event(
                     "SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file
                 )
-                _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+                _emit_loaded(content, bundled_file=requested_file)
                 sections.append(
                     f"=== File {index}/{len(requested_files)}: {requested_file} ===\n{content}"
                 )
@@ -549,7 +544,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             requested_file = requested_files[0]
             content = _read_one_bundled_file(requested_file)
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file)
-            _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+            _emit_loaded(content, bundled_file=requested_file)
             if duplicates_collapsed:
                 content += (
                     f"\n\n({duplicates_collapsed} duplicate file request"
@@ -598,7 +593,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                         capped = True
                         break
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
-        _emit_loaded(len(body.encode("utf-8")))
+        _emit_loaded(body)
         listing = (
             "\n\nBundled files (use file=... for one or files=[...] for a batch):\n"
             + "\n".join(f"- {name}" for name in bundled)

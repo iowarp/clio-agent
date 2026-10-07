@@ -1,13 +1,54 @@
 ---
 name: connect-data
-description: Connect Google Drive, Globus, SSH/SFTP, or local folders through CLIO's private setup UI, then use approved inputs in the current workspace.
+description: Use when the user asks to connect data, or when needed inputs are absent after inspecting supplied references and workspace folders. Connect external sources through CLIO's private setup UI.
 ---
 
 # Connect data
 
-Call `connected_data_status` to present **Connect data** in the main session.
-The user opens the same trusted picker available from the composer and Files.
-If this tool is absent in a child session, return to the main session for setup.
+Start with supplied attachments, references and the current workspace folders.
+Inspect the relevant files and their self-description using available file tools.
+A primary workspace folder is already input; an empty connected-source list
+does not mean its files are missing. If a read fails, diagnose the reported
+access or runtime error rather than asking the user to reconnect that folder.
+
+Use this setup workflow when the user explicitly wants to connect a source,
+or a bounded workspace inspection finds that the needed data is elsewhere.
+Explain what input is missing and ask where it is before requesting setup.
+
+Call `connected_data_status` for the inventory of approved workspace folders,
+attached sources, and signed-in provider accounts. This read returns status,
+not a setup control. If this tool is absent in a child session, return to the
+main session for setup.
+
+When an account needs sign-in, explain the need in your answer and use its
+returned `login_action` as an ordinary A2UI Button's action. Load the active
+catalog for the exact component shape. The user sees and clicks this control
+in the answer; the existing private account flow opens. It never passes a
+credential to you. Do not bury a requested action only in Activity.
+
+When the user supplies a remote source location, use `connected_data_connect`
+to attach it. A new connection passes through the session permission gate;
+bypass can approve it automatically, while explicit deny/ask rules still apply.
+An already-approved identical source is reused. Registration, authentication
+and a successfully linked file index are separate states: report the returned
+state honestly. After sign-in, retry connection to build the linked index.
+
+For GitHub, use CLIO's managed `github_cli` on an approved source, rather than
+the machine's unrelated shell login. It resolves the current CLIO account for
+every read and enforces repository/folder scope. Source writes retain the
+existing working-copy review and publication boundary.
+
+For published releases, the managed CLI accepts repository API reads at
+`repos/OWNER/REPO/releases/latest`, `releases`, `releases/tags/TAG`, and
+`releases/ID`. These require approval for the entire repository; a folder
+grant does not expose repository-wide metadata. Inspect publication dates,
+notes, URLs and draft/prerelease flags. Separate stable releases from
+prereleases, and exclude drafts from published results. Local tags or a cached
+checkout alone cannot verify what GitHub has published. A public release page
+or public GitHub API read through available HTTP/browser tools or read-only
+shell HTTP requests is sufficient
+when managed access is unavailable; do not require sign-in or source setup
+solely to answer a public release question.
 
 Briefly explain that the user selects a source and, when required, signs in in
 their browser. Sign-in runs independently of the agent; only the outcome and

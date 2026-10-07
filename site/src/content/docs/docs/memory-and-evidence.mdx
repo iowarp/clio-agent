@@ -50,6 +50,16 @@ The Gantt tab lays the same run out against time. It shows the main agent, its c
 
 The Context tab shows the context the agent is working with, for the agent you select.
 
+### Inspect additions and recovered context
+
+When CLIO adds instructions or recovers earlier conversation context, a receipt appears in the transcript. Choose **Open exact details** to inspect the recorded content in a separate window. You can also expand it in place with **Show what it got**.
+
+Recovery uses the complete saved context records when available, including recorded tool inputs, results and loaded instructions. If only a transcript is available, the receipt identifies that reconstruction and its missing continuation state. A normal restart with retained context does not need a recovery receipt.
+
+![The exact-details window shows the ordered context records restored after a controlled context-loss check](/media/source-context-recovery.png)
+
+The receipt distinguishes a restored context from a reconstructed transcript. [Enlarge screenshot](/media/source-context-recovery.png).
+
 ## Changed files and diffs
 
 An agent proposes a file change as a diff. Nothing is written until you approve it. Review the diff, then choose **Apply change** or **Reject change**. A confirmation asks "Apply this file change?" before the write happens, and you can choose **Keep reviewing** instead.

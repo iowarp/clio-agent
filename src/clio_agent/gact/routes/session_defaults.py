@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from clio_agent.gact.routes.runtime_settings import register_runtime_settings_routes
 from clio_agent.gact.session_defaults import (
     SessionDefaults,
     SessionDefaultsResponse,
@@ -15,12 +16,14 @@ from clio_agent.gact.spotter_availability import register_spotter_routes
 def register_session_defaults_routes(app: FastAPI) -> None:
     """Register read and partial-update routes for session defaults.
 
-    Also registers ``GET /v1/spotter/availability``: the approval-mode pickers
+    Also registers global runtime preferences and ``GET /v1/spotter/availability``.
+    The approval-mode pickers
     that choose a session's (or the default) confirmation policy read it to
     disable ``spotter-ai`` with its typed reason before the click.
     """
 
     register_spotter_routes(app)
+    register_runtime_settings_routes(app)
 
     def _respond(value: SessionDefaults) -> SessionDefaultsResponse:
         # Typed load/migration facts (a quarantined file, a cleared legacy

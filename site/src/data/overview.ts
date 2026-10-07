@@ -92,7 +92,7 @@ export const features: readonly Feature[] = [
 export const modelGroups = [
 	{
 		title: 'On your machine',
-		detail: 'Nothing leaves your computer.',
+		detail: 'Your model prompts stay local.',
 		items: ['LM Studio', 'Ollama', 'llama.cpp', 'vLLM'],
 	},
 	{
@@ -116,7 +116,7 @@ export const modelGroups = [
 export const faq: readonly { q: string; a: string }[] = [
 	{
 		q: 'Does CLIO need an account?',
-		a: 'No. CLIO runs on your computer and has no account system. You only sign in to the model provider you choose, and local models need no sign-in at all.',
+		a: 'CLIO itself needs no account. Connect a model provider, or use a local model without signing in. Accounts for private data sources, such as GitHub and Google Drive, are optional and managed separately in Settings.',
 	},
 	{
 		q: 'Can I use it with local models only?',

@@ -1,0 +1,37 @@
+WEBVTT
+
+00:00:00.000 --> 00:00:05.967
+Ask for a two-page report from the source notes · typing 3×
+
+00:00:05.967 --> 00:00:08.500
+Send the request to CLIO
+
+00:00:08.500 --> 00:00:13.033
+CLIO inspects the workspace · idle waits omitted
+
+00:00:13.033 --> 00:00:18.033
+Allow the source-file reads
+
+00:00:18.033 --> 00:00:22.367
+CLIO writes and runs the report builder · 3×
+
+00:00:22.367 --> 00:00:25.367
+The report is created; CLIO prepares its preview · 2×
+
+00:00:25.367 --> 00:00:28.867
+CLIO corrects the requested review page range · 2×
+
+00:00:28.867 --> 00:00:34.367
+CLIO reviews the rendered pages and registers the file · 2×
+
+00:00:34.367 --> 00:00:40.733
+The answer and generated files arrive · 3×
+
+00:00:40.733 --> 00:00:47.733
+Open the Word file that CLIO just generated
+
+00:00:47.733 --> 00:00:51.767
+Expand its PDF preview · idle pauses omitted
+
+00:00:51.767 --> 00:01:06.233
+Briefly review both pages; download the editable Word file

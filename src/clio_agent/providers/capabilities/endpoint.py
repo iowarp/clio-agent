@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
@@ -33,6 +34,18 @@ from clio_agent.providers.capabilities.records import (
 from clio_agent.providers.custom_transports import CLIO_CUSTOM_LITELLM_PROVIDERS
 
 logger = logging.getLogger(__name__)
+
+# The shipped CLIO engines' tool contracts, rather than model-name assumptions.
+TOOL_CALLING_BY_DIALECT: dict[str, tuple[Literal["native", "text"], str]] = {
+    "codex": (
+        "native",
+        "CLIO Codex Direct engine sends native function tools and returns typed tool calls",
+    ),
+    "claude_code": (
+        "text",
+        "CLIO Claude Code engine renders CLIO tools into the prompt and parses typed tool calls",
+    ),
+}
 
 
 def _now_iso() -> str:
@@ -292,6 +305,7 @@ def build_endpoint_capabilities(
     accepted = resolve_accepted_params(dialect, model_id, custom_llm_provider=custom_llm_provider)
     thinking = THINKING_CONTROLS_BY_DIALECT.get(dialect, frozenset())
     structured = STRUCTURED_OUTPUT_MODES_BY_DIALECT.get(dialect, frozenset())
+    tool_calling = TOOL_CALLING_BY_DIALECT.get(dialect)
     return EndpointCapabilities(
         provider_id=provider_id,
         api_base=api_base,
@@ -301,6 +315,14 @@ def build_endpoint_capabilities(
         thinking_controls=Fact(value=thinking, source="dialect", observed_at=observed_at)
         if thinking
         else unknown("dialect has no known thinking control"),
+        tool_calling_mode=Fact(
+            value=tool_calling[0],
+            source="dialect",
+            observed_at=observed_at,
+            detail=tool_calling[1],
+        )
+        if tool_calling
+        else unknown("no CLIO-owned tool transport"),
         structured_output_modes=Fact(value=structured, source="dialect", observed_at=observed_at)
         if structured
         else unknown("dialect has no known structured-output mode"),

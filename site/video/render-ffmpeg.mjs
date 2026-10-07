@@ -19,7 +19,7 @@ for (const [index, shot] of edit.shots.entries()) {
   const speed = shot.speed ?? 1;
   if (!Number.isFinite(speed) || speed <= 0) throw new Error(`Invalid speed in shot ${index}`);
   const crop = shot.crop ?? {x:0,y:0,width:1280,height:870};
-  const filters = [`setpts=(PTS-STARTPTS)/${speed}`, `fps=30`, `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}`, 'scale=1280:870:force_original_aspect_ratio=decrease', 'pad=1280:870:(ow-iw)/2:(oh-ih)/2:color=0xf4f9f9', 'setsar=1'];
+  const filters = [`setpts=(PTS-STARTPTS)/${speed}`, `fps=30`, `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}`, 'scale=1280:870:force_original_aspect_ratio=decrease:in_range=auto:out_range=tv', 'pad=1280:870:(ow-iw)/2:(oh-ih)/2:color=0xf4f9f9', 'setsar=1'];
   if (shot.zoom) filters.push(`zoompan=z='1+${shot.zoom-1}*min(on/30,1)':x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':d=1:s=1280x870:fps=30`);
   if (shot.caption) {
     const captionPath = resolve(directory, `${index}.txt`);

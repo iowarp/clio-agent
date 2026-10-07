@@ -261,7 +261,8 @@ def detect_used_edges(
     from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
 
     root = _workspace_root(app, workspace_id)
-    if root is None:
+    # Registration output paths are not inputs; detect_declared_used_edges owns used refs.
+    if root is None or tool_name.rsplit(".", 1)[-1] == "create_artifact":
         return EdgeScan([], [])
     registry = get_registry(app)
     edges: list[ProvEdge] = []

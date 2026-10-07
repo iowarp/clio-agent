@@ -14,10 +14,9 @@ thread (:func:`_registry`) — a route handler runs on the event loop, where a
 first access would raise :class:`RegistryFoldOnLoopError`. Byte-serving,
 re-hashing and the pin mint are likewise offloaded (blocking file I/O).
 
-Artifact custody is provider-scoped. The ``/bytes`` route first asks the selected
-store for provider-owned bytes, then applies the existing workspace-reference
-fallback. Every served hashed object is verified; a hash mismatch is a typed
-``integrity_violation``.
+Artifact custody is provider-scoped. ``/bytes`` asks the selected store for owned bytes
+before the workspace-reference fallback. Hashed objects are verified; mismatches
+produce a typed ``integrity_violation``.
 """
 
 from __future__ import annotations
@@ -49,6 +48,7 @@ from clio_agent.gact.artifacts.wire import fetch_url_for, mime_for
 from clio_agent.gact.artifacts.wire import version_uri as _version_uri
 from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.platform_paths import win_extended_path
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -772,10 +772,10 @@ def _open_verify_stream(
     buffers whole in RAM. A recorded-hash MISMATCH is a 409 ``integrity_violation``;
     a stat-pinned version (no recorded sha) skips the check (identity was never
     hashed). Residual TOCTOU: a same-fd truncation between hash and stream is a
-    documented limit of the app-private store.
+    documented app-private-store limit. Extended Windows paths preserve deep CAS downloads.
     """
     try:
-        handle = open(source, "rb")
+        handle = open(win_extended_path(source), "rb")
     except OSError as exc:
         raise _artifact_error(
             status_code=404,

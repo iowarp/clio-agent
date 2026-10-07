@@ -5,12 +5,7 @@
  */
 import { ArrowRight, Container, Globe, Monitor } from 'lucide-react';
 import HeroDownload from './HeroDownload';
-import Capture from './Capture';
 import { release } from '@/lib/release';
-import { captureImage } from '@/lib/captures';
-import chart from '@/assets/captures/earthscope-chart.png';
-
-const heroCapture = await captureImage(chart);
 
 const surfaces = [
 	{ icon: Monitor, label: 'Desktop app', href: '#download' },
@@ -26,10 +21,12 @@ const surfaces = [
 			<span class="sep" aria-hidden="true">/</span>
 			<a href={release.notesUrl}>{release.tag}</a>
 		</p>
-		<h1 id="_top">From scientific question to <em>defensible&nbsp;result.</em></h1>
+		<h1 id="_top">Analyze your data.<br /><em>Keep the evidence.</em></h1>
+	</div>
+	<div class="intro">
 		<p class="lede">
-			CLIO is an AI workspace for scientific data. It finds data, runs the analysis with domain experts, and keeps
-			the evidence for every result, on your computer and with the models you choose.
+			CLIO is an open-source AI workspace for scientific data. Ask a question, explore the results,
+			and inspect the files and steps behind the answer. Run it on your computer with the models you choose.
 		</p>
 		<div class="actions">
 			<HeroDownload client:load />
@@ -48,35 +45,25 @@ const surfaces = [
 			}
 		</ul>
 	</div>
-	<div class="capture">
-		<Capture
-			client:visible
-			priority
-			image={heroCapture}
-			sizes="(min-width: 72rem) 44rem, 100vw"
-			alt="An interactive GNSS time-series chart in a CLIO session, labeled as 1,000 evenly sampled rows from 857,957"
-			caption="A CLIO session charting EarthScope GNSS displacement: 857,957 rows drawn from an even sample of 1,000, labeled as such."
-		/>
-	</div>
 </section>
 
 <style>
 	.ov-hero {
 		display: grid;
-		gap: clamp(2rem, 5vw, 3.5rem);
+		gap: 1.75rem 3rem;
 		align-items: center;
-		padding-block: clamp(2rem, 6vw, 5rem) 1rem;
+		padding-block: clamp(2rem, 5vw, 4rem) 2rem;
 	}
-	@media (min-width: 72rem) {
+	@media (min-width: 64rem) {
 		.ov-hero {
-			grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+			grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
 		}
 	}
 	.eyebrow {
 		display: flex;
 		gap: 0.6rem;
 		align-items: baseline;
-		margin: 0 0 1.75rem;
+		margin: 0 0 1rem;
 		font-family: var(--font-code);
 		font-size: var(--sl-text-sm);
 		color: var(--muted);
@@ -90,11 +77,11 @@ const surfaces = [
 	}
 	h1 {
 		margin: 0;
-		max-width: 16ch;
+		max-width: 22ch;
 		font-family: var(--font-display);
 		font-weight: 400;
-		font-size: clamp(2.75rem, 6vw, 4.5rem);
-		line-height: 1.02;
+		font-size: clamp(2.6rem, 5vw, 4.1rem);
+		line-height: 1.08;
 		letter-spacing: -0.02em;
 		color: var(--ink);
 	}
@@ -104,17 +91,17 @@ const surfaces = [
 	}
 	.lede {
 		max-width: 38rem;
-		margin: 1.75rem 0 0;
-		font-size: clamp(1.1rem, 1.6vw, 1.3rem);
+		margin: 0;
+		font-size: 1.05rem;
 		line-height: 1.55;
 		color: var(--ink-soft);
 	}
 	.actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 1rem 2rem;
+		gap: 0.75rem 1.25rem;
 		align-items: flex-start;
-		margin-top: 2.25rem;
+		margin-top: 1.25rem;
 	}
 	.secondary {
 		display: inline-flex;
@@ -135,9 +122,9 @@ const surfaces = [
 	.surfaces {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.5rem 1.75rem;
-		margin: 1.5rem 0 0;
-		padding: 1.25rem 0 0;
+		gap: 0.5rem 1.25rem;
+		margin: 1rem 0 0;
+		padding: 1rem 0 0;
 		list-style: none;
 		border-top: 1px solid var(--line);
 	}

@@ -51,7 +51,7 @@ def build_delete_a2ui_surface_tool() -> Any:
         delete_a2ui_surface,
         name="delete_a2ui_surface",
         presentation="text",
-        title="Delete UI element",
+        title="Delete widget",
         domain="surfaces",
         desc=delete_a2ui_surface.__doc__,
         args={

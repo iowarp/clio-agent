@@ -25,6 +25,7 @@ PACKAGES = {
     "openpyxl": "openpyxl",
     "odfpy": "odf",
     "pillow": "PIL",
+    "numpy": "numpy",
     "lxml": "lxml.etree",
     "defusedxml": "defusedxml",
     "nodejs-wheel-binaries": "nodejs_wheel",
@@ -42,7 +43,10 @@ def inventory() -> dict[str, Any]:
         }
     import nodejs_wheel
 
-    node_root = Path(nodejs_wheel.__file__).resolve().parent
+    node_module_file = nodejs_wheel.__file__
+    if not node_module_file:
+        raise DocumentError("Managed Node.js package has no module file")
+    node_root = Path(node_module_file).resolve().parent
     node_candidates = [
         node_root / "bin" / "node",
         node_root / "node.exe",

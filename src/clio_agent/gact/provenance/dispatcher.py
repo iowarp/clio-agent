@@ -7,7 +7,7 @@ import queue
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Iterator, cast
 
 from clio_agent.gact.provenance.protocol import (
     ExecutionProvenanceReader,
@@ -227,6 +227,20 @@ class ProvenanceDispatcher:
         """Fan out without blocking on any provider."""
         for worker in self._workers.values():
             worker.submit(event)
+
+    def session_events(self, session_id: str) -> Iterator[dict[str, Any]]:
+        """Read the first complete local journal, draining its dispatcher queue.
+
+        Recovery needs full records in append order, rather than a downstream
+        analytics projection. Providers without a journal reader are not used.
+        Never combine fan-out copies, which would duplicate or reorder mutations.
+        """
+        for worker in self._workers.values():
+            reader = getattr(worker.provider, "session_events", None)
+            if callable(reader):
+                worker.flush()
+                yield from cast(Callable[[str], Iterator[dict[str, Any]]], reader)(session_id)
+                return
 
     def flush(self) -> None:
         """Wait until every accepted event is processed and, PER PROVIDER, as

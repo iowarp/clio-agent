@@ -63,6 +63,7 @@ from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.resource_tools import build_resource_tools
+from clio_agent.gact.storage.connect_tool import build_connected_data_connect_tool
 from clio_agent.gact.storage.setup_tool import (
     build_connected_data_open_tool,
     build_connected_data_status_tool,
@@ -147,6 +148,10 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             tools.append(build_weather_forecast_tool())
         tools.append(build_refresh_provider_models_tool())
         tools.append(build_connected_data_status_tool())
+        tools.append(build_connected_data_connect_tool())
+        from clio_agent.gact.storage.github_tool import build_github_cli_tool
+
+        tools.append(build_github_cli_tool())
         tools.append(build_connected_data_open_tool())
         tools.append(build_connected_data_write_tool())
         tools.extend(build_memory_tools(agent_def))

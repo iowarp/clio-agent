@@ -1,6 +1,6 @@
 ---
 name: planning
-description: Enter Plan Mode and produce an approved implementation plan before touching the system — ground in evidence, consult the user, draft incrementally to the plan file, then hand it back for approval.
+description: Produce an approval plan when the user asks to plan before execution or an unresolved implementation decision needs approval. Loading this skill enters Plan Mode and stops ordinary writes. Routine authorized creation of reports, slides or other deliverables does not require this separate planning workflow.
 effect: {kind: "enter_mode", mode: "plan"}
 ---
 

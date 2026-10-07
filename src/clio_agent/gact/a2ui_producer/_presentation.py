@@ -108,10 +108,10 @@ def _surface_kind(components: Any, row: Mapping[str, Any]) -> str:
 
 def _action_label(row: Mapping[str, Any]) -> str:
     if row.get("deleted"):
-        return "Delete UI element"
+        return "Delete widget"
     if row.get("created") is False:
-        return "Update UI element"
-    return "Generate UI element"
+        return "Update widget"
+    return "Generate widget"
 
 
 def surface_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
