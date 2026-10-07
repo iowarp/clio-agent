@@ -373,3 +373,37 @@ def test_launcher_keeps_vllm_ipc_sockets_within_unix_path_limit(
     base = result.stdout.strip().splitlines()[-1]
     assert len(f"{base}/{'0' * 36}") < 107
     assert Path(base).stat().st_mode & 0o077 == 0
+
+
+def test_plain_launcher_survives_vllm_spawning_its_engine_core(tmp_path: Path) -> None:
+    """A spawned child re-imports the launcher; it must not start a second server (live on Delta)."""
+    import subprocess
+    import sys
+
+    from clio_agent.gact.infrastructure.native_vllm import launcher
+
+    stubs = tmp_path / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "engine_core.py").write_text("def run():\n    pass\n")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import multiprocessing\n"
+        "import engine_core\n"
+        "child = multiprocessing.get_context('spawn').Process(target=engine_core.run)\n"
+        "child.start()\n"
+        "child.join()\n"
+        "print('served', child.exitcode)\n"
+    )
+    script = tmp_path / "launch.py"
+    script.write_text(launcher(False))
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["served", "0"], result.stderr

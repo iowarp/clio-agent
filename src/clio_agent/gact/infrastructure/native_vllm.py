@@ -60,12 +60,19 @@ if len(_base) + 38 > 107:
 """
 
 
+# vLLM may spawn its engine core; a spawned child re-imports this file as __mp_main__ and must
+# not start a second API server.
+RUN_GUARD = 'if __name__ == "__main__":\n'
+
+
 def launcher(attention: bool) -> str:
     """Activate the pinned probe before importing or constructing vLLM's engine."""
     if not attention:
         return (
             IPC_PRELUDE
-            + 'import runpy\nrunpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
+            + "import runpy\n"
+            + RUN_GUARD
+            + '    runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
         )
     return (
         IPC_PRELUDE
@@ -93,9 +100,11 @@ sys.argv.extend(["--kv-transfer-config", json.dumps({
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {"workflow_id": workflow, "out_dir": str(root / "evidence")},
 })])
-# The separately managed collector is the sole persistence owner.
-with Flowcept("vllm", workflow_id=workflow, workflow_name="CLIO attention", start_persistence=False):
-    runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
+"""
+        + RUN_GUARD
+        + """    # The separately managed collector is the sole persistence owner.
+    with Flowcept("vllm", workflow_id=workflow, workflow_name="CLIO attention", start_persistence=False):
+        runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
 """
     )
 
