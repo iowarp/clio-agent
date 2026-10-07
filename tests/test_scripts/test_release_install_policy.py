@@ -587,7 +587,30 @@ def test_a_beta_tag_never_moves_the_latest_container_image() -> None:
     """ghcr `latest` follows stable tags only."""
 
     docker = _text(".github/workflows/docker.yml")
+    workflow = yaml.safe_load(docker)
+    metadata = next(step for step in workflow["jobs"]["build"]["steps"] if step.get("id") == "meta")
+    # type=match adds latest independently of the explicit type=raw rule.
+    assert metadata["with"]["flavor"] == "latest=false"
     assert (
         "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') "
         "&& !contains(github.ref_name, '-') }}"
     ) in docker
+
+
+def test_container_channel_recovery_cannot_rebuild_versioned_images() -> None:
+    """Explicit recovery writes the mutable channel without running the builder."""
+
+    workflow = yaml.safe_load(_text(".github/workflows/docker.yml"))
+    jobs = workflow["jobs"]
+    assert jobs["build"]["if"] == "inputs.restore_stable_latest == ''"
+    recovery = jobs["restore-stable-latest"]
+    assert recovery["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.restore_stable_latest != ''"
+    )
+    assert recovery["permissions"] == {"contents": "read", "packages": "write"}
+    assert not any("build-push-action" in step.get("uses", "") for step in recovery["steps"])
+    for step in recovery["steps"]:
+        if step.get("uses", "").startswith("docker/metadata-action@"):
+            assert step["with"]["flavor"] == "latest=false"
+    runner = recovery["steps"][-1]
+    assert '--version "$STABLE_VERSION" --expected-latest "$EXPECTED_LATEST"' in runner["run"]
