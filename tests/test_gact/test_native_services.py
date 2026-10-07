@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -407,3 +408,20 @@ def test_plain_launcher_survives_vllm_spawning_its_engine_core(tmp_path: Path) -
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["served", "0"], result.stderr
+
+
+def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> None:
+    """vLLM's flashinfer JIT runs ``ninja`` from the service venv (live: FileNotFoundError)."""
+    env = node_service.worker_environment(
+        tmp_path,
+        {"environment": {"VLLM_CPU_KVCACHE_SPACE": "4"}},
+        {"PATH": "/usr/bin:/bin", "VIRTUAL_ENV": "/clio/.venv", "PYTHONPATH": "/clio/src"},
+    )
+    assert env["PATH"].split(os.pathsep) == [
+        str(tmp_path / "environment/.venv/bin"),
+        "/usr/bin",
+        "/bin",
+    ]
+    assert "VIRTUAL_ENV" not in env and "PYTHONPATH" not in env
+    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"

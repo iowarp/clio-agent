@@ -314,6 +314,29 @@ def launch(root: Path, request: dict[str, Any]) -> None:
     write_json(root / "receipt.json", receipt)
 
 
+def worker_environment(
+    root: Path, manifest: dict[str, Any], base: dict[str, str]
+) -> dict[str, str]:
+    """Isolate the service from CLIO's interpreter and expose its own environment's tools.
+
+    Runtimes JIT-compile with console scripts installed beside their interpreter (vLLM's
+    flashinfer runs ``ninja``), so the service environment's ``bin`` leads ``PATH``.
+    """
+    env = {**base, **manifest.get("environment", {})}
+    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(name, None)
+    env.update(
+        UV_CACHE_DIR=str(root / "cache/uv"),
+        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
+        TMPDIR=str(root / "tmp"),
+        HF_HOME=str(root / "cache/huggingface"),
+        PATH=os.pathsep.join(
+            item for item in (str(root / "environment/.venv/bin"), env.get("PATH", "")) if item
+        ),
+    )
+    return env
+
+
 def worker(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     # Wait for the parent to commit the receipt under the same lifecycle lock.
@@ -331,15 +354,7 @@ def worker(root: Path, action: str, generation: str) -> None:
     # ignores SIGTERM, the controller can still safely kill the exact group.
     signal.signal(signal.SIGTERM, handle_stop)
     manifest = json.loads((root / "manifest.json").read_text())
-    env = {**os.environ, **manifest.get("environment", {})}
-    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
-        env.pop(name, None)
-    env.update(
-        UV_CACHE_DIR=str(root / "cache/uv"),
-        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
-        TMPDIR=str(root / "tmp"),
-        HF_HOME=str(root / "cache/huggingface"),
-    )
+    env = worker_environment(root, manifest, dict(os.environ))
     if action == "install":
         uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
         command = [
