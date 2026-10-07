@@ -451,7 +451,9 @@ def test_builtin_main_discovery_respects_workspace_precedence_and_expert_ownersh
     assert declared == ["shared-procedure", "next-guide"]
     runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
     assert "LOCAL BODY" in build_load_skill_tool(agent, runtime).func(skill_id="shared-procedure")
-    assert runtime.resolved["shared-procedure"].skill.scope == "workspace"
+    resolved_skill = runtime.resolved["shared-procedure"].skill
+    assert resolved_skill is not None
+    assert resolved_skill.scope == "workspace"
 
     child = agent.model_copy(update={"id": "child", "parent_id": "main"})
     custom_root = AgentDef(id="custom", title="Custom", metadata={"definition_kind": "blueprint"})

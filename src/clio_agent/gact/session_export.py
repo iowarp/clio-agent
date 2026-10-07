@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Iterator
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +24,7 @@ def _events(app: FastAPI, sid: str) -> tuple[list[dict[str, Any]], str]:
     flush = getattr(backend, "flush", None)
     if callable(flush):
         flush()
-    roots = list(getattr(backend, "replay_paths", ()))
+    roots: list[Path | str] = list(getattr(backend, "replay_paths", ()))
     if isinstance(backend, FileSemanticTraceBackend):
         roots.append(backend.path)
     events: dict[str, dict[str, Any]] = {}
@@ -46,7 +47,9 @@ def _events(app: FastAPI, sid: str) -> tuple[list[dict[str, Any]], str]:
     if events:
         return list(events.values()), "durable_trace"
     live = getattr(getattr(app.state, "arc", None), "_live", None)
-    iterator = getattr(live, "iter_session_event_segments", None)
+    iterator: Callable[[str], Iterator[Any]] | None = getattr(
+        live, "iter_session_event_segments", None
+    )
     if callable(iterator):
         for segment in iterator(sid):
             event = semantic_event_from_events_content(

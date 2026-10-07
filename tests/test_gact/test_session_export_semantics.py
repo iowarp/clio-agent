@@ -398,7 +398,9 @@ def test_visual_bootstrap_preserves_text_without_executable_interpolation(
             assert '<link rel="stylesheet"' not in html
             assert 'id="evidence"' in html
             assert "evidence.html" not in archive.namelist()
-            bootstrap = re.search(r"<script>(window.CLIO_EXPORT_DATA=.*?;)</script>", html).group(1)
+            bootstrap_match = re.search(r"<script>(window.CLIO_EXPORT_DATA=.*?;)</script>", html)
+            assert bootstrap_match is not None
+            bootstrap = bootstrap_match.group(1)
             encoded = json.loads(
                 bootstrap.removeprefix("window.CLIO_EXPORT_DATA=").removesuffix(";")
             )
