@@ -6,6 +6,21 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.5] — 2026-10-07
+
+### Changed
+
+- Release the integrated frontend from gact-tui main as v0.11.3-beta.7 before
+  recording its exact tag in CLIO. Marketplace v0.6.11 and schemas 0.6.0b4 remain
+  verified, published dependencies from their main branches.
+- Require dependency publication, exact release pins, source/main qualification
+  and preserved cleanup of completed owned work before CLIO publication. Published
+  tags and packages stay immutable; corrections use a new version.
+
+This forward correction supersedes the incomplete beta.4 release. It includes
+that release's conversation, document, Settings and display improvements without
+adding another backend contract change.
+
 ## [0.9.5-beta.4] — 2026-10-07
 
 ### Added
