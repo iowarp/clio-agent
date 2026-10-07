@@ -71,6 +71,11 @@ clio-agent serve
 Use `uv tool upgrade clio-agent` for later upgrades. The full
 one-line installer remains the supported path when you also want the CLIO-branded TUI.
 
+To opt into CLIO v0.9.5-beta.4, replace the package pin above with
+`clio-agent==0.9.5b4`. For the complete beta frontend/backend install, use
+`CLIO_VERSION=v0.9.5-beta.4` with the installer. Beta selection is explicit;
+the examples for the default channel continue to name the current stable release.
+
 ## Source-build mode (track unreleased work)
 
 Set `CLIO_REF` and optionally `GACT_REF` to a branch/tag to clone-and-build

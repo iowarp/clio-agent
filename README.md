@@ -62,6 +62,10 @@ persistent backend-only install. This keeps unrelated dependencies on stable rel
 Reserve `uvx` / `uv tool run` for disposable checks. See
 [install/README.md](install/README.md) for the full contract.
 
+To opt into the current beta, use the same persistent install with an explicit
+`clio-agent==0.9.5b4` pin and the exact DSPy/FastMCP roots documented in
+[the beta installation guide](docs/INSTALL.md#beta-releases).
+
 ### More ways to get CLIO
 
 The install script above is one of several download options:

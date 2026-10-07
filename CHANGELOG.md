@@ -6,6 +6,43 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.4] — 2026-10-07
+
+### Added
+
+- Download a complete conversation as self-contained HTML. Effects exports include
+  the selected session and its children; Full exports add the workspace snapshot.
+  Recorded tool inputs/results, loaded skills, permissions and file checksums remain
+  available in the portable review.
+- Shared source/account access supports client-side sign-in and recovery of recorded
+  context. GitHub release questions use published release metadata through managed gh.
+- Runtime preferences expose timeouts, retries, compaction and saved reasoning/history
+  with their effective scope. New session defaults use the shared provider/model picker.
+- Recorded provider/model changes separate transcript segments. Compact activity and
+  message footers show available status, token usage, cost and tool counts.
+- Anchored context/work showcases, stronger composer contrast and saved interface size
+  make the workspace easier to read across small and large displays.
+- Paged directory browsing, consistent file preview controls and reviewed report/slide
+  guides, including real document-generation recordings and larger-screen typography.
+
+### Fixed
+
+- Windows bundle checks probe all five clio-core endpoints below the OS ephemeral
+  range, preventing adjacent-port collisions during the relocated ARC startup check.
+- Editable Word and PowerPoint outputs retain review PDFs as version-bound derivatives
+  instead of duplicate user deliverables. Lineage starts from the editable source.
+- Reasoning-effort saves reuse a verified model binding and end Saving on acknowledgement.
+- Codex and Claude Code model filters report usable CLIO tools for their actual transports.
+- Recorded activity avoids duplicate previews while preserving complete stored parts,
+  causal order and navigation to exact tool details.
+- Settings rows, popup anchoring, file card actions and narrow-window controls use a
+  consistent layout and keep overlays clear of the composer.
+
+Fresh local native Desktop, Microsoft Office launch, physical 4K-monitor and provider
+acceptance remain separate from browser, build and native CI fixture evidence.
+The pinned clio-core 2.2.1 omits the optional search indexer; ARC persistence works,
+and indexed segment search reports that limitation.
+
 ## [0.9.5-beta.3] — 2026-10-05
 
 ### Added

@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.5b3"
+version = "0.9.5b4"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -351,6 +351,3 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp>=2.0.0"]
-
-[tool.uv.sources]
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas", rev = "cab116da42fdfd620c1c251cb83eca9df44dd162" }
