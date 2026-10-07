@@ -32,6 +32,11 @@ Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop fronten
   the GitHub release is published as a pre-release and never marked latest
   (`github_release.py`), so installed desktops do not update to it; ghcr gets the version
   tag but not `latest` (`docker.yml`).
+- Docker metadata-action must have `flavor: latest=false`; `type=match` otherwise
+  generates `latest` independently of the explicit stable-only raw rule. Verify
+  each published beta version digest and that `latest` still equals the existing
+  stable version digest. Recover an incorrect mutable channel only by copying the
+  existing stable manifest; never rebuild or overwrite a published version tag.
 - Desktop builds use `X.Y.Z-N` internally (the MSI bundler takes only a numeric
   pre-release); assets keep the public `X.Y.Z-beta.N` name. Other pre-release forms
   (`-rc1`, ...) are refused by `clio-bundles.yml` before the build.
