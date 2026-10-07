@@ -26,12 +26,13 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from clio_agent.gact.composer_runtime import delete_workspace_resources
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.workspace_directory_listing import collect_workspace_directory
 from clio_agent.gact.routes.workspace_file_listing import (
     collect_workspace_file_entries,
     resolve_managed_input,
@@ -507,7 +508,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/workspaces/{wid}/files")
     async def list_workspace_files(
-        wid: str, include_hidden: bool = True, exclude_service_storage: bool = False
+        wid: str,
+        include_hidden: bool = True,
+        exclude_service_storage: bool = False,
+        directory: str | None = None,
+        offset: int = Query(default=0, ge=0, le=100_000),
     ) -> dict[str, Any]:
         """SPEC §6.9 — list files under a workspace's root_path.
 
@@ -516,6 +521,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         picker filters dirs client-side. Hard-capped at _FILE_PICKER_LIMIT to keep
         large repos from blocking the modal; ``truncated`` is computed from the
         real, capped walk.
+
+        Supplying ``directory`` switches to immediate-child browsing with pages
+        of 200 entries. ``next_offset`` is null when that directory is complete;
+        otherwise request it with ``offset``. Closed descendants and file bodies
+        are not read. Omitting ``directory`` retains the recursive picker contract.
 
         ``include_hidden`` (default ``true``) controls EVERY dotfile/dot-directory
         generically — there is no server-side reason to hide a workspace's own
@@ -546,6 +556,17 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         root = Path(ws.root_path or os.getcwd()).expanduser()
         if not root.is_dir():
             return {"entries": [], "truncated": False}
+
+        if directory is not None:
+            return await collect_workspace_directory(
+                app,
+                wid,
+                root,
+                directory=directory,
+                offset=offset,
+                include_hidden=include_hidden,
+                exclude_service_storage=exclude_service_storage,
+            )
 
         walk = await collect_workspace_file_entries(
             app,
