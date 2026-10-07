@@ -98,6 +98,22 @@ a changed source revision needs a new rendition. Converters receive a verified
 snapshot from CAS rather than the current mutable workspace file. Native editing
 and downloads continue to use the editable source.
 
+The editable file is the deliverable. A PDF made only for display or review stays
+an internal derivative: its producer carries `designation=document-rendition`
+and `source_artifact_id`, so the UI omits it from output cards and deliverable
+counts while retaining it for preview, downloads and lineage. Publish a separate
+PDF only when the user requested that output. An independently registered PDF
+without this binding remains a separate artifact; filenames do not establish a
+preview relationship.
+
+Each new conversion records source version -> Render PDF preview -> PDF version.
+An enclosing `create_artifact` registration cannot claim that conversion's output
+as its own. Registration output paths are not consumed inputs: only explicit
+`used` references describe its sources. Registry reconstruction also drops older
+generic output-path guesses with a `registration_output_refs_not_inputs` note,
+retaining explicit source references and the original event log. Preview copying
+and original-byte downloads support extended Windows paths under deep workspaces.
+
 Office rendering and recalculation use **LibreOffice on the execution host**.
 Clio discovers its standard Windows/macOS/PATH location or the absolute executable
 specified by `CLIO_DOCUMENT_SOFFICE`. When no renderer is installed, setup downloads

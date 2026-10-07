@@ -54,14 +54,10 @@ from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.local_server_store import with_saved_address
 from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.providers import response_settings
-from clio_agent.gact.providers.auth import (
-    _is_placeholder_api_key,
-    _resolve_argonne_runtime_api_key,
-)
+from clio_agent.gact.providers.bind_configuration import prepare_bind_configuration
 from clio_agent.gact.providers.config import (
     _default_profile_spec,
     _effective_lm_config,
-    requested_thinking_level,
     thinking_level_record,
 )
 from clio_agent.gact.providers.lmstudio import (
@@ -75,7 +71,6 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
-from clio_agent.gact.routes.codex_readiness import apply_codex_readiness_gate, await_startup_check
 from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
@@ -546,121 +541,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 }
 
         try:
-            from clio_agent.config import (
-                LMProviderConfig,
-                create_lm,
+            from clio_agent.config import create_lm  # noqa: PLC0415
+
+            cfg, thinking_only = await prepare_bind_configuration(
+                app, req, _codex_readiness, _claude_code_readiness
             )
-
-            # Argonne / ALCF: if the TUI didn't ship an api_key, mint
-            # one from the user's stored Globus session. ``LMProviderConfig``
-            # will do this lazily inside __post_init__ too, but we resolve
-            # eagerly here so the bound ``cfg`` (and the main agent's LMs built
-            # from it) carry the real token, and so a missing token surfaces the
-            # actionable structured 401 below instead of a later opaque LM error.
-            resolved_api_key = req.api_key
-            if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
-                auth_exc: Exception | None
-                try:
-                    resolved_api_key = _resolve_argonne_runtime_api_key()
-                except Exception as exc:  # noqa: BLE001 - auth failure captured in auth_exc and surfaced
-                    resolved_api_key = ""
-                    auth_exc = exc
-                else:
-                    auth_exc = None
-                if not resolved_api_key:
-                    raise HTTPException(
-                        status_code=401,
-                        detail=ErrorEnvelope(
-                            error=ErrorInfo(
-                                error="argonne_auth_required",
-                                message=(
-                                    "ALCF provider selected but no Globus token "
-                                    "is available. Run "
-                                    "`python -m clio_agent.providers.argonne_auth "
-                                    "authenticate` once, or pass api_key in this "
-                                    "request."
-                                ),
-                                recoverable=True,
-                            )
-                        ).model_dump(exclude_none=True),
-                    ) from auth_exc
-
-            is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
-            if is_codex or is_cc:
-                await await_startup_check(app)
-            cfg = LMProviderConfig(
-                provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
-                provider_id=req.provider_id,
-                api_base=req.api_base,
-                model=req.model,
-                api_key=resolved_api_key or "x",
-                provider_options=req.provider_options,
-                **response_settings.config_kwargs(req),
-                thinking_budget=req.thinking_budget,
-                thinking_level=requested_thinking_level(app, req),  # #895: see its provenance rule
-                # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
-                codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
-                claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
-            )
-            if is_cc:
-                status, message, verified, default_model = _claude_code_readiness()
-                if not verified:
-                    from clio_agent.providers import model_discovery  # noqa: PLC0415
-                    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-
-                    provider = get_provider(req.provider_id or req.provider)
-                    if provider is not None:
-                        await model_discovery.refresh_all(presets=[provider])
-                    status, message, verified, default_model = _claude_code_readiness()
-                if not verified:
-                    raise HTTPException(
-                        status_code=401
-                        if status in {"auth_check_required", "auth_required"}
-                        else 503,
-                        detail=ErrorEnvelope(
-                            error=ErrorInfo(
-                                error=(
-                                    "claude_code_install_required"
-                                    if status in {"install_required", "support_restoring"}
-                                    else "claude_code_auth_required"
-                                ),
-                                message=message,
-                                recoverable=True,
-                            )
-                        ).model_dump(exclude_none=True),
-                    )
-                if not req.model and default_model:
-                    cfg.model = default_model
-            if is_codex:
-                await apply_codex_readiness_gate(cfg, req, _codex_readiness)
-            # Per-provider handshake folds per-model config into cfg (context-aware
-            # max_tokens, capability flags); a handshake failure keeps the static config.
-            handshake_report = None
-            try:
-                from clio_agent.providers.handshake import (  # noqa: PLC0415
-                    HandshakeContext,
-                    run_handshake,
-                )
-
-                handshake_report = await run_handshake(
-                    HandshakeContext(
-                        provider_id=req.provider_id or req.provider,
-                        provider_kind=req.provider,
-                        api_base=req.api_base,
-                        api_key=resolved_api_key or "",
-                        target_model=req.model,
-                        auth_mode="active",
-                    ),
-                    force=True,
-                )
-                cfg.apply_handshake(handshake_report, user_set_max_tokens=(req.max_tokens or 0) > 0)
-            except Exception:  # noqa: BLE001 - handshake failure recorded as a None report
-                handshake_report = None
-            app.state.lm_handshake_report = handshake_report
-            await asyncio.get_running_loop().run_in_executor(
-                None,
-                _apply_lm_studio_load_config,
-            )
+            if not thinking_only:
+                await asyncio.get_running_loop().run_in_executor(None, _apply_lm_studio_load_config)
             # Build the new LMs + adapter for the singleton main agent. The
             # process-global dspy default is deliberately NOT rewritten here
             # (design §5/§6): experts select their LM per-call via
@@ -804,7 +691,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # PREVIOUS provider's capability evidence -- a sticky cache deciding what
         # bytes reach a model it never described. The next GET /v1/provider-catalog
         # repopulates it; until then the planner correctly finds no evidence.
-        app.state.provider_catalog = None
+        if not thinking_only:
+            app.state.provider_catalog = None
         # Publish so live SSE subscribers see the swap (TUI updates
         # its model chip without polling).
         app.state.bus.publish(

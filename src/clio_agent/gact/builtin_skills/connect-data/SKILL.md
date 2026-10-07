@@ -38,6 +38,18 @@ the machine's unrelated shell login. It resolves the current CLIO account for
 every read and enforces repository/folder scope. Source writes retain the
 existing working-copy review and publication boundary.
 
+For published releases, the managed CLI accepts repository API reads at
+`repos/OWNER/REPO/releases/latest`, `releases`, `releases/tags/TAG`, and
+`releases/ID`. These require approval for the entire repository; a folder
+grant does not expose repository-wide metadata. Inspect publication dates,
+notes, URLs and draft/prerelease flags. Separate stable releases from
+prereleases, and exclude drafts from published results. Local tags or a cached
+checkout alone cannot verify what GitHub has published. A public release page
+or public GitHub API read through available HTTP/browser tools or read-only
+shell HTTP requests is sufficient
+when managed access is unavailable; do not require sign-in or source setup
+solely to answer a public release question.
+
 Briefly explain that the user selects a source and, when required, signs in in
 their browser. Sign-in runs independently of the agent; only the outcome and
 approved data references are returned. The UI's info icon explains this privacy

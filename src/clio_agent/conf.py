@@ -67,7 +67,7 @@ import os
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import yaml
 
@@ -379,6 +379,26 @@ class ConfigStore:
     def file_value(self, key: str) -> Any:
         """Return the dotted-path value from the file layer, or ``_UNSET``."""
         return _lookup(self.data, key)
+
+    def source(
+        self, key: str, *, env: str
+    ) -> Literal["workspace", "user", "environment", "default"]:
+        """Name the winning layer, including the legacy workspace configuration.
+
+        Inspect the merged value first: a scalar workspace parent can remove a
+        nested user key, in which case resolution proceeds to the environment.
+        """
+        if self.file_value(key) is not _UNSET:
+            user, workspace = self._layer_paths()
+            legacy = workspace.parent.parent.parent / ".clio" / "config.yaml"
+            for path in (workspace, legacy):
+                if _lookup(_read_yaml_mapping(path), key) is not _UNSET:
+                    return "workspace"
+            if user is not None and _lookup(_read_yaml_mapping(user), key) is not _UNSET:
+                return "user"
+        if (self._env_map().get(env) or "").strip():
+            return "environment"
+        return "default"
 
     def resolve(
         self,

@@ -167,7 +167,7 @@ def build_create_a2ui_surface_tool() -> Any:
         presentation=surface_presentation,
         domain="surfaces",
         desc=create_a2ui_surface.__doc__,
-        title="Generate UI element",
+        title="Generate widget",
         args={
             "surface_id": {
                 "type": "string",

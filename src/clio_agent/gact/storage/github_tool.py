@@ -54,7 +54,11 @@ def source_arguments(record: SourceRecord, arguments: list[str]) -> list[str]:
         relative = tail.removeprefix("contents").removeprefix("/")
         if folder and relative != folder and not relative.startswith(folder + "/"):
             raise PermissionError("GitHub CLI is restricted to the approved folder")
-    elif folder or not re.fullmatch(r"(?:branches|tags|commits)(?:/[A-Za-z0-9._-]+)?|", tail):
+    elif folder or not re.fullmatch(
+        r"(?:branches|tags|commits)(?:/[A-Za-z0-9._-]+)?"
+        r"|releases(?:/latest|/[0-9]+|/tags/[A-Za-z0-9._-]+)?|",
+        tail,
+    ):
         raise PermissionError("This GitHub API resource is outside the source read scope")
     if tail.startswith("contents") and ref:
         from urllib.parse import quote
@@ -95,8 +99,18 @@ def source_cli(
 def github_cli(source_id: str, arguments: list[str]) -> dict[str, Any]:
     """Read an approved GitHub repository with CLIO's managed gh and signed-in account.
 
+    Prefer this tool for supported GitHub reads; local git tags and logs do not
+    establish published releases. Check connected_data_status for the approved
+    source and CLIO sign-in, rather than the machine's unrelated gh login.
     Use ['repo', 'view'] or ['api', 'repos/OWNER/REPO/contents/PATH'],
-    branches, tags or commits. Repository/folder scope is enforced; no CLI login,
+    branches, tags, commits or releases. For release questions, read
+    ['api', 'repos/OWNER/REPO/releases/latest'] for the latest stable release,
+    ['api', 'repos/OWNER/REPO/releases'] for a bounded list including prereleases,
+    and ['api', 'repos/OWNER/REPO/releases/tags/TAG'] or releases/ID for notes.
+    Inspect draft, prerelease, published_at, body and html_url; report stable
+    and prerelease channels separately and never call a draft published.
+    Release reads require a repository-wide source, not a folder-only grant.
+    Repository/folder scope is enforced; no CLI login,
     tokens, extensions, local files or writes. Sign in with the status tool's
     ordinary A2UI login action when needed. Connect a requested source with
     connected_data_connect first. Edit through connected_data_write, which

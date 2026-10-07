@@ -412,6 +412,13 @@ def message_to_v3(message: Any) -> dict[str, Any]:
     if turn_id:
         row["run_id"] = turn_id
     metadata = _mapping(wire.get("metadata"))
+    # A turn's accepted route is historical evidence. Never substitute the
+    # session's current choice for a message that did not record one.
+    recorded_model = _mapping(metadata.get("effective_model"))
+    provider_id = recorded_model.get("provider_id")
+    model_id = recorded_model.get("model_id")
+    if isinstance(provider_id, str) and provider_id and isinstance(model_id, str) and model_id:
+        row["model"] = {"provider_id": provider_id, "model_id": model_id}
     presentation_metadata = _message_presentation_metadata(metadata)
     if presentation_metadata:
         row["metadata"] = presentation_metadata

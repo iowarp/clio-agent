@@ -42,6 +42,31 @@ def test_missing_uv_reports_execution_host_failure(
         runtime.prepare_document_runtime(tmp_path, cache_root=tmp_path / "cache")
 
 
+def test_import_preflight_checks_the_selected_interpreter_and_missing_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Probe real import behavior, including a deterministic unavailable module."""
+    import subprocess
+    import sys
+
+    seen: list[str] = []
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        seen.extend(command)
+        return subprocess.check_output(command, text=True, cwd=kwargs["cwd"])
+
+    monkeypatch.setattr(runtime, "_run", run)
+    checks = runtime.inspect_python_imports(
+        Path(sys.executable), ["json", "_clio_test_module_not_installed", "json"]
+    )
+    assert seen[0] == sys.executable
+    assert checks["json"] == {"status": "ready"}
+    assert checks["_clio_test_module_not_installed"]["status"] == "missing"
+    assert len(checks) == 2
+    with pytest.raises(ValueError, match="module names"):
+        runtime.inspect_python_imports(Path(sys.executable), ["json;print('unsafe')"])
+
+
 def test_python_failure_never_advertises_ready_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

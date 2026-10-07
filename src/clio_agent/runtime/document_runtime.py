@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -117,6 +118,32 @@ def _probe(python: Path) -> dict[str, Any]:
         if package["version"] != expected.get(name):
             raise DocumentRuntimeError(f"Prepared package {name} differs from its locked version")
     return result
+
+
+def inspect_python_imports(python: Path, modules: list[str]) -> dict[str, dict[str, str]]:
+    """Check requested modules in the managed interpreter without installing anything."""
+    names = list(dict.fromkeys(modules))
+    if len(names) > 32 or any(
+        len(name) > 200 or re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", name) is None
+        for name in names
+    ):
+        raise ValueError("required_imports must contain at most 32 Python module names")
+    source = """import importlib, json, sys
+checks = {}
+for name in json.loads(sys.argv[1]):
+    try:
+        importlib.import_module(name)
+    except (ImportError, OSError) as error:
+        checks[name] = {"status": "missing", "detail": str(error)}
+    else:
+        checks[name] = {"status": "ready"}
+print(json.dumps(checks))
+"""
+    output = _run([str(python), "-c", source, json.dumps(names)], cwd=python.parent)
+    checks = json.loads(output)
+    if not isinstance(checks, dict) or set(checks) != set(names):
+        raise DocumentRuntimeError("Import checks did not return the requested modules")
+    return checks
 
 
 def _python_runtime(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:

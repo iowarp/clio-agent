@@ -245,6 +245,8 @@ def append_turn_resource_links(
             version = entry.get("version")
             if version is None:
                 continue
+            if version.producer.get("designation") == "document-rendition":
+                continue
             transcript.append_part(
                 resource_link_part(
                     str(entry.get("workspace_id") or ""),
@@ -318,6 +320,8 @@ def append_turn_child_resource_links(
         rows: list[tuple[str, str, ArtifactVersion]] = []
         for record in get_registry(app).all_records():
             for version in record.versions:
+                if version.producer.get("designation") == "document-rendition":
+                    continue
                 producer_sid = str((version.producer or {}).get("session_id") or "")
                 if producer_sid not in session_ids or version.artifact_id in already:
                     continue

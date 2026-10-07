@@ -94,10 +94,14 @@ do not establish visual quality. Designate the requested editable `.pptx` with
 `create_artifact(path=output_path, kind="report", pdf_preview=true)`.
 Name the published artifact in the final response; Clio shows its artifact card.
 Do not format local filesystem paths as Markdown links.
-This registers the editable deck and a version-bound PDF artifact for Clio's
+This registers the editable deck with a version-bound PDF preview for Clio's
 viewer. Before claiming a preview is available, confirm a successful entry in
 the publication result's `pdf_previews`; correct a missing or failed binding.
 A saved preview is not visual review.
 A separately registered review PDF does not bind to the editable deck. Keep
 `pdf_preview=true` on the source call, or on its batch item, when a preview is
 requested; the publication workflow creates that relationship.
+Publish and name the requested editable deck. Keep PDFs made only for review or
+display as derivatives; do not separately register or list them as deliverables.
+Publish a separate PDF only when requested. In `used`, cite the actual source
+documents or data, not the review PDF derived from this output.
