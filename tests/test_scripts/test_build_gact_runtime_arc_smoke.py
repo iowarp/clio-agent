@@ -141,10 +141,15 @@ def test_arc_smoke_is_hermetic(script: str) -> None:
 def test_arc_smoke_surfaces_its_failure(script: str) -> None:
     """The smoke's output must reach the build log, not ``Out-Null``."""
     block = _arc_smoke_block(script)
-    invoke = block.index("install/arc_smoke.py")
-    assert "Out-Null" not in block[invoke : invoke + 200], (
-        "the ARC smoke is swallowing its diagnostic output again"
+    # The port probe also names this helper. Require the standalone ARC startup
+    # invocation and inspect its entire line, excluding the preceding setup.
+    invoke = re.search(
+        r"(?m)^[ \t]*Invoke-Native -Exe \$relocPy -Args "
+        r"@\('-I', '-B', \(Join-Path \$checkout 'install/arc_smoke\.py'\)\)([^\r\n]*)$",
+        block,
     )
+    assert invoke is not None, "the relocated ARC initialization is missing"
+    assert not invoke.group(1).strip(), "the ARC smoke is redirecting its diagnostic output"
 
 
 def test_arc_smoke_cleans_up_after_itself(script: str) -> None:
