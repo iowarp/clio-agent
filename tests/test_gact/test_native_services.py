@@ -279,3 +279,50 @@ def test_provenance_verification_expires_with_configuration_or_process(
     for changed in ({"generation": "process-b"}, {"configuration_revision": "config-b"}):
         node_service.write_json(tmp_path / "evidence/verification.json", {**proof, **changed})
         assert not node_service.observation(tmp_path)["provenance_ingesting"]
+
+
+def test_attention_launcher_runs_until_vllm_entrypoint(tmp_path: Path) -> None:
+    """Execute the generated launcher against stub packages: it must reach vLLM's entrypoint."""
+    import subprocess
+    import sys
+
+    stubs = tmp_path / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv, 'settings': os.environ['FLOWCEPT_SETTINGS_PATH']}))\n"
+    )
+    (stubs / "vllm_attn_connector.py").write_text("def install_probe():\n    return True\n")
+    (stubs / "flowcept.py").write_text(
+        "from contextlib import contextmanager\n"
+        "@contextmanager\n"
+        "def Flowcept(*args, **kwargs):\n"
+        "    yield\n"
+    )
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("")
+    root = tmp_path / "service"
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps({"flowcept_settings": str(settings), "workflow_id": "wf-test"})
+    )
+    script = root / "launcher.py"
+    script.write_text(json.loads(plan().commands[-1].stdin)["manifest"]["launcher"])
+    result = subprocess.run(
+        [sys.executable, str(script), "--model", "/data/models/qualified"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed["settings"] == str(settings)
+    transfer = json.loads(observed["argv"][observed["argv"].index("--kv-transfer-config") + 1])
+    assert transfer["kv_connector_extra_config"] == {
+        "workflow_id": "wf-test",
+        "out_dir": str(root / "evidence"),
+    }

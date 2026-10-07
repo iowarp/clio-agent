@@ -51,6 +51,7 @@ def launcher(attention: bool) -> str:
 import os
 import runpy
 import sys
+from pathlib import Path
 
 # Settings are a private file on this host, never agent/transcript material.
 root = Path(__file__).parent
