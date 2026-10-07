@@ -32,6 +32,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import msgspec
 
+from clio_agent.arc.context_restore import PlainContextRestore
 from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import (
@@ -137,7 +138,7 @@ _SCOPE_SEP = "__"  # session_id <SEP> scope, in the store record name
 _SLASH_SUB = "~"  # scope's '/' replaced so the record name is one path segment
 
 
-class SegmentStore:
+class SegmentStore(PlainContextRestore):
     """Ordered, scoped, mutable live-context store. Thread-safe."""
 
     def __init__(
@@ -847,13 +848,12 @@ class SegmentStore:
         content matches ``query_text``. Returns ``[(scope, score)]`` best-first —
         "which expert/scope knows about X". BM25 on clio-core, naive word-overlap on LocalFS.
         """
-        search = getattr(self._store, "search", None)
-        if not callable(search):
-            return []
         prefix = f"{session_id}{_SCOPE_SEP}{scope_prefix.replace('/', _SLASH_SUB)}"
         sep = f"{session_id}{_SCOPE_SEP}"
         out: list[tuple[str, float]] = []
-        for record_name, score in search("segments", query_text, name_prefix=prefix, k=k):
+        for record_name, score in self._store.search(
+            "segments", query_text, name_prefix=prefix, k=k
+        ):
             if record_name.startswith(sep):
                 out.append((record_name[len(sep) :].replace(_SLASH_SUB, "/"), score))
         return out

@@ -1,4 +1,4 @@
-"""Read-only agent handoff to trusted, owner-bound connected-data setup."""
+"""Workspace inputs, provider accounts and permission-bound source access."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 
 
 def connected_data_status() -> dict[str, Any]:
-    """Show the trusted Connect data action and read approved source status.
+    """Read workspace folders, attached sources and provider sign-in status.
 
-    The user selects folders and signs in privately in the connected-data UI.
-    This tool cannot authorize access, accept credentials, or change sources.
-    Call it again after setup to obtain approved source references and local
-    materialization paths. Do not poll; wait for the user to finish setup.
+    Workspace files do not require a connected source. An empty sources list
+    does not mean that data is missing. This call never opens setup or signs in.
+    If needed, present an account's login_action in an ordinary A2UI Button in
+    the answer; only the user click opens private sign-in. No credentials are
+    returned. Check again after the user completes setup; do not poll.
     """
     app = context.active_app()
     sid = context.active_session_id()
@@ -28,6 +29,29 @@ def connected_data_status() -> dict[str, Any]:
     workspace = app.state.workspaces.get(session.workspace_id)
     if workspace is None:
         raise ValueError("The session workspace is unavailable on this CLIO")
+    from clio_agent.gact.storage.auth import application
+
+    accounts = []
+    for provider in ("github", "google_drive", "globus"):
+        authenticated = service.auth.account_connected(
+            service.principal, service.store.clio_id, provider
+        )
+        accounts.append(
+            {
+                "provider": provider,
+                "authenticated": authenticated,
+                "sign_in_available": bool(
+                    application(provider).client_id and application(provider).redirect_uri
+                ),
+                "login_action": {
+                    "name": f"data_source/login/{provider}",
+                    "context": {
+                        "clio_id": service.store.clio_id,
+                        "workspace_id": session.workspace_id,
+                    },
+                },
+            }
+        )
     sources = []
     for record in service.sources(session.workspace_id):
         source = record.source
@@ -44,6 +68,7 @@ def connected_data_status() -> dict[str, Any]:
                 "link_access": record.linked_access,
                 "download_access": "read_only" if record.download_read_only else "editable",
                 "connected": record.connected,
+                "authenticated": service.auth.connected(record),
                 "materialization": source.materialization,
                 "revision": source.revision,
                 "local_path": source.local_path,
@@ -53,28 +78,54 @@ def connected_data_status() -> dict[str, Any]:
             }
         )
     return {
-        "status": "setup_available",
+        "status": "available",
         "clio_id": service.store.clio_id,
         "workspace_id": session.workspace_id,
+        "workspace_folders": [
+            {
+                "path": path,
+                "role": "primary" if path == workspace.root_path else "additional",
+                "access": "workspace",
+            }
+            for path in dict.fromkeys(
+                [
+                    *([workspace.root_path] if workspace.root_path else []),
+                    *(getattr(workspace, "config", {}).get("granted_write_roots") or []),
+                ]
+            )
+        ],
+        "accounts": accounts,
         "sources": sources,
     }
 
 
 def setup_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
-    """Offer a native setup link without any sign-in URL or credential payload."""
+    """Display the same inventory the agent received, without a setup button."""
     row = structured if isinstance(structured, Mapping) else result
-    if not isinstance(row, Mapping) or row.get("status") != "setup_available":
+    if not isinstance(row, Mapping) or row.get("status") != "available":
         return {"summary": "Connected data is unavailable", "blocks": []}
+    lines = ["### Workspace folders"]
+    lines.extend(f"- `{folder['path']}` ({folder['role']})" for folder in row["workspace_folders"])
+    lines.extend(["", "### Accounts", "| Provider | Sign-in |", "| --- | --- |"])
+    lines.extend(
+        f"| {account['provider']} | {'Signed in' if account['authenticated'] else 'Signed out'} |"
+        for account in row["accounts"]
+    )
+    lines.extend(["", "### Attached sources"])
+    lines.extend(
+        f"- {source['label']} ({source['provider']}, {source['link_access']}, "
+        f"{'connected' if source['connected'] else 'disconnected'})"
+        for source in row["sources"]
+    )
+    if not row["sources"]:
+        lines.append("No attached remote sources. Files may already be in the workspace folders.")
     return {
-        "summary": "Choose data for this workspace",
+        "summary": "Workspace inputs and provider accounts",
         "blocks": [
             {
-                "id": "connected-data",
-                "type": "link",
-                "target": "connected_data",
-                "uri": row["clio_id"],
-                "workspace_id": row["workspace_id"],
-                "label": "Connect data",
+                "id": "source-inventory",
+                "type": "markdown",
+                "text": "\n".join(lines),
             }
         ],
     }

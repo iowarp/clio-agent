@@ -35,7 +35,8 @@ class ContextSearch:
 
         def _view(self, session_id: str, scope: str) -> ContextView: ...
 
-        def _record_name(self, session_id: str, scope: str) -> str: ...
+        @staticmethod
+        def _record_name(session_id: str, scope: str) -> str: ...
 
     @staticmethod
     def scope_of_record(stem: str) -> str:

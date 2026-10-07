@@ -33,6 +33,7 @@ import shutil
 import socket
 import stat
 import time
+import uuid
 from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -248,7 +249,9 @@ def isolate_cte_env(root: Path, environ: MutableMapping[str, str]) -> CteIsolati
     # variable), gives this suite run its own segment namespace and keeps the
     # host daemon's namespace untouchable by tests.
     user_base = environ.get("USERNAME") or environ.get("USER") or "clio"
-    environ["USER"] = f"{user_base}-cte-{port}"
+    # A free port may be selected again before either daemon starts. Its
+    # number therefore cannot identify a run's shared-memory namespace.
+    environ["USER"] = f"{user_base}-cte-{port}-{uuid.uuid4().hex}"
     return CteIsolation(
         root=root,
         state_dir=state_dir,

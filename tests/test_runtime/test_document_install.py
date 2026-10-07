@@ -26,6 +26,7 @@ def test_installer_records_only_complete_provisioning(
     }
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
+    monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
     receipt = cache / "locked" / "installed.json"
     if javascript == "failed":
         with pytest.raises(installer.DocumentRuntimeError, match="Node/pnpm"):
@@ -34,6 +35,7 @@ def test_installer_records_only_complete_provisioning(
     else:
         installed = installer.install_document_runtime(tmp_path / "workspace", cache_root=cache)
         assert installed["capabilities"]["office_render_recalculate"] == "available"
+        assert installed["native_tools"]["gh"]["authentication"] == "clio_account"
         assert (
             json.loads(receipt.read_text())["native_tools"]["soffice"]["path"] == "private soffice"
         )

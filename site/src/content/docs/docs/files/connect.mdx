@@ -10,6 +10,12 @@ import GuideScreenshot from '../../../../components/GuideScreenshot.astro';
 
 Open **+ → Attach** to connect a folder, repository, or collection. **Sign in** connects your account. **Connect** chooses the particular data you want to use. These are separate actions.
 
+You can also open **Settings → Data sources** to manage accounts and saved sources without composing a message. Choose the workspace whose sources you want to manage. Signing in or out applies across workspaces on this CLIO; connecting or removing a source applies to the selected workspace.
+
+![Settings shows shared provider accounts and a workspace selector for saved data sources](/media/source-settings.png)
+
+Use **Sign in** for an account, **Connect** for a dataset, or open a saved source to inspect and manage it. [Enlarge screenshot](/media/source-settings.png).
+
 <GuideScreenshot name="guide-connect" alt="Attach shows local file choices, provider accounts, Connect buttons, and collapsed saved sources" caption="An account can already be signed in before you choose a source. Saved sources stay compact at the bottom." />
 
 ## Pick a location
@@ -37,3 +43,23 @@ After connecting, inspect the source's files. Connecting alone does not download
 **Saved sources belong to a workspace.** **Connected accounts are reusable across workspaces for the same user on that CLIO.** A separate CLIO machine may need its own sign-in.
 
 Signing out is under the provider. Removing one saved source does not sign out the account. See [Manage sources](/docs/files/manage/).
+
+## Ask CLIO to connect a source
+
+You can say, “My next dataset is in Google Drive. Help me sign in,” or provide a repository or folder link and ask CLIO to connect it. When sign-in is needed, the answer includes a **Sign in** button. Choose it to open the private account dialog, then finish the browser steps. Return to the conversation and tell CLIO when you are ready.
+
+![Luna's answer includes a Google Drive sign-in button beside the conversation, outside collapsed Activity](/media/source-login-answer.png)
+
+The button stays with the answer. It opens account setup; the click itself does not mean the account is signed in. [Enlarge screenshot](/media/source-login-answer.png).
+
+![The private Google Drive sign-in dialog opened from the answer](/media/source-login-private.png)
+
+Your credentials stay in the private sign-in flow. The agent receives account status and approved source references. [Enlarge screenshot](/media/source-login-private.png).
+
+Attaching a new source goes through the session's confirmation policy. **Bypass checks** can approve that attachment automatically. Read-only access is the default; choose a working copy when changes should be reviewed before publication. See [Downloads and links](/docs/files/download-or-link/) for what each access mode means.
+
+For GitHub reads through CLIO's managed GitHub CLI, CLIO uses its current signed-in account and the approved repository or folder. You do not need a second CLI login. GitHub's app permissions still determine which repositories it can access, and signing out stops subsequent private reads. Source edits keep their existing review and publication rules.
+
+## Files already in the workspace
+
+Workspace folders are already available inputs. CLIO checks them before asking you to connect another source. An empty list of remote sources does not mean your workspace is empty. Its source inventory shows workspace folders, attached sources, and provider account status separately, so “signed in” and “dataset connected” remain distinct.

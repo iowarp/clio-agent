@@ -9,7 +9,7 @@ concurrent batch (``ARCStore.put_many``), so an append costs about one round tri
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
 from clio_agent.arc.lane_chunking import chunk_for_append
@@ -54,13 +54,24 @@ class LaneWriter:
 
         def _session(self, session_id: str) -> _Session: ...
 
-        def _record_name(self, session_id: str, scope: str) -> str: ...
+        @staticmethod
+        def _record_name(session_id: str, scope: str) -> str: ...
 
         def _lock_for(self, session_id: str, scope: str) -> threading.RLock: ...
 
         def _segs(self, session_id: str, scope: str) -> list[Segment]: ...
 
         def _discard_scope(self, session_id: str, scope: str) -> None: ...
+
+    def restore_empty(self, session_id: str, scope: str, segments: list[Segment]) -> bool:
+        """Restore a missing scope to the correct canonical storage lane."""
+        from clio_agent.arc.context_restore import restore_folded_context, restore_plain_context
+
+        store = cast(Any, self)
+        restore = (
+            restore_folded_context if store._is_working_set_scope(scope) else restore_plain_context
+        )
+        return restore(store, session_id, scope, segments)
 
     def _put_index(self, session_id: str, index: SessionIndex) -> None:
         """Put the session index record; a refusal is a typed :class:`ArcPersistError`."""
