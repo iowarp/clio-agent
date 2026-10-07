@@ -326,3 +326,50 @@ def test_attention_launcher_runs_until_vllm_entrypoint(tmp_path: Path) -> None:
         "workflow_id": "wf-test",
         "out_dir": str(root / "evidence"),
     }
+
+
+@pytest.mark.parametrize("attention", [False, True])
+def test_launcher_keeps_vllm_ipc_sockets_within_unix_path_limit(
+    tmp_path: Path, attention: bool
+) -> None:
+    """A deep service temp dir must not overflow AF_UNIX paths (live: ZMQError on Delta /work)."""
+    import subprocess
+    import sys
+
+    from clio_agent.gact.infrastructure.native_vllm import launcher
+
+    deep = tmp_path / ("d" * 60) / ("e" * 60)
+    deep.mkdir(parents=True)
+    root = tmp_path / "service"
+    stubs = root / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import os\nprint(os.environ['VLLM_RPC_BASE_PATH'])\n"
+    )
+    (stubs / "vllm_attn_connector.py").write_text("def install_probe():\n    return True\n")
+    (stubs / "flowcept.py").write_text(
+        "from contextlib import contextmanager\n"
+        "@contextmanager\n"
+        "def Flowcept(*args, **kwargs):\n"
+        "    yield\n"
+    )
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("")
+    (root / "manifest.json").write_text(
+        json.dumps({"flowcept_settings": str(settings), "workflow_id": "wf-test"})
+    )
+    (root / "launch.py").write_text(launcher(attention))
+    result = subprocess.run(
+        [sys.executable, str(root / "launch.py")],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin", "TMPDIR": str(deep)},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    base = result.stdout.strip().splitlines()[-1]
+    assert len(f"{base}/{'0' * 36}") < 107
+    assert Path(base).stat().st_mode & 0o077 == 0

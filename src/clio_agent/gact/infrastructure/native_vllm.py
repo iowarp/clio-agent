@@ -43,12 +43,33 @@ def native_variants(facts: TargetFacts) -> list[ServiceVariant]:
     ]
 
 
+# vLLM binds ZMQ IPC sockets at $VLLM_RPC_BASE_PATH/<uuid4> (default: the temp dir). A deep
+# service directory overflows the 107-byte AF_UNIX path limit, so use a private short directory.
+IPC_PRELUDE = """import hashlib
+import os
+import tempfile
+
+_base = os.environ.get("VLLM_RPC_BASE_PATH") or tempfile.gettempdir()
+if len(_base) + 38 > 107:
+    _base = "/tmp/clio-vllm-" + hashlib.sha256(_base.encode()).hexdigest()[:16]
+    os.makedirs(_base, mode=0o700, exist_ok=True)
+    _stat = os.stat(_base)
+    if _stat.st_uid != os.getuid() or _stat.st_mode & 0o077:
+        raise RuntimeError("The short vLLM socket directory is not private to this user")
+    os.environ["VLLM_RPC_BASE_PATH"] = _base
+"""
+
+
 def launcher(attention: bool) -> str:
     """Activate the pinned probe before importing or constructing vLLM's engine."""
     if not attention:
-        return 'import runpy\nrunpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
-    return """import json
-import os
+        return (
+            IPC_PRELUDE
+            + 'import runpy\nrunpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
+        )
+    return (
+        IPC_PRELUDE
+        + """import json
 import runpy
 import sys
 from pathlib import Path
@@ -76,6 +97,7 @@ sys.argv.extend(["--kv-transfer-config", json.dumps({
 with Flowcept("vllm", workflow_id=workflow, workflow_name="CLIO attention", start_persistence=False):
     runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
 """
+    )
 
 
 def native_vllm_plan(
