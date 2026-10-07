@@ -158,6 +158,9 @@ class EffectiveCapabilities:
     structured_output: Decision[bool]
     accepted_params: Decision[frozenset[str]]
     thinking: ThinkingDecision
+    #: Usable tools, including a transport's explicit text adapter. ``tools``
+    #: continues to describe native function calling for runtime consumers.
+    tool_use: Decision[bool] = field(default_factory=lambda: _unknown("no tool-use evidence"))
     #: Recommended sampling for EACH mode, already narrowed to
     #: ``accepted_params`` -- picking which mode currently applies (thinking
     #: on/off) is a runtime/request-builder decision (Part 7), not this
@@ -220,6 +223,33 @@ def _tri_and(*facts: tuple[Fact[bool] | None, str]) -> Decision[bool]:
         reason = f"{owners}: supported" + (f" ({detail})" if detail else "")
         return Decision(True, owners, reason, source, observed_at)
     return _unknown("boolean evidence disagreed in kind (non-bool present)")
+
+
+def _tool_capabilities(
+    model: ModelCapabilities | None,
+    endpoint: EndpointCapabilities | None,
+    deployment: DeploymentCapabilities | None,
+) -> tuple[Decision[bool], Decision[bool]]:
+    """Keep native tool support separate from an integration's usable tools."""
+    mode = endpoint.tool_calling_mode if endpoint else None
+    native_transport = (
+        Fact(mode.value == "native", mode.source, mode.observed_at, mode.detail)
+        if mode is not None and mode.known
+        else None
+    )
+    enabled = deployment.tools_enabled if deployment else None
+    native = _tri_and(
+        (model.tools if model else None, "model"),
+        (enabled, "deployment"),
+        (native_transport, "endpoint"),
+    )
+    if mode is not None and mode.value == "text":
+        usable = _tri_and(
+            (Fact(True, mode.source, mode.observed_at, mode.detail), "endpoint"),
+            (enabled, "deployment"),
+        )
+        return native, usable
+    return native, native
 
 
 def _min_known(*values: tuple[Fact[int] | None, str]) -> Decision[int]:
@@ -449,10 +479,7 @@ def combine_capabilities(
     Part 4.2 and 5.5 describe.
     """
 
-    tools = _tri_and(
-        (model.tools if model else None, "model"),
-        (deployment.tools_enabled if deployment else None, "deployment"),
-    )
+    tools, tool_use = _tool_capabilities(model, endpoint, deployment)
     parallel = _tri_and(
         (model.parallel_tool_calls if model else None, "model"),
     )
@@ -511,6 +538,7 @@ def combine_capabilities(
         output_max=output_max,
         input_modalities=modalities,
         tools=tools,
+        tool_use=tool_use,
         parallel_tool_calls=parallel,
         structured_output=structured,
         accepted_params=accepted,
