@@ -10,7 +10,9 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -207,3 +209,112 @@ def test_a_run_that_cannot_measure_fails_the_gate(
     monkeypatch.setattr(_mod, "_run_once", lambda args: next(results))
     monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--runs", "3"))
     assert _mod.main() == 2
+
+
+def test_all_blueprints_are_prepared_before_any_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Workspace access setup cannot overlap an active acceptance turn."""
+
+    events: list[tuple[str, int]] = []
+    out: dict[int, str] = {}
+    sids: dict[int, str] = {}
+    plan = [(tmp_path / f"pack-{idx}", f"prompt-{idx}") for idx in range(3)]
+
+    def prepare(base: str, pack: Path, idx: int) -> str:
+        assert base == "http://gate"
+        assert pack == plan[idx][0]
+        events.append(("prepare", idx))
+        return f"session-{idx}"
+
+    def drive(base: str, sid: str, prompt: str, results: dict[int, str], idx: int) -> None:
+        assert events[:3] == [("prepare", number) for number in range(3)]
+        assert sids == {number: f"session-{number}" for number in range(3)}
+        assert sid == f"session-{idx}"
+        assert prompt == plan[idx][1]
+        events.append(("turn", idx))
+        results[idx] = "idle"
+
+    monkeypatch.setattr(_mod, "prepare_session", prepare)
+    monkeypatch.setattr(_mod, "drive_session", drive)
+    assert _mod.drive_load("http://gate", plan, out, sids)
+    assert out == {0: "idle", 1: "idle", 2: "idle"}
+    assert sorted(events[3:]) == [("turn", number) for number in range(3)]
+
+
+def test_prepared_acceptance_turns_still_run_concurrently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Serial blueprint setup must preserve three simultaneous provider turns."""
+
+    barrier = threading.Barrier(3, timeout=3)
+    out: dict[int, str] = {}
+    errors: list[BaseException] = []
+    monkeypatch.setattr(_mod, "prepare_session", lambda base, pack, idx: f"session-{idx}")
+
+    def drive(base: str, sid: str, prompt: str, results: dict[int, str], idx: int) -> None:
+        try:
+            barrier.wait()
+            results[idx] = "idle"
+        except threading.BrokenBarrierError as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(_mod, "drive_session", drive)
+    assert _mod.drive_load("http://gate", [(tmp_path, "prompt")] * 3, out, {})
+    assert errors == []
+    assert out == {0: "idle", 1: "idle", 2: "idle"}
+
+
+@pytest.mark.parametrize("failed_phase", ["create", "blueprint"])
+def test_setup_http_failure_aborts_before_any_acceptance_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failed_phase: str
+) -> None:
+    """Failed session creation or activation cannot qualify a partial load."""
+
+    sessions: list[MagicMock] = []
+
+    def session_factory() -> MagicMock:
+        idx = len(sessions)
+        session = MagicMock()
+        session.__enter__.return_value = session
+        created = MagicMock()
+        created.json.return_value = {"id": f"session-{idx}"}
+        activated = MagicMock()
+        if idx == 1:
+            response = created if failed_phase == "create" else activated
+            response.raise_for_status.side_effect = _mod.requests.HTTPError("setup failed")
+        session.post.side_effect = [created, activated]
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(_mod.requests, "Session", session_factory)
+    drive = MagicMock()
+    monkeypatch.setattr(_mod, "drive_session", drive)
+    out: dict[int, str] = {}
+    sids: dict[int, str] = {}
+    assert not _mod.drive_load("http://gate", [(tmp_path, "prompt")] * 3, out, sids)
+    drive.assert_not_called()
+    assert sids == {0: "session-0"}
+    assert "setup failed" in out[1]
+    assert len(sessions) == 2
+    sessions[0].post.assert_any_call(
+        "http://gate/v1/sessions/session-0/agent-blueprint",
+        json={"path": str(tmp_path)},
+        timeout=120,
+    )
+    assert sessions[1].post.call_count == (1 if failed_phase == "create" else 2)
+
+
+def test_invalid_created_session_id_cannot_start_a_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A successful HTTP response still needs a usable authoritative session ID."""
+
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.post.return_value.json.return_value = {"id": ""}
+    monkeypatch.setattr(_mod.requests, "Session", lambda: session)
+    out: dict[int, str] = {}
+    assert not _mod.drive_load("http://gate", [(tmp_path, "prompt")] * 3, out, {})
+    assert session.post.call_count == 1
+    assert "invalid id" in out[0]
