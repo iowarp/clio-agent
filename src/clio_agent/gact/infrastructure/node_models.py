@@ -19,6 +19,9 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+# The worker's owned uv project installs only this; its imports must stay within it and stdlib.
+WORKER_DEPENDENCIES = ("huggingface-hub==0.35.3",)
+
 
 class AcquisitionError(ValueError):
     """An explicitly sanitized failure safe to display outside the execution host."""
@@ -161,7 +164,7 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
         worker.write_text(script)
         (folder / "pyproject.toml").write_text(
             '[project]\nname="clio-model-download"\nversion="1.0.0"\nrequires-python=">=3.11"\n'
-            'dependencies=["huggingface-hub==0.35.3"]\n'
+            f"dependencies={json.dumps(list(WORKER_DEPENDENCIES))}\n"
         )
         if any(path.is_symlink() for path in destination.rglob("*")):
             raise ValueError("Model directories must not contain symbolic links")
@@ -250,7 +253,6 @@ def download(receipt: Path) -> None:
     """Download a resolved revision and verify file sizes/hashes before marking it ready."""
     import threading
 
-    import httpx
     from huggingface_hub import HfApi, snapshot_download
 
     # Parent publishes process identity first; both processes write the receipt.
@@ -367,7 +369,8 @@ def download(receipt: Path) -> None:
             updated_at=time.time(),
         )
         write_json(receipt, job)
-    except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+    # The pinned client's HTTP errors derive from requests' RequestException, an OSError.
+    except (OSError, ValueError, RuntimeError) as exc:
         # Upstream exception strings can contain signed URLs or auth headers.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         detail = (

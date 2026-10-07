@@ -139,17 +139,19 @@ def test_worker_verifies_hash_and_retries_resolved_commit(
 
 def test_worker_redacts_auth_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import huggingface_hub
+    import requests
+    from huggingface_hub.errors import HfHubHTTPError
 
     receipt = tmp_path / "receipt.json"
     node_models.write_json(receipt, job(tmp_path))
 
     class Api:
         def model_info(self, *args: Any, **kwargs: Any) -> Any:
-            raise httpx.HTTPStatusError(
-                "secret signed URL",
-                request=httpx.Request("GET", "https://registry/secret"),
-                response=httpx.Response(403),
-            )
+            # The pinned worker client raises requests-based errors, not httpx ones.
+            response = requests.Response()
+            response.status_code = 403
+            response.url = "https://registry/secret"
+            raise HfHubHTTPError("secret signed URL", response=response)
 
     monkeypatch.setattr(huggingface_hub, "HfApi", Api)
     with pytest.raises(node_models.AcquisitionError, match="access denied") as error:
@@ -316,3 +318,26 @@ def test_disconnected_host_keeps_receipts_and_explains_transport_first(tmp_path:
         response = client.post(route, json={"repository": "org/model"})
         assert response.status_code == 409
         assert response.json()["detail"].startswith("Connect this execution host")
+
+
+def test_worker_imports_only_stdlib_and_its_declared_client() -> None:
+    """The worker runs in its own uv project, not CLIO's environment (live: httpx was missing)."""
+    import ast
+    import sys
+
+    declared = {
+        requirement.split("==")[0].replace("-", "_")
+        for requirement in node_models.WORKER_DEPENDENCIES
+    }
+    tree = ast.parse(Path(node_models.__file__).read_text(encoding="utf-8"))
+    imported = {
+        name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import | ast.ImportFrom)
+        for name in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+        )
+    }
+    assert imported - set(sys.stdlib_module_names) - {"__future__"} <= declared
