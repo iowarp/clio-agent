@@ -129,9 +129,9 @@ def test_arc_smoke_is_hermetic(script: str) -> None:
     block = _arc_smoke_block(script)
     assert "$env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')" in block
     assert "Remove-Item Env:CLIO_RUNTIME_STATE_DIR" in block, "the smoke leaks its state dir"
-    assert "[System.Net.IPAddress]::Loopback, 0" in block
-    assert "$env:CLIO_CORE_PORT = [string]$coreListener.LocalEndpoint.Port" in block
-    assert "$coreListener.Stop()" in block
+    assert "$env:CLIO_CORE_PORT = [string](Invoke-Native -Exe $relocPy" in block
+    assert "'--reserve-core-port'" in block
+    assert "[System.Net.IPAddress]::Loopback, 0" not in block
     assert "$previousCorePort = $env:CLIO_CORE_PORT" in block
     assert "Remove-Item Env:CLIO_CORE_PORT" in block
     assert "$env:CLIO_CORE_PORT = $previousCorePort" in block
