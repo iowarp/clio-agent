@@ -66,6 +66,36 @@ def _runtime(pack: Path, agent: AgentDef | None = None) -> Any:
     return skill_runtime_for_agent(None, agent or _agent(pack))
 
 
+def test_load_records_exact_procedure_and_bundled_body_at_load_time(
+    pack: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    from clio_agent.gact import context
+    from clio_agent.gact.runtime import globals as runtime_globals
+
+    recorded: list[dict[str, Any]] = []
+
+    def capture(*args: Any, **kwargs: Any) -> None:
+        recorded.append(kwargs["payload"])
+
+    monkeypatch.setattr(context, "active_app", lambda: object())
+    monkeypatch.setattr(context, "active_session_id", lambda: "session")
+    monkeypatch.setattr(runtime_globals, "_emit_semantic_event", capture)
+    tool = build_load_skill_tool(_agent(pack), _runtime(pack))
+    tool.func(skill_id="quality-rubric")
+    tool.func(skill_id="quality-rubric", file="references/checklist.md")
+    assert BODY in recorded[0]["content"]
+    assert recorded[1]["content"] == "THE CHECKLIST"
+    for row in recorded:
+        assert row["content_sha256"] == hashlib.sha256(row["content"].encode()).hexdigest()
+        assert row["size"] == len(row["content"].encode())
+    (pack / "skills/quality-rubric/references/checklist.md").write_text(
+        "later edit", encoding="utf-8"
+    )
+    assert recorded[1]["content"] == "THE CHECKLIST"
+
+
 # ---- tier 1: the metadata block -------------------------------------------------
 
 
@@ -421,7 +451,9 @@ def test_builtin_main_discovery_respects_workspace_precedence_and_expert_ownersh
     assert declared == ["shared-procedure", "next-guide"]
     runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
     assert "LOCAL BODY" in build_load_skill_tool(agent, runtime).func(skill_id="shared-procedure")
-    assert runtime.resolved["shared-procedure"].skill.scope == "workspace"
+    resolved_skill = runtime.resolved["shared-procedure"].skill
+    assert resolved_skill is not None
+    assert resolved_skill.scope == "workspace"
 
     child = agent.model_copy(update={"id": "child", "parent_id": "main"})
     custom_root = AgentDef(id="custom", title="Custom", metadata={"definition_kind": "blueprint"})
