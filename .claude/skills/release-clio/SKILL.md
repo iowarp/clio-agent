@@ -1,6 +1,6 @@
 ---
 name: release-clio
-description: Cut a clio-agent release (vX.Y.Z) end-to-end — merge feature→develop→main, bump version, pin submodules, tag, push, and verify all CI (PyPI, bundles, ghcr) goes green. Use when asked to "do a release", "cut vX.Y.Z", "publish", or "ship".
+description: Release dependencies from main and clean completed work, record verified release pins in CLIO, qualify and integrate CLIO into main, then tag and verify PyPI, bundles and ghcr publication. Use when asked to "do a release", "cut vX.Y.Z", "publish", or "ship".
 ---
 
 # Releasing clio-agent
@@ -21,7 +21,7 @@ Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop fronten
 `external/clio-agent-marketplace` (blueprints). Both must point at a released tag.
 
 ## Preconditions
-- Working tree clean. Revert runtime churn first: `git checkout -- src/clio_agent/providers/handshake/sources/data/model_limits.json` (timestamp-only regen).
+- Use a clean owned release checkout. Preserve private runtime churn and unrelated changes separately; never discard them to obtain a clean status.
 - You are an org admin (tags, ghcr). `gh auth status` ok.
 - Decide the version: `vX.Y.Z`. Patch bump for fixes; the user usually says "0.5.x+1".
 
@@ -38,40 +38,62 @@ Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop fronten
 
 ## Steps
 
-### 1. Marketplace submodule release (do FIRST — clio-agent will pin its tag)
-```sh
-cd external/clio-agent-marketplace
-git checkout main && git merge --ff-only <feature-branch>   # or PR-merge
-git tag -a vX.Y.Z -m "release: vX.Y.Z — <summary>"
-git push origin main && git push origin vX.Y.Z
-cd ../..
-```
+### 1. Finish every dependency repository on main
 
-**Rollout order when a release changes what packs must declare** (e.g. 0.9.4.17's
-per-agent `a2ui_catalogs`): the marketplace change must be on marketplace `main`
-BEFORE any clio-agent artifact of that release is built. Deployed installs
-re-sync their unedited default-registry packs from the registry once per
-clio-agent version change (`gact/default_registry_migration.py`) and record the
-version on success, so an artifact that ships ahead of the marketplace would
-record the new version against the OLD packs and not re-sync them again until
-the next version.
+The release order is gact-tui, clio-agent-marketplace and clio-schemas first,
+then clio-agent. Each repository must finish its approved integration path into
+`main`. A feature branch or a merge into `develop` is not a release source, even
+when its tree matches a tested commit. State the exact branch direction before
+acting and verify the current remote head before each merge.
 
-### 2. Pin submodules in clio-agent
+For each dependency:
+
+1. Integrate the release source and metadata into `main` through the approved PR
+   path. Require the current source/integration checks and fresh main checks.
+2. Verify the release version, changelog and curated notes on main. Fetch main
+   and create a new annotated tag on that exact main commit; never tag the
+   preparation branch. Keep independent Desktop package versions independent.
+3. Verify the complete published release through that repository's configured
+   channels. For gact-tui, require public GitHub release metadata, curated notes,
+   every expected binary/checksum and successful release CI. For marketplace,
+   require its main-based published tag/release and policy qualification. For
+   schemas, require the main-based tag, release CI and actual PyPI wheel/sdist.
+4. Clean proven merged branches and completed owned worktrees while integration
+   and release checks run. Use exact-head leases for remote branch deletion.
+   Preserve recoverable commits, ignored evidence and private data before
+   archival, and compare backup hashes. Do not delete unmerged or unrelated
+   work, hide lost changes, or stop a protected live service without authorization.
+
+An unchanged dependency may reuse its current release only after verifying its
+main provenance, publication and exact contents. Never claim the dependency
+sequence is complete merely because tags or some uploaded assets exist. Do not
+begin the CLIO pin/version commit until all three dependencies are released.
+
+When marketplace pack declarations change, publish them before building CLIO.
+Installed default packs resync once per CLIO version, so publishing CLIO first
+can leave an installation using old declarations until another version ships.
+
+### 2. Record the verified dependency releases in CLIO
+
+Start from current CLIO main in a clean owned checkout. Fetch dependency tags,
+check out the selected released tags and verify each peeled commit against the
+submodule gitlink that will be committed:
+
 ```sh
-git -C external/gact-tui fetch origin --tags && git -C external/gact-tui checkout vA.B.C   # the aligned gact-tui release
+git -C external/gact-tui fetch origin --tags
+git -C external/gact-tui checkout vA.B.C
+git -C external/gact-tui rev-parse 'vA.B.C^{}'
+git -C external/clio-agent-marketplace fetch origin --tags
 git -C external/clio-agent-marketplace checkout vX.Y.Z
+git -C external/clio-agent-marketplace rev-parse 'vX.Y.Z^{}'
 ```
 
-### 3. Integrate branches (gitflow: feature → develop → main)
-```sh
-git fetch origin                       # ALWAYS — others push develop/main via PRs
-git checkout develop && git merge --no-ff origin/develop   # reconcile remote first
-git merge <feature-branch>             # bring the release work onto develop
-git checkout main && git merge --no-ff origin/main         # reconcile remote first
-git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
-```
+Pin clio-schemas to the verified published PyPI version in pyproject.toml and
+uv.lock, including the registry artifact hashes. Gitlinks store commit IDs;
+record the corresponding release tags and main provenance in the handoff.
+Never stage a dependency preparation branch as the release pin.
 
-### 4. Bump version (these must all agree; release.yml hard-checks tag == `uv version`)
+### 3. Bump version (these must all agree; release.yml hard-checks tag == `uv version`)
 - `pyproject.toml` → `version = "X.Y.Z"`
 - `src/clio_agent/__init__.py` → `__version__ = "X.Y.Z"`
 - `uv.lock` → run `uv lock` (updates the clio-agent entry), commit it.
@@ -83,7 +105,7 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
   policy test greps them).
 - Commit the submodule gitlink bumps + version together: `chore(release): vX.Y.Z`.
 
-### 4b. Roll the CHANGELOG (GACT-contract surface only)
+### 3b. Roll the CHANGELOG (GACT-contract surface only)
 `CHANGELOG.md` tracks changes to clio-agent's **GACT-contract surface**
 (the TUI/HTTP surface) — not every internal change. Before tagging:
 - Rename the `## Unreleased` heading to `## [X.Y.Z] — YYYY-MM-DD` (today's
@@ -93,7 +115,7 @@ git merge --no-ff develop -m "Merge develop: release vX.Y.Z — <summary>"
   under the new version heading rather than leaving a stale Unreleased block.
 - Commit alongside the version bump (`chore(release): vX.Y.Z`).
 
-### 5. Verify locally BEFORE tagging (cheap; avoids failed CI cycles)
+### 4. Qualify the proposed source locally before main integration
 ```sh
 uv version --short                     # == X.Y.Z
 uv run python -c "import clio_agent, clio_agent.config, clio_agent.gact.app, clio_agent.ui.cli; print('ok')"
@@ -128,12 +150,35 @@ test `tests/test_scripts/test_mcp_mem_budget.py` pins the recorded values at
 or under the #930 campaign targets (1.8 GB peak / 1.3 GB post-idle) — any
 raise past that line fails plain CI.
 
-### 6. Tag + push (triggers all CI)
+### 5. Integrate the qualified CLIO correction into main
+
+Commit the verified pins, CLIO version/lock/install metadata, changelog and
+curated release notes together. Follow the approved PR path into CLIO main
+(feature to develop to main where that path is used). Require current-head
+source/integration checks, mandatory local qualification and fresh exact-main
+checks. A matching tree preserves source evidence but does not replace the
+main merge or fresh main checks. Clean up completed merged branches/worktrees
+with the same preservation rules used for dependencies.
+
+### 6. Tag verified remote main (triggers all CI)
+
+Immediately before tagging, reverify all dependency publications and pins,
+current remote main, version agreement and new tag absence. Check out the
+verified main commit, not a preparation branch:
+
 ```sh
-git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z — <summary>"
-git push origin main && git push origin develop && git push origin vX.Y.Z
+git fetch origin main --tags
+git checkout --detach origin/main
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z"
+git push origin vX.Y.Z
 ```
 
+Save the exact main commit, tree, annotated tag object and peeled commit in the
+handoff. A pushed tag starts publication immediately; do not push one while a
+required dependency release, source/main check or qualification gate is pending.
+Continue cleanup of completed owned branches/worktrees while release assets
+build, preserving the only active release checkout until it is no longer needed.
 ### 6b. Author the GitHub release notes on the DRAFT (NEVER skip)
 The tag push's first `clio-bundles.yml` job (`release`, via
 `scripts/github_release.py ensure`) creates the release as a **draft** titled with
@@ -218,7 +263,7 @@ gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check
 - **PyPI rejects direct/git dependencies.** A `... @ git+https://...` in ANY extra → upload `400 Can't have direct dependency`. Keep such deps OUT of `[project.optional-dependencies]` (document manual install instead). `[tool.hatch.metadata] allow-direct-references` lets it BUILD but PyPI still rejects the UPLOAD.
 - **PyPI 100 MB file limit.** The default hatchling sdist includes ALL VCS-tracked files → `docs/ref/`, `benchmark/`, vendored content balloon it past 100 MB (`400 File too large`). Add `[tool.hatch.build.targets.sdist] include = ["src/clio_agent","pyproject.toml","README.md","uv.lock"]`. **Verify with a local `uv build` — CI checks out submodules so its tree differs from a quick local glance.**
 - **`git add a b` is atomic.** If one pathspec doesn't match (e.g. already `git rm`'d), the WHOLE `git add` fails and stages NOTHING → your edit silently doesn't get committed. Add paths separately or re-check `git show HEAD:<file>`.
-- **Re-tagging:** `git tag -d <tag>` takes NO `-q`. To move a pushed tag: `git tag -d v; git tag -a v HEAD -m ...; git push --force origin v`. The failed-publish version is NOT on PyPI, so re-tag+republish the same version is fine (PyPI rejects re-upload only of a *successfully* uploaded version).
+- **Published versions are immutable.** Once any GitHub asset, PyPI package or container is published, never move its tag or overwrite the publication. Correct source or sequencing errors with a new version integrated into main. Rerun an affected workflow only against its unchanged, correctly integrated source.
 - **`git fetch` before integrating.** `develop`/`main` advance via others' PRs; a stale local branch → non-fast-forward push rejection. Reconcile (`git merge origin/<branch>`) — content is usually identical, it's just merge-commit topology.
 - **Submodule gitlink must be committed.** `git submodule status` showing a leading `+` means the checked-out commit isn't recorded in the parent — commit the gitlink before tagging or the release ships the old submodule.
 - **ghcr `403 Forbidden` on push** — check WHO OWNS the package first: `gh api "orgs/iowarp/packages?package_type=container"` (needs `read:packages`; use `MSYS_NO_PATHCONV=1` and no leading slash on Git Bash). The v0.6.1–v0.7.4 saga: the packages EXISTED but were linked to **gact-tui** (created by its pre-move docker pipeline), so clio-agent's GITHUB_TOKEN had no role — org creation settings were irrelevant and every tag push 403'd on a blob HEAD. Fix: link this repo with Write (package Settings → Manage Actions access), or delete the stale packages (restorable 30 days) and let the next tag push recreate them fresh (auto-linked, and public under current org defaults — verify with an anonymous `https://ghcr.io/v2/iowarp/clio-tui/tags/list` pull). For true first creation the old advice stands: org Settings→Packages allow creation, or a one-time `write:packages` PAT bootstrap.
