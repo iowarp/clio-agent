@@ -102,12 +102,6 @@ def _builtin_main_agent() -> AgentDef:
                 "prepare_document",
             }
         ),
-        skills=[
-            "work-with-pdfs",
-            "work-with-word",
-            "work-with-presentations",
-            "work-with-spreadsheets",
-        ],
         metadata={
             "definition_kind": "builtin_main",
             "a2ui_catalogs": list(BUILTIN_MAIN_A2UI_CATALOGS),

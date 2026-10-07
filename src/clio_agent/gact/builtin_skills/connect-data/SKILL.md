@@ -1,9 +1,19 @@
 ---
 name: connect-data
-description: Connect Google Drive, Globus, SSH/SFTP, or local folders through CLIO's private setup UI, then use approved inputs in the current workspace.
+description: Use when the user asks to connect data, or when needed inputs are absent after inspecting supplied references and workspace folders. Connect external sources through CLIO's private setup UI.
 ---
 
 # Connect data
+
+Start with supplied attachments, references and the current workspace folders.
+Inspect the relevant files and their self-description using available file tools.
+A primary workspace folder is already input; an empty connected-source list
+does not mean its files are missing. If a read fails, diagnose the reported
+access or runtime error rather than asking the user to reconnect that folder.
+
+Use this setup workflow when the user explicitly wants to connect a source,
+or a bounded workspace inspection finds that the needed data is elsewhere.
+Explain what input is missing and ask where it is before requesting setup.
 
 Call `connected_data_status` to present **Connect data** in the main session.
 The user opens the same trusted picker available from the composer and Files.
