@@ -77,13 +77,31 @@ def threads(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[threading.Thread]]
 
 
 def test_draft_prepares_default_fleet_and_first_session_reuses_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threads: list[threading.Thread]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source"
     source.mkdir()
     (source / "AGENT.md").write_text("---\nid: science-blueprint\ntitle: Science\n---\nScience")
     install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     mounted: list[tuple[_Executor, str]] = []
+    completed = threading.Event()
+    original_workspace_warmup = workspace_warmup._warm_and_release
+    original_session_warmup = session_warmup._warm_and_release
+
+    def warm_workspace(app: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
+        try:
+            original_workspace_warmup(app, root, blueprint_id, key)
+        finally:
+            completed.set()
+
+    def warm_session(app: Any, sid: str, trigger: str) -> None:
+        try:
+            original_session_warmup(app, sid, trigger)
+        finally:
+            completed.set()
+
+    monkeypatch.setattr(workspace_warmup, "_warm_and_release", warm_workspace)
+    monkeypatch.setattr(session_warmup, "_warm_and_release", warm_session)
 
     def mount(executor: _Executor, namespace: str, spec: Any, *, connect: bool) -> dict:
         assert connect
@@ -105,18 +123,17 @@ def test_draft_prepares_default_fleet_and_first_session_reuses_it(
         response = client.post(f"/v1/workspaces/{workspace.id}/warmup")
         assert response.status_code == 202
         assert response.json() == {"status": "warming"}
-        threads[-1].join(5)
-        assert not threads[-1].is_alive()
+        assert completed.wait(5), "draft preparation must finish before checking its fleet"
         assert app.state.sessions.list() == before
         assert {namespace for _, namespace in mounted} == {"web", "science"}
         assert agent.bound == [(canonical_workspace_root(tmp_path), "science-blueprint", "")]
         assert agent.leases == []
         executor = agent.executors[canonical_workspace_root(tmp_path)]
 
+        completed.clear()
         created = client.post("/v1/sessions", json={"workspace_id": workspace.id})
         assert created.status_code == 200
-        threads[-1].join(5)
-        assert not threads[-1].is_alive()
+        assert completed.wait(5), "the first session must finish preparing the shared fleet"
         assert agent.bound[-1][2] == created.json()["id"]
         assert agent.executors[canonical_workspace_root(tmp_path)] is executor
         assert len(mounted) == 2, "already connected servers must not start again"

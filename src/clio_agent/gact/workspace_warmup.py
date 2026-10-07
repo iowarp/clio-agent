@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from contextlib import nullcontext
-from typing import Any, Literal
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, Literal, cast
 
 from clio_agent.gact import session_warmup
 from clio_agent.gact.runtime.globals import _gact_app_context
+from clio_agent.gact.warmup_revision import start_revision_warmup
 from clio_agent.tools.execution import tool_blueprint_context, tool_workspace_context
 from clio_agent.tools.workspace_root import canonical_workspace_root
 
@@ -44,19 +45,18 @@ def start_workspace_warmup(app: Any, root: str) -> WarmupStatus:
         if key in _inflight:
             return "warming"
         _inflight.add(key)
-    thread = threading.Thread(
-        target=_warm_and_release,
-        args=(app, root, blueprint_id, key),
+    start_revision_warmup(
+        app,
+        lambda: _warm_and_release(app, root, blueprint_id, key),
         name="clio-workspace-warmup",
-        daemon=True,
+        aborted=lambda: _release(key),
     )
-    try:
-        thread.start()
-    except RuntimeError:
-        with _lock:
-            _inflight.discard(key)
-        raise
     return "warming"
+
+
+def _release(key: tuple[int, str, str]) -> None:
+    with _lock:
+        _inflight.discard(key)
 
 
 def _warm_and_release(app: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
@@ -65,7 +65,7 @@ def _warm_and_release(app: Any, root: str, blueprint_id: str, key: tuple[int, st
         lease = getattr(agent, "lease_workspace_fleet", None)
         with (
             _gact_app_context(app),
-            lease(root) if callable(lease) else nullcontext(),
+            cast(AbstractContextManager[None], lease(root)) if callable(lease) else nullcontext(),
             tool_workspace_context(root),
             tool_blueprint_context(blueprint_id),
         ):
@@ -75,5 +75,4 @@ def _warm_and_release(app: Any, root: str, blueprint_id: str, key: tuple[int, st
         # Best-effort startup never blocks Send; the real turn retries failures.
         logger.exception("workspace_warmup_failed root=%s blueprint=%s", root, blueprint_id)
     finally:
-        with _lock:
-            _inflight.discard(key)
+        _release(key)

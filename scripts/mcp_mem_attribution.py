@@ -230,16 +230,58 @@ def check_budget(peak_gb: float, final_gb: float, budget: dict) -> tuple[bool, s
     return peak_gb <= peak_cap and final_gb <= final_cap, detail
 
 
-def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int, sids: dict) -> None:
-    s = requests.Session()
-    try:
-        sid = s.post(f"{base}/v1/sessions", json={"title": f"membudget {idx}"}, timeout=30).json()[
-            "id"
-        ]
-        sids[idx] = sid  # recorded so the children scenario can verify real child spawns
-        s.post(
+def prepare_session(base: str, pack: Path, idx: int) -> str:
+    """Create and configure one session before any acceptance turn starts."""
+
+    with requests.Session() as session:
+        response = session.post(
+            f"{base}/v1/sessions", json={"title": f"membudget {idx}"}, timeout=30
+        )
+        response.raise_for_status()
+        sid = response.json()["id"]
+        if not isinstance(sid, str) or not sid:
+            raise ValueError(f"session {idx} creation returned an invalid id")
+        session.post(
             f"{base}/v1/sessions/{sid}/agent-blueprint", json={"path": str(pack)}, timeout=120
         ).raise_for_status()
+    return sid
+
+
+def drive_load(
+    base: str,
+    plan: list[tuple[Path, str]],
+    out: dict[int, str],
+    sids: dict[int, str],
+) -> bool:
+    """Prepare every blueprint, then drive the complete concurrent acceptance load."""
+
+    for idx, (pack, _prompt) in enumerate(plan):
+        try:
+            sids[idx] = prepare_session(base, pack, idx)
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            out[idx] = f"setup error: {exc!r}"
+            print(f"GATE: FAIL (session {idx} setup failed: {exc!r})")
+            return False
+    threads = [
+        threading.Thread(
+            target=drive_session,
+            args=(base, sids[idx], prompt, out, idx),
+            daemon=True,
+        )
+        for idx, (_pack, prompt) in enumerate(plan)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=1500)
+    return True
+
+
+def drive_session(base: str, sid: str, prompt: str, out: dict[int, str], idx: int) -> None:
+    """Submit a turn for an already configured session and wait for its outcome."""
+
+    s = requests.Session()
+    try:
         deadline = time.time() + 300
         while True:
             r = s.post(f"{base}/v1/sessions/{sid}/messages", json={"text": prompt}, timeout=60)
@@ -261,6 +303,8 @@ def drive_session(base: str, pack: Path, prompt: str, out: dict, idx: int, sids:
         out[idx] = "timeout"
     except Exception as exc:  # noqa: BLE001 - a failed session is a failed run, reported below
         out[idx] = f"error: {exc!r}"
+    finally:
+        s.close()
 
 
 def _assert_children_spawned(base: str, sid: str | None) -> tuple[bool, str]:
@@ -602,8 +646,8 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
             report("IDLE (post-boot)", idle[1], idle[2])
 
         data_path = (args.workspace / args.data).as_posix()
-        out: dict = {}
-        sids: dict = {}
+        out: dict[int, str] = {}
+        sids: dict[int, str] = {}
 
         def _assign(i: int) -> tuple[Path, str]:
             # Children scenario: session 0 drives the declared-children blueprint
@@ -620,19 +664,11 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
                 f"scenario: children — session 0 -> {args.children_pack} "
                 "(fan-out of 2 background children: alpha+beta)"
             )
-        threads = [
-            threading.Thread(
-                target=drive_session,
-                args=(base, plan[i][0], plan[i][1], out, i, sids),
-                daemon=True,
-            )
-            for i in range(args.sessions)
-        ]
         started = time.time()
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=1500)
+        # Sampling already covers setup. No blueprint may change workspace
+        # access after another session starts its turn.
+        if not drive_load(base, plan, out, sids):
+            return 2
         print(f"\nsessions: {json.dumps(out)}  wall: {time.time() - started:.0f}s")
         time.sleep(args.settle_s)  # let reclamation (once it exists, #933) act
         sampler.stop()
