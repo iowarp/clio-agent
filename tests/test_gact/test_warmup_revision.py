@@ -102,6 +102,7 @@ async def test_workspace_warmup_queues_behind_blueprint_change(
 
     def warm(owner: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
         seen.append("warmup")
+        workspace_warmup._release(key)
         warmed.set()
 
     monkeypatch.setattr(session_warmup, "session_warmup_enabled", lambda: True)
@@ -123,8 +124,10 @@ async def test_workspace_warmup_queues_behind_blueprint_change(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", [1, 2])
 async def test_cancelled_warmup_keeps_revision_reader_until_thread_exits(
     monkeypatch: pytest.MonkeyPatch,
+    cancel_count: int,
 ) -> None:
     """Cancelling an async wrapper cannot let a revision outlive a leased worker."""
     app = _app()
@@ -156,6 +159,9 @@ async def test_cancelled_warmup_keeps_revision_reader_until_thread_exits(
             )
         )
         await _closed(app)
+        for _ in range(cancel_count - 1):
+            worker.cancel()
+            await asyncio.sleep(0)
         assert not worker.done()
         assert seen == []
         finish.set()
@@ -201,8 +207,10 @@ async def test_running_turn_warmup_can_finish_while_writer_waits(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("let_task_start", [False, True])
 async def test_cancelled_queued_warmup_releases_its_coalescing_slot(
     monkeypatch: pytest.MonkeyPatch,
+    let_task_start: bool,
 ) -> None:
     """A cancelled queued warm-up cannot permanently suppress later preparation."""
     app = _app()
@@ -214,7 +222,8 @@ async def test_cancelled_queued_warmup_releases_its_coalescing_slot(
             app, "cancel-queued", trigger="session_created"
         )
         assert isinstance(worker, asyncio.Task)
-        await asyncio.sleep(0)
+        if let_task_start:
+            await asyncio.sleep(0)
         worker.cancel()
         with pytest.raises(asyncio.CancelledError):
             await worker
@@ -224,3 +233,56 @@ async def test_cancelled_queued_warmup_releases_its_coalescing_slot(
     assert isinstance(retry, asyncio.Task)
     await retry
     assert seen == ["warmup"]
+
+
+@pytest.mark.asyncio
+async def test_completed_warmup_does_not_clear_its_successor_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An old completion must not unguard a newer warm-up of the same session."""
+    app = _app()
+    loop = asyncio.get_running_loop()
+    original_release = session_warmup._release
+    second_entered, finish = threading.Event(), threading.Event()
+    lock = threading.Lock()
+    warmed = 0
+    releases = 0
+    successors: list[asyncio.Task[None]] = []
+
+    async def successor() -> None:
+        worker = session_warmup.start_session_warmup(app, "successor", trigger="turn_started")
+        assert isinstance(worker, asyncio.Task)
+        successors.append(worker)
+        assert await asyncio.to_thread(second_entered.wait, 5)
+
+    def release(sid: str) -> None:
+        nonlocal releases
+        original_release(sid)
+        with lock:
+            releases += 1
+            first_release = releases == 1
+        if first_release:
+            asyncio.run_coroutine_threadsafe(successor(), loop).result(timeout=5)
+
+    def warm(owner: Any, sid: str, trigger: str) -> None:
+        nonlocal warmed
+        with lock:
+            warmed += 1
+            second = warmed == 2
+        if second:
+            second_entered.set()
+            assert finish.wait(5)
+
+    monkeypatch.setattr(session_warmup, "session_warmup_enabled", lambda: True)
+    monkeypatch.setattr(session_warmup, "_warm", warm)
+    monkeypatch.setattr(session_warmup, "_release", release)
+    first = session_warmup.start_session_warmup(app, "successor", trigger="session_created")
+    assert isinstance(first, asyncio.Task)
+    try:
+        await asyncio.wait_for(first, timeout=5)
+        assert second_entered.is_set()
+        assert "successor" in session_warmup._inflight
+        assert session_warmup.start_session_warmup(app, "successor", trigger="turn_started") is None
+    finally:
+        finish.set()
+        await asyncio.gather(first, *successors, return_exceptions=True)

@@ -13,11 +13,15 @@ from clio_agent.gact.turn_revision_gate import TurnRevisionGate
 async def _finish_thread(work: Callable[[], None]) -> None:
     """Retain the revision reader until its worker really finishes, even on cancellation."""
     worker = asyncio.create_task(asyncio.to_thread(work))
-    try:
-        await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        await asyncio.shield(worker)
-        raise
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    worker.result()
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def start_revision_warmup(
@@ -25,14 +29,26 @@ def start_revision_warmup(
     work: Callable[[], None],
     *,
     name: str,
-    finished: Callable[[], None],
+    aborted: Callable[[], None],
 ) -> threading.Thread | asyncio.Task[None]:
     """Start preparation off-loop, draining or queuing with the app's revision gate.
 
     Warm-ups created by a running turn retain its descendant context, so a
     waiting writer cannot deadlock that turn. Synchronous standalone callers
     without a running app loop retain the existing thread interface.
+    The worker owns normal cleanup; ``aborted`` releases preparation that never
+    starts, including cancellation while queued behind a revision.
     """
+    started = threading.Event()
+
+    def marked_work() -> None:
+        started.set()
+        work()
+
+    def abort_if_not_started() -> None:
+        if not started.is_set():
+            aborted()
+
     state = getattr(app, "state", None)
     gate = getattr(getattr(state, "turn_runner", None), "revision_gate", None)
     try:
@@ -40,20 +56,18 @@ def start_revision_warmup(
     except RuntimeError:
         loop = None
     if loop is not None and isinstance(gate, TurnRevisionGate):
-        task = loop.create_task(gate.run(_finish_thread(work)), name=name)
-        task.add_done_callback(lambda _task: finished())
+
+        async def run_revision() -> None:
+            await gate.run(_finish_thread(marked_work))
+
+        task = loop.create_task(run_revision(), name=name)
+        task.add_done_callback(lambda _task: abort_if_not_started())
         return task
 
-    def run() -> None:
-        try:
-            work()
-        finally:
-            finished()
-
-    thread = threading.Thread(target=run, name=name, daemon=True)
+    thread = threading.Thread(target=marked_work, name=name, daemon=True)
     try:
         thread.start()
     except RuntimeError:
-        finished()
+        abort_if_not_started()
         raise
     return thread

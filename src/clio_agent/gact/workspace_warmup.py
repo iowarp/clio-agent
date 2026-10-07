@@ -49,7 +49,7 @@ def start_workspace_warmup(app: Any, root: str) -> WarmupStatus:
         app,
         lambda: _warm_and_release(app, root, blueprint_id, key),
         name="clio-workspace-warmup",
-        finished=lambda: _release(key),
+        aborted=lambda: _release(key),
     )
     return "warming"
 

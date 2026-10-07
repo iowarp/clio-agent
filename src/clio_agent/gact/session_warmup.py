@@ -74,7 +74,7 @@ def start_session_warmup(
         app,
         lambda: _warm_and_release(app, sid, trigger),
         name=f"clio-warmup-{sid}",
-        finished=lambda: _release(sid),
+        aborted=lambda: _release(sid),
     )
 
 
