@@ -69,6 +69,9 @@ class FakeLinuxTarget:
             # exec the wrapped command (``sh -c SCRIPT sh docker run ...``).
             variable = args[1].split("export ", 1)[1].split("=", 1)[0]
             inner = args[3:]
+            if inner[0] == "sh":
+                # The keyed readiness probe (F026): the fake server is ours.
+                return CommandResult(exit_code=0, stdout="ready")
             name = inner[inner.index("--name") + 1]
             self.environments[name] = {variable: spec.stdin.splitlines()[0]}
             return self._docker(inner[1:])

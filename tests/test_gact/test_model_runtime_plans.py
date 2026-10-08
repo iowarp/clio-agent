@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
+
 import pytest
 from clio_schemas.connected_resources import HostStorageLocations
 
@@ -526,3 +530,94 @@ def test_every_container_image_is_digest_pinned() -> None:
             name, _, digest = variant.image.partition("@sha256:")
             assert len(digest) == 64, variant.image
             assert ":" not in name.rsplit("/", 1)[-1], variant.image
+
+
+def _fake_model_server(keyless_status: int, served: str):
+    import http.server
+    import json
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/health":
+                status, body = 200, b""
+            elif self.headers.get("Authorization") == "Bearer launch-key":
+                status, body = 200, json.dumps({"data": [{"id": served}]}).encode()
+            else:
+                status, body = keyless_status, b"{}"
+            self.send_response(status)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not shutil.which("curl"), reason="POSIX + curl")
+@pytest.mark.parametrize(
+    ("keyless_status", "served", "expected"),
+    [
+        (401, "/models/downloaded", "ready"),
+        (403, "/models/downloaded", "ready"),
+        (401, "someone-else", "waiting"),
+        (200, "/models/downloaded", "foreign_endpoint"),
+    ],
+)
+def test_container_readiness_proves_identity(
+    keyless_status: int, served: str, expected: str
+) -> None:
+    """Ready only when the keyless request is refused and the key lists our model (F026)."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import _identity_health_command
+
+    server = _fake_model_server(keyless_status, served)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        command = _identity_health_command(
+            f"{base}/health",
+            f"{base}/v1/models",
+            "/models/downloaded",
+            "VLLM_API_KEY",
+            "launch-key",
+            False,
+        )
+        assert "launch-key" not in " ".join(command.args)
+        completed = subprocess.run(
+            [command.program, *command.args],
+            input=command.stdin,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        server.shutdown()
+    assert completed.stdout.strip() == expected
+
+
+def test_container_readiness_uses_identity_only_when_keyed() -> None:
+    """A keyed vLLM container proves identity, key on stdin; a keyless one keeps the health probe."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import build_model_runtime_plan
+
+    def readiness(api_key: str | None):
+        plan = build_model_runtime_plan(
+            service_id="vllm",
+            action="start",
+            variant_id="cuda",
+            configuration={"model": "Qwen/Qwen3-0.6B", "container_runtime": "apptainer"},
+            facts=_facts("apptainer"),
+            target=None,
+            api_key=api_key,
+        )
+        assert plan.readiness is not None
+        return plan.readiness.health
+
+    keyed = readiness("launch-key")
+    assert keyed.stdin == "launch-key\n"
+    assert "launch-key" not in " ".join(keyed.args)
+    assert "Qwen/Qwen3-0.6B" in keyed.args
+    assert readiness(None).stdin in (None, "")

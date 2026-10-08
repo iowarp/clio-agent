@@ -69,6 +69,7 @@ from clio_agent.gact.infrastructure.native_vllm import (
     NATIVE_VARIANTS,
     native_variants,
     native_vllm_plan,
+    served_model,
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.resource_ledger import (
@@ -384,6 +385,61 @@ def _health_command(url: str, windows: bool) -> CommandSpec:
     )
 
 
+def _identity_health_command(
+    health_url: str, models_url: str, served: str, variable: str, api_key: str, windows: bool
+) -> CommandSpec:
+    """Readiness that proves the answering server is ours, not just healthy (F026, F010).
+
+    The endpoint must refuse ``/v1/models`` without the per-launch key, answer
+    its health URL, and, given the key (held in ``variable``, read from
+    stdin), list ``served`` (any model when empty). A server that accepts a
+    keyless request is someone else's: the check never reports it ready.
+    """
+
+    if windows:
+        script = (
+            f"$m = {powershell.literal(models_url)}; $u = {powershell.literal(health_url)}; "
+            f"$s = {powershell.literal(served)}; "
+            "try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 $m | Out-Null; "
+            "'foreign_endpoint'; exit 0 } catch { "
+            "$c = 0; if ($_.Exception.Response) { $c = [int]$_.Exception.Response.StatusCode }; "
+            "if ($c -ne 401 -and $c -ne 403) { 'waiting'; exit 0 } }; "
+            "try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 $u | Out-Null } "
+            "catch { 'waiting'; exit 0 }; "
+            "try { $b = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "
+            f'-Headers @{{Authorization = "Bearer $env:{variable}"}} $m).Content }} '
+            "catch { 'waiting'; exit 0 }; "
+            "if ($s -and -not $b.Contains('\"' + $s + '\"')) { 'waiting' } else { 'ready' }"
+        )
+        command = powershell.command(script, timeout_seconds=30)
+    else:
+        # The key reaches curl as a header read from stdin (-H @-), never as an
+        # argument; printf is a shell builtin.
+        command = CommandSpec(
+            program="sh",
+            args=[
+                "-c",
+                "command -v curl >/dev/null 2>&1 || { echo no_http_client; exit 0; }; "
+                'code=$(curl -s -m 5 -o /dev/null -w "%{http_code}" --noproxy "*" "$1"); '
+                'case "$code" in 401|403) ;; 2??) echo foreign_endpoint; exit 0 ;; '
+                "*) echo waiting; exit 0 ;; esac; "
+                'curl -fsS -m 5 -o /dev/null --noproxy "*" "$0" 2>/dev/null '
+                "|| { echo waiting; exit 0; }; "
+                f'body=$(printf "Authorization: Bearer %s\\n" "${variable}" '
+                '| curl -fsS -m 5 --noproxy "*" -H @- "$1" 2>/dev/null) '
+                "|| { echo waiting; exit 0; }; "
+                '[ -z "$2" ] || printf %s "$body" | grep -F -q "\\"$2\\"" '
+                "|| { echo waiting; exit 0; }; "
+                "echo ready",
+                health_url,
+                models_url,
+                served,
+            ],
+            timeout_seconds=30,
+        )
+    return with_secret_env(command, variable, api_key, windows=windows)
+
+
 def deployment_storage_configuration(
     service_id: str,
     facts: TargetFacts,
@@ -632,8 +688,22 @@ def build_model_runtime_plan(
             variable = f"APPTAINERENV_{variable}"
         return with_secret_env(command, variable, api_key, windows=windows)
 
+    health_url = f"http://127.0.0.1:{port}{spec.health_path}"
     readiness = Readiness(
-        health=_health_command(f"http://127.0.0.1:{port}{spec.health_path}", windows),
+        # Ollama has no API key upstream: its identity is the owned container
+        # alive plus /api/version answering.
+        health=(
+            _identity_health_command(
+                health_url,
+                f"http://127.0.0.1:{port}/v1/models",
+                served_model(launch.args[1], launch.args) if spec.engine == "vllm" else "",
+                KEY_VARIABLES[spec.engine],
+                api_key,
+                windows,
+            )
+            if api_key
+            else _health_command(health_url, windows)
+        ),
         alive=status_command(runtime, name),
         logs=logs_command(runtime, name, lines=40),
         label=spec.label,
