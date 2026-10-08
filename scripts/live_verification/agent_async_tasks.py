@@ -266,7 +266,7 @@ def main() -> int:
             common.terminate_server(process)
             if payload_server is not None:
                 payload_server.close()
-            common.write_verdict(proof / "verdict.json", verdict)
+            common.dump_json(proof / "verdict.json", verdict)
     print(
         json.dumps(
             {"pass": verdict.get("pass"), "error": verdict.get("error"), "proof": str(proof)}

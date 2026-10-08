@@ -38,7 +38,12 @@ def folder_input(proof: Path, kind: str) -> dict[str, Any]:
     for index in range(count):
         directory = root / f"group-{index // 500:03}"
         directory.mkdir(exist_ok=True)
-        os.link(seed, directory / f"entry-{index:06}.txt")
+        destination = directory / f"entry-{index:06}.txt"
+        if index % 500 == 0:
+            destination.write_bytes(seed.read_bytes())
+        else:
+            # NTFS caps hard links per file. Each real seed owns at most 500.
+            os.link(directory / f"entry-{index // 500 * 500:06}.txt", destination)
     return {
         "root": str(root),
         "entries": count + (count + 499) // 500 + 2,
