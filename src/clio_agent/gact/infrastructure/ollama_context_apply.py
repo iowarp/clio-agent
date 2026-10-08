@@ -28,19 +28,46 @@ AfterReadyHook = Callable[[Execute, Progress], Awaitable[dict[str, str]]]
 _GPU_AVAILABLE = re.compile(
     r'msg="(?:inference compute|gpu memory)".*?available="(?P<value>[\d.]+) ?(?P<unit>[KMGT]i?B|B)"'
 )
+_MODEL_INFO_KEY = re.compile(r'"model_info"\s*:\s*')
 _UNITS = {"B": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40}
 _UNITS.update({"KB": 10**3, "MB": 10**6, "GB": 10**9, "TB": 10**12})
 
 
 def gpu_available_bytes(logs: str) -> int | None:
-    """The GPU memory Ollama reported free at startup (the largest GPU), or None."""
+    """The GPU memory Ollama last reported available, or None.
+
+    The newest line wins: an Apptainer instance log is appended across
+    restarts, so earlier lines can describe an older server.
+    """
 
     found = [
         int(float(m.group("value")) * _UNITS[m.group("unit")])
         for m in _GPU_AVAILABLE.finditer(logs)
         if m.group("unit") in _UNITS
     ]
-    return max(found) if found else None
+    return found[-1] if found else None
+
+
+def model_info_from_show(text: str) -> dict[str, Any] | None:
+    """``model_info`` from an ``/api/show`` reply, also when only its tail was kept.
+
+    Command output is bounded to its last 16 000 characters; the reply leads
+    with the license and Modelfile (about 29 kB for qwen3:4b), and
+    ``model_info`` comes after them, so it is decoded where it starts.
+    """
+
+    whole = _json(text)
+    if isinstance(whole, dict):
+        info = whole.get("model_info")
+        return info if isinstance(info, dict) else None
+    start = _MODEL_INFO_KEY.search(text)
+    if start is None:
+        return None
+    try:
+        info, _end = json.JSONDecoder().raw_decode(text, start.end())
+    except ValueError:
+        return None
+    return info if isinstance(info, dict) else None
 
 
 def _http(url: str, body: dict[str, Any] | None, windows: bool, timeout: float) -> CommandSpec:
@@ -88,8 +115,8 @@ def ollama_context_hook(port: int, model: str, logs: CommandSpec, windows: bool)
     """The after-ready step that serves ``model`` at its computed context.
 
     Returns the settled-configuration entries ``effective.context_length`` and
-    ``effective.context_reason`` (empty when Ollama does not report the model's
-    trained context, so Ollama's own default stays in force).
+    ``effective.context_reason``; only the reason when Ollama does not report
+    the model's trained context, so Ollama's own default stays in force.
     """
 
     base = f"http://127.0.0.1:{port}"
@@ -97,16 +124,20 @@ def ollama_context_hook(port: int, model: str, logs: CommandSpec, windows: bool)
     async def apply(execute: Execute, progress: Progress) -> dict[str, str]:
         progress("Sizing the model's context")
         show = await execute(_http(f"{base}/api/show", {"model": model}, windows, 30))
-        info = (_json(show.stdout) or {}).get("model_info") if show.exit_code == 0 else None
-        if not isinstance(info, dict):
-            return {}
+        info = model_info_from_show(show.stdout) if show.exit_code == 0 else None
+        if info is None:
+            return {
+                "effective.context_reason": f"Ollama's default: /api/show gave no model_info for {model}"
+            }
         tags = await execute(_http(f"{base}/api/tags", None, windows, 30))
         log_text = (await execute(logs)).stdout
         chosen: ContextDefault | None = ollama_context_default(
             info, gpu_available_bytes(log_text), _model_size(_json(tags.stdout), model)
         )
         if chosen is None:
-            return {}
+            return {
+                "effective.context_reason": f"Ollama's default: {model} reports no trained context"
+            }
         progress(f"Serving {model} with context {chosen.tokens}")
         created = await execute(
             _http(

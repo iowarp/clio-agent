@@ -10,6 +10,7 @@ import pytest
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.ollama_context_apply import (
     gpu_available_bytes,
+    model_info_from_show,
     ollama_context_hook,
 )
 
@@ -31,6 +32,15 @@ LOG = (
 def test_gpu_available_is_read_from_the_startup_log() -> None:
     assert gpu_available_bytes(LOG) == int(38.6 * GIB)
     assert gpu_available_bytes("no gpu line") is None
+    newer = LOG.replace('available="38.6 GiB"', 'available="12.0 GiB"')
+    assert gpu_available_bytes(LOG + newer) == 12 * GIB
+
+
+def test_model_info_survives_a_reply_cut_to_its_tail() -> None:
+    reply = json.dumps({"license": "x" * 20_000, "model_info": MODEL_INFO, "capabilities": []})
+    assert model_info_from_show(reply) == MODEL_INFO
+    assert model_info_from_show("…" + reply[-16_000:]) == MODEL_INFO
+    assert model_info_from_show("…tail without it") is None
 
 
 class FakeTarget:
@@ -74,7 +84,7 @@ def test_hook_recreates_the_model_under_its_name_with_the_capped_context() -> No
 
 def test_hook_leaves_ollama_default_when_the_model_reports_no_context() -> None:
     target = FakeTarget({"model_info": {"general.architecture": "x"}})
-    assert _run(target) == {}
+    assert set(_run(target)) == {"effective.context_reason"}
     assert target.created == []
 
 
