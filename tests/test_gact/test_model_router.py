@@ -560,6 +560,8 @@ def test_a_model_whose_instance_stopped_is_refused_typed(tmp_path: Path, config_
     assert envelope.error.details["router"]["instance"] == "vllm@b"
     served = {"provider_id": provider, "model_id": "Qwen/Qwen3-4B"}
     assert router_model_error(app, served, session_id="s", source="session") is None
+    prefixed = {"provider_id": provider, "model_id": "hosted_vllm/Qwen/Qwen3-4B"}
+    assert router_model_error(app, prefixed, session_id="s", source="session") is None
 
 
 def test_an_unrouted_model_or_a_stopped_router_is_refused_typed(

@@ -413,7 +413,12 @@ def router_model_problem(
     )
     if router is None:
         return None
-    record = model_names(records, target_id).get(model_id)
+    names = model_names(records, target_id)
+    # A model ref may carry the wire prefix of the preset it is reached through.
+    for prefix in ("hosted_vllm/", "openai/"):
+        if model_id not in names and model_id.startswith(prefix):
+            model_id = model_id[len(prefix) :]
+    record = names.get(model_id)
     if record is not None and record.state != "running":
         return {
             "error": "model_instance_stopped",
