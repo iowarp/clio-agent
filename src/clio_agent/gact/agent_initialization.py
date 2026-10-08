@@ -65,10 +65,18 @@ def agent_not_available_error(app: Any, sid: str) -> ErrorEnvelope:
     )
 
 
-def mark_agent_ready(app: Any, agent: Any) -> None:
-    """Publish the live agent and promote inputs deferred during initialization."""
+def mark_agent_ready(app: Any, agent: Any, *, boot: bool = False) -> None:
+    """Publish the live agent and promote inputs deferred during initialization.
+
+    ``boot``: the agent was built from the persisted selection, not a bind, so its
+    context window is discovered in the background (F042).
+    """
 
     app.state.agent = agent
+    if boot:
+        from clio_agent.gact.providers import boot_handshake  # noqa: PLC0415
+
+        boot_handshake.schedule(app, agent)
 
     def drain() -> None:
         from clio_agent.gact.loop_inbox import drain_inbox_to_new_turn  # noqa: PLC0415
