@@ -434,10 +434,78 @@ def removed_deployment_error(
     )
 
 
-def raise_if_deployment_removed(app: Any, value: Any, *, session_id: str, source: str) -> None:
-    """Refuse (typed 409) a message whose model ran on an uninstalled managed deployment."""
+_ROUTER_MESSAGES = {
+    "model_instance_stopped": (
+        "The vLLM instance {instance} that serves {model} through the model router is "
+        "{state}. Start it, or pick another model."
+    ),
+    "model_router_stopped": (
+        "The model router on {target_id} is not running. Start it, or pick another model."
+    ),
+    "model_not_routed": (
+        "The model router on {target_id} serves no {model}; it routes {routed}. "
+        "Pick one of those, or deploy the model."
+    ),
+}
 
-    gone = removed_deployment_error(app, value, session_id=session_id, source=source)
+
+def router_model_error(
+    app: Any, value: Any, *, session_id: str, source: str
+) -> ErrorEnvelope | None:
+    """A typed 409 body for a model a CLIO-managed model router cannot serve right now.
+
+    The router (LiteLLM Proxy) serves only running instances; a session pinned
+    to a model whose instance stopped (or was removed) would otherwise get the
+    proxy's generic error. Checked against the infrastructure store: the saved
+    server's key ref names the router, its target names the instances.
+    """
+
+    ref = _model_ref_dict(value)
+    provider_id = str(ref.get("provider_id") or "")
+    infrastructure = getattr(getattr(app, "state", None), "infrastructure_store", None)
+    if not provider_id or infrastructure is None:
+        return None
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+    from clio_agent.gact.infrastructure.model_router import router_model_problem  # noqa: PLC0415
+
+    try:
+        entry = local_server_store.get_server(provider_id)
+    except local_server_store.LocalServerStoreError:
+        return None
+    if entry is None or not entry.credential_ref:
+        return None
+    problem = router_model_problem(
+        infrastructure, entry.credential_ref, str(ref.get("model_id") or "")
+    )
+    if problem is None:
+        return None
+    code = str(problem["error"])
+    facts = {**problem, "routed": ", ".join(map(str, problem.get("routed") or [])) or "nothing"}
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error=code,
+            message=_ROUTER_MESSAGES[code].format(**facts),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": ref,
+                "router": problem,
+                "recovery_actions": ["choose_model", "start_instance", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
+def raise_if_deployment_removed(app: Any, value: Any, *, session_id: str, source: str) -> None:
+    """Refuse (typed 409) a message whose model ran on an uninstalled managed deployment.
+
+    Also a model a managed model router cannot serve now (:func:`router_model_error`).
+    """
+
+    gone = removed_deployment_error(
+        app, value, session_id=session_id, source=source
+    ) or router_model_error(app, value, session_id=session_id, source=source)
     if gone is not None:
         from fastapi import HTTPException  # noqa: PLC0415
 

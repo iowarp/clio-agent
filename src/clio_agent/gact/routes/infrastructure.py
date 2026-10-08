@@ -15,6 +15,8 @@ from clio_agent.gact.infrastructure.context_sizing.preview import (
     ContextSizingPreviewRequest,
     preview_context,
 )
+from clio_agent.gact.infrastructure.gpu_share import GpuShareExceededError
+from clio_agent.gact.infrastructure.model_instances import InstanceNameError
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     DesktopExitRequest,
@@ -39,6 +41,7 @@ from clio_agent.gact.routes.infrastructure_provenance import (
     register_infrastructure_provenance_routes,
 )
 from clio_agent.gact.routes.infrastructure_storage import register_infrastructure_storage_routes
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.providers.capabilities.server_defaults import (
     register_context_default_lookup,
 )
@@ -184,7 +187,21 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
             row = runtime().start_action(service_id, request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Infrastructure target not found") from exc
+        except InstanceNameError as exc:
+            raise typed(422, exc.reason, str(exc), {"service_id": service_id}) from exc
+        except GpuShareExceededError as exc:
+            raise typed(409, exc.reason, str(exc), exc.details()) from exc
         return row.model_dump(mode="json")
+
+    def typed(
+        status_code: int, code: str, message: str, details: dict[str, object]
+    ) -> HTTPException:
+        return HTTPException(
+            status_code=status_code,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(error=code, message=message, details=details, recoverable=True)
+            ).model_dump(exclude_none=True),
+        )
 
     @app.post("/v1/infrastructure/services/{service_id}/context-sizing")
     async def context_sizing(

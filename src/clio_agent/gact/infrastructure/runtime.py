@@ -22,16 +22,18 @@ from clio_agent.gact.infrastructure.deployment_ledger import (
     remove_created,
 )
 from clio_agent.gact.infrastructure.drivers import (
-    LOOPBACK_ONLY_SERVICES,
     DriverPlan,
     build_driver_plan,
     clio_agent_version,
+    loopback_only,
     service_connection_port,
     service_definitions,
 )
 from clio_agent.gact.infrastructure.external_connections import ExternalConnectionsMixin
 from clio_agent.gact.infrastructure.local_executor import OutputSink, run_local, tcp_reachable
 from clio_agent.gact.infrastructure.local_executor import bounded as _bounded
+from clio_agent.gact.infrastructure.model_instances import engine_of, named_instance_ids
+from clio_agent.gact.infrastructure.model_router_runtime import ModelRouterMixin
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -59,6 +61,7 @@ from clio_agent.gact.infrastructure.server_access import (
     retire_saved_servers,
     settle_failed_launch,
     store_key,
+    stores_launch_key,
 )
 from clio_agent.gact.infrastructure.service_observation import parse_observation
 from clio_agent.gact.infrastructure.service_readiness import observe_service, wait_until_ready
@@ -73,7 +76,7 @@ from clio_agent.providers.credentials import resolve as resolve_credential
 logger = logging.getLogger(__name__)
 
 
-class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
+class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRouterMixin):
     """Own service operations and delegate only byte transport to Desktop."""
 
     def __init__(
@@ -152,7 +155,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             return await self._execute(target_id, spec)
 
         facts = await probe_target(target, execute if target.kind == "ssh" else None)
-        services = service_definitions(facts)
+        services = service_definitions(facts, named_instance_ids(self.store.services(), target_id))
         for service in services:
             record = self.store.service(target_id, service.id)
             if record is None:
@@ -289,6 +292,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
 
         if self.store.target(request.target_id) is None:
             raise KeyError(request.target_id)
+        self._admit(service_id, request)
         row = self.store.put_operation(
             InfrastructureOperation(
                 service_id=service_id,
@@ -361,7 +365,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             catalog = await self.catalog(request.target_id)
             target_os = catalog.facts.os
             definition = next(
-                (item for item in catalog.services if item.id == row.service_id), None
+                (item for item in catalog.services if item.id == engine_of(row.service_id)), None
             )
             if definition is None:
                 raise ValueError(f"Unknown managed service {row.service_id!r}")
@@ -430,6 +434,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         ),
                     }
                 )
+            request = await self._prepare_launch(row.service_id, request)
             api_key = launch_key(
                 request.target_id, row.service_id, request.action, request.configuration
             )
@@ -447,8 +452,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 api_key=api_key,
                 on_conflict=on_conflict,
                 resolved_root=(installed.resolved_root or None) if installed else None,
+                router=self._router_inputs(row.service_id, request.target_id),
             )
-            if api_key and request.action in {"install", "reinstall"}:
+            if api_key and stores_launch_key(row.service_id, request.action):
                 previous_key = load_key(request.target_id, row.service_id)
                 store_key(request.target_id, row.service_id, api_key)
                 made_key = True
@@ -655,6 +661,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                     cleaned_up=cleanup.startswith("Removed the"),
                 )
             tracker.finish("failed", f"Failed. {cleanup}", error=str(exc))
+        # Outside the operation's own error handling: the router follows its instances.
+        await self._refresh_router(request.target_id, row.service_id, request.action)
 
     async def _teardown(
         self,
@@ -727,8 +735,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
     ) -> tuple[str, ConnectionStrategy]:
         """Where the desktop reaches a running service, and how.
 
-        A service that listens on the target's loopback only
-        (:data:`LOOPBACK_ONLY_SERVICES`) is never tried at the host's address:
+        A service that listens on the target's loopback only (``loopback_only``,
+        named instances by their engine) is never tried at the host's address:
         that attempt cannot succeed, and on a route through jump hosts it
         spent half a minute on retries before the forward even started.
         """
@@ -747,7 +755,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         if target.kind != "ssh" or target.ssh is None:
             raise ValueError("Managed services require a local or SSH target")
         host = target.ssh.host.strip()
-        if host and service_id not in LOOPBACK_ONLY_SERVICES:
+        if host and not loopback_only(service_id):
             direct = f"http://{host}:{port}"
             attempts = 10 if wait_for_direct else 1
             for attempt in range(attempts):

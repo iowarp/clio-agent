@@ -16,7 +16,8 @@ import httpx
 from clio_agent.gact.infrastructure.container_runtime import parse_runtime_name
 from clio_agent.gact.infrastructure.effective_parameters import observe_effective
 from clio_agent.gact.infrastructure.log_follow import LogFollower
-from clio_agent.gact.infrastructure.model_runtimes import ENGINES, RUNTIME_FIELD
+from clio_agent.gact.infrastructure.model_instances import engine_of
+from clio_agent.gact.infrastructure.model_runtimes import ENGINES, RUNTIME_FIELD, engine_spec
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -131,7 +132,7 @@ async def observe_service(
     connection yet (nothing can be observed).
     """
 
-    spec = ENGINES.get(record.service_id)
+    spec = engine_spec(record.service_id) if engine_of(record.service_id) in ENGINES else None
     if spec is None or not record.connection_url or record.state != "running":
         return []
     base = record.connection_url.rstrip("/")

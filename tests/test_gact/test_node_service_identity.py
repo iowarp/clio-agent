@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from clio_agent.gact.infrastructure import node_service
+from clio_agent.gact.infrastructure import node_service, process_group
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX supervisor")
 
@@ -62,11 +62,11 @@ def test_group_members_lists_the_live_group(branch: str) -> None:
         [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
     )
     try:
-        assert node_service.group_members(child.pid) == [child.pid]
+        assert process_group.group_members(child.pid, node_service.identity) == [child.pid]
     finally:
         child.kill()
         child.wait()
-    assert node_service.group_members(child.pid) == []
+    assert process_group.group_members(child.pid, node_service.identity) == []
 
 
 def test_no_pid_has_no_identity() -> None:

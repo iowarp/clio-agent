@@ -195,7 +195,7 @@ def _layout(
             raise ValueError(
                 "Could not determine the target's home directory; set an install location."
             )
-        # Per host: cluster nodes share one home (see model_runtimes._service_dir).
+        # Per host: cluster nodes share one home (see service_paths.service_directory).
         service_dir = posixpath.join(root, "services", host, CONTAINER_NAME)
     if not posixpath.isabs(service_dir) or any(ch in service_dir for ch in ":,\n\r\0"):
         raise ValueError("The web search folder must be an absolute path without ':' or ','")

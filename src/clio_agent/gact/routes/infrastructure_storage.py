@@ -7,6 +7,7 @@ from typing import Any
 from clio_schemas.connected_resources import HostStorageLocations
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact.infrastructure.model_instances import engine_of
 from clio_agent.gact.infrastructure.model_runtimes import ENGINES, deployment_storage_configuration
 from clio_agent.gact.infrastructure.models import CommandSpec, InfrastructureTarget, TargetFacts
 from clio_agent.gact.infrastructure.probe import probe_target
@@ -79,7 +80,7 @@ def register_infrastructure_storage_routes(app: FastAPI) -> None:
                 row
                 for row in app.state.infrastructure_store.services()
                 if row.target_id == target_id
-                and row.service_id in ENGINES
+                and engine_of(row.service_id) in ENGINES
                 and "storage.service_directory" not in row.configuration
             ]
             if existing:

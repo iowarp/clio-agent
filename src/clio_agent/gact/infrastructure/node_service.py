@@ -30,6 +30,10 @@ from urllib.request import ProxyHandler, Request, build_opener
 MARKER = "CLIO_SERVICE_OBSERVATION "
 #: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
 LOG_GENERATIONS = 3
+#: Files a service definition may never write over.
+PROTECTED_FILES = frozenset(
+    {"owner.json", "receipt.json", "manifest.json", "controller.py", ".lock"}
+)
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -50,10 +54,9 @@ def _has_proc() -> bool:
 def identity(pid: int) -> str:
     """Return the exact live process identity, excluding zombies.
 
-    Linux: boot id + start tick from /proc. A POSIX host without /proc (macOS,
-    BSD): ``ps``'s start time, which with the PID names one process (F010 /
-    DIRECTIVES 11). This supervisor is POSIX-only (process groups, fcntl);
-    Windows native services use their own launcher.
+    Linux: boot id + start tick from /proc. A POSIX host without /proc (macOS, BSD): ``ps``'s start
+    time, which with the PID names one process (F010 / DIRECTIVES 11). This supervisor is
+    POSIX-only (process groups, fcntl); Windows native services use their own launcher.
     """
     if _has_proc():
         try:
@@ -124,6 +127,7 @@ def owner(root: Path, expected: str) -> None:
         "manifest.json",
         "controller.py",
         "clio_reuse.py",
+        "clio_process_group.py",
         "launch.py",
         ".lock",
         "environment",
@@ -195,9 +199,9 @@ def hook(root: Path, action: str, *, timeout: int = 90) -> None:
 def listeners(port: int) -> list[tuple[str, str]]:
     """Every TCP socket listening on ``port`` on this host, as (address, inode).
 
-    On Linux /proc/net lists sockets of every user, so a listener held by
-    another account on a shared node is visible even though its process is
-    not. Elsewhere a loopback connection attempt is the portable signal.
+    On Linux /proc/net lists sockets of every user, so a listener held by another account on a
+    shared node is visible even though its process is not. Elsewhere a loopback connection attempt
+    is the portable signal.
     """
     found = []
     tables = [Path(table) for table in ("/proc/net/tcp", "/proc/net/tcp6")]
@@ -233,10 +237,10 @@ def http_get(url: str, key: str = "") -> tuple[int, bytes]:
 def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
     """Whether the answering endpoint is provably the owned server (F010, F025).
 
-    Portable across operating systems and native/container runtimes: no socket
-    or process-table inspection. A model server must refuse a request without
-    the per-launch key and, when the caller holds the key, list the served
-    model. A container stack must report every owned component running.
+    Portable across operating systems and native/container runtimes: no socket or process-table
+    inspection. A model server must refuse a request without the per-launch key and, when the
+    caller holds the key, list the served model. A container stack must report every owned
+    component running.
     """
     manifest_path = root / "manifest.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
@@ -251,9 +255,16 @@ def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
         status, body = http_get(models, key)
         try:
             served = {row.get("id") for row in json.loads(body or b"{}").get("data", [])}
-        except (ValueError, AttributeError):
+            # A router lists every model it was launched with (a per-launch file).
+            listed = root / check.get("served_models_file", "")
+            wanted = (
+                set(json.loads(listed.read_text()))
+                if check.get("served_models_file") and listed.parent == root
+                else {check.get("served_model")}
+            )
+        except (OSError, ValueError, AttributeError, TypeError):
             return False
-        return status == 200 and check.get("served_model") in served
+        return status == 200 and wanted <= served
     if check.get("kind") == "components":
         script = root / check.get("hook", "")
         if script.parent != root or script.is_symlink() or not script.is_file():
@@ -395,11 +406,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         environment.mkdir(exist_ok=True)
         for name, content in manifest.get("files", {}).items():
             path = root / name
-            if (
-                path.parent != root
-                or path.is_symlink()
-                or name in {"owner.json", "receipt.json", "manifest.json", "controller.py", ".lock"}
-            ):
+            if path.parent != root or path.is_symlink() or name in PROTECTED_FILES:
                 raise ValueError("Invalid service definition support file")
             path.write_text(content, encoding="utf-8")
         write_json(root / "manifest.json", manifest)
@@ -409,15 +416,28 @@ def launch(root: Path, request: dict[str, Any]) -> None:
     if request.get("reuse_helper"):
         # The shared reuse helper the worker and the stack hooks import.
         (root / "clio_reuse.py").write_text(request["reuse_helper"], encoding="utf-8")
+    if request.get("process_group_helper"):
+        (root / "clio_process_group.py").write_text(request["process_group_helper"], "utf-8")
     for name in ("logs", "evidence", "cache", "tmp"):
         (root / name).mkdir(exist_ok=True)
+    # Per-launch, non-secret files (a router's model list): not part of the revision.
+    runtime_files = (request.get("runtime_files") or {}) if action == "start" else {}
+    for name, content in runtime_files.items():
+        path = root / name
+        if path.parent != root or path.is_symlink() or name in PROTECTED_FILES:
+            raise ValueError("Invalid per-launch service file")
+        path.write_text(content, encoding="utf-8")
     generation = str(uuid.uuid4())
     env = os.environ.copy()
     # Credentials are ephemeral process environment, never manifest/arguments.
-    if request.get("api_key"):
-        env["VLLM_API_KEY"] = request["api_key"]
-    else:
-        env.pop("VLLM_API_KEY", None)
+    variable = request.get("api_key_variable") or "VLLM_API_KEY"
+    secrets = {**(request.get("secret_env") or {}), variable: request.get("api_key") or ""}
+    for name, value in secrets.items():
+        if value:
+            env[name] = value
+        else:
+            env.pop(name, None)
+    env["CLIO_SECRET_VARIABLES"] = ",".join(sorted(secrets))
     if action == "install" and request.get("from_scratch"):
         env["CLIO_FROM_SCRATCH"] = "1"
     else:
@@ -454,8 +474,8 @@ def worker_environment(
 ) -> dict[str, str]:
     """Isolate the service from CLIO's interpreter and expose its own environment's tools.
 
-    Runtimes JIT-compile with console scripts installed beside their interpreter (vLLM's
-    flashinfer runs ``ninja``), so the service environment's ``bin`` leads ``PATH``.
+    Runtimes JIT-compile with console scripts installed beside their interpreter (vLLM's flashinfer
+    runs ``ninja``), so the service environment's ``bin`` leads ``PATH``.
     """
     env = {**base, **manifest.get("environment", {})}
     for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
@@ -480,6 +500,13 @@ def reuse_helper() -> Any:
     return None
 
 
+def process_group_helper() -> Any:
+    """The process-group reaper shipped beside this supervisor, else CLIO's own."""
+    with suppress(ImportError):
+        return importlib.import_module("clio_process_group")
+    return importlib.import_module("clio_agent.gact.infrastructure.process_group")
+
+
 def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
     """Copy the server's merged output into its log with credentials redacted."""
     for line in stream:
@@ -487,55 +514,6 @@ def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
             line = line.replace(value, "[redacted]")
         output.write(line)
         output.flush()
-
-
-def group_members(group: int) -> list[int]:
-    """Live processes of a POSIX process group other than the caller."""
-    if _has_proc():
-        pids = [int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()]
-    else:
-        pids = _ps_pids()
-    members = []
-    for pid in pids:
-        if pid == os.getpid():
-            continue
-        try:
-            if os.getpgid(pid) == group and identity(pid):
-                members.append(pid)
-        except OSError:
-            continue
-    return members
-
-
-def _ps_pids() -> list[int]:
-    """Every PID ``ps`` lists (a host without /proc)."""
-    try:
-        done = subprocess.run(
-            ["ps", "-A", "-o", "pid="], capture_output=True, text=True, timeout=10, check=False
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [int(word) for word in done.stdout.split() if word.isdigit()]
-
-
-def release_group(timeout: float = 10) -> None:
-    """End descendants left in the worker's own group after its child exited (F014).
-
-    A server's engine processes inherit the output pipe; if the API server dies
-    they would keep the GPU and the pipe while nothing supervises them.
-    """
-    group = os.getpgrp()
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        for pid in group_members(group):
-            try:
-                os.kill(pid, sig)
-            except OSError:
-                continue
-        deadline = time.monotonic() + timeout
-        while group_members(group) and time.monotonic() < deadline:
-            time.sleep(0.1)
-        if not group_members(group):
-            return
 
 
 def rotate_log(log: Path, keep: int = LOG_GENERATIONS) -> None:
@@ -592,8 +570,8 @@ def worker(root: Path, action: str, generation: str) -> None:
             str(root / "launch.py"),
             *manifest["arguments"],
         ]
-    secret = env.get("VLLM_API_KEY", "")
-    secrets = [secret] if secret else []
+    names = {"VLLM_API_KEY", *env.get("CLIO_SECRET_VARIABLES", "").split(",")}
+    secrets = [env[name] for name in sorted(names) if name and env.get(name)]
     credentials = root / "credentials.json"
     if credentials.is_file():
         secrets.extend(
@@ -625,7 +603,7 @@ def worker(root: Path, action: str, generation: str) -> None:
                 pump.start()
                 code = process.wait()
                 if not stopping and getattr(os, "getpgrp", None) and os.getpgrp() == os.getpid():
-                    release_group()
+                    process_group_helper().release_group(identity)
                 pump.join(timeout=10)
                 if code == 0 and helper is not None and not reused:
                     helper.record_uv_environment(

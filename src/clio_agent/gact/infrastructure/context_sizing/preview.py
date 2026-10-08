@@ -54,6 +54,10 @@ async def preview_context(
         logs_command,
         parse_runtime_name,
     )
+    from clio_agent.gact.infrastructure.model_instances import (  # noqa: PLC0415
+        engine_of,
+        validate_service_id,
+    )
     from clio_agent.gact.infrastructure.model_runtimes import (  # noqa: PLC0415
         ENGINES,
         MODEL_RUNTIME_SERVICES,
@@ -64,12 +68,13 @@ async def preview_context(
     )
     from clio_agent.gact.infrastructure.probe import probe_target  # noqa: PLC0415
 
-    if service_id not in MODEL_RUNTIME_SERVICES:
+    if engine_of(service_id) not in MODEL_RUNTIME_SERVICES:
         raise KeyError(service_id)
+    validate_service_id(service_id)
     target = runtime.store.target(request.target_id)
     if target is None:
         raise KeyError(request.target_id)
-    engine = cast(EngineId, service_id)
+    engine = cast(EngineId, engine_of(service_id))
     installed = runtime.store.service(request.target_id, service_id)
     typed = {key: value for key, value in request.configuration.items() if value.strip()}
     configuration = {**(installed.configuration if installed else {}), **typed}

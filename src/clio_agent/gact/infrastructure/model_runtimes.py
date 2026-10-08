@@ -26,6 +26,7 @@ handed over through the environment (:mod:`~clio_agent.gact.infrastructure.secre
 
 from __future__ import annotations
 
+import dataclasses
 import ntpath
 import posixpath
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ from clio_agent.gact.infrastructure.llama_native_windows import (
     NATIVE_PORT,
     native_windows_llama_plan,
 )
+from clio_agent.gact.infrastructure.model_instances import engine_of, instance_container_name
 from clio_agent.gact.infrastructure.model_runtime_readiness import (
     health_command,
     identity_health_command,
@@ -96,6 +98,7 @@ from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
 from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
 from clio_agent.gact.infrastructure.server_parameters import EngineId, compile_parameters
+from clio_agent.gact.infrastructure.service_paths import service_directory
 
 VLLM_VERSION = "0.28.0"
 OLLAMA_VERSION = "0.34.4"
@@ -211,6 +214,14 @@ ENGINES: dict[str, EngineSpec] = {
 }
 
 
+def engine_spec(service_id: str) -> EngineSpec:
+    """The engine spec of a deployment, named for its instance (``vllm@a`` -> ``clio-vllm-a``)."""
+
+    spec = ENGINES[engine_of(service_id)]
+    name = instance_container_name(spec.container_name, service_id)
+    return spec if name == spec.container_name else dataclasses.replace(spec, container_name=name)
+
+
 def service_port(service_id: str, configuration: dict[str, str], variant_id: str = "") -> int:
     """The target loopback port a model runtime listens on (configurable for containers)."""
 
@@ -218,7 +229,7 @@ def service_port(service_id: str, configuration: dict[str, str], variant_id: str
         return NATIVE_PORT
     raw = configuration.get(PORT_FIELD, "").strip()
     if not raw:
-        return ENGINES[service_id].port
+        return engine_spec(service_id).port
     if not raw.isdigit() or not 1024 <= int(raw) <= 65535:
         raise ValueError("port must be a number from 1024 to 65535")
     return int(raw)
@@ -348,40 +359,6 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
     )
 
 
-def _service_dir(spec: EngineSpec, facts: TargetFacts, target: InfrastructureTarget | None) -> str:
-    windows = facts.os == "windows"
-    module = ntpath if windows else posixpath
-    if target and any(target.storage.model_dump().values()):
-        from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
-
-        locations = resolved_locations(target, facts)
-        return module.join(
-            locations.service_data, facts.hostname or facts.target_id, spec.container_name
-        )
-    root = (target.install_root.strip() if target else "").rstrip("/\\")
-    if not root:
-        root = facts.agent_data_root
-    if not root:
-        if not facts.home:
-            raise ValueError(
-                "Could not determine the target's home directory; set an install location for this host."
-            )
-        root = (
-            module.join(facts.home, "AppData", "Local", "clio-agent", "data")
-            if windows
-            else module.join(facts.home, "Library", "Application Support", "clio-agent", "data")
-            if facts.os == "macos"
-            else module.join(facts.home, ".local", "share", "clio-agent")
-        )
-    if not module.isabs(root):
-        raise ValueError("The target's Agent data directory must be absolute")
-    # Cluster nodes share one home: without the host in the path, a login node
-    # and a compute node deploying the same engine would share one cache and
-    # one SIF, and uninstalling on one would delete the other's.
-    host = facts.hostname or facts.target_id
-    return module.join(root, "services", host, spec.container_name)
-
-
 def deployment_storage_configuration(
     service_id: str,
     facts: TargetFacts,
@@ -391,11 +368,11 @@ def deployment_storage_configuration(
 ) -> dict[str, str]:
     """Freeze an existing model deployment's paths before changing host defaults.
 
-    Legacy receipts recorded created directories but no resolved configuration.
-    Prefer their actual cache directory, then resolve with the old host settings.
+    Legacy receipts recorded created directories but no resolved configuration. Prefer their actual
+    cache directory, then resolve with the old host settings.
     """
     module = ntpath if facts.os == "windows" else posixpath
-    spec = ENGINES[service_id]
+    spec = engine_spec(service_id)
     caches = [
         row.ref
         for row in owned
@@ -408,7 +385,9 @@ def deployment_storage_configuration(
             f"Multiple model caches recorded for {service_id}; inspect its storage first"
         )
     service_dir = configuration.get("storage.service_directory") or (
-        module.dirname(caches[0]) if caches else _service_dir(spec, facts, target)
+        module.dirname(caches[0])
+        if caches
+        else service_directory(spec.container_name, facts, target)
     )
     return {
         **configuration,
@@ -582,10 +561,10 @@ def build_model_runtime_plan(
             :class:`RuntimeUnavailableError`) when no usable runtime fits.
     """
 
-    spec = ENGINES[service_id]
-    if service_id == "vllm" and variant_id in NATIVE_VARIANTS:
-        directory = configuration.get("storage.service_directory") or _service_dir(
-            spec, facts, target
+    spec = engine_spec(service_id)
+    if spec.engine == "vllm" and variant_id in NATIVE_VARIANTS:
+        directory = configuration.get("storage.service_directory") or service_directory(
+            spec.container_name, facts, target
         )
         return native_vllm_plan(
             action,
@@ -596,9 +575,9 @@ def build_model_runtime_plan(
             service_port(service_id, configuration),
             api_key,
         )
-    if api_key and service_id not in KEY_VARIABLES:
+    if api_key and spec.engine not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
-    if service_id == "llama_cpp" and variant_id == "native-windows-cpu":
+    if spec.engine == "llama_cpp" and variant_id == "native-windows-cpu":
         compiled = compile_parameters("llama_cpp", "cpu", configuration)
         return native_windows_llama_plan(
             action, configuration.get("model_path", "").strip(), target, compiled.flags, api_key
@@ -634,8 +613,8 @@ def build_model_runtime_plan(
         return DriverPlan(
             (stop_command(runtime, name),), connection_port=port, configuration=resolved
         )
-    service_dir = configuration.get("storage.service_directory") or _service_dir(
-        spec, facts, target
+    service_dir = configuration.get("storage.service_directory") or service_directory(
+        spec.container_name, facts, target
     )
     module = ntpath if windows else posixpath
     cache_dir = configuration.get("storage.model_cache") or module.join(service_dir, "cache")

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from clio_agent.gact.infrastructure import node_service, reuse
+from clio_agent.gact.infrastructure import node_service, process_group, reuse
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec, OwnedResource
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.service_observation import parse_observation
@@ -24,8 +24,17 @@ def supervised_plan(
     label: str,
     configuration: dict[str, str],
     api_key: str | None = None,
+    key_variable: str = "",
+    secret_env: dict[str, str] | None = None,
+    runtime_files: dict[str, str] | None = None,
 ) -> DriverPlan:
-    """Keep lifecycle, readiness, ownership and failure cleanup identical across drivers."""
+    """Keep lifecycle, readiness, ownership and failure cleanup identical across drivers.
+
+    A start hands the server ``api_key`` (as ``key_variable``, default
+    ``VLLM_API_KEY``) and any further ``secret_env`` through its environment,
+    and writes ``runtime_files`` (non-secret, per-launch) into the service
+    directory: neither changes the installed configuration's revision.
+    """
     script = Path(node_service.__file__).read_text(encoding="utf-8")
     operation_id = str(uuid4())
     # Outside the manifest (whose digest is the configuration revision): the
@@ -43,11 +52,22 @@ def supervised_plan(
         if cleanup:
             body["require_operation_id"] = operation_id
         if verb in {"install", "start"}:
-            body.update(manifest=manifest, script=script, reuse_helper=helper)
+            body.update(
+                manifest=manifest,
+                script=script,
+                reuse_helper=helper,
+                process_group_helper=process_group.source(),
+            )
             if verb == "install" and fresh:
                 body["from_scratch"] = True
             if verb == "start" and api_key:
                 body["api_key"] = api_key
+            extra = {
+                "api_key_variable": key_variable,
+                "secret_env": dict(secret_env or {}),
+                "runtime_files": dict(runtime_files or {}),
+            }
+            body.update({k: v for k, v in extra.items() if v and verb == "start"})
         elif verb == "status" and action == "start" and api_key:
             # Readiness proves the endpoint lists our model with the per-launch key.
             body["api_key"] = api_key

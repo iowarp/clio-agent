@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+from collections.abc import Iterable
 from typing import cast
 from uuid import uuid4
 
@@ -14,6 +15,20 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     teardown_command,
 )
 from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
+from clio_agent.gact.infrastructure.gpu_share import share_launch
+from clio_agent.gact.infrastructure.model_instances import (
+    ROUTER_SERVICE,
+    engine_of,
+    instance_label,
+    is_named_instance,
+    validate_service_id,
+)
+from clio_agent.gact.infrastructure.model_router import (
+    RouterInputs,
+    router_definition,
+    router_plan,
+    router_port,
+)
 from clio_agent.gact.infrastructure.model_runtimes import (
     MODEL_RUNTIME_SERVICES,
     build_model_runtime_plan,
@@ -63,8 +78,17 @@ CLIO_AGENT_PORT = 17_800
 # Services whose server listens on the target's loopback only: nothing can
 # reach them at the host's address, so they are always reached through an SSH
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
-# loopback because they have no authentication (see model_runtimes).
-LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
+# loopback because they have no authentication (see model_runtimes). Named
+# instances (``vllm@small``) are matched by their engine (:func:`loopback_only`).
+LOOPBACK_ONLY_SERVICES = frozenset(
+    {"clio_agent", ROUTER_SERVICE, *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES}
+)
+
+
+def loopback_only(service_id: str) -> bool:
+    """Whether ``service_id`` (or the engine of a named instance) listens on loopback only."""
+
+    return engine_of(service_id) in LOOPBACK_ONLY_SERVICES
 
 
 def clio_agent_version() -> str:
@@ -82,8 +106,10 @@ def service_connection_port(
     (``configuration["port"]``); the native Windows llama.cpp on its fixed one.
     """
 
-    if service_id in MODEL_RUNTIME_SERVICES:
+    if engine_of(service_id) in MODEL_RUNTIME_SERVICES:
         return service_port(service_id, configuration or {}, variant_id)
+    if service_id == ROUTER_SERVICE:
+        return router_port(configuration or {})
     if service_id in MONITORING_SERVICES:
         return monitoring_port(service_id, configuration or {})
     if service_id == "clio_agent":
@@ -113,8 +139,14 @@ def _field(
     )
 
 
-def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
-    """Build service compatibility from inspected host facts."""
+def service_definitions(
+    facts: TargetFacts, instances: Iterable[str] = ()
+) -> list[ManagedServiceDefinition]:
+    """Build service compatibility from inspected host facts.
+
+    ``instances`` are the named model-runtime instances (``vllm@small``) to
+    list beside their engine's default deployment.
+    """
 
     relay = ManagedServiceDefinition(
         id="relay",
@@ -161,8 +193,16 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
             )
         ],
     )
+    named: list[ManagedServiceDefinition] = []
+    for service_id in dict.fromkeys(instances):
+        if is_named_instance(service_id) and engine_of(service_id) in MODEL_RUNTIME_SERVICES:
+            engine = model_runtime_definition(engine_of(service_id), facts)
+            label = instance_label(engine.label, service_id)
+            named.append(engine.model_copy(update={"id": service_id, "label": label}))
     return [
         model_runtime_definition("vllm", facts),
+        *named,
+        router_definition(facts),
         model_runtime_definition("llama_cpp", facts),
         model_runtime_definition("ollama", facts),
         *monitoring_definitions(facts),
@@ -193,6 +233,7 @@ def build_driver_plan(
     api_key: str | None = None,
     on_conflict: str | None = None,
     resolved_root: str | None = None,
+    router: RouterInputs | None = None,
 ) -> DriverPlan:
     """Compile one allowlisted lifecycle action into commands.
 
@@ -205,16 +246,20 @@ def build_driver_plan(
     it again; a fresh claim asks again every time. ``resolved_root``
     overrides ``target.install_root`` when a prior ``connect`` adopted the
     service under a different root than the target's configured one.
+    ``router`` is what a model-router start routes to (its instances and keys).
     """
 
-    definitions = {row.id: row for row in service_definitions(facts)}
+    validate_service_id(service_id)
+    definitions = {row.id: row for row in service_definitions(facts, [service_id])}
     definition = definitions.get(service_id)
     if definition is None:
         raise ValueError(f"Unknown managed service {service_id!r}")
+    engine = engine_of(service_id)
     if action == "delete_data" and not (
-        (service_id == "vllm" and variant_id.startswith("native-cuda"))
+        (engine == "vllm" and variant_id.startswith("native-cuda"))
         or service_id in MONITORING_SERVICES
         or service_id == "web_search"
+        or service_id == ROUTER_SERVICE
     ):
         raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
@@ -230,10 +275,13 @@ def build_driver_plan(
             facts,
             target or InfrastructureTarget(id=facts.target_id, label=facts.label, kind="local"),
         )
-    if service_id in MODEL_RUNTIME_SERVICES:
+    if service_id == ROUTER_SERVICE:
+        return router_plan(action, configuration, facts, target, api_key, router)
+    if engine in MODEL_RUNTIME_SERVICES:
         # The model-runtime driver checks its own compatibility, so a missing
         # container runtime surfaces as the typed RuntimeUnavailableError. The
-        # context is sized around it (context_sizing.deployment).
+        # context is sized around it (context_sizing.deployment), and a vLLM
+        # GPU share is its memory utilization (gpu_share).
         def model_plan(sized: dict[str, str]) -> DriverPlan:
             return build_model_runtime_plan(
                 service_id=service_id,
@@ -247,12 +295,12 @@ def build_driver_plan(
             )
 
         return sized_model_runtime_plan(
-            engine=cast(EngineId, service_id),
+            engine=cast(EngineId, engine),
             action=action,
             variant_id=variant_id,
             configuration=configuration,
             facts=facts,
-            build=model_plan,
+            build=share_launch(model_plan, engine, variant_id),
         )
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")
