@@ -32,6 +32,7 @@ from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.web_search_service import (
     WEB_SEARCH_IMAGE,
     WEB_SEARCH_PINNED_IMAGE,
+    web_search_image,
 )
 
 posix_only = pytest.mark.skipif(sys.platform == "win32", reason="Apptainer is Linux-only")
@@ -83,8 +84,10 @@ def test_apptainer_only_host_offers_web_search_with_the_pinned_image() -> None:
     row = web_search(facts("apptainer"))
     variant = row.variants[0]
     assert variant.compatible
-    assert variant.artifact == WEB_SEARCH_PINNED_IMAGE
-    digest = WEB_SEARCH_PINNED_IMAGE.rsplit("@sha256:", 1)[1]
+    # The default install is the slim image (documents off), always digest-pinned on Apptainer.
+    default = web_search_image({})
+    assert variant.artifact == default.pinned
+    digest = default.pinned.rsplit("@sha256:", 1)[1]
     assert len(digest) == 64 and all(ch in "0123456789abcdef" for ch in digest)
     runtime = next(field for field in row.configuration_fields if field.id == "container_runtime")
     assert runtime.options == ["apptainer"]
@@ -124,7 +127,8 @@ def test_docker_install_is_unchanged_and_podman_uses_the_same_commands() -> None
         service_id="web_search",
         action="install",
         variant_id="container",
-        configuration={"contact_email": "alice@example.org"},
+        # The full image keeps the release tag on Docker and Podman.
+        configuration={"contact_email": "alice@example.org", "documents": "on"},
         facts=facts("docker", docker=True),
     )
     assert [argv(spec) for spec in docker.commands] == [
@@ -183,7 +187,7 @@ def test_docker_verify_runs_one_search_inside_the_container_and_keeps_data_whole
 
 
 def test_apptainer_install_pins_the_image_and_keeps_secrets_out_of_argv() -> None:
-    install = plan("install", {"contact_email": "alice@example.org"})
+    install = plan("install", {"contact_email": "alice@example.org", "documents": "on"})
     joined = [argv(spec) for spec in install.commands]
     pulls = [line for line in joined if "clio-apptainer-pull" in line]
     assert len(pulls) == 2 and all(WEB_SEARCH_PINNED_IMAGE in line for line in pulls)

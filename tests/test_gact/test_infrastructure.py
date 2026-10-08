@@ -111,7 +111,11 @@ def test_web_search_plan_is_pinned_and_allowlisted() -> None:
         service_id="web_search",
         action="install",
         variant_id="container",
-        configuration={"contact_email": "alice@example.org", "task_backend_port": "8090"},
+        configuration={
+            "contact_email": "alice@example.org",
+            "task_backend_port": "8090",
+            "documents": "on",
+        },
         facts=facts,
     )
 
