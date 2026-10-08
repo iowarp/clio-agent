@@ -369,6 +369,10 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     # Returns the task handle for a later wait (run_index is the ensemble run id, #948 S5);
     # queued_reason is the typed at-cap reason (#948 S6 fire-and-forget handle).
     assert result == {
+        "accepted": True,
+        "handle": "task_abc",
+        "kind": "Subagent",
+        "description": "analyze",
         "task_id": "task_abc",
         "status": "running",
         "run_index": 0,
@@ -1013,6 +1017,10 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
     assert result == {
         "spawned": [
             {
+                "accepted": True,
+                "handle": "task_data_expert",
+                "kind": "Subagent",
+                "description": "profile the CSV",
                 "task_id": "task_data_expert",
                 "status": "running",
                 "run_index": 0,
@@ -1024,6 +1032,10 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
                 "placement": "local",
             },
             {
+                "accepted": True,
+                "handle": "task_hpc_expert",
+                "kind": "Subagent",
+                "description": "run the job",
                 "task_id": "task_hpc_expert",
                 "status": "running",
                 "run_index": 0,
@@ -2255,6 +2267,10 @@ def test_one_placement_parameter_drives_local_and_relay_with_part_shape_parity(
         set(local_wire)
         == set(relay_wire)
         == {
+            "accepted",
+            "handle",
+            "kind",
+            "description",
             "handle_id",
             "host",
             "live_state",
@@ -2266,6 +2282,11 @@ def test_one_placement_parameter_drives_local_and_relay_with_part_shape_parity(
             "task_id",
         }
     )
+    for wire, assignment in ((local_wire, "profile locally"), (relay_wire, "profile remotely")):
+        assert wire["accepted"] is True
+        assert wire["kind"] == "Subagent"
+        assert wire["handle"] == wire["task_id"]
+        assert wire["description"] == assignment
     assert len(parts) == 2
     assert set(parts[0][1].to_wire()) == set(parts[1][1].to_wire())
     for (_sid, part), wire in zip(parts, (local_wire, relay_wire), strict=True):
@@ -2922,3 +2943,28 @@ def test_child_rollup_appends_nothing_when_no_child_spawned_this_turn(tmp_path: 
     append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
 
     assert transcript.snapshot() == []
+
+
+def test_compatibility_collectors_cannot_read_an_unrelated_subagent(monkeypatch) -> None:
+    foreign = replace(
+        _completed_task("foreign-task"),
+        parent_session_id="foreign-parent",
+        child_session_id="foreign-child",
+        notify_pending=True,
+    )
+    registry = AgentTaskRegistry()
+    registry.register(foreign)
+    app = _fake_app(registry)
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        waited = json.loads(tools["wait_agent_tasks"].func(task_ids=[foreign.task_id]))
+        fetched = json.loads(tools["get_agent_task_output"].func(task_id=foreign.task_id))
+        observed = json.loads(tools["observe_agent_tasks"].func(task_ids=[foreign.task_id]))
+    assert waited["results"] == [{"task_id": foreign.task_id, "error": "unknown_task"}]
+    assert fetched == {"task_id": foreign.task_id, "error": "unknown_task"}
+    assert observed["tasks"] == [{"task_id": foreign.task_id, "error": "unknown_task"}]
+    retained = registry.get(foreign.task_id)
+    assert retained is not None and retained.notify_pending and not retained.consumed_at
+    assert parts == []

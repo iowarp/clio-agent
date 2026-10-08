@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import time
+from datetime import datetime
 from typing import Any
 
 from clio_agent.gact import context
@@ -137,14 +138,20 @@ def collect_result(app: Any, sid: str, row: dict[str, Any]) -> dict[str, Any]:
     consume_task(app, sid, row["handle"])
     result = row.get("result")
     if row["task_kind"] == "Subagent":
-        from clio_agent.gact.agents.agent_task_output_digest import digested_model_row
         from clio_agent.gact.agents.spawn_completion import completion_payload
 
         task = app.state.agent_task_registry.get(row["id"])
-        result = digested_model_row(completion_payload(app, task), task)
+        result = completion_payload(app, task)
     from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
 
-    rendered = bounded_model_tool_result(json.dumps(result, ensure_ascii=False, default=str))
+    session = app.state.sessions.get(sid)
+    workspaces = getattr(app.state, "workspaces", None)
+    workspace = workspaces.get(session.workspace_id) if workspaces is not None else None
+    rendered = bounded_model_tool_result(
+        json.dumps(result, ensure_ascii=False, default=str),
+        root=getattr(workspace, "root_path", None),
+        session_id=sid,
+    )
     try:
         result = json.loads(rendered)
     except json.JSONDecodeError:
@@ -205,6 +212,7 @@ def _wait_tasks(
         pending = [r["handle"] for r in rows if r["effective_status"] not in TERMINAL]
         expired = deadline is not None and time.monotonic() >= deadline
         if not pending or expired or (return_when == "any" and (settled or errors)):
+            settled.sort(key=_settlement_order)
             return {
                 "results": [collect_result(app, sid, r) for r in settled],
                 "errors": errors,
@@ -212,6 +220,15 @@ def _wait_tasks(
                 "timed_out": bool(pending and expired),
             }
         _wait_change(app, sid, version, deadline)
+
+
+def _settlement_order(row: dict[str, Any]) -> tuple[float, str]:
+    """Collect in recorded completion order, including the once-only event lane."""
+    try:
+        completed_at = datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
+        return completed_at.timestamp(), row["handle"]
+    except (KeyError, TypeError, ValueError):
+        return float("inf"), row["handle"]
 
 
 def observe_tasks(
@@ -235,7 +252,18 @@ def _observe_tasks(
 ) -> dict[str, Any]:
     app, sid = _scope()
     deadline = _deadline(timeout_s)
-    regex = re.compile(pattern) if pattern is not None else None
+    try:
+        regex = re.compile(pattern) if pattern is not None else None
+    except re.error as exc:
+        return {
+            "error": "invalid_pattern",
+            "message": str(exc),
+            "pattern": pattern,
+            "tasks": [],
+            "events": [],
+            "errors": [{"error": "invalid_pattern", "message": str(exc)}],
+            "matched": False,
+        }
     start, recovered = _observe_cursor(app, cursor)
     if recovered:
         start = 0

@@ -347,7 +347,7 @@ def observe_agent_tasks_impl(
     app: Any,
     *,
     task_ids: list[str] | None,
-    cursor: int = 1,
+    cursor: str | int = 1,
     limit: int = DEFAULT_OBSERVE_LIMIT,
     pattern: str | None = None,
     include_state: bool = True,
@@ -373,7 +373,12 @@ def observe_agent_tasks_impl(
         limit_i = DEFAULT_OBSERVE_LIMIT
     limit_i = max(1, min(limit_i, MAX_OBSERVE_LIMIT))
     try:
-        cursor_i = max(1, int(cursor))
+        if isinstance(cursor, str):
+            from clio_agent.gact.task_controls import _observe_cursor
+
+            cursor_i = _observe_cursor(app, cursor)[0] + 1
+        else:
+            cursor_i = max(1, int(cursor))
     except (TypeError, ValueError):
         cursor_i = 1
 
@@ -394,9 +399,23 @@ def observe_agent_tasks_impl(
                 sort_keys=True,
             )
 
-    requested = [str(t) for t in (task_ids or [])]
-    resolved: dict[str, Any] = {tid: registry.get(tid) for tid in requested}
+    from clio_agent.gact import context
+    from clio_agent.gact.task_controls import observe_tasks
+    from clio_agent.gact.task_projection import resolve_task
 
+    requested = [str(t) for t in (task_ids or [])]
+    if requested:
+        # The shared owner handles the commitment, Stop, pattern and settlement.
+        # Everything below is the old wire presentation, not another task driver.
+        observe_tasks(requested, cursor=cursor_i - 1, pattern=pattern)
+    resolved: dict[str, Any] = {}
+    for tid in requested:
+        try:
+            row = resolve_task(app, context.active_session_id(), tid)
+        except ValueError:
+            resolved[tid] = None
+        else:
+            resolved[tid] = registry.get(row["id"]) if row["task_kind"] == "Subagent" else None
     scan_cursor = cursor_i
     while True:
         result = _read_once(
@@ -408,27 +427,14 @@ def observe_agent_tasks_impl(
             compiled=compiled,
             include_state=include_state,
         )
-        if compiled is None:
+        if (
+            compiled is None
+            or result["matched"]
+            or _terminal_or_error_reached(resolved)
+            or not result["events_truncated"]
+        ):
             return _finish_observe(result)
-        if result["matched"] or _terminal_or_error_reached(resolved):
-            return _finish_observe(result)
-        # A patterned hold scans every already-buffered page before subscribing.
-        # This avoids missing a match beyond the caller's display limit without
-        # returning a model-visible polling ladder.
-        if result["events_truncated"]:
-            scan_cursor = int(result["next_cursor"])
-            continue
-        # Use the highest event visible in this snapshot as the condition
-        # watermark.  wait_for_session_events checks its predicate under the same
-        # lock as EventBus history append, closing the snapshot→subscribe race.
-        child_session_ids = [
-            task.child_session_id for task in resolved.values() if task is not None
-        ]
-        watermark = app.state.bus.latest_session_event_id(child_session_ids)
-        app.state.bus.wait_for_session_events(child_session_ids, after_event_id=watermark)
-        # A lifecycle event may represent running→terminal, so refresh the
-        # authoritative task projection after every event-driven wake.
-        resolved = {tid: registry.get(tid) for tid in requested}
+        scan_cursor = int(result["next_cursor"])
 
 
 def build_observe_tool() -> Any:
@@ -465,16 +471,13 @@ def build_observe_tool() -> Any:
         app = _ctx.active_app()
         if app is None or not _ctx.active_session_id():
             raise RuntimeError("observe_agent_tasks requires an active CLIO app/session context")
-        from clio_agent.gact.task_controls import observe_tasks
-
-        del limit, include_state
-        return json.dumps(
-            observe_tasks(
-                task_ids,
-                cursor=max(0, cursor - 1) if isinstance(cursor, int) else cursor,
-                pattern=pattern,
-            ),
-            default=str,
+        return observe_agent_tasks_impl(
+            app,
+            task_ids=task_ids,
+            cursor=cursor,
+            limit=limit,
+            pattern=pattern,
+            include_state=include_state,
         )
 
     return native_tool(

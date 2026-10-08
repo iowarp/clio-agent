@@ -129,6 +129,13 @@ restart are retained. App-less legacy MCP callers retain their existing
 transparent result behavior; all supported product bridges require the shared
 agent-facing contract.
 
+Compatibility observation keeps the old numeric cursor, bounded curated rows,
+workflow-state snapshot and declared structured response while using the shared
+wait/Stop/authorization machinery. Grouped collection follows recorded terminal
+order on both result and event lanes. Shared result collection uses the existing
+model-result bound and session-owned spill references, including the complete
+stored subagent output; it does not refer to an omitted compatibility tool.
+
 ## Qualification ledger
 
 Evidence lives under the recovery directory's `mcp-agent-tasks/`. A gate passes
@@ -148,7 +155,8 @@ CI and executor-only probes are separate evidence.
 | Reconnect and isolated service interruption | Outstanding live matrix for each distinct execution route. Lost nonrecoverable work must be honest. |
 | Desktop and phone UI | Outstanding real-service browser interaction and visual review. |
 | Five final lifecycle race repetitions | Outstanding; run after the final integrated changes. |
-| Focused checks and CI | In progress; no feature CI conclusion yet. |
+| Focused checks and CI | GACT `85e04c9e` passed both full workspace runs; native/build routes still pending. Core `dd4cb684` exposed legacy response/fixture failures. Nine first-shard cases now pass separately; remaining affected cases are running separately. New exact-head CI and final checks remain required. |
+| Parallel Codex arguments | `model-parallel-argument-diagnostic-1` recorded correct actual model arguments and empty tool inputs on the coalesced parallel path. The provider bridge now reconciles completed argument snapshots on WebSocket and SSE, with three focused passing cases. Fresh model acceptance remains required. |
 
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,

@@ -58,6 +58,7 @@ def main() -> int:
     parser.add_argument("--proof", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18835)
     parser.add_argument("--model", default="gpt-6-luna")
+    parser.add_argument("--transport", choices=["websocket", "sse"], default="websocket")
     parser.add_argument("--phase", choices=["baseline", "acceptance"], default="baseline")
     parser.add_argument("--slow-payload", action="store_true")
     parser.add_argument(
@@ -179,7 +180,7 @@ def main() -> int:
                     "provider": "codex",
                     "model": args.model,
                     "api_base": "",
-                    "transport": "websocket",
+                    "transport": args.transport,
                 },
             )
             common.expanding_wait(

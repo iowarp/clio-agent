@@ -2663,7 +2663,9 @@ Coordinate genomics work.
     assert "returns the requested children's output into your" in context
     assert "do not repeatedly poll" in context
     assert "NEXT turn" in context  # observe-later: results inject into the next turn
-    assert "observe_agent_tasks" in context  # non-blocking observation while working
+    assert "observe_tasks" in context  # shared non-consuming task observation
+    assert "wait_tasks" in context
+    assert "observe_agent_tasks" not in context  # compatibility names aren't taught by default
     assert "check_agent_tasks" not in context  # observe owns snapshots and monitoring
     # The old serial teaching must be gone (it made sync spawn→wait the default).
     assert "Spawn one child, wait for its evidence" not in context

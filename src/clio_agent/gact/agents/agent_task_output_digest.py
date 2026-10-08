@@ -272,8 +272,17 @@ def build_agent_task_output_tool() -> Any:
         if app is None:
             raise RuntimeError("get_agent_task_output requires an active CLIO app context")
         from clio_agent.gact.task_controls import get_task_result
+        from clio_agent.gact.task_projection import resolve_task
 
-        return json.dumps(get_task_result(task_id), default=str)
+        sid = _ctx.active_session_id()
+        try:
+            row = resolve_task(app, sid, task_id)
+        except ValueError:
+            return json.dumps({"task_id": task_id, "error": "unknown_task"})
+        if row["task_kind"] != "Subagent":
+            return json.dumps({"task_id": task_id, "error": "not_subagent"})
+        get_task_result(row["handle"])
+        return get_agent_task_output_impl(app, row["id"])
 
     return native_tool(
         get_agent_task_output,

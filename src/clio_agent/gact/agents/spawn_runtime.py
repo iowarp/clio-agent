@@ -494,7 +494,7 @@ def build_spawn_runtime_tools(
             {
                 "accepted": True,
                 "task_id": spawned.task_id,
-                "handle": spawned.handle_id or spawned.task_id,
+                "handle": getattr(spawned, "handle_id", "") or spawned.task_id,
                 "kind": "Subagent",
                 "description": task,
                 "status": spawned.status,
@@ -560,12 +560,23 @@ def build_spawn_runtime_tools(
         wait_started_at = datetime.now(timezone.utc)
         request_order_results: list[dict[str, Any]] = []
         collected_rows: list[tuple[int, Any | None, dict[str, Any], dict[str, Any]]] = []
+        if task_ids:
+            from clio_agent.gact.task_controls import wait_tasks
+
+            wait_tasks(task_ids)
         for request_index, tid in enumerate(task_ids or []):
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
             # (starving every real id after it via the shared deadline). An unknown
             # id returns immediately with a typed row and emits nothing.
-            task = registry.get(tid)
+            from clio_agent.gact.task_projection import resolve_task
+
+            try:
+                selected = resolve_task(app, session_id, tid)
+            except ValueError:
+                task = None
+            else:
+                task = registry.get(selected["id"]) if selected["task_kind"] == "Subagent" else None
             if task is None:
                 payload = {"task_id": tid, "error": "unknown_task"}
                 structured_row = wait_structured_row(tid, "unknown_task", 0.0, "")
@@ -573,10 +584,7 @@ def build_spawn_runtime_tools(
                 collected_rows.append((request_index, None, payload, structured_row))
                 continue
             try:
-                from clio_agent.gact.task_controls import wait_tasks
-
-                wait_tasks(tid)
-                task_result = registry.get(tid)
+                task_result = registry.get(task.task_id)
                 if task_result is None:
                     raise SpawnError(
                         f"Task {tid!r} disappeared during collection", reason="unknown_task"

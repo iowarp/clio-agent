@@ -102,4 +102,22 @@ def emit_raw_event(
     )
 
 
-__all__ = ["emit_call_started", "emit_call_usage", "emit_raw_event"]
+def emit_tool_call(*, call_index: int, item: dict[str, Any]) -> None:
+    """Retain backend tool arguments on the opt-in audit without transport credentials."""
+    if not stream_audit_enabled():
+        return
+    session_id, turn_id, trace_id = active_gact_ids()
+    stream_audit(
+        "provider.tool_call",
+        provider=_PROVIDER,
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        call_index=call_index,
+        call_id=item.get("call_id"),
+        tool_name=item.get("name"),
+        arguments=item.get("arguments"),
+    )
+
+
+__all__ = ["emit_call_started", "emit_call_usage", "emit_raw_event", "emit_tool_call"]

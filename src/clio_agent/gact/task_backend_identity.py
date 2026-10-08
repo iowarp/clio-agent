@@ -10,6 +10,8 @@ from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord
 
 def relay_key(app: Any, task: Any) -> TaskKey | None:
     """Read full retained identity, or resolve an older bare alias only if unambiguous."""
+    from clio_agent.gact.agents.relay_invoker_runtime import RELAY_REMOTE_AGENT_TOOL
+
     child = app.state.sessions.get(task.child_session_id)
     retained = (getattr(child, "metadata", None) or {}).get("relay_task_key")
     if retained:
@@ -20,7 +22,7 @@ def relay_key(app: Any, task: Any) -> TaskKey | None:
     matches = [
         row.key
         for row in app_task_store(app).list()
-        if row.tool == "relay_submit_agent"
+        if row.tool == RELAY_REMOTE_AGENT_TOOL
         and row.session_id == task.parent_session_id
         and row.task_id == task.task_id
     ]

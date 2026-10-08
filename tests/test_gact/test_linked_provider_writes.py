@@ -25,7 +25,7 @@ def test_globus_adapter_create_replace_delete_and_readonly(
     record = SimpleNamespace(linked_access="write_through", source=SimpleNamespace(root="/"))
     adapter.source = SimpleNamespace(
         record=record,
-        entries=lambda: [
+        entries=lambda *, progress=None, cancelled=None: [
             FileEntry(path=path.lstrip("/"), kind="file", size=len(data), revision=data.hex())
             for path, data in files.items()
         ],

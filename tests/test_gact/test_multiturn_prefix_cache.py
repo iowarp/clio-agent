@@ -212,7 +212,8 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     assert "observe_tasks(tasks, cursor=" in first
     assert "check_agent_tasks(" not in first
     assert "without consuming it" in first
-    assert "pattern" in first and "next_cursor" in first
+    assert "pattern" in first and "returned `cursor`" in first
+    assert "omit the initial cursor" in first
 
 
 def test_orchestrator_briefing_child_order_is_deterministic(

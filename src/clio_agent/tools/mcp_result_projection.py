@@ -59,7 +59,9 @@ def transcript_tool_result_chars() -> int:
     )
 
 
-def bounded_model_tool_result(text: str) -> str:
+def bounded_model_tool_result(
+    text: str, *, root: str | Path | None = None, session_id: str | None = None
+) -> str:
     """The model-facing text of one tool result: whole, or its head plus a file for the rest.
 
     The harness does not decide what the agent needs from a big result. Over
@@ -73,7 +75,11 @@ def bounded_model_tool_result(text: str) -> str:
     if len(text) <= max_chars:
         return text
     try:
-        path = _spill(text)
+        path = (
+            _spill(text)
+            if root is None and session_id is None
+            else _spill(text, root=root, session_id=session_id)
+        )
         where = f"the full result is in `{path}` for you to explore (read it in parts or search it)"
     except OSError as exc:
         logger.warning(
@@ -97,7 +103,7 @@ def bounded_model_tool_result(text: str) -> str:
     return f"{note}\n\n{head}"
 
 
-def _spill(text: str) -> Path:
+def _spill(text: str, *, root: str | Path | None = None, session_id: str | None = None) -> Path:
     """Write ``text`` to the session's tool-output folder; return the file."""
     from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
     from clio_agent.tools.servers.shell_spill_store import (  # noqa: PLC0415
@@ -105,8 +111,8 @@ def _spill(text: str) -> Path:
         spill_directory,
     )
 
-    root = get_active_tool_workspace_root() or str(Path.cwd())
-    folder = spill_directory(root, session_id=active_session_id())
+    root = root or get_active_tool_workspace_root() or str(Path.cwd())
+    folder = spill_directory(root, session_id=session_id or active_session_id())
     folder.mkdir(parents=True, exist_ok=True)
     suffix = ".json" if text.lstrip()[:1] in ("{", "[") else ".txt"
     path = folder / f"result-{uuid.uuid4().hex[:12]}{suffix}"

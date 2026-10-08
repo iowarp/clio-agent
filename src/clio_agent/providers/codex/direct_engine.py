@@ -76,6 +76,7 @@ from clio_agent.providers.codex.audit import (
     emit_call_started,
     emit_call_usage,
     emit_raw_event,
+    emit_tool_call,
 )
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
 from clio_agent.providers.codex.stream_errors import (
@@ -85,6 +86,7 @@ from clio_agent.providers.codex.stream_errors import (
     RetryLog,
     terminal_error,
 )
+from clio_agent.providers.codex.stream_tool_calls import ToolCallAssembler
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     register_scope_registry,
@@ -362,7 +364,9 @@ class AsyncCodexDirectEngine:
         from dspy.lm15 import RateLimitError  # noqa: PLC0415
 
         try:
-            for event in self.wire.stream(dataclasses.replace(request, model=self.model)):
+            for event in ToolCallAssembler().stream(
+                self.wire.stream(dataclasses.replace(request, model=self.model))
+            ):
                 out.put(event)
         except RateLimitError as exc:
             if is_usage_limit_text(str(exc)):
@@ -642,6 +646,7 @@ async def _stream(
     first = True
     usage: Any = None
     calls: list[str] = []
+    tool_calls = ToolCallAssembler()
     await socket.send(json.dumps({"type": "response.create", **frame}))
     async for raw in socket:
         payload = json.loads(raw)
@@ -662,8 +667,11 @@ async def _stream(
             parsed = [failure]  # lm15's typed error (lm15 parses no response.failed)
         if kind == "response.output_item.done":
             calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
+            item = payload.get("item")
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                emit_tool_call(call_index=call_index, item=item)
         if parsed is None:
-            parsed = wire.parse_stream_events(request, _WireEvent(event=kind, data=raw))
+            parsed = tool_calls.parse(wire, request, _WireEvent(event=kind, data=raw))
         for event in parsed:
             if first and event.type == "delta":
                 first = False

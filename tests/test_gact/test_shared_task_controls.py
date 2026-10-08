@@ -219,6 +219,20 @@ def test_authorization_precedes_filters_pagination_and_counts(
         resolve_task(app, child.child_session_id, "ancestor")
 
 
+def test_invalid_observation_pattern_is_typed_and_does_not_collect(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+) -> None:
+    app, sid, store = scoped_app
+    retained = record(store, sid, "completed-pattern", status="completed")
+    store.put(replace(retained, notify_pending=True, result={"answer": "retained"}))
+    outcome = observe_tasks("completed-pattern", pattern="[")
+    assert outcome["error"] == "invalid_pattern"
+    assert outcome["tasks"] == [] and outcome["events"] == []
+    assert outcome["errors"][0]["error"] == "invalid_pattern"
+    after = store.get(retained.key)
+    assert after is not None and after.notify_pending and not after.consumed_at
+
+
 def test_staged_handle_cannot_consume_an_unrelated_subagent_with_the_same_id(
     scoped_app: tuple[Any, str, SessionMetadataTaskStore],
 ) -> None:
@@ -388,3 +402,37 @@ def test_observation_cursor_is_incremental_and_recovers_after_restart(
     assert [e["payload"]["text"] for e in second["events"]] == ["second"]
     store.put(replace(row, status="completed", result={"text": "done"}, notify_pending=True))
     assert observe_tasks("output", cursor=10**15)["cursor_recovered"]
+
+
+def test_shared_subagent_large_result_spills_full_stored_output_in_callers_scope(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore], tmp_path: Path, monkeypatch
+) -> None:
+    import json
+    import re
+
+    from clio_agent.gact.task_controls import get_task_result
+    from clio_agent.gact.workspaces import WorkspaceStore
+    from clio_agent.tools.servers.shell_spill_store import spill_directory
+
+    app, sid, _store = scoped_app
+    app.state.workspaces = WorkspaceStore(path=tmp_path / "workspaces.json")
+    workspace = app.state.workspaces.create(name="owned", root_path=str(tmp_path))
+    app.state.sessions.get(sid).workspace_id = workspace.id
+    full_output = "actual full stored output\n" * 2000
+    task = seed_agent_task(
+        app, parent_session_id=sid, agent_ref={"expert_id": "child"}, status="completed"
+    )
+    app.state.agent_task_registry.register(
+        replace(task, result={"answer_excerpt": full_output}, notify_pending=True)
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.spawn_runtime._emit_delegation_terminal", lambda *args: None
+    )
+    result = get_task_result(task.task_id)
+    assert isinstance(result["result"], str) and "result_spilled" in result["result"]
+    path = Path(re.search(r"the full result is in `([^`]+)`", result["result"])[1])
+    assert path.parent == spill_directory(tmp_path, session_id=sid)
+    stored = json.loads(path.read_text(encoding="utf8"))
+    assert stored["output"] == full_output
+    assert "get_agent_task_output" not in result["result"]
+    assert result["result_reference"] == {"handle": task.task_id, "tool": "get_task_result"}
