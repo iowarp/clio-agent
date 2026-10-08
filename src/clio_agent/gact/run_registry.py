@@ -12,7 +12,8 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.agent_tasks import AgentTask, persist_agent_task
-from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskRecord, resolve_store
+from clio_agent.gact.mcp_task_store import app_task_store
+from clio_agent.tools.mcp_task_records import TERMINAL_TASK_STATES, TaskRecord
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -37,6 +38,12 @@ def _agent_run(task: AgentTask) -> dict[str, Any]:
     host = task.host or (placement.split(":", 1)[1] if placement.startswith("relay:") else "local")
     return {
         "handle_id": handle_id,
+        "task_kind": "Subagent",
+        "description": task.description or "Description unavailable for this older task",
+        "cancel_requested": task.cancel_requested,
+        "supported_actions": ["cancel"]
+        if live_state not in {"completed", "failed", "cancelled", "interrupted"}
+        else [],
         "task_id": task.task_id,
         "run_label": run_label,
         "live_state": live_state,
@@ -89,7 +96,14 @@ def _relay_run(record: TaskRecord) -> dict[str, Any]:
     display_status = record.display_status
     live_state = _RELAY_LIVE_STATES.get(display_status, display_status)
     return {
-        "handle_id": record.task_id,
+        "handle_id": record.handle or record.task_id,
+        "task_kind": record.kind,
+        "progress": record.backend.get("progress", {}),
+        "description": record.description or "Description unavailable for this older task",
+        "cancel_requested": record.cancel_requested,
+        "supported_actions": ["cancel"]
+        if display_status not in {"completed", "failed", "cancelled", "interrupted"}
+        else [],
         "task_id": record.task_id,
         "run_label": record.tool or f"task {record.task_id}",
         "live_state": live_state,
@@ -97,7 +111,9 @@ def _relay_run(record: TaskRecord) -> dict[str, Any]:
         "protocol_status": record.status,
         "status_reason": record.effective_status_reason,
         "host": cluster if is_relay else record.key.server_id,
-        "placement": f"relay:{cluster}" if is_relay else f"mcp:{record.key.server_id}",
+        "placement": f"relay:{cluster}"
+        if is_relay
+        else record.backend.get("placement", f"mcp:{record.key.server_id}"),
         "parent_session_id": record.session_id or "",
         "child_session_id": "",
         "created_at": record.created_at,
@@ -128,13 +144,34 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
     """
 
     tasks = app.state.agent_task_registry.snapshot()
-    agent_ids = {task.task_id for task in tasks}
+    agent_ids = {(task.parent_session_id, task.task_id) for task in tasks}
+    records = app_task_store(app).list()
+    alias_counts: dict[tuple[str | None, str], int] = {}
+    for record in records:
+        alias = (record.session_id, record.task_id)
+        alias_counts[alias] = alias_counts.get(alias, 0) + 1
     rows = [_agent_run(task) for task in tasks if not task.dismissed]
     rows.extend(
         _relay_run(record)
-        for record in resolve_store(None).list()
-        if record.task_id not in agent_ids
+        for record in records
+        if not record.dismissed
+        and not (
+            record.tool == "relay_submit_agent"
+            and (record.session_id, record.task_id) in agent_ids
+            and alias_counts[(record.session_id, record.task_id)] == 1
+        )
     )
+    # Use the same owner-aware actions as agent and session controls. A lost
+    # transport cannot honestly offer cancellation, while a finished subagent
+    # may still own active descendants.
+    from clio_agent.gact.task_projection import task_views
+
+    actions: dict[str, list[str]] = {}
+    for sid in {row["parent_session_id"] for row in rows if row["parent_session_id"]}:
+        for task in task_views(app, sid):
+            actions[task["handle"]] = task["supported_actions"]
+    for row in rows:
+        row["supported_actions"] = actions.get(row["handle_id"], [])
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
 
@@ -159,10 +196,12 @@ def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
             task = replace(task, detached=True)
             persist_agent_task(app, task)
         return _agent_run(task)
-    match = next(
-        (record for record in resolve_store(None).list() if record.task_id == handle_id),
-        None,
-    )
+    matches = [
+        record
+        for record in app_task_store(app).list()
+        if handle_id in (record.handle, record.task_id)
+    ]
+    match = matches[0] if len(matches) == 1 else None
     if match is None:
         return None
     # A relay/MCP record with no active lease is already detached from a driver;
@@ -211,9 +250,10 @@ def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
         if not task.dismissed:
             persist_agent_task(app, replace(task, dismissed=True))
         return True
-    store = resolve_store(None)
-    match = next((record for record in store.list() if record.task_id == handle_id), None)
-    if match is None or match.status not in TERMINAL_TASK_STATES:
+    store = app_task_store(app)
+    matches = [record for record in store.list() if handle_id in (record.handle, record.task_id)]
+    match = matches[0] if len(matches) == 1 else None
+    if match is None or match.display_status not in {*TERMINAL_TASK_STATES, "interrupted"}:
         return False
-    store.drop(match.key)
+    store.put(replace(match, dismissed=True))
     return True
