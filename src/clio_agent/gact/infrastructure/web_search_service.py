@@ -1,7 +1,9 @@
 """CLIO Web Search: its catalog row and lifecycle plans on Docker, Podman or Apptainer.
 
-One OCI image (``ghcr.io/iowarp/clio-web-search``) runs a gateway, SearXNG,
-GROBID and Valkey. On Docker and Podman the image's own entrypoint runs it
+The OCI image (``ghcr.io/iowarp/clio-web-search``) runs a gateway, SearXNG and
+Valkey; its full variant adds document conversion (Docling + GROBID), its slim
+variant is search only. The ``documents`` install option picks the variant
+(:func:`web_search_image`). On Docker and Podman the image's own entrypoint runs it
 with published ports (unchanged from the Docker-only driver). On Apptainer
 there is no port publishing, so the deployment is the digest-pinned image's
 SIF run as a user instance on the host network with every listener bound to
@@ -13,6 +15,7 @@ from __future__ import annotations
 import ipaddress
 import ntpath
 import posixpath
+from dataclasses import dataclass
 
 from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.container_runtime import (
@@ -47,6 +50,18 @@ WEB_SEARCH_PINNED_IMAGE = (
     "ghcr.io/iowarp/clio-web-search@sha256:"
     "60ff8b979bd495a5ba63e8e1eaa61f053ff25564b8fc62714bd92a52a3e0769d"
 )
+#: The slim, search-only image (gateway + SearXNG + Valkey; no Docling, GROBID or
+#: models): a much smaller, faster install. NOT PUBLISHED YET -- until this ONE
+#: constant holds its OCI index digest, ``documents=off`` still installs the full
+#: image above. Filling it switches the default (documents off) to the slim image
+#: on Docker, Podman and Apptainer alike. Resolve it once the tag is published with:
+#:   crane digest ghcr.io/iowarp/clio-web-search:0.3.1-slim
+#: and paste only the 64 hex characters after ``sha256:``.
+WEB_SEARCH_SLIM_DIGEST = ""
+WEB_SEARCH_REPOSITORY = "ghcr.io/iowarp/clio-web-search"
+DOCUMENTS_FIELD = "documents"
+#: Recorded at install: which image variant the deployment runs (``full``/``slim``).
+IMAGE_VARIANT_FIELD = "image_variant"
 WEB_SEARCH_PORT = 8089
 LISTEN_FIELD = "listen_address"
 CONTAINER_NAME = "clio-web-search"
@@ -86,6 +101,63 @@ print(json.dumps(evidence))
 """
 
 
+@dataclass(frozen=True)
+class WebSearchImage:
+    """The image one deployment runs and whether it carries document conversion."""
+
+    variant: str
+    #: Docker and Podman reference (the release tag for the full image).
+    reference: str
+    #: Apptainer reference (always digest-pinned).
+    pinned: str
+    documents: bool
+
+
+FULL_IMAGE = WebSearchImage("full", WEB_SEARCH_IMAGE, WEB_SEARCH_PINNED_IMAGE, documents=True)
+
+
+def slim_image() -> WebSearchImage | None:
+    """The published slim image, or ``None`` while its digest is not pinned here."""
+
+    digest = WEB_SEARCH_SLIM_DIGEST.strip().removeprefix("sha256:")
+    if not digest:
+        return None
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise ValueError("WEB_SEARCH_SLIM_DIGEST must be a sha256 hex digest")
+    reference = f"{WEB_SEARCH_REPOSITORY}@sha256:{digest}"
+    return WebSearchImage("slim", reference, reference, documents=False)
+
+
+def documents_requested(configuration: dict[str, str]) -> bool:
+    """The ``documents`` install option: off (search only) unless the person turned it on."""
+
+    raw = configuration.get(DOCUMENTS_FIELD, "").strip().lower() or "off"
+    if raw in {"on", "true", "yes", "1"}:
+        return True
+    if raw in {"off", "false", "no", "0"}:
+        return False
+    raise ValueError("documents must be 'on' or 'off'")
+
+
+def web_search_image(configuration: dict[str, str]) -> WebSearchImage:
+    """The image an install uses: slim when documents are off and the slim digest is pinned."""
+
+    slim = slim_image()
+    if documents_requested(configuration) or slim is None:
+        return FULL_IMAGE
+    return slim
+
+
+def installed_image(configuration: dict[str, str]) -> WebSearchImage:
+    """The image an existing deployment runs (recorded at install; older ones are full)."""
+
+    if configuration.get(IMAGE_VARIANT_FIELD, "").strip() == "slim":
+        slim = slim_image()
+        if slim is not None:
+            return slim
+    return FULL_IMAGE
+
+
 def _field(
     field_id: str, label: str, placeholder: str, options: list[str] | None = None
 ) -> ServiceConfigurationField:
@@ -116,11 +188,12 @@ def web_search_definition(facts: TargetFacts) -> ManagedServiceDefinition:
         compatible, reason = True, f"Runs with {RUNTIME_LABELS[chosen.name]}."
     except RuntimeUnavailableError as exc:
         compatible, reason = False, str(exc)
+    default = web_search_image({})
     return ManagedServiceDefinition(
         id="web_search",
         category="scientific_service",
         label="CLIO Web Search",
-        description="Private search and document conversion.",
+        description="Private web search; PDF/document conversion is optional.",
         recommended_variant="container",
         variants=[
             ServiceVariant(
@@ -128,14 +201,18 @@ def web_search_definition(facts: TargetFacts) -> ManagedServiceDefinition:
                 label="Container",
                 version=WEB_SEARCH_VERSION,
                 install_type="container",
-                artifact=WEB_SEARCH_PINNED_IMAGE
-                if options[:1] == ["apptainer"]
-                else WEB_SEARCH_IMAGE,
+                artifact=default.pinned if options[:1] == ["apptainer"] else default.reference,
                 compatible=compatible,
                 reason=reason,
             )
         ],
         configuration_fields=[
+            _field(
+                DOCUMENTS_FIELD,
+                "Document conversion",
+                "off (on adds PDF/document conversion; larger, slower install)",
+                ["off", "on"],
+            ),
             _field("contact_email", "Publication metadata email", "scientist@example.org"),
             _field("task_backend_port", "Document task port", "8090"),
             _field(LISTEN_FIELD, "Listen address", "127.0.0.1 (0.0.0.0 serves every network)"),
@@ -181,7 +258,17 @@ def build_web_search_plan(
         )
 
         return apptainer_web_search_plan(action, configuration, facts, target, owned or [])
-    resolved = {**configuration, RUNTIME_FIELD: runtime}
+    image = (
+        web_search_image(configuration)
+        if action in {"install", "reinstall"}
+        else installed_image(configuration)
+    )
+    resolved = {
+        **configuration,
+        RUNTIME_FIELD: runtime,
+        DOCUMENTS_FIELD: "on" if documents_requested(configuration) else "off",
+        IMAGE_VARIANT_FIELD: image.variant,
+    }
     if action == "verify":
         return DriverPlan(
             (
@@ -229,12 +316,12 @@ def build_web_search_plan(
             )
         )
     commands.append(
-        CommandSpec(program=runtime, args=["pull", WEB_SEARCH_IMAGE], timeout_seconds=900)
+        CommandSpec(program=runtime, args=["pull", image.reference], timeout_seconds=900)
     )
     storage = _container_storage_path(target, facts)
     if storage:
         commands.append(_create_directory(storage, facts))
-    commands.append(_container_run(runtime, configuration, facts, storage))
+    commands.append(_container_run(runtime, configuration, facts, storage, image.reference))
     return DriverPlan(tuple(commands), connection_port=WEB_SEARCH_PORT, configuration=resolved)
 
 
@@ -269,6 +356,7 @@ def _container_run(
     configuration: dict[str, str],
     facts: TargetFacts,
     storage: str | None,
+    image: str,
 ) -> CommandSpec:
     bind = _listen_address(configuration)
     email = configuration.get("contact_email", "").strip()
@@ -295,7 +383,7 @@ def _container_run(
         if "@" not in email or any(character.isspace() for character in email):
             raise ValueError("contact_email must be a valid email address")
         args.extend(["--env", f"CLIO_WEB_SEARCH_CONTACT_EMAIL={email}"])
-    args.append(WEB_SEARCH_IMAGE)
+    args.append(image)
     return CommandSpec(program=runtime, args=args)
 
 

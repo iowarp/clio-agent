@@ -54,11 +54,15 @@ from clio_agent.gact.infrastructure.reuse import from_scratch
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.web_search_service import (
     CONTAINER_NAME,
+    DOCUMENTS_FIELD,
     EVIDENCE_PATH,
+    IMAGE_VARIANT_FIELD,
     RUNTIME_FIELD,
     VERIFY_QUERY,
     VERIFY_SCRIPT,
-    WEB_SEARCH_PINNED_IMAGE,
+    documents_requested,
+    installed_image,
+    web_search_image,
     web_search_port,
 )
 
@@ -75,7 +79,9 @@ PRIVATE_PORTS = {
 
 #: Replaces the image entrypoint inside the instance (runs as the calling user).
 #: Mirrors the upstream entrypoint's ordering -- Docling warms before GROBID
-#: loads -- with every listener on the loopback at its private port.
+#: loads -- with every listener on the loopback at its private port. The slim,
+#: search-only image has no GROBID (and sets CLIO_WEB_SEARCH_DOCUMENTS_ENABLED=false):
+#: then only Valkey, the gateway and SearXNG start.
 LAUNCHER = """#!/bin/sh
 # CLIO-managed launcher for CLIO Web Search on Apptainer (replaces the image entrypoint).
 set -eu
@@ -100,6 +106,12 @@ chmod 600 "$auth"  # a default ACL (e.g. a shared project dir) can widen the uma
 export CLIO_WEB_SEARCH_TASK_BACKEND_URL="redis://:$pw@127.0.0.1:$task/0"
 unset pw
 export CLIO_WEB_SEARCH_TASK_BACKEND_PUBLIC_PORT="$task"
+documents=true
+if [ "${CLIO_WEB_SEARCH_DOCUMENTS_ENABLED:-}" = false ] \\
+    || [ ! -x /opt/grobid/grobid-service/bin/grobid-service ]; then
+    documents=false
+    export CLIO_WEB_SEARCH_DOCUMENTS_ENABLED=false
+fi
 settings_path="$(/app/.venv/bin/python -m clio_web_search.configure)"
 
 cleanup() {
@@ -124,27 +136,30 @@ cd /app
 gateway_pid=$!
 until curl --fail --silent --noproxy '*' "http://127.0.0.1:$port/healthz" >/dev/null; do
     if ! kill -0 "$gateway_pid" "$valkey_pid" 2>/dev/null; then
-        echo "CLIO Web Search failed during Docling startup warmup" >&2
+        echo "CLIO Web Search gateway failed during startup" >&2
         tail -n 100 "$logs"/*.log >&2 || true
         exit 1
     fi
     sleep 2
 done
-echo "Docling startup warmup complete" >&2
-
-cd /opt/grobid
-JAVA_OPTS="${JAVA_OPTS:-} -Ddw.server.applicationConnectors[0].port=$grobid \\
+if [ "$documents" = true ]; then
+    echo "Docling startup warmup complete" >&2
+    cd /opt/grobid
+    JAVA_OPTS="${JAVA_OPTS:-} -Ddw.server.applicationConnectors[0].port=$grobid \\
 -Ddw.server.applicationConnectors[0].bindHost=127.0.0.1 \\
 -Ddw.server.adminConnectors[0].port=$admin -Ddw.server.adminConnectors[0].bindHost=127.0.0.1" \\
-    ./grobid-service/bin/grobid-service > "$logs/grobid.log" 2>&1 &
-grobid_pid=$!
+        ./grobid-service/bin/grobid-service > "$logs/grobid.log" 2>&1 &
+    grobid_pid=$!
+else
+    echo "Search-only image: document conversion (Docling, GROBID) not started" >&2
+fi
 
 cd /opt/searxng
 SEARXNG_SETTINGS_PATH="$settings_path" ./.venv/bin/granian searx.webapp:app \\
     --interface wsgi --host 127.0.0.1 --port "$searx" > "$logs/searxng.log" 2>&1 &
 searxng_pid=$!
 
-while kill -0 "$gateway_pid" "$searxng_pid" "$grobid_pid" "$valkey_pid" 2>/dev/null; do
+while kill -0 "$gateway_pid" "$searxng_pid" ${grobid_pid:-} "$valkey_pid" 2>/dev/null; do
     sleep 2
 done
 echo "A CLIO Web Search child process exited" >&2
@@ -355,9 +370,16 @@ def write_launcher_command(layout: Layout) -> CommandSpec:
     )
 
 
-def run_command(layout: Layout, ports: dict[str, int], email: str) -> CommandSpec:
-    """Start the instance from the receipt-verified SIF; private values via the environment."""
+def run_command(
+    layout: Layout, ports: dict[str, int], email: str, *, documents: bool = True
+) -> CommandSpec:
+    """Start the instance from the receipt-verified SIF; private values via the environment.
 
+    ``documents`` is whether the image carries GROBID: the slim image has no
+    GROBID home to bind its scratch folder over.
+    """
+
+    grobid_bind = ["--bind", f"{layout.grobid_tmp}:{GROBID_TMP}"] if documents else []
     launch = [
         "apptainer",
         "instance",
@@ -367,8 +389,7 @@ def run_command(layout: Layout, ports: dict[str, int], email: str) -> CommandSpe
         "--writable-tmpfs",
         "--bind",
         f"{layout.data_dir}:{DATA_MOUNT}",
-        "--bind",
-        f"{layout.grobid_tmp}:{GROBID_TMP}",
+        *grobid_bind,
         "--bind",
         f"{layout.launcher}:{ENTRYPOINT}:ro",
         "--env",
@@ -467,9 +488,13 @@ def apptainer_web_search_plan(
 
     layout = _layout(facts, target, configuration)
     ports = _ports(configuration)
+    installing = action in {"install", "reinstall"}
+    image = web_search_image(configuration) if installing else installed_image(configuration)
     resolved = {
         **configuration,
         RUNTIME_FIELD: "apptainer",
+        DOCUMENTS_FIELD: "on" if documents_requested(configuration) else "off",
+        IMAGE_VARIANT_FIELD: image.variant,
         "port": str(ports["port"]),
         **{key: str(ports[key]) for key in PRIVATE_PORTS},
         "storage.service_directory": layout.service_dir,
@@ -540,7 +565,10 @@ def apptainer_web_search_plan(
     email = configuration.get("contact_email", "").strip()
     if action == "start":
         return plan(
-            [stop_owned_command(layout), run_command(layout, ports, email)],
+            [
+                stop_owned_command(layout),
+                run_command(layout, ports, email, documents=image.documents),
+            ],
             recorders={1: container_recorder("apptainer", CONTAINER_NAME, facts.hostname)},
             readiness=readiness,
         )
@@ -557,7 +585,7 @@ def apptainer_web_search_plan(
     commands.extend(
         pull_commands(
             "apptainer",
-            WEB_SEARCH_PINNED_IMAGE,
+            image.pinned,
             layout.images_dir,
             layout.image_store,
             CONTAINER_NAME,
@@ -568,7 +596,7 @@ def apptainer_web_search_plan(
     recorders[len(commands) - 1] = shared_image_recorder()
     commands.append(receipt_command(layout))
     recorders[len(commands)] = container_recorder("apptainer", CONTAINER_NAME, facts.hostname)
-    commands.append(run_command(layout, ports, email))
+    commands.append(run_command(layout, ports, email, documents=image.documents))
     return plan(commands, recorders=recorders, readiness=readiness)
 
 
