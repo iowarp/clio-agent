@@ -83,6 +83,7 @@ from clio_agent.gact.infrastructure.resource_ledger import (
 )
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
+from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
 from clio_agent.gact.infrastructure.server_parameters import (
     EngineId,
     compile_parameters,
@@ -516,6 +517,14 @@ def _launch(
     keyed: bool = False,
     host_accelerator: str = "none",
 ) -> ContainerLaunch:
+    module = ntpath if windows else posixpath
+    if spec.engine == "vllm" and module.isabs(configuration.get("model", "")):
+        # Same family-based tool/reasoning parser defaults as native vLLM
+        # (user overrides kept), read from the downloaded model's config.
+        configuration = {
+            **configuration,
+            **parser_defaults(configuration["model"], configuration),
+        }
     compiled = compile_parameters(spec.engine, variant.id, configuration)
     if keyed and spec.engine not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
@@ -526,12 +535,17 @@ def _launch(
     mounts: list[tuple[str, str]] = []
     if spec.engine == "vllm":
         model = _required(configuration, "model")
-        if (ntpath if windows else posixpath).isabs(model):
+        served: list[str] = []
+        if module.isabs(model):
             _check_value("model_path", model)
             mounts.append((model, "/models/downloaded"))
+            if "--served-model-name" not in compiled.flags:
+                # Serve under the host path, as native vLLM does, so the id
+                # CLIO discovers and binds is the model the user selected.
+                served = ["--served-model-name", model]
             model = "/models/downloaded"
         env.append(("HF_HOME", "/cache/huggingface"))
-        args = ["--model", model, "--host", host, "--port", str(port), *compiled.flags]
+        args = ["--model", model, *served, "--host", host, "--port", str(port), *compiled.flags]
     elif spec.engine == "llama_cpp":
         model_path = configuration.get("model_path", "").strip()
         hf_model = configuration.get("hf_model", "").strip()

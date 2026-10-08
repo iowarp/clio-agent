@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from clio_schemas.connected_resources import HostStorageLocations
@@ -700,3 +701,44 @@ def test_windows_llama_archive_is_sha256_verified_before_unpacking() -> None:
     assert LLAMA_WINDOWS_CPU_SHA256 in script
     assert script.index("Get-FileHash") < script.index("Expand-Archive")
     assert len(LLAMA_WINDOWS_CPU_SHA256) == 64
+
+
+def test_container_vllm_serves_a_downloaded_model_under_its_path_with_family_parsers(
+    tmp_path: Path,
+) -> None:
+    """F031: the bound model id is the selected path, and tool/reasoning parsers are on."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import build_model_runtime_plan
+
+    model = tmp_path / "Qwen--Qwen3-4B"
+    model.mkdir()
+    (model / "config.json").write_text('{"model_type": "qwen3"}')
+
+    def plan(api_key: str | None = None, **extra: str):
+        return build_model_runtime_plan(
+            service_id="vllm",
+            action="install",
+            variant_id="cuda",
+            configuration={"model": str(model), "container_runtime": "apptainer", **extra},
+            facts=_gpu_facts("nvidia", "apptainer"),
+            target=None,
+            api_key=api_key,
+        )
+
+    def args(**extra: str) -> list[str]:
+        return _run(plan(**extra).commands, "apptainer").args
+
+    keyed = plan("launch-key").readiness
+    assert keyed is not None
+    assert str(model) in keyed.health.args  # identity expects the served path
+
+    launched = args()
+    assert launched[launched.index("--model") + 1] == "/models/downloaded"
+    assert launched[launched.index("--served-model-name") + 1] == str(model)
+    assert launched[launched.index("--tool-call-parser") + 1] == "hermes"
+    assert "--enable-auto-tool-choice" in launched
+    assert launched[launched.index("--reasoning-parser") + 1] == "qwen3"
+    # A user override is kept.
+    overridden = args(**{"param.tool_call_parser": "off"})
+    assert "--tool-call-parser" not in overridden
+    assert "--enable-auto-tool-choice" not in overridden
