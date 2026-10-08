@@ -1,11 +1,15 @@
-"""Apply the managed Ollama context default once the model is pulled.
+"""Apply a managed Ollama's context once the model is pulled.
 
-The default itself is computed by :mod:`ollama_context`; this module reads
-what it needs from the running server through target-side commands (so it
-works on remote targets too), then re-creates the model under its own name
-with ``num_ctx`` set. Ollama keeps the served name, its blobs and the other
-Modelfile parameters, and every later ``/v1`` request loads at that context
-without a restart or per-request options.
+The decision is the engine-neutral one
+(:mod:`clio_agent.gact.infrastructure.context_sizing.deployment`): the person's
+Max or Fit to GPU (the default), sized from the model's ``/api/show``
+``model_info`` (:func:`~clio_agent.context_sizing.adapters.ollama_profile`) and
+the GPU memory Ollama logged at startup. This module reads
+those through target-side commands (so it works on remote targets too), then
+re-creates the model under its own name with ``num_ctx`` set. Ollama keeps the
+served name, its blobs and the other Modelfile parameters, and every later
+``/v1`` request loads at that context without a restart or per-request options.
+A typed number keeps the ``OLLAMA_CONTEXT_LENGTH`` launch setting instead.
 """
 
 from __future__ import annotations
@@ -15,12 +19,19 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from clio_agent.context_sizing.adapters import ollama_profile
+from clio_agent.context_sizing.profile import GpuBudget, ModelMemoryProfile
 from clio_agent.gact.infrastructure import powershell
+from clio_agent.gact.infrastructure.context_sizing.deployment import (
+    ContextDecision,
+    SizingRequest,
+    decide,
+    ollama_budget,
+)
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
-from clio_agent.gact.infrastructure.ollama_context import ContextDefault, ollama_context_default
 
 Execute = Callable[[CommandSpec], Awaitable[CommandResult]]
-Progress = Callable[[str], None]
+Progress = Callable[[str], object]
 AfterReadyHook = Callable[[Execute, Progress], Awaitable[dict[str, str]]]
 
 #: Ollama logs the GPU it found at startup on every backend (CUDA, ROCm, Metal):
@@ -43,7 +54,8 @@ def gpu_available_bytes(logs: str) -> int | None:
     found = [
         int(float(m.group("value")) * _UNITS[m.group("unit")])
         for m in _GPU_AVAILABLE.finditer(logs)
-        if m.group("unit") in _UNITS
+        # The CPU's own "inference compute" line reports system RAM, not a GPU.
+        if m.group("unit") in _UNITS and "library=cpu" not in m.group(0)
     ]
     return found[-1] if found else None
 
@@ -111,37 +123,58 @@ def _model_size(tags: Any, model: str) -> int:
     return 0
 
 
-def ollama_context_hook(port: int, model: str, logs: CommandSpec, windows: bool) -> AfterReadyHook:
-    """The after-ready step that serves ``model`` at its computed context.
+async def read_ollama_inputs(
+    execute: Execute,
+    port: int,
+    model: str,
+    logs: CommandSpec,
+    windows: bool,
+    request: SizingRequest,
+) -> tuple[ModelMemoryProfile | None, GpuBudget | None, str]:
+    """The pulled model's profile and the GPU budget, read from the running Ollama.
 
-    Returns the settled-configuration entries ``effective.context_length`` and
-    ``effective.context_reason``; only the reason when Ollama does not report
-    the model's trained context, so Ollama's own default stays in force.
+    Returns ``(profile, budget, why)``; ``why`` says what is missing when the
+    profile could not be read.
     """
 
     base = f"http://127.0.0.1:{port}"
+    show = await execute(_http(f"{base}/api/show", {"model": model}, windows, 30))
+    info = model_info_from_show(show.stdout) if show.exit_code == 0 else None
+    if info is None:
+        return None, None, f"/api/show gave no model_info for {model}"
+    tags = await execute(_http(f"{base}/api/tags", None, windows, 30))
+    weights = _model_size(_json(tags.stdout), model)
+    log_text = (await execute(logs)).stdout
+    profile = ollama_profile(info, weights_bytes=weights)
+    budget = ollama_budget(gpu_available_bytes(log_text), weights, request)
+    if not profile.trained_context:
+        return profile, budget, f"{model} reports no trained context"
+    return profile, budget, ""
+
+
+def ollama_context_hook(
+    port: int, model: str, logs: CommandSpec, windows: bool, request: SizingRequest
+) -> AfterReadyHook:
+    """The after-ready step that serves ``model`` at the chosen context.
+
+    Returns the settled-configuration entries (``effective.context_length``,
+    ``effective.context_reason``, ``effective.context_choice``); the length is
+    empty when the model does not report its trained context, so Ollama's own
+    default stays in force.
+    """
 
     async def apply(execute: Execute, progress: Progress) -> dict[str, str]:
         progress("Sizing the model's context")
-        show = await execute(_http(f"{base}/api/show", {"model": model}, windows, 30))
-        info = model_info_from_show(show.stdout) if show.exit_code == 0 else None
-        if info is None:
-            return {
-                "effective.context_reason": f"Ollama's default: /api/show gave no model_info for {model}"
-            }
-        tags = await execute(_http(f"{base}/api/tags", None, windows, 30))
-        log_text = (await execute(logs)).stdout
-        chosen: ContextDefault | None = ollama_context_default(
-            info, gpu_available_bytes(log_text), _model_size(_json(tags.stdout), model)
+        profile, budget, why = await read_ollama_inputs(
+            execute, port, model, logs, windows, request
         )
-        if chosen is None:
-            return {
-                "effective.context_reason": f"Ollama's default: {model} reports no trained context"
-            }
+        chosen: ContextDecision = decide("ollama", request, profile, budget, why=why)
+        if not chosen.tokens:
+            return chosen.entries()
         progress(f"Serving {model} with context {chosen.tokens}")
         created = await execute(
             _http(
-                f"{base}/api/create",
+                f"http://127.0.0.1:{port}/api/create",
                 {"model": model, "from": model, "parameters": {"num_ctx": chosen.tokens}},
                 windows,
                 120,
@@ -152,9 +185,6 @@ def ollama_context_hook(port: int, model: str, logs: CommandSpec, windows: bool)
                 f"Could not set the context of {model} to {chosen.tokens}: "
                 + (created.stderr.strip() or created.stdout.strip()[-500:] or "no answer")
             )
-        return {
-            "effective.context_length": str(chosen.tokens),
-            "effective.context_reason": chosen.reason,
-        }
+        return chosen.entries()
 
     return apply

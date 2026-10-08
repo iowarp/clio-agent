@@ -1,4 +1,4 @@
-"""The managed Ollama context default applied after the model pull."""
+"""The managed Ollama context applied after the model pull (the shared sizing decision)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from clio_agent.gact.infrastructure.context_sizing.deployment import SizingRequest
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.ollama_context_apply import (
     gpu_available_bytes,
@@ -29,11 +30,20 @@ LOG = (
 )
 
 
+FIT = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu")
+CPU_LOG = (
+    'time=2026-10-08T09:40:01 level=INFO source=types.go:42 msg="inference compute" '
+    'id=cpu library=cpu compute="" name=cpu total="503.0 GiB" available="480.0 GiB"\n'
+)
+
+
 def test_gpu_available_is_read_from_the_startup_log() -> None:
     assert gpu_available_bytes(LOG) == int(38.6 * GIB)
     assert gpu_available_bytes("no gpu line") is None
     newer = LOG.replace('available="38.6 GiB"', 'available="12.0 GiB"')
     assert gpu_available_bytes(LOG + newer) == 12 * GIB
+    # The CPU's line reports system RAM: it is no GPU budget.
+    assert gpu_available_bytes(CPU_LOG) is None
 
 
 def test_model_info_survives_a_reply_cut_to_its_tail() -> None:
@@ -65,9 +75,9 @@ class FakeTarget:
         return CommandResult(exit_code=0, stdout=out, stderr="")
 
 
-def _run(target: FakeTarget) -> dict[str, str]:
+def _run(target: FakeTarget, request: SizingRequest = FIT) -> dict[str, str]:
     logs = CommandSpec(program="sh", args=["-c", "true"])
-    hook = ollama_context_hook(11434, "qwen3:4b", logs, windows=False)
+    hook = ollama_context_hook(11434, "qwen3:4b", logs, False, request)
     return asyncio.run(hook(target, lambda _message: None))
 
 
@@ -76,15 +86,33 @@ def test_hook_recreates_the_model_under_its_name_with_the_capped_context() -> No
     chosen = _run(target)
     tokens = int(chosen["effective.context_length"])
     assert 4096 <= tokens < 262144 and tokens % 4096 == 0
-    assert "capped" in chosen["effective.context_reason"]
+    assert chosen["effective.context_reason"].startswith("Fit to GPU: trained context 262144")
+    assert chosen["effective.context_choice"] == "fit_to_gpu"
     assert target.created == [
         {"model": "qwen3:4b", "from": "qwen3:4b", "parameters": {"num_ctx": tokens}}
     ]
 
 
+def test_max_serves_the_trained_context_whatever_the_gpu() -> None:
+    target = FakeTarget({"model_info": MODEL_INFO})
+    chosen = _run(target, SizingRequest(choice="max", strategy="fit_to_gpu"))
+    assert chosen["effective.context_length"] == "262144"
+    assert chosen["effective.context_choice"] == "max"
+    assert target.created[0]["parameters"] == {"num_ctx": 262144}
+
+
+def test_parallel_requests_and_a_gpu_share_shrink_the_fit() -> None:
+    alone = int(_run(FakeTarget({"model_info": MODEL_INFO}))["effective.context_length"])
+    shared = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu", share=0.5, sequences=2)
+    tokens = int(_run(FakeTarget({"model_info": MODEL_INFO}), shared)["effective.context_length"])
+    assert tokens < alone // 2
+
+
 def test_hook_leaves_ollama_default_when_the_model_reports_no_context() -> None:
     target = FakeTarget({"model_info": {"general.architecture": "x"}})
-    assert set(_run(target)) == {"effective.context_reason"}
+    chosen = _run(target)
+    assert chosen["effective.context_length"] == ""
+    assert chosen["effective.context_reason"].startswith("Ollama's own default:")
     assert target.created == []
 
 

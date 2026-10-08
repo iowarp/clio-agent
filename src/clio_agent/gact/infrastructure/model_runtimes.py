@@ -46,6 +46,10 @@ from clio_agent.gact.infrastructure.container_runtime import (
     stop_command,
     usable_runtimes,
 )
+from clio_agent.gact.infrastructure.context_sizing.deployment import (
+    context_parameters,
+    sizing_request,
+)
 from clio_agent.gact.infrastructure.llama_native_windows import (
     LLAMA_BUILD,
     LLAMA_WINDOWS_CPU_ARCHIVE,
@@ -89,11 +93,7 @@ from clio_agent.gact.infrastructure.resource_ledger import (
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
 from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
-from clio_agent.gact.infrastructure.server_parameters import (
-    EngineId,
-    compile_parameters,
-    engine_parameters,
-)
+from clio_agent.gact.infrastructure.server_parameters import EngineId, compile_parameters
 
 VLLM_VERSION = "0.28.0"
 OLLAMA_VERSION = "0.34.4"
@@ -341,7 +341,7 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
         recommended_variant=recommended,
         variants=variants,
         configuration_fields=fields,
-        parameters=engine_parameters(spec.engine),
+        parameters=context_parameters(spec.engine, facts),
         supports_api_key=supports_api_key(service_id),
     )
 
@@ -714,7 +714,9 @@ def build_model_runtime_plan(
         )
         if not resolved.get("param.context_length"):
             # A person's value keeps the OLLAMA_CONTEXT_LENGTH launch setting.
-            context_hook = ollama_context_hook(port, model, readiness.logs, windows)
+            context_hook = ollama_context_hook(
+                port, model, readiness.logs, windows, sizing_request("ollama", resolved)
+            )
     if action == "start":
         command = (
             start_command(runtime, name)

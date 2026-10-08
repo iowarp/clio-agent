@@ -22,6 +22,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from clio_agent.context_sizing.controls import ContextSizingSpec
+
 ParameterKind = Literal["integer", "number", "choice", "text"]
 ParameterDelivery = Literal["flag", "env"]
 EngineId = Literal["vllm", "llama_cpp", "ollama"]
@@ -56,6 +58,9 @@ class ServerParameter(BaseModel):
     #: Flags the engine needs alongside this one (vLLM's tool-call parser only
     #: takes effect with ``--enable-auto-tool-choice``).
     companion_flags: list[str] = Field(default_factory=list)
+    #: The context parameter's Max / Fit-to-GPU control (see ``context_sizing``);
+    #: set per host on the catalog, absent on every other parameter.
+    context_sizing: ContextSizingSpec | None = None
 
     def applies_to(self, variant_id: str) -> bool:
         """Whether this parameter is meaningful for ``variant_id``."""
@@ -130,7 +135,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "--max-model-len",
             minimum=16,
             maximum=10_000_000,
-            default_behavior="The model's own maximum",
+            default_behavior="Fit to GPU: the model's maximum, capped to fit the GPU",
         ),
         ServerParameter(
             id="gpu_memory_utilization",
@@ -259,7 +264,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "--ctx-size",
             minimum=0,
             maximum=10_000_000,
-            default_behavior="The model's trained context",
+            default_behavior="Fit to GPU: the model's trained context, capped to fit the GPU",
             effective_key="ctx_size",
         ),
         _int(
@@ -302,7 +307,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "OLLAMA_CONTEXT_LENGTH",
             minimum=256,
             maximum=10_000_000,
-            default_behavior="Model's trained context, capped to fit the GPU",
+            default_behavior="Fit to GPU: the model's trained context, capped to fit the GPU",
             effective_key="context_length",
         ),
     ),

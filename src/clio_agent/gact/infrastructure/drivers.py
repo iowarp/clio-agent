@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+from typing import cast
 from uuid import uuid4
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
@@ -12,6 +13,7 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import (
     status_command,
     teardown_command,
 )
+from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
 from clio_agent.gact.infrastructure.model_runtimes import (
     MODEL_RUNTIME_SERVICES,
     build_model_runtime_plan,
@@ -35,6 +37,7 @@ from clio_agent.gact.infrastructure.monitoring_services import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
+from clio_agent.gact.infrastructure.server_parameters import EngineId
 from clio_agent.gact.infrastructure.web_search_service import (
     WEB_SEARCH_IMAGE,
     build_web_search_plan,
@@ -227,16 +230,27 @@ def build_driver_plan(
         )
     if service_id in MODEL_RUNTIME_SERVICES:
         # The model-runtime driver checks its own compatibility, so a missing
-        # container runtime surfaces as the typed RuntimeUnavailableError.
-        return build_model_runtime_plan(
-            service_id=service_id,
+        # container runtime surfaces as the typed RuntimeUnavailableError. The
+        # context is sized around it (context_sizing.deployment).
+        def model_plan(sized: dict[str, str]) -> DriverPlan:
+            return build_model_runtime_plan(
+                service_id=service_id,
+                action=action,
+                variant_id=variant_id,
+                configuration=sized,
+                facts=facts,
+                target=target,
+                owned=owned,
+                api_key=api_key,
+            )
+
+        return sized_model_runtime_plan(
+            engine=cast(EngineId, service_id),
             action=action,
             variant_id=variant_id,
             configuration=configuration,
             facts=facts,
-            target=target,
-            owned=owned,
-            api_key=api_key,
+            build=model_plan,
         )
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")

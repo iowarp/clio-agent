@@ -487,6 +487,11 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 previous_key = load_key(request.target_id, row.service_id)
                 store_key(request.target_id, row.service_id, api_key)
                 made_key = True
+            if plan.before_launch is not None:
+                plan = await plan.before_launch(
+                    lambda spec: self._execute(request.target_id, spec),
+                    lambda msg: self.store.put_operation(row.model_copy(update={"progress": msg})),
+                )
             output: list[str] = []
             for index, spec in enumerate(plan.commands):
                 if plan.remote_launch and spec.args[1].startswith("# clio-deploy:start"):
@@ -534,12 +539,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         ):
                             resolved_root_update = claim.owner.strip()
                         break
-                    # Nothing was stopped or installed. Surface what was
-                    # found so the caller can ask "Connect" or "Replace"
-                    # instead of clio silently deciding either way. A
-                    # process that never answered its health check is never
-                    # a reason to stop it either: `health` says so, typed,
-                    # rather than clio guessing it is hung.
+                    # Nothing was stopped or installed. Surface what was found so the caller
+                    # can ask "Connect" or "Replace" instead of clio deciding either way. An
+                    # unanswered health check is no reason to stop a process: `health` says so.
                     health = claim.health or "unknown"
                     progress = (
                         (

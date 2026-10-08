@@ -42,6 +42,9 @@ class DriverPlan:
         recorders: Per command index, what that step created on the target
             (see :mod:`clio_agent.gact.infrastructure.resource_ledger`).
         readiness: Wait for the started server to answer before succeeding.
+        before_launch: Runs before ``commands`` with the target executor and a
+            progress callback, and returns the plan to run instead (a model
+            server sized to the host's GPU; see ``context_sizing.deployment``).
         after_ready: Commands run once the server answers (a model pull).
         after_ready_hook: Runs after ``after_ready`` with the target executor and
             a progress callback; the entries it returns are merged into the
@@ -56,6 +59,13 @@ class DriverPlan:
     teardown: Callable[[ClaimResult], CommandSpec] | None = None
     recorders: Mapping[int, StepRecorder] = field(default_factory=dict)
     readiness: Readiness | None = None
+    before_launch: (
+        Callable[
+            [Callable[[CommandSpec], Awaitable[CommandResult]], Callable[[str], object]],
+            Awaitable[DriverPlan],
+        ]
+        | None
+    ) = None
     after_ready: tuple[CommandSpec, ...] = ()
     after_ready_hook: (
         Callable[
