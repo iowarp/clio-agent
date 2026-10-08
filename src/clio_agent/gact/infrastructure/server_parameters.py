@@ -29,6 +29,9 @@ EngineId = Literal["vllm", "llama_cpp", "ollama"]
 #: Configuration keys carrying a server parameter are ``param.<id>``.
 PARAMETER_PREFIX = "param."
 
+#: A choice that turns a model-derived default off: validated and recorded, no flag.
+OFF = "off"
+
 
 class ServerParameter(BaseModel):
     """One tweakable server parameter as declared by an engine driver."""
@@ -174,6 +177,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             delivery="flag",
             name="--tool-call-parser",
             options=[
+                OFF,
                 "hermes",
                 "mistral",
                 "llama3_json",
@@ -189,7 +193,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
                 "glm45",
                 "openai",
             ],
-            default_behavior="Tool calling off",
+            default_behavior="Chosen from the model family (off when the family is unknown)",
             effective_key="tool_call_parser",
             companion_flags=["--enable-auto-tool-choice"],
         ),
@@ -205,6 +209,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             delivery="flag",
             name="--reasoning-parser",
             options=[
+                OFF,
                 "qwen3",
                 "deepseek_r1",
                 "deepseek_v3",
@@ -218,7 +223,9 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
                 "seed_oss",
                 "step3",
             ],
-            default_behavior="Thinking left inside the answer",
+            default_behavior=(
+                "Chosen from the model family (thinking left inside the answer when unknown)"
+            ),
             effective_key="reasoning_parser",
         ),
         ServerParameter(
@@ -384,7 +391,7 @@ def compile_parameters(
         values[pid] = value
     for parameter in ENGINE_PARAMETERS[engine]:
         chosen = values.get(parameter.id)
-        if chosen is None:
+        if chosen is None or (chosen == OFF and OFF in parameter.options):
             continue
         if parameter.delivery == "flag":
             flags.extend([*parameter.companion_flags, parameter.name, chosen])
