@@ -8,6 +8,7 @@ SSH disconnect; a boot/start identity prevents signalling a reused PID.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -19,7 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
@@ -472,16 +473,11 @@ def worker_environment(
 
 
 def reuse_helper() -> Any:
-    """The shared reuse helper shipped beside this supervisor (None when absent)."""
-    try:
-        import clio_reuse  # type: ignore[import-not-found]
-    except ImportError:
-        # Not shipped (run from CLIO's own tree): the same module in the package.
-        try:
-            from clio_agent.gact.infrastructure import reuse as clio_reuse
-        except ImportError:
-            return None
-    return clio_reuse
+    """The reuse helper shipped beside this supervisor, else CLIO's own (None when absent)."""
+    for name in ("clio_reuse", "clio_agent.gact.infrastructure.reuse"):
+        with suppress(ImportError):
+            return importlib.import_module(name)
+    return None
 
 
 def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
@@ -543,10 +539,7 @@ def release_group(timeout: float = 10) -> None:
 
 
 def rotate_log(log: Path, keep: int = LOG_GENERATIONS) -> None:
-    """Shift a non-empty log to ``.1`` (older ones up to ``.keep``) instead of truncating it.
-
-    A failed start's log is the evidence for the next attempt (F008).
-    """
+    """Shift a non-empty log to ``.1`` (up to ``.keep``): a failed start's log is evidence (F008)."""
     if not log.is_file() or log.stat().st_size == 0:
         return
     log.with_name(f"{log.name}.{keep}").unlink(missing_ok=True)

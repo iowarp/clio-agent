@@ -320,14 +320,17 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
     pulls = [spec for spec in plan.commands if spec.args[2:3] == ["clio-apptainer-pull"]]
     assert [spec.allowed_exit_codes for spec in pulls] == [[0, 124], [0]]
     store = "/home/alice/.local/share/clio-agent/services/ares/apptainer-images"
-    assert pulls[0].args[3:] == [
+    assert pulls[0].args[3:11] == [
         store,
         OLLAMA_IMAGE,
         "sha256-" + OLLAMA_IMAGE.rsplit("@sha256:", 1)[1],
         f"{service_dir}/images/clio-ollama.sif",
         f"{service_dir}/tmp/apptainer-tmp",
         "1740",
+        "1",
+        "0",
     ]
+    assert pulls[1].args[9:11] == ["2", "0"]
     assert all(spec.timeout_seconds <= 1800 for spec in plan.commands)
     run = _run(plan.commands, "apptainer")
     assert run.args[:4] == ["instance", "run", "--cleanenv", "--writable-tmpfs"]
