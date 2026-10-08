@@ -50,6 +50,7 @@ from clio_agent.gact.infrastructure.resource_ledger import (
     removal_commands,
     shared_image_recorder,
 )
+from clio_agent.gact.infrastructure.reuse import from_scratch
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.web_search_service import (
     CONTAINER_NAME,
@@ -561,6 +562,7 @@ def apptainer_web_search_plan(
             layout.image_store,
             CONTAINER_NAME,
             posixpath.join(layout.temporary, "apptainer-tmp"),
+            fresh=from_scratch(configuration),
         )
     )
     recorders[len(commands) - 1] = shared_image_recorder()

@@ -479,3 +479,15 @@ def test_launch_hands_the_host_proxy_to_the_instance_by_environment(tmp_path: Pa
     assert "APPTAINERENV_NO_PROXY=localhost" in exported
     assert not any(line.startswith("APPTAINERENV_http_proxy=") for line in exported)
     assert "secret" not in (tmp_path / "argv").read_text()
+
+
+def test_reinstall_from_scratch_bypasses_the_image_store() -> None:
+    def pulls(configuration: dict[str, str]) -> list[list[str]]:
+        commands = plan("install", configuration).commands
+        return [list(c.args) for c in commands if "CLIO_SHARED_IMAGE" in argv(c)]
+
+    plain, fresh = pulls({}), pulls({"install.from_scratch": "true"})
+    assert plain and len(plain) == len(fresh)
+    # The pull script's 8th argument (before the probe): 1 = --disable-cache, no SIF reuse.
+    assert [args[-2] for args in plain] == ["0"] * len(plain)
+    assert [args[-2] for args in fresh] == ["1"] * len(fresh)
