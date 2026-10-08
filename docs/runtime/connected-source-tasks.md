@@ -43,6 +43,11 @@ by actual settlement without publishing a partial snapshot. This exposed a
 Windows `WinError 206` when staging directories exceeded the ordinary path limit;
 directory creation now uses the existing extended-path helper.
 
+The tests also pause the real staging cleanup. The operation remains running
+and control requests stay responsive until that cleanup finishes, for both
+completion and cancellation. A deterministic pre-fix cancellation run reproduced
+the premature terminal-state race observed under CI load.
+
 Additional focused cases cover honoring `pollIntervalMs`, persisting before the
 first poll, publishing wait events from a real app boot and loading task records
 after process-state loss. This qualification does not measure large-folder

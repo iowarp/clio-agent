@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from clio_agent.gact.storage import transfers
 from clio_agent.gact.storage.adapters import LocalSource, SourceAdapter
 from clio_agent.gact.storage.models import FileEntry, SourceRecord
 from clio_agent.platform_paths import win_extended_path
@@ -104,8 +105,28 @@ def _wait_terminal(client: TestClient, prefix: str, identifier: str) -> dict[str
     pytest.fail("the transfer never settled")
 
 
+@contextmanager
+def _pause_cleanup(monkeypatch: pytest.MonkeyPatch, identifier: str) -> Iterator[threading.Event]:
+    """Gate the real staging cleanup so terminal publication has a deterministic boundary."""
+    entered, release = threading.Event(), threading.Event()
+    remove = transfers.remove_owned_tree
+
+    def paused_remove(path: Path, owner_root: Path) -> None:
+        if path.name == "stage-" + identifier:
+            entered.set()
+            assert release.wait(timeout=10), "the paused cleanup was never released"
+        remove(path, owner_root)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(transfers, "remove_owned_tree", paused_remove)
+        try:
+            yield entered
+        finally:
+            release.set()
+
+
 def test_download_ack_progress_and_result_do_not_block_control_plane(
-    transfer_setup: tuple[Any, ...],
+    transfer_setup: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The real 202/progress/result path stays responsive while file I/O is paused."""
     client, app, prefix, adapter, payload = transfer_setup
@@ -123,7 +144,11 @@ def test_download_ack_progress_and_result_do_not_block_control_plane(
     assert live["bytes_done"] == 1024 * 1024
     assert live["bytes_total"] == len(payload)
 
-    adapter.release.set()
+    with _pause_cleanup(monkeypatch, identifier) as cleanup:
+        adapter.release.set()
+        assert cleanup.wait(timeout=5), str(_operation(client, prefix, identifier))
+        assert _operation(client, prefix, identifier)["state"] == "running"
+        assert client.get("/v1/health").status_code == 200
     finished = _wait_terminal(client, prefix, identifier)
     assert finished["state"] == "completed", finished
     assert finished["bytes_done"] == finished["bytes_total"] == len(payload)
@@ -136,7 +161,7 @@ def test_download_ack_progress_and_result_do_not_block_control_plane(
 
 
 def test_cancel_is_requested_then_settled_without_publishing_partial_data(
-    transfer_setup: tuple[Any, ...],
+    transfer_setup: tuple[Any, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An acknowledged cancellation becomes terminal only when the transfer owner settles."""
     client, app, prefix, adapter, payload = transfer_setup
@@ -150,7 +175,13 @@ def test_cancel_is_requested_then_settled_without_publishing_partial_data(
     assert pending["cancel_requested"] is True
     assert pending["state"] == "running"
 
-    adapter.release.set()
+    with _pause_cleanup(monkeypatch, identifier) as cleanup:
+        adapter.release.set()
+        assert cleanup.wait(timeout=5), str(_operation(client, prefix, identifier))
+        pending = _operation(client, prefix, identifier)
+        assert pending["state"] == "running"
+        assert pending["cancel_requested"] is True
+        assert client.get("/v1/health").status_code == 200
     settled = _wait_terminal(client, prefix, identifier)
     assert settled["state"] == "cancelled", settled
     assert settled["bytes_done"] == 1024 * 1024

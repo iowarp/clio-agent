@@ -8,6 +8,7 @@ import os
 import shutil
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from clio_agent.gact.storage.adapters import SourceAdapter, file_hash, safe_child
 from clio_agent.gact.storage.filesystem import is_link, walk
@@ -75,7 +76,8 @@ def materialize(
     """Stream selected data on the connected CLIO and publish only a complete copy.
 
     A retry creates a new immutable revision. Failed and cancelled staging trees
-    are removed; previous manifests and workspace copies remain available.
+    are removed before the operation becomes terminal; previous manifests and
+    workspace copies remain available.
     """
     source = record.source
     if operation.selected_paths is not None:
@@ -89,6 +91,9 @@ def materialize(
     baseline = owner_root / baseline_id
     previous_path = Path(source.local_path) if source.local_path else None
     workspace_stage: Path | None = None
+    settled_state: Literal["completed", "cancelled", "failed"] | None = None
+    settled_error: str | None = None
+    done = 0
     store.update_operation(operation.id, state="running")
     try:
         entries = adapter.entries()
@@ -102,7 +107,6 @@ def materialize(
         if not record.download_read_only and shutil.disk_usage(workspace_root).free < total:
             raise ValueError("Insufficient workspace capacity for the working copy")
         os.mkdir(win_extended_path(stage))
-        done = 0
         hashes: dict[str, str] = {}
         seen: set[str] = set()
         for entry in entries:
@@ -192,11 +196,11 @@ def materialize(
             }
         )
         store.put("source", source.id, record)
-        store.update_operation(operation.id, state="completed", bytes_done=done)
+        settled_state = "completed"
         return record
     except (OSError, ValueError, RuntimeError) as exc:
-        state = "cancelled" if isinstance(exc, TransferCancelled) else "failed"
-        store.update_operation(operation.id, state=state, error=str(exc))
+        settled_state = "cancelled" if isinstance(exc, TransferCancelled) else "failed"
+        settled_error = str(exc)
         record.source = source.model_copy(
             update={
                 "materialization": "ready"
@@ -211,6 +215,12 @@ def materialize(
         remove_owned_tree(stage, owner_root)
         if workspace_stage is not None:
             remove_owned_tree(workspace_stage, workspace_root / "connected-data")
+        # Terminal state acknowledges settled ownership, including staging cleanup.
+        # If cleanup raises, leave the operation live for the service's error owner.
+        if settled_state == "completed":
+            store.update_operation(operation.id, state=settled_state, bytes_done=done)
+        elif settled_state is not None:
+            store.update_operation(operation.id, state=settled_state, error=settled_error)
 
 
 def local_hashes(root: Path) -> dict[str, str]:
