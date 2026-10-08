@@ -21,7 +21,10 @@ def _bash_path(path: Path) -> str:
 
 
 @pytest.mark.parametrize("system", ["Darwin", "Linux"])
-def test_backend_installer_requests_compatible_mac_wheels(tmp_path: Path, system: str) -> None:
+@pytest.mark.parametrize("version", ["0.9.5b2", "v0.9.5-beta.5.1"])
+def test_backend_installer_requests_compatible_mac_wheels(
+    tmp_path: Path, system: str, version: str
+) -> None:
     """The registry install uses wheel-only resolution on Mac, retaining Linux source support."""
     binaries = tmp_path / "bin"
     binaries.mkdir()
@@ -41,7 +44,7 @@ def test_backend_installer_requests_compatible_mac_wheels(tmp_path: Path, system
         TEST_PATH=f"{_bash_path(binaries)}:/usr/bin:/bin",
         CLIO_PREFIX=_bash_path(tmp_path / "install"),
         CLIO_BIN_DIR=_bash_path(tmp_path / "launchers"),
-        CLIO_VERSION="0.9.5b2",
+        CLIO_VERSION=version,
         TEST_UV_ARGS=_bash_path(args_file),
     )
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else "bash"
@@ -60,11 +63,14 @@ def test_backend_installer_requests_compatible_mac_wheels(tmp_path: Path, system
     )
     assert result.returncode == 77, result.stdout + result.stderr
     args = args_file.read_text().splitlines()
-    assert "clio-agent[argonne,flowcept]==0.9.5b2" in args
+    package_version = "0.9.5b5.post1" if version == "v0.9.5-beta.5.1" else version
+    assert f"clio-agent[argonne,flowcept]=={package_version}" in args
     assert ("--only-binary=rasterio" in args) == (system == "Darwin")
 
 
-@pytest.mark.parametrize("version", ["0.9.5b2", "v0.9.5-beta.2", "0.9.4.24"])
+@pytest.mark.parametrize(
+    "version", ["0.9.5b2", "v0.9.5-beta.2", "0.9.4.24", "0.9.5b5.post1", "v0.9.5-beta.5.1"]
+)
 @pytest.mark.parametrize("integrity", ["valid", "tampered", "missing", "duplicate"])
 @pytest.mark.parametrize("checksum_format", ["canonical", "legacy", "binary"])
 def test_verified_desktop_download(
@@ -72,7 +78,10 @@ def test_verified_desktop_download(
 ) -> None:
     """A real hash check must precede setup, including beta normalization and bad manifests."""
     windows = os.name == "nt"
-    tag_version = "0.9.5-beta.2" if "b" in version else version
+    tag_version = {
+        "0.9.5b2": "0.9.5-beta.2",
+        "0.9.5b5.post1": "0.9.5-beta.5.1",
+    }.get(version, version.removeprefix("v"))
     suffix = "x64-setup-bundled.exe" if windows else "aarch64-bundled.dmg"
     asset_name = f"CLIO.Desktop_{tag_version}_{suffix}"
     payload = tmp_path / "fixture.bin"
@@ -159,6 +168,43 @@ esac""",
         assert result.returncode != 0, result.stdout + result.stderr
         assert "checksum" in (result.stdout + result.stderr).lower()
         assert not output.exists()
+
+
+def test_windows_backend_installer_normalizes_hotfix_package_version(tmp_path: Path) -> None:
+    """The public hotfix tag selects its real PyPI version before any installation."""
+    if os.name != "nt":
+        pytest.skip("Windows installer execution requires PowerShell on Windows")
+    args_file = tmp_path / "uv-args"
+    wrapper = tmp_path / "run.ps1"
+
+    def quote(path: Path) -> str:
+        return "'" + str(path).replace("'", "''") + "'"
+
+    wrapper.write_text(
+        f"""$ErrorActionPreference = 'Stop'
+$env:CLIO_PREFIX = {quote(tmp_path / "install")}
+$env:CLIO_BIN_DIR = {quote(tmp_path / "launchers")}
+$env:CLIO_VERSION = 'v0.9.5-beta.5.1'
+$env:CLIO_REF = ''
+$env:GACT_REF = ''
+function uv {{
+    if ($args[0] -eq 'venv') {{ $global:LASTEXITCODE = 0; return }}
+    $args | Set-Content -LiteralPath {quote(args_file)}
+    exit 77
+}}
+& {quote(ROOT / "install/install.ps1")}
+exit $LASTEXITCODE
+""",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(wrapper)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 77, result.stdout + result.stderr
+    assert "clio-agent==0.9.5b5.post1" in args_file.read_text(encoding="utf-8-sig").splitlines()
 
 
 def test_shell_release_parser_accepts_bsd_whitespace(tmp_path: Path) -> None:

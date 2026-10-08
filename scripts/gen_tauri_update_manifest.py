@@ -110,9 +110,10 @@ def encode_version(tag: str) -> str:
     maintenance = re.match(r"^(\d+\.\d+\.\d+)\.(\d+)$", version)
     if maintenance:
         return f"{maintenance.group(1)}+{maintenance.group(2)}"
-    beta = re.match(r"^(\d+\.\d+\.\d+)-beta\.(\d+)$", version)
+    beta = re.match(r"^(\d+\.\d+\.\d+)-beta\.(\d+)(?:\.(\d+))?$", version)
     if beta:
-        return f"{beta.group(1)}-{beta.group(2)}"
+        hotfix = f"+{beta.group(3)}" if beta.group(3) is not None else ""
+        return f"{beta.group(1)}-{beta.group(2)}{hotfix}"
     if not re.match(r"^\d+\.\d+\.\d+$", version):
         raise ValueError(f"invalid CLIO release version: {version!r}")
     return version

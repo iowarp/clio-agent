@@ -31,10 +31,12 @@ if [ -z "$tag" ]; then
   tag="${resolved##*/}"
 fi
 version="${tag#v}"
-if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
+if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)\.post([0-9]+)$ ]]; then
+  version="${BASH_REMATCH[1]}-beta.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
   version="${BASH_REMATCH[1]}-beta.${BASH_REMATCH[2]}"
 fi
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|-beta\.[0-9]+)?$ ]] || die "invalid release version: $tag"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+|-beta\.[0-9]+(\.[0-9]+)?)?$ ]] || die "invalid release version: $tag"
 tag="v$version"
 suffix=""; [ "$variant" != bundled ] || suffix=-bundled
 target=aarch64-apple-darwin

@@ -49,3 +49,14 @@ def test_unknown_tag_exits_nonzero_and_prints_nothing() -> None:
     out = _run("v9.9.9")
     assert out.returncode == 1
     assert out.stdout == ""
+
+
+def test_beta_hotfix_is_found_by_tag_and_post_release_version() -> None:
+    """The public beta hotfix and its normalized Python version identify one section."""
+    by_tag = _run("v0.9.5-beta.5.1")
+    by_package = _run("0.9.5b5.post1")
+    assert by_tag.returncode == by_package.returncode == 0
+    assert (
+        by_tag.stdout.split("**Full details:**")[0]
+        == by_package.stdout.split("**Full details:**")[0]
+    )

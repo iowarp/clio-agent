@@ -50,9 +50,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # PyPI package spelling and GitHub tag spelling differ for beta releases.
 release_tag() {
   local version="${1#v}"
-  if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)b([0-9]+)$ ]]; then
+  if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)\.post([0-9]+)$ ]]; then
+    printf 'v%s-beta.%s.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+  elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?)b([0-9]+)$ ]]; then
     printf 'v%s-beta.%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
-  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+)?$ ]]; then
+  elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(-beta\.[0-9]+(\.[0-9]+)?)?$ ]]; then
     printf 'v%s' "$version"
   else
     die "no GitHub release tag for package version: $version"
@@ -155,7 +157,11 @@ if [ -n "$CLIO_REF" ]; then
   say "Installing clio-agent deps (uv sync --python 3.13 --extra argonne --extra flowcept)"
   ( cd "$PREFIX/clio-agent" && uv sync --python 3.13 --extra argonne --extra flowcept )
 else
-  pkg_spec="clio-agent[argonne,flowcept]${CLIO_VERSION:+==$CLIO_VERSION}"
+  package_version="$CLIO_VERSION"
+  if [[ "$package_version" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+    package_version="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}.post${BASH_REMATCH[3]}"
+  fi
+  pkg_spec="clio-agent[argonne,flowcept]${package_version:+==$package_version}"
   # On macOS, select an available Rasterio wheel for the user's OS instead
   # of trying to compile a newer release against a missing system GDAL.
   wheel_arg=""

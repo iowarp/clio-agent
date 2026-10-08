@@ -63,10 +63,13 @@ if (-not $env:CLIO_PREFIX -and -not $env:CLIO_AGENT_HOME -and -not $env:CLIO_AGE
 $BinDir      = if ($env:CLIO_BIN_DIR)      { $env:CLIO_BIN_DIR }     else { Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
 function Get-ClioReleaseTag([string]$Version) {
     $Version = $Version -replace '^v', ''
+    if ($Version -match '^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)\.post([0-9]+)$') {
+        return "v$($Matches[1])-beta.$($Matches[2]).$($Matches[3])"
+    }
     if ($Version -match '^([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)b([0-9]+)$') {
         return "v$($Matches[1])-beta.$($Matches[2])"
     }
-    if ($Version -match '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-beta\.[0-9]+)?$') {
+    if ($Version -match '^[0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-beta\.[0-9]+(?:\.[0-9]+)?)?$') {
         return "v$Version"
     }
     throw "No GitHub release tag for package version: $Version"
@@ -136,7 +139,11 @@ if ($ClioRef) {
     RunNative uv @('sync', '--python', '3.13')
     Pop-Location
 } else {
-    $pkgSpec = if ($ClioVersion) { "clio-agent==$ClioVersion" } else { 'clio-agent' }
+    $PackageVersion = $ClioVersion
+    if ($PackageVersion -match '^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$') {
+        $PackageVersion = "$($Matches[1])b$($Matches[2]).post$($Matches[3])"
+    }
+    $pkgSpec = if ($PackageVersion) { "clio-agent==$PackageVersion" } else { 'clio-agent' }
     Say "Installing $pkgSpec from PyPI"
     RemoveTree $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null

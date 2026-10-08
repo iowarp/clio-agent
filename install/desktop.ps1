@@ -17,8 +17,9 @@ if (-not $Version) {
     $Version = $release.tag_name
 }
 $Version = $Version -replace '^v', ''
-if ($Version -match '^(\d+\.\d+\.\d+)b(\d+)$') { $Version = "$($Matches[1])-beta.$($Matches[2])" }
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+|-beta\.\d+)?$') { throw "Invalid release version: $Version" }
+if ($Version -match '^(\d+\.\d+\.\d+)b(\d+)\.post(\d+)$') { $Version = "$($Matches[1])-beta.$($Matches[2]).$($Matches[3])" }
+elseif ($Version -match '^(\d+\.\d+\.\d+)b(\d+)$') { $Version = "$($Matches[1])-beta.$($Matches[2])" }
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+|-beta\.\d+(?:\.\d+)?)?$') { throw "Invalid release version: $Version" }
 $tag = "v$Version"
 $asset = "CLIO.Desktop_${Version}_x64-setup-bundled.exe"
 $checksums = 'SHA256SUMS.x86_64-pc-windows-msvc.bundled.txt'
