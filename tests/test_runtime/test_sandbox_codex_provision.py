@@ -252,7 +252,7 @@ def test_doctor_codex_windows_unprovisioned_is_degraded_with_setup_action() -> N
 
 
 def test_doctor_codex_enforcement_unverified_is_degraded_with_reverify_action() -> None:
-    """codex_enforcement_unverified → DEGRADED, next_action says enforcement couldn't be verified."""
+    """An unverified installation reports the real Desktop action and headless alternative."""
     state = sandbox.SandboxResult(
         mechanism=sandbox.MECHANISM_NONE,
         active=False,
@@ -260,5 +260,7 @@ def test_doctor_codex_enforcement_unverified_is_degraded_with_reverify_action() 
     )
     row = sandbox.probe_sandbox(state=state)
     assert row.state == IntegrationState.DEGRADED
-    assert "could not be verified" in row.next_action
+    assert "no successful verification receipt" in row.next_action
+    assert "Infrastructure > Agent > Protected execution" in row.next_action
+    assert "Set up protected execution" in row.next_action
     assert "clio sandbox setup" in row.next_action

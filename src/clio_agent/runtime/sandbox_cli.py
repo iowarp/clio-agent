@@ -243,8 +243,10 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     """Resolve the Windows fleet-runtime ``(label, path, inherit)`` specs the grant plan covers.
 
     ``(OI)(CI)(RX)`` ``/T`` on: the uv tool bin dir (the clio-kit launcher), the uv tools tree, the
-    uv-managed python tree, and clio-kit's cache; a bare ``(RX)`` traverse (no ``/T``) on the
-    per-user Temp (the confined workspace lives under it). Paths resolve via env vars / ``Path.home``
+    uv-managed python tree, clio-kit's cache, and the desktop's bundled runtime when present;
+    a bare ``(RX)`` traverse (no ``/T``) on per-user Temp (the confined workspace lives under
+    it). Grant only the runtime tree, never the adjacent private Desktop data/config. Paths resolve
+    via env vars / ``Path.home``
     robustly; a path that does not currently exist is STILL returned (the executor skips it with a
     typed reason). Windows-shaped, but pure — safe to call anywhere for the plan.
     """
@@ -258,6 +260,11 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     specs.append(("uv_tools", str(roaming / "uv" / "tools"), True))
     specs.append(("uv_python", str(roaming / "uv" / "python"), True))
     specs.append(("clio_kit_cache", str(home / ".cache" / "clio-kit"), True))
+    from clio_agent.tools.desktop_mcp_runtime import resolve_bundled_runtime_root  # noqa: PLC0415
+
+    bundled = resolve_bundled_runtime_root()
+    if bundled is not None:
+        specs.append(("bundled_runtime", str(bundled), True))
     specs.append(("user_temp", str(local / "Temp"), False))
     return specs
 
@@ -369,6 +376,8 @@ def provision_codex_windows(
     marker_writer: Any = None,
     gate: Any = None,
     grantor: Any = None,
+    helper_preparer: Callable[[Path, str], dict[str, Any]] | None = None,
+    allow_elevation: bool = True,
     platform: str = sys.platform,
 ) -> CodexProvisionResult:
     """Idempotently provision the Codex Windows write fence (``clio sandbox setup``) (B-codex-5).
@@ -379,7 +388,9 @@ def provision_codex_windows(
     * codex absent / below the validated floor → the typed install pointer, NO elevation;
     * already provisioned + enforcement-verified → idempotent no-op
       (:data:`OUTCOME_ALREADY_PROVISIONED`), ZERO prompts;
-    * otherwise → one self-elevating ``codex sandbox`` setup (creates the ``codexsandbox*``
+    * accounts present but this installation has no verified receipt → grant runtime access and
+      verify the existing fence WITHOUT repeating account creation or a UAC prompt;
+    * accounts absent → one self-elevating ``codex sandbox`` setup (creates the ``codexsandbox*``
       accounts), GRANT those restricted users read+exec on the fleet runtime they must launch
       (:func:`grant_fleet_runtime_access` — else ``CreateProcessAsUserW`` fails ``WinError 5``),
       then run the real enforcement check
@@ -418,7 +429,23 @@ def provision_codex_windows(
 
     gate_fn = gate if gate is not None else scx.codex_windows_gate
     grant_fn = grantor if grantor is not None else grant_fleet_runtime_access
-    ready, _reason = gate_fn(platform=platform)
+    if det.source == scx.CODEX_SOURCE_BUNDLED:
+        from clio_agent.runtime.codex_windows_helpers import (  # noqa: PLC0415
+            CodexWindowsHelpersError,
+            ensure_codex_windows_helpers,
+        )
+
+        try:
+            (helper_preparer or ensure_codex_windows_helpers)(Path(det.binary_path), det.version)
+        except CodexWindowsHelpersError as exc:
+            return CodexProvisionResult(
+                ok=False,
+                status=OUTCOME_SETUP_FAILED,
+                reason="codex_windows_helpers_unavailable",
+                detail=str(exc),
+                next_action="Retry Set up protected execution when the matching helper download is available.",
+            )
+    ready, reason = gate_fn(platform=platform)
     if ready:
         # Idempotent: already provisioned + enforcement-verified. STILL (re)apply the fleet-runtime
         # RX grants — a box provisioned by a PRIOR clio version has the accounts but NOT the grants,
@@ -438,18 +465,29 @@ def provision_codex_windows(
             extra={"fleet_runtime_grants": grant_reasons},
         )
 
-    # Not provisioned (or unverified) → the one-time self-elevating codex setup.
-    elevate = elevator if elevator is not None else _elevated_codex_setup
-    ok, detail = elevate(det.binary_path)
-    if not ok:
-        return CodexProvisionResult(
-            ok=False,
-            status=OUTCOME_SETUP_FAILED,
-            reason=REASON_SETUP_FAILED,
-            detail=detail,
-            next_action="Re-run `clio sandbox setup` and approve the UAC prompt.",
-            elevated=True,
-        )
+    # Re-prove an existing sandbox; never infer enforcement from account presence
+    # or copy another installation's receipt. Only absent accounts need elevation.
+    elevated = reason != scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED
+    if elevated:
+        if not allow_elevation:
+            return CodexProvisionResult(
+                ok=False,
+                status=OUTCOME_SETUP_FAILED,
+                reason=scx.REASON_CODEX_WINDOWS_UNPROVISIONED,
+                detail="Windows protected execution requires its one-time account setup.",
+                next_action="Open Infrastructure > Agent > Protected execution and select Set up protected execution.",
+            )
+        elevate = elevator if elevator is not None else _elevated_codex_setup
+        ok, detail = elevate(det.binary_path)
+        if not ok:
+            return CodexProvisionResult(
+                ok=False,
+                status=OUTCOME_SETUP_FAILED,
+                reason=REASON_SETUP_FAILED,
+                detail=detail,
+                next_action="Re-run `clio sandbox setup` and approve the UAC prompt.",
+                elevated=True,
+            )
 
     # The codexsandbox* accounts now exist; grant them read+exec on the fleet runtime they must
     # launch (the launcher + uv-managed python/tools + clio-kit cache + Temp traverse) BEFORE the
@@ -478,9 +516,13 @@ def provision_codex_windows(
             ok=True,
             status=OUTCOME_PROVISIONED,
             reason=REASON_PROVISIONED,
-            detail="Codex Windows write fence provisioned + enforcement verified (one-time UAC).",
+            detail=(
+                "Codex Windows write fence provisioned + enforcement verified (one-time UAC)."
+                if elevated
+                else "Existing Codex Windows write fence verified for this installation without UAC."
+            ),
             next_action="No action required.",
-            elevated=True,
+            elevated=elevated,
             extra={"fleet_runtime_grants": grant_reasons},
         )
     # Setup ran and the accounts are real, but codex could NOT enforce a confined write on this
@@ -490,12 +532,12 @@ def provision_codex_windows(
         status=OUTCOME_ENFORCEMENT_UNVERIFIED,
         reason=enforce_reason or scx.REASON_CODEX_ENFORCEMENT_UNVERIFIED,
         detail=(
-            "codex Windows sandbox setup ran and the accounts are provisioned, but codex could "
+            "The Codex Windows sandbox accounts are provisioned, but codex could "
             f"NOT enforce a confined write ({enforce_reason}). clio runs with the advisory file "
             "policy (honest degrade — no OS write fence in force on this host)."
         ),
         next_action="Re-run `clio sandbox setup` to re-verify enforcement.",
-        elevated=True,
+        elevated=elevated,
         extra={"fleet_runtime_grants": grant_reasons},
     )
 

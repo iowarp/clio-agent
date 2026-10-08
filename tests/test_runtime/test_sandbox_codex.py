@@ -181,22 +181,23 @@ def test_parse_codex_version_banner() -> None:
 
 
 def test_synthesize_profile_win32_read_anywhere_write_fence() -> None:
-    """win32: drive anchors → "read" (read-anywhere), the workspace → "write" (the fence)."""
+    """Windows uses the client's supported read root and retains the exact write fence."""
     profile = sc.synthesize_codex_profile(["D:\\ws"], profile_name="clio", platform="win32")
     fs = profile["filesystem"]
     assert fs["D:\\ws"] == "write"
-    assert fs["D:\\"] == "read"  # the write root's drive anchor is a read grant
+    assert fs[":root"] == "read"
+    assert "D:\\" not in fs
     assert set(profile) == {"description", "filesystem", "network"}
     # The synthesized table passes clio's own validation (round-trip).
     sc.validate_codex_profile(profile)
 
 
-def test_synthesize_profile_multiple_drives_dedup_anchors() -> None:
-    """Two write roots on distinct drives → both drive anchors granted read, both roots write."""
+def test_synthesize_profile_multiple_drives_share_supported_read_root() -> None:
+    """Cross-drive writes retain their territories without invalid native root entries."""
     profile = sc.synthesize_codex_profile(["C:\\a", "D:\\b", "D:\\c"], platform="win32")
     fs = profile["filesystem"]
-    assert fs["C:\\"] == "read"
-    assert fs["D:\\"] == "read"
+    assert fs[":root"] == "read"
+    assert "C:\\" not in fs and "D:\\" not in fs
     assert fs["C:\\a"] == "write"
     assert fs["D:\\b"] == "write"
     assert fs["D:\\c"] == "write"

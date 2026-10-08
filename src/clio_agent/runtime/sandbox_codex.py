@@ -516,20 +516,19 @@ def verify_codex_enforcement(
         return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
 
 
-def _run_codex_enforcement_probe(
-    binary: str, write_root: str
-) -> tuple[bool, str]:  # pragma: no cover - win32 live gate only (never unit-run)
+def _run_codex_enforcement_probe(binary: str, write_root: str) -> tuple[bool, str]:
     """The real behavioural probe (win32; never unit-run — tests inject ``runner``).
 
     Fences a fresh temp ``allow`` dir and composes a confined codex child (via
     :func:`codex_prefix` over a :func:`write_codex_layer` elevated layer) that writes to a path
-    OUTSIDE the fence. Enforcement ⇒ the write is denied (file absent AND the child spawned):
+    OUTSIDE the fence. An in-root sentinel must first prove that the child ran and could write.
+    Enforcement ⇒ the outside write is denied (outside absent, sentinel present, nonzero exit):
     :data:`REASON_CODEX_ENFORCEMENT_VERIFIED`. If the file appears the fence let an out-of-root
     write through: :data:`REASON_CODEX_ENFORCEMENT_ESCAPED`. If codex could not even spawn the
-    confined child (``createprocesswithlogon`` in the output) the fence is
-    :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED`. The outside redirect target is NOT quoted (the
-    temp path is space-free; quoting mangles the child redirect through codex's spawn — a
-    live-proven gotcha). ``write_root`` is the caller's declared territory (threaded for parity
+    confined child (including a profile/config/launcher failure) the fence is
+    :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED`. Both redirect targets are relative to the declared
+    working directory, so a space in the user's Temp path needs no shell-path quoting.
+    ``write_root`` is the caller's declared territory (threaded for parity
     with :func:`verify_codex_enforcement`); the probe self-provisions its temp allow dir.
     """
     import subprocess  # noqa: PLC0415 - only on this path
@@ -540,23 +539,37 @@ def _run_codex_enforcement_probe(
         tempfile.TemporaryDirectory(prefix="clio-agent-codex-out-") as outside,
     ):
         outside_target = Path(outside) / "denied.txt"
+        started_target = Path(allow) / "started.txt"
+        relative_outside = f"..\\{Path(outside).name}\\denied.txt"
         profile = synthesize_codex_profile([allow])
         layer = write_codex_layer("clio-verify", profile, elevated=True)
         argv = [
             *codex_prefix(binary, "clio-verify", allow, layer_name=layer),
             "cmd",
+            "/d",
             "/c",
-            f"type nul > {outside_target}",  # NO quotes — space-free temp path; quoting mangles it
+            f"type nul > started.txt && type nul > {relative_outside}",
         ]
+        # Codex delegates ACL work to background helpers. Captured pipe handles
+        # can outlive the command on Windows; file witnesses provide the proof.
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_CODEX_PROBE_TIMEOUT_S, check=False
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_CODEX_PROBE_TIMEOUT_S,
+            check=False,
         )
         if outside_target.exists():
             # The confined child wrote OUTSIDE its territory — the fence did not hold.
             return False, REASON_CODEX_ENFORCEMENT_ESCAPED
-        blob = f"{proc.stdout}\n{proc.stderr}".lower()
-        if "createprocesswithlogon" in blob:
-            # codex never spawned the confined child (elevated logon failed) — nothing enforced.
+        if not started_target.is_file() or proc.returncode == 0:
+            # Missing outside output alone is not proof: the launcher may never
+            # have started the child or the command may not have executed.
+            logger.info(
+                "codex verification unproven child_started=%s returncode=%s",
+                started_target.is_file(),
+                proc.returncode,
+            )
             return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
         # Child spawned and the out-of-root write did not land ⇒ the fence is genuinely in force.
         return True, REASON_CODEX_ENFORCEMENT_VERIFIED

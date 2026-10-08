@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import paths
+from clio_agent.runtime.codex_desktop_setup import prepare_existing_windows_fence
+from clio_agent.runtime.codex_windows_helpers import ensure_bundled_codex_windows_helpers
 from clio_agent.runtime.document_runtime import (
     DocumentRuntimeError,
     prepare_document_runtime,
@@ -42,6 +44,15 @@ def install_document_runtime(
         "path": str(github),
         "authentication": "clio_account",
     }
+    if progress is not None:
+        progress("Preparing and checking protected execution helpers...")
+    result["native_tools"]["codex_windows_helpers"] = ensure_bundled_codex_windows_helpers()
+    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence()
+    if (
+        progress is not None
+        and result["native_tools"]["protected_execution"]["status"] == "setup_required"
+    ):
+        progress(result["native_tools"]["protected_execution"]["next_action"])
     receipt = (
         (cache_root or paths.user_cache_dir() / "document-runtime")
         / result["runtime_id"]
