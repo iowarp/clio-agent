@@ -680,3 +680,21 @@ def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> Non
 
 
 LLAMA_DIGEST = "sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe"
+
+
+def test_windows_llama_archive_is_sha256_verified_before_unpacking() -> None:
+    """The native Windows llama.cpp zip is checked against the pinned digest (F027)."""
+
+    from clio_agent.gact.infrastructure.llama_native_windows import (
+        LLAMA_WINDOWS_CPU_SHA256,
+        native_windows_llama_plan,
+    )
+    from clio_agent.gact.infrastructure.store import InfrastructureStore  # noqa: PLC0415
+
+    plan = native_windows_llama_plan(
+        "install", "C:/models/q.gguf", InfrastructureStore(None).target("local")
+    )
+    script = " ".join(plan.commands[0].args)
+    assert LLAMA_WINDOWS_CPU_SHA256 in script
+    assert script.index("Get-FileHash") < script.index("Expand-Archive")
+    assert len(LLAMA_WINDOWS_CPU_SHA256) == 64
