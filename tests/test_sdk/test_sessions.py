@@ -44,7 +44,7 @@ def test_session_lifecycle_round_trip(client: ClioClient) -> None:
         client.sessions.get(created.id)
 
 
-def test_session_fork_sets_parent_and_store_defaults(client: ClioClient) -> None:
+def test_session_fork_preserves_parent_configuration(client: ClioClient) -> None:
     parent = client.sessions.create(title="parent", mode="plan", edit_mode="whole")
 
     fork = client.sessions.fork(parent.id, title="the fork")
@@ -52,10 +52,10 @@ def test_session_fork_sets_parent_and_store_defaults(client: ClioClient) -> None
     assert fork.id != parent.id
     assert fork.parent_session_id == parent.id
     assert fork.title == "the fork"
-    # SPEC §6.2: modes are NOT inherited — the fork gets store defaults.
-    # P1.1 #1063: the default mode is now ``edit`` (``chat`` mode was deleted).
-    assert fork.mode == "edit"
-    assert fork.edit_mode == "diff"
+    # An independent branch continues with the source conversation's settings.
+    assert fork.mode == parent.mode == "plan"
+    assert fork.edit_mode == parent.edit_mode == "whole"
+    assert fork.metadata["session_kind"] == "branch"
 
     # Both remain listed and independently fetchable.
     ids = [s.id for s in client.sessions.list()]

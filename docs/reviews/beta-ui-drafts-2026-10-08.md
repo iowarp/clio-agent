@@ -52,6 +52,12 @@ Sanitized local evidence is retained under `.local/beta-ui-evidence/`: `live-dra
 - Two Playwright checks cover message branching, submission, preserved parent history, reopening/reload, and artifact filtering in light/dark themes. Screenshots are retained locally under `.local/beta-ui-evidence/issues-1659-1660/`. This browser evidence uses a test-owned service; the backend tests drive the production fork and interaction routes.
 - CI on the prior head caught stale `.env.example` draft-cap documentation and a lock test that assumed FIFO acquisition. The template now records 8; the test controls each waiter poll around real holder handoffs, preserving genuine file locks, owner tokens and elapsed time, and requiring all three handoffs. New-head CI must be evaluated after push.
 
+## General download-routing audit
+
+The subsequent [general download-routing audit](download-routing-2026-10-08.md) closes independent evidence-ZIP and reusable Markdown download paths and adds automatic Windows history opening for browser/embedded-editor downloads. It records the complete routing inventory, 70 focused tests, browser ZIP/file checks and real WebView2 direct/frame acceptance.
+
+CI follow-up on the branch head aligned the SDK contract with inherited branch settings and identified the elicitation fixture as a delegated worker. The real stdio reconnect test now retains the app event loop through its connection lifecycle. All 64 SDK/elicitation/reconnect regressions passed. Browser checks now assert the compact current-location mark and matching composer/queue surface, and document navigation waits for the actual workspace to hydrate before opening its canvas. The three formerly failing browser cases passed locally.
+
 ## Sandbox error
 
 The connected-source Windows sandbox refusal in figure 15 is covered by existing [PR #1658](https://github.com/iowarp/clio-agent/pull/1658), still open at review time, head `a8e1357150271a91cf627b9cbddaedb11589f883`. That fix is absent from beta 5.2. Its broader sandbox and connected-transfer changes are not duplicated here; they must be included in a subsequent release.

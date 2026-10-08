@@ -278,7 +278,10 @@ def test_child_session_elicitation_forwards_to_parent_and_resolves(client: TestC
     app = client.app  # type: ignore[attr-defined]
     parent = app.state.sessions.create(workspace_id="ws_default", title="parent")  # type: ignore[attr-defined]
     child = app.state.sessions.create(  # type: ignore[attr-defined]
-        workspace_id="ws_default", title="child", parent_session_id=parent.id
+        workspace_id="ws_default",
+        title="child",
+        parent_session_id=parent.id,
+        agent={"id": "main", "mode": "subagent"},
     )
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=child.id, namespace="ext", tool_name="pick_color"
