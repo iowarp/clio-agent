@@ -160,6 +160,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_LM_CONTEXT_SIZING_STRATEGY` | `lm.context_sizing_strategy` | str | `fit_to_gpu` | `src/clio_agent/context_sizing/strategies.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
 | `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |

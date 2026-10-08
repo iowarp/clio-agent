@@ -90,6 +90,13 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 # continuation) or "sse" to force the stateless HTTP transport.
 # lm.codex_transport:  # default unset; resolved in code
 
+# CLIO_LM_CONTEXT_SIZING_STRATEGY  (str)  <- src/clio_agent/context_sizing/strategies.py
+# Default Fit-to-GPU strategy that sizes a CLIO-managed model server's
+# context (vLLM, llama.cpp, Ollama) from the model's KV cost and the GPU's
+# free memory; set to a registered research strategy id to change how
+# contexts are fitted.
+lm.context_sizing_strategy: "fit_to_gpu"
+
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
 # handshake-discovered served window, set >0 to assert a larger window than

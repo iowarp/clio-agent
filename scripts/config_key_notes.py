@@ -660,6 +660,11 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
         "to force the stateless HTTP transport."
     ),
+    "lm.context_sizing_strategy": (
+        "Default Fit-to-GPU strategy that sizes a CLIO-managed model server's context (vLLM, "
+        "llama.cpp, Ollama) from the model's KV cost and the GPU's free memory; set to a "
+        "registered research strategy id to change how contexts are fitted."
+    ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
         "handshake-discovered served window, set >0 to assert a larger window than the provider "
