@@ -74,6 +74,7 @@ from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError,
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
+from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
@@ -430,11 +431,10 @@ class _Loop:
             from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
 
             raise LMOutputTruncatedError(self.lm.model)
-        thinking = [p for p in response.message.parts if isinstance(p, ThinkingPart)]
-        text = "".join(p.text for p in response.message.parts if isinstance(p, TextPart))
+        thinking, text, origin = stream.reply_thinking_and_text(response)
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
-            self._record(text, thinking, calls, {})
+            self._record(text, thinking, calls, {}, origin)
             return self._end({"answer": text}, "direct_response", self.step + 1)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
@@ -444,7 +444,7 @@ class _Loop:
         finally:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
-        self._record(text, thinking, calls, results)
+        self._record(text, thinking, calls, results, origin)
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
@@ -561,9 +561,17 @@ class _Loop:
         thinking: list[ThinkingPart],
         calls: list[ToolCallPart],
         results: dict[str, tuple[Any, bool]],
+        origin: tuple[str, bool] = ("", True),
     ) -> None:
         self.recorder.step_done(
-            self.step, self.span, text=text, thinking=thinking, calls=calls, results=results
+            self.step,
+            self.span,
+            text=text,
+            thinking=thinking,
+            calls=calls,
+            results=results,
+            thinking_source=origin[0],
+            thinking_complete=origin[1],
         )
 
     def _stop(self, reason: str) -> dspy.Prediction:
@@ -615,11 +623,13 @@ def _call_lm(lm: Any, request: Request) -> Response:
     async def run() -> Response:
         send, receive = anyio.create_memory_object_stream(math.inf)
         response: Response | None = None
+        router = stream.StreamRouter()
 
         async def consume() -> None:
             async with receive:
                 async for chunk in receive:
-                    _route_chunk(chunk)
+                    stream.route_pieces(router.feed(chunk))
+            stream.route_pieces(router.finish(), unclosed=router.incomplete)
 
         async def watch_cancel() -> None:
             # A cancel lands mid-call too (F038): raising here cancels the call's
@@ -676,35 +686,13 @@ def _sole(group: BaseExceptionGroup) -> BaseException:
     return leaves[0] if len(leaves) == 1 else group
 
 
-def _route_chunk(chunk: Any) -> None:
-    from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-        note_lm_activity,
-        note_lm_answer_delta,
-        note_lm_provider_thinking_delta,
-        note_lm_token_event,
-    )
-
-    note_lm_activity()
-    delta = (
-        chunk.choices[0]["delta"] if isinstance(chunk.choices[0], dict) else chunk.choices[0].delta
-    )
-    get = delta.get if isinstance(delta, dict) else lambda k, d=None: getattr(delta, k, d)
-    text = get("content") or ""
-    thinking = get("reasoning_content") or ""
-    if thinking:
-        note_lm_provider_thinking_delta(thinking, provider="model")
-    if text:
-        note_lm_answer_delta(text, field="next_thought")
-    if text or thinking:
-        note_lm_token_event(text, thinking, field="next_thought")
-
-
 # --------------------------------------------------------------------------- #
 # helpers                                                                     #
 # --------------------------------------------------------------------------- #
 def _raise_if_cancelled() -> None:
     """Typed cooperative cancellation at a loop boundary."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
+
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _cancelled_error_info,

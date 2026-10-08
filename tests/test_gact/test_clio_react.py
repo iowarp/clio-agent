@@ -378,6 +378,115 @@ def test_an_uncancelled_call_returns_without_waiting_on_the_watch() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# reasoning: provider field vs inline <think> (live == recorded == reloaded)  #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def live_lanes(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
+    """What the streamed call put on the live thinking and answer lanes."""
+    from clio_agent.runtime import lm_activity
+
+    lanes: dict[str, list[Any]] = {"thinking": [], "answer": []}
+
+    def thinking(text: str, *, provider: str = "") -> None:
+        lanes["thinking"].append((provider, text))
+
+    def answer(text: str, *, field: str = "answer") -> None:
+        lanes["answer"].append(text)
+
+    monkeypatch.setattr(lm_activity, "note_lm_provider_thinking_delta", thinking)
+    monkeypatch.setattr(lm_activity, "note_lm_answer_delta", answer)
+    return lanes
+
+
+@pytest.fixture
+def thoughts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every ``thought`` segment the loop wrote to the plane (what a reload folds)."""
+    from clio_agent.gact.agents.clio_react_record import StepRecorder
+
+    seen: list[dict[str, Any]] = []
+    write = StepRecorder._write
+
+    def spy(self: Any, kind: str, content: dict[str, Any], step: int, span: str) -> str:
+        if kind == "thought":
+            seen.append(content)
+        return write(self, kind, content, step, span)
+
+    monkeypatch.setattr(StepRecorder, "_write", spy)
+    return seen
+
+
+def test_an_inline_think_block_is_thinking_live_recorded_and_logged(
+    live_lanes: dict[str, list[Any]], thoughts: list[dict[str, Any]]
+) -> None:
+    from clio_agent.gact.reasoning_extract import entry_reasoning_text, entry_response_text
+
+    lm, engine = scripted_lm(
+        [
+            calls(("search", {"query": "x"}), text="<think>plan: search</think>\n\nlooking"),
+            Reply(text="\n<think>sure</think>42"),
+        ]
+    )
+    with dspy.context(lm=lm):
+        pred = ClioReAct("question -> answer", tools=[search])(question="q")
+    assert pred.answer == "42"
+    # The plane holds the block as thinking and the text clean: the next request
+    # (folded from the plane, as a reload is) shows exactly that.
+    assert wire(engine.requests[1])[2] == (
+        "assistant",
+        [
+            ("thinking", "plan: search"),
+            ("text", "looking"),
+            ("call", "call_0_0", "search", {"query": "x"}),
+        ],
+    )
+    assert [t["text"] for t in thoughts] == ["looking", "42"]
+    assert [[r["source"] for r in t["thinking"]] for t in thoughts] == [["inline_tag"]] * 2
+    # Live: the same split, labelled inline_tag.
+    assert {provider for provider, _ in live_lanes["thinking"]} == {"model:inline_tag"}
+    assert "".join(text for _, text in live_lanes["thinking"]) == "plan: searchsure"
+    assert "".join(live_lanes["answer"]) == "looking42"
+    # The persisted reasoning log reads the history entry by the same rule.
+    assert entry_reasoning_text(lm.history[-1]) == "sure"
+    assert entry_response_text(lm.history[-1]) == "42"
+
+
+def test_a_provider_thinking_field_wins_and_inline_tags_stay_text(
+    live_lanes: dict[str, list[Any]], thoughts: list[dict[str, Any]]
+) -> None:
+    pred, _ = _run([Reply(text="<think>literal</think>ans", thinking="real")], [search])
+    assert pred.answer == "<think>literal</think>ans"
+    assert {provider for provider, _ in live_lanes["thinking"]} == {"model:provider_field"}
+    assert "".join(text for _, text in live_lanes["thinking"]) == "real"
+    assert "".join(live_lanes["answer"]) == "<think>literal</think>ans"
+    recorded = thoughts[0]["thinking"][0]
+    assert (recorded["text"], recorded["source"]) == ("real", "provider_field")
+
+
+def test_an_empty_think_block_records_no_thinking(thoughts: list[dict[str, Any]]) -> None:
+    pred, _ = _run([Reply(text="<think>\n\n</think>\n\nHi")], [search])
+    assert pred.answer == "Hi"
+    assert thoughts[0]["thinking"] == []
+    assert thoughts[0]["text"] == "Hi"
+
+
+def test_an_unclosed_think_block_is_incomplete_thinking_and_no_answer() -> None:
+    from dspy.lm15 import Message, Response, TextPart, Usage
+
+    from clio_agent.gact.agents.clio_react_stream import reply_thinking_and_text
+
+    reply = Response(
+        id="r",
+        model="m",
+        message=Message.assistant([TextPart(text="<think>ran out of")]),
+        finish_reason="stop",
+        usage=Usage(input_tokens=1, output_tokens=1),
+    )
+    thinking, text, origin = reply_thinking_and_text(reply)
+    assert [t.text for t in thinking] == ["ran out of"]
+    assert (text, origin) == ("", ("inline_tag", False))
+
+
+# --------------------------------------------------------------------------- #
 # tool-result media placement                                                #
 # --------------------------------------------------------------------------- #
 def _media_step() -> tuple[list[Any], Any]:

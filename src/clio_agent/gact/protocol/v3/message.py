@@ -184,6 +184,11 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
                 else {}
             ),
             **(
+                {"reasoning_source": str(metadata["reasoning_source"])}
+                if metadata.get("reasoning_source")
+                else {}
+            ),
+            **(
                 {"default_collapsed": metadata["default_collapsed"]}
                 if isinstance(metadata.get("default_collapsed"), bool)
                 else {}

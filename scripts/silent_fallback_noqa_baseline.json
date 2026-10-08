@@ -130,7 +130,6 @@
  "gact/spotter_arming.py": 1,
  "gact/spotter_watcher.py": 1,
  "gact/steer_delivery.py": 1,
- "gact/stream_chunks.py": 4,
  "gact/tool_observer.py": 2,
  "gact/transcript.py": 1,
  "gact/turn.py": 1,

@@ -52,6 +52,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from clio_agent.gact.events import Event, EventBus
 from clio_agent.gact.field_stream import FieldStream  # noqa: F401 - re-export
+from clio_agent.gact.reasoning_extract import thinking_part_metadata
 from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
@@ -460,15 +461,7 @@ class TurnTranscript:
                     metadata={
                         "stream_source": "live",
                         "signature_field_name": field,
-                        **(
-                            {
-                                "thinking_source": "provider",
-                                "provider_source": field.split(":", 1)[1],
-                                "default_collapsed": True,
-                            }
-                            if is_thinking
-                            else {}
-                        ),
+                        **(thinking_part_metadata(field) if is_thinking else {}),
                     },
                 )
                 self._parts.append(part)
