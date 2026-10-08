@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
-import ipaddress
-import ntpath
-import posixpath
 from uuid import uuid4
 
-from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
     LAUNCHER_PRELUDE,
     claim_command,
@@ -39,6 +35,12 @@ from clio_agent.gact.infrastructure.monitoring_services import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
+from clio_agent.gact.infrastructure.web_search_service import (
+    WEB_SEARCH_IMAGE,
+    build_web_search_plan,
+    web_search_definition,
+    web_search_port,
+)
 
 __all__ = [
     "CLIO_AGENT_PORT",
@@ -51,7 +53,6 @@ __all__ = [
     "service_definitions",
 ]
 
-WEB_SEARCH_IMAGE = "ghcr.io/iowarp/clio-web-search:0.3.1"
 RELAY_VERSION = "1.6.8"
 CLIO_AGENT_PORT = 17_800
 # Services whose server listens on the target's loopback only: nothing can
@@ -59,8 +60,6 @@ CLIO_AGENT_PORT = 17_800
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
 # loopback because they have no authentication (see model_runtimes).
 LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
-#: Where CLIO Web Search publishes its ports; empty means loopback (F001).
-LISTEN_FIELD = "listen_address"
 
 
 def clio_agent_version() -> str:
@@ -87,7 +86,9 @@ def service_connection_port(
         if not value.isdigit() or not 1024 <= int(value) <= 65535:
             raise ValueError("Remote CLIO port must be between 1024 and 65535")
         return int(value)
-    return {"web_search": 8089, "clio_agent": CLIO_AGENT_PORT}.get(service_id)
+    if service_id == "web_search":
+        return web_search_port(configuration)
+    return None
 
 
 def _field(
@@ -110,36 +111,6 @@ def _field(
 def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
     """Build service compatibility from inspected host facts."""
 
-    docker = facts.docker_available
-    web_search = ManagedServiceDefinition(
-        id="web_search",
-        category="scientific_service",
-        label="CLIO Web Search",
-        description="Private search and document conversion.",
-        recommended_variant="container",
-        variants=[
-            ServiceVariant(
-                id="container",
-                label="Docker",
-                version="0.3.1",
-                install_type="container",
-                artifact=WEB_SEARCH_IMAGE,
-                compatible=docker,
-                reason=(
-                    "Docker is ready."
-                    if docker
-                    else "Docker is installed but unavailable."
-                    if facts.docker_installed
-                    else "Docker is not installed."
-                ),
-            )
-        ],
-        configuration_fields=[
-            _field("contact_email", "Publication metadata email", "scientist@example.org"),
-            _field("task_backend_port", "Document task port", "8090"),
-            _field(LISTEN_FIELD, "Listen address", "127.0.0.1 (0.0.0.0 serves every network)"),
-        ],
-    )
     relay = ManagedServiceDefinition(
         id="relay",
         category="remote_access",
@@ -190,7 +161,7 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
         model_runtime_definition("llama_cpp", facts),
         model_runtime_definition("ollama", facts),
         *monitoring_definitions(facts),
-        web_search,
+        web_search_definition(facts),
         relay,
         clio_agent,
     ]
@@ -203,35 +174,6 @@ def _required(configuration: dict[str, str], key: str) -> str:
     if "\0" in value or "\r" in value or "\n" in value:
         raise ValueError(f"{key} contains invalid control characters")
     return value
-
-
-def _docker_lifecycle(action: str, container: str) -> DriverPlan:
-    if action == "status":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="docker", args=["inspect", "--format", "{{.State.Status}}", container]
-                ),
-            )
-        )
-    if action == "logs":
-        return DriverPlan(
-            (CommandSpec(program="docker", args=["logs", "--tail", "80", container]),)
-        )
-    if action == "stop":
-        return DriverPlan((CommandSpec(program="docker", args=["stop", container]),))
-    if action == "uninstall":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="docker",
-                    args=["rm", "--force", container],
-                    allowed_exit_codes=[0, 1],
-                    settle_seconds=1.0,
-                ),
-            )
-        )
-    raise ValueError(f"Unsupported lifecycle action {action!r}")
 
 
 def build_driver_plan(
@@ -267,12 +209,13 @@ def build_driver_plan(
     if action == "delete_data" and not (
         (service_id == "vllm" and variant_id.startswith("native-cuda"))
         or service_id in MONITORING_SERVICES
+        or service_id == "web_search"
     ):
         raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
-    if action == "verify" and service_id not in MONITORING_SERVICES:
+    if action == "verify" and service_id not in {*MONITORING_SERVICES, "web_search"}:
         raise ValueError("This service definition has no setup verification procedure")
     if service_id in MONITORING_SERVICES:
         return monitoring_plan(
@@ -309,121 +252,7 @@ def build_driver_plan(
             configuration=configuration,
         )
 
-    container = "clio-web-search"
-    if action in {"status", "logs", "stop", "uninstall"}:
-        return _docker_lifecycle(action, container)
-    if action == "start":
-        return DriverPlan(
-            (CommandSpec(program="docker", args=["start", container]),),
-            connection_port=8089,
-        )
-
-    commands: list[CommandSpec] = []
-    if action == "reinstall":
-        commands.append(
-            CommandSpec(
-                program="docker",
-                args=["rm", "--force", container],
-                allowed_exit_codes=[0, 1],
-                settle_seconds=1.0,
-            )
-        )
-    commands.append(
-        CommandSpec(program="docker", args=["pull", variant.artifact], timeout_seconds=900)
-    )
-    storage = _container_storage_path(service_id, target, facts)
-    if storage:
-        commands.append(_create_directory(storage, facts))
-    commands.append(
-        _container_run(
-            service_id,
-            variant.artifact,
-            variant_id,
-            configuration,
-            storage,
-        )
-    )
-    return DriverPlan(tuple(commands), connection_port=8089)
-
-
-def _listen_address(configuration: dict[str, str]) -> str:
-    """The published-port address: loopback unless the person chose another (F001).
-
-    The search API and its task backend have no authentication, so they are not
-    published on every interface of a shared host by default; a remote host is
-    reached through an SSH forward instead.
-    """
-
-    raw = configuration.get(LISTEN_FIELD, "").strip() or "127.0.0.1"
-    try:
-        address = ipaddress.ip_address(raw)
-    except ValueError as exc:
-        raise ValueError(f"{LISTEN_FIELD} must be an IP address such as 127.0.0.1") from exc
-    return f"[{address}]" if address.version == 6 else str(address)
-
-
-def _container_run(
-    service_id: str,
-    artifact: str,
-    variant_id: str,
-    configuration: dict[str, str],
-    storage: str | None,
-) -> CommandSpec:
-    bind = _listen_address(configuration)
-    if service_id == "web_search":
-        email = configuration.get("contact_email", "").strip()
-        task_port = configuration.get("task_backend_port", "8090").strip() or "8090"
-        if not task_port.isdigit() or not 1 <= int(task_port) <= 65535:
-            raise ValueError("task_backend_port must be a valid port")
-        args = [
-            "run",
-            "--detach",
-            "--name",
-            "clio-web-search",
-            "--restart",
-            "unless-stopped",
-            "--publish",
-            f"{bind}:8089:8080",
-            "--publish",
-            f"{bind}:{task_port}:6379",
-            "--volume",
-            f"{storage or 'clio-web-search-data'}:/var/lib/clio-web-search",
-            "--env",
-            f"CLIO_WEB_SEARCH_TASK_BACKEND_PUBLIC_PORT={task_port}",
-        ]
-        if email:
-            if "@" not in email or any(character.isspace() for character in email):
-                raise ValueError("contact_email must be a valid email address")
-            args.extend(["--env", f"CLIO_WEB_SEARCH_CONTACT_EMAIL={email}"])
-        args.append(artifact)
-        return CommandSpec(program="docker", args=args)
-    raise ValueError(f"Unsupported container service {service_id!r}")
-
-
-def _container_storage_path(
-    service_id: str,
-    target: InfrastructureTarget | None,
-    facts: TargetFacts,
-) -> str | None:
-    """Return an optional service-owned bind directory under the configured root."""
-
-    if target is None or not target.install_root.strip() or service_id != "web_search":
-        return None
-    root = target.install_root.strip().rstrip("/\\")
-    name = "web-search"
-    path_module = ntpath if facts.os == "windows" else posixpath
-    return path_module.join(root, "services", name)
-
-
-def _create_directory(path: str, facts: TargetFacts) -> CommandSpec:
-    """Create one validated driver-owned directory without invoking a shell on Linux."""
-
-    if facts.os == "windows":
-        # -Command never binds trailing arguments to $args: embed a literal.
-        return powershell.command(
-            f"New-Item -ItemType Directory -Force -Path {powershell.literal(path)} | Out-Null"
-        )
-    return CommandSpec(program="mkdir", args=["-p", "--", path])
+    return build_web_search_plan(action, configuration, facts, target, owned)
 
 
 def _relay_plan(
