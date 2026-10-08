@@ -202,6 +202,27 @@ def test_attach_hands_the_native_client_clios_bound(monkeypatch):
     assert clio_core_attach.attach_window_s() == 7.0
 
 
+@pytest.mark.parametrize(("preset", "expected"), [(None, "127.0.0.1"), ("10.0.0.5", "10.0.0.5")])
+def test_attach_binds_the_native_clients_listener_to_loopback(monkeypatch, preset, expected):
+    """F001: the native client's own listener bound 0.0.0.0 in the server process."""
+    monkeypatch.setenv("BIND_ADDR", "restored-after-test")
+    if preset is None:
+        monkeypatch.delenv("BIND_ADDR")
+    else:
+        monkeypatch.setenv("BIND_ADDR", preset)
+    seen: list[str | None] = []
+
+    def _init(mode, flag):
+        seen.append(os.environ.get("BIND_ADDR"))
+        return True
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    clio_core_attach.attach_native_client(
+        cte, config_path="c.yaml", port=1, on_failure=lambda: None
+    )
+    assert seen == [expected]
+
+
 def _daemon_work(monkeypatch, read) -> None:
     """The daemon progress signal for a binding-free test (no real daemon is attached)."""
     from clio_agent.arc import daemon_progress  # noqa: PLC0415

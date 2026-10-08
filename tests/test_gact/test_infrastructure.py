@@ -118,8 +118,35 @@ def test_web_search_plan_is_pinned_and_allowlisted() -> None:
     assert plan.commands[0].program == "docker"
     assert plan.commands[0].args == ["pull", WEB_SEARCH_IMAGE]
     assert plan.commands[1].program == "docker"
-    assert "0.0.0.0:8089:8080" in plan.commands[1].args
+    # F001: an unauthenticated service is not published on every interface by default.
+    assert "127.0.0.1:8089:8080" in plan.commands[1].args
+    assert "127.0.0.1:8090:6379" in plan.commands[1].args
     assert plan.connection_port == 8089
+
+    network_plan = build_driver_plan(
+        service_id="web_search",
+        action="install",
+        variant_id="container",
+        configuration={"listen_address": "0.0.0.0"},
+        facts=facts,
+    )
+    assert "0.0.0.0:8089:8080" in network_plan.commands[1].args
+    ipv6_plan = build_driver_plan(
+        service_id="web_search",
+        action="install",
+        variant_id="container",
+        configuration={"listen_address": "::1"},
+        facts=facts,
+    )
+    assert "[::1]:8089:8080" in ipv6_plan.commands[1].args
+    with pytest.raises(ValueError, match="listen_address"):
+        build_driver_plan(
+            service_id="web_search",
+            action="install",
+            variant_id="container",
+            configuration={"listen_address": "everywhere"},
+            facts=facts,
+        )
 
     local_plan = build_driver_plan(
         service_id="web_search",

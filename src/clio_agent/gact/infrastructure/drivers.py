@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.metadata
+import ipaddress
 import ntpath
 import posixpath
 from uuid import uuid4
@@ -58,6 +59,8 @@ CLIO_AGENT_PORT = 17_800
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
 # loopback because they have no authentication (see model_runtimes).
 LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
+#: Where CLIO Web Search publishes its ports; empty means loopback (F001).
+LISTEN_FIELD = "listen_address"
 
 
 def clio_agent_version() -> str:
@@ -134,6 +137,7 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
         configuration_fields=[
             _field("contact_email", "Publication metadata email", "scientist@example.org"),
             _field("task_backend_port", "Document task port", "8090"),
+            _field(LISTEN_FIELD, "Listen address", "127.0.0.1 (0.0.0.0 serves every network)"),
         ],
     )
     relay = ManagedServiceDefinition(
@@ -336,11 +340,26 @@ def build_driver_plan(
             variant.artifact,
             variant_id,
             configuration,
-            facts,
             storage,
         )
     )
     return DriverPlan(tuple(commands), connection_port=8089)
+
+
+def _listen_address(configuration: dict[str, str]) -> str:
+    """The published-port address: loopback unless the person chose another (F001).
+
+    The search API and its task backend have no authentication, so they are not
+    published on every interface of a shared host by default; a remote host is
+    reached through an SSH forward instead.
+    """
+
+    raw = configuration.get(LISTEN_FIELD, "").strip() or "127.0.0.1"
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise ValueError(f"{LISTEN_FIELD} must be an IP address such as 127.0.0.1") from exc
+    return f"[{address}]" if address.version == 6 else str(address)
 
 
 def _container_run(
@@ -348,10 +367,9 @@ def _container_run(
     artifact: str,
     variant_id: str,
     configuration: dict[str, str],
-    facts: TargetFacts,
     storage: str | None,
 ) -> CommandSpec:
-    bind = "127.0.0.1" if facts.target_id == "local" else "0.0.0.0"
+    bind = _listen_address(configuration)
     if service_id == "web_search":
         email = configuration.get("contact_email", "").strip()
         task_port = configuration.get("task_backend_port", "8090").strip() or "8090"

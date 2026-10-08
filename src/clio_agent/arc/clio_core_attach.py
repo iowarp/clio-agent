@@ -65,6 +65,13 @@ _PROBE_POLL_S = 0.02
 # at ``clio_init`` time). Unset, the native default is 30 s whatever CLIO is configured with.
 _NATIVE_WAIT_ENV = "CLIO_WAIT_SERVER"
 
+# The address the native client library binds its own listener to (read from the
+# environment at ``clio_init``; the library defaults it to 0.0.0.0). CLIO's client
+# talks only to the daemon on this host, so it binds loopback unless the person set
+# the variable themselves (F001: an ephemeral 0.0.0.0 listener in the server process).
+_NATIVE_BIND_ENV = "BIND_ADDR"
+_LOOPBACK_BIND = "127.0.0.1"
+
 
 class ClioCoreAttachPhase(str, Enum):
     """Where this process's clio-core attach is."""
@@ -274,6 +281,9 @@ def attach_native_client(
     making no progress (or at the ceiling) and ``clio_core_client_attach_failed`` when
     the native client gave up sooner.
 
+    LOOPBACK. The native client opens a listener of its own, bound to ``$BIND_ADDR``
+    (library default 0.0.0.0); it is exported as 127.0.0.1 first unless already set.
+
     NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
     startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
     So an inherited ``CLIO_WITH_RUNTIME`` is removed first (recorded), and the native
@@ -289,6 +299,7 @@ def attach_native_client(
     mode = (getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient  # type: ignore[attr-defined]
     window = attach_window_s()
     preflight.remove_embedded_runtime_env(os.environ)
+    os.environ.setdefault(_NATIVE_BIND_ENV, _LOOPBACK_BIND)
     check = preflight.preflight_native_client(
         cte, config_path=config_path, no_progress_s=preflight.preflight_window_s(window)
     )
