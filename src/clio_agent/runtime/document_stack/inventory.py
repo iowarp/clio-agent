@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from node_paths import node_path
 from process import DocumentError, find_native, run
 
 PACKAGES = {
@@ -46,7 +47,7 @@ def inventory() -> dict[str, Any]:
     node_module_file = nodejs_wheel.__file__
     if not node_module_file:
         raise DocumentError("Managed Node.js package has no module file")
-    node_root = Path(node_module_file).resolve().parent
+    node_root = Path(node_path(str(Path(node_module_file).resolve().parent)))
     node_candidates = [
         node_root / "bin" / "node",
         node_root / "node.exe",
