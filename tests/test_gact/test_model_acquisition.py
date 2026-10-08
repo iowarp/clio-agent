@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -414,3 +416,145 @@ def test_download_request_accepts_only_plain_file_names(name: str) -> None:
         repository="Qwen/Qwen3-4B-GGUF", files=["b.gguf", "sub/a.gguf", "b.gguf"]
     )
     assert request.files == ["b.gguf", "sub/a.gguf"]
+
+
+def _crash_log(folder: Path) -> None:
+    (folder / "download.log").write_text(
+        "Installed 13 packages\n"
+        "GET https://cdn.example/weights?X-Amz-Signature=abc123 token=hf_SECRETSECRET\n"
+        "Traceback (most recent call last):\n"
+        "ModuleNotFoundError: No module named 'httpx'\n"
+    )
+
+
+def test_supervisor_types_a_crashed_worker_with_its_log_tail(tmp_path: Path) -> None:
+    """Live F003: the worker died at import and the UI only said "interrupted; retry"."""
+    folder = tmp_path / ("a" * 24)
+    folder.mkdir()
+    receipt = folder / "receipt.json"
+    node_models.write_json(receipt, job(folder, state="queued"))
+    _crash_log(folder)
+    assert node_models.supervise(receipt, [sys.executable, "-c", "raise SystemExit(3)"]) == 3
+    result = json.loads(receipt.read_text())
+    assert result["state"] == "failed" and result["error_code"] == "worker_exited"
+    assert result["exit_code"] == 3
+    assert "exited with code 3" in result["error"]
+    assert result["error"].endswith("ModuleNotFoundError: No module named 'httpx'")
+    assert result["log_path"] == str(folder / "download.log")
+    tail = "\n".join(result["log_tail"])
+    assert "Traceback" in tail and "abc123" not in tail and "hf_SECRET" not in tail
+    acquisition = ModelAcquisition.model_validate(
+        {**node_models.public(result), "target_id": "local", "storage_root": "/data"}
+    )
+    assert acquisition.error_code == "worker_exited" and acquisition.log_tail
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+def test_supervisor_names_the_signal_that_killed_the_worker(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    node_models.write_json(receipt, job(tmp_path))
+    kill = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
+    node_models.supervise(receipt, [sys.executable, "-c", kill])
+    result = json.loads(receipt.read_text())
+    assert result["state"] == "failed" and "killed by SIGKILL" in result["error"]
+
+
+@pytest.mark.parametrize("terminal", ["ready", "cancel-requested", "failed"])
+def test_supervisor_keeps_a_terminal_or_cancelled_receipt(tmp_path: Path, terminal: str) -> None:
+    receipt = tmp_path / "receipt.json"
+    if terminal == "cancel-requested":
+        node_models.write_json(receipt, job(tmp_path))
+        (tmp_path / "cancel").touch()
+    else:
+        node_models.write_json(receipt, job(tmp_path, state=terminal, error="worker reason"))
+    before = json.loads(receipt.read_text())
+    node_models.supervise(receipt, [sys.executable, "-c", "raise SystemExit(1)"])
+    after = json.loads(receipt.read_text())
+    assert after["state"] == before["state"] and after["error"] == before["error"]
+    assert after.get("exit_code") == (1 if terminal == "failed" else None)
+
+
+def test_dead_unsupervised_worker_is_typed_with_its_log_tail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = tmp_path / ("a" * 24)
+    folder.mkdir()
+    node_models.write_json(folder / "receipt.json", job(folder))
+    _crash_log(folder)
+    monkeypatch.setattr(node_models, "process_identity", lambda pid: "")
+    row = node_models.inspect_jobs(tmp_path)[0]
+    assert row["state"] == "interrupted" and row["error_code"] == "worker_lost"
+    assert "No module named 'httpx'" in row["error"] and row["log_tail"]
+
+
+def test_start_runs_the_worker_under_its_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uv = tmp_path / "uv"
+    uv.write_text("")
+    launched: list[list[str]] = []
+
+    def popen(command: list[str], **kwargs: Any) -> Any:
+        launched.append(command)
+        return SimpleNamespace(pid=os.getpid())
+
+    monkeypatch.setattr(node_models.shutil, "which", lambda name: str(uv))
+    monkeypatch.setattr(node_models.subprocess, "Popen", popen)
+    root = tmp_path / "ops"
+    request = {"repository": "org/model", "revision": "main", "destination": str(tmp_path / "m")}
+    row = node_models.start(root, request, "# worker")
+    worker = str(root / row["id"] / "download.py")
+    assert launched[0][1:3] == [worker, "--supervise"]
+    assert launched[0][4:6] == [str(uv), "run"] and launched[0][-2] == "--worker"
+    assert row["error_code"] is None and row["log_tail"] == []
+
+
+def test_model_verified_on_another_host_stays_ready(tmp_path: Path) -> None:
+    """Live: Qwen3-4B (downloaded on gpua005) turned "interrupted" when listed from gpua018."""
+    peers = tmp_path / "model-operations"
+    here, there = peers / "gpua018", peers / "gpua005"
+    here.mkdir(parents=True)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "weights").write_bytes(b"model")
+    stamp = [5, (model / "weights").stat().st_mtime_ns]
+    (there / ("a" * 24)).mkdir(parents=True)
+    node_models.write_json(
+        there / ("a" * 24) / "receipt.json",
+        job(model, state="ready", verified_files={"weights": stamp}),
+    )
+    (there / ("b" * 24)).mkdir()
+    node_models.write_json(there / ("b" * 24) / "receipt.json", job(model, id="b" * 24))
+    rows = node_models.inspect_jobs(here, peers=peers)
+    assert [(row["id"], row["state"]) for row in rows] == [("a" * 24, "ready")]
+    assert node_models.inspect_jobs(here) == []
+    (model / "weights").write_bytes(b"changed")
+    assert node_models.inspect_jobs(here, peers=peers) == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "state"),
+    [
+        ({"state": "ready"}, "stale"),
+        (
+            {
+                "state": "interrupted",
+                "phase": "Model available; choose a runtime to serve it",
+                "bytes_done": 8,
+                "bytes_total": 8,
+            },
+            "stale",
+        ),
+        ({"state": "running"}, "interrupted"),
+    ],
+)
+def test_missing_receipt_never_calls_a_finished_download_interrupted(
+    changes: dict[str, Any], state: str
+) -> None:
+    from clio_agent.gact.routes.infrastructure_models import missing_receipt
+
+    prior = ModelAcquisition.model_validate(
+        {**job("/data/m"), **changes, "target_id": "local", "storage_root": "/data"}
+    )
+    relabeled = missing_receipt(prior)
+    assert relabeled.state == state and relabeled.error_code == "receipt_missing"

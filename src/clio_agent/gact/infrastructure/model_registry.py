@@ -28,6 +28,12 @@ class ModelAcquisition(BaseModel):
     updated_at: float
     observed_at: float = Field(default_factory=time.time)
     error: str | None = None
+    # Typed cause: worker_exited (exit status known), worker_lost (killed/host restart),
+    # receipt_missing (this host holds no receipt for the record).
+    error_code: str | None = None
+    exit_code: int | None = None
+    log_tail: list[str] = Field(default_factory=list)
+    log_path: str | None = None
     files: list[str] = Field(default_factory=list)
     file_path: str | None = None
 

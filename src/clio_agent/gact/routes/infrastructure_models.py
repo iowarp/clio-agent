@@ -22,6 +22,32 @@ from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.storage import resolved_locations
 
 
+def missing_receipt(prior: ModelAcquisition) -> ModelAcquisition:
+    """Relabel a record whose host receipt is gone, never calling a finished download interrupted.
+
+    A verified model is not a stopped download: without a receipt this host cannot vouch
+    for its files, so it is stale (retry re-verifies) rather than interrupted.
+    """
+    finished = prior.state in {"ready", "stale"} or (
+        prior.bytes_total is not None
+        and prior.bytes_done == prior.bytes_total
+        and prior.phase.startswith("Model available")
+    )
+    return prior.model_copy(
+        update={
+            "state": "stale" if finished else "interrupted",
+            "error_code": "receipt_missing",
+            "error": (
+                "This host has no download receipt for this model (downloaded on another "
+                "host, or the receipt was removed); retry to verify its files here."
+                if finished
+                else "The host download receipt is missing; retry will reverify the "
+                "recorded revision."
+            ),
+        }
+    )
+
+
 def register_infrastructure_model_routes(app: FastAPI) -> None:
     """Reuse CLIO's target transport; detached downloads survive client disconnection."""
 
@@ -84,9 +110,7 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 found = {row["id"] for row in rows}
                 for prior in app.state.infrastructure_store.model_acquisitions(target_id):
                     if prior.storage_root == selected_root and prior.id not in found:
-                        prior.state = "interrupted"
-                        prior.error = "The host download receipt is missing; retry will reverify the recorded revision."
-                        app.state.infrastructure_store.put_model_acquisition(prior)
+                        app.state.infrastructure_store.put_model_acquisition(missing_receipt(prior))
             for row in rows if action == "list" else [rows]:
                 observed = ModelAcquisition.model_validate(
                     {**row, "target_id": target_id, "storage_root": selected_root}

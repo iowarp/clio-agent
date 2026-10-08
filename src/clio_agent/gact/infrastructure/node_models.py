@@ -23,8 +23,53 @@ from typing import Any
 WORKER_DEPENDENCIES = ("huggingface-hub==0.35.3",)
 
 
+# A dead worker's last log lines travel to the API/UI; keep them bounded and secret-free.
+LOG_TAIL_LINES = 20
+LOG_TAIL_BYTES = 64 * 1024
+_URL_QUERY = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
+_SECRET = re.compile(
+    r"(?i)(hf_[A-Za-z0-9]{8,}|bearer\s+\S+|(?:token|signature|credential|key)=[^&\s]+)"
+)
+
+
 class AcquisitionError(ValueError):
     """An explicitly sanitized failure safe to display outside the execution host."""
+
+
+def log_tail(path: Path) -> list[str]:
+    """Return the worker log's last lines with signed-URL queries and tokens removed."""
+    try:
+        with path.open("rb") as reader:
+            reader.seek(max(0, path.stat().st_size - LOG_TAIL_BYTES))
+            text = reader.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    return [
+        _SECRET.sub("<redacted>", _URL_QUERY.sub(r"\1?<redacted>", line))[:300]
+        for line in lines[-LOG_TAIL_LINES:]
+    ]
+
+
+def exit_cause(code: int) -> str:
+    """Describe a child exit status, naming the signal when one ended it."""
+    if code < 0:
+        try:
+            return f"was killed by {signal.Signals(-code).name}"
+        except ValueError:
+            return f"was killed by signal {-code}"
+    return f"exited with code {code}"
+
+
+def worker_failure(folder: Path, cause: str) -> dict[str, Any]:
+    """Typed receipt fields for a worker that ended without a terminal result."""
+    tail = log_tail(folder / "download.log")
+    detail = f": {tail[-1]}" if tail else ""
+    return {
+        "error": f"The download worker {cause} before finishing{detail}",
+        "log_tail": tail,
+        "log_path": str(folder / "download.log"),
+    }
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -83,24 +128,42 @@ def complete(job: dict[str, Any]) -> bool:
     return True
 
 
-def inspect_jobs(root: Path) -> list[dict[str, Any]]:
-    """Reconcile dead workers without claiming an incomplete model is reusable."""
+def inspect_jobs(root: Path, peers: Path | None = None) -> list[dict[str, Any]]:
+    """Reconcile dead workers without claiming an incomplete model is reusable.
+
+    ``peers`` holds the other hosts' operation roots on a shared filesystem: a model
+    another host verified stays ready here while its files are unchanged.
+    """
     if not root.is_dir():
         raise ValueError("The recorded model storage location is unavailable on this host")
     rows = []
     for path in sorted(root.glob("*/receipt.json")):
         job = json.loads(path.read_text())
         if job["state"] in {"queued", "running"} and not alive(job):
+            # No supervisor recorded an exit: it was killed with the worker or the host restarted.
             job.update(
                 state="interrupted",
-                error="The download process ended; retry to reuse its cached bytes.",
+                error_code="worker_lost",
+                **worker_failure(path.parent, "stopped (killed or host restart)"),
             )
+            job["error"] += "; retry to reuse its cached bytes."
         if job["state"] == "ready" and not complete(job):
             job.update(
                 state="stale",
                 error="Model files changed or disappeared; retry to verify the revision.",
             )
         rows.append(public(job))
+    seen = {row["id"] for row in rows}
+    for path in sorted(peers.glob("*/*/receipt.json")) if peers else []:
+        if path.parent.parent == root:
+            continue
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue  # Another host's unreadable receipt says nothing about this host.
+        if job["id"] not in seen and job["state"] == "ready" and complete(job):
+            seen.add(job["id"])
+            rows.append(public(job))
     return rows
 
 
@@ -190,6 +253,10 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             "created_at": previous["created_at"] if previous else time.time(),
             "updated_at": time.time(),
             "error": None,
+            "error_code": None,
+            "exit_code": None,
+            "log_tail": [],
+            "log_path": None,
             "force_redownload": bool(
                 previous and (previous.get("force_redownload") or previous["state"] == "ready")
             ),
@@ -205,8 +272,13 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             HF_HUB_DISABLE_TELEMETRY="1",
         )
         with (folder / "download.log").open("ab") as log:
+            # A stdlib supervisor waits on the worker so its exit cause reaches the receipt.
             process = subprocess.Popen(
                 [
+                    sys.executable,
+                    str(worker),
+                    "--supervise",
+                    str(receipt),
                     uv,
                     "run",
                     "--project",
@@ -256,6 +328,29 @@ def _cancel_locked(root: Path, job_id: str) -> dict[str, Any]:
     job.update(state="cancelled", phase="Cancelled; cached bytes retained", updated_at=time.time())
     write_json(path, job)
     return public(job)
+
+
+def supervise(receipt: Path, command: list[str]) -> int:
+    """Run the worker and type its failure when it ends without a terminal receipt."""
+    try:
+        code = subprocess.call(command, stdin=subprocess.DEVNULL)
+        cause = exit_cause(code)
+    except OSError as exc:
+        code, cause = 127, f"could not be launched ({type(exc).__name__})"
+    job = json.loads(receipt.read_text())
+    if job["state"] in {"queued", "running"} and not (receipt.parent / "cancel").exists():
+        job.update(
+            state="failed",
+            error_code="worker_exited",
+            exit_code=code,
+            updated_at=time.time(),
+            **worker_failure(receipt.parent, cause),
+        )
+        write_json(receipt, job)
+    elif job["state"] == "failed" and job.get("exit_code") is None:
+        job["exit_code"] = code
+        write_json(receipt, job)
+    return code
 
 
 def download(receipt: Path) -> None:
@@ -415,6 +510,8 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
         download(Path(sys.argv[2]))
         return
+    if len(sys.argv) > 3 and sys.argv[1] == "--supervise":
+        sys.exit(supervise(Path(sys.argv[2]), sys.argv[3:]))
     request = json.loads(sys.stdin.read())
     root = Path(request["root"])
     if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
@@ -423,7 +520,7 @@ def main() -> None:
     root = root.resolve() / "model-operations" / hostname
     action = request["action"]
     if action == "list":
-        result: Any = inspect_jobs(root)
+        result: Any = inspect_jobs(root, peers=root.parent)
     elif action == "start":
         result = start(root, request, request["script"])
     elif action == "cancel":
