@@ -44,12 +44,45 @@ def monitoring_port(service: str, configuration: dict[str, str]) -> int:
 
 def monitoring_engines(service: str, facts: TargetFacts) -> list[str]:
     """Usable container runtimes this service's dependencies can run on."""
-    # The CMF server is built from a Dockerfile, which Apptainer cannot build.
-    supported = {"docker", "podman"} | ({"apptainer"} if service == "flowcept" else set())
+    # On Apptainer the CMF server runs from a pinned venv inside its base image's SIF.
+    supported = {"docker", "podman", "apptainer"}
     engines = [row.name for row in facts.container_runtimes if row.usable and row.name in supported]
     if not engines and facts.docker_available:
         engines = ["docker"]
     return [str(engine) for engine in engines]
+
+
+def cmf_host_server(port: int, postgres_port: int) -> dict[str, Any]:
+    """The CMF server's host-network launch from its venv inside the base SIF."""
+    return {
+        "mounts": [
+            ["data/cmf", "/cmf-server/data", False],
+            ["source", "/cmf-server/src", True],
+            ["cmf-venv", "/cmf-server/venv", True],
+        ],
+        "environment": {
+            "POSTGRES_HOST": "127.0.0.1",
+            "POSTGRES_PORT": str(postgres_port),
+            "HOME": "/cmf-server/data",
+            "CMF_LOG_FILE": "/cmf-server/data/cmflib.log",
+        },
+        "workdir": "/cmf-server/src",
+        "host_arguments": [
+            "/cmf-server/venv/bin/uvicorn",
+            "server.app.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+        ],
+        # Importing the app opens the metadata store and loads dvc/ray: allow minutes.
+        "ready_seconds": 300,
+        "host_check": [
+            "/cmf-server/venv/bin/python",
+            "-c",
+            f"import urllib.request; urllib.request.urlopen('http://127.0.0.1:{port}/', timeout=5)",
+        ],
+    }
 
 
 def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
@@ -327,7 +360,25 @@ def monitoring_plan(
         image = configuration.get("server_image", "").strip()
         if image and not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
             raise ValueError("An existing CMF server image must be its immutable sha256 image ID")
-        if not image:
+        if image and engine == "apptainer":
+            raise ValueError("Apptainer runs the CMF server from its pinned source, not an image")
+        if engine == "apptainer":
+            # Apptainer cannot build the Dockerfile: the base image's SIF runs a
+            # venv installed from a shipped, hash-pinned lock plus cmflib at the
+            # pinned revision; server/app hardcodes /cmf-server/data, hence binds.
+            image = CMF_BASE_IMAGE
+            files["cmf-server.lock"] = (
+                Path(__file__).with_name("cmf_server_py310.lock").read_text(encoding="utf-8")
+            )
+            manifest["installation_bytes"] = 3 * 1024**3
+            manifest["source_environment"] = {
+                "repository": "https://github.com/HewlettPackard/cmf.git",
+                "revision": CMF_REVISION,
+                "lock": "cmf-server.lock",
+                # The only sdist allowed; pure Python and hash-pinned in the lock.
+                "sdists": ["antlr4-python3-runtime"],
+            }
+        elif not image:
             image = f"clio-managed-cmf:{CMF_REVISION}"
             manifest["build"] = {
                 "image": image,
@@ -398,6 +449,7 @@ def monitoring_plan(
                         "HOME": "/cmf-server/data",
                         "CMF_LOG_FILE": "/cmf-server/data/cmflib.log",
                     },
+                    **(cmf_host_server(port, postgres_port) if engine == "apptainer" else {}),
                 },
             ],
         )

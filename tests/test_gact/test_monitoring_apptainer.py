@@ -48,13 +48,59 @@ def apptainer_manifest(service: str, **configuration: str) -> dict[str, Any]:
     return json.loads(plan.commands[-1].stdin)["manifest"]
 
 
-def test_apptainer_only_host_offers_flowcept_but_explains_cmf() -> None:
+def test_apptainer_only_host_offers_flowcept_and_cmf() -> None:
     rows = {row.id: row for row in service_definitions(apptainer_facts())}
-    assert rows["flowcept"].variants[0].compatible
-    assert rows["flowcept"].configuration_fields[0].options == ["apptainer"]
-    assert rows["flowcept"].configuration_fields[1].placeholder == "service"
-    assert not rows["cmf"].variants[0].compatible
-    assert "Docker or Podman" in (rows["cmf"].variants[0].reason or "")
+    for service in ("flowcept", "cmf"):
+        assert rows[service].variants[0].compatible
+        assert rows[service].configuration_fields[0].options == ["apptainer"]
+        assert rows[service].configuration_fields[1].placeholder == "service"
+
+
+def test_cmf_server_runs_its_pinned_venv_inside_the_base_sif() -> None:
+    from clio_agent.gact.infrastructure.monitoring_services import CMF_BASE_IMAGE, CMF_REVISION
+
+    manifest = apptainer_manifest("cmf", port="38380", postgres_port="35433")
+    assert "build" not in manifest
+    spec = manifest["source_environment"]
+    assert spec["revision"] == CMF_REVISION and spec["sdists"] == ["antlr4-python3-runtime"]
+    lock = manifest["files"][spec["lock"]]
+    pins = [line for line in lock.splitlines() if "==" in line and not line.startswith("#")]
+    assert pins and all(line.endswith("\\") for line in pins)  # every pin is hash-checked
+    assert "antlr4-python3-runtime==4.9.3" in lock and CMF_REVISION in lock
+    server = manifest["components"][1]
+    assert server["image"] == CMF_BASE_IMAGE
+    assert server["workdir"] == "/cmf-server/src"
+    assert ["cmf-venv", "/cmf-server/venv", True] in server["mounts"]
+    assert ["source", "/cmf-server/src", True] in server["mounts"]
+    assert server["host_arguments"][-4:] == ["--host", "127.0.0.1", "--port", "38380"]
+    assert server["environment"]["POSTGRES_PORT"] == "35433"
+    assert server["environment"]["POSTGRES_HOST"] == "127.0.0.1"
+    with pytest.raises(ValueError, match="pinned source"):
+        apptainer_manifest("cmf", server_image="sha256:" + "0" * 64)
+
+
+def test_cmf_environment_installs_hash_pinned_and_is_reused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = owned_root(tmp_path)
+    manifest = apptainer_manifest("cmf")
+    (root / "cmf-server.lock").write_text(manifest["files"]["cmf-server.lock"])
+    (root / "source").mkdir()
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    backend.install_environment(root, manifest)
+    backend.install_environment(root, manifest)
+    assert len(calls) == 1
+    script = calls[0][-1]
+    assert "--require-hashes" in script and "--only-binary :all:" in script
+    assert "--no-binary antlr4-python3-runtime" in script
+    assert calls[0][-4].endswith("containers/images/server.sif")
+    assert f"{root}/containers/downloads/pip-tmp:/tmp" in calls[0]
 
 
 def test_apptainer_keeps_sifs_in_the_service_folder_and_ships_its_backend() -> None:

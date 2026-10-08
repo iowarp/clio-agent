@@ -213,6 +213,10 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     if host_network(manifest):
         apptainer_backend().cleanup(root, manifest, private)
         apptainer_backend().install(root, manifest)
+        environment = manifest.get("source_environment")
+        if environment:
+            checkout_source(root, environment)
+            apptainer_backend().install_environment(root, manifest)
         return
     # Replacement keeps database/evidence files but cannot retain old container
     # specifications after ports, images or environment have changed.
@@ -220,22 +224,7 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     build = manifest.get("build")
     if build:
         engine_capacity(root, 8 * 1024**3)
-        source = root / "source"
-        if source.is_symlink():
-            raise ValueError("Monitoring source directory cannot be a symlink")
-        if not source.exists():
-            subprocess.run(
-                ["git", "clone", "--no-checkout", build["repository"], str(source)],
-                check=True,
-                capture_output=True,
-                timeout=180,
-            )
-        subprocess.run(
-            ["git", "-C", str(source), "checkout", "--detach", build["revision"]],
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
+        source = checkout_source(root, build)
         dockerfile = source / build["dockerfile"]
         if build.get("base_image"):
             dockerfile = build_definition(root, dockerfile, build)
@@ -275,6 +264,27 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
         raise ValueError("Image receipt path cannot be a symlink")
     temporary.write_text(json.dumps(images))
     temporary.replace(root / "images.json")
+
+
+def checkout_source(root: Path, build: dict[str, Any]) -> Path:
+    """Check out the pinned service source into the owned ``source`` folder."""
+    source = root / "source"
+    if source.is_symlink():
+        raise ValueError("Monitoring source directory cannot be a symlink")
+    if not source.exists():
+        subprocess.run(
+            ["git", "clone", "--no-checkout", build["repository"], str(source)],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        )
+    subprocess.run(
+        ["git", "-C", str(source), "checkout", "--detach", build["revision"]],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return source
 
 
 def build_definition(root: Path, upstream: Path, build: dict[str, Any]) -> Path:

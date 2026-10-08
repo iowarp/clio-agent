@@ -111,6 +111,59 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     temporary.replace(root / "images.json")
 
 
+def install_environment(root: Path, manifest: dict[str, Any]) -> None:
+    """Install a component venv from the shipped hash-pinned lock inside its base SIF.
+
+    The venv is reused while its marker records the same lock digest and revision.
+    """
+    spec = manifest["source_environment"]
+    lock = owned_path(root, spec["lock"])
+    marker = owned_path(root, "cmf-venv/.clio-installed")
+    identity = digest(lock) + " " + spec["revision"]
+    if marker.is_file() and marker.read_text() == identity:
+        return
+    venv = owned_path(root, "cmf-venv")
+    if venv.exists():
+        shutil.rmtree(venv)
+    scratch = owned_path(root, "containers/downloads/pip-tmp")
+    for path in (venv, scratch):
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    server = next(row for row in manifest["components"] if row["role"] == "server")
+    pip = "/cmf-server/venv/bin/pip"
+    script = (
+        "set -e; python -m venv /cmf-server/venv; "
+        f"{pip} install --no-cache-dir --disable-pip-version-check --require-hashes --no-deps "
+        "--only-binary :all: "
+        + "".join(f"--no-binary {name} " for name in spec.get("sdists", []))
+        + "-r /lock.txt; "
+        f"{pip} install --no-cache-dir --disable-pip-version-check --no-deps "
+        "--no-build-isolation --no-index /cmf-server/src"
+    )
+    apptainer(
+        root,
+        [
+            "exec",
+            "--cleanenv",
+            "--containall",
+            "--bind",
+            f"{venv}:/cmf-server/venv",
+            "--bind",
+            f"{scratch}:/tmp",
+            "--bind",
+            f"{lock}:/lock.txt:ro",
+            "--bind",
+            f"{owned_path(root, 'source')}:/cmf-server/src",
+            str(sif(root, server)),
+            "sh",
+            "-c",
+            script,
+        ],
+        timeout=1800,
+    )
+    shutil.rmtree(scratch)
+    marker.write_text(identity)
+
+
 def secret_environment(component: dict[str, Any], private: dict[str, str]) -> dict[str, str]:
     """Pass a component's secrets through Apptainer's environment channel."""
     environment = {**os.environ}
@@ -131,6 +184,8 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
         env = secret_environment(component, private)
         if owned_instance(root, component) is None:
             arguments = ["instance", "run", "--cleanenv", "--containall", "--writable-tmpfs"]
+            if component.get("workdir"):
+                arguments += ["--pwd", component["workdir"]]
             for relative, destination, readonly in component.get("mounts", []):
                 source = owned_path(root, relative)
                 if not readonly:
@@ -142,7 +197,7 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
             apptainer(root, [*arguments, str(path), component["name"], *launch], env=env)
         check = component.get("host_check", component.get("check"))
         if check:
-            deadline = time.monotonic() + 90
+            deadline = time.monotonic() + int(component.get("ready_seconds", 90))
             while True:
                 try:
                     apptainer(
