@@ -271,7 +271,9 @@ def build_agent_task_output_tool() -> Any:
         app = _ctx.active_app()
         if app is None:
             raise RuntimeError("get_agent_task_output requires an active CLIO app context")
-        return get_agent_task_output_impl(app, task_id)
+        from clio_agent.gact.task_controls import get_task_result
+
+        return json.dumps(get_task_result(task_id), default=str)
 
     return native_tool(
         get_agent_task_output,

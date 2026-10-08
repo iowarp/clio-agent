@@ -25,7 +25,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,19 @@ class _InvocationRecord:
 
 _LOCK = threading.Lock()
 _OPEN: list[_InvocationRecord] = []
+_TASK_INPUT: ContextVar[_InvocationRecord | None] = ContextVar(
+    "clio_task_input_owner", default=None
+)
+
+
+@contextmanager
+def task_input_owner(app: Any, invocation: "MCPInvocationContext", session: Any) -> Iterator[None]:
+    """Bind the existing input bridge to the exact task owner after its foreground call ends."""
+    token = _TASK_INPUT.set(_InvocationRecord(app, invocation, id(session)))
+    try:
+        yield
+    finally:
+        _TASK_INPUT.reset(token)
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +191,9 @@ def _resolve_for_session(session_key: int) -> _InvocationRecord | None:
     session. Ambiguous (>1 open, none matching) -> ``None`` (typed decline).
     """
 
+    task_owner = _TASK_INPUT.get()
+    if task_owner is not None and task_owner.session_key == session_key:
+        return task_owner
     with _LOCK:
         for record in _OPEN:
             if record.session_key == session_key:

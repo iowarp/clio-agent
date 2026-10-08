@@ -375,6 +375,7 @@ async def drive_task_to_terminal(
     lease: TaskLease | None = None,
     poll_sleep: Callable[[float], Awaitable[None]] | None = None,
     on_poll: OnPollHook | None = None,
+    final_validator: Callable[[ClientGetTaskResult], None] | None = None,
 ) -> ClientGetTaskResult:
     """Poll ``tasks/get`` to a terminal state under an exclusive lease.
 
@@ -429,6 +430,7 @@ async def drive_task_to_terminal(
             max_no_progress_rounds=max_no_progress_rounds,
             poll_sleep=asyncio.sleep if poll_sleep is None else poll_sleep,
             on_poll=on_poll,
+            final_validator=final_validator,
         )
     finally:
         if owned_lease:
@@ -446,6 +448,7 @@ async def _poll_until_terminal(
     max_no_progress_rounds: int,
     poll_sleep: Callable[[float], Awaitable[None]],
     on_poll: OnPollHook | None = None,
+    final_validator: Callable[[ClientGetTaskResult], None] | None = None,
 ) -> ClientGetTaskResult:
     """The lease-protected poll loop body (see :func:`drive_task_to_terminal`)."""
 
@@ -471,6 +474,8 @@ async def _poll_until_terminal(
             raise typed_task_drive_timeout_error(key.task_id, cast(float, timeout_seconds))
 
         current = await send_task_get(session, key.task_id, budget)
+        if current.status in TERMINAL_TASK_STATES and final_validator is not None:
+            final_validator(current)
         _record_status(store, ledger, key, current)
         if on_poll is not None:
             await on_poll(current, key, store)
@@ -599,6 +604,16 @@ def _record_status(
             effective_status=effective_status,
             effective_status_reason=reason,
             input_answers=ledger.snapshot(),
+            result=(
+                dict(current.result or current.error or {})
+                if current.status in TERMINAL_TASK_STATES
+                else existing.result
+            ),
+            notify_pending=(
+                not existing.consumed_at
+                if current.status in TERMINAL_TASK_STATES
+                else existing.notify_pending
+            ),
         )
     )
 
@@ -635,26 +650,19 @@ async def cancel_task(
     a live UI still needs to SHOW the finished/cancelled row (the tray's
     "recently finished" section) after it settles, not just the moment it did.
 
-    #1205 review D1 (1st round): this is the LAST CLIO-side representation of the
-    task before nothing further polls it (the ack is the commitment point —
-    nothing here polls for the server's own later ``tasks/get`` confirmation), so
-    the record's status is stamped ``cancelled`` via ``put`` here rather than left
-    at whatever pre-cancel status (``working`` / ``input_required``) it last had.
+    Acknowledgement records cancellation intent only. The application-owned
+    driver keeps polling until the backend and its cleanup actually settle.
     """
 
     ack = await send_task_cancel(session, key.task_id)
     resolved = resolve_store(store)
     existing = resolved.get(key)
     if existing is not None:
-        # #1236: an explicit cancel ack is unambiguous -- stamp the honest field
-        # alongside the raw one so a run card reading ``display_status`` sees
-        # "cancelled" immediately rather than a stale pre-cancel effective_status.
         resolved.put(
             replace(
                 existing,
-                status="cancelled",
-                effective_status="cancelled",
-                effective_status_reason=None,
+                cancel_requested=True,
+                cancel_acknowledged=True,
             )
         )
     return ack
@@ -673,6 +681,7 @@ async def resume_task(
     timeout_seconds: float | None = None,
     store: TaskRecordStore | None = None,
     on_poll: OnPollHook | None = None,
+    final_validator: Callable[[ClientGetTaskResult], None] | None = None,
 ) -> ClientGetTaskResult:
     """Resume a persisted task on a FRESH session and drive it to a terminal state.
 
@@ -706,4 +715,5 @@ async def resume_task(
         ledger=TaskInputLedger.from_record(record),
         store=record_store,
         on_poll=on_poll,
+        final_validator=final_validator,
     )

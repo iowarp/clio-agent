@@ -206,13 +206,10 @@ class AgentTask:
     # ``notify_pending``; the parent's next turn consumes them (``consumed_at``).
     notify_pending: bool = False
     consumed_at: str = ""
-    # Once-per-task terminal-event guard (#948 S4 adversarial-review fix): set the
-    # first time a waiter emits this task's ``blueprint.delegation.completed``/
-    # ``.failed`` wire event, so a re-wait (partial-timeout re-collect, id repeated
-    # in a batch) never re-emits it (the server owns the de-duplicated stream). The
-    # RESULT ROW is still returned on every wait; only the EVENT is once. Persisted
-    # to the child-session metadata so a boot-rebuilt registry does not re-emit.
+    # Persisted once guard for terminal wire events; explicit result reads remain repeatable.
     delegation_reported: bool = False
+    description: str = ""
+    cancel_requested: bool = False
 
     def __post_init__(self) -> None:
         """Keep lifecycle-backed live state canonical at record construction."""

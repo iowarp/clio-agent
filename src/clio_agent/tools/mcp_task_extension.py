@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -42,7 +43,6 @@ from clio_agent.tools.mcp_task_records import (
     task_record_store,
 )
 from clio_agent.tools.mcp_tasks import (
-    cancel_task,
     drive_task_to_terminal,
     send_task_cancel,
     session_elicitation_callback,
@@ -138,16 +138,35 @@ async def persist_created_task(
     record = TaskRecord(
         key=key,
         tool=tool_name,
-        backend=dict(identity.locator),
+        backend={
+            **identity.locator,
+            "negotiation": _negotiation(session),
+            "output_schema": getattr(session, "_tool_output_schemas", {}).get(tool_name),
+        },
         status=create_result.status,
         # #1236: trivially equal to ``status`` at creation -- there is no
         # delivered result yet to derive an error out of, so no separate
         # derivation call is needed here (only a completed poll ever diverges).
         effective_status=create_result.status,
         created_at=getattr(create_result, "created_at", "") or utcnow_iso(),
+        handle="task_" + uuid.uuid4().hex,
+    )
+    from clio_agent.tools.task_call_context import TASK_CALL
+
+    call = TASK_CALL.get()
+    from dataclasses import replace
+
+    record = replace(
+        record,
+        description=call.description,
+        invocation_id=call.invocation_id,
+        owner_agent=call.owner_agent,
     )
     try:
         record_store.put(record)
+        persisted = record_store.get(key)
+        if persisted is None or persisted.holding_reason or persisted.handle != record.handle:
+            raise RuntimeError("Accepted MCP task lacks durable session ownership")
     except Exception as exc:  # noqa: BLE001 - converted to the typed recovery error below
         cancelled = await _best_effort_cancel(session, key)
         logger.error(
@@ -198,7 +217,9 @@ class ClioTasksClientExtension(TasksClientExtension):
     payload-bearing ledger, the exclusive lease, and the ``Mcp-Name``-bearing RPCs.
     """
 
-    def __init__(self, identity: BackendIdentity, tool_name: str = "") -> None:
+    def __init__(
+        self, identity: BackendIdentity, tool_name: str = "", transport: Any = None
+    ) -> None:
         # The substrate stores a construction-time elicitation callback; CLIO
         # deliberately passes NONE and resolves it from the live ``ClientSession``
         # instead. fastmcp wraps the caller's 4-argument ``elicitation_handler`` into
@@ -210,6 +231,7 @@ class ClioTasksClientExtension(TasksClientExtension):
         super().__init__(None)
         self._clio_identity = identity
         self._clio_tool_name = tool_name
+        self._clio_transport = transport
 
     @property
     def backend(self) -> BackendIdentity:
@@ -218,17 +240,45 @@ class ClioTasksClientExtension(TasksClientExtension):
         return self._clio_identity
 
     async def _resolve_task(self, create_result: Any, ctx: Any) -> mcp_types.CallToolResult:
-        """Persist the task id, drive it to terminal, and return the real result."""
+        """Persist acceptance, then detach in GACT or drive the legacy app-less caller."""
+
+        from clio_agent.tools.task_call_context import TASK_CALL
 
         key = TaskKey(
             server_id=self._clio_identity.server_id,
-            session_id=resolve_task_session_id(getattr(ctx, "session", None)),
+            session_id=TASK_CALL.get().session_id
+            or resolve_task_session_id(getattr(ctx, "session", None)),
             task_id=create_result.task_id,
+            backend_session_id=(getattr(self._clio_transport, "get_session_id", lambda: None)()),
         )
         store = task_record_store()
         # FIRST thing after the server minted the task: make the id durable. The
         # window before this line is the residual documented in the module docstring.
-        await self._make_durable(ctx, key, create_result, store)
+        persistence = asyncio.create_task(self._make_durable(ctx, key, create_result, store))
+        stopped = False
+        try:
+            await asyncio.shield(persistence)
+        except asyncio.CancelledError:
+            # Backend acceptance is already certain. Finish custody even if Stop
+            # cancelled the caller; discoverability must survive the lost receipt.
+            await persistence
+            stopped = True
+        from clio_agent.gact import context
+        from clio_agent.tools.task_call_context import TASK_CALL
+
+        app = context.active_app()
+        if (
+            app is not None
+            and getattr(app.state, "mcp_app_loop", None) is asyncio.get_running_loop()
+        ):
+            from clio_agent.gact.task_mcp_owner import accept_mcp_task
+
+            accepted = accept_mcp_task(app, ctx.session, key, store, TASK_CALL.get().executor)
+            if stopped:
+                raise asyncio.CancelledError
+            from clio_agent.tools.task_receipt import accepted_result
+
+            return accepted_result(accepted)
         # #1231: the transparent auto-claim path drives EVERY task-returning call
         # through here, so a per-backend observer (e.g. relay's console-tail fold,
         # registered by relay_transport.py against this task's server_id) must be
@@ -246,22 +296,6 @@ class ClioTasksClientExtension(TasksClientExtension):
                 on_poll=resolve_task_observer(key),
             )
         except asyncio.CancelledError:
-            # Cancelling the foreground turn must also cancel the durable MCP
-            # task it created.  Otherwise the turn settles as interrupted while
-            # the retained task row remains ``working`` forever, leaving every
-            # client to report phantom background activity.  The claim context
-            # still owns the live ClientSession here, so this is the last safe
-            # point to send the protocol-level tasks/cancel request.
-            try:
-                await asyncio.shield(cancel_task(ctx.session, key, store=store))
-            except Exception as exc:  # noqa: BLE001 - cancellation remains primary
-                logger.warning(
-                    "best-effort tasks/cancel after foreground cancellation failed "
-                    "task=%s server=%s: %s",
-                    key.task_id,
-                    key.server_id,
-                    exc,
-                )
             raise
         if final.status == "completed":
             return _inlined_call_tool_result(final.result)
@@ -337,4 +371,15 @@ def tasks_declaration(client_cls: Any, target: Any = None) -> TasksDeclaration:
         )
         return TasksDeclaration(extensions=(), reason=MCP_TASKS_DECLARATION_SUPPRESSED)
     identity = backend_identity(target)
-    return TasksDeclaration(extensions=(ClioTasksClientExtension(identity),), reason=None)
+    return TasksDeclaration(
+        extensions=(ClioTasksClientExtension(identity, transport=target),), reason=None
+    )
+
+
+def _negotiation(session: Any) -> dict[str, Any]:
+    """Keep the actual negotiated state for reconnect without a new initialize request."""
+    for name in ("initialize_result", "discover_result"):
+        result = getattr(session, name, None)
+        if result is not None:
+            return {"type": name, "result": result.model_dump(mode="json", by_alias=True)}
+    return {}

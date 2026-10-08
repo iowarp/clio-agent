@@ -108,6 +108,10 @@ def publish_mcp_task_event(app: "FastAPI", record: TaskRecord) -> None:
 
     event_type = MCP_TASK_EVENTS.get(record.display_status, MCP_TASK_EVENT_DEFAULT)
     app.state.bus.publish(Event(type=event_type, session_id=session_id, payload=record.to_wire()))
+    if record.notify_pending and not record.consumed_at:
+        from clio_agent.gact.task_delivery import enqueue_task_wake
+
+        enqueue_task_wake(app, record)
 
 
 def publish_mcp_task_console_delta(

@@ -444,7 +444,7 @@ def build_observe_tool() -> Any:
 
     def observe_agent_tasks(
         task_ids: list[str],
-        cursor: int = 1,
+        cursor: str | int = 1,
         limit: int = DEFAULT_OBSERVE_LIMIT,
         pattern: str | None = None,
         include_state: bool = True,
@@ -465,13 +465,16 @@ def build_observe_tool() -> Any:
         app = _ctx.active_app()
         if app is None or not _ctx.active_session_id():
             raise RuntimeError("observe_agent_tasks requires an active CLIO app/session context")
-        return observe_agent_tasks_impl(
-            app,
-            task_ids=task_ids,
-            cursor=cursor,
-            limit=limit,
-            pattern=pattern,
-            include_state=include_state,
+        from clio_agent.gact.task_controls import observe_tasks
+
+        del limit, include_state
+        return json.dumps(
+            observe_tasks(
+                task_ids,
+                cursor=max(0, cursor - 1) if isinstance(cursor, int) else cursor,
+                pattern=pattern,
+            ),
+            default=str,
         )
 
     return native_tool(
@@ -487,7 +490,7 @@ def build_observe_tool() -> Any:
                 "description": "Task ids (from spawn) whose progress to observe.",
             },
             "cursor": {
-                "type": "integer",
+                "type": ["integer", "string"],
                 "description": (
                     "Resume point: start at 1, then pass the returned next_cursor "
                     "so each observe reads only NEW events (never misses/re-reads)."

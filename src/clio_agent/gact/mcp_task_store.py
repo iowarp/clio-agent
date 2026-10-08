@@ -138,6 +138,21 @@ class SessionMetadataTaskStore:
                 self._notify(self._hold(stamped, "session row absent"))
                 return
             rows = dict(self._rows_of(session))
+            previous = rows.get(stamped.key.row_key)
+            if isinstance(previous, dict):
+                prior = TaskRecord.from_wire(previous)
+                # Transport callbacks can hold an older snapshot while a model
+                # collects its result. Delivery and cancellation intent never
+                # roll back when that callback subsequently persists progress.
+                stamped = replace(
+                    stamped,
+                    handle=prior.handle or stamped.handle,
+                    consumed_at=prior.consumed_at or stamped.consumed_at,
+                    notify_pending=stamped.notify_pending and not prior.consumed_at,
+                    cancel_requested=prior.cancel_requested or stamped.cancel_requested,
+                    cancel_acknowledged=prior.cancel_acknowledged or stamped.cancel_acknowledged,
+                    dismissed=prior.dismissed or stamped.dismissed,
+                )
             rows[stamped.key.row_key] = stamped.to_wire()
             updated = self._sessions.update(
                 session_id, metadata_patch={SESSION_TASKS_METADATA_KEY: rows}

@@ -13,10 +13,7 @@ Supporting tool/LM resolution lives here; retaining ReAct and prompts stay in si
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import threading
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
@@ -44,6 +41,12 @@ from clio_agent.gact.agents.declared_native_tools import (
     declared_native_capabilities,
     resolve_declared_native_tools,
 )
+from clio_agent.gact.agents.external_mcp_calls import (
+    _call_enabled_external_mcp_tool as _call_enabled_external_mcp_tool,
+)
+from clio_agent.gact.agents.external_mcp_calls import (
+    _run_external_mcp_tool_sync,
+)
 from clio_agent.gact.agents.invalid_tool_selection import (
     _emit_invalid_tool_selection_event,
     _invalid_tool_selection_from_exception,
@@ -55,10 +58,6 @@ from clio_agent.gact.agents.signatures import (
 )
 from clio_agent.gact.agents.tool_executor_resolution import (
     resolve_active_base_agent_tool_executor,
-)
-from clio_agent.gact.permission_gate import (
-    _external_mcp_permission_context,
-    _invoke_permission_gate,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
@@ -73,6 +72,7 @@ from clio_agent.gact.runtime.type_parsing import (
     _structured_output_enabled,
 )
 from clio_agent.runtime import trace
+from clio_agent.tools.task_call_context import task_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
 
             self.answer_synthesizer = ClioReAct(_prompt_user_agent_signature(), tools=[])
-            self.answer_synthesizer._clio_expert_id = agent_def.id
+            object.__setattr__(self.answer_synthesizer, "_clio_expert_id", agent_def.id)
 
         def forward(
             self,
@@ -297,145 +297,6 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             )
 
     return PromptUserAgentModule(base_agent, agent_def)
-
-
-async def _call_enabled_external_mcp_tool(
-    app: Any,
-    server_id: str,
-    info: Mapping[str, Any],
-    tool_name: str,
-    tool_args: Mapping[str, Any],
-    tool_annotations: Any = None,
-) -> str:
-    """Call an explicitly enabled external MCP tool for a dynamic agent."""
-
-    observer_name = f"{info.get('name', 'ext')}.{tool_name}"
-    # Reach the permission gate via the active app's state (installed turn gate, else
-    # the build_app-stored factory) rather than importing ``_make_permission_gate``
-    # from ``gact.app`` -- keeps this module off a module-load cycle (#714 DI seam).
-    gate = getattr(app.state, "pending_permission_gate", None)
-    if gate is None:
-        gate = app.state.make_permission_gate()
-    decision = _invoke_permission_gate(
-        gate,
-        observer_name,
-        dict(tool_args),
-        _external_mcp_permission_context(tool_annotations),
-    )
-    if decision != "allow":
-        raise PermissionError(f"tool call {observer_name!r} denied by permission gate")
-
-    # Execution path (#1106 + #1113): this dynamic-agent call dispatches call_tool, so
-    # its client comes from make_elicitation_client — the single factory PLUS the
-    # elicitation handler bound to THIS call's invocation (one client per call).
-    from clio_agent.gact.elicitation_bridge import make_elicitation_client  # noqa: PLC0415
-    from clio_agent.gact.mcp_apps import call_tool_result_to_observer  # noqa: PLC0415
-    from clio_agent.tools.execution import notify_tool_observer  # noqa: PLC0415
-    from clio_agent.tools.mcp_config import (  # noqa: PLC0415
-        MCPTransportError,
-        transport_from_spec,
-    )
-    from clio_agent.tools.mcp_errors import typed_mcp_call_error  # noqa: PLC0415
-
-    spec = info.get("spec", {})
-    try:
-        transport = transport_from_spec(spec)
-        client_ctx = make_elicitation_client(app, transport, server_id, tool_name)
-    except MCPTransportError:
-        raise RuntimeError(f"unknown stored MCP transport for {server_id}") from None
-    except Exception:  # noqa: BLE001
-        raise RuntimeError("fastmcp Client unavailable") from None
-
-    tool_observer = getattr(app.state, "pending_tool_observer", None)
-    if tool_observer is None:
-        tool_observer = app.state.make_tool_observer()
-    notify_tool_observer(tool_observer, observer_name, dict(tool_args), "started")
-    try:
-        async with client_ctx as client:
-            from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
-                call_tool_with_header_retry,
-            )
-
-            result = await call_tool_with_header_retry(client, tool_name, dict(tool_args))
-    except Exception as raw_exc:  # noqa: BLE001
-        # #1114: typed translation first — the model never sees a raw SDK class/message.
-        surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
-        notify_tool_observer(
-            tool_observer, observer_name, dict(tool_args), "completed", error=repr(surfaced)
-        )
-        raise surfaced from raw_exc
-    content = getattr(result, "content", None) or []
-    result_text = "\n".join(str(getattr(part, "text", part)) for part in content)
-    if not result_text:
-        data = getattr(result, "data", None)
-        result_text = (
-            json.dumps(data, sort_keys=True, default=str)
-            if isinstance(data, Mapping)
-            else str(data if data is not None else result)
-        )
-    observer_result = call_tool_result_to_observer(result)
-    notify_tool_observer(
-        tool_observer,
-        observer_name,
-        dict(tool_args),
-        "completed",
-        # Legacy text projection for the model; the durable observer gets the
-        # machine-readable public MCP result (private `_meta` stays excluded).
-        result=observer_result,
-    )
-    if content:
-        return result_text
-    data = getattr(result, "data", None)
-    if data is not None:
-        return json.dumps(data, default=str) if isinstance(data, Mapping) else str(data)
-    return str(result)
-
-
-def _run_external_mcp_tool_sync(
-    app: Any,
-    server_id: str,
-    info: Mapping[str, Any],
-    tool_name: str,
-    tool_args: Mapping[str, Any],
-    tool_annotations: Any = None,
-) -> str:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(
-            _call_enabled_external_mcp_tool(
-                app,
-                server_id,
-                info,
-                tool_name,
-                tool_args,
-                tool_annotations,
-            )
-        )
-
-    result: dict[str, Any] = {}
-
-    def _runner() -> None:
-        try:
-            result["value"] = asyncio.run(
-                _call_enabled_external_mcp_tool(
-                    app,
-                    server_id,
-                    info,
-                    tool_name,
-                    tool_args,
-                    tool_annotations,
-                )
-            )
-        except BaseException as exc:  # noqa: BLE001
-            result["error"] = exc
-
-    thread = threading.Thread(target=_runner, daemon=True)
-    thread.start()
-    thread.join()
-    if "error" in result:
-        raise result["error"]
-    return str(result.get("value", ""))
 
 
 def _enabled_external_mcp_dspy_tools(
@@ -497,7 +358,7 @@ def _enabled_external_mcp_dspy_tools(
                 tool_fn,
                 name=tool_name,
                 desc=description,
-                args=properties,
+                args=task_arguments(properties),
                 domain="agents",  # dynamic per-blueprint bridge, not a builtin catalog row (#1350)
                 title=title,
             )
@@ -974,7 +835,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             if self.kind in ("predict", "chain_of_thought"):
                 # One loop for every kind: tool-less (only ``submit``), thinking is its reasoning.
                 self.program = ClioReAct(self.signature, tools=[])
-                self.program._clio_expert_id = agent_def.id
+                object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
             else:
                 # #948 S4: react mains route by SPAWNING declared children as real
                 # child turns (spawn_agent_task / wait_agent_tasks / fanout); the
@@ -1052,7 +913,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     max_iters=_tool_user_agent_max_iters(agent_def, declared_children=_n_children),
                 )
                 # The loop attributes each step to this expert on the highway.
-                self.program._clio_expert_id = agent_def.id
+                object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
             # Wrap in the declared (or spawn-requested) BestOfN / Refine variant, if any.
             self.program = _mv.wrap_module_variant(
                 self.program, _mv.with_session_strategy(agent_def)

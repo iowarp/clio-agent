@@ -23,6 +23,7 @@ from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
 from clio_agent.tools import injections, tool_presentation
+from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
     ClientFactory,
@@ -524,14 +525,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             client_factory=client_factory,
             server_id=server_id,
         )
-        # iowarp/clio-agent#7: optional gate called BEFORE every
-        # tool invocation. Returns one of:
-        #   "allow"  → run the tool unchanged
-        #   "deny"   → raise a PermissionError; the agent sees the
-        #              traceback in its tool_result and reports it.
-        # Explicit instance hook wins. When omitted, call_tool consults the
-        # resolved ``current_tool_runtime()`` bundle dynamically so GACT deferred
-        # startup can wire hooks after an executor exists.
+        # Explicit hooks win; omitted hooks resolve the current runtime dynamically.
+        # The permission gate must allow each invocation before dispatch.
         self._permission_gate = permission_gate
         # iowarp/clio-agent#2: optional observer called BEFORE
         # ("started") and AFTER ("completed", error?) every tool
@@ -546,13 +541,16 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         self._inflight = 0
         self._inflight_lock = threading.Lock()
 
-        self._loop = asyncio.new_event_loop()
+        app_loop = task_calls.application_loop()
+        self._owns_loop = app_loop is None
+        self._loop = app_loop or asyncio.new_event_loop()
         self._thread = threading.Thread(
             target=self._run_loop,
             name="clio-sync-mcp-tool-executor",
             daemon=True,
         )
-        self._thread.start()
+        if self._owns_loop:
+            self._thread.start()
 
         try:  # progress-based: waits while the servers it starts keep working
             self._run_while_server_works(self._async_executor.start(), action="executor setup")
@@ -756,6 +754,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         budget = self._async_executor._timeout_budget_for_call(name, effective_args)
         timeout = budget.seconds  # None == unbounded wait_for_terminal commitment, #1225
+        task_call_token = task_calls.begin_invocation()
         try:
             # #1230: an unbounded commitment wait must not count against the
             # turn's no-progress ceiling — commitment_activity is the signal
@@ -808,8 +807,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 tool_observer, name, effective_args, "completed", error_text, trace
             )
             raise
-        # The model-facing text is bounded HERE, on the calling thread, so an oversize
-        # result spills into the session's workspace and its note reaches the loop.
+        finally:
+            task_calls.TASK_CALL.reset(task_call_token)
+        # Bound output on the caller's thread so spills retain workspace custody.
         result = bounded_model_tool_result(outcome.model_text)
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
@@ -964,11 +964,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 except Exception as exc:  # noqa: BLE001 - client-close error logged at debug; teardown continues
                     logger.debug("Error closing SyncMCPToolExecutor client: %s", exc)
 
-            if not self._loop.is_closed():
+            if self._owns_loop and not self._loop.is_closed():
                 with suppress(RuntimeError):
                     self._loop.call_soon_threadsafe(self._loop.stop)
 
-        if threading.current_thread() is not self._thread:
+        if self._owns_loop and threading.current_thread() is not self._thread:
             self._thread.join(timeout=5)
 
     def _run_coroutine(self, coro: Any, *, timeout: float, action: str) -> Any:
@@ -1041,9 +1041,7 @@ def _make_dspy_tool(
 
     stamp_mcp_tool_title(tool_fn, mcp_tool)
 
-    properties = _tool_input_schema(mcp_tool).get("properties", {})  # fastmcp-4 snake read
-    if not isinstance(properties, dict):
-        properties = {}
+    properties = task_calls.task_arguments(_tool_input_schema(mcp_tool).get("properties", {}))
 
     return dspy.Tool(
         func=tool_fn,

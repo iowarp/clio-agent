@@ -197,4 +197,7 @@ def assemble_spawn_runtime_tools(
                 },
             )
         )
-    return tools
+    # Explicit old blueprint declarations remain callable for one compatibility cycle.
+    # Newly generated inventories expose the shared task controls instead.
+    aliases = {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"}
+    return [tool for tool in tools if tool.name not in aliases or tool.name in agent_def.tools]

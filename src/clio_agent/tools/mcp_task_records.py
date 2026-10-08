@@ -99,11 +99,18 @@ class TaskKey:
     server_id: str
     session_id: str | None
     task_id: str
+    backend_session_id: str | None = None
 
     @property
     def row_key(self) -> str:
         """The stable string the durable row is stored under, within its session."""
 
+        if self.backend_session_id:
+            import hashlib
+            import json
+
+            identity = json.dumps([self.server_id, self.backend_session_id, self.task_id])
+            return "session-task:" + hashlib.sha256(identity.encode()).hexdigest()
         return f"{self.server_id}|{self.task_id}"
 
     def to_wire(self) -> dict[str, Any]:
@@ -113,6 +120,7 @@ class TaskKey:
             "server_id": self.server_id,
             "session_id": self.session_id,
             "task_id": self.task_id,
+            **({"backend_session_id": self.backend_session_id} if self.backend_session_id else {}),
         }
 
     @classmethod
@@ -123,6 +131,7 @@ class TaskKey:
             server_id=str(payload.get("server_id") or ""),
             session_id=payload.get("session_id") or None,
             task_id=str(payload.get("task_id") or ""),
+            backend_session_id=payload.get("backend_session_id") or None,
         )
 
 
@@ -190,7 +199,19 @@ class TaskRecord:
     lease_owner: str | None = None
     lease_expires_at: float | None = None
     cancel_requested: bool = False
+    cancel_acknowledged: bool = False
     holding_reason: str | None = None
+    # Public identity and delivery are persisted on the existing session task row.
+    handle: str = ""
+    kind: str = "MCP"
+    description: str = ""
+    invocation_id: str = ""
+    owner_agent: str = ""
+    result: dict[str, Any] | None = None
+    notify_pending: bool = False
+    consumed_at: str = ""
+    connection_freshness: str = "connected"
+    dismissed: bool = False
 
     @property
     def task_id(self) -> str:
@@ -233,7 +254,18 @@ class TaskRecord:
             "lease_owner": self.lease_owner,
             "lease_expires_at": self.lease_expires_at,
             "cancel_requested": self.cancel_requested,
+            "cancel_acknowledged": self.cancel_acknowledged,
             "holding_reason": self.holding_reason,
+            "handle": self.handle,
+            "kind": self.kind,
+            "description": self.description,
+            "invocation_id": self.invocation_id,
+            "owner_agent": self.owner_agent,
+            "result": self.result,
+            "notify_pending": self.notify_pending,
+            "consumed_at": self.consumed_at,
+            "connection_freshness": self.connection_freshness,
+            "dismissed": self.dismissed,
         }
 
     @classmethod
@@ -258,7 +290,18 @@ class TaskRecord:
             lease_owner=payload.get("lease_owner") or None,
             lease_expires_at=float(expires) if isinstance(expires, (int, float)) else None,
             cancel_requested=bool(payload.get("cancel_requested")),
+            cancel_acknowledged=bool(payload.get("cancel_acknowledged")),
             holding_reason=payload.get("holding_reason") or None,
+            handle=str(payload.get("handle") or ""),
+            kind=str(payload.get("kind") or "MCP"),
+            description=str(payload.get("description") or ""),
+            invocation_id=str(payload.get("invocation_id") or ""),
+            owner_agent=str(payload.get("owner_agent") or ""),
+            result=dict(payload["result"]) if isinstance(payload.get("result"), Mapping) else None,
+            notify_pending=bool(payload.get("notify_pending")),
+            consumed_at=str(payload.get("consumed_at") or ""),
+            connection_freshness=str(payload.get("connection_freshness") or "unknown"),
+            dismissed=bool(payload.get("dismissed")),
         )
 
 

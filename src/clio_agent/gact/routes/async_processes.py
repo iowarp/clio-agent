@@ -19,10 +19,12 @@ publishes onto it on every durable write; no second SSE route.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
 from clio_agent.gact.agent_tasks import AgentTask, display_run_name
 from clio_agent.gact.agents.tool_instrumentation import declared_tool_title
@@ -91,11 +93,11 @@ def _mcp_task_process(record: TaskRecord) -> dict[str, Any]:
     """
 
     return {
+        **record.to_wire(),
         "kind": "mcp-task",
         "id": record.task_id,
         "title": mcp_task_display_title(record),
         "live_state": _MCP_TASK_LIVE_STATES.get(record.display_status, record.display_status),
-        **record.to_wire(),
     }
 
 
@@ -135,7 +137,12 @@ def project_session_async_processes(
         for owner_session_id in owner_session_ids
         for task in app.state.agent_task_registry.for_parent(owner_session_id)
     ]
-    agent_task_ids = {task.task_id for task in agent_tasks}
+    agent_task_ids = {(task.parent_session_id, task.task_id) for task in agent_tasks}
+    records = app_task_store(app).list()
+    identity_counts: dict[tuple[str | None, str], int] = {}
+    for record in records:
+        alias = (record.session_id, record.task_id)
+        identity_counts[alias] = identity_counts.get(alias, 0) + 1
     rows = []
     for task in agent_tasks:
         owner = lineage_by_session.get(task.child_session_id, {})
@@ -154,8 +161,13 @@ def project_session_async_processes(
             "owner_session_id": record.session_id,
             "task_path": list(lineage_by_session.get(record.session_id, {}).get("task_path") or []),
         }
-        for record in app_task_store(app).list()
-        if record.session_id in owner_session_ids and record.task_id not in agent_task_ids
+        for record in records
+        if record.session_id in owner_session_ids
+        and not (
+            record.tool == "relay_submit_agent"
+            and (record.session_id, record.task_id) in agent_task_ids
+            and identity_counts[(record.session_id, record.task_id)] == 1
+        )
     )
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
@@ -171,8 +183,64 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         if app.state.sessions.get(sid) is None:
             raise _not_found("session", sid)
-        return {
-            "processes": project_session_async_processes(
-                app, sid, include_children=include_children
+        from clio_agent.gact.task_projection import task_views
+
+        return {"processes": task_views(app, sid, include_children=include_children)}
+
+    @app.get("/v1/sessions/{sid}/tasks")
+    async def list_tasks(
+        sid: str,
+        kind: str | None = None,
+        status: str | None = None,
+        handle: str | None = None,
+        tool: str | None = None,
+        agent: str | None = None,
+        active_only: bool = False,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        from clio_agent.gact.task_controls import query_snapshot
+
+        if app.state.sessions.get(sid) is None:
+            raise _not_found("session", sid)
+        try:
+            return query_snapshot(
+                app,
+                sid,
+                kind=kind,
+                status=status,
+                handle=handle,
+                tool=tool,
+                agent=agent,
+                active_only=active_only,
+                cursor=cursor,
+                limit=limit,
             )
-        }
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/sessions/{sid}/tasks/cancel")
+    async def cancel_tasks(sid: str, body: TaskSelection) -> dict[str, Any]:
+        from clio_agent.gact.task_controls import cancel_selected
+
+        if app.state.sessions.get(sid) is None:
+            raise _not_found("session", sid)
+        return await asyncio.to_thread(cancel_selected, app, sid, body.tasks)
+
+    @app.get("/v1/sessions/{sid}/tasks/{handle}/result")
+    async def get_result(sid: str, handle: str) -> dict[str, Any]:
+        from clio_agent.gact.task_controls import collect_result
+        from clio_agent.gact.task_projection import resolve_task
+
+        if app.state.sessions.get(sid) is None:
+            raise _not_found("session", sid)
+        try:
+            return collect_result(app, sid, resolve_task(app, sid, handle))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class TaskSelection(BaseModel):
+    """The same nonempty handle list accepted by agent task controls."""
+
+    tasks: str | list[str] = Field(min_length=1)

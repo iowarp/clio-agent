@@ -1,22 +1,8 @@
-"""Spawn-runtime tools for react mains (#948 S4).
+"""Spawn real child turns and return their durable task handles.
 
-The routing surface that REPLACES the deleted settle/synthesis orchestration and
-the deleted inline per-child delegate/fan-out tools. A tier-1 main is now a react
-agent whose answer IS the user deliverable; instead of a typed routing field
-consumed by a settle loop, it CALLS these tools:
-
-* ``spawn_agent_task(agent, task)`` — spawn a declared child as a REAL child turn
-  (S3 ``spawn_child_turn``) and return its ``task_id``.
-* ``wait_agent_tasks(task_ids)`` — commit to the children's completion
-  and return their results (spawn + wait COMPOSE the old synchronous delegate;
-  the child runs on the dedicated pool so waiting here never starves it).
-* ``observe_agent_tasks(task_ids, cursor=...)`` — the OBSERVE posture (#1000):
-  snapshot or hold on a child's event stream without consuming it.
-* ``spawn_agents_parallel(spawns)`` — fan out several children at once.
-Each tool re-emits the wire-facing delegation/fanout events and appends the
-``expert_handoff`` Parts the deleted sync-delegate path appended. Child sessions
-and AgentTask records are the real substrate—there is no inline child forward or
-settle-loop routing vocabulary.
+Shared task controls manage observation, waiting, results and cancellation.
+Agent-only control names remain compatibility aliases for one release cycle.
+Child sessions and AgentTask records retain execution and output ownership.
 """
 
 from __future__ import annotations
@@ -357,13 +343,11 @@ def build_spawn_runtime_tools(
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
         InvokerError,
         SpawnError,
-        TaskHandle,
         TaskSpec,
     )
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_placement import (  # noqa: PLC0415
         invoker_for_placement,
-        invoker_for_task,
         resolve_batch_placement,
     )
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
@@ -448,6 +432,7 @@ def build_spawn_runtime_tools(
                     TaskSpec(
                         child_expert_id=child_id,
                         task_text=briefing,
+                        description=task,
                         parent_session_id=session_id,
                         target_blueprint_id=target_blueprint_id,
                         requesting_expert_id=agent_def.id,
@@ -507,11 +492,13 @@ def build_spawn_runtime_tools(
         )
         return json.dumps(
             {
+                "accepted": True,
                 "task_id": spawned.task_id,
+                "handle": spawned.handle_id or spawned.task_id,
+                "kind": "Subagent",
+                "description": task,
                 "status": spawned.status,
                 "run_index": spawned.run_index,
-                # Typed queued_reason at the concurrency cap (#948 S6): the handle
-                # returns IMMEDIATELY as queued|running, never blocking on admission.
                 "queued_reason": spawned.queued_reason,
                 **run_handle_fields(spawned, child_id),
             },
@@ -528,8 +515,8 @@ def build_spawn_runtime_tools(
     ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
-        untied to this turn — collect it now with wait_agent_tasks, inspect progress
-        with observe_agent_tasks, or let its result surface in your NEXT turn. Prefer to spawn
+        untied to this turn — collect it now with wait_tasks, inspect progress
+        with observe_tasks, or let its result surface in your NEXT turn. Prefer to spawn
         ALL independent children before waiting on any.
 
         Pass input_task_ids to hand THIS child the FULL stored output of tasks
@@ -586,8 +573,12 @@ def build_spawn_runtime_tools(
                 collected_rows.append((request_index, None, payload, structured_row))
                 continue
             try:
-                binding = invoker_for_task(app, task)
-                task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=None)
+                from clio_agent.gact.task_controls import wait_tasks
+
+                wait_tasks(tid)
+                task_result = registry.get(tid)
+                if task_result is None:
+                    raise SpawnError("unknown_task")
             except (InvokerError, SpawnError) as exc:
                 payload = {"task_id": tid, "error": exc.reason}
                 structured_row = wait_structured_row(tid, exc.reason, 0.0, "")
