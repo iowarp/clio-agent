@@ -616,3 +616,39 @@ def test_start_refuses_a_port_with_any_existing_listener(
         )
         with pytest.raises(ValueError, match="already has a listener"):
             node_service.launch(tmp_path, {"action": "start", "manifest": manifest})
+
+
+def test_a_new_run_keeps_the_previous_runs_server_logs(tmp_path: Path) -> None:
+    """F008: the next start truncated server.log, losing the failed start's evidence."""
+    log = tmp_path / "server.log"
+    node_service.rotate_log(log)  # nothing to keep yet
+    assert not list(tmp_path.iterdir())
+    for run in range(1, 6):
+        node_service.rotate_log(log)
+        log.write_text(f"run {run}\n")
+    assert log.read_text() == "run 5\n"
+    kept = {path.name: path.read_text() for path in tmp_path.glob("server.log.*")}
+    assert kept == {
+        "server.log.1": "run 4\n",
+        "server.log.2": "run 3\n",
+        "server.log.3": "run 2\n",
+    }
+    log.write_text("")
+    node_service.rotate_log(log)  # an empty run does not push real evidence out
+    assert (tmp_path / "server.log.1").read_text() == "run 4\n"
+
+
+def test_logs_action_shows_the_current_run_and_names_earlier_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    monkeypatch.setattr(node_service, "checked_root", lambda raw: Path(raw))
+    root = tmp_path / "owned"
+    node_service.prepare(root, "owner")
+    (root / "logs").mkdir()
+    (root / "logs/server.log").write_text("current start\n")
+    (root / "logs/server.log.1").write_text("earlier failure\n")
+    result = node_service.control({"root": str(root), "owner": "owner", "action": "logs"})
+    assert "current start" in result["logs"]
+    assert "earlier failure" not in result["logs"]
+    assert "server.log.1" in result["logs"]

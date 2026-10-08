@@ -27,6 +27,8 @@ from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
+#: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
+LOG_GENERATIONS = 3
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -519,6 +521,21 @@ def release_group(timeout: float = 10) -> None:
             return
 
 
+def rotate_log(log: Path, keep: int = LOG_GENERATIONS) -> None:
+    """Shift a non-empty log to ``.1`` (older ones up to ``.keep``) instead of truncating it.
+
+    A failed start's log is the evidence for the next attempt (F008).
+    """
+    if not log.is_file() or log.stat().st_size == 0:
+        return
+    log.with_name(f"{log.name}.{keep}").unlink(missing_ok=True)
+    for index in range(keep - 1, 0, -1):
+        older = log.with_name(f"{log.name}.{index}")
+        if older.is_file():
+            older.replace(log.with_name(f"{log.name}.{index + 1}"))
+    log.replace(log.with_name(f"{log.name}.1"))
+
+
 def worker(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     # Wait for the parent to commit the receipt under the same lifecycle lock.
@@ -563,6 +580,7 @@ def worker(root: Path, action: str, generation: str) -> None:
         )
     log = root / "logs" / ("install.log" if action == "install" else "server.log")
     try:
+        rotate_log(log)
         with subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -724,10 +742,14 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
         elif action == "logs":
             hook(root, "logs")
             tails = []
-            for file in (root / "logs").glob("*.log"):
+            # The current run only; rotated earlier runs are named, not mixed in.
+            for file in sorted((root / "logs").glob("*.log")):
                 with file.open("rb") as stream:
                     stream.seek(max(0, file.stat().st_size - 12000))
                     tails.append(file.name + "\n" + stream.read().decode("utf-8", errors="replace"))
+            earlier = sorted(path.name for path in (root / "logs").glob("*.log.[0-9]*"))
+            if earlier:
+                tails.append(f"Earlier runs kept in {root / 'logs'}: {', '.join(earlier)}")
             return {"logs": "\n".join(tails)[-16000:]}
         elif action not in {"status", "prepare"}:
             raise ValueError("Unsupported native service action")
