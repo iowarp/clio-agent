@@ -8,7 +8,8 @@ collide with other users. So, as with Flowcept's Apptainer dependencies:
 * the image is digest-pinned and its SIF comes from the shared, digest-keyed
   image store (:func:`~clio_agent.gact.infrastructure.container_runtime.pull_commands`);
   the SIF's sha256 is written to a receipt at installation and every launch
-  refuses a SIF that no longer matches it;
+  refuses a SIF that no longer matches it (re-hashed only when the file's
+  identity -- inode, size, change times -- differs from the receipt's);
 * the instance runs with ``instance run --cleanenv --containall`` and a
   CLIO-written launcher bind-mounted over the image's entrypoint (the image's
   ``tini`` still supervises it), which starts each component bound to
@@ -299,15 +300,21 @@ def logs_command(layout: Layout, lines: int = 80) -> CommandSpec:
     )
 
 
+#: The SIF's file identity (path, device, inode, size, change times): a start trusts the
+#: receipt's sha256 while it is unchanged instead of re-hashing gigabytes every time.
+_FINGERPRINT = 'fp="$real:$(stat -L -c "%d:%i:%s:%.9Y:%.9Z" "$real" 2>/dev/null)"'
+
+
 def receipt_command(layout: Layout) -> CommandSpec:
-    """Record the installed SIF's sha256 (its immutable identity) beside it."""
+    """Record the installed SIF's sha256 (its immutable identity) and file identity beside it."""
 
     return CommandSpec(
         program="sh",
         args=[
             "-c",
             'real=$(readlink -f "$0") && sum=$(sha256sum "$real" | cut -d " " -f 1) && '
-            '[ -n "$sum" ] && printf "%s\\n" "$sum" > "$1.tmp" && mv -f "$1.tmp" "$1" && '
+            f'[ -n "$sum" ] && {_FINGERPRINT} && '
+            'printf "%s\\n%s\\n" "$sum" "$fp" > "$1.tmp" && mv -f "$1.tmp" "$1" && '
             'echo "CLIO_IMAGE_SHA256 $sum"',
             layout.sif,
             layout.receipt,
@@ -365,8 +372,9 @@ def run_command(layout: Layout, ports: dict[str, int], email: str) -> CommandSpe
         program="sh",
         args=[
             "-c",
-            'real=$(readlink -f "$0") || exit 65; want=$(cat "$1" 2>/dev/null || true); '
-            'sum=$(sha256sum "$real" | cut -d " " -f 1); '
+            'real=$(readlink -f "$0") || exit 65; want=$(sed -n 1p "$1" 2>/dev/null || true); '
+            f'seen=$(sed -n 2p "$1" 2>/dev/null || true); {_FINGERPRINT}; sum=$want; '
+            '[ -n "$seen" ] && [ "${fp%:}" = "$fp" ] && [ "$fp" = "$seen" ] || sum=$(sha256sum "$real" | cut -d " " -f 1); '
             'if [ -z "$want" ] || [ "$sum" != "$want" ]; then '
             'echo "image_receipt_mismatch: the installed web search image no longer matches '
             'its receipt; reinstall it" >&2; exit 65; fi; shift; exec "$@"',

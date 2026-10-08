@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -386,11 +387,20 @@ def test_launch_requires_the_receipted_sif_and_passes_the_email_by_environment(
     receipt = _run(backend.receipt_command(layout), env)
     digest = hashlib.sha256(b"image-bytes").hexdigest()
     assert receipt.returncode == 0 and f"CLIO_IMAGE_SHA256 {digest}" in receipt.stdout
-    assert Path(layout.receipt).read_text().strip() == digest
+    assert Path(layout.receipt).read_text().splitlines()[0] == digest
+    # A start trusts the receipt while the SIF's file identity is unchanged: no re-hash.
+    spy = tmp_path / "spy"
+    spy.mkdir()
+    hashed = tmp_path / "hashed"
+    real = shutil.which("sha256sum")
+    (spy / "sha256sum").write_text(f'#!/bin/sh\necho x >> "{hashed}"\nexec {real} "$@"\n')
+    (spy / "sha256sum").chmod(0o755)
+    env = {**env, "PATH": f"{spy}:{env['PATH']}"}
 
     ports = backend._ports({})  # noqa: SLF001
     launch = backend.run_command(layout, ports, "alice@example.org")
     assert _run(launch, env).returncode == 0
+    assert not hashed.exists()
     started = [line for line in _calls(tmp_path) if line.startswith("instance run")]
     assert len(started) == 1
     arguments, _, email = started[0].partition(" | ")
@@ -400,6 +410,7 @@ def test_launch_requires_the_receipted_sif_and_passes_the_email_by_environment(
     store.write_bytes(b"tampered")
     refused = _run(launch, env)
     assert refused.returncode == 65 and "image_receipt_mismatch" in refused.stderr
+    assert hashed.exists()  # a changed file is re-hashed
     assert len([line for line in _calls(tmp_path) if line.startswith("instance run")]) == 1
 
 
