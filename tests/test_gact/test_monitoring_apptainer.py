@@ -155,3 +155,51 @@ def test_an_instance_running_another_image_is_not_adopted(
     )
     with pytest.raises(ValueError, match="another deployment"):
         backend.owned_instance(root, component)
+
+
+def test_postgres_has_a_loopback_host_network_profile() -> None:
+    from tests.test_gact.test_monitoring_services import manifest
+
+    postgres = manifest("cmf", postgres_port="35432")["components"][0]
+    assert postgres["host_arguments"] == [
+        "postgres",
+        "-c",
+        "listen_addresses=127.0.0.1",
+        "-c",
+        "port=35432",
+    ]
+    assert "-p 35432" in postgres["host_check"][-1]
+    script = postgres["host_initialize"][-1]
+    assert "createdb -h 127.0.0.1 -p 35432" in script
+    assert subprocess.run(["sh", "-n", "-c", script], check=False).returncode == 0
+    with pytest.raises(ValueError, match="distinct ports"):
+        manifest("cmf", port="35432", postgres_port="35432")
+
+
+def test_start_runs_the_host_initialize_step_after_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = owned_root(tmp_path)
+    component = {
+        "name": "clio-cmf-x-postgres",
+        "role": "postgres",
+        "image": "docker.io/library/postgres@sha256:" + "0" * 64,
+        "secrets": ["POSTGRES_PASSWORD"],
+        "host_check": ["true"],
+        "host_initialize": ["sh", "-c", "createdb clio"],
+    }
+    path = root / "containers/images/postgres.sif"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"pg")
+    (root / "images.json").write_text(json.dumps({component["name"]: backend.digest(path)}))
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(backend, "instances", lambda root: {})
+    monkeypatch.setattr(subprocess, "run", run)
+    backend.start(root, {"components": [component]}, {"POSTGRES_PASSWORD": "pw"})
+    execs = [args for args in calls if args[1] == "exec"]
+    assert [args[4:] for args in execs] == [["true"], ["sh", "-c", "createdb clio"]]

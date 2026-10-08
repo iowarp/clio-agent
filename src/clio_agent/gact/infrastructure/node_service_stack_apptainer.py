@@ -155,6 +155,13 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
                     if time.monotonic() > deadline:
                         raise RuntimeError(f"{component['role']} did not become ready") from None
                     time.sleep(1)
+        initialize = component.get("host_initialize", component.get("initialize"))
+        if initialize:
+            apptainer(
+                root,
+                ["exec", "--cleanenv", f"instance://{component['name']}", *initialize],
+                env=env,
+            )
 
 
 def running(root: Path, component: dict[str, Any]) -> bool:

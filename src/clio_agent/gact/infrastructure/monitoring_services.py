@@ -337,7 +337,15 @@ def monitoring_plan(
                 "base_image": CMF_BASE_IMAGE,
                 "upstream_base": "docker.io/library/python:3.10-slim-bullseye",
             }
+        postgres_port = monitoring_port(
+            service, {"port": configuration.get("postgres_port") or "15432"}
+        )
+        if postgres_port == port:
+            raise ValueError("CMF and PostgreSQL require distinct ports")
+        # On the host network (Apptainer) PostgreSQL listens on loopback at its private port.
+        psql = f'psql -h 127.0.0.1 -p {postgres_port} -U "$POSTGRES_USER"'
         manifest.update(
+            postgres_port=postgres_port,
             verification_document=verification_document(),
             components=[
                 {
@@ -346,6 +354,26 @@ def monitoring_plan(
                     "image": POSTGRES_IMAGE,
                     "mounts": [["data/postgres", "/var/lib/postgresql/data", False]],
                     "secrets": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"],
+                    "host_arguments": [
+                        "postgres",
+                        "-c",
+                        "listen_addresses=127.0.0.1",
+                        "-c",
+                        f"port={postgres_port}",
+                    ],
+                    "host_check": [
+                        "sh",
+                        "-c",
+                        f'PGPASSWORD="$POSTGRES_PASSWORD" {psql} -d postgres -tAc "SELECT 1"',
+                    ],
+                    "host_initialize": [
+                        "sh",
+                        "-c",
+                        f'export PGPASSWORD="$POSTGRES_PASSWORD"; exists=$({psql} -d postgres -tAc '
+                        f"\"SELECT 1 FROM pg_database WHERE datname='clio'\") || exit; "
+                        f'[ "$exists" = 1 ] || createdb -h 127.0.0.1 -p {postgres_port} '
+                        '-U "$POSTGRES_USER" clio',
+                    ],
                     "check": [
                         "sh",
                         "-c",
