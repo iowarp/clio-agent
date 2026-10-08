@@ -19,6 +19,7 @@ from collections.abc import Mapping
 
 from clio_agent.gact.infrastructure.drivers import service_definitions
 from clio_agent.gact.infrastructure.models import ManagedServiceDefinition, TargetFacts
+from clio_agent.gact.infrastructure.reuse import TRANSIENT_KEYS
 from clio_agent.gact.infrastructure.server_access import SHAREABLE_FIELD
 from clio_agent.gact.infrastructure.server_parameters import PARAMETER_PREFIX
 
@@ -41,6 +42,8 @@ CONTROL_KEYS = frozenset(
         "model_revision",
         # The provenance workflow a native vLLM reports under.
         "workflow_id",
+        # Operation-scoped answers such as "Reinstall from scratch" (never recorded).
+        *TRANSIENT_KEYS,
     }
 )
 

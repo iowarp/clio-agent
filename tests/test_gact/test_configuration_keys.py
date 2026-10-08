@@ -70,6 +70,9 @@ def test_unprefixed_or_unknown_vllm_keys_are_rejected(key: str, hint: str) -> No
             },
         ),
         ("flowcept", {"container_runtime": "apptainer", "redis_port": "16379"}),
+        # "Reinstall from scratch" applies to every service's install.
+        ("web_search", {"container_runtime": "apptainer", "install.from_scratch": "true"}),
+        ("ollama", {"install.from_scratch": "true"}),
         ("not_a_service", {"anything": "goes to the operation's own error"}),
     ],
 )
