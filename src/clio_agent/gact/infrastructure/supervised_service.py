@@ -41,6 +41,9 @@ def supervised_plan(
             body.update(manifest=manifest, script=script)
             if verb == "start" and api_key:
                 body["api_key"] = api_key
+        elif verb == "status" and action == "start" and api_key:
+            # Readiness proves the endpoint lists our model with the per-launch key.
+            body["api_key"] = api_key
         return CommandSpec(
             program="python3", args=["-c", script], stdin=json.dumps(body), timeout_seconds=120
         )

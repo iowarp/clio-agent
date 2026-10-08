@@ -524,6 +524,10 @@ def main() -> None:
         cleanup(root, manifest, remove=action == "uninstall")
     elif action == "logs":
         collect_logs(root, manifest)
+    elif action == "running":
+        # Readiness identity: every owned component is up (exit status only).
+        if not all(running(root, manifest, row) for row in manifest["components"]):
+            sys.exit(1)
     elif action == "delete_data":
         if any(
             (

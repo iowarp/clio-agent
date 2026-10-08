@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import posixpath
+from collections.abc import Sequence
 
 from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
@@ -19,6 +20,16 @@ CONNECTOR_REVISION = "95ab2acd6fe1be74ad9a3fa2aca1ecbee60a6284"
 FLOWCEPT_REVISION = "e638b4e2072290a2921965a03a150db124e11c2e"
 ATTENTION_PROFILE = "vllm-0.27.0-attention-1"
 NATIVE_VARIANTS = frozenset({"native-cuda", "native-cuda-attention"})
+
+
+def served_model(model: str, flags: Sequence[str]) -> str:
+    """The model id vLLM lists: ``--served-model-name`` when set, else the model path."""
+    for index, flag in enumerate(flags):
+        if flag == "--served-model-name" and index + 1 < len(flags):
+            return flags[index + 1]
+        if flag.startswith("--served-model-name="):
+            return flag.split("=", 1)[1]
+    return model
 
 
 def native_variants(facts: TargetFacts) -> list[ServiceVariant]:
@@ -156,6 +167,7 @@ def native_vllm_plan(
         "model_revision": configuration.get("model_revision", ""),
         "port": port,
         "health_path": "/health",
+        "identity": {"kind": "openai", "served_model": served_model(model, compiled.flags)},
         "arguments": [
             "--model",
             model,

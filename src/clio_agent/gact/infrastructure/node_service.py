@@ -22,9 +22,9 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import ProxyHandler, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
 
@@ -155,20 +155,22 @@ def hook(root: Path, action: str, *, timeout: int = 90) -> None:
         raise RuntimeError(f"Service {action} hook failed; inspect retained logs and resources")
 
 
-#: Loopback addresses as written in /proc/net/tcp{,6} (little-endian hex).
-LOOPBACK_HEX = {"0100007F", "0000000000000000FFFF00000100007F", "00000000000000000000000001000000"}
-
-
 def listeners(port: int) -> list[tuple[str, str]]:
     """Every TCP socket listening on ``port`` on this host, as (address, inode).
 
-    /proc/net lists sockets of every user, so a listener held by another
-    account on a shared node is visible even though its process is not.
+    On Linux /proc/net lists sockets of every user, so a listener held by
+    another account on a shared node is visible even though its process is
+    not. Elsewhere a loopback connection attempt is the portable signal.
     """
     found = []
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    tables = [Path(table) for table in ("/proc/net/tcp", "/proc/net/tcp6")]
+    if not any(table.is_file() for table in tables):
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            return [("127.0.0.1", "")] if probe.connect_ex(("127.0.0.1", port)) == 0 else []
+    for table in tables:
         try:
-            rows = Path(table).read_text().splitlines()[1:]
+            rows = table.read_text().splitlines()[1:]
         except OSError:
             continue
         for row in rows:
@@ -179,42 +181,57 @@ def listeners(port: int) -> list[tuple[str, str]]:
     return found
 
 
-def group_socket_inodes(group: int) -> set[str]:
-    """Socket inodes held open by any process of the owned process group."""
-    inodes: set[str] = set()
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            if os.getpgid(int(entry.name)) != group:
-                continue
-            for descriptor in (entry / "fd").iterdir():
-                target = os.readlink(descriptor)
-                if target.startswith("socket:["):
-                    inodes.add(target[len("socket:[") : -1])
-        except OSError:
-            continue
-    return inodes
+def http_get(url: str, key: str = "") -> tuple[int, bytes]:
+    """Status and body of a direct (proxy-free) loopback GET; 0 when nothing answered."""
+    request = Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+            return response.status, response.read()
+    except HTTPError as error:
+        return error.code, b""
+    except (OSError, URLError, ValueError):
+        return 0, b""
 
 
-def owned_listener(receipt: dict[str, Any]) -> bool:
-    """Whether loopback connections to the health port reach the owned server.
+def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
+    """Whether the answering endpoint is provably the owned server (F010, F025).
 
-    A 200 from the health URL proves only that *something* answered. On a
-    shared node another user's server may hold the same port (for example on
-    0.0.0.0), so the owned process group must hold a listener on that port and
-    no foreign socket may hold the exact loopback address, which the kernel
-    would prefer over a wildcard.
+    Portable across operating systems and native/container runtimes: no socket
+    or process-table inspection. A model server must refuse a request without
+    the per-launch key and, when the caller holds the key, list the served
+    model. A container stack must report every owned component running.
     """
-    port = urlsplit(receipt.get("health_url", "")).port
-    group = int(receipt.get("pid") or 0)
-    if not port or group <= 0:
-        return False
-    ours = group_socket_inodes(group)
-    sockets = listeners(port)
-    if not any(inode in ours for _, inode in sockets):
-        return False
-    return not any(address in LOOPBACK_HEX and inode not in ours for address, inode in sockets)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    check = manifest.get("identity") or {}
+    if check.get("kind") == "openai":
+        parts = urlsplit(receipt.get("health_url", ""))
+        models = f"{parts.scheme}://{parts.netloc}/v1/models"
+        if http_get(models)[0] not in {401, 403}:
+            return False
+        if not key:
+            return True
+        status, body = http_get(models, key)
+        try:
+            served = {row.get("id") for row in json.loads(body or b"{}").get("data", [])}
+        except (ValueError, AttributeError):
+            return False
+        return status == 200 and check.get("served_model") in served
+    if check.get("kind") == "components":
+        script = root / check.get("hook", "")
+        if script.parent != root or script.is_symlink() or not script.is_file():
+            return False
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(script), "running"],
+                cwd=root,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+    return False
 
 
 def read_receipt(root: Path) -> dict[str, Any]:
@@ -239,7 +256,7 @@ def effective_artifacts(root: Path) -> dict[str, str]:
     return artifacts
 
 
-def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
+def observation(root: Path, *, health: bool = True, key: str = "") -> dict[str, Any]:
     """Separate installation, process liveness and actual HTTP serving readiness."""
     receipt = read_receipt(root)
     live = alive(receipt)
@@ -248,12 +265,7 @@ def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
         phase = "interrupted" if phase == "installing" else "stopped"
     serving = False
     if health and live and phase == "running":
-        try:
-            with build_opener(ProxyHandler({})).open(receipt["health_url"], timeout=3) as response:
-                serving = response.status == 200
-        except (OSError, URLError):
-            serving = False
-        serving = serving and owned_listener(receipt)
+        serving = http_get(receipt["health_url"])[0] == 200 and serves_identity(root, receipt, key)
     verification = root / "evidence/verification.json"
     verified = json.loads(verification.read_text()) if verification.is_file() else {}
     current_verification = verified.get("configuration_revision") == receipt.get(
@@ -671,7 +683,7 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
             return {"logs": "\n".join(tails)[-16000:]}
         elif action not in {"status", "prepare"}:
             raise ValueError("Unsupported native service action")
-        return observation(root)
+        return observation(root, key=request.get("api_key") or "")
 
 
 if __name__ == "__main__":

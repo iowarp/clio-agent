@@ -6,9 +6,10 @@ import asyncio
 import json
 import os
 import socket
-import subprocess
-import sys
-from contextlib import nullcontext
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -290,14 +291,8 @@ def test_provenance_verification_expires_with_configuration_or_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(node_service, "alive", lambda receipt: True)
-    monkeypatch.setattr(node_service, "owned_listener", lambda receipt: True)
-    monkeypatch.setattr(
-        node_service,
-        "build_opener",
-        lambda *args: SimpleNamespace(
-            open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))
-        ),
-    )
+    monkeypatch.setattr(node_service, "serves_identity", lambda root, receipt, key="": True)
+    monkeypatch.setattr(node_service, "http_get", lambda url, key="": (200, b""))
     (tmp_path / "evidence").mkdir()
     node_service.write_json(
         tmp_path / "receipt.json",
@@ -465,62 +460,140 @@ def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> N
     assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
 
 
-def _listen_in_own_group(address: str) -> tuple[subprocess.Popen[bytes], int]:
-    """A listener in its own session, as the supervised server would be."""
-    child = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import socket,sys,time\n"
-            "s=socket.socket(); s.bind((sys.argv[1], 0)); s.listen()\n"
-            "print(s.getsockname()[1], flush=True); time.sleep(60)",
-            address,
-        ],
-        stdout=subprocess.PIPE,
-        start_new_session=True,
+@contextmanager
+def _model_server(key: str | None, models: list[str]) -> Iterator[int]:
+    """A loopback OpenAI-style server; ``key=None`` means it enforces no key."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/v1/models" and key is not None:
+                if self.headers.get("Authorization") != f"Bearer {key}":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+            body = json.dumps({"data": [{"id": name} for name in models]}).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _running_receipt(root: Path, port: int, identity: dict[str, str]) -> None:
+    node_service.write_json(root / "manifest.json", {"identity": identity})
+    node_service.write_json(
+        root / "receipt.json",
+        {"phase": "running", "pid": 1, "health_url": f"http://127.0.0.1:{port}/health"},
     )
-    assert child.stdout is not None
-    return child, int(child.stdout.readline())
 
 
-def test_readiness_refuses_a_foreign_listener_on_the_service_port(
+def test_readiness_refuses_a_server_that_accepts_keyless_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F010: a 200 from another user's server on the port is not "serving"."""
-    with socket.socket() as foreign:
-        foreign.bind(("0.0.0.0", 0))
-        foreign.listen()
-        port = foreign.getsockname()[1]
-        owned, _ = _listen_in_own_group("127.0.0.1")
-        try:
-            receipt = {"pid": owned.pid, "health_url": f"http://127.0.0.1:{port}/health"}
-            # Only the foreign wildcard listener holds the port.
-            assert node_service.listeners(port)
-            assert not node_service.owned_listener(receipt)
-            monkeypatch.setattr(node_service, "alive", lambda receipt: True)
-            monkeypatch.setattr(
-                node_service,
-                "build_opener",
-                lambda *args: SimpleNamespace(
-                    open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))
-                ),
-            )
-            node_service.write_json(tmp_path / "receipt.json", {**receipt, "phase": "running"})
-            assert not node_service.observation(tmp_path)["serving"]
-        finally:
-            owned.kill()
-            owned.wait()
+    """F010/F025: a 200 from someone else's open server on the port is not "serving"."""
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server(None, ["/models/ours"]) as port:
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/ours"})
+        assert not node_service.observation(tmp_path)["serving"]
+        assert not node_service.observation(tmp_path, key="k")["serving"]
 
 
-def test_readiness_accepts_the_owned_loopback_listener() -> None:
-    owned, port = _listen_in_own_group("127.0.0.1")
-    try:
-        receipt = {"pid": owned.pid, "health_url": f"http://127.0.0.1:{port}/health"}
-        assert node_service.owned_listener(receipt)
-        assert not node_service.owned_listener({**receipt, "pid": os.getpid()})
-    finally:
-        owned.kill()
-        owned.wait()
+def test_readiness_requires_our_key_and_served_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server("per-launch", ["/models/ours"]) as port:
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/ours"})
+        assert node_service.observation(tmp_path, key="per-launch")["serving"]
+        # Without the key (a later status call) a keyless refusal is the identity.
+        assert node_service.observation(tmp_path)["serving"]
+        assert not node_service.observation(tmp_path, key="another-launch")["serving"]
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/other"})
+        assert not node_service.observation(tmp_path, key="per-launch")["serving"]
+
+
+def test_readiness_without_a_declared_identity_is_not_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server("per-launch", []) as port:
+        _running_receipt(tmp_path, port, {})
+        assert not node_service.observation(tmp_path, key="per-launch")["serving"]
+
+
+@pytest.mark.parametrize("up", [True, False])
+def test_stack_readiness_requires_every_owned_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, up: bool
+) -> None:
+    """Container stacks (Apptainer instances run in their own session) prove identity by hook."""
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    (tmp_path / "stack.py").write_text(
+        "import sys\nsys.exit(0 if sys.argv[1] == 'running' and " + repr(up) + " else 1)\n"
+    )
+    with _model_server(None, []) as port:
+        _running_receipt(tmp_path, port, {"kind": "components", "hook": "stack.py"})
+        assert node_service.observation(tmp_path)["serving"] is up
+
+
+def test_stack_identity_refuses_a_hook_outside_the_service_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server(None, []) as port:
+        _running_receipt(tmp_path, port, {"kind": "components", "hook": "../stack.py"})
+        assert not node_service.observation(tmp_path)["serving"]
+
+
+def test_listeners_fall_back_to_a_loopback_probe_without_proc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS/Windows have no /proc/net: an answering loopback port still refuses a start."""
+    monkeypatch.setattr(node_service.Path, "is_file", lambda self: False)
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert node_service.listeners(port)
+    assert not node_service.listeners(port)
+
+
+def test_status_during_start_carries_the_per_launch_key_only_then() -> None:
+    from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+
+    def plan(action: str) -> Any:
+        return supervised_plan(
+            action,
+            directory="/srv/clio/services/vllm",
+            ownership="o",
+            manifest={},
+            port=1,
+            label="vLLM",
+            configuration={},
+            api_key="per-launch",
+        )
+
+    start = plan("start")
+    assert start.readiness is not None
+    assert json.loads(start.readiness.health.stdin)["api_key"] == "per-launch"
+    assert "api_key" not in json.loads(plan("status").commands[0].stdin)
+
+
+def test_vllm_identity_names_the_served_model() -> None:
+    from clio_agent.gact.infrastructure.native_vllm import served_model
+
+    assert served_model("/m", []) == "/m"
+    assert served_model("/m", ["--served-model-name", "qwen"]) == "qwen"
+    assert served_model("/m", ["--served-model-name=qwen"]) == "qwen"
 
 
 def test_start_refuses_a_port_with_any_existing_listener(
@@ -528,7 +601,9 @@ def test_start_refuses_a_port_with_any_existing_listener(
 ) -> None:
     """F010: the old SO_REUSEADDR probe bound beside a foreign 0.0.0.0 listener."""
     manifest = {"port": 0, "model_path": ""}
-    monkeypatch.setattr(node_service, "observation", lambda root, health=True: {"installed": True})
+    monkeypatch.setattr(
+        node_service, "observation", lambda root, health=True, key="": {"installed": True}
+    )
     with socket.socket() as foreign:
         foreign.bind(("0.0.0.0", 0))
         foreign.listen()
