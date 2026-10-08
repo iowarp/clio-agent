@@ -181,7 +181,9 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "processes": [
                 row
-                for row in task_views(app, sid, include_children=include_children)
+                for row in await asyncio.to_thread(
+                    task_views, app, sid, include_children=include_children
+                )
                 if not row.get("dismissed")
             ]
         }
@@ -203,7 +205,8 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
         if app.state.sessions.get(sid) is None:
             raise _not_found("session", sid)
         try:
-            return query_snapshot(
+            return await asyncio.to_thread(
+                query_snapshot,
                 app,
                 sid,
                 kind=kind,
@@ -234,7 +237,9 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
         if app.state.sessions.get(sid) is None:
             raise _not_found("session", sid)
         try:
-            return collect_result(app, sid, resolve_task(app, sid, handle))
+            return await asyncio.to_thread(
+                lambda: collect_result(app, sid, resolve_task(app, sid, handle))
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

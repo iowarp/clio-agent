@@ -1,9 +1,11 @@
 """Conversation to-dos, shared asynchronous controls and retained results coexist."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.agent_tasks import seed_agent_task
 from clio_agent.gact.app import build_app
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord
@@ -54,3 +56,31 @@ def test_shared_task_api_preserves_todos_and_results_after_dismissal(tmp_path: P
         record = app_task_store(app).get(key)
         assert record is not None and record.dismissed and record.consumed_at
         assert not record.notify_pending and record.status == "completed"
+
+
+def test_cancelled_subagent_result_route_commits_provenance_without_blocking_loop(
+    tmp_path: Path,
+) -> None:
+    """The real result owner must publish terminal provenance off the server loop."""
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "owner"}).json()["id"]
+        task = seed_agent_task(
+            app,
+            parent_session_id=sid,
+            agent_ref={"expert_id": "child", "requesting_expert_id": "main"},
+            status="cancelled",
+        )
+        app.state.agent_task_registry.register(
+            replace(task, notify_pending=True, result={"answer_excerpt": "retained child output"})
+        )
+        url = f"/v1/sessions/{sid}/async-tasks/{task.task_id}/result"
+        first = client.get(url)
+        assert first.status_code == 200
+        assert first.json()["status"] == "cancelled"
+        assert first.json()["result"]["output"] == "retained child output"
+        claimed = app.state.agent_task_registry.get(task.task_id)
+        assert claimed.consumed_at and not claimed.notify_pending
+        second = client.get(url)
+        assert second.status_code == 200 and second.json() == first.json()
+        assert app.state.agent_task_registry.get(task.task_id).consumed_at == claimed.consumed_at
