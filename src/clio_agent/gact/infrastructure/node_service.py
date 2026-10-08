@@ -39,17 +39,50 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _has_proc() -> bool:
+    """Whether this host has a Linux-style /proc (macOS and BSD do not)."""
+    return Path("/proc/self/stat").exists()
+
+
 def identity(pid: int) -> str:
-    """Return the exact live Linux process identity, excluding zombies."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return (
-            ""
-            if stat[0] == "Z"
-            else Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
-        )
-    except (OSError, IndexError):
+    """Return the exact live process identity, excluding zombies.
+
+    Linux: boot id + start tick from /proc. A POSIX host without /proc (macOS,
+    BSD): ``ps``'s start time, which with the PID names one process (F010 /
+    DIRECTIVES 11). This supervisor is POSIX-only (process groups, fcntl);
+    Windows native services use their own launcher.
+    """
+    if _has_proc():
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return (
+                ""
+                if stat[0] == "Z"
+                else Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
+            )
+        except (OSError, IndexError):
+            return ""
+    return _ps_identity(pid)
+
+
+def _ps_identity(pid: int) -> str:
+    """``ps``-based identity: ``ps:<start time>``, or "" for a gone or zombie process."""
+    if pid <= 0:
         return ""
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    fields = done.stdout.strip().split(None, 1)
+    if done.returncode != 0 or len(fields) != 2 or fields[0].startswith("Z"):
+        return ""
+    return "ps:" + " ".join(fields[1].split())
 
 
 def alive(receipt: dict[str, Any]) -> bool:
@@ -438,17 +471,32 @@ def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
 
 
 def group_members(group: int) -> list[int]:
-    """Live processes of a Linux process group other than the caller."""
+    """Live processes of a POSIX process group other than the caller."""
+    if _has_proc():
+        pids = [int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()]
+    else:
+        pids = _ps_pids()
     members = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+    for pid in pids:
+        if pid == os.getpid():
             continue
         try:
-            if os.getpgid(int(entry.name)) == group and identity(int(entry.name)):
-                members.append(int(entry.name))
+            if os.getpgid(pid) == group and identity(pid):
+                members.append(pid)
         except OSError:
             continue
     return members
+
+
+def _ps_pids() -> list[int]:
+    """Every PID ``ps`` lists (a host without /proc)."""
+    try:
+        done = subprocess.run(
+            ["ps", "-A", "-o", "pid="], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(word) for word in done.stdout.split() if word.isdigit()]
 
 
 def release_group(timeout: float = 10) -> None:
