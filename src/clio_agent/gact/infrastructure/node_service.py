@@ -16,6 +16,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -407,6 +408,49 @@ def worker_environment(
     return env
 
 
+def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
+    """Copy the server's merged output into its log with credentials redacted."""
+    for line in stream:
+        for value in secrets:
+            line = line.replace(value, "[redacted]")
+        output.write(line)
+        output.flush()
+
+
+def group_members(group: int) -> list[int]:
+    """Live processes of a Linux process group other than the caller."""
+    members = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) == group and identity(int(entry.name)):
+                members.append(int(entry.name))
+        except OSError:
+            continue
+    return members
+
+
+def release_group(timeout: float = 10) -> None:
+    """End descendants left in the worker's own group after its child exited (F014).
+
+    A server's engine processes inherit the output pipe; if the API server dies
+    they would keep the GPU and the pipe while nothing supervises them.
+    """
+    group = os.getpgrp()
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in group_members(group):
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                continue
+        deadline = time.monotonic() + timeout
+        while group_members(group) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if not group_members(group):
+            return
+
+
 def worker(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     # Wait for the parent to commit the receipt under the same lifecycle lock.
@@ -463,12 +507,16 @@ def worker(root: Path, action: str, generation: str) -> None:
         ) as process:
             assert process.stdout is not None
             with log.open("w", encoding="utf-8") as output:
-                for line in process.stdout:
-                    for value in secrets:
-                        line = line.replace(value, "[redacted]")
-                    output.write(line)
-                    output.flush()
+                # Wait on the child itself, not on EOF: an orphaned descendant
+                # holding the pipe must not hide the server's exit (F014).
+                pump = threading.Thread(
+                    target=copy_output, args=(process.stdout, output, secrets), daemon=True
+                )
+                pump.start()
                 code = process.wait()
+                if not stopping and getattr(os, "getpgrp", None) and os.getpgrp() == os.getpid():
+                    release_group()
+                pump.join(timeout=10)
                 if code == 0 and action == "install" and manifest.get("post_install"):
                     post = root / manifest["post_install"]
                     if post.parent != root or post.is_symlink():
