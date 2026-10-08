@@ -122,6 +122,7 @@ def owner(root: Path, expected: str) -> None:
         "receipt.json",
         "manifest.json",
         "controller.py",
+        "clio_reuse.py",
         "launch.py",
         ".lock",
         "environment",
@@ -404,6 +405,9 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         (environment / "pyproject.toml").write_text(manifest["project"], encoding="utf-8")
         (root / "launch.py").write_text(manifest["launcher"], encoding="utf-8")
     (root / "controller.py").write_text(request["script"], encoding="utf-8")
+    if request.get("reuse_helper"):
+        # The shared reuse helper the worker and the stack hooks import.
+        (root / "clio_reuse.py").write_text(request["reuse_helper"], encoding="utf-8")
     for name in ("logs", "evidence", "cache", "tmp"):
         (root / name).mkdir(exist_ok=True)
     generation = str(uuid.uuid4())
@@ -413,6 +417,10 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         env["VLLM_API_KEY"] = request["api_key"]
     else:
         env.pop("VLLM_API_KEY", None)
+    if action == "install" and request.get("from_scratch"):
+        env["CLIO_FROM_SCRATCH"] = "1"
+    else:
+        env.pop("CLIO_FROM_SCRATCH", None)
     receipt = {
         **current,
         "phase": "installing" if action == "install" else "running",
@@ -461,6 +469,19 @@ def worker_environment(
         ),
     )
     return env
+
+
+def reuse_helper() -> Any:
+    """The shared reuse helper shipped beside this supervisor (None when absent)."""
+    try:
+        import clio_reuse  # type: ignore[import-not-found]
+    except ImportError:
+        # Not shipped (run from CLIO's own tree): the same module in the package.
+        try:
+            from clio_agent.gact.infrastructure import reuse as clio_reuse
+        except ImportError:
+            return None
+    return clio_reuse
 
 
 def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
@@ -554,7 +575,13 @@ def worker(root: Path, action: str, generation: str) -> None:
     signal.signal(signal.SIGTERM, handle_stop)
     manifest = json.loads((root / "manifest.json").read_text())
     env = worker_environment(root, manifest, dict(os.environ))
-    if action == "install":
+    started = time.monotonic()
+    helper = reuse_helper() if action == "install" else None
+    profile = str(manifest.get("definition_version", ""))
+    reused = helper.uv_environment_reuse(root / "environment", profile) if helper else ""
+    if reused:
+        command = [sys.executable, "-c", "print('clio: the service environment is reused')"]
+    elif action == "install":
         uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
         command = [
             uv,
@@ -564,6 +591,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             str(root / "environment"),
             "--python",
             "3.12",
+            *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:
         command = [
@@ -593,6 +621,9 @@ def worker(root: Path, action: str, generation: str) -> None:
         ) as process:
             assert process.stdout is not None
             with log.open("w", encoding="utf-8") as output:
+                if reused:
+                    output.write(reused + "\n")
+                    output.flush()
                 # Wait on the child itself, not on EOF: an orphaned descendant
                 # holding the pipe must not hide the server's exit (F014).
                 pump = threading.Thread(
@@ -603,6 +634,10 @@ def worker(root: Path, action: str, generation: str) -> None:
                 if not stopping and getattr(os, "getpgrp", None) and os.getpgrp() == os.getpid():
                     release_group()
                 pump.join(timeout=10)
+                if code == 0 and helper is not None and not reused:
+                    helper.record_uv_environment(
+                        root / "environment", profile, time.monotonic() - started
+                    )
                 if code == 0 and action == "install" and manifest.get("post_install"):
                     post = root / manifest["post_install"]
                     if post.parent != root or post.is_symlink():

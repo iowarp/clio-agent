@@ -27,6 +27,18 @@ def host_network(manifest: dict[str, Any]) -> bool:
     return manifest.get("container_runtime") == "apptainer"
 
 
+def reuse_helper() -> Any:
+    """The shared reuse helper shipped beside the supervisor (None when absent)."""
+    try:
+        import clio_reuse  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from clio_agent.gact.infrastructure import reuse as clio_reuse
+        except ImportError:
+            return None
+    return clio_reuse
+
+
 def apptainer_backend() -> Any:
     """The shipped Apptainer backend beside this file."""
     import stack_apptainer  # type: ignore[import-not-found]
@@ -222,34 +234,52 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
     # specifications after ports, images or environment have changed.
     cleanup(root, manifest, remove=True)
     build = manifest.get("build")
+    helper = reuse_helper()
+    fresh = bool(helper and helper.fresh_requested())
     if build:
-        engine_capacity(root, 8 * 1024**3)
         source = checkout_source(root, build)
         dockerfile = source / build["dockerfile"]
         if build.get("base_image"):
             dockerfile = build_definition(root, dockerfile, build)
-        command(
-            root,
-            [
-                "build",
-                *(["--layers=true"] if manifest["container_runtime"] == "podman" else []),
-                "--label",
-                "org.opencontainers.image.revision=" + build["revision"],
-                "--file",
-                str(dockerfile),
-                "--tag",
-                build["image"],
-                str(source),
-            ],
-        )
+        if not built_identity_reused(root, manifest, build, dockerfile, helper, fresh):
+            engine_capacity(root, 8 * 1024**3)
+            command(
+                root,
+                [
+                    "build",
+                    *(["--layers=true"] if manifest["container_runtime"] == "podman" else []),
+                    *(["--no-cache"] if fresh else []),
+                    "--label",
+                    "org.opencontainers.image.revision=" + build["revision"],
+                    "--label",
+                    f"{BUILD_IDENTITY_LABEL}={build_identity(manifest, build, dockerfile)}",
+                    "--file",
+                    str(dockerfile),
+                    "--tag",
+                    build["image"],
+                    str(source),
+                ],
+            )
     images: dict[str, str] = {}
     components = list(manifest["components"])
     if manifest.get("pod_infra_image"):
         components.append({"name": "pod_infra", "image": manifest["pod_infra_image"]})
     for component in components:
         image = component["image"]
+        if fresh and not image.startswith("sha256:"):
+            command(root, ["pull", image])
         try:
             details = json.loads(command(root, ["image", "inspect", image]))[0]
+            if helper and not fresh and "@sha256:" in image:
+                # A digest reference resolves only to an image holding that digest.
+                helper.publish(
+                    helper.Reuse(
+                        kind="container_image",
+                        thing=f"{component['name']} image",
+                        identity=image.rsplit("@", 1)[1],
+                        size_bytes=details.get("Size"),
+                    )
+                )
         except RuntimeError:
             if image.startswith("sha256:"):
                 raise ValueError(
@@ -264,6 +294,50 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
         raise ValueError("Image receipt path cannot be a symlink")
     temporary.write_text(json.dumps(images))
     temporary.replace(root / "images.json")
+
+
+BUILD_IDENTITY_LABEL = "ai.iowarp.clio.build-identity"
+
+
+def build_identity(manifest: dict[str, Any], build: dict[str, Any], dockerfile: Path) -> str:
+    """What a built image is keyed by: revision, recipe, base image and engine."""
+    parts = [
+        build["revision"],
+        hashlib.sha256(dockerfile.read_bytes()).hexdigest(),
+        build.get("base_image", ""),
+        manifest["container_runtime"],
+    ]
+    return "sha256:" + hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
+def built_identity_reused(
+    root: Path,
+    manifest: dict[str, Any],
+    build: dict[str, Any],
+    dockerfile: Path,
+    helper: Any,
+    fresh: bool,
+) -> bool:
+    """Whether the tagged image was built from exactly this identity (then reported)."""
+    if helper is None or fresh:
+        return False
+    try:
+        details = json.loads(command(root, ["image", "inspect", build["image"]]))[0]
+    except (RuntimeError, ValueError, IndexError):
+        return False
+    labels = (details.get("Config") or {}).get("Labels") or {}
+    identity = build_identity(manifest, build, dockerfile)
+    if labels.get(BUILD_IDENTITY_LABEL) != identity:
+        return False
+    helper.publish(
+        helper.Reuse(
+            kind="build",
+            thing=f"built image {build['image']}",
+            identity=identity,
+            size_bytes=details.get("Size"),
+        )
+    )
+    return True
 
 
 def checkout_source(root: Path, build: dict[str, Any]) -> Path:

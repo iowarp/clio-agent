@@ -203,8 +203,11 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
         previous = None
         if receipt.exists():
             previous = json.loads(receipt.read_text())
-            if (previous["state"] == "ready" and complete(previous)) or alive(previous):
-                return public(previous)
+            # A verified revision is reused (reported as such) unless the
+            # request is from scratch; a ready job then re-downloads (forced).
+            ready = previous["state"] == "ready" and complete(previous)
+            if alive(previous) or (ready and not request.get("from_scratch")):
+                return {**public(previous), "reused": ready}
         for path in root.glob("*/receipt.json"):
             other = json.loads(path.read_text())
             if other["id"] != job_id and Path(other["destination"]) == destination:
@@ -351,6 +354,24 @@ def supervise(receipt: Path, command: list[str]) -> int:
         job["exit_code"] = code
         write_json(receipt, job)
     return code
+
+
+def read_log(root: Path, job_id: str, offset: int, cap: int = 12_000) -> dict[str, Any]:
+    """Whole lines of one acquisition's download log from byte ``offset``."""
+    if not re.fullmatch(r"[a-f0-9]{24}", job_id):
+        raise ValueError("Invalid model operation")
+    path = root / job_id / "download.log"
+    if path.is_symlink() or not path.is_file():
+        return {"offset": 0, "next_offset": 0, "size": 0, "text": ""}
+    size = path.stat().st_size
+    offset = 0 if offset > size else max(0, offset)
+    with path.open("rb") as reader:
+        reader.seek(offset)
+        data = reader.read(cap)
+    if offset + len(data) < size and b"\n" in data:
+        data = data[: data.rfind(b"\n") + 1]
+    text = data.decode("utf-8", errors="replace")
+    return {"offset": offset, "next_offset": offset + len(data), "size": size, "text": text}
 
 
 def download(receipt: Path) -> None:
@@ -525,6 +546,8 @@ def main() -> None:
         result = start(root, request, request["script"])
     elif action == "cancel":
         result = cancel(root, request["id"])
+    elif action == "log":
+        result = read_log(root, request["id"], int(request.get("offset") or 0))
     else:
         raise ValueError("Unsupported model operation")
     print(json.dumps(result))

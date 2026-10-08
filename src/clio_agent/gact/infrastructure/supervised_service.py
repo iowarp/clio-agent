@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import posixpath
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from clio_agent.gact.infrastructure import node_service
+from clio_agent.gact.infrastructure import node_service, reuse
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec, OwnedResource
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.service_observation import parse_observation
@@ -27,6 +28,10 @@ def supervised_plan(
     """Keep lifecycle, readiness, ownership and failure cleanup identical across drivers."""
     script = Path(node_service.__file__).read_text(encoding="utf-8")
     operation_id = str(uuid4())
+    # Outside the manifest (whose digest is the configuration revision): the
+    # shared reuse helper beside the worker, and this operation's bypass of it.
+    helper = reuse.source()
+    fresh = reuse.from_scratch(configuration)
 
     def command(verb: str, *, cleanup: bool = False) -> CommandSpec:
         body: dict[str, object] = {
@@ -38,7 +43,9 @@ def supervised_plan(
         if cleanup:
             body["require_operation_id"] = operation_id
         if verb in {"install", "start"}:
-            body.update(manifest=manifest, script=script)
+            body.update(manifest=manifest, script=script, reuse_helper=helper)
+            if verb == "install" and fresh:
+                body["from_scratch"] = True
             if verb == "start" and api_key:
                 body["api_key"] = api_key
         elif verb == "status" and action == "start" and api_key:
@@ -53,6 +60,7 @@ def supervised_plan(
         return [OwnedResource(kind="directory", ref=directory)] if observed else []
 
     status = command("status")
+    logs = posixpath.join(directory, "logs", "install.log" if action != "start" else "server.log")
     commands = (
         [command("prepare"), command("install")]
         if action == "install"
@@ -71,6 +79,7 @@ def supervised_plan(
             command("logs"),
             f"{label} installation" if action != "start" else label,
             capability="installed" if action != "start" else "serving",
+            log_path=logs,
         )
         if action in {"install", "reinstall", "start"}
         else None,

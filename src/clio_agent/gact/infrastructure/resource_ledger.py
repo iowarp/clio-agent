@@ -304,7 +304,7 @@ def _release_shared_image(sif: str) -> CommandSpec:
         program="sh",
         args=[
             "-c",
-            'store=$(dirname "$0"); rm -f -- "$0" "$0.ref" "$0.partial"; '
+            'store=$(dirname "$0"); rm -f -- "$0" "$0.ref" "$0.took" "$0.partial"; '
             'if ! ls "$store"/*.sif >/dev/null 2>&1; then '
             'APPTAINER_CACHEDIR="$store/cache" apptainer cache clean -f >/dev/null 2>&1; '
             'rm -rf -- "$store/cache"; fi; '

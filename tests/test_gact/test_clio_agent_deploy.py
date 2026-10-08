@@ -80,11 +80,13 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     # says so (see build_driver_plan's on_conflict plumbing).
     assert plan.commands[0].args[-4:] == [str(CLIO_AGENT_PORT), VERSION, "0", ""]
     install = plan.commands[1]
-    assert install.args[-4:] == [
+    # The trailing "0": an install of this exact version already there is reused.
+    assert install.args[-5:] == [
         VERSION,
         f"https://pypi.org/pypi/clio-agent/{VERSION}/json",
         f"https://raw.githubusercontent.com/iowarp/clio-agent/{release_tag(VERSION)}/install/install.sh",
         release_tag(VERSION),
+        "0",
     ]
     # A failed install fails the step: nothing swallows it.
     assert "; true" not in install.args[1] and "set -o pipefail" in install.args[1]

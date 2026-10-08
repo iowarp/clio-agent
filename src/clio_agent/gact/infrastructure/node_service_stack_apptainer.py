@@ -16,9 +16,24 @@ import json
 import os
 import shutil
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+
+def reuse_helper() -> Any:
+    """The shared reuse helper shipped beside the supervisor (None when absent)."""
+    try:
+        import clio_reuse  # type: ignore[import-not-found]
+    except ImportError:
+        # Not shipped (run from CLIO's own tree): the same module in the package.
+        try:
+            from clio_agent.gact.infrastructure import reuse as clio_reuse
+        except ImportError:
+            return None
+    return clio_reuse
 
 
 def owned_path(root: Path, relative: str) -> Path:
@@ -29,29 +44,70 @@ def owned_path(root: Path, relative: str) -> Path:
     return path
 
 
+def redacted(root: Path, text: str) -> str:
+    """``text`` without the deployment's generated credentials."""
+    credentials = root / "credentials.json"
+    if credentials.is_file():
+        for secret in json.loads(credentials.read_text()).values():
+            if secret:
+                text = text.replace(str(secret), "[redacted]")
+    return text
+
+
+def streamed(root: Path, command: list[str], environment: dict[str, str], timeout: int) -> Any:
+    """Run ``command`` copying its merged output, redacted, to this hook's stdout (the
+    supervisor's install log, which the operation follows live)."""
+    process = subprocess.Popen(
+        command,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        errors="replace",
+    )
+    timer = threading.Timer(timeout, process.kill)
+    timer.start()
+    kept: list[str] = []
+    try:
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = redacted(root, line)
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            kept.append(line)
+            del kept[:-400]
+        code = process.wait()
+    finally:
+        timer.cancel()
+    return subprocess.CompletedProcess(command, code, "".join(kept), "")
+
+
 def apptainer(
-    root: Path, arguments: list[str], *, env: dict[str, str] | None = None, timeout: int = 900
+    root: Path,
+    arguments: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: int = 900,
+    stream: bool = False,
 ) -> str:
     """Run Apptainer with its cache and scratch inside the deployment's folder."""
     downloads = owned_path(root, "containers/downloads")
     downloads.mkdir(parents=True, exist_ok=True, mode=0o700)
     environment = dict(os.environ if env is None else env)
     environment.update(APPTAINER_CACHEDIR=str(downloads), APPTAINER_TMPDIR=str(downloads))
-    result = subprocess.run(
-        ["apptainer", *arguments],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    if stream:
+        result = streamed(root, ["apptainer", *arguments], environment, timeout)
+    else:
+        result = subprocess.run(
+            ["apptainer", *arguments],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
     if result.returncode:
-        diagnostics = (result.stdout or "") + (result.stderr or "")
-        credentials = root / "credentials.json"
-        if credentials.is_file():
-            for secret in json.loads(credentials.read_text()).values():
-                if secret:
-                    diagnostics = diagnostics.replace(str(secret), "[redacted]")
+        diagnostics = redacted(root, (result.stdout or "") + (result.stderr or ""))
         log = root / "logs/container-engine.log"
         if log.is_symlink():
             raise ValueError("Container diagnostic log cannot be a symlink")
@@ -95,14 +151,31 @@ def owned_instance(root: Path, component: dict[str, Any]) -> dict[str, Any] | No
 def install(root: Path, manifest: dict[str, Any]) -> None:
     """Convert each digest-pinned image to an owned SIF and record its sha256."""
     images: dict[str, str] = {}
+    helper = reuse_helper()
     for component in manifest["components"]:
         image = component["image"]
         if "@sha256:" not in image:
             raise ValueError("Apptainer monitoring images must be digest-pinned")
         path = sif(root, component)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if not path.is_file():
-            apptainer(root, ["pull", "--force", str(path), f"docker://{image}"], timeout=1800)
+        # Reused only with a sidecar naming exactly this image (a complete pull).
+        if helper and not helper.fresh_requested() and helper.sif_matches(path, image):
+            helper.publish(
+                helper.Reuse(
+                    kind="sif",
+                    thing=f"{component['name']} image",
+                    identity=image.rsplit("@", 1)[1],
+                    path=str(path),
+                    size_bytes=path.stat().st_size,
+                    saved_seconds=helper.sif_seconds(path),
+                )
+            )
+        else:
+            started = time.monotonic()
+            pull = ["pull", "--force", str(path), f"docker://{image}"]
+            apptainer(root, pull, timeout=1800, stream=True)
+            if helper:
+                helper.record_sif(path, image, time.monotonic() - started)
         images[component["name"]] = digest(path)
     temporary = root / "images.json.tmp"
     if temporary.is_symlink():
@@ -114,15 +187,43 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
 def install_environment(root: Path, manifest: dict[str, Any]) -> None:
     """Install a component venv from the shipped hash-pinned lock inside its base SIF.
 
-    The venv is reused while its marker records the same lock digest and revision.
+    The venv is reused (through the shared reuse helper) while its marker
+    records the same lock digest and revision, unless installing from scratch.
     """
     spec = manifest["source_environment"]
     lock = owned_path(root, spec["lock"])
     marker = owned_path(root, "cmf-venv/.clio-installed")
     identity = digest(lock) + " " + spec["revision"]
-    if marker.is_file() and marker.read_text() == identity:
-        return
     venv = owned_path(root, "cmf-venv")
+    helper = reuse_helper()
+    if (
+        helper
+        and not helper.fresh_requested()
+        and helper.check_marker(marker, identity, required=[venv / "bin" / "python"])
+    ):
+        recorded = helper.read_marker(marker)
+        helper.publish(
+            helper.Reuse(
+                kind="venv",
+                thing="CMF server environment",
+                identity=f"{spec['revision'][:12]} lock {digest(lock)}",
+                path=str(venv),
+                size_bytes=helper.tree_size(venv),
+                saved_seconds=recorded[1] if recorded else None,
+            )
+        )
+        return
+    started = time.monotonic()
+    requirements = [
+        row
+        for row in lock.read_text().splitlines()
+        if row.strip() and not row.startswith((" ", "\t", "#", "-"))
+    ]
+    print(
+        "CLIO_PROGRESS "
+        + json.dumps({"unit": "packages", "current": 0, "total": len(requirements)}),
+        flush=True,
+    )
     if venv.exists():
         shutil.rmtree(venv)
     scratch = owned_path(root, "containers/downloads/pip-tmp")
@@ -159,9 +260,13 @@ def install_environment(root: Path, manifest: dict[str, Any]) -> None:
             script,
         ],
         timeout=1800,
+        stream=True,
     )
     shutil.rmtree(scratch)
-    marker.write_text(identity)
+    if helper:
+        helper.write_marker(marker, identity, time.monotonic() - started)
+    else:
+        marker.write_text(identity)
 
 
 def secret_environment(component: dict[str, Any], private: dict[str, str]) -> dict[str, str]:

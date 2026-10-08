@@ -26,15 +26,20 @@ The runtimes differ in ways the launch must respect:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
+from clio_agent.gact.infrastructure import image_manifest_probe
 from clio_agent.gact.infrastructure.models import (
     RUNTIME_LABELS,
+    CommandResult,
     CommandSpec,
     ContainerRuntimeFact,
     RuntimeName,
     TargetIdentity,
 )
+from clio_agent.gact.infrastructure.reuse import SHELL_FUNCTIONS, Reuse, ReuseCheck
 
 #: Separates the launched args from the environment in ``inspect`` output. Not
 #: a tab: the Desktop's SSH PTY expands tabs to spaces.
@@ -186,23 +191,70 @@ def image_present_command(
 # One Apptainer pull attempt, bounded inside the script so a timeout stops
 # apptainer itself (not only the shell). The SIF of a pinned image is kept in
 # a shared store keyed by its digest, with a ``.ref`` sidecar written only
-# after a complete pull; a store hit is reused instead of re-pulled, and the
-# service's own SIF path is a symlink to it.
-_APPTAINER_PULL_SCRIPT = """set -eu
+# after a complete pull; a store hit is reused instead of re-pulled (reported
+# through the shared reuse helper), and the service's own SIF path is a
+# symlink to it. A cold pull reports progress: the registry manifest's bytes
+# still to download (``image_manifest_probe``), then the layer cache's growth
+# every few seconds. ``fresh`` (install from scratch) skips the store hit and
+# Apptainer's layer cache; the second attempt only finishes what the first
+# left (a ``done`` flag in the scratch directory), so it never re-pulls.
+_APPTAINER_PULL_SCRIPT = (
+    """set -eu
 store=$1; image=$2; key=$3; link=$4; scratch=$5; budget=$6
-sif="$store/$key.sif"
+attempt=${7:-1}; fresh=${8:-0}; probe=${9:-}
+sif="$store/$key.sif"; done_flag="$scratch/.clio-pulled-$key"; pull=""; sampler=""
 mkdir -p "$store/cache" "$scratch"
-if [ -f "$sif" ] && [ "$(cat "$sif.ref" 2>/dev/null)" = "$image" ]; then
+"""
+    + SHELL_FUNCTIONS
+    + """if [ "$attempt" = 1 ]; then rm -f "$done_flag"; fi
+if [ -f "$done_flag" ] && [ -f "$sif" ]; then
+  echo "clio: the first attempt completed the pull"
+elif [ "$fresh" != 1 ] && [ -f "$sif" ] && [ "$(cat "$sif.ref" 2>/dev/null)" = "$image" ]; then
   echo "clio: reusing $sif"
+  clio_reuse sif "container image" "$image" "$sif" "$(wc -c < "$sif" | tr -d ' ')" \\
+    "$(cat "$sif.took" 2>/dev/null || true)"
 else
+  started=$(date +%s)
+  if [ -n "$probe" ] && command -v python3 >/dev/null 2>&1; then
+    timeout 60 python3 -c "$probe" "$image" "$store/cache" 2>/dev/null || true
+  fi
+  measure() { du -sk "$store/cache" 2>/dev/null | cut -f1; }
+  base=$(measure); base=${base:-0}
+  (
+    last=-1
+    while sleep 5 </dev/null >/dev/null 2>&1; do
+      now=$(measure); grown=$(( (${now:-0} - base) * 1024 ))
+      if [ "$grown" != "$last" ]; then
+        printf 'CLIO_PROGRESS {"unit": "bytes", "current": %s, "source": "layer_cache"}\\n' "$grown"
+        last=$grown
+      fi
+    done
+  ) &
+  sampler=$!
+  # timeout(1) leads its own process group: stopping this script (a cancel)
+  # must reach it explicitly, or the pull would go on without an owner.
+  trap 'kill $sampler $pull 2>/dev/null || true' EXIT
+  trap 'exit 143' TERM INT HUP
+  flags=""
+  if [ "$fresh" = 1 ]; then flags="--disable-cache"; fi
   APPTAINER_CACHEDIR="$store/cache" APPTAINER_TMPDIR="$scratch" \\
-    timeout -k 15 "$budget" apptainer pull --force "$sif.partial" "docker://$image"
+    timeout -k 15 "$budget" apptainer pull --force $flags "$sif.partial" "docker://$image" &
+  pull=$!
+  status=0
+  wait "$pull" || status=$?
+  pull=""
+  kill "$sampler" 2>/dev/null || true
+  sampler=""
+  if [ "$status" != 0 ]; then exit "$status"; fi
   mv -f "$sif.partial" "$sif"
+  echo "$(( $(date +%s) - started ))" > "$sif.took"
   printf '%s\\n' "$image" > "$sif.ref"
 fi
+touch "$done_flag"
 ln -sfn "$sif" "$link"
 echo "CLIO_SHARED_IMAGE $sif"
 """
+)
 
 # Two attempts of at most this many seconds each: the first may run out of
 # time (exit 124) with the downloaded layers kept in the persistent layer
@@ -225,6 +277,8 @@ def pull_commands(
     store_dir: str,
     name: str,
     scratch_dir: str | None = None,
+    *,
+    fresh: bool = False,
 ) -> list[CommandSpec]:
     """Fetch the pinned image.
 
@@ -233,7 +287,9 @@ def pull_commands(
     node does not re-download) using ``scratch_dir`` (the target's temporary
     location, which an operator may point at node-local scratch) for the
     conversion. The pull runs as two bounded attempts so a large image is not
-    cut off by one command's timeout.
+    cut off by one command's timeout. ``fresh`` bypasses the store and the
+    layer cache (install from scratch). Docker and Podman skip their pull
+    through :func:`image_reuse_check` instead.
     """
 
     if runtime != "apptainer":
@@ -248,9 +304,47 @@ def pull_commands(
         sif_path(images_dir, name),
         scratch_dir or f"{store_dir.rstrip('/')}/tmp",
         str(APPTAINER_PULL_ATTEMPT_SECONDS),
+        "1",
+        "1" if fresh else "0",
+        Path(image_manifest_probe.__file__).read_text(encoding="utf-8"),
     ]
     first = CommandSpec(program="sh", args=args, timeout_seconds=1800, allowed_exit_codes=[0, 124])
-    return [first, first.model_copy(update={"allowed_exit_codes": [0]})]
+    second = [*args]
+    second[9] = "2"
+    return [first, first.model_copy(update={"args": second, "allowed_exit_codes": [0]})]
+
+
+def image_reuse_check(
+    runtime: RuntimeName, image: str, skip: tuple[int, ...]
+) -> ReuseCheck | None:
+    """Skip a Docker/Podman pull when the image is present under its pinned digest.
+
+    Only a digest reference is verifiable (``image inspect name@sha256:...``
+    succeeds only for an image holding that repository digest); a tag may
+    have moved upstream, so it is always pulled. Apptainer reuses through its
+    image store instead (the pull script).
+    """
+
+    if runtime == "apptainer" or "@sha256:" not in image:
+        return None
+    name, digest = image.rsplit("@", 1)
+
+    def report(result: CommandResult) -> Reuse | None:
+        if result.exit_code != 0:
+            return None
+        try:
+            size = int(json.loads(result.stdout)[0]["Size"])
+        except (ValueError, KeyError, IndexError, TypeError):
+            size = None
+        label = RUNTIME_LABELS.get(runtime, runtime)
+        return Reuse(
+            kind="container_image",
+            thing=f"{label} image {name}",
+            identity=digest,
+            size_bytes=size,
+        )
+
+    return ReuseCheck(skip=skip, report=report)
 
 
 def remove_container_command(runtime: RuntimeName, name: str) -> CommandSpec:

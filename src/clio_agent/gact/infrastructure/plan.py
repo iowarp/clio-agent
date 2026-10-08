@@ -10,6 +10,7 @@ from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult
 from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch
 from clio_agent.gact.infrastructure.resource_ledger import StepRecorder
+from clio_agent.gact.infrastructure.reuse import ReuseCheck
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,9 @@ class Readiness:
     logs: CommandSpec
     label: str = "server"
     capability: Literal["serving", "installed"] = "serving"
+    #: A target file whose new output the runtime streams into the
+    #: operation's live log while it waits (a supervised install or server log).
+    log_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +56,10 @@ class DriverPlan:
         configuration: The configuration as resolved by the driver (for
             example with the negotiated container runtime filled in); the
             runtime persists this rather than the raw request.
+        reuse_checks: Per command index, a reuse preflight whose verified
+            match skips later commands (see :mod:`~.reuse`).
+        step_labels: Per command index, the progress step it belongs to;
+            unlabelled commands are named from what they run.
     """
 
     commands: tuple[CommandSpec, ...]
@@ -78,3 +86,5 @@ class DriverPlan:
     remote_launch: RemoteLaunch | None = None
     retain_record: bool = False
     failure_cleanup: tuple[CommandSpec, ...] = ()
+    reuse_checks: Mapping[int, ReuseCheck] = field(default_factory=dict)
+    step_labels: Mapping[int, str] = field(default_factory=dict)

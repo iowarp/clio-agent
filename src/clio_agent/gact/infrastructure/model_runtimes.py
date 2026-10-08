@@ -35,6 +35,7 @@ from clio_agent.gact.infrastructure.container_runtime import (
     RuntimeUnavailableError,
     exec_command,
     image_present_command,
+    image_reuse_check,
     logs_command,
     negotiate_runtime,
     parse_runtime_name,
@@ -90,6 +91,7 @@ from clio_agent.gact.infrastructure.resource_ledger import (
     remove_container,
     shared_image_recorder,
 )
+from clio_agent.gact.infrastructure.reuse import from_scratch
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
 from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
@@ -754,7 +756,8 @@ def build_model_runtime_plan(
     for directory in directories:
         recorders[len(commands)] = directory_recorder(directory, facts.os)
         commands.append(create_directory_command(directory, facts.os))
-    recorders[len(commands)] = image_recorder(runtime, variant.image)
+    present = len(commands)
+    recorders[present] = image_recorder(runtime, variant.image)
     commands.append(image_present_command(runtime, variant.image, images_dir, name))
     commands.extend(
         pull_commands(
@@ -764,8 +767,11 @@ def build_model_runtime_plan(
             image_store,
             name,
             module.join(temporary_dir, "apptainer-tmp"),
+            fresh=from_scratch(configuration),
         )
     )
+    # Docker/Podman skip the pull of an image present under its digest (reuse).
+    check = image_reuse_check(runtime, variant.image, tuple(range(present + 1, len(commands))))
     if runtime == "apptainer":
         recorders[len(commands) - 1] = shared_image_recorder()
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)
@@ -782,4 +788,5 @@ def build_model_runtime_plan(
         after_ready=after_ready,
         after_ready_hook=context_hook,
         configuration=resolved,
+        reuse_checks={present: check} if check else {},
     )

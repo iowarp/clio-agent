@@ -21,6 +21,7 @@ from clio_agent.gact.infrastructure.model_runtimes import (
     service_port,
 )
 from clio_agent.gact.infrastructure.models import (
+    CommandResult,
     CommandSpec,
     InfrastructureTarget,
     ManagedServiceDefinition,
@@ -37,6 +38,7 @@ from clio_agent.gact.infrastructure.monitoring_services import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
+from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
 from clio_agent.gact.infrastructure.server_parameters import EngineId
 from clio_agent.gact.infrastructure.web_search_service import (
     WEB_SEARCH_IMAGE,
@@ -311,6 +313,7 @@ def _relay_plan(
                 "--python",
                 "3.13",
                 "--no-config",
+                *(["--reinstall"] if from_scratch(configuration) else []),
                 f"clio-relay=={RELAY_VERSION}",
             ],
             scope="controller",
@@ -354,7 +357,15 @@ def _relay_plan(
             timeout_seconds=900,
         ),
     ]
-    return DriverPlan(tuple(commands))
+    return DriverPlan(tuple(commands), reuse_checks={0: ReuseCheck((), _relay_reused)})
+
+
+def _relay_reused(result: CommandResult) -> Reuse | None:
+    """uv's own verdict that this exact Relay version is already installed."""
+
+    if "is already installed" not in result.stdout + result.stderr:
+        return None
+    return Reuse(kind="package", thing="Relay", identity=f"clio-relay=={RELAY_VERSION}")
 
 
 def _ssh_destination(target: InfrastructureTarget | None) -> str:
@@ -449,7 +460,7 @@ def _clio_agent_plan(
             ).commands
         )
     if action in {"install", "reinstall"}:
-        commands.append(install_command(root, version))
+        commands.append(install_command(root, version, fresh=from_scratch(configuration)))
     launch = RemoteLaunch(
         root,
         port,

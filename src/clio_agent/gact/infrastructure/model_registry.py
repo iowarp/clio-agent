@@ -9,6 +9,8 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from clio_agent.gact.infrastructure.operation_models import ReuseReport
+
 
 class ModelAcquisition(BaseModel):
     """Last observed target receipt, with the immutable location used to reconcile it."""
@@ -36,6 +38,8 @@ class ModelAcquisition(BaseModel):
     log_path: str | None = None
     files: list[str] = Field(default_factory=list)
     file_path: str | None = None
+    #: Set on the reply to a download whose verified revision was already there.
+    reuse: ReuseReport | None = None
 
 
 class ModelDownloadRequest(BaseModel):
@@ -48,6 +52,8 @@ class ModelDownloadRequest(BaseModel):
     # Exact repository file names to fetch (e.g. one GGUF quantization);
     # empty fetches the whole revision.
     files: list[str] = Field(default_factory=list, max_length=64)
+    #: Download again even when this verified revision is already present.
+    from_scratch: bool = False
 
     @field_validator("files")
     @classmethod

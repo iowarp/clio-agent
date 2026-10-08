@@ -90,9 +90,14 @@ def test_cmf_environment_installs_hash_pinned_and_is_reused(
 
     def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(arguments)
+        python = root / "cmf-venv/bin/python"
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("")
         return subprocess.CompletedProcess(arguments, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
+    # The venv build streams its output into the install log (the live log).
+    monkeypatch.setattr(backend, "streamed", lambda _root, command, _env, _timeout: run(command))
     backend.install_environment(root, manifest)
     backend.install_environment(root, manifest)
     assert len(calls) == 1
