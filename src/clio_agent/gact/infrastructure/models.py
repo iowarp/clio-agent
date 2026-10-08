@@ -31,7 +31,9 @@ RuntimeReason = Literal["not_installed", "unusable", "not_probed"]
 #: separate field, not new ``RuntimeReason`` values, so a client that predates
 #: it still decodes the facts.
 RuntimeFailure = Literal["not_running", "permission_denied", "timed_out", "unknown"]
-ResourceKind = Literal["container", "image", "directory", "parent_directory", "instance_logs"]
+ResourceKind = Literal[
+    "container", "image", "shared_image", "directory", "parent_directory", "instance_logs"
+]
 EffectiveSource = Literal["server_report", "container_config", "launch_request", "engine_default"]
 
 RUNTIME_LABELS: dict[RuntimeName, str] = {

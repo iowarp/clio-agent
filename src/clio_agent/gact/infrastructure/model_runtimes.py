@@ -83,6 +83,7 @@ from clio_agent.gact.infrastructure.resource_ledger import (
     image_recorder,
     removal_commands,
     remove_container,
+    shared_image_recorder,
 )
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
@@ -747,6 +748,8 @@ def build_model_runtime_plan(
             module.join(temporary_dir, "apptainer-tmp"),
         )
     )
+    if runtime == "apptainer":
+        recorders[len(commands) - 1] = shared_image_recorder()
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)
     commands.append(
         keyed(

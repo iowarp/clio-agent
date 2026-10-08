@@ -201,6 +201,7 @@ else
   printf '%s\\n' "$image" > "$sif.ref"
 fi
 ln -sfn "$sif" "$link"
+echo "CLIO_SHARED_IMAGE $sif"
 """
 
 # Two attempts of at most this many seconds each: the first may run out of

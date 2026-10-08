@@ -18,6 +18,10 @@ Ownership is decided from what the target reports, not assumed:
   never name some other directory;
 * a container / instance is owned from the moment its run step was attempted
   (a failed ``docker run`` can still leave a created container behind).
+* an Apptainer SIF in the shared image store (reused across deployments and
+  nodes) is HELD by every service whose pull reported it
+  (``CLIO_SHARED_IMAGE``); it is deleted only when no other service on the
+  target still holds it, and the store's layer cache with the last SIF.
 
 Removal is verified: each removal command checks afterwards that the thing is
 gone and fails otherwise, so "removed" is never inferred from an exit code
@@ -45,12 +49,15 @@ logger = logging.getLogger(__name__)
 
 CREATED_DIR_MARKER = "CLIO_CREATED_DIR"
 CREATED_PARENT_MARKER = "CLIO_CREATED_PARENT"
+#: The Apptainer pull reports the SIF it left in the shared image store.
+SHARED_IMAGE_MARKER = "CLIO_SHARED_IMAGE"
 
 # Removal order: running things first, then what they used.
 _REMOVAL_ORDER: dict[str, int] = {
     "container": 0,
     "instance_logs": 1,
     "image": 2,
+    "shared_image": 2,
     "directory": 3,
     "parent_directory": 4,
 }
@@ -69,6 +76,31 @@ def image_recorder(runtime: RuntimeName, image: str) -> StepRecorder:
         return [OwnedResource(kind="image", ref=image, runtime=runtime)]
 
     return record
+
+
+def shared_image_recorder() -> StepRecorder:
+    """Record the SIF an Apptainer pull left in the shared image store.
+
+    Every service that uses the image holds it (pulled or reused); the last
+    holder's removal deletes it (:func:`unheld`, :func:`_release_shared_image`).
+    """
+
+    def record(result: CommandResult) -> list[OwnedResource]:
+        rows: list[OwnedResource] = []
+        for line in logical_lines(result.stdout or "", (SHARED_IMAGE_MARKER,)):
+            if line.startswith(f"{SHARED_IMAGE_MARKER} "):
+                path = posixpath.normpath(line[len(SHARED_IMAGE_MARKER) + 1 :].strip())
+                if posixpath.isabs(path) and path.endswith(".sif"):
+                    rows.append(OwnedResource(kind="shared_image", ref=path, runtime="apptainer"))
+        return rows
+
+    return record
+
+
+def unheld(owned: list[OwnedResource], held_elsewhere: set[str]) -> list[OwnedResource]:
+    """``owned`` without the shared images another service still holds (those stay)."""
+
+    return [row for row in owned if row.kind != "shared_image" or row.ref not in held_elsewhere]
 
 
 def container_recorder(runtime: RuntimeName, name: str, host: str = "") -> StepRecorder:
@@ -265,6 +297,24 @@ def _remove_instance_logs(ref: str) -> CommandSpec:
     )
 
 
+def _release_shared_image(sif: str) -> CommandSpec:
+    """Delete a shared SIF nobody holds; with the last one, the store's layer cache too."""
+
+    return CommandSpec(
+        program="sh",
+        args=[
+            "-c",
+            'store=$(dirname "$0"); rm -f -- "$0" "$0.ref" "$0.partial"; '
+            'if ! ls "$store"/*.sif >/dev/null 2>&1; then '
+            'APPTAINER_CACHEDIR="$store/cache" apptainer cache clean -f >/dev/null 2>&1; '
+            'rm -rf -- "$store/cache"; fi; '
+            'if [ -e "$0" ]; then echo "still present: $0"; exit 1; fi',
+            sif,
+        ],
+        timeout_seconds=600,
+    )
+
+
 def _safe_directory(path: str, os_name: str) -> bool:
     module = ntpath if os_name == "windows" else posixpath
     normalized = module.normpath(path)
@@ -297,6 +347,14 @@ def removal_commands(owned: list[OwnedResource], os_name: str) -> list[CommandSp
             commands.append(_remove_instance_logs(row.ref))
         elif row.kind == "image" and row.runtime:
             commands.append(remove_image(row.runtime, row.ref, os_name))
+        elif row.kind == "shared_image":
+            if not _safe_directory(row.ref, "linux") or not row.ref.endswith(".sif"):
+                logger.warning(
+                    "infrastructure ledger: reason=unsafe_ledger_path path=%r -- not removed",
+                    row.ref,
+                )
+                continue
+            commands.append(_release_shared_image(row.ref))
         elif row.kind in {"directory", "parent_directory"}:
             if not _safe_directory(row.ref, os_name):
                 logger.warning(

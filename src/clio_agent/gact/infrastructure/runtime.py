@@ -17,6 +17,7 @@ from anyio.to_thread import run_sync
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
+    held_elsewhere,
     persist_created,
     remove_created,
 )
@@ -45,6 +46,7 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, stop_desktop_launches
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
+from clio_agent.gact.infrastructure.resource_ledger import unheld
 from clio_agent.gact.infrastructure.server_access import (
     ServerAccessMixin,
     forget_key,
@@ -472,7 +474,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 configuration=request.configuration,
                 facts=catalog.facts,
                 target=target_row,
-                owned=installed.owned_resources if installed else [],
+                owned=unheld(
+                    installed.owned_resources if installed else [],
+                    held_elsewhere(self.store, request.target_id, row.service_id),
+                ),
                 api_key=api_key,
                 on_conflict=on_conflict,
                 resolved_root=(installed.resolved_root or None) if installed else None,
@@ -716,7 +721,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             async def execute(spec: CommandSpec) -> CommandResult:
                 return await self._execute(target_id, spec)
 
-            return (await remove_created(execute, target_id, created, target_os))[1]
+            # A failed deploy keeps the shared image store (a retry resumes from it, F030).
+            kept = [row for row in created if row.kind != "shared_image"]
+            return (await remove_created(execute, target_id, kept, target_os))[1]
         if (
             plan is None
             or plan.teardown is None
