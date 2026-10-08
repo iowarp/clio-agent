@@ -487,6 +487,10 @@ def _launch(
             _check_value("model_path", model_path)
             mounts.append((model_path, "/models/model.gguf"))
             source = ["-m", "/models/model.gguf"]
+            if "--alias" not in compiled.flags:
+                # Serve under the host path, not the mount point, so the id
+                # CLIO binds names the selected model and its family (F035).
+                source.extend(["--alias", model_path])
         else:
             _check_value("hf_model", hf_model)
             source = ["-hf", hf_model]

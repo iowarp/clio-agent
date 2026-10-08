@@ -661,6 +661,8 @@ def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtim
     assert ("--nv" if runtime == "apptainer" else "--gpus") in run.args
     assert run.args[run.args.index("--n-gpu-layers") + 1] == "999"
     assert any(LLAMA_DIGEST in arg for arg in run.args) or runtime == "apptainer"
+    # Served under the host path, not the mount point (F035).
+    assert run.args[run.args.index("--alias") + 1] == "/models/q.gguf"
     # The image's libraries resolve from its WORKDIR, which Apptainer does not
     # apply (F033); Docker/Podman take it from the image.
     library_path = "LD_LIBRARY_PATH=/app:/usr/local/cuda/lib64"
