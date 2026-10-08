@@ -199,6 +199,11 @@ def _thinking_effective_display(cfg: dict[str, Any]) -> str:
     for value in wire.values():
         if isinstance(value, dict) and isinstance(value.get("budget_tokens"), int):
             return f"{level} (budget {value['budget_tokens']})"
+    spec = effective.thinking.spec
+    if spec is not None and spec.mechanism == "on_off":
+        # A toggle has no strength: every level above off sends the same "on", so
+        # echoing "low" would claim an effect the request does not carry (F017).
+        return f"on (requested={level}; this model's thinking is an on/off switch)"
     return str(level)
 
 
