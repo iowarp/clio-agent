@@ -42,7 +42,9 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           # A beta tag vX.Y.Z-beta.N is the PEP 440 version X.Y.ZbN, the form
           # uv normalizes pyproject's version to.
-          if [[ "$tag" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
+          if [[ "$tag" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+            tag="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}.post${BASH_REMATCH[3]}"
+          elif [[ "$tag" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
             tag="${BASH_REMATCH[1]}b${BASH_REMATCH[2]}"
           fi
           pkg="$(uv version --short)"

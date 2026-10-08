@@ -106,6 +106,30 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
 ]
 
 
+MACOS_DESKTOP_LABELS: frozenset[str] = frozenset(
+    {
+        "bundled dmg (aarch64 macOS)",
+        "lite dmg (aarch64 macOS)",
+        "lite dmg (x86_64 macOS)",
+        "bundled macOS updater bundle (aarch64)",
+        "bundled macOS updater sig (aarch64)",
+        "lite macOS updater bundle (aarch64)",
+        "lite macOS updater sig (aarch64)",
+        "lite macOS updater bundle (x86_64)",
+        "lite macOS updater sig (x86_64)",
+    }
+)
+
+
+def expected_assets(tag: str | None, allow_missing_macos: bool) -> list[tuple[str, str]]:
+    """Keep the full matrix unless an operator explicitly defers macOS for a beta."""
+    if not allow_missing_macos:
+        return list(EXPECTED_ASSETS)
+    if tag is None or re.fullmatch(r"v\d+\.\d+\.\d+-beta\.\d+(?:\.\d+)?", tag) is None:
+        raise ValueError("--allow-missing-macos requires --tag vX.Y.Z-beta.N")
+    return [asset for asset in EXPECTED_ASSETS if asset[0] not in MACOS_DESKTOP_LABELS]
+
+
 def find_missing(
     asset_names: list[str],
     expected: list[tuple[str, str]] = EXPECTED_ASSETS,
@@ -143,16 +167,28 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="File with asset names (one per line). Defaults to stdin.",
     )
+    parser.add_argument("--tag", help="Release tag; required for the beta macOS exception.")
+    parser.add_argument(
+        "--allow-missing-macos",
+        action="store_true",
+        help="Explicit beta-only exception for macOS Desktop assets; all other assets remain required.",
+    )
     args = parser.parse_args(argv)
+    try:
+        expected = expected_assets(args.tag, args.allow_missing_macos)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     asset_names = _read_asset_names(args.assets_file)
     if not asset_names:
         print("FAIL: no asset names provided (empty release listing?).")
         return 1
 
-    missing = find_missing(asset_names)
+    missing = find_missing(asset_names, expected)
     if not missing:
-        print(f"OK: all {len(EXPECTED_ASSETS)} expected release assets present.")
+        print(f"OK: all {len(expected)} expected release assets present.")
+        if args.allow_missing_macos:
+            print("Explicit beta exception: macOS Desktop qualification is deferred.")
         return 0
 
     print(f"FAIL: {len(missing)} expected release asset(s) missing (#841):")

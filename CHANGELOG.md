@@ -6,6 +6,22 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5-beta.5.1] — 2026-10-07
+
+### Fixed
+
+- Windows bundled installation extracts the private LibreOffice renderer correctly
+  when managed storage contains spaces. MSI properties use Windows Installer quoting,
+  avoiding error1639 and the unexpected Windows Installer help dialog.
+- Beta container publication explicitly disables automatic `latest` tags, preserving
+  the stable container channel. Already-published beta.5 version tags remain immutable.
+
+### Changed
+
+- Beta hotfix tags have distinct Python package and Desktop updater versions. An
+  explicit beta-only release-check option can defer macOS Desktop qualification
+  while retaining all Windows/Linux, web, CLI/TUI and updater requirements.
+
 ## [0.9.5-beta.5] — 2026-10-07
 
 ### Changed

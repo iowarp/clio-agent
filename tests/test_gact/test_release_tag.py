@@ -16,6 +16,8 @@ from clio_agent.gact.infrastructure.release_tag import release_tag
         ("0.9.5b1", "v0.9.5-beta.1"),
         ("0.9.5b12", "v0.9.5-beta.12"),
         ("0.9.5-beta.1", "v0.9.5-beta.1"),
+        ("0.9.5b5.post1", "v0.9.5-beta.5.1"),
+        ("0.9.5-beta.5.1", "v0.9.5-beta.5.1"),
     ],
 )
 def test_release_refs_keep_registry_and_github_versions_separate(version: str, tag: str) -> None:

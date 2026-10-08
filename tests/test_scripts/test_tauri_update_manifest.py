@@ -105,6 +105,14 @@ def test_beta_tag_encodes_as_a_numeric_pre_release() -> None:
             encode_version(bad)
 
 
+def test_beta_hotfix_keeps_numeric_prerelease_and_build_metadata() -> None:
+    """Hotfix metadata matches the desktop build without promoting a beta to stable."""
+    assert encode_version("v0.9.5-beta.5.1") == "0.9.5-5+1"
+    assert encode_version("v0.9.5-beta.5.12") == "0.9.5-5+12"
+    with pytest.raises(ValueError):
+        encode_version("v0.9.5-beta.5.1.2")
+
+
 def test_manifest_maps_every_platform_from_asset_names(tmp_path: Path) -> None:
     """Every LITE platform PLATFORM_PATTERNS declares gets a signature + url."""
 
