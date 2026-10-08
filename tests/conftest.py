@@ -6,6 +6,7 @@ HDF5 and Parquet test data for MCP server testing.
 """
 
 import os
+import re
 
 # LiteLLM does a network GET for its model-cost map on the first `import
 # litellm` unless this is set (litellm's own offline-mode flag) -- every
@@ -37,6 +38,14 @@ os.environ["CLIO_GACT_ALLOWED_HOSTS"] = ",".join(sorted({*_ambient_hosts, _TEST_
 # EC2 instance metadata endpoint, 169.254.169.254: a network call, and a multi-second
 # timeout off EC2. Unit tests never reach the network (tests/_network_guard.py).
 os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
+# A shell or job that exports CLIO_AGENT_HOME (or a per-role CLIO_AGENT_<ROLE>_DIR)
+# for a real service must not lend that live home to tests: these outrank the
+# per-test CLIO_USER_DIR, and import-time caches resolve before any fixture runs.
+for _home_key in [
+    k for k in os.environ if k == "CLIO_AGENT_HOME" or re.fullmatch(r"CLIO_AGENT_\w+_DIR", k)
+]:
+    del os.environ[_home_key]
 
 # Even with the network GET removed, litellm's own MODULE BODY costs ~3.5-4s
 # to import cold (hundreds of provider submodules + pydantic model builds --
