@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ class InfrastructureStore:
         self._operations: dict[str, InfrastructureOperation] = {}
         self._model_roots: dict[str, list[str]] = {}
         self._model_acquisitions: dict[str, ModelAcquisition] = {}
+        self._removed_deployments: dict[str, dict[str, str]] = {}
         self._load()
         self._interrupt_unfinished_operations()
         self._reset_ssh_transport_state()
@@ -286,6 +288,40 @@ class InfrastructureStore:
             self._model_acquisitions[f"{row.target_id}:{row.id}"] = row.model_copy(deep=True)
             self._flush()
 
+    def note_removed_deployment(self, target_id: str, service_id: str, address: str) -> None:
+        """Remember that CLIO uninstalled the model server ``service_id`` on ``target_id``.
+
+        A session still pinned to it is then told so (a typed error) instead of
+        failing to connect. Cleared when that service runs again.
+        """
+        with self._lock:
+            self._removed_deployments[f"{target_id}:{service_id}"] = {
+                "target_id": target_id,
+                "service_id": service_id,
+                "address": address,
+                "removed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._flush()
+
+    def removed_deployment(self, service_id: str) -> dict[str, str] | None:
+        """The uninstalled deployment of ``service_id`` (any target), or ``None``."""
+        with self._lock:
+            found = next(
+                (
+                    row
+                    for row in self._removed_deployments.values()
+                    if row["service_id"] == service_id
+                ),
+                None,
+            )
+            return dict(found) if found is not None else None
+
+    def clear_removed_deployment(self, target_id: str, service_id: str) -> None:
+        """``service_id`` runs on ``target_id`` again: it is no longer a removed deployment."""
+        with self._lock:
+            if self._removed_deployments.pop(f"{target_id}:{service_id}", None) is not None:
+                self._flush()
+
     def operations(self) -> list[InfrastructureOperation]:
         """Return durable activity newest first, including interrupted operations."""
         with self._lock:
@@ -380,6 +416,13 @@ class InfrastructureStore:
         self._load_rows(
             payload.get("model_acquisitions"), ModelAcquisition, self._model_acquisitions
         )
+        removed = payload.get("removed_deployments", {})
+        if isinstance(removed, dict):
+            self._removed_deployments = {
+                key: {k: str(v) for k, v in value.items()}
+                for key, value in removed.items()
+                if isinstance(key, str) and isinstance(value, dict) and "service_id" in value
+            }
         roots = payload.get("model_roots", {})
         if isinstance(roots, dict):
             self._model_roots = {
@@ -419,6 +462,7 @@ class InfrastructureStore:
                 key: value.model_dump(mode="json") for key, value in self._operations.items()
             },
             "model_roots": self._model_roots,
+            "removed_deployments": self._removed_deployments,
             "model_acquisitions": {
                 key: value.model_dump(mode="json")
                 for key, value in self._model_acquisitions.items()

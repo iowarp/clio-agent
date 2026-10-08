@@ -44,6 +44,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
     _removed_transport_error,
+    raise_if_deployment_removed,
 )
 from clio_agent.gact.question_answer_message import (
     QuestionAnswerMessage,
@@ -314,6 +315,7 @@ def _validate_provider_and_payload(
     removed = _removed_transport_error(selected_model, session_id=sid, source=_source)
     if removed is not None:
         raise HTTPException(status_code=400, detail=removed.model_dump(exclude_none=True))
+    raise_if_deployment_removed(app, selected_model, session_id=sid, source=_source)
     surrogate = surrogate_selection_error(app, selected_model.provider_id, selected_model.model_id)
     if surrogate is not None:
         raise HTTPException(status_code=422, detail=surrogate.model_dump(exclude_none=True))

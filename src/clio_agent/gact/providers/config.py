@@ -382,6 +382,68 @@ def removed_transport_message(value: Any) -> str:
     return CODEX_VARIANT_REMOVED_MESSAGE
 
 
+def removed_deployment_error(
+    app: Any, value: Any, *, session_id: str, source: str
+) -> ErrorEnvelope | None:
+    """A typed 409 body for a model on a managed deployment CLIO has uninstalled.
+
+    Uninstall removes the deployment's saved server entry
+    (:func:`clio_agent.gact.infrastructure.server_access.retire_saved_servers`);
+    a session still pinned to it would otherwise fail to connect (or get a 401
+    from whatever now listens there). Only while nothing replaced it: no saved
+    entry for that engine and no deployment of it running.
+    """
+
+    ref = _model_ref_dict(value)
+    provider_id = str(ref.get("provider_id") or "")
+    infrastructure = getattr(getattr(app, "state", None), "infrastructure_store", None)
+    if not provider_id or infrastructure is None:
+        return None
+    removed = infrastructure.removed_deployment(provider_id)
+    if removed is None:
+        return None
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    try:
+        if local_server_store.get_server(provider_id) is not None:
+            return None
+    except local_server_store.LocalServerStoreError:
+        return None
+    if any(
+        record.service_id == provider_id and record.state == "running"
+        for record in infrastructure.services()
+    ):
+        return None
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="model_deployment_removed",
+            message=(
+                f"The {provider_id} deployment this model ran on was removed "
+                f"({removed.get('address') or removed.get('target_id', '')}). "
+                "Pick another model."
+            ),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": ref,
+                "removed": removed,
+                "recovery_actions": ["clear_session_model", "choose_model", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
+def raise_if_deployment_removed(app: Any, value: Any, *, session_id: str, source: str) -> None:
+    """Refuse (typed 409) a message whose model ran on an uninstalled managed deployment."""
+
+    gone = removed_deployment_error(app, value, session_id=session_id, source=source)
+    if gone is not None:
+        from fastapi import HTTPException  # noqa: PLC0415
+
+        raise HTTPException(status_code=409, detail=gone.model_dump(exclude_none=True))
+
+
 def _removed_transport_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
     """A typed 400 body for a Codex model ref that names a variant (see the message helper)."""
 

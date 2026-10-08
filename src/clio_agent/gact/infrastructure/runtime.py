@@ -50,6 +50,7 @@ from clio_agent.gact.infrastructure.server_access import (
     forget_key,
     launch_key,
     load_key,
+    retire_saved_servers,
     settle_failed_launch,
     store_key,
 )
@@ -621,6 +622,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 resolved_root=resolved_root_update,
                 retain_record=plan.retain_record,
             )
+            if request.action in {"uninstall", "delete_data"} and installed is not None:
+                # The saved "Use in Models" entry goes with the deployment it names.
+                retire_saved_servers(self.store, installed)
             if request.action in {"uninstall", "delete_data"} or (
                 request.action in {"install", "reinstall"} and not api_key
             ):

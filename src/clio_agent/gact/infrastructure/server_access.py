@@ -271,6 +271,39 @@ def managed_credential_ref(store: InfrastructureStore, preset_id: str, address: 
     return ""
 
 
+def retire_saved_servers(store: InfrastructureStore, record: ServiceRecord) -> list[str]:
+    """Uninstall of a managed model server: forget the saved servers CLIO linked to it.
+
+    A "Use in Models" entry is linked by the deployment's key ref, or -- for a
+    keyless (shareable, Ollama) deployment -- by being this engine's entry at
+    this deployment's address. Entries the person pointed elsewhere stay. The
+    deployment is remembered as removed, so a session still pinned to it gets a
+    typed "deployment removed" error. Returns the removed entry ids.
+    """
+
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    if record.service_id not in MODEL_SERVERS:
+        return []
+    ref = deployment_key_ref(record.target_id, record.service_id)
+    root = _root(record.connection_url) if record.connection_url else ""
+
+    def linked(entry: local_server_store.LocalServerEntry) -> bool:
+        if entry.credential_ref:
+            return entry.credential_ref == ref
+        return bool(root) and entry.preset_id == record.service_id and _root(entry.address) == root
+
+    try:
+        removed = local_server_store.remove_linked_servers(linked)
+    except local_server_store.LocalServerStoreError as exc:
+        logger.warning(
+            "managed_server_entry_not_removed service=%s error=%s", record.service_id, exc
+        )
+        removed = []
+    store.note_removed_deployment(record.target_id, record.service_id, root)
+    return [entry.id for entry in removed]
+
+
 class ServerAccessMixin:
     """Record who can use a managed model server once it runs (a mixin of the runtime)."""
 
@@ -279,6 +312,9 @@ class ServerAccessMixin:
 
     async def _record_access(self, target_id: str, service_id: str, port: int | None) -> None:
         record = self.store.service(target_id, service_id)
+        if record is not None and record.state == "running":
+            # The engine is deployed again: no longer a removed deployment.
+            self.store.clear_removed_deployment(target_id, service_id)
         if record is None or service_id not in MODEL_SERVERS or record.state != "running":
             return
         access = await check_access(
@@ -305,5 +341,6 @@ __all__ = [
     "is_shareable",
     "managed_credential_ref",
     "request_headers",
+    "retire_saved_servers",
     "supports_api_key",
 ]

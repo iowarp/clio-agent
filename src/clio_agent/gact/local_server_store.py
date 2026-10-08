@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -50,6 +50,7 @@ __all__ = [
     "get_server",
     "list_servers",
     "normalize_server_address",
+    "remove_linked_servers",
     "remove_server",
     "saved_address_for_preset",
     "update_server",
@@ -327,6 +328,24 @@ def remove_server(server_id: str) -> None:
             raise KeyError(server_id)
         _store(document, [e for e in entries if e.id != server_id])
         _write_document(path, document)
+
+
+def remove_linked_servers(linked: Callable[[LocalServerEntry], bool]) -> list[LocalServerEntry]:
+    """Forget every saved server ``linked`` selects; returns the removed entries.
+
+    Used when CLIO uninstalls a managed deployment: the "Use in Models" entry
+    it saved for that deployment goes with it (see
+    :func:`clio_agent.gact.infrastructure.server_access.retire_saved_servers`).
+    """
+    with _LOCK:
+        path = user_config_path()
+        document = _read_document(path)
+        entries = _entries(document)
+        removed = [e for e in entries if linked(e)]
+        if removed:
+            _store(document, [e for e in entries if not linked(e)])
+            _write_document(path, document)
+        return removed
 
 
 def _host_of(address: str) -> str:
