@@ -620,14 +620,16 @@ def test_start_refuses_a_port_with_any_existing_listener(
 
 def test_a_new_run_keeps_the_previous_runs_server_logs(tmp_path: Path) -> None:
     """F008: the next start truncated server.log, losing the failed start's evidence."""
-    log = tmp_path / "server.log"
+    logs = tmp_path / "logs"  # tmp_path also holds the isolated XDG home
+    logs.mkdir()
+    log = logs / "server.log"
     node_service.rotate_log(log)  # nothing to keep yet
-    assert not list(tmp_path.iterdir())
+    assert not list(logs.iterdir())
     for run in range(1, 6):
         node_service.rotate_log(log)
         log.write_text(f"run {run}\n")
     assert log.read_text() == "run 5\n"
-    kept = {path.name: path.read_text() for path in tmp_path.glob("server.log.*")}
+    kept = {path.name: path.read_text() for path in logs.glob("server.log.*")}
     assert kept == {
         "server.log.1": "run 4\n",
         "server.log.2": "run 3\n",
@@ -635,7 +637,7 @@ def test_a_new_run_keeps_the_previous_runs_server_logs(tmp_path: Path) -> None:
     }
     log.write_text("")
     node_service.rotate_log(log)  # an empty run does not push real evidence out
-    assert (tmp_path / "server.log.1").read_text() == "run 4\n"
+    assert (logs / "server.log.1").read_text() == "run 4\n"
 
 
 def test_logs_action_shows_the_current_run_and_names_earlier_ones(
