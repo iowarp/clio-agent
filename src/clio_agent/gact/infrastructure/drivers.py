@@ -54,6 +54,14 @@ from clio_agent.gact.infrastructure.monitoring_services import (
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
 from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
+from clio_agent.gact.infrastructure.searxng_service import (
+    SERVICE_ID as SEARXNG_SERVICE,
+)
+from clio_agent.gact.infrastructure.searxng_service import (
+    searxng_definition,
+    searxng_plan,
+    searxng_port,
+)
 from clio_agent.gact.infrastructure.server_parameters import EngineId
 from clio_agent.gact.infrastructure.web_search_service import (
     WEB_SEARCH_IMAGE,
@@ -81,7 +89,13 @@ CLIO_AGENT_PORT = 17_800
 # loopback because they have no authentication (see model_runtimes). Named
 # instances (``vllm@small``) are matched by their engine (:func:`loopback_only`).
 LOOPBACK_ONLY_SERVICES = frozenset(
-    {"clio_agent", ROUTER_SERVICE, *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES}
+    {
+        "clio_agent",
+        ROUTER_SERVICE,
+        SEARXNG_SERVICE,
+        *MODEL_RUNTIME_SERVICES,
+        *MONITORING_SERVICES,
+    }
 )
 
 
@@ -119,6 +133,8 @@ def service_connection_port(
         return int(value)
     if service_id == "web_search":
         return web_search_port(configuration)
+    if service_id == SEARXNG_SERVICE:
+        return searxng_port(configuration or {})
     return None
 
 
@@ -207,6 +223,7 @@ def service_definitions(
         model_runtime_definition("ollama", facts),
         *monitoring_definitions(facts),
         web_search_definition(facts),
+        searxng_definition(facts),
         relay,
         clio_agent,
     ]
@@ -258,15 +275,21 @@ def build_driver_plan(
     if action == "delete_data" and not (
         (engine == "vllm" and variant_id.startswith("native-cuda"))
         or service_id in MONITORING_SERVICES
-        or service_id == "web_search"
+        or service_id in {"web_search", SEARXNG_SERVICE}
         or service_id == ROUTER_SERVICE
     ):
         raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
-    if action == "verify" and service_id not in {*MONITORING_SERVICES, "web_search"}:
+    if action == "verify" and service_id not in {
+        *MONITORING_SERVICES,
+        "web_search",
+        SEARXNG_SERVICE,
+    }:
         raise ValueError("This service definition has no setup verification procedure")
+    if service_id == SEARXNG_SERVICE:
+        return searxng_plan(action, configuration, facts, target)
     if service_id in MONITORING_SERVICES:
         return monitoring_plan(
             service_id,
