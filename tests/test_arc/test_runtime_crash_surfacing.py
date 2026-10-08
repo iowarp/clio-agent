@@ -77,6 +77,28 @@ def test_watcher_writes_typed_crash_record_on_abnormal_exit(tmp_path: Path) -> N
     assert record["crashed_at"]
 
 
+def test_crash_tail_excludes_an_earlier_daemons_log(tmp_path: Path) -> None:
+    """F019: a silent crash must not show the previous daemon's lines as its own."""
+
+    from clio_agent.arc.runtime_crash import (
+        crash_record_path,
+        summarize_crash,
+        watch_daemon_process,
+    )
+
+    log_path = tmp_path / "clio-runtime.log"
+    log_path.write_text("old daemon: RouteTask error\n", encoding="utf-8")
+    offset = log_path.stat().st_size
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
+    watch_daemon_process(proc, log_path=log_path, state_dir=tmp_path, log_offset=offset)
+
+    record_path = crash_record_path(tmp_path)
+    _wait_for(record_path)
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["log_tail"] == ""
+    assert "(no daemon log output)" in summarize_crash(record)
+
+
 def test_watcher_writes_no_record_on_clean_exit(tmp_path: Path) -> None:
     """A clean daemon exit (rc=0) is not a crash and writes no record."""
 

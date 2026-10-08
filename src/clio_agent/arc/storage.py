@@ -226,6 +226,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
+    log_offset = log_path.stat().st_size if log_path.exists() else 0
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
 
     def _spawn(*, breakaway: bool) -> "subprocess.Popen[bytes]":
@@ -260,7 +261,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
     # watcher writes a typed crash record that the liveness gate folds into its
     # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
-    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir)
+    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir, log_offset=log_offset)
     proc_pid = proc.pid
     ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
