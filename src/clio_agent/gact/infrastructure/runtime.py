@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import socket
 import subprocess
@@ -576,14 +577,14 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                     break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
+
+            def report(message: str, current: InfrastructureOperation = row) -> None:
+                self.store.put_operation(current.model_copy(update={"progress": message}))
+
+            async def execute(spec: CommandSpec) -> CommandResult:
+                return await self._execute(request.target_id, spec)
+
             if plan.readiness is not None:
-
-                def report(message: str, current: InfrastructureOperation = row) -> None:
-                    self.store.put_operation(current.model_copy(update={"progress": message}))
-
-                async def execute(spec: CommandSpec) -> CommandResult:
-                    return await self._execute(request.target_id, spec)
-
                 await wait_until_ready(plan.readiness, execute, report)
             for spec in plan.after_ready:
                 row = self.store.put_operation(
@@ -597,6 +598,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         or result.stdout.strip()[-2000:]
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
+            if plan.after_ready_hook is not None:
+                chosen = await plan.after_ready_hook(execute, report)
+                base = plan.configuration or request.configuration
+                plan = dataclasses.replace(plan, configuration={**base, **chosen})
             # A reinstall replaces only the server; the image and caches stay
             # on the ledger, so both install and reinstall merge.
             owned = merge_owned(installed.owned_resources if installed else [], created)

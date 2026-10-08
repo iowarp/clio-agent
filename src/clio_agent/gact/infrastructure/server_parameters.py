@@ -302,7 +302,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "OLLAMA_CONTEXT_LENGTH",
             minimum=256,
             maximum=10_000_000,
-            default_behavior="Ollama's default",
+            default_behavior="Model's trained context, capped to fit the GPU",
             effective_key="context_length",
         ),
     ),

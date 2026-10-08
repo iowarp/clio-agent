@@ -74,6 +74,7 @@ from clio_agent.gact.infrastructure.native_vllm import (
     native_vllm_plan,
     served_model,
 )
+from clio_agent.gact.infrastructure.ollama_context_apply import ollama_context_hook
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.resource_ledger import (
     StepRecorder,
@@ -703,6 +704,7 @@ def build_model_runtime_plan(
         label=spec.label,
     )
     after_ready: tuple[CommandSpec, ...] = ()
+    context_hook = None
     if spec.engine == "ollama":
         model = _required(resolved, "model")
         after_ready = (
@@ -710,6 +712,9 @@ def build_model_runtime_plan(
                 runtime, name, ["env", f"OLLAMA_HOST=127.0.0.1:{port}", "ollama", "pull", model]
             ),
         )
+        if not resolved.get("param.context_length"):
+            # A person's value keeps the OLLAMA_CONTEXT_LENGTH launch setting.
+            context_hook = ollama_context_hook(port, model, readiness.logs, windows)
     if action == "start":
         command = (
             start_command(runtime, name)
@@ -773,5 +778,6 @@ def build_model_runtime_plan(
         recorders=recorders,
         readiness=readiness,
         after_ready=after_ready,
+        after_ready_hook=context_hook,
         configuration=resolved,
     )

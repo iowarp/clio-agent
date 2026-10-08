@@ -167,6 +167,20 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     assert plan.configuration is not None and plan.configuration["container_runtime"] == "docker"
 
 
+def test_ollama_context_hook_only_without_a_person_value() -> None:
+    def plan_for(configuration: dict[str, str]):
+        return build_driver_plan(
+            service_id="ollama",
+            action="install",
+            variant_id="cpu",
+            configuration={"model": "qwen3:4b", **configuration},
+            facts=_facts("docker"),
+        )
+
+    assert plan_for({}).after_ready_hook is not None
+    assert plan_for({"param.context_length": "8192"}).after_ready_hook is None
+
+
 def test_model_cache_uses_the_target_agent_data_override() -> None:
     facts = _facts("docker").model_copy(update={"agent_data_root": "/scratch/alice/agent-data"})
     plan = build_driver_plan(
