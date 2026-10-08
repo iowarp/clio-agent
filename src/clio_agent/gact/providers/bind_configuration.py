@@ -141,6 +141,10 @@ async def prepare_bind_configuration(
         codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
         claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
     )
+    if not cfg.api_key:
+        # Nothing saved or managed resolved: keep the request's placeholder, as
+        # keyless transports (codex, claude_code, local no-auth servers) expect.
+        cfg.api_key = req.api_key or "x"
     if is_cc:
         status, message, verified, default_model = claude_readiness()
         if not verified:
@@ -184,7 +188,7 @@ async def prepare_bind_configuration(
                 provider_id=req.provider_id or req.provider,
                 provider_kind=req.provider,
                 api_base=req.api_base,
-                api_key=cfg.api_key,
+                api_key="" if _is_placeholder_api_key(cfg.api_key) else cfg.api_key,
                 target_model=req.model,
                 auth_mode="active",
             ),
