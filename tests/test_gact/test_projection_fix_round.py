@@ -12,6 +12,7 @@ substrates, which a hand-built stub cannot reproduce.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -150,8 +151,8 @@ def test_the_descendant_scope_carries_forks_with_a_typed_marker(tmp_path) -> Non
     assert set(descendant_session_ids(app, root.id)) == set(rows)
 
 
-def test_a_forks_pending_permission_is_listable_from_the_root(tmp_path) -> None:
-    """The user-visible half of the same finding."""
+def test_fork_pending_permission_is_listable_from_its_own_conversation(tmp_path: Path) -> None:
+    """A writable user branch attends its own permissions, retaining provenance parentage."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as client:
@@ -170,10 +171,17 @@ def test_a_forks_pending_permission_is_listable_from_the_root(tmp_path) -> None:
         listed = client.get(
             f"/v1/sessions/{root.id}/interactions", params={"include_children": True}
         )
+        branch_listed = client.get(
+            f"/v1/sessions/{fork.id}/interactions", params={"include_children": True}
+        )
 
     assert listed.status_code == 200, listed.text
     ids = [row["id"] for row in listed.json()["interactions"]]
-    assert "permission:perm_fork" in ids
+    assert "permission:perm_fork" not in ids
+    assert branch_listed.status_code == 200
+    branch_rows = branch_listed.json()["interactions"]
+    assert [row["id"] for row in branch_rows] == ["permission:perm_fork"]
+    assert branch_rows[0]["attended_session_id"] == fork.id
 
 
 # --------------------------------------------------------------------------- #
@@ -213,7 +221,7 @@ def test_the_interactions_projection_serves_the_a2ui_quarantine_reasons(tmp_path
     assert reasons & {row["reason"] for row in quarantined}
 
 
-def test_the_interactions_projection_bounds_the_owners_it_walks(tmp_path) -> None:
+def test_the_interactions_projection_bounds_the_owners_it_walks(tmp_path: Path) -> None:
     """Per-owner A2UI derivation re-walks a whole message ledger, per poll.
 
     ``include_children`` on a wide tree multiplied that by the descendant count
@@ -229,7 +237,10 @@ def test_the_interactions_projection_bounds_the_owners_it_walks(tmp_path) -> Non
     root = app.state.sessions.create(workspace_id="ws_default", title="root")
     for index in range(6):
         child = app.state.sessions.create(
-            workspace_id="ws_default", title=f"child{index}", parent_session_id=root.id
+            workspace_id="ws_default",
+            title=f"child{index}",
+            parent_session_id=root.id,
+            agent={"id": f"worker{index}", "mode": "subagent"},
         )
         app.state.permissions[f"perm_{index}"] = {
             "id": f"perm_{index}",
@@ -316,7 +327,7 @@ def test_deleting_a_session_purges_its_agent_task_rows(tmp_path) -> None:
     assert app.state.agent_task_registry.for_parent(root.id) == []
 
 
-def test_agent_task_events_reach_the_attended_root(tmp_path) -> None:
+def test_agent_task_events_reach_the_attended_root(tmp_path: Path) -> None:
     """Permission events already mirror to the watched root; task events did not.
 
     A nested spawn published only to its own parent and child, so the human
@@ -328,10 +339,16 @@ def test_agent_task_events_reach_the_attended_root(tmp_path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root = app.state.sessions.create(workspace_id="ws_default", title="root")
     middle = app.state.sessions.create(
-        workspace_id="ws_default", title="middle", parent_session_id=root.id
+        workspace_id="ws_default",
+        title="middle",
+        parent_session_id=root.id,
+        agent={"id": "middle", "mode": "subagent"},
     )
     leaf = app.state.sessions.create(
-        workspace_id="ws_default", title="leaf", parent_session_id=middle.id
+        workspace_id="ws_default",
+        title="leaf",
+        parent_session_id=middle.id,
+        agent={"id": "leaf", "mode": "subagent"},
     )
     task = _seed_task(app, parent=middle.id, child=leaf.id, task_id="task_deep", depth=2)
 

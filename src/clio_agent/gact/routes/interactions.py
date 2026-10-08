@@ -89,14 +89,19 @@ def _permission_intercept(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
 def _session_scope(app: FastAPI, root_session_id: str, include_children: bool) -> set[str]:
     """Every session whose interactions this root is answerable for.
 
-    ``descendant_session_ids`` walks BOTH substrates, so a permission raised
-    inside a user FORK (a session-store child with no ``AgentTask``) is listable
-    here. Reading the task registry alone made those invisible to every poll.
+    The lineage walk includes conversation forks, while this interaction scope
+    stops at independent branches. Delegated children still attend their owning
+    conversation, even when their task registry row has been retired.
     """
 
     scope = {root_session_id}
     if include_children:
-        scope.update(descendant_session_ids(app, root_session_id))
+        attended = attended_session_id(app, root_session_id)
+        scope.update(
+            child
+            for child in descendant_session_ids(app, root_session_id)
+            if attended_session_id(app, child) == attended
+        )
     return scope
 
 

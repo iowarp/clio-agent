@@ -49,6 +49,7 @@ from clio_agent.gact.routes.session_question_helpers import (
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.runtime.globals import _new_attempt_id, _new_question_id
+from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.session_tool_output import delete_session_tool_output
@@ -567,16 +568,39 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         body = await json_body(request, route="POST /v1/sessions/{sid}/fork")
         title = body.get("title") or f"{sess.title} (fork)"
+        # Preserve conversation configuration, without copying task ownership,
+        # pending work, pinning, or ephemeral lookup state into a user branch.
+        metadata = {
+            key: value
+            for key, value in sess.metadata.items()
+            if key.startswith("active_agent_blueprint_")
+            or key in {"effort", "effort_source", "thinking_level", "branch", "git_branch"}
+        }
+        metadata["session_kind"] = "branch"
+        agent = {key: value for key, value in sess.agent.items() if key != "mode"}
         new_sess = app.state.sessions.create(
             workspace_id=sess.workspace_id,
             title=title,
             parent_session_id=sid,
+            model=dict(sess.model),
+            agent=agent,
+            metadata=metadata,
+            mode=sess.mode,
+            edit_mode=sess.edit_mode,
+            routing_mode=sess.routing_mode,
+            approval_mode=sess.approval_mode,
+            approval_profile=sess.approval_profile,
         )
+        inherit_child_session_policies(app, sid, new_sess.id)
         copied = await copy_session_context(sid, new_sess.id, body.get("at_message_id") or "")
         app.state.sessions.update(new_sess.id, message_count=copied)
-        return JSONResponse(
-            status_code=201,
-            content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
+        return project_for_request(
+            request,
+            v2=lambda: JSONResponse(
+                status_code=201,
+                content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
+            ),
+            v3=lambda: JSONResponse(status_code=201, content=session_to_v3(new_sess)),
         )
 
     # ---- /v1/sessions/{sid}/compact ----------------------------------
