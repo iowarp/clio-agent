@@ -341,3 +341,76 @@ def test_worker_imports_only_stdlib_and_its_declared_client() -> None:
         )
     }
     assert imported - set(sys.stdlib_module_names) - {"__future__"} <= declared
+
+
+def _gguf_repo(data: bytes) -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            rfilename=name,
+            size=len(data),
+            lfs=SimpleNamespace(sha256=hashlib.sha256(data).hexdigest()),
+            blob_id=None,
+        )
+        for name in ("Qwen3-4B-Q4_K_M.gguf", "Qwen3-4B-Q8_0.gguf", "Qwen3-4B-f16.gguf")
+    ]
+
+
+def test_worker_fetches_and_verifies_only_the_selected_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import huggingface_hub
+
+    destination = tmp_path / "model"
+    destination.mkdir()
+    receipt = tmp_path / "receipt.json"
+    selected = "Qwen3-4B-Q4_K_M.gguf"
+    node_models.write_json(receipt, job(destination, files=[selected]))
+    data = b"gguf"
+    calls: list[dict[str, Any]] = []
+
+    class Api:
+        def model_info(self, repository: str, **kwargs: Any) -> Any:
+            return SimpleNamespace(sha="f" * 40, siblings=_gguf_repo(data))
+
+    def snapshot(repository: str, **kwargs: Any) -> None:
+        calls.append(kwargs)
+        for name in kwargs["allow_patterns"]:
+            (destination / name).write_bytes(data)
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot)
+    node_models.download(receipt)
+    result = json.loads(receipt.read_text())
+    assert calls[0]["allow_patterns"] == [selected]
+    assert result["state"] == "ready"
+    assert result["bytes_total"] == len(data)  # the capacity check counts one file
+    assert list(result["verified_files"]) == [selected]
+
+
+def test_worker_rejects_a_file_the_revision_does_not_have(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import huggingface_hub
+
+    destination = tmp_path / "model"
+    destination.mkdir()
+    receipt = tmp_path / "receipt.json"
+    node_models.write_json(receipt, job(destination, files=["Qwen3-4B-Q2_K.gguf"]))
+
+    class Api:
+        def model_info(self, repository: str, **kwargs: Any) -> Any:
+            return SimpleNamespace(sha="f" * 40, siblings=_gguf_repo(b"gguf"))
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", Api)
+    with pytest.raises(node_models.AcquisitionError, match="no file named"):
+        node_models.download(receipt)
+
+
+@pytest.mark.parametrize("name", ["../x.gguf", "/abs.gguf", "*.gguf", "a\\b.gguf", "q?.gguf"])
+def test_download_request_accepts_only_plain_file_names(name: str) -> None:
+    with pytest.raises(ValueError):
+        ModelDownloadRequest(repository="Qwen/Qwen3-4B-GGUF", files=[name])
+    request = ModelDownloadRequest(
+        repository="Qwen/Qwen3-4B-GGUF", files=["b.gguf", "sub/a.gguf", "b.gguf"]
+    )
+    assert request.files == ["b.gguf", "sub/a.gguf"]

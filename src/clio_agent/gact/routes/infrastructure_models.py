@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import posixpath
 from pathlib import Path
@@ -53,6 +54,10 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                         + "--"
                         + body["revision"].replace("/", "--")
                     )
+                    if body.get("files"):
+                        # A file selection is its own acquisition (and directory).
+                        selection = "\0".join(body["files"]).encode()
+                        suffix += "--" + hashlib.sha256(selection).hexdigest()[:8]
                     body["destination"] = posixpath.join(locations.models, suffix)
             if action == "start":
                 app.state.infrastructure_store.register_model_root(target_id, selected_root)
@@ -177,6 +182,7 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 "revision": row.requested_revision,
                 "destination": row.destination,
                 "resolved_revision": row.revision,
+                "files": row.files,
             },
             root=row.storage_root,
         )

@@ -124,7 +124,14 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     ):
         raise ValueError("Select a dedicated absolute model directory on this host")
     destination = destination.resolve()
-    job_id = hashlib.sha256(f"{repository}\0{revision}\0{destination}".encode()).hexdigest()[:24]
+    files = sorted(set(request.get("files") or []))
+    for name in files:
+        if not re.fullmatch(r"[\w.+-]+(?:/[\w.+-]+)*", name) or ".." in name.split("/"):
+            raise ValueError("Invalid model file name")
+    identity = f"{repository}\0{revision}\0{destination}"
+    if files:
+        identity += "\0" + "\0".join(files)
+    job_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
     folder = root / job_id
     folder.mkdir(parents=True, exist_ok=True)
     with (root / ".control.lock").open("a+") as lock:
@@ -174,6 +181,8 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             "requested_revision": revision,
             "revision": previous.get("revision") if previous else request.get("resolved_revision"),
             "destination": str(destination),
+            "files": files,
+            "file_path": str(destination / files[0]) if len(files) == 1 else None,
             "state": "queued",
             "phase": "Preparing download tools",
             "bytes_done": 0,
@@ -279,6 +288,12 @@ def download(receipt: Path) -> None:
             raise AcquisitionError(
                 "Registry did not provide the file sizes needed for a capacity check"
             )
+        if job.get("files"):
+            available = {row.rfilename for row in siblings}
+            missing = [name for name in job["files"] if name not in available]
+            if missing:
+                raise AcquisitionError(f"This model revision has no file named {missing[0]!r}")
+            siblings = [row for row in siblings if row.rfilename in set(job["files"])]
         for row in siblings:
             relative = PurePosixPath(row.rfilename)
             if (
@@ -327,6 +342,7 @@ def download(receipt: Path) -> None:
                 local_dir=destination,
                 max_workers=4,
                 force_download=job.get("force_redownload", False),
+                allow_patterns=job.get("files") or None,
             )
         finally:
             stopped.set()

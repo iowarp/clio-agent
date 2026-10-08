@@ -28,6 +28,8 @@ class ModelAcquisition(BaseModel):
     updated_at: float
     observed_at: float = Field(default_factory=time.time)
     error: str | None = None
+    files: list[str] = Field(default_factory=list)
+    file_path: str | None = None
 
 
 class ModelDownloadRequest(BaseModel):
@@ -37,6 +39,18 @@ class ModelDownloadRequest(BaseModel):
     repository: str = Field(min_length=1, max_length=180)
     revision: str = Field(default="main", min_length=1, max_length=120)
     destination: str = Field(default="", max_length=4096)
+    # Exact repository file names to fetch (e.g. one GGUF quantization);
+    # empty fetches the whole revision.
+    files: list[str] = Field(default_factory=list, max_length=64)
+
+    @field_validator("files")
+    @classmethod
+    def file_names(cls, value: list[str]) -> list[str]:
+        """Accept relative repository file names only, never patterns or escapes."""
+        for name in value:
+            if not re.fullmatch(r"[\w.+-]+(?:/[\w.+-]+)*", name) or ".." in name.split("/"):
+                raise ValueError(f"Invalid model file name: {name!r}")
+        return sorted(set(value))
 
     @field_validator("repository")
     @classmethod
