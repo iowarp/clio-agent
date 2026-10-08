@@ -19,16 +19,20 @@ on:
         description: Boot the existing release DMG on macOS 14, 15 and 26 before publication
         type: boolean
         default: false
+      allow_pending_macos:
+        description: Explicit beta-only approval to publish while macOS Desktop qualification is pending
+        type: boolean
+        default: false
 
 env:
   PNPM_VERSION: "9.15.9"
   NODE_VERSION: "22.x"
 
 # One run per tag at a time (queued, never cancelled): a tag re-push or a
-# workflow_dispatch escape-hatch run waits for the in-flight run instead of
-# interleaving uploads into, or publishing, the same release.
+# ordinary workflow_dispatch waits for the in-flight run. An explicitly
+# approved beta macOS exception must be able to publish while those runners queue.
 concurrency:
-  group: clio-bundles-${{ inputs.tag || github.ref_name }}
+  group: clio-bundles-${{ inputs.tag || github.ref_name }}${{ inputs.allow_pending_macos && '-beta-macos-exception' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -430,14 +434,14 @@ jobs:
           // A beta (vX.Y.Z-beta.N) builds as the numeric pre-release X.Y.Z-N:
           // the MSI bundler accepts only a numeric pre-release identifier.
           // Any other pre-release form is refused here, before a long build.
-          const beta = releaseVersion.match(/^(\d+\.\d+\.\d+)-beta\.(\d+)$/);
+          const beta = releaseVersion.match(/^(\d+\.\d+\.\d+)-beta\.(\d+)(?:\.(\d+))?$/);
           if (releaseVersion.includes("-") && !beta) {
             throw new Error(`invalid CLIO release version: ${releaseVersion} (pre-releases are vX.Y.Z-beta.N)`);
           }
           const tauriVersion = maintenance
             ? `${maintenance[1]}+${maintenance[2]}`
             : beta
-              ? `${beta[1]}-${beta[2]}`
+              ? `${beta[1]}-${beta[2]}` + (beta[3] ? `+${beta[3]}` : "")
               : releaseVersion;
 
           const isObject = (value) =>
@@ -481,6 +485,17 @@ jobs:
             config.bundle.windows ??= {};
             config.bundle.windows.wix ??= {};
             config.bundle.windows.wix.version = releaseVersion;
+          }
+          if (beta) {
+            // Reserve ordered MSI revisions for hotfixes without changing the
+            // numeric prerelease used by the updater (5 < 5+1 < 6).
+            const revision = Number(beta[2]) * 1000 + Number(beta[3] || 0);
+            if (Number(beta[3] || 0) >= 1000 || revision > 65535) {
+              throw new Error(`beta hotfix exceeds Windows MSI version limits: ${releaseVersion}`);
+            }
+            config.bundle.windows ??= {};
+            config.bundle.windows.wix ??= {};
+            config.bundle.windows.wix.version = `${beta[1]}.${revision}`;
           }
           // Signed auto-update (v0.9.4.1): the CLIO brand overlay already
           // sets bundle.createUpdaterArtifacts + plugins.updater.pubkey (the
@@ -565,6 +580,8 @@ jobs:
             tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
           elif [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)$ ]]; then
             tauri_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
+          elif [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then
+            tauri_version="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}+${BASH_REMATCH[3]}"
           fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
@@ -717,10 +734,13 @@ jobs:
       # hatch); a real tag push falls back to the triggering ref, which for a
       # `push: tags: v*` event IS the tag name.
       TAG: ${{ inputs.tag || github.ref_name }}
+      ALLOW_PENDING_MACOS: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_pending_macos || false }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          # Only the explicit beta exception uses reviewed release operations
+          # from the dispatch ref; all assets and the published tag stay frozen.
+          ref: ${{ inputs.allow_pending_macos && github.ref || env.TAG }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -729,19 +749,40 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          manifest_args=()
+          if [ "$ALLOW_PENDING_MACOS" = true ]; then
+            # Reject stable tags before generating or uploading anything.
+            python3 -c 'import os; from scripts.check_release_completeness import expected_assets; expected_assets(os.environ["TAG"], True)'
+            manifest_args=(--allow-missing darwin-aarch64,darwin-x86_64)
+          fi
           # Existing bundled clients still request latest.json. Point that
           # compatibility name at the lite installer so their first update
           # also transitions to independent Desktop/CLIO lifecycle control.
-          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest.json
-          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json
+          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest.json "${manifest_args[@]}"
+          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json "${manifest_args[@]}"
           gh release upload "$TAG" latest.json latest-lite.json --clobber
       - name: Assert release asset completeness
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          completeness_args=()
+          if [ "$ALLOW_PENDING_MACOS" = true ]; then
+            completeness_args=(--tag "$TAG" --allow-missing-macos)
+          fi
           gh release view "$TAG" --json assets -q '.assets[].name' \
-            | python3 scripts/check_release_completeness.py
+            | python3 scripts/check_release_completeness.py "${completeness_args[@]}"
+      - name: Disclose deferred macOS Desktop qualification
+        if: env.ALLOW_PENDING_MACOS == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" --json body -q '.body' > /tmp/beta-notes.md
+          if ! grep -q 'macOS Desktop qualification is deferred for this beta' /tmp/beta-notes.md; then
+            printf '\n## Platform availability\n\nmacOS Desktop qualification is deferred for this beta under explicit release approval. Missing macOS Desktop installers and updater entries will be added after their builds and packaged startup checks pass. Windows/Linux Desktop, web, CLI/TUI and Python packages remain available.\n' >> /tmp/beta-notes.md
+            gh release edit "$TAG" --notes-file /tmp/beta-notes.md
+          fi
       - name: Backstop release notes from CHANGELOG
         # The `release` job creates the draft with an empty body. The
         # release-clio skill's curated notes (step 6b, edited onto the DRAFT)

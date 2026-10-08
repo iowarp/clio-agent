@@ -14,7 +14,16 @@ on:
     # never pushed (found on v0.6.0). The exact gitlink path above also ensures
     # paired UI revisions are checked on branch pushes before release tagging.
     tags: ["v*"]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      restore_stable_latest:
+        description: "Restore latest from this existing stable version (leave empty to build)"
+        type: string
+        default: ""
+      expected_latest:
+        description: "Existing version currently selected by latest; required for restoration"
+        type: string
+        default: ""
   pull_request:
     paths:
       - "docker/**"
@@ -29,6 +38,7 @@ env:
 
 jobs:
   build:
+    if: inputs.restore_stable_latest == ''
     name: build · ${{ matrix.image }}
     runs-on: ubuntu-22.04
     permissions:
@@ -68,6 +78,8 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image }}
+          # type=match otherwise generates latest automatically, including betas.
+          flavor: latest=false
           tags: |
             type=match,pattern=v(.*),group=1,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             # A pre-release tag (vX.Y.Z-beta.N) never moves `latest`.
@@ -88,3 +100,53 @@ jobs:
             GACT_TUI_REVISION=${{ steps.gact_source.outputs.revision }}
             GACT_TUI_BUILD_TIME=${{ steps.gact_source.outputs.build_time }}
           provenance: false
+
+  restore-stable-latest:
+    if: github.event_name == 'workflow_dispatch' && inputs.restore_stable_latest != ''
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+      - name: Verify real metadata action on a beta tag
+        id: beta_policy
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/iowarp/clio-api
+          flavor: latest=false
+          tags: |
+            type=match,pattern=v(.*),group=1,value=v0.9.5-beta.5
+            type=raw,value=latest,enable=false
+      - name: Verify real metadata action on a stable tag
+        id: stable_policy
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/iowarp/clio-api
+          flavor: latest=false
+          tags: |
+            type=match,pattern=v(.*),group=1,value=v0.9.4.24
+            type=raw,value=latest,enable=true
+      - name: Require beta isolation and stable latest
+        env:
+          BETA_TAGS: ${{ steps.beta_policy.outputs.tags }}
+          STABLE_TAGS: ${{ steps.stable_policy.outputs.tags }}
+        run: |
+          uv run --no-project --python 3.13 python - <<'PY'
+          import os
+          beta = set(os.environ["BETA_TAGS"].splitlines())
+          stable = set(os.environ["STABLE_TAGS"].splitlines())
+          assert beta == {"ghcr.io/iowarp/clio-api:0.9.5-beta.5"}, beta
+          assert stable == {"ghcr.io/iowarp/clio-api:0.9.4.24", "ghcr.io/iowarp/clio-api:latest"}, stable
+          PY
+      - name: Restore only the mutable stable channel from existing manifests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          STABLE_VERSION: ${{ inputs.restore_stable_latest }}
+          EXPECTED_LATEST: ${{ inputs.expected_latest }}
+        run: |
+          uv run --no-project --python 3.13 python scripts/restore_stable_container_channel.py \
+            --version "$STABLE_VERSION" --expected-latest "$EXPECTED_LATEST"

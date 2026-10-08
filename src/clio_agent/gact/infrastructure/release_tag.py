@@ -12,9 +12,14 @@ def release_tag(version: str) -> str:
     version untouched for registry operations and translate only GitHub refs.
     """
 
-    match = re.fullmatch(r"(\d+\.\d+\.\d+(?:\.\d+)?)(?:b(\d+)|-beta\.(\d+))?", version)
+    match = re.fullmatch(
+        r"(\d+\.\d+\.\d+(?:\.\d+)?)(?:b(\d+)(?:\.post(\d+))?|-beta\.(\d+)(?:\.(\d+))?)?",
+        version,
+    )
     if match is None:
         raise ValueError(f"CLIO {version!r} has no release tag; deploy from a released CLIO.")
-    base, pep_beta, tag_beta = match.groups()
+    base, pep_beta, pep_hotfix, tag_beta, tag_hotfix = match.groups()
     beta = pep_beta or tag_beta
-    return f"v{base}-beta.{beta}" if beta else f"v{base}"
+    hotfix = pep_hotfix or tag_hotfix
+    suffix = f".{hotfix}" if hotfix is not None else ""
+    return f"v{base}-beta.{beta}{suffix}" if beta else f"v{base}"

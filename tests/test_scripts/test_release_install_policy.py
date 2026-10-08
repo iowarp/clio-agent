@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5b5"
+EXPECTED_VERSION = "0.9.5b5.post1"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
 DOCUMENTED_VERSION = "0.9.4.24"
@@ -410,7 +410,10 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
 
     # Runs for one tag are serialized, never cancelled mid-upload.
     assert workflow["concurrency"] == {
-        "group": "clio-bundles-${{ inputs.tag || github.ref_name }}",
+        "group": (
+            "clio-bundles-${{ inputs.tag || github.ref_name }}"
+            "${{ inputs.allow_pending_macos && '-beta-macos-exception' || '' }}"
+        ),
         "cancel-in-progress": False,
     }
 
@@ -470,6 +473,28 @@ def test_release_macos_gate_can_read_and_recheck_draft_assets() -> None:
     assert publish_step["if"].strip() == (
         "!contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')"
     )
+
+
+def test_beta_macos_exception_is_explicit_guarded_and_disclosed() -> None:
+    """Only approved beta dispatch uses partial Mac manifests; other builds stay frozen."""
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    triggers = workflow.get("on", workflow.get(True))
+    flag = triggers["workflow_dispatch"]["inputs"]["allow_pending_macos"]
+    assert flag["type"] == "boolean" and flag["default"] is False
+    check = workflow["jobs"]["release-check"]
+    assert "github.event_name == 'workflow_dispatch'" in check["env"]["ALLOW_PENDING_MACOS"]
+    assert check["steps"][0]["with"]["ref"] == (
+        "${{ inputs.allow_pending_macos && github.ref || env.TAG }}"
+    )
+    steps = {step.get("name"): step for step in check["steps"]}
+    generate = steps["Generate signed Tauri update manifest"]["run"]
+    assert generate.index("expected_assets(") < generate.index("gh release upload")
+    assert "manifest_args=(--allow-missing darwin-aarch64,darwin-x86_64)" in generate
+    completeness = steps["Assert release asset completeness"]["run"]
+    assert 'completeness_args=(--tag "$TAG" --allow-missing-macos)' in completeness
+    disclose = steps["Disclose deferred macOS Desktop qualification"]
+    assert disclose["if"] == "env.ALLOW_PENDING_MACOS == 'true'"
+    assert "macOS Desktop qualification is deferred for this beta" in disclose["run"]
 
 
 def test_release_completeness_expects_signed_updater_assets() -> None:
@@ -574,6 +599,50 @@ def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: P
     assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5") != 0
 
 
+def test_beta_hotfix_tag_matches_its_pep440_post_release(tmp_path: Path) -> None:
+    """The beta.5.1 hotfix publishes a distinct, ordered Python version."""
+    assert _run_tag_check(tmp_path, "v0.9.5-beta.5.1", "0.9.5b5.post1") == 0
+    assert (tmp_path / "github_output").read_text() == "version=0.9.5b5.post1\n"
+    assert _run_tag_check(tmp_path, "v0.9.5-beta.5.1", "0.9.5b5") != 0
+
+
+def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Path) -> None:
+    """Execute the real Node merge script for hotfix, next beta and stable tags."""
+    import json
+    import re
+
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    steps = workflow["jobs"]["desktop"]["steps"]
+    build = next(step["run"] for step in steps if step.get("name") == "Tauri release build")
+    match = re.search(r"<<'NODE'\n(.*?)\nNODE", build, flags=re.DOTALL)
+    assert match is not None
+    for public, app, msi in (
+        ("0.9.5-beta.5.1", "0.9.5-5+1", "0.9.5.5001"),
+        ("0.9.5-beta.6", "0.9.5-6", "0.9.5.6000"),
+        ("0.9.4.24", "0.9.4+24", "0.9.4.24"),
+    ):
+        output = tmp_path / "config.json"
+        result = subprocess.run(
+            [
+                "node",
+                "-",
+                "lite",
+                str(ROOT / "branding/clio/tauri.clio.conf.json"),
+                str(output),
+                public,
+            ],
+            input=match.group(1),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        config = json.loads(output.read_text())
+        assert config["version"] == app
+        assert config["bundle"]["windows"]["wix"]["version"] == msi
+
+
 def test_release_steps_after_the_check_use_the_package_version() -> None:
     """Only the tag check reads the tag; the rest use the package version it exports."""
 
@@ -587,7 +656,30 @@ def test_a_beta_tag_never_moves_the_latest_container_image() -> None:
     """ghcr `latest` follows stable tags only."""
 
     docker = _text(".github/workflows/docker.yml")
+    workflow = yaml.safe_load(docker)
+    metadata = next(step for step in workflow["jobs"]["build"]["steps"] if step.get("id") == "meta")
+    # type=match adds latest independently of the explicit type=raw rule.
+    assert metadata["with"]["flavor"] == "latest=false"
     assert (
         "type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') "
         "&& !contains(github.ref_name, '-') }}"
     ) in docker
+
+
+def test_container_channel_recovery_cannot_rebuild_versioned_images() -> None:
+    """Explicit recovery writes the mutable channel without running the builder."""
+
+    workflow = yaml.safe_load(_text(".github/workflows/docker.yml"))
+    jobs = workflow["jobs"]
+    assert jobs["build"]["if"] == "inputs.restore_stable_latest == ''"
+    recovery = jobs["restore-stable-latest"]
+    assert recovery["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.restore_stable_latest != ''"
+    )
+    assert recovery["permissions"] == {"contents": "read", "packages": "write"}
+    assert not any("build-push-action" in step.get("uses", "") for step in recovery["steps"])
+    for step in recovery["steps"]:
+        if step.get("uses", "").startswith("docker/metadata-action@"):
+            assert step["with"]["flavor"] == "latest=false"
+    runner = recovery["steps"][-1]
+    assert '--version "$STABLE_VERSION" --expected-latest "$EXPECTED_LATEST"' in runner["run"]

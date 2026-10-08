@@ -10,7 +10,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from scripts.check_release_completeness import EXPECTED_ASSETS, find_missing, main
+import pytest
+
+from scripts.check_release_completeness import (
+    EXPECTED_ASSETS,
+    MACOS_DESKTOP_LABELS,
+    expected_assets,
+    find_missing,
+    main,
+)
 
 # The actual v0.5.17 GH release asset names (desktop app version 0.7.1), minus
 # the checksum/installer noise the check intentionally ignores. This release
@@ -266,3 +274,37 @@ def test_main_exits_nonzero_on_empty_input(tmp_path: Path) -> None:
     assets_file = tmp_path / "assets.txt"
     assets_file.write_text("", encoding="utf-8")
     assert main(["--assets-file", str(assets_file)]) == 1
+
+
+def test_beta_macos_exception_removes_only_desktop_requirements(tmp_path: Path) -> None:
+    """A beta may defer Mac Desktop while CLI, installers and other platforms stay required."""
+    mac_patterns = [pattern for label, pattern in EXPECTED_ASSETS if label in MACOS_DESKTOP_LABELS]
+    listing = [
+        name for name in _COMPLETE_ASSETS if not any(re.search(p, name) for p in mac_patterns)
+    ]
+    assets_file = tmp_path / "assets.txt"
+    assets_file.write_text("\n".join(listing))
+    assert len(find_missing(listing)) == 9
+    assert main(["--assets-file", str(assets_file)]) == 1
+    assert (
+        main(
+            ["--assets-file", str(assets_file), "--tag", "v0.9.5-beta.5.1", "--allow-missing-macos"]
+        )
+        == 0
+    )
+    required = expected_assets("v0.9.5-beta.5.1", True)
+    for name in ("clio-tui-darwin-arm64", "desktop.sh", "latest-lite.json"):
+        assert find_missing([asset for asset in listing if asset != name], required)
+    for name in ("CLIO.Desktop_0.7.1_x64-setup.exe.sig", "CLIO.Desktop_0.7.1_amd64.AppImage"):
+        assert find_missing([asset for asset in listing if asset != name], required)
+
+
+def test_macos_exception_rejects_stable_and_unspecified_tags(tmp_path: Path) -> None:
+    """An explicit Mac exception never reduces a stable release's publish requirements."""
+    assets_file = tmp_path / "assets.txt"
+    assets_file.write_text("\n".join(_COMPLETE_ASSETS))
+    for tag_args in ([], ["--tag", "v0.9.4.24"], ["--tag", "v0.9.5-rc.1"]):
+        with pytest.raises(SystemExit) as error:
+            main(["--assets-file", str(assets_file), "--allow-missing-macos", *tag_args])
+        assert error.value.code == 2
+    assert expected_assets("v0.9.4.24", False) == EXPECTED_ASSETS

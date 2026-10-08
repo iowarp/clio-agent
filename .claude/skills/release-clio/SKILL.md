@@ -27,11 +27,22 @@ Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop fronten
 
 ## Beta (pre-release) cuts
 - Tag `vX.Y.Z-beta.N`; pyproject / `__init__` / `uv.lock` carry the PEP 440 form `X.Y.ZbN`
+  A requested hotfix `vX.Y.Z-beta.N.M` uses `X.Y.ZbN.postM` and updater
+  `X.Y.Z-N+M`; keep all three identities aligned and verify update ordering.
+  An explicit human beta exception may defer queued macOS Desktop qualification.
+  Use `allow_pending_macos=true` on the release-check dispatch, disclose the gap,
+  and omit unavailable darwin updater entries. Do not defer non-macOS checks or
+  stable-release completeness, or treat this as fresh macOS acceptance.
   (`release.yml` maps one to the other before comparing).
 - PyPI publishes it as a pre-release (plain `pip install clio-agent` does not pick it up);
   the GitHub release is published as a pre-release and never marked latest
   (`github_release.py`), so installed desktops do not update to it; ghcr gets the version
   tag but not `latest` (`docker.yml`).
+- Docker metadata-action must have `flavor: latest=false`; `type=match` otherwise
+  generates `latest` independently of the explicit stable-only raw rule. Verify
+  each published beta version digest and that `latest` still equals the existing
+  stable version digest. Recover an incorrect mutable channel only by copying the
+  existing stable manifest; never rebuild or overwrite a published version tag.
 - Desktop builds use `X.Y.Z-N` internally (the MSI bundler takes only a numeric
   pre-release); assets keep the public `X.Y.Z-beta.N` name. Other pre-release forms
   (`-rc1`, ...) are refused by `clio-bundles.yml` before the build.

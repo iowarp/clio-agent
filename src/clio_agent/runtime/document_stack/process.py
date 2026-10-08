@@ -29,15 +29,23 @@ def scratch_root(workspace: Path, *, create: bool = True) -> Path:
 
 
 def run(
-    command: list[str], *, cwd: Path, timeout: float = 120.0, env: dict[str, str] | None = None
+    command: list[str],
+    *,
+    cwd: Path,
+    timeout: float = 120.0,
+    env: dict[str, str] | None = None,
+    windows_command_line: str | None = None,
 ) -> str:
-    """Run argv without a shell and return stdout, or a bounded diagnostic."""
+    """Run without a shell, allowing explicit Windows quoting for non-CRT parsers."""
+    if windows_command_line is not None and os.name != "nt":
+        raise DocumentError("An explicit Windows command line requires Windows")
     flags: dict[str, Any] = {}
     if os.name == "nt":
         flags["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     try:
         process = subprocess.Popen(
-            command,
+            windows_command_line if windows_command_line is not None else command,
+            executable=command[0] if windows_command_line is not None else None,
             cwd=cwd,
             env=env,
             stdin=subprocess.DEVNULL,

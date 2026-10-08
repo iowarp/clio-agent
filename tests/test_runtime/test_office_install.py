@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -38,16 +40,64 @@ def test_windows_renderer_is_extracted_to_private_image(
 ) -> None:
     monkeypatch.setattr(office.platform, "system", lambda: "Windows")
     seen: list[str] = []
+    options: dict[str, Any] = {}
 
     def run(command: list[str], **kwargs: Any) -> str:
         seen.extend(command)
+        options.update(kwargs)
         return ""
 
     monkeypatch.setattr(office, "run", run)
-    office._extract(tmp_path / "renderer.msi", tmp_path / "private")
-    assert seen[1:4] == ["/a", str(tmp_path / "renderer.msi"), "/qn"]
-    assert seen[-1] == f"TARGETDIR={tmp_path / 'private'}"
+    archive = tmp_path / "CLIO Desktop" / "renderer.msi"
+    private = tmp_path / "CLIO Desktop" / "private image"
+    office._extract(archive, private)
+    assert seen[1:4] == ["/a", str(archive), "/qn"]
+    assert seen[-1] == f"TARGETDIR={private}"
+    assert options["windows_command_line"] == (
+        subprocess.list2cmdline(seen[:-1]) + f' TARGETDIR="{private}"'
+    )
+    assert '"TARGETDIR=' not in options["windows_command_line"]
+    assert options["cwd"] == private
+    assert options["timeout"] == 300
+    assert "/norestart" in seen
     assert "/i" not in seen
+
+
+def test_explicit_windows_command_line_reaches_createprocess_without_a_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preserve MSI-specific quoting through the bounded subprocess owner."""
+    from clio_agent.runtime.document_stack import process
+
+    observed: dict[str, Any] = {}
+
+    class Child:
+        returncode = 0
+
+        def communicate(self, *, timeout: float) -> tuple[str, str]:
+            assert timeout == 300
+            return "extracted", ""
+
+    def start(args: str | list[str], **kwargs: Any) -> Child:
+        observed.update(args=args, **kwargs)
+        return Child()
+
+    monkeypatch.setattr(process, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(process.subprocess, "Popen", start)
+    command_line = 'msiexec.exe /a "renderer with spaces.msi" /qn TARGETDIR="private image"'
+    assert (
+        process.run(
+            ["msiexec.exe", "/a", "renderer with spaces.msi", "/qn", "TARGETDIR=private image"],
+            cwd=tmp_path,
+            timeout=300,
+            windows_command_line=command_line,
+        )
+        == "extracted"
+    )
+    assert observed["args"] == command_line
+    assert observed["executable"] == "msiexec.exe"
+    assert observed.get("shell", False) is False
+    assert observed["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 def test_private_renderer_is_probed_before_warm_reuse(
