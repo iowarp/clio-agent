@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 __all__ = ["ensure_host_agent"]
 
 
-def _selected_ref(app: "FastAPI", sid: str, req: "PostMessageRequest") -> "ModelRef | None":
+def selected_ref(app: "FastAPI", sid: str, req: "PostMessageRequest") -> "ModelRef | None":
     """The message's model reference, else its session's; ``None`` when neither names one."""
 
     from clio_agent.gact.providers.config import _model_ref_dict  # noqa: PLC0415
@@ -115,7 +115,7 @@ async def ensure_host_agent(app: "FastAPI", sid: str, req: "PostMessageRequest")
 
     if app.state.agent is not None:
         return
-    ref = _selected_ref(app, sid, req)
+    ref = selected_ref(app, sid, req)
     if ref is None:
         return
     async with _lock(app):

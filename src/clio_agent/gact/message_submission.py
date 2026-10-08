@@ -58,6 +58,7 @@ from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
 )
+from clio_agent.gact.selected_model_refresh import refresh_for_selected_model
 from clio_agent.gact.session_host_agent import ensure_host_agent
 from clio_agent.gact.session_model_ref import remember_session_model
 from clio_agent.gact.transcript_projection import on_message_appended
@@ -528,6 +529,7 @@ async def accept_message_async(
     # A session's selected model is enough to run its first turn (no global provider).
     await ensure_host_agent(app, sid, req)
     await reprobe_for_message(app, sid, req)  # #1455: see a terminal sign-in at turn start
+    await refresh_for_selected_model(app, sid, req)  # a pinned model's stale discovery
     prepared = await prepare_references(app, sid, req)
     ack = accept_message(
         app,
