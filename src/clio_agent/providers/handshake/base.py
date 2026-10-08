@@ -381,19 +381,27 @@ class ProviderHandshake(abc.ABC):
         """The Hugging Face layer for this deployment, or ``None``.
 
         Bound to the Hub repo the endpoint actually serves: ``model_key`` when
-        it has the ``org/name`` shape, else ``wire_id`` when that does.
+        it has the ``org/name`` shape, else ``wire_id`` when that does; else a local
+        snapshot directory either one names (read from disk).
         """
         from clio_agent.providers.capabilities.hf_repo import (  # noqa: PLC0415
             HfRepoCatalogSource,
             is_repo_id,
         )
+        from clio_agent.providers.capabilities.local_snapshot import (  # noqa: PLC0415
+            LocalSnapshotSource,
+            is_local_snapshot,
+        )
 
-        repo_id = next((c for c in (model_key, wire_id) if is_repo_id(c)), None)
-        if repo_id is None:
-            return None
         if self._endpoint_dialect(ctx) not in _HF_REPO_DIALECTS:
             return None
-        return HfRepoCatalogSource(repo_id=repo_id)
+        repo_id = next((c for c in (model_key, wire_id) if is_repo_id(c)), None)
+        if repo_id is not None:
+            return HfRepoCatalogSource(repo_id=repo_id)
+        # A server launched on a downloaded snapshot serves it by path: read the
+        # files it loaded instead of skipping the layer (F016/F017).
+        snapshot = next((c for c in (model_key, wire_id) if is_local_snapshot(c)), None)
+        return LocalSnapshotSource(snapshot) if snapshot is not None else None
 
     def _endpoint_dialect(self, ctx: HandshakeContext) -> str:
         """This endpoint's recorded dialect ("" before its record exists)."""
