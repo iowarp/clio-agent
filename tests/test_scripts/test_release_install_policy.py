@@ -653,6 +653,70 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
         assert config["bundle"]["windows"]["wix"]["version"] == msi
 
 
+@pytest.mark.parametrize(
+    ("variant", "platform"), [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux")]
+)
+def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
+    tmp_path: Path, variant: str, platform: str
+) -> None:
+    """Run the shipping merge against a pinned UI overlay, retaining brand/signing policy."""
+    import json
+    import re
+
+    steps = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))["jobs"]["desktop"]["steps"]
+    build = next(step["run"] for step in steps if step.get("name") == "Tauri release build")
+    match = re.search(r"<<'NODE'\n(.*?)\nNODE", build, flags=re.DOTALL)
+    assert match is not None
+    ui = tmp_path / "desktop/src-tauri"
+    ui.mkdir(parents=True)
+    (ui / "tauri.bundled.conf.json").write_text(
+        json.dumps({"bundle": {"resources": ["gact-runtime/**/*"]}})
+    )
+    (ui / "tauri.bundled.windows-pack.conf.json").write_text(
+        json.dumps(
+            {
+                "bundle": {
+                    "resources": ["gact-runtime.tar.zst", "gact-runtime.pack.json"],
+                    "windows": {"nsis": {"compression": "zlib"}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "config.json"
+    result = subprocess.run(
+        [
+            "node",
+            "-",
+            variant,
+            str(ROOT / "branding/clio/tauri.clio.conf.json"),
+            str(output),
+            "0.9.5-beta.5.2",
+        ],
+        input=match.group(1),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        cwd=tmp_path,
+        env={**os.environ, "RUNNER_OS": platform},
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads(output.read_text())
+    brand = json.loads(_text("branding/clio/tauri.clio.conf.json"))
+    assert config["plugins"]["updater"]["pubkey"] == brand["plugins"]["updater"]["pubkey"]
+    assert config["bundle"]["createUpdaterArtifacts"] == brand["bundle"]["createUpdaterArtifacts"]
+    assert config["bundle"]["externalBin"] == brand["bundle"]["externalBin"]
+    assert config["bundle"]["windows"]["wix"]["version"] == "0.9.5.5002"
+    nsis = config["bundle"]["windows"]["nsis"]
+    assert nsis["headerImage"] == brand["bundle"]["windows"]["nsis"]["headerImage"]
+    assert nsis["sidebarImage"] == brand["bundle"]["windows"]["nsis"]["sidebarImage"]
+    if variant == "bundled" and platform == "Windows":
+        assert nsis["compression"] == "zlib"
+        assert config["bundle"]["resources"] == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]
+    else:
+        assert nsis.get("compression") == brand["bundle"]["windows"]["nsis"].get("compression")
+
+
 def test_release_steps_after_the_check_use_the_package_version() -> None:
     """Only the tag check reads the tag; the rest use the package version it exports."""
 

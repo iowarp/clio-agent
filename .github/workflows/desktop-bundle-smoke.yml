@@ -77,7 +77,10 @@ jobs:
           fs.cpSync(path.join(root, 'branding/clio/icons'), path.join(ui, 'desktop/src-tauri/icons'), {recursive: true});
           fs.cpSync(path.join(root, 'branding/clio/installer'), path.join(ui, 'desktop/src-tauri/installer'), {recursive: true});
           const bundle = {createUpdaterArtifacts: false};
-          if (process.platform === 'win32') bundle.resources = ['gact-runtime.tar.zst', 'gact-runtime.pack.json'];
+          if (process.platform === 'win32') {
+            const windowsPack = JSON.parse(fs.readFileSync(path.join(ui, 'desktop/src-tauri/tauri.bundled.windows-pack.conf.json'), 'utf8'));
+            Object.assign(bundle, windowsPack.bundle);
+          }
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'smoke-config.json'), JSON.stringify({bundle}));
           NODE
           bash external/gact-tui/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
