@@ -271,6 +271,17 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             maximum=1024,
             default_behavior="llama.cpp picks from the available cores",
         ),
+        _int(
+            "gpu_layers",
+            "GPU layers",
+            "Model layers offloaded to the GPU.",
+            "flag",
+            "--n-gpu-layers",
+            minimum=0,
+            maximum=10_000,
+            default_behavior="Every layer on the GPU",
+            variants=["cuda", "vulkan"],
+        ),
     ),
     "ollama": (
         _int(

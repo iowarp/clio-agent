@@ -103,6 +103,10 @@ VLLM_IMAGES = {
 # ghcr.io/ggml-org/llama.cpp:server[-vulkan]-b11206, resolved 2026-10-08.
 LLAMA_CPU_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f"
 LLAMA_VULKAN_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00810eb17c7b816f4e4b16ac9467ed177f125ff3d72abc61e4a8b717f4430bdc"
+# ghcr.io/ggml-org/llama.cpp:server-cuda-b11206, resolved 2026-10-08.
+LLAMA_CUDA_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe"
+#: Offload every layer on a GPU variant unless the person sets gpu_layers.
+LLAMA_ALL_LAYERS = "999"
 # ollama/ollama:0.34.4 and :0.34.4-rocm, resolved 2026-10-08.
 OLLAMA_IMAGE = (
     "ollama/ollama@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551"
@@ -173,6 +177,7 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-llama-cpp",
         health_path="/health",
         variants=(
+            VariantSpec("cuda", "NVIDIA CUDA", LLAMA_BUILD, LLAMA_CUDA_IMAGE, "nvidia"),
             VariantSpec("vulkan", "Vulkan", LLAMA_BUILD, LLAMA_VULKAN_IMAGE, "dri"),
             VariantSpec("cpu", "CPU", LLAMA_BUILD, LLAMA_CPU_IMAGE, linux_only=False),
         ),
@@ -211,12 +216,20 @@ def service_port(service_id: str, configuration: dict[str, str], variant_id: str
     return int(raw)
 
 
+#: GPUs with a Vulkan driver CLIO can hand to a container: NVIDIA ships one in
+#: its driver (exposed with --nv / NVIDIA_DRIVER_CAPABILITIES=graphics), AMD
+#: through /dev/dri (Mesa RADV).
+VULKAN_ACCELERATORS = frozenset({"nvidia", "amd"})
+
+
 def _variant_compatible(variant: VariantSpec, facts: TargetFacts) -> tuple[bool, str]:
     if variant.linux_only and facts.os != "linux":
         return False, f"{variant.label} requires a Linux target."
     if variant.x86_only and facts.arch != "x86_64":
         return False, f"{variant.label} requires an x86-64 target."
-    wanted = {"nvidia": "nvidia", "amd": "amd", "dri": "amd"}.get(variant.accelerator)
+    if variant.accelerator == "dri" and facts.accelerator not in VULKAN_ACCELERATORS:
+        return False, f"{variant.label} requires an NVIDIA or AMD GPU."
+    wanted = {"nvidia": "nvidia", "amd": "amd"}.get(variant.accelerator)
     if wanted and facts.accelerator != wanted:
         return (
             False,
@@ -501,6 +514,7 @@ def _launch(
     cache_dir: str,
     windows: bool,
     keyed: bool = False,
+    host_accelerator: str = "none",
 ) -> ContainerLaunch:
     compiled = compile_parameters(spec.engine, variant.id, configuration)
     if keyed and spec.engine not in KEY_VARIABLES:
@@ -534,10 +548,18 @@ def _launch(
             _check_value("hf_model", hf_model)
             source = ["-hf", hf_model]
         args = [*source, "--host", host, "--port", str(port), *compiled.flags]
+        if variant.accelerator != "none" and "--n-gpu-layers" not in compiled.flags:
+            args.extend(["--n-gpu-layers", LLAMA_ALL_LAYERS])
     else:
         env.extend([("OLLAMA_HOST", f"{host}:{port}"), ("OLLAMA_MODELS", "/cache/models")])
         args = ["serve"]
     env.extend(compiled.env)
+    accelerator = variant.accelerator
+    if accelerator == "dri" and host_accelerator == "nvidia":
+        # Vulkan on NVIDIA: the driver's ICD comes with the GPU passthrough
+        # (--gpus all / --nv), plus the graphics capability on Docker/Podman.
+        accelerator = "nvidia"
+        env.append(("NVIDIA_DRIVER_CAPABILITIES", "compute,utility,graphics"))
     return ContainerLaunch(
         name=spec.container_name,
         image=variant.image,
@@ -546,7 +568,7 @@ def _launch(
         args=tuple(args),
         env=tuple(env),
         cache_dir=cache_dir,
-        accelerator=variant.accelerator,
+        accelerator=accelerator,
         mounts=tuple(mounts),
         # Docker/Podman take the key by name; Apptainer reads APPTAINERENV_*.
         secret_env=(KEY_VARIABLES[spec.engine],) if keyed and runtime != "apptainer" else (),
@@ -677,7 +699,15 @@ def build_model_runtime_plan(
     )
     images_dir = module.join(service_dir, "images")
     launch = _launch(
-        spec, variant, runtime, resolved, port, cache_dir, windows, keyed=bool(api_key)
+        spec,
+        variant,
+        runtime,
+        resolved,
+        port,
+        cache_dir,
+        windows,
+        keyed=bool(api_key),
+        host_accelerator=facts.accelerator,
     )
 
     def keyed(command: CommandSpec) -> CommandSpec:

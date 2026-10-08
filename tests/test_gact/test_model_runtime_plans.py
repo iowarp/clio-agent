@@ -369,6 +369,7 @@ def test_catalog_declares_parameters_runtime_choices_and_port() -> None:
         "parallel",
         "ctx_size",
         "threads",
+        "gpu_layers",
     }
     assert {row.id for row in definitions["ollama"].parameters} == {
         "num_parallel",
@@ -621,3 +622,61 @@ def test_container_readiness_uses_identity_only_when_keyed() -> None:
     assert "launch-key" not in " ".join(keyed.args)
     assert "Qwen/Qwen3-0.6B" in keyed.args
     assert readiness(None).stdin in (None, "")
+
+
+def _gpu_facts(accelerator: str, *usable: str) -> TargetFacts:
+    return _facts(*usable).model_copy(update={"accelerator": accelerator})
+
+
+@pytest.mark.parametrize(
+    ("accelerator", "offered"),
+    [("nvidia", {"cuda", "vulkan", "cpu"}), ("amd", {"vulkan", "cpu"}), ("none", {"cpu"})],
+)
+def test_llama_cpp_gpu_variants_follow_the_host_gpu(accelerator: str, offered: set[str]) -> None:
+    """CUDA needs NVIDIA; Vulkan runs on NVIDIA or AMD (it is not AMD-only)."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import model_runtime_definition
+
+    definition = model_runtime_definition("llama_cpp", _gpu_facts(accelerator, "apptainer"))
+    compatible = {v.id for v in definition.variants if v.compatible}
+    assert compatible & {"cuda", "vulkan", "cpu"} == offered
+    for variant in definition.variants:
+        if variant.id == "vulkan" and not variant.compatible:
+            assert variant.reason == "Vulkan requires an NVIDIA or AMD GPU."
+
+
+@pytest.mark.parametrize("runtime", ["apptainer", "docker"])
+def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtime: str) -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="cuda",
+        configuration={"model_path": "/models/q.gguf", "container_runtime": runtime},
+        facts=_gpu_facts("nvidia", runtime),
+    )
+    run = _run(plan.commands, runtime)
+    assert ("--nv" if runtime == "apptainer" else "--gpus") in run.args
+    assert run.args[run.args.index("--n-gpu-layers") + 1] == "999"
+    assert any(LLAMA_DIGEST in arg for arg in run.args) or runtime == "apptainer"
+
+
+def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="vulkan",
+        configuration={
+            "model_path": "/models/q.gguf",
+            "container_runtime": "docker",
+            "param.gpu_layers": "20",
+        },
+        facts=_gpu_facts("nvidia", "docker"),
+    )
+    run = _run(plan.commands, "docker")
+    assert "--gpus" in run.args and "/dev/dri" not in run.args
+    assert "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics" in run.args
+    assert run.args.count("--n-gpu-layers") == 1
+    assert run.args[run.args.index("--n-gpu-layers") + 1] == "20"
+
+
+LLAMA_DIGEST = "sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe"
