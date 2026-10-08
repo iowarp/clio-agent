@@ -20,6 +20,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import httpx
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -37,7 +39,10 @@ async def refresh_for_selected_model(app: "FastAPI", sid: str, req: "PostMessage
         EVIDENCED_MODALITY_SOURCES,
         live_model_modalities,
     )
-    from clio_agent.gact.provider_catalog_snapshot import read_catalog  # noqa: PLC0415
+    from clio_agent.gact.provider_catalog_snapshot import (  # noqa: PLC0415
+        UnknownCatalogProviderError,
+        read_catalog,
+    )
     from clio_agent.gact.providers.config import _model_ref_matches_active  # noqa: PLC0415
     from clio_agent.gact.session_host_agent import selected_ref  # noqa: PLC0415
 
@@ -48,7 +53,9 @@ async def refresh_for_selected_model(app: "FastAPI", sid: str, req: "PostMessage
         return
     try:
         await read_catalog(app, refresh=True, provider_id=ref.provider_id)
-    except Exception as exc:  # noqa: BLE001 - the gate then refuses with its typed 501
+    # The gate then refuses with its typed 501. A discovery transport failure
+    # (incl. a RuntimeError from a client) or an unregistered provider is logged.
+    except (UnknownCatalogProviderError, httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
         logger.warning(
             "selected model discovery refresh failed reason=selected_model_refresh_failed "
             "session=%s provider=%s model=%s error=%r",
