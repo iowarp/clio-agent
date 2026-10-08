@@ -11,6 +11,7 @@ import subprocess
 import sys
 import sysconfig
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from filelock import FileLock
 
 from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
+from clio_agent.runtime.document_stack.node_paths import node_path
 from clio_agent.runtime.document_stack.process import scratch_root
 from clio_agent.runtime.execution_environment import (
     bundled_root,
@@ -194,21 +196,32 @@ def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
 
 
 def _javascript_runtime(
-    cache: Path, workspace: Path, python: Path, inventory: dict[str, Any]
+    cache: Path,
+    workspace: Path,
+    inventory: dict[str, Any],
+    *,
+    progress: Callable[[str], None] | None = None,
 ) -> tuple[Path, Path]:
-    node = str(inventory["node"])
-    tools = cache / "javascript-tools"
+    node = node_path(str(inventory["node"]))
+    tools = Path(node_path(str(cache / "javascript-tools")))
     package = tools / "node_modules" / "pnpm"
     env = {**os.environ, "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", "")}
     try:
         pnpm = _pnpm_command(package, node, env)
     except (DocumentRuntimeError, OSError, ValueError, KeyError, TypeError, AttributeError):
         tools.mkdir(parents=True, exist_ok=True)
+        node_root = Path(node).parent
+        if node_root.name == "bin":
+            node_root = node_root.parent
+        npm = node_root / "lib" / "node_modules" / "npm" / "bin" / "npm-cli.js"
+        if not npm.is_file():
+            raise DocumentRuntimeError("Managed Node.js package has no npm entry point") from None
+        if progress is not None:
+            progress("Installing the pinned pnpm package manager...")
         _run(
             [
-                str(python),
-                "-c",
-                "import sys; from nodejs_wheel import npm; sys.exit(npm(sys.argv[1:]))",
+                node,
+                str(npm),
                 "install",
                 "--prefix",
                 str(tools),
@@ -224,7 +237,7 @@ def _javascript_runtime(
             pnpm = _pnpm_command(package, node, env)
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise DocumentRuntimeError(f"Installed pnpm has invalid metadata: {exc}") from exc
-    work = scratch_root(workspace) / "javascript"
+    work = Path(node_path(str(scratch_root(workspace) / "javascript")))
     work.mkdir(parents=True, exist_ok=True)
     for name in ("package.json", "pnpm-lock.yaml"):
         target = work / name
@@ -235,6 +248,8 @@ def _javascript_runtime(
             )
         target.write_bytes(expected)
     if not (work / "node_modules").is_dir():
+        if progress is not None:
+            progress("Installing Word, PowerPoint and image packages for Node.js...")
         _run(
             [
                 node,
@@ -243,7 +258,7 @@ def _javascript_runtime(
                 "--frozen-lockfile",
                 "--ignore-scripts",
                 "--store-dir",
-                str(cache / "pnpm-store"),
+                node_path(str(cache / "pnpm-store")),
             ],
             cwd=work,
             env=env,
@@ -270,7 +285,7 @@ def _javascript_runtime(
                 "--frozen-lockfile",
                 "--ignore-scripts",
                 "--store-dir",
-                str(cache / "pnpm-store"),
+                node_path(str(cache / "pnpm-store")),
             ],
             cwd=work,
             env=env,
@@ -289,7 +304,12 @@ def _javascript_runtime(
     return work, pnpm
 
 
-def prepare_document_runtime(workspace: Path, *, cache_root: Path | None = None) -> dict[str, Any]:
+def prepare_document_runtime(
+    workspace: Path,
+    *,
+    cache_root: Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Prepare and probe an isolated document runtime without changing Clio's interpreter.
 
     First use downloads Node.js and the locked package sets using Clio's Python. A failed
@@ -311,7 +331,11 @@ def prepare_document_runtime(workspace: Path, *, cache_root: Path | None = None)
     cache = (cache_root or paths.user_cache_dir() / "document-runtime") / _fingerprint()
     cache.mkdir(parents=True, exist_ok=True)
     with FileLock(str(cache / "prepare.lock"), timeout=240):
+        if progress is not None:
+            progress("Preparing and checking Python document packages...")
         python, inventory = _python_runtime(cache, uv)
+        if progress is not None:
+            progress("Python document packages are ready. Preparing Node.js packages...")
         output = scratch / "output"
         output.mkdir(parents=True, exist_ok=True)
         inventory.update(
@@ -353,7 +377,8 @@ def prepare_document_runtime(workspace: Path, *, cache_root: Path | None = None)
             }
         )
         try:
-            work, pnpm = _javascript_runtime(cache, workspace, python, inventory)
+            work, pnpm = _javascript_runtime(cache, workspace, inventory, progress=progress)
+            inventory["node"] = node_path(str(inventory["node"]))
             inventory["javascript"] = {
                 "status": "ready",
                 "workspace": str(work),
@@ -373,6 +398,8 @@ def prepare_document_runtime(workspace: Path, *, cache_root: Path | None = None)
             inventory["javascript"] = {"status": "failed", "error": str(exc)}
             inventory["status"] = "partial"
         publish_environment(workspace, inventory, cache)
+        if progress is not None and inventory["javascript"]["status"] == "ready":
+            progress("Node.js document packages are ready.")
     return inventory
 
 

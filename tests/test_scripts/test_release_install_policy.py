@@ -14,10 +14,11 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5b5.post1"
+EXPECTED_VERSION = "0.9.5b5.post2"
 #: The release the install docs name: the latest stable one. A beta changes the
 #: package version only; users opt into it explicitly.
 DOCUMENTED_VERSION = "0.9.4.24"
@@ -599,11 +600,19 @@ def test_release_tag_check_accepts_a_beta_tag_for_its_pep440_version(tmp_path: P
     assert _run_tag_check(tmp_path, "v0.9.5-beta.1", "0.9.5") != 0
 
 
-def test_beta_hotfix_tag_matches_its_pep440_post_release(tmp_path: Path) -> None:
-    """The beta.5.1 hotfix publishes a distinct, ordered Python version."""
-    assert _run_tag_check(tmp_path, "v0.9.5-beta.5.1", "0.9.5b5.post1") == 0
-    assert (tmp_path / "github_output").read_text() == "version=0.9.5b5.post1\n"
-    assert _run_tag_check(tmp_path, "v0.9.5-beta.5.1", "0.9.5b5") != 0
+@pytest.mark.parametrize(
+    ("public", "package"),
+    [("v0.9.5-beta.5.1", "0.9.5b5.post1"), ("v0.9.5-beta.5.2", "0.9.5b5.post2")],
+)
+def test_beta_hotfix_tag_matches_its_pep440_post_release(
+    tmp_path: Path,
+    public: str,
+    package: str,
+) -> None:
+    """Each hotfix publishes its distinct, ordered Python version."""
+    assert _run_tag_check(tmp_path, public, package) == 0
+    assert (tmp_path / "github_output").read_text() == f"version={package}\n"
+    assert _run_tag_check(tmp_path, public, "0.9.5b5") != 0
 
 
 def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Path) -> None:
@@ -618,6 +627,7 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
     assert match is not None
     for public, app, msi in (
         ("0.9.5-beta.5.1", "0.9.5-5+1", "0.9.5.5001"),
+        ("0.9.5-beta.5.2", "0.9.5-5+2", "0.9.5.5002"),
         ("0.9.5-beta.6", "0.9.5-6", "0.9.5.6000"),
         ("0.9.4.24", "0.9.4+24", "0.9.4.24"),
     ):

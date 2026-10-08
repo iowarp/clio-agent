@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -17,15 +18,24 @@ from clio_agent.runtime.document_runtime import (
 from clio_agent.runtime.github_cli import ensure_github_cli
 
 
-def install_document_runtime(workspace: Path, *, cache_root: Path | None = None) -> dict[str, Any]:
+def install_document_runtime(
+    workspace: Path,
+    *,
+    cache_root: Path | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
     """Provision and verify all required packages without enlarging the installer payload."""
     workspace.mkdir(parents=True, exist_ok=True)
-    result = prepare_document_runtime(workspace, cache_root=cache_root)
+    result = prepare_document_runtime(workspace, cache_root=cache_root, progress=progress)
     if result["javascript"]["status"] != "ready":
         raise DocumentRuntimeError(f"Node/pnpm package installation failed: {result['javascript']}")
+    if progress is not None:
+        progress("Preparing and checking the Office renderer...")
     office = prepare_office_runtime()
     result["native_tools"]["soffice"] = {"status": "available", "path": office}
     result["capabilities"]["office_render_recalculate"] = "available"
+    if progress is not None:
+        progress("Office rendering is ready. Preparing the GitHub command-line tool...")
     github = ensure_github_cli()
     result["native_tools"]["gh"] = {
         "status": "available",
@@ -38,6 +48,8 @@ def install_document_runtime(workspace: Path, *, cache_root: Path | None = None)
         / "installed.json"
     )
     receipt.write_text(json.dumps(result, indent=2), encoding="utf-8")
+    if progress is not None:
+        progress("All managed runtime packages are installed and verified.")
     return result
 
 
@@ -48,8 +60,9 @@ def main() -> None:
     args = parser.parse_args()
     # This standalone installer owns its workspace. Never widen a running agent's policy.
     os.environ["CLIO_ALLOWED_ROOTS"] = str(args.workspace.resolve())
-    print("Installing locked Python/uv and Node/pnpm packages and Office rendering...", flush=True)
-    result = install_document_runtime(args.workspace)
+    result = install_document_runtime(
+        args.workspace, progress=lambda message: print(message, flush=True)
+    )
     print(
         json.dumps(
             {
