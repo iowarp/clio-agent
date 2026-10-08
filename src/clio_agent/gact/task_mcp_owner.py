@@ -31,6 +31,9 @@ def accept_mcp_task(
         _drive(app, session, key, store, executor),
         lambda: cancel_task(session, key, store=store),
     )
+    from clio_agent.gact.task_submission_custody import cancel_accepted_if_closed
+
+    cancel_accepted_if_closed(app, key.session_id or "", row.handle)
     return {
         "accepted": True,
         "handle": row.handle,

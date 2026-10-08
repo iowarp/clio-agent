@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -18,7 +18,8 @@ from clio_agent.gact.task_controls import (
 def task_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
     """Present task control outcomes while keeping full structured results available."""
     del args, structured
-    count = len(result.get("tasks", result.get("results", []))) if isinstance(result, dict) else 0
+    rows = result.get("tasks", result.get("results", [])) if isinstance(result, dict) else []
+    count = len(rows) if isinstance(rows, list) else 0
     return {"summary": f"{count} task outcomes", "blocks": []}
 
 
@@ -33,7 +34,7 @@ def build_task_tools() -> list[Any]:
         "description": "Omit for an unbounded wait; zero snapshots immediately. Expiry ends only the waiter.",
     }
     optional_string = {"type": ["string", "null"]}
-    declarations = [
+    declarations: list[tuple[Callable[..., Any], dict[str, Any], bool]] = [
         (
             query_tasks,
             {

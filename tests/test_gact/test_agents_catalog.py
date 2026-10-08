@@ -192,7 +192,15 @@ def test_catalog_tools_describes_bare_clio_without_blueprint_activation(
     rows = resp.json()["tools"]
     names = {row["name"] for row in rows}
     assert {"fs_read_file", "create_artifact", "memory_search_sessions"} <= names
-    assert {"spawn_agent_task", "observe_agent_tasks", "wait_agent_tasks"} <= names
+    assert {
+        "spawn_agent_task",
+        "query_tasks",
+        "observe_tasks",
+        "wait_tasks",
+        "cancel_tasks",
+        "get_task_result",
+    } <= names
+    assert not {"observe_agent_tasks", "wait_agent_tasks", "get_agent_task_output"} & names
 
     # #1350: every row carries a typed input/output schema and a declared
     # domain -- the desktop Tools view groups/filters by these instead of a

@@ -35,10 +35,19 @@ def start_task_recovery(app: Any) -> None:
     if getattr(app.state, "connected_storage", None) is not None:
         recover_storage_handles(app)
     supervisor, store = task_supervisor(app), app_task_store(app)
+    from clio_agent.gact.task_relay_owner import retain_relay_owner
+
+    for task in app.state.agent_task_registry.snapshot():
+        retain_relay_owner(app, task)
+    from clio_agent.gact.task_backend_identity import relay_mirrors
+
+    mirrored = relay_mirrors(app, app.state.agent_task_registry.snapshot(), store.list())
     for row in store.list():
         if not row.handle or row.holding_reason or row.handle in supervisor.drivers:
             continue
         if row.kind in {"Download", "Indexing"}:
+            continue
+        if row.key in mirrored:
             continue
         if (row.effective_status or row.status) in TERMINAL and row.status in TERMINAL:
             continue

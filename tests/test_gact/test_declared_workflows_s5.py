@@ -971,7 +971,8 @@ def test_run_workflow_tool_present_only_when_workflow_declared(tmp_path: Path, m
     assert "run_workflow" in names_with
     assert "run_workflow" not in names_without
     # The base spawn toolset is present in both cases.
-    assert {"spawn_agent_task", "wait_agent_tasks", "spawn_agents_parallel"} <= names_without
+    assert {"spawn_agent_task", "spawn_agents_parallel", "message_agent"} <= names_without
+    assert not {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"} & names_without
 
 
 def test_run_workflow_tool_func_invokes_runner(tmp_path: Path, monkeypatch) -> None:

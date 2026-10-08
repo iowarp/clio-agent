@@ -10,8 +10,10 @@ import mcp_types
 from fastmcp import Client
 from fastmcp.client.client import CallToolResult
 from fastmcp_tasks.client import _inlined_call_tool_result
-from jsonschema import ValidationError, validate
+from jsonschema import Draft202012Validator, ValidationError
 from mcp.client.extension import ClaimContext
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 
 
 class AcceptedTaskResult(mcp_types.CallToolResult):
@@ -78,10 +80,16 @@ def validate_terminal(record: Any, current: Any) -> None:
     try:
         if result.structured_content is None:
             raise TaskResultValidationError("Backend omitted its declared structured result")
-        validate(result.structured_content, schema)
+        # Backend schemas can use local definitions, but validation must never
+        # fetch arbitrary external references using the application's credentials.
+        Draft202012Validator(schema, registry=Registry()).validate(result.structured_content)
     except ValidationError as exc:
         raise TaskResultValidationError(
             f"Backend result violates its declared schema: {exc.message}"
+        ) from exc
+    except Unresolvable as exc:
+        raise TaskResultValidationError(
+            "Backend schema contains an unresolved external reference"
         ) from exc
 
 

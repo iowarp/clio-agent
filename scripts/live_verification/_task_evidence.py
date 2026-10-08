@@ -64,4 +64,23 @@ def model_task_evidence(messages: list[dict[str, Any]], kind: str) -> dict[str, 
         if receipt["handle"] == observation["handle"]
         and receipt["position"] < observation["position"]
     ]
-    return {"accepted": accepted, "overlap": overlap, "pass": bool(overlap)}
+    independent = [
+        {"position": position, "invocation_id": part.get("call_id"), "observation": part}
+        for position, part in enumerate(parts)
+        if part.get("type") == "tool_result"
+        and part.get("tool_name") in ({"web_search"} if kind == "MCP" else {"fs_read_file"})
+        and not part.get("is_error")
+        and (kind == "MCP" or "independent action completed" in str(part))
+        and any(
+            receipt["position"] < position < observation["position"]
+            and receipt["handle"] == observation["handle"]
+            for receipt in accepted
+            for observation in running_observations
+        )
+    ]
+    return {
+        "accepted": accepted,
+        "overlap": overlap,
+        "independent_action_while_running": independent,
+        "pass": bool(overlap) and bool(independent),
+    }

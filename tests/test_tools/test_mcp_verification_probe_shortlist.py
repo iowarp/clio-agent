@@ -90,6 +90,7 @@ def test_a7_no_network_json_schema_dereferencing_in_clio_agent() -> None:
     allowed = {
         Path("src/clio_agent/gact/a2ui_catalogs/registry.py"),
         Path("src/clio_agent/gact/a2ui_catalogs/validation.py"),
+        Path("src/clio_agent/tools/task_receipt.py"),
     }
     src_root = Path("src/clio_agent")
     offenders = []
@@ -140,6 +141,19 @@ def test_a7_no_network_json_schema_dereferencing_in_clio_agent() -> None:
         validator = catalog_validators(catalog)["Probe"]
         with pytest.raises(Unresolvable):
             validator.validate({"component": "Probe", "leak": {"anything": 1}})
+        # MCP terminal schemas use the same no-retrieval rule. Exercise the real
+        # task validator as well, rather than merely expanding the file allowlist.
+        from types import SimpleNamespace
+
+        from clio_agent.tools.task_receipt import TaskResultValidationError, validate_terminal
+
+        record = SimpleNamespace(backend={"output_schema": catalog["components"]["Probe"]})
+        current = SimpleNamespace(
+            status="completed",
+            result={"content": [], "structuredContent": {"component": "Probe", "leak": {}}},
+        )
+        with pytest.raises(TaskResultValidationError, match="unresolved external reference"):
+            validate_terminal(record, current)
     finally:
         socket.create_connection = original_create_connection
 

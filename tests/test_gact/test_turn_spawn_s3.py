@@ -10,6 +10,7 @@ has a child to accept.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,20 @@ class _Agent:
                 "routing_rationale": "",
             },
         )()
+
+
+class _HeldAgent(_Agent):
+    """Hold a real child turn inside its executor until the Stop assertion releases it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def forward(self, question: str, session_id: str, **kwargs: Any) -> Any:
+        self.entered.set()
+        assert self.release.wait(10), "the test must release the running child"
+        return super().forward(question, session_id, **kwargs)
 
 
 def _declare(monkeypatch, *child_ids: str) -> None:
@@ -283,21 +298,30 @@ def test_queue_admission_at_cap(tmp_path: Path, monkeypatch) -> None:
         assert _wait_terminal(app, second.task_id).status == "completed"
 
 
-def test_cancel_cascade_from_parent(tmp_path: Path, monkeypatch) -> None:
-    """Cancelling a parent session cascades to cancel its spawned child tasks."""
+def test_stop_parent_turn_preserves_accepted_children(tmp_path: Path, monkeypatch) -> None:
+    """Conversation Stop abandons its turn while accepted children run to completion."""
 
     _declare(monkeypatch, "main")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(sleep_s=3.0))
+    agent = _HeldAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         task = spawn_child_turn_threadsafe(
             app, TaskSpec(child_expert_id="main", task_text="x", parent_session_id=parent)
         )
         assert task.status == STATUS_RUNNING
-        assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+        assert agent.entered.wait(10), "Stop must occur while the accepted child is executing"
+        try:
+            assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+            active = app.state.agent_task_registry.get(task.task_id)
+            assert active.status == STATUS_RUNNING and not active.cancel_requested
+            assert task.child_session_id not in app.state.cancel_flags
+        finally:
+            agent.release.set()
         settled = _wait_terminal(app, task.task_id, timeout=6.0)
-        assert settled.status == "cancelled", settled.status
-        assert _bus(app, parent, "agent.task.cancelled"), "no cascade cancel event on parent"
+        assert settled.status == "completed", settled.status
+        assert not settled.cancel_requested
+        assert not _bus(app, parent, "agent.task.cancelled")
 
 
 def test_late_child_spawn_after_parent_cancel_is_refused(tmp_path: Path, monkeypatch) -> None:
@@ -326,7 +350,7 @@ def test_late_child_spawn_after_parent_cancel_is_refused(tmp_path: Path, monkeyp
 
 
 def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> None:
-    """Cancelling a parent frees its child's concurrency slot and admits a QUEUED
+    """Explicitly cancelling a child frees its concurrency slot and admits a QUEUED
     task of ANOTHER parent — it must not strand forever (the completion hook won't
     admit a cascade-cancelled task, which is already terminal when its callback runs)."""
 
@@ -344,8 +368,11 @@ def test_cancel_frees_slot_and_admits_queued(tmp_path: Path, monkeypatch) -> Non
         )
         assert ta.status == STATUS_RUNNING
         assert tb.status == "queued"
-        # Cancel parent A -> frees the only slot -> B's queued child is admitted.
-        assert client.post(f"/v1/sessions/{pa}/cancel").status_code == 204
+        # Explicit task cancellation frees a slot only after its owner settles.
+        cancelled = client.post(f"/v1/sessions/{pa}/async-tasks/cancel", json={"tasks": ta.task_id})
+        assert cancelled.status_code == 200, cancelled.text
+        assert cancelled.json()["results"][0]["cancellation_requested"]
+        assert _wait_terminal(app, ta.task_id, timeout=6).status == "cancelled"
         settled_b = _wait_terminal(app, tb.task_id, timeout=8.0)
         assert settled_b.status == "completed", (
             f"queued task of another parent stranded: {settled_b.status}"

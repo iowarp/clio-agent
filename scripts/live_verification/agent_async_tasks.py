@@ -208,7 +208,9 @@ def main() -> int:
                 prompt = (
                     f"Call web_fetch on exactly {target}. If it returns a task handle, immediately "
                     "call query_tasks(kind='MCP') before waiting. Then call web_search for 'Model "
-                    "Context Protocol specification', count=1. Use wait_tasks on all handles you "
+                    "Context Protocol specification', count=1. Immediately query_tasks(kind='MCP') "
+                    "again to establish whether the fetch still runs after the search. "
+                    "Use wait_tasks on all handles you "
                     "received, then get_task_result on the fetch handle. Report the actual returned "
                     "observations and whether they are handles or documents. Do not infer that work "
                     "was still running unless the task snapshot proves it."

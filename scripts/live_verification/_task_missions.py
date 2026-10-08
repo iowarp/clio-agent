@@ -55,7 +55,7 @@ def folder_input(proof: Path, kind: str) -> dict[str, Any]:
 
 def mission(kind: str, workspace: Path, *, source: dict[str, Any] | None = None) -> str:
     """Name actual tools and require independent work before any explicit wait."""
-    read = f"fs_read_file(filepath={str(workspace / 'sentinel.txt')!r})"
+    read = f"fs_read_file(filepath={(workspace / 'sentinel.txt').as_posix()!r})"
     if kind in {"Shell", "Subagent"}:
         command = shell_input(workspace)
         execution = (
@@ -83,6 +83,7 @@ def mission(kind: str, workspace: Path, *, source: dict[str, Any] | None = None)
         raise ValueError(f"No mission for {kind}")
     return (
         submit + f" Immediately call query_tasks(kind={kind!r}) and {read}. "
+        f"Then query_tasks(kind={kind!r}) again to establish whether it still runs after the read. "
         "Call wait_tasks on the accepted handle with timeout_s=0.1. If it expires, do not "
         "cancel or relaunch. Call observe_tasks on that handle, then wait_tasks without a "
         "timeout. Finally call get_task_result on that handle. Report actual returned "

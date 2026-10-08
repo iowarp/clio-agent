@@ -137,12 +137,10 @@ def project_session_async_processes(
         for owner_session_id in owner_session_ids
         for task in app.state.agent_task_registry.for_parent(owner_session_id)
     ]
-    agent_task_ids = {(task.parent_session_id, task.task_id) for task in agent_tasks}
     records = app_task_store(app).list()
-    identity_counts: dict[tuple[str | None, str], int] = {}
-    for record in records:
-        alias = (record.session_id, record.task_id)
-        identity_counts[alias] = identity_counts.get(alias, 0) + 1
+    from clio_agent.gact.task_backend_identity import relay_mirrors
+
+    mirrored = relay_mirrors(app, agent_tasks, records)
     rows = []
     for task in agent_tasks:
         owner = lineage_by_session.get(task.child_session_id, {})
@@ -162,12 +160,7 @@ def project_session_async_processes(
             "task_path": list(lineage_by_session.get(record.session_id, {}).get("task_path") or []),
         }
         for record in records
-        if record.session_id in owner_session_ids
-        and not (
-            record.tool == "relay_submit_agent"
-            and (record.session_id, record.task_id) in agent_task_ids
-            and identity_counts[(record.session_id, record.task_id)] == 1
-        )
+        if record.session_id in owner_session_ids and record.key not in mirrored
     )
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
 
@@ -185,9 +178,15 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _not_found("session", sid)
         from clio_agent.gact.task_projection import task_views
 
-        return {"processes": task_views(app, sid, include_children=include_children)}
+        return {
+            "processes": [
+                row
+                for row in task_views(app, sid, include_children=include_children)
+                if not row.get("dismissed")
+            ]
+        }
 
-    @app.get("/v1/sessions/{sid}/tasks")
+    @app.get("/v1/sessions/{sid}/async-tasks")
     async def list_tasks(
         sid: str,
         kind: str | None = None,
@@ -219,7 +218,7 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.post("/v1/sessions/{sid}/tasks/cancel")
+    @app.post("/v1/sessions/{sid}/async-tasks/cancel")
     async def cancel_tasks(sid: str, body: TaskSelection) -> dict[str, Any]:
         from clio_agent.gact.task_controls import cancel_selected
 
@@ -227,7 +226,7 @@ def register_async_process_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _not_found("session", sid)
         return await asyncio.to_thread(cancel_selected, app, sid, body.tasks)
 
-    @app.get("/v1/sessions/{sid}/tasks/{handle}/result")
+    @app.get("/v1/sessions/{sid}/async-tasks/{handle}/result")
     async def get_result(sid: str, handle: str) -> dict[str, Any]:
         from clio_agent.gact.task_controls import collect_result
         from clio_agent.gact.task_projection import resolve_task

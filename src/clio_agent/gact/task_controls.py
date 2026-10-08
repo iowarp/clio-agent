@@ -185,6 +185,15 @@ def wait_tasks(
     tasks: str | list[str], return_when: str = "all", timeout_s: float | None = None
 ) -> dict[str, Any]:
     """Wait for any/all mixed tasks. Default is unbounded; expiry or Stop ends only the wait."""
+    from clio_agent.runtime.commitment_activity import track
+
+    with track(timeout_s is None):
+        return _wait_tasks(tasks, return_when, timeout_s)
+
+
+def _wait_tasks(
+    tasks: str | list[str], return_when: str, timeout_s: float | None
+) -> dict[str, Any]:
     if return_when not in {"any", "all"}:
         raise ValueError("return_when must be any or all")
     app, sid = _scope()
@@ -212,6 +221,18 @@ def observe_tasks(
     timeout_s: float | None = None,
 ) -> dict[str, Any]:
     """Read incremental output without collecting completion; pattern waits for output or settlement."""
+    from clio_agent.runtime.commitment_activity import track
+
+    with track(pattern is not None and timeout_s is None):
+        return _observe_tasks(tasks, cursor, pattern, timeout_s)
+
+
+def _observe_tasks(
+    tasks: str | list[str],
+    cursor: str | int | None,
+    pattern: str | None,
+    timeout_s: float | None,
+) -> dict[str, Any]:
     app, sid = _scope()
     deadline = _deadline(timeout_s)
     regex = re.compile(pattern) if pattern is not None else None

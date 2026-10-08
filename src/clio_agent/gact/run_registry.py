@@ -144,32 +144,31 @@ def project_runs(app: "FastAPI") -> list[dict[str, Any]]:
     """
 
     tasks = app.state.agent_task_registry.snapshot()
-    agent_ids = {(task.parent_session_id, task.task_id) for task in tasks}
-    records = app_task_store(app).list()
-    alias_counts: dict[tuple[str | None, str], int] = {}
-    for record in records:
-        alias = (record.session_id, record.task_id)
-        alias_counts[alias] = alias_counts.get(alias, 0) + 1
+    from clio_agent.gact.task_projection import task_views
+
+    store = app_task_store(app)
+    actions: dict[str, list[str]] = {}
+    for sid in {
+        *(task.parent_session_id for task in tasks),
+        *(record.session_id for record in store.list() if record.session_id),
+    }:
+        # Legacy handles are persisted by the common projection before any
+        # response is built; the first and subsequent reads expose one identity.
+        for task in task_views(app, sid):
+            actions[task["handle"]] = task["supported_actions"]
+    records = store.list()
+    from clio_agent.gact.task_backend_identity import relay_mirrors
+
+    mirrored = relay_mirrors(app, tasks, records)
     rows = [_agent_run(task) for task in tasks if not task.dismissed]
     rows.extend(
         _relay_run(record)
         for record in records
-        if not record.dismissed
-        and not (
-            record.tool == "relay_submit_agent"
-            and (record.session_id, record.task_id) in agent_ids
-            and alias_counts[(record.session_id, record.task_id)] == 1
-        )
+        if not record.dismissed and record.key not in mirrored
     )
     # Use the same owner-aware actions as agent and session controls. A lost
     # transport cannot honestly offer cancellation, while a finished subagent
     # may still own active descendants.
-    from clio_agent.gact.task_projection import task_views
-
-    actions: dict[str, list[str]] = {}
-    for sid in {row["parent_session_id"] for row in rows if row["parent_session_id"]}:
-        for task in task_views(app, sid):
-            actions[task["handle"]] = task["supported_actions"]
     for row in rows:
         row["supported_actions"] = actions.get(row["handle_id"], [])
     return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
@@ -212,37 +211,12 @@ def detach_run(app: "FastAPI", handle_id: str) -> dict[str, Any] | None:
 
 
 def dismiss_run(app: "FastAPI", handle_id: str) -> bool:
-    """Hide one run while leaving execution untouched.
+    """Hide one run while preserving its durable handle, outcome and delivery state.
 
-    An ``AgentTask``-backed run is hidden via its ``dismissed`` field — never
-    dropped, so ``for_parent``/``project_runs`` keep returning the row (a
-    dismissed run is hidden by the CLIENT's own filter, not erased server-side).
-    A durable MCP/relay ``TaskRecord`` has no such field: #1205's retention
-    design (2nd round) keeps a settled record in the store with its terminal
-    status until this explicit action, so dismissing one is the ONE way to make
-    it stop appearing — this call drops it for real. Matches ANY tool now, not
-    only the relay-agent-mirroring ``relay_submit_agent`` records this
-    originally covered — the session-scoped async-processes tray (#1205)
-    surfaces every non-agent-task record (``jarvis_run`` etc.), not just that one.
-
-    Two invariants #1205 review (3rd round) holds this to:
-
-    * **Terminality guard (BLOCKING).** A live (non-terminal) ``TaskRecord`` is
-      NEVER dropped here — dropping it would delete the only durable local handle
-      to a still-running remote task (the exact crash-recovery guarantee
-      ``mcp_task_store.py``'s own module contract exists to protect; the old
-      tool-name filter only incidentally shielded this by accident, not by
-      design). A dismiss request against a non-terminal task is refused
-      (``False``), same shape as "no match" — it never partially acts.
-    * **Composite-key precision (BLOCKING).** ``handle_id`` is a bare task id, but
-      the durable identity is the COMPOSITE ``(server_id, session_id, task_id)``
-      — two different backends can legitimately mint the same task id
-      (``mcp_task_records.py``'s own module contract; ``cancel_task``'s docstring
-      states the identical invariant and ``test_cancel_stamps_only_the_named_identity``
-      guards it there). This resolves to at most ONE matching record and drops
-      only THAT record's own composite key — never a blanket sweep of every
-      record merely sharing the bare id, which would delete an unrelated
-      backend's live task as collateral damage.
+    Agent and MCP records use their persisted ``dismissed`` flag. MCP owners must
+    already be terminal; hiding an active owner is refused. Resolve public handles
+    or an unambiguous legacy alias to exactly one composite identity. UI listings
+    hide dismissed records, while explicit result readback remains available.
     """
 
     task = app.state.agent_task_registry.get(handle_id)

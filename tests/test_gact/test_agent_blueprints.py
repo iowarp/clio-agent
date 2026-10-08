@@ -2649,7 +2649,7 @@ Coordinate genomics work.
     assert "- `variant`: Variant Expert" in context
     assert "memory_search_sessions" in context
     assert "`spawn_agent_task(agent, task)`" in context
-    assert "`wait_agent_tasks(" in context
+    assert "`wait_tasks(" in context
     # Async-first posture lock (async-first-semantics slice): the routing briefing
     # MUST teach the fire-and-forget async spawn posture, not the old serial
     # "spawn one child, wait, decide the next hop" loop. These load-bearing phrases
@@ -3807,10 +3807,10 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                 isError=False,
             )
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("fastmcp.Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )
@@ -3893,10 +3893,10 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
                 )
             ]
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("fastmcp.Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )

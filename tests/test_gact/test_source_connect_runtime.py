@@ -2,40 +2,39 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from clio_agent.gact.app import build_app
 from clio_agent.gact.storage import connect_tool, setup_tool
 from clio_agent.gact.storage.service import StorageService
 
 
 @pytest.fixture
-def bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[StorageService, Any, Path]:
+def bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[StorageService, Any, Path]]:
     service = StorageService(tmp_path / "data", tmp_path / "private" / "credentials.json")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    app = SimpleNamespace(
-        state=SimpleNamespace(
-            connected_storage=service,
-            sessions={"s": SimpleNamespace(workspace_id="w")},
-            workspaces={
-                "w": SimpleNamespace(
-                    root_path=str(workspace),
-                    config={"granted_write_roots": [str(tmp_path / "second")]},
-                )
-            },
-            pending_permission_gate=lambda *args: "allow",
-        )
-    )
-    monkeypatch.setattr(connect_tool.context, "active_app", lambda: app)
-    monkeypatch.setattr(connect_tool.context, "active_session_id", lambda: "s")
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    configured = app.state.workspaces.update("ws_default", root_path=str(workspace))
+    assert configured is not None
+    configured.config["granted_write_roots"] = [str(tmp_path / "second")]
+    sid = app.state.sessions.create(workspace_id="ws_default", title="owner").id
     upstream = tmp_path / "upstream"
     upstream.mkdir()
     (upstream / "measurements.csv").write_text("x,y\n1,2\n", encoding="utf-8")
-    return service, app, upstream
+    with TestClient(app):
+        app.state.connected_storage = service
+        app.state.pending_permission_gate = lambda *args: "allow"
+        monkeypatch.setattr(connect_tool.context, "active_app", lambda: app)
+        monkeypatch.setattr(connect_tool.context, "active_session_id", lambda: sid)
+        yield service, app, upstream
 
 
 def test_permission_denial_leaves_no_source(bound: tuple[StorageService, Any, Path]) -> None:
@@ -43,11 +42,13 @@ def test_permission_denial_leaves_no_source(bound: tuple[StorageService, Any, Pa
     app.state.pending_permission_gate = lambda *args: "deny"
     with pytest.raises(PermissionError, match="not approved"):
         connect_tool.connected_data_connect("local", str(upstream), "Measurements")
-    assert service.sources("w") == []
+    assert service.sources("ws_default") == []
 
 
 @pytest.mark.parametrize("mode,decision", [("ask", "deny"), ("ask", "allow"), ("bypass", "allow")])
-def test_connection_uses_live_permission_gate(tmp_path: Path, mode: str, decision: str) -> None:
+def test_connection_uses_live_permission_gate(
+    tmp_path: Path, mode: str, decision: str, request: pytest.FixtureRequest
+) -> None:
     """Prompted and bypass connections share the actual audited permission gate."""
     import threading
     import time
@@ -56,6 +57,8 @@ def test_connection_uses_live_permission_gate(tmp_path: Path, mode: str, decisio
     from tests.test_gact.test_a2ui_v3 import HEADERS, _session_client
 
     client, sid, _ = _session_client(tmp_path)
+    client.__enter__()
+    request.addfinalizer(lambda: client.__exit__(None, None, None))
     app = client.app
     upstream = tmp_path / "upstream"
     upstream.mkdir()
@@ -116,13 +119,18 @@ def test_connection_is_real_and_reused_without_a_second_approval(
 
     app.state.pending_permission_gate = allow
     first = connect_tool.connected_data_connect("local", str(upstream), "Measurements")
+    from clio_agent.gact.task_controls import wait_tasks
+
+    settled = wait_tasks(first["handle"])
+    assert settled["results"][0]["status"] == "completed"
+    assert first["connection"]["state"] == "indexing"
     second = connect_tool.connected_data_connect("local", str(upstream), "Measurements")
-    assert first["connection"] == second["connection"]
-    assert first["connection"]["state"] == "linked"
+    assert second["connection"]["source_id"] == first["connection"]["source_id"]
+    assert second["connection"]["state"] == "linked"
     assert len(requests) == 1 and requests[0][0] == "connected_data_connect"
     opened = setup_tool.connected_data_open(first["connection"]["source_id"])
     assert [row["path"] for row in opened["entries"]] == ["measurements.csv"]
-    assert len(service.sources("w")) == 1
+    assert len(service.sources("ws_default")) == 1
 
 
 def test_status_keeps_workspace_folders_when_remote_sources_are_empty(
@@ -144,7 +152,7 @@ def test_oauth_connection_waits_for_private_sign_in(
     service, _, _ = bound
     result = connect_tool.connected_data_connect("google_drive", "drive-folder", "Dataset")
     assert result["connection"]["state"] == "sign_in_required"
-    assert service.sources("w")[0].linked_manifest_id is None
+    assert service.sources("ws_default")[0].linked_manifest_id is None
     assert (
         next(row for row in result["accounts"] if row["provider"] == "google_drive")[
             "login_action"
@@ -161,4 +169,4 @@ def test_source_configuration_cannot_smuggle_a_credential(
         connect_tool.connected_data_connect(
             "github", "iowarp/clio-agent", "Repo", configuration={"token": "must-not-accept"}
         )
-    assert service.sources("w") == []
+    assert service.sources("ws_default") == []

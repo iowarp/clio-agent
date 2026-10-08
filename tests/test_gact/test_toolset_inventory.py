@@ -304,8 +304,9 @@ def test_declared_children_give_spawn_tools_the_spawn_runtime_source(
         for row in _events_of(captured, "agent.toolset.recorded")[0]["payload"]["tools"]
     }
     assert rows["spawn_agent_task"]["source"] == "spawn-runtime"
-    assert rows["wait_agent_tasks"]["source"] == "spawn-runtime"
-    assert rows["observe_agent_tasks"]["source"] == "spawn-runtime"
+    assert rows["wait_tasks"]["source"] == "native"
+    assert rows["observe_tasks"]["source"] == "native"
+    assert not {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"} & rows.keys()
     assert "check_agent_tasks" not in rows
     assert rows["spawn_agents_parallel"]["source"] == "spawn-runtime"
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import posixpath
 import re
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Literal, cast
 from urllib.parse import urlparse
@@ -125,7 +126,12 @@ class DriveSource:
         except httpx.HTTPError as exc:
             raise ValueError("Google Drive could not be reached") from exc
 
-    def entries(self) -> list[FileEntry]:
+    def entries(
+        self,
+        *,
+        progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[FileEntry]:
         """List all selected descendants and identify native document exports explicitly."""
         rows: list[FileEntry] = []
         self._files = {}
@@ -135,6 +141,8 @@ class DriveSource:
             folder, parent = pending.pop()
             page = ""
             while True:
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("Drive folder indexing cancelled")
                 parameters = {
                     "q": f"'{folder}' in parents and trashed = false",
                     "pageSize": "1000",
@@ -146,6 +154,8 @@ class DriveSource:
                     parameters["pageToken"] = page
                 data = self._json("GET", _API + "/files", params=parameters)
                 for metadata in data.get("files", []):
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("Drive folder indexing cancelled")
                     if len(rows) >= 100_000:
                         raise ValueError("Select a smaller Drive folder (limit 100,000 entries)")
                     name, mime = str(metadata["name"]), str(metadata["mimeType"])
@@ -180,6 +190,8 @@ class DriveSource:
                         pending.append((metadata["id"], path))
                     else:
                         self._files[path] = metadata
+                    if progress is not None:
+                        progress(len(rows))
                 page = data.get("nextPageToken", "")
                 if not page:
                     break

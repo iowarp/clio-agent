@@ -616,6 +616,12 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # makes a provider "configured" and the real probe reach the network.
             "refresh_provider_models": {},
             "connected_data_status": {},
+            "connected_data_download": {"source_id": "missing-source"},
+            "query_tasks": {},
+            "observe_tasks": {"tasks": "missing-task"},
+            "wait_tasks": {"tasks": "missing-task", "timeout_s": 0},
+            "cancel_tasks": {"tasks": "missing-task"},
+            "get_task_result": {"handle": "missing-task"},
             # Invalid source locations and missing source records refuse before
             # permission prompts, account access or network operations. They
             # must still record the exact executed inputs and failure result.
@@ -951,7 +957,11 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
     with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
         tools = spawn_runtime.build_spawn_runtime_tools(
             SimpleNamespace(),
-            SimpleNamespace(id="main", metadata={"agent_blueprint_id": "bp"}),
+            SimpleNamespace(
+                id="main",
+                metadata={"agent_blueprint_id": "bp"},
+                tools=["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"],
+            ),
         )
     instrument_tools(tools)
     expected = {
@@ -982,6 +992,7 @@ def test_declared_workflow_keeps_a_tool_row_around_its_child_handoffs(
     )
     agent = SimpleNamespace(
         id="main",
+        tools=[],
         metadata={
             "agent_blueprint_id": "bp",
             "workflow": {"steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]},
@@ -1070,7 +1081,11 @@ def test_no_registered_native_title_contains_a_paren(tmp_path: Path, monkeypatch
     with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
         tools += spawn_runtime.build_spawn_runtime_tools(
             SimpleNamespace(),
-            SimpleNamespace(id="main", metadata={"agent_blueprint_id": "bp"}),
+            SimpleNamespace(
+                id="main",
+                metadata={"agent_blueprint_id": "bp"},
+                tools=["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"],
+            ),
         )
     instrument_tools(tools)
     assert len(tools) >= 12, "expected the full curated native/auto/spawn-runtime set"

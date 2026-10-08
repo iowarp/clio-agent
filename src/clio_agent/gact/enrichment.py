@@ -660,9 +660,7 @@ def enrich_turn_context(
 # register it and keep the block out of the user-text lane is future work (see
 # CHANGELOG); the marker is a stable, greppable header now and the registration
 # hook when that machinery lands. It is NOT a machine-enforced trust boundary yet.
-PENDING_TASK_NOTIFICATION_MARKER = (
-    "## Background agent-task results (spawned in an earlier turn — you decide what to do)"
-)
+PENDING_TASK_NOTIFICATION_MARKER = "## Background task results"
 # Injection is BOUNDED: at most this many task blocks per turn, each excerpt
 # size-capped; a typed note reports how many more remain pending (they surface on
 # the following turn — never dropped).

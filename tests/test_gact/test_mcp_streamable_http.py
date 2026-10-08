@@ -100,7 +100,9 @@ def test_streamable_http_tool_visible_in_catalog(
     """(a) A streamable-http server's live tool must appear in GET /v1/tools."""
     _seed_streamable_http(client)
     captured: list[object] = []
-    monkeypatch.setattr("fastmcp.Client", _fake_client_factory(captured))
+    monkeypatch.setattr(
+        "clio_agent.tools.task_receipt.TaskAwareClient", _fake_client_factory(captured)
+    )
 
     resp = client.get("/v1/tools")
     assert resp.status_code == 200, resp.text
@@ -121,7 +123,9 @@ def test_streamable_http_tools_listing_nonempty(
     """(b) GET /v1/mcp/servers/{sid}/tools must be non-empty for streamable-http."""
     sid = _seed_streamable_http(client)
     captured: list[object] = []
-    monkeypatch.setattr("fastmcp.Client", _fake_client_factory(captured))
+    monkeypatch.setattr(
+        "clio_agent.tools.task_receipt.TaskAwareClient", _fake_client_factory(captured)
+    )
 
     resp = client.get(f"/v1/mcp/servers/{sid}/tools")
     assert resp.status_code == 200, resp.text
@@ -139,7 +143,9 @@ def test_streamable_http_tool_call_not_500(
     """(c) POST /v1/mcp/servers/{sid}/call must not 500 on a streamable-http spec."""
     sid = _seed_streamable_http(client)
     captured: list[object] = []
-    monkeypatch.setattr("fastmcp.Client", _fake_client_factory(captured))
+    monkeypatch.setattr(
+        "clio_agent.tools.task_receipt.TaskAwareClient", _fake_client_factory(captured)
+    )
 
     resp = client.post(f"/v1/mcp/servers/{sid}/call", json={"tool": "sh_tool", "args": {}})
     assert resp.status_code == 200, resp.text

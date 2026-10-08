@@ -8,6 +8,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import stat
 import uuid
 from contextlib import contextmanager
@@ -259,7 +260,10 @@ class FsspecFolder:
         if isinstance(self.fs, LocalFileSystem):
             target = safe_child(Path(self.root), path).as_posix()
         if content is None:
-            self.fs.rm_file(target)
+            if isinstance(self.fs, LocalFileSystem):
+                os.unlink(win_extended_path(target))
+            else:
+                self.fs.rm_file(target)
             return None
         self.fs.makedirs(posixpath.dirname(target), exist_ok=True)
         if isinstance(self.fs, _ApprovedDrive):
@@ -269,13 +273,17 @@ class FsspecFolder:
             # Local and SFTP implementations publish one staged file with rename.
             stage = posixpath.join(posixpath.dirname(target), ".clio-write-" + uuid.uuid4().hex)
             try:
-                self.fs.put_file(str(content), stage)
                 if isinstance(self.fs, LocalFileSystem):
+                    shutil.copyfile(win_extended_path(content), win_extended_path(stage))
                     atomic_replace(Path(stage), Path(target))
                 else:
+                    self.fs.put_file(win_extended_path(content), stage)
                     self.fs.mv(stage, target)
             finally:
-                if self.fs.exists(stage):
+                if isinstance(self.fs, LocalFileSystem):
+                    if os.path.exists(win_extended_path(stage)):
+                        os.unlink(win_extended_path(stage))
+                elif self.fs.exists(stage):
                     self.fs.rm_file(stage)
         self.fs.invalidate_cache()
         return next(row.revision for row in self.entries() if row.path == path)

@@ -74,7 +74,7 @@ class RelayExpertInvoker:
         if not prompt_path.strip():
             raise ValueError("relay prompt_path must be a non-empty string")
         self._app = app
-        self._runtime = RelayInvokerRuntime(client_factory, cluster=cluster)
+        self._runtime = RelayInvokerRuntime(client_factory, cluster=cluster, app=app)
         self._placement = f"relay:{cluster}"
         self._events = RelayEventPump(app, client_factory)
         self._prompt_path = prompt_path
@@ -112,8 +112,13 @@ class RelayExpertInvoker:
         }
 
     def invoke(self, spec: TaskSpec) -> TaskHandle:
-        """Submit remote_agent work and return the relay job id as the task id."""
+        """Submit remote work once, retaining acceptance custody across subtree cancellation."""
+        from clio_agent.gact.task_submission_custody import submission_scope
 
+        with submission_scope(self._app, spec.parent_session_id):
+            return self._invoke(spec)
+
+    def _invoke(self, spec: TaskSpec) -> TaskHandle:
         workspace_id, session_mode, scope = validate_task_spec(self._app, spec)
         spec = replace(spec, placement=self._placement)
         identity, current = self._runtime.submit_and_poll(
@@ -144,10 +149,9 @@ class RelayExpertInvoker:
                 },
                 parent_turn_id=spec.parent_turn_id,
                 depth=spec.depth,
-                task_id=identity.task_id,
                 workspace_id=workspace_id,
                 session_mode=session_mode,
-                session_scope_metadata=scope,
+                session_scope_metadata={**scope, "relay_task_key": identity.key.to_wire()},
                 run_index=run_index,
                 fanout_bound=spec.fanout_bound,
                 queued_reason="",
@@ -155,12 +159,20 @@ class RelayExpertInvoker:
                 host=self._placement.split(":", 1)[1],
                 spawn_group_id=spec.spawn_group_id,
                 group_size=spec.group_size,
+                description=spec.description or spec.task_text,
             )
             handle = TaskHandle.from_task(seeded)
             self._apply_poll(handle, current)
             current_task = self._require_local_task(handle)
             handle = TaskHandle.from_task(current_task)
         self._start_event_pump(handle)
+        if getattr(self._app.state, "mcp_app_loop", None) is not None:
+            from clio_agent.gact.task_relay_owner import retain_relay_owner
+
+            retain_relay_owner(self._app, current_task)
+            from clio_agent.gact.task_submission_custody import cancel_accepted_if_closed
+
+            cancel_accepted_if_closed(self._app, spec.parent_session_id, handle.task_id)
         return handle
 
     def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
@@ -336,7 +348,7 @@ class RelayExpertInvoker:
         wire = find_task_result_wire(getattr(current, "result", None))
         if wire is not None:
             remote_task_id = str(wire.get("task_id") or "")
-            if remote_task_id and remote_task_id != handle.task_id:
+            if remote_task_id and remote_task_id != self._runtime.task_key(handle).task_id:
                 raise InvokerError(
                     "relay TaskResult task_id disagrees with the retained handle",
                     reason="task_identity_mismatch",

@@ -59,6 +59,19 @@ Submission health limits remain. A failed submission never returns acceptance;
 uncertain requests are not replayed. Existing orphan persistence errors retain
 the backend identity and best-effort cancellation outcome.
 
+The supervisor tracks outstanding acceptance RPCs against their complete
+conversation owner. Subtree cancellation closes admission under the same lock
+and waits for already-dispatched acceptances to finish recording and enter their
+owner's cancellation path. A parent cannot publish cancellation while an
+uncertain descendant submission is still settling. Stop only releases the turn's
+waiter; it does not close task admission or cancel accepted work.
+
+Relay subagents persist their complete backend key in the existing child-session
+metadata before returning a fresh opaque handle. Timeline and lifecycle frames
+validate the retained backend key and project onto that handle. Bare backend IDs
+remain aliases only when unique; colliding IDs cannot hide another owner or
+select the wrong transport after reconstruction.
+
 Accepted MCP drivers reuse exclusive leases, task progress, input-answer
 persistence and result collection. HTTP recovery uses the original backend
 session and resumes observation without calling the original tool again.
@@ -99,6 +112,12 @@ the assignment; subagent confirmation warns about descendants. Acknowledged
 cancellation displays "Cancellation requested" until owner settlement. Dismissal
 only hides a row.
 
+The shared REST projection is `GET /v1/sessions/{sid}/async-tasks`; cancellation
+is `POST /v1/sessions/{sid}/async-tasks/cancel`, and explicit result readback is
+`GET /v1/sessions/{sid}/async-tasks/{handle}/result`. The existing `/tasks` routes
+retain the conversation to-do contract. Dismissed task records remain readable
+through shared controls and result readback, while UI listings hide their cards.
+
 ## Compatibility
 
 Newly generated default tool catalogs expose shared task controls rather than
@@ -121,7 +140,8 @@ CI and executor-only probes are separate evidence.
 | Pre-change model baseline | `model-baseline-1`: actual Codex/Luna fetch returned terminal document content before the next model tool action. |
 | MCP model overlap | `model-mcp-overlap-1`: actual production Web fetch accepted a handle; the model queried that handle while working. Earlier feature state; final requalification required. |
 | Shell model overlap | `model-shell-acceptance-4`: actual Codex/Luna handle, running query, expired wait, incremental observation and successful stored output. Independent file-read call failed and is not credited. Earlier feature state; final requalification required. |
-| Subagent, Download, Indexing model overlap | Outstanding. Must prove receipt and another action before settlement, then actual child output, bytes/hashes or manifest/counts. |
+| Subagent and Download model overlap | `model-subagent-acceptance-1` and `model-download-acceptance-2` proved running queries and actual owner outcomes, but independent file reads failed. Their older broad verdicts are superseded by `qualification-correction.md`. Strict final model acceptance remains outstanding. |
+| Indexing model overlap | Outstanding. Must prove receipt and another successful action before settlement, then manifest/counts. |
 | Mixed waits, partial errors, input/permission handling | Outstanding live matrix. Focused tests do not replace it. |
 | Automatic completion, next-turn delivery, duplicate prevention | Outstanding live matrix, including veto/overflow/collection races. |
 | Stop, UI cancellation and subtree settlement | Outstanding live matrix on the integrated UI/service. |

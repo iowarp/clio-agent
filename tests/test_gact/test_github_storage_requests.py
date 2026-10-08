@@ -104,7 +104,9 @@ def test_browse_navigates_without_repeated_repository_scans(
         assert len(calls) == 3
         for query in ("b", "b.txt", "txt"):
             assert client.post(prefix + "/browse", json={"query": query}).status_code == 200
-        assert client.post(prefix + "/link").status_code == 200
+        from tests.test_gact.storage_operation_helpers import complete_indexing
+
+        complete_indexing(client, prefix, client.post(prefix + "/link"))
         assert len(calls) == 3  # Searching and linking reuse the already-read metadata.
 
 

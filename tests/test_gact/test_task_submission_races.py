@@ -102,6 +102,131 @@ def test_stop_during_actual_shell_spawn_finishes_durable_acceptance(tmp_path: Pa
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("kind", ["MCP", "Shell"])
+def test_subtree_cancel_joins_late_actual_acceptance(
+    kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parent cannot settle while a once-only real submission's acceptance is uncertain."""
+    from datetime import timedelta
+
+    from fastapi.testclient import TestClient
+    from fastmcp import FastMCP
+    from fastmcp.utilities.tasks import TaskConfig
+    from fastmcp_tasks.extension import TasksExtension
+
+    from clio_agent.gact import context
+    from clio_agent.gact.agent_tasks import seed_agent_task
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.mcp_task_store import app_task_store
+    from clio_agent.gact.task_submission_custody import pending_submissions
+    from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
+    from clio_agent.tools.mcp_task_extension import ClioTasksClientExtension
+    from clio_agent.tools.mcp_task_records import set_task_record_store
+    from tests.test_gact.test_invoker_s7 import _Agent
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    server = FastMCP("actual-subtree-acceptance")
+    server.add_extension(TasksExtension())
+
+    async def exercise(sid: str) -> None:
+        reached, release, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        calls: list[str] = []
+        child = seed_agent_task(
+            app, parent_session_id=sid, agent_ref={"expert_id": "main"}, status="queued"
+        )
+        child_sid = child.child_session_id
+        executor: AsyncMCPToolExecutor | None = None
+        tokens = [
+            context.set_app(app),
+            context.set_session_id(child_sid),
+            context.set_tool_session_id(child_sid),
+        ]
+        set_task_record_store(app_task_store(app))
+
+        @server.tool(task=TaskConfig(mode="required", poll_interval=timedelta(milliseconds=50)))
+        async def actual_work() -> str:
+            calls.append("MCP")
+            await finish.wait()
+            return "settled"
+
+        original = ClioTasksClientExtension._make_durable
+
+        async def gated(extension: Any, *args: Any, **kwargs: Any) -> None:
+            reached.set()
+            await release.wait()
+            await original(extension, *args, **kwargs)
+
+        async def spawn() -> asyncio.subprocess.Process:
+            calls.append("Shell")
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                "-c",
+                "import time; print('once',flush=True); time.sleep(120)",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **task_spawn_options({}),
+            )
+            reached.set()
+            await release.wait()
+            return process
+
+        try:
+            if kind == "MCP":
+                monkeypatch.setattr(ClioTasksClientExtension, "_make_durable", gated)
+                executor = AsyncMCPToolExecutor(server)
+                await executor.start()
+                waiter = asyncio.create_task(executor.call_tool_result("actual_work", {}))
+            else:
+                captures = [
+                    StreamCapture(name, inline_limit=4096, spill_path=tmp_path / f"{name}.log")
+                    for name in ("stdout", "stderr")
+                ]
+                waiter = asyncio.create_task(
+                    spawn_owned_shell(
+                        app,
+                        child_sid,
+                        spawn(),
+                        captures,
+                        command="late acceptance",
+                        cwd=tmp_path,
+                        spill_root=tmp_path,
+                        timeout=0,
+                        invocation_id="acceptance-race",
+                    )
+                )
+            await asyncio.wait_for(reached.wait(), 5)
+            assert pending_submissions(app, child_sid)
+            supervisor = task_supervisor(app)
+            assert await asyncio.to_thread(
+                supervisor.request_cancel, resolve_task(app, sid, child.handle_id)
+            )
+            assert not app.state.agent_task_registry.get(child.task_id).is_terminal
+            release.set()
+            await asyncio.wait_for(waiter, 5)
+            async with asyncio.timeout(5):
+                while not app.state.agent_task_registry.get(child.task_id).is_terminal:
+                    await asyncio.sleep(0.02)
+            owned = task_views(app, child_sid)
+            assert len(owned) == 1
+            assert owned[0]["effective_status"] == "cancelled"
+            assert owned[0]["cancel_requested"]
+            assert app.state.agent_task_registry.get(child.task_id).status == "cancelled"
+            assert not pending_submissions(app, child_sid)
+            assert calls == [kind]
+        finally:
+            release.set()
+            finish.set()
+            if executor is not None:
+                await executor.aclose(force=True)
+            set_task_record_store(None)
+            for token in reversed(tokens):
+                context.reset(token)
+
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "late acceptance"}).json()["id"]
+        asyncio.run_coroutine_threadsafe(exercise(sid), app.state.mcp_app_loop).result(timeout=25)
+
+
 def test_subtree_admission_closure_survives_restart_and_includes_forks(tmp_path: Path) -> None:
     app, sid = application(tmp_path)
     child = app.state.sessions.create(workspace_id="ws", title="child", parent_session_id=sid)

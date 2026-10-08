@@ -301,19 +301,40 @@ class _AckOnlyCancelSession:
         return result_type()
 
 
-async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
-    """D1 (BLOCKING, 1st round), the explicitly-named "including cancel" case:
-    ``tasks/cancel`` is ack-only with NO later ``tasks/get`` to ever observe a
-    terminal status — ``cancel_task`` stamps ``status="cancelled"`` itself so
-    the published event carries the real transition, not a stale pre-cancel
-    status.
+class _SettledCancelSession(_AckOnlyCancelSession):
+    """A backend reporting cancellation only when its later task poll settles."""
 
-    #1205 review D1 (2nd round): ``cancel_task`` no longer drops the record —
-    RETAINED with its terminal status, so exactly ONE ``mcp_task.cancelled``
-    fires here (the earlier round's second, drop-triggered copy is gone along
-    with the drop itself; drop is now an explicit, separate dismiss action,
-    covered above and in the route-level retention tests below).
-    """
+    async def send_request(
+        self,
+        request: Any,
+        result_type: Any,
+        request_read_timeout_seconds: float | None = None,
+    ) -> Any:
+        self.methods.append(request.method)
+        assert request.method == "tasks/get"
+        return result_type.model_validate(
+            {
+                "taskId": request.params.task_id,
+                "status": "cancelled",
+                "createdAt": "2026-08-01T00:00:00+00:00",
+                "lastUpdatedAt": "2026-08-01T00:00:01+00:00",
+                "resultType": "complete",
+            }
+        )
+
+
+async def _cancel_then_settle(key: TaskKey) -> None:
+    """Assert honest acknowledgement, then drive authoritative terminal evidence."""
+    from clio_agent.tools.mcp_tasks import cancel_task, resume_task
+
+    await cancel_task(_AckOnlyCancelSession(), key)
+    pending = task_record_store().get(key)
+    assert pending is not None and pending.status == "working" and pending.cancel_requested
+    await resume_task(_SettledCancelSession(), key)
+
+
+async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
+    """Cancellation intent stays working until a real poll observes backend settlement."""
 
     from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
 
@@ -330,14 +351,23 @@ async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
         assert session.methods == ["tasks/cancel"]
         settled = store.get(key)
         assert settled is not None, "cancel retains the record"
-        assert settled.status == "cancelled"
+        assert settled.status == "working" and settled.cancel_requested
+        from clio_agent.tools.mcp_tasks import resume_task
+
+        await resume_task(_SettledCancelSession(), key)
 
         events = app.state.bus.session_events_since(sid, cursor=1)
         mcp_events = [e for e in events if e.type.startswith("mcp_task.")]
 
-    # working -> mcp_task.updated, cancel's own status stamp -> mcp_task.cancelled.
-    # No drop, so no second copy.
-    assert [e.type for e in mcp_events] == ["mcp_task.updated", "mcp_task.cancelled"]
+    # Every persisted state fires an event: initial row, cancellation intent,
+    # driver lease, observed terminal state, then terminal lease release.
+    assert [e.type for e in mcp_events] == [
+        "mcp_task.updated",
+        "mcp_task.updated",
+        "mcp_task.updated",
+        "mcp_task.cancelled",
+        "mcp_task.cancelled",
+    ]
     assert mcp_events[-1].payload["status"] == "cancelled"
     assert mcp_events[-1].payload["key"]["task_id"] == "jarvis-cancel-1"
 
@@ -360,15 +390,13 @@ async def test_route_retains_a_cancelled_task_until_dismissed(tmp_path: Path) ->
     ``run_registry.dismiss_run``) removes it.
     """
 
-    from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
-
     app = _build(tmp_path)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-cancel-route")
         task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
 
-        await cancel_task(_AckOnlyCancelSession(), key)
+        await _cancel_then_settle(key)
 
         response = client.get(f"/v1/sessions/{sid}/async-processes")
         processes = response.json()["processes"]
@@ -510,7 +538,7 @@ async def test_hold_preserves_a_more_specific_existing_reason(tmp_path: Path) ->
 
     after_cancel = task_record_store().get(key)
     assert after_cancel is not None
-    assert after_cancel.status == "cancelled"
+    assert after_cancel.status == "working" and after_cancel.cancel_requested
     assert after_cancel.holding_reason == MCP_TASK_SESSION_DELETED, (
         "a more specific existing reason must survive a second hold, not be "
         "downgraded to the generic mcp_task_record_held_locally"
@@ -569,27 +597,30 @@ def test_dismiss_touches_only_the_matched_composite_key(tmp_path: Path) -> None:
         sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         key_a = TaskKey(server_id="relay-ares", session_id=sid, task_id="shared-id")
         key_b = TaskKey(server_id="relay-metis", session_id=sid, task_id="shared-id")
-        task_record_store().put(TaskRecord(key=key_a, tool="jarvis_run", status="completed"))
-        task_record_store().put(TaskRecord(key=key_b, tool="jarvis_run", status="completed"))
+        task_record_store().put(
+            TaskRecord(key=key_a, handle="task_first", tool="jarvis_run", status="completed")
+        )
+        task_record_store().put(
+            TaskRecord(key=key_b, handle="task_second", tool="jarvis_run", status="completed")
+        )
 
         before_a = task_record_store().get(key_a)
         before_b = task_record_store().get(key_b)
         assert before_a is not None
         assert before_b is not None
 
-        result = dismiss_run(app, "shared-id")
+        assert dismiss_run(app, "shared-id") is False
+        assert task_record_store().get(key_a) == before_a
+        assert task_record_store().get(key_b) == before_b
+        result = dismiss_run(app, "task_first")
 
         after_a = task_record_store().get(key_a)
         after_b = task_record_store().get(key_b)
 
     assert result is True
-    assert (after_a is None) != (after_b is None), (
-        "exactly one of the two colliding composite keys must be gone, never both"
-    )
-    if after_a is not None:
-        assert after_a == before_a, "the surviving record must be byte-identical, never re-written"
-    else:
-        assert after_b == before_b, "the surviving record must be byte-identical, never re-written"
+    assert after_a is not None and after_a.dismissed
+    assert after_a.result == before_a.result
+    assert after_b == before_b, "the other record must be byte-identical, never re-written"
 
 
 async def test_dismiss_removes_a_settled_mcp_task_from_both_async_processes_and_runs(
@@ -606,22 +637,20 @@ async def test_dismiss_removes_a_settled_mcp_task_from_both_async_processes_and_
     it, and it is then gone from BOTH listings.
     """
 
-    from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
-
     app = _build(tmp_path)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-reachable")
         task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
 
-        await cancel_task(_AckOnlyCancelSession(), key)
+        await _cancel_then_settle(key)
 
         processes = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
         assert any(r["id"] == "jarvis-reachable" for r in processes), (
             "a settled mcp-task must be visible in the session-scoped tray"
         )
         runs = client.get("/v1/runs").json()["runs"]
-        assert any(r["handle_id"] == "jarvis-reachable" for r in runs), (
+        assert any(r["task_id"] == "jarvis-reachable" for r in runs), (
             "project_runs must be widened the same way dismiss_run was — the "
             "listing that owns the dismiss control must actually serve this row"
         )
@@ -632,7 +661,7 @@ async def test_dismiss_removes_a_settled_mcp_task_from_both_async_processes_and_
         processes_after = client.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
         assert all(r["id"] != "jarvis-reachable" for r in processes_after)
         runs_after = client.get("/v1/runs").json()["runs"]
-        assert all(r["handle_id"] != "jarvis-reachable" for r in runs_after)
+        assert all(r["task_id"] != "jarvis-reachable" for r in runs_after)
 
 
 # --------------------------------------------------------------------------- #
@@ -683,7 +712,7 @@ async def test_detach_route_no_longer_404s_a_jarvis_row(tmp_path: Path) -> None:
         task_record_store().put(TaskRecord(key=key, tool="jarvis_run", status="working"))
 
         runs = client.get("/v1/runs").json()["runs"]
-        assert any(r["handle_id"] == "jarvis-detach-route" for r in runs)
+        assert any(r["task_id"] == "jarvis-detach-route" for r in runs)
 
         response = client.post("/v1/runs/jarvis-detach-route/detach")
 
@@ -715,7 +744,7 @@ def test_relay_run_projection_is_honest_about_non_relay_records(tmp_path: Path) 
             )
         )
 
-        rows = {row["handle_id"]: row for row in project_runs(app)}
+        rows = {row["task_id"]: row for row in project_runs(app)}
 
     row = rows["jarvis-honest"]
     assert row["source"] == "mcp_task"
@@ -748,7 +777,7 @@ def test_relay_run_projection_still_labels_genuine_relay_jobs(tmp_path: Path) ->
             )
         )
 
-        rows = {row["handle_id"]: row for row in project_runs(app)}
+        rows = {row["task_id"]: row for row in project_runs(app)}
 
     row = rows["relay-genuine"]
     assert row["source"] == "relay_job"
@@ -819,7 +848,7 @@ async def test_relay_run_and_async_processes_both_surface_the_effective_status_f
         assert tray_row["effective_status"] == "failed"
         assert tray_row["effective_status_reason"] == "exit code 186"
 
-        runs = {row["handle_id"]: row for row in project_runs(app)}
+        runs = {row["task_id"]: row for row in project_runs(app)}
 
     run_row = runs["jarvis-delivered-error"]
     assert run_row["live_state"] == "failed"

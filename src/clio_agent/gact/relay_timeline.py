@@ -229,7 +229,14 @@ def route_relay_timeline_event(app: "FastAPI", handle: Any, raw: Any) -> bool:
             app, handle, "relay_timeline_malformed", raw=raw, message="task_id is missing"
         )
         return False
-    if observed_task_id != expected_task_id:
+    from clio_agent.gact.task_backend_identity import relay_key
+
+    try:
+        backend_key = relay_key(app, expected) if expected.placement.startswith("relay:") else None
+    except ValueError:
+        backend_key = None
+    expected_backend_id = backend_key.task_id if backend_key is not None else expected_task_id
+    if observed_task_id != expected_backend_id:
         reason = (
             "relay_timeline_unknown_task"
             if app.state.agent_task_registry.get(observed_task_id) is None

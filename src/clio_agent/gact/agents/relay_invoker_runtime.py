@@ -26,9 +26,11 @@ class RelayInvokerRuntime:
         client_factory: Callable[[str], Any],
         *,
         cluster: str,
+        app: Any,
     ) -> None:
         self._client_factory = client_factory
         self._cluster = cluster
+        self._app = app
 
     def submit_and_poll(
         self,
@@ -91,11 +93,20 @@ class RelayInvokerRuntime:
 
         run_async(call)
 
-    @staticmethod
-    def task_key(handle: Any) -> Any:
+    def task_key(self, handle: Any) -> Any:
         """Resolve exactly one persisted composite identity for a handle."""
 
         from clio_agent.gact.agents.invoker import InvokerError  # noqa: PLC0415
+        from clio_agent.gact.task_backend_identity import relay_key
+
+        task = self._app.state.agent_task_registry.get(handle.task_id)
+        if task is not None:
+            try:
+                key = relay_key(self._app, task)
+            except ValueError as exc:
+                raise InvokerError(str(exc), reason="ambiguous_task") from exc
+            if key is not None:
+                return key
         from clio_agent.tools.mcp_task_records import resolve_store  # noqa: PLC0415
 
         records = [
@@ -208,7 +219,7 @@ class RelayEventPump:
                         if key != RELAY_EVENT_NEXT_CURSOR_FIELD
                     }
                 try:
-                    event = relay_task_event(handle, raw)
+                    event = relay_task_event(handle, raw, backend_task_id=key.task_id)
                 except InvokerError as exc:
                     reason = (
                         "relay_timeline_task_identity_mismatch"
@@ -264,7 +275,9 @@ class RelayEventPump:
         record_relay_timeline_drop(self._app, handle, reason, raw=raw, message=message)
 
 
-def relay_task_event(handle: Any, raw: Mapping[str, Any]) -> Any | None:
+def relay_task_event(
+    handle: Any, raw: Mapping[str, Any], *, backend_task_id: str | None = None
+) -> Any | None:
     """Project an exact relay TaskEvent envelope onto the local child identity."""
 
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
@@ -283,7 +296,7 @@ def relay_task_event(handle: Any, raw: Mapping[str, Any]) -> Any | None:
     event = TaskEvent.from_wire(candidate)
     if not event.event_type.startswith("agent.task."):
         return None
-    if event.task_id and event.task_id != handle.task_id:
+    if event.task_id and event.task_id != (backend_task_id or handle.task_id):
         raise InvokerError(
             "relay TaskEvent task_id disagrees with the retained handle",
             reason="task_identity_mismatch",

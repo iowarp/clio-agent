@@ -61,6 +61,26 @@ def fold_agent_task_transition(
     # write and ledger publication. Keep that complete lifecycle edge ordered so
     # an older nonterminal fold cannot persist or publish after a terminal fold.
     with reg.lifecycle_lock:
+        current = reg.get(task_id)
+        if (
+            current is not None
+            and current.placement.startswith("relay:")
+            and current.cancel_requested
+            and status in {"completed", "failed", "cancelled"}
+        ):
+            from clio_agent.gact.task_projection import TERMINAL, task_views
+            from clio_agent.gact.task_submission_custody import pending_submissions
+
+            if pending_submissions(app, current.child_session_id) or any(
+                row["effective_status"] not in TERMINAL
+                for row in task_views(app, current.child_session_id)
+            ):
+                # The retained relay driver will re-read the same backend terminal
+                # result after descendant owners settle. Never run the local child
+                # callback for a remote owner or lose its authoritative outcome.
+                return AgentTaskFoldOutcome(
+                    task=current, applied=False, reason="descendant_cleanup_pending"
+                )
         try:
             updated = reg.transition(
                 task_id,

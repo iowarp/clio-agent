@@ -439,7 +439,7 @@ def make_mcp_client(
             push-forwarding. ``None`` (the default) leaves the whole advertisement
             SDK-derived.
         client_cls: Injection seam for the client class. Defaults to
-            ``fastmcp.Client``; tests substitute a fake to inspect the
+            ``TaskAwareClient``; tests substitute a fake to inspect the
             construction without spawning a real backend.
         server_id: #1201 -- when non-empty, the constructed client is
             instrumented (:func:`clio_agent.tools.mcp_connection_era.

@@ -555,7 +555,8 @@ def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
     now = datetime.now(timezone.utc).isoformat()
     settled = 0
     for task in reg.snapshot():
-        if task.is_terminal:
+        # Remote owners survive this process; recovery resumes retained identity.
+        if task.is_terminal or task.placement.startswith("relay:"):
             continue
         try:
             updated = reg.transition(
@@ -611,6 +612,7 @@ def seed_agent_task(
     project_to_parent: bool = True,
     spawn_group_id: str = "",
     group_size: int = 0,
+    description: str = "",
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -650,6 +652,7 @@ def seed_agent_task(
         fanout_bound=fanout_bound,
         spawn_group_id=spawn_group_id,
         group_size=group_size,
+        description=description,
         handle_id=tid,
         run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
         project_to_parent=project_to_parent,

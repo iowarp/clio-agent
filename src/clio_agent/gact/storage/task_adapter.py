@@ -105,6 +105,9 @@ def _record_storage_handle(
             service.store.update_operation(operation.id, cancel_requested=True)
 
         supervisor.supervise(operation.task_handle, _observe_storage(app, key), cancel)
+    from clio_agent.gact.task_submission_custody import cancel_accepted_if_closed
+
+    cancel_accepted_if_closed(app, sid, operation.task_handle)
     return {
         "accepted": True,
         "handle": operation.task_handle,

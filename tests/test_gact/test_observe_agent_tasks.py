@@ -55,6 +55,7 @@ class _Def:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
         self.fanout = None
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 def _declare(monkeypatch, *child_ids: str) -> None:

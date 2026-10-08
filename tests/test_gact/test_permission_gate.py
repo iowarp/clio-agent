@@ -369,9 +369,7 @@ def test_dynamic_external_mcp_requires_permission_before_client_invocation(
         def __init__(self, transport: Any) -> None:
             MustNotStartClient.constructed = True
 
-    import fastmcp
-
-    monkeypatch.setattr(fastmcp, "Client", MustNotStartClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", MustNotStartClient)
     app = build_app(sessions_path=tmp_path / "s.json")
     info = {
         "name": "remote",
@@ -420,9 +418,13 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
                 isError=False,
             )
 
-    import fastmcp
+        async def list_tools(self) -> list[Any]:
+            """Advertise the same read-only tool whose permission path is tested."""
+            from mcp.types import Tool
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+            return [Tool(name="lookup", inputSchema={"type": "object"})]
+
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         "clio_agent.tools.mcp_config.transport_from_spec",
         lambda spec: spec,
@@ -468,9 +470,7 @@ def test_external_mcp_route_requires_permission_before_client_invocation(
         def __init__(self, transport: Any) -> None:
             MustNotStartClient.constructed = True
 
-    import fastmcp
-
-    monkeypatch.setattr(fastmcp, "Client", MustNotStartClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", MustNotStartClient)
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.external_mcp_servers = {
         "mcp_ext_test": {
@@ -1098,10 +1098,9 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
                 isError=False,
             )
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )
@@ -1168,10 +1167,9 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
                 isError=False,
             )
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )

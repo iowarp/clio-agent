@@ -57,10 +57,24 @@ async def submit_with_custody(executor: Any, operation: Awaitable[Any], *, capab
     from clio_agent.gact.task_supervisor import task_supervisor
 
     supervisor = task_supervisor(app)
+    from clio_agent.gact.task_submission_custody import begin_submission, finish_submission
+    from clio_agent.tools.task_call_context import TASK_CALL
+
+    try:
+        ticket = begin_submission(app, TASK_CALL.get().session_id or context.active_session_id())
+    except Exception:
+        if asyncio.iscoroutine(operation):
+            operation.close()
+        raise
     supervisor.retained_executors.add(executor)
     pending = asyncio.ensure_future(operation)
     executor._pending_task_submissions.add(pending)
-    pending.add_done_callback(lambda task: _submitted(executor, supervisor, task))
+
+    def settled(task: asyncio.Future[Any]) -> None:
+        finish_submission(app, ticket)
+        _submitted(executor, supervisor, task)
+
+    pending.add_done_callback(settled)
     return await asyncio.shield(pending)
 
 

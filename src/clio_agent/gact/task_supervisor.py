@@ -26,6 +26,7 @@ class TaskSupervisor:
         self.drivers: dict[str, asyncio.Task[Any]] = {}
         self.cancellers: dict[str, Callable[[], Coroutine[Any, Any, Any]]] = {}
         self.cancellation_requests: dict[str, Future[Any]] = {}
+        self.submission_owners: dict[Future[None], str] = {}
         self.retained_executors: set[Any] = set()
         self.closing = False
 
@@ -60,6 +61,11 @@ class TaskSupervisor:
     def request_cancel(self, row: dict[str, Any]) -> bool:
         """Request cancellation on the owning loop, with idempotent persisted intent."""
         if row["task_kind"] == "Subagent":
+            task = self.app.state.agent_task_registry.get(row["id"])
+            if task.placement.startswith("relay:"):
+                from clio_agent.gact.task_relay_owner import request_relay_cancel
+
+                return request_relay_cancel(self.app, task)
             from clio_agent.gact.loop_handoff import call_on_loop
             from clio_agent.gact.turn_spawn import cancel_agent_task
 

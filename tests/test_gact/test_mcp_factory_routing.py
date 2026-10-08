@@ -51,6 +51,9 @@ class _FakeClient:
     async def __aexit__(self, *exc: Any) -> bool:
         return False
 
+    async def list_tools(self) -> list[Any]:
+        return [SimpleNamespace(name="do_thing", outputSchema=None)]
+
     async def call_tool(
         self, tool_name: str, tool_args: Any, *, progress_handler: Any = None
     ) -> _FakeResult:

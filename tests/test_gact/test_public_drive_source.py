@@ -107,7 +107,9 @@ def test_public_drive_browse_or_private_login_after_refusal(
             assert result.status_code == 200, result.text
             assert result.json()["entries"][0]["path"] == "data.txt"
             link_result = client.post(path + "/link", json={})
-            assert link_result.status_code == 200, link_result.text
+            from tests.test_gact.storage_operation_helpers import complete_indexing
+
+            complete_indexing(client, path, link_result)
             record = app.state.connected_storage.store.get("source", source["id"], SourceRecord)
             assert record.linked_manifest_id and not record.sign_in_required
             assert len(calls) == 2

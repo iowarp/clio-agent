@@ -65,6 +65,21 @@ def task_views(app: Any, sid: str, *, include_children: bool = True) -> list[dic
             kind = "Subagent"
             description = row.get("description", "")
             owner = row["parent_session_id"]
+            if row.get("placement", "").startswith("relay:"):
+                from clio_agent.gact.task_backend_identity import relay_key
+
+                task = app.state.agent_task_registry.get(row["id"])
+                try:
+                    retained_key = relay_key(app, task)
+                except ValueError:
+                    retained_key = None
+                relay_records = [records[retained_key]] if retained_key in records else []
+                if len(relay_records) == 1:
+                    record = relay_records[0]
+                    row["legacy_task_id"] = record.task_id
+                    row["connection_freshness"] = record.connection_freshness
+                    row["backend"] = record.backend
+                    row["raw_status"] = record.status
         else:
             record = records[TaskKey.from_wire(row["key"])]
             if not record.handle:
@@ -77,13 +92,23 @@ def task_views(app: Any, sid: str, *, include_children: bool = True) -> list[dic
         status = row.get("live_state") or row.get("effective_status") or row.get("status")
         active = status not in TERMINAL
         supervisor = getattr(app.state, "task_supervisor", None)
-        cancellable = active and (subagent or handle in getattr(supervisor, "cancellers", {}))
+        placement = row.get("placement", "")
+        subagent_owner_available = subagent and (
+            not placement.startswith("relay:")
+            or placement.split(":", 1)[1] in getattr(app.state, "relay_expert_invokers", {})
+        )
+        cancellable = active and (
+            subagent_owner_available or handle in getattr(supervisor, "cancellers", {})
+        )
         if subagent:
-            cancellable = cancellable or any(
-                row["id"] in descendant.get("task_path", [])
-                and descendant["id"] != row["id"]
-                and (descendant.get("live_state") or descendant.get("status")) not in TERMINAL
-                for descendant in rows
+            cancellable = cancellable or (
+                subagent_owner_available
+                and any(
+                    row["id"] in descendant.get("task_path", [])
+                    and descendant["id"] != row["id"]
+                    and (descendant.get("live_state") or descendant.get("status")) not in TERMINAL
+                    for descendant in rows
+                )
             )
         row.update(
             handle=handle,
@@ -98,7 +123,7 @@ def task_views(app: Any, sid: str, *, include_children: bool = True) -> list[dic
                 else row.get("owner_agent", ""),
             },
             effective_status=status,
-            raw_status=row.get("status"),
+            raw_status=row.get("raw_status", row.get("status")),
             supported_actions=["observe", "wait", "result"] + (["cancel"] if cancellable else []),
             result_reference={"handle": handle, "tool": "get_task_result"},
             connection_freshness=row.get("connection_freshness", "unknown"),
@@ -111,7 +136,7 @@ def resolve_task(app: Any, sid: str, handle: str) -> dict[str, Any]:
     """Resolve an authorized public handle or an unambiguous legacy alias."""
     rows = task_views(app, sid)
     exact = [row for row in rows if row["handle"] == handle]
-    matches = exact or [row for row in rows if row["id"] == handle]
+    matches = exact or [row for row in rows if handle in (row["id"], row.get("legacy_task_id"))]
     if len(matches) != 1:
         raise ValueError("ambiguous_task" if matches else "unknown_or_unauthorized_task")
     return matches[0]

@@ -103,7 +103,8 @@ class _Agent:
 class _FakeRelayBackend:
     """Deterministic relay state shared by every reconstructed fake client."""
 
-    def __init__(self) -> None:
+    def __init__(self, server_id: str = "fake-relay-server") -> None:
+        self.server_id = server_id
         self.tasks: dict[str, dict[str, Any]] = {}
         self.submissions: list[dict[str, Any]] = []
         self.messages: list[tuple[str, str]] = []
@@ -131,6 +132,7 @@ class _FakeRelayBackend:
             task_id = f"task_relay_{self._next_id:04d}"
             task = {
                 "task_id": task_id,
+                "server_id": self.server_id,
                 "owner_session_id": owner_session_id,
                 "arguments": dict(arguments),
                 "context": {},
@@ -144,7 +146,7 @@ class _FakeRelayBackend:
             self.tasks[task_id] = task
             self.submissions.append(dict(arguments))
         key = TaskKey(
-            server_id="fake-relay-server",
+            server_id=self.server_id,
             session_id=owner_session_id,
             task_id=task_id,
         )
@@ -207,7 +209,7 @@ class _FakeRelayBackend:
     @staticmethod
     def _key(task: dict[str, Any]) -> TaskKey:
         return TaskKey(
-            server_id="fake-relay-server",
+            server_id=str(task.get("server_id", "fake-relay-server")),
             session_id=str(task["owner_session_id"]),
             task_id=str(task["task_id"]),
         )
@@ -646,7 +648,11 @@ def test_relay_invoke_does_not_serialize_network_round_trips(
             handles = [future.result(timeout=5) for future in futures]
 
     assert overlapped is True
-    assert {handle.task_id for handle in handles} == {"parallel-relay-1", "parallel-relay-2"}
+    assert len({handle.task_id for handle in handles}) == 2
+    assert {invoker._task_key(handle).task_id for handle in handles} == {
+        "parallel-relay-1",
+        "parallel-relay-2",
+    }
     assert sorted(handle.run_index for handle in handles) == [0, 1]
 
 
@@ -679,11 +685,12 @@ def test_relay_message_answers_post_admission_input_on_retained_task(
         invoker.message(handle, "Use the new boundary condition.")
         result = invoker.wait(handle, timeout_s=1.0)
         assert result.status == "completed"
-        assert backend.tasks[handle.task_id]["stream_closed"].wait(1.0)
+        backend_id = invoker._task_key(handle).task_id
+        assert backend.tasks[backend_id]["stream_closed"].wait(1.0)
 
     assert backend.messages == [
-        (handle.task_id, "initial"),
-        (handle.task_id, "Use the new boundary condition."),
+        (backend_id, "initial"),
+        (backend_id, "Use the new boundary condition."),
     ]
 
 
@@ -721,7 +728,8 @@ def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         originating = _relay_invoker(app, backend)
         handle = originating.invoke(_spec(parent))
-        assert handle.task_id == next(iter(backend.tasks))
+        assert handle.task_id != next(iter(backend.tasks))
+        assert originating._task_key(handle).task_id == next(iter(backend.tasks))
         assert resolve_store(None).get(originating._task_key(handle)) is not None
         deadline = time.monotonic() + 5.0
         while backend.client_count < 2 and time.monotonic() < deadline:
@@ -1142,15 +1150,15 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
 
 def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> None:
     """The boundary :class:`TaskResult` omits EVERY :class:`AgentTask` field that is not
-    part of the executor boundary — all nine, in four classes: parent-side observe-later /
+    part of the executor boundary — all eleven: parent-side observe-later /
     wire-dedup bookkeeping (``notify_pending`` / ``consumed_at`` / ``delegation_reported``)
     and spawn-request / topology fields the parent already holds on its ``TaskSpec``
     (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``), plus parent-side run-list
     display state (``detached`` / ``dismissed``), and local parent-projection policy
-    (``project_to_parent``).
+    (``project_to_parent``), plus local cancellation intent and assignment description.
 
     Adversarial-review finding [5]: the drop-list must be EXHAUSTIVE against the code —
-    ``AgentTask`` minus ``TaskResult`` is exactly these nine, no more, no less."""
+    ``AgentTask`` minus ``TaskResult`` is exactly these eleven, no more, no less."""
 
     task_fields = set(AgentTask.__dataclass_fields__)
     result_fields = set(TaskResult.__dataclass_fields__)
@@ -1164,9 +1172,11 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "detached",
         "dismissed",
         "project_to_parent",
+        "cancel_requested",
+        "description",
     }
-    assert dropped.isdisjoint(result_fields)  # none of the nine survive the projection
-    # EXHAUSTIVE: the nine named above are exactly the fields AgentTask has and
+    assert dropped.isdisjoint(result_fields)  # none of the eleven survive the projection
+    # EXHAUSTIVE: the eleven named above are exactly the fields AgentTask has and
     # TaskResult drops — a newly-added dropped/carried field must update this + the docs.
     assert task_fields - result_fields == dropped
     # But it DOES carry the durable, relay-compatible record vocabulary.

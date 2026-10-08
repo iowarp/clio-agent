@@ -40,6 +40,13 @@ async def spawn_owned_shell(
     invocation_id: str,
 ) -> dict[str, Any]:
     """Finish custody after a spawn racing Stop, without replaying the command."""
+    from clio_agent.gact.task_submission_custody import begin_submission, finish_submission
+
+    try:
+        ticket = begin_submission(app, sid)
+    except Exception:
+        spawn.close()
+        raise
 
     async def submit() -> dict[str, Any]:
         process = await spawn
@@ -64,7 +71,13 @@ async def spawn_owned_shell(
             await process.wait()
             raise
 
-    submission = asyncio.create_task(submit())
+    async def owned_submission() -> dict[str, Any]:
+        try:
+            return await submit()
+        finally:
+            finish_submission(app, ticket)
+
+    submission = asyncio.create_task(owned_submission())
     try:
         return await asyncio.shield(submission)
     except asyncio.CancelledError:
@@ -146,6 +159,9 @@ def accept_shell(
         ),
         cancel,
     )
+    from clio_agent.gact.task_submission_custody import cancel_accepted_if_closed
+
+    cancel_accepted_if_closed(app, sid, handle)
     return {
         "accepted": True,
         "handle": handle,

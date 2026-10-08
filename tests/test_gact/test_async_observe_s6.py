@@ -187,6 +187,7 @@ class _Def:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
         self.fanout = None
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 # --------------------------------------------------------------------------- #
@@ -422,9 +423,8 @@ def test_failed_child_preserves_typed_tool_unavailability_for_parent(
         }
 
 
-def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> None:
-    """A cancelled child is NOT observed-later (cancellation is parent-driven, so the
-    parent already knows)."""
+def test_cancelled_child_settlement_is_notify_pending(tmp_path: Path, monkeypatch) -> None:
+    """A cancellation acknowledgement does not tell the parent that cleanup settled."""
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -458,7 +458,7 @@ def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> N
         _on_child_done(app, task.task_id, child.id, "async")
         settled = app.state.agent_task_registry.get(task.task_id)
         assert settled.status == "cancelled"
-        assert settled.notify_pending is False
+        assert settled.notify_pending is True
 
 
 # --------------------------------------------------------------------------- #

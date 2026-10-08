@@ -51,7 +51,9 @@ def test_writable_link_uses_custody_boundary_instead_of_raw_os_grant(
         assert row["local_path"] is None
         prefix = f"/v1/workspaces/w/sources/{row['id']}"
         linked = client.post(prefix + "/link")
-        assert linked.status_code == 200, linked.text
+        from tests.test_gact.storage_operation_helpers import complete_indexing
+
+        complete_indexing(client, prefix, linked)
         policy = FileAccessPolicy(allowed_roots=(tmp_path,))
         with pytest.raises(FilePolicyError, match="read-only"):
             policy.validate_write(str(original))

@@ -208,8 +208,8 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     # Briefing-content lock (#1000): the routing paragraph teaches the two postures —
     # wait (committed collection) and observe (immediate snapshot or event-driven
     # pattern hold, both WITHOUT consuming).
-    assert "wait_agent_tasks(" in first
-    assert "observe_agent_tasks(task_ids, cursor=" in first
+    assert "wait_tasks(" in first
+    assert "observe_tasks(tasks, cursor=" in first
     assert "check_agent_tasks(" not in first
     assert "without consuming it" in first
     assert "pattern" in first and "next_cursor" in first

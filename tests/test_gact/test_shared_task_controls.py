@@ -219,6 +219,30 @@ def test_authorization_precedes_filters_pagination_and_counts(
         resolve_task(app, child.child_session_id, "ancestor")
 
 
+def test_staged_handle_cannot_consume_an_unrelated_subagent_with_the_same_id(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+) -> None:
+    """Resolve caller custody before consulting the global subagent registry."""
+    from clio_agent.gact.task_notifications import consume_pending_agent_task_notifications
+
+    app, sid, store = scoped_app
+    unrelated = app.state.sessions.create(workspace_id="ws", title="unrelated").id
+    foreign = seed_agent_task(
+        app,
+        parent_session_id=unrelated,
+        agent_ref={"expert_id": "private"},
+        status="completed",
+    )
+    snapshot = app.state.agent_task_registry.get(foreign.task_id)
+    own = record(store, sid, foreign.task_id, task_id="backend-own", status="completed")
+    blocks = consume_pending_agent_task_notifications(app, sid, [own.handle])
+    assert len(blocks) == 1 and "real stored result" in blocks[0]
+    assert store.get(own.key).consumed_at
+    assert app.state.agent_task_registry.get(foreign.task_id) == snapshot
+    assert consume_pending_agent_task_notifications(app, sid, [foreign.child_session_id]) == []
+    assert app.state.agent_task_registry.get(foreign.task_id) == snapshot
+
+
 def test_query_pages_survive_new_insertion_without_duplicates(
     scoped_app: tuple[Any, str, SessionMetadataTaskStore],
 ) -> None:
@@ -250,6 +274,8 @@ def test_expired_mixed_wait_and_invalid_member_leave_work_running(
 def test_stop_interrupts_waiter_without_changing_accepted_task(
     scoped_app: tuple[Any, str, SessionMetadataTaskStore],
 ) -> None:
+    from clio_agent.runtime.commitment_activity import commitment_wait_in_flight
+
     app, sid, store = scoped_app
     active = record(store, sid, "accepted")
     app.state.cancel_flags.add(sid)
@@ -257,6 +283,42 @@ def test_stop_interrupts_waiter_without_changing_accepted_task(
         wait_tasks("accepted")
     assert store.get(active.key).status == "working"
     assert not store.get(active.key).cancel_requested
+    assert not commitment_wait_in_flight(sid)
+
+
+@pytest.mark.parametrize("control", ["wait", "observe"])
+@pytest.mark.parametrize("bounded", [False, True])
+def test_shared_wait_reports_only_its_unbounded_commitment_to_turn_watchdog(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+    monkeypatch: pytest.MonkeyPatch,
+    control: str,
+    bounded: bool,
+) -> None:
+    from clio_agent.runtime.commitment_activity import commitment_wait_in_flight
+
+    app, sid, store = scoped_app
+    active = record(store, sid, "committed")
+    entered: list[bool] = []
+
+    def settle_at_wait(*args: Any, **kwargs: Any) -> None:
+        entered.append(commitment_wait_in_flight(sid))
+        assert not commitment_wait_in_flight("unrelated-session")
+        store.put(
+            replace(active, status="completed", result={"text": "settled"}, notify_pending=True)
+        )
+
+    monkeypatch.setattr(app.state.bus, "wait_for_session_events", settle_at_wait)
+    timeout_s = 1.0 if bounded else None
+    if control == "wait":
+        outcome = wait_tasks("committed", timeout_s=timeout_s)
+        assert outcome["results"][0]["result"] == {"text": "settled"}
+        assert not store.get(active.key).notify_pending
+    else:
+        outcome = observe_tasks("committed", pattern="settled", timeout_s=timeout_s)
+        assert outcome["tasks"][0]["status"] == "completed"
+        assert store.get(active.key).notify_pending
+    assert entered == [not bounded]
+    assert not commitment_wait_in_flight(sid)
 
 
 def test_query_and_observe_do_not_consume_pending_completion(

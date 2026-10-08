@@ -536,8 +536,7 @@ def test_ensemble_queue_admission_fifo_per_depth(tmp_path: Path, monkeypatch) ->
 
 
 def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> None:
-    """Cancelling the parent cancels EVERY run of a concurrent ensemble (the cascade
-    iterates for_parent, which lists all task records regardless of shared child id)."""
+    """Explicitly cancelling each accepted ensemble task settles every selected owner."""
 
     _declare(monkeypatch, "main")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_RecordingAgent(sleep_s=3.0))
@@ -547,7 +546,13 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
 
         spawned = _spawn_ensemble(app, parent, "main", 3)
         assert all(t.status == STATUS_RUNNING for t in spawned)
-        assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+        response = client.post(
+            f"/v1/sessions/{parent}/async-tasks/cancel",
+            json={"tasks": [t.task_id for t in spawned]},
+        )
+        assert response.status_code == 200
+        assert not response.json()["errors"]
+        assert all(r["cancellation_requested"] for r in response.json()["results"])
 
         for t in spawned:
             assert _wait_terminal(app, t.task_id, timeout=8.0).status == "cancelled"
@@ -557,13 +562,9 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
 
 
 def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
-    """main -> A -> B (nested spawns are first-class in S5). Cancelling main cancels A AND
-    its grandchild B — no child turn outlives the parent that spawned it (#953 [3]). Sabotage:
-    the pre-fix single-level cascade only touched main's DIRECT children, leaving B running →
-    B stays non-terminal → red."""
+    """Explicit cancellation of subagent A settles A and its grandchild B."""
 
     from clio_agent.gact.agent_tasks import seed_agent_task
-    from clio_agent.gact.turn_spawn import cancel_children_of
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
@@ -583,12 +584,12 @@ def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
             depth=2,
             status=STATUS_RUNNING,
         )
-        n = cancel_children_of(app, main)
-
-    reg = app.state.agent_task_registry
-    assert reg.get(a.task_id).status == "cancelled"
-    assert reg.get(b.task_id).status == "cancelled"  # grandchild cancelled too (transitive)
-    assert n == 2
+        response = client.post(f"/v1/sessions/{main}/async-tasks/cancel", json={"tasks": a.task_id})
+        assert response.status_code == 200 and not response.json()["errors"]
+        assert _wait_terminal(app, a.task_id).status == "cancelled"
+        assert _wait_terminal(app, b.task_id).status == "cancelled"
+        assert app.state.sessions.get(a.child_session_id).metadata["task_admission_closed"]
+        assert app.state.sessions.get(b.child_session_id).metadata["task_admission_closed"]
 
 
 # ===========================================================================
@@ -616,6 +617,7 @@ class _Def:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 class _StubSessions:
@@ -625,8 +627,12 @@ class _StubSessions:
     def get(self, sid: str) -> Any:
         return self._sessions.get(sid)
 
+    def list(self, *, workspace_id: str | None = None) -> list[SimpleNamespace]:
+        del workspace_id
+        return list(self._sessions.values())
+
     def update(self, sid: str, *, metadata_patch: dict | None = None, **_kw: Any) -> Any:
-        sess = self._sessions.get(sid) or SimpleNamespace(id=sid, metadata={})
+        sess = self._sessions.get(sid) or SimpleNamespace(id=sid, metadata={}, parent_session_id="")
         sess.metadata.update(metadata_patch or {})
         self._sessions[sid] = sess
         return sess
@@ -639,6 +645,18 @@ def _fake_app(registry: AgentTaskRegistry, messages: dict[str, list[Message]]) -
         )
     )
     app.state.expert_invoker = InProcessExpertInvoker(app)
+    from clio_agent.gact.events import EventBus
+    from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore
+
+    app.state.bus = EventBus()
+    app.state.cancel_flags = set()
+    app.state.sessions.task_store = InMemoryTaskRecordStore()
+    app.state.sessions.update("sess_x", metadata_patch={"agent_blueprint_id": "bp"})
+    for task in registry.snapshot():
+        app.state.sessions.update(
+            task.parent_session_id, metadata_patch={"agent_blueprint_id": "bp"}
+        )
+        app.state.sessions.update(task.child_session_id, metadata_patch=task.to_metadata())
     return app
 
 

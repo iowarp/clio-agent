@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from clio_agent.gact.agent_task_artifacts import emit_commission_parent_use
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -102,15 +105,21 @@ def consume_pending_agent_task_notifications(
     blueprint_id = _runtime_active_agent_blueprint_id(app, sid) or ""
     delivered: list[str] = []
     for task_id in task_ids:
-        task = reg.get(task_id)
-        if task is None:
-            from clio_agent.gact.task_delivery import completion_block, consume_task
-            from clio_agent.gact.task_projection import resolve_task
+        from clio_agent.gact.task_projection import resolve_task
 
+        try:
             row = resolve_task(app, sid, task_id)
+        except ValueError as exc:
+            logger.warning("Staged task result unavailable handle=%s reason=%s", task_id, exc)
+            continue
+        if row["task_kind"] != "Subagent":
+            from clio_agent.gact.task_delivery import completion_block, consume_task
+
             if consume_task(app, sid, task_id):
                 delivered.append(completion_block(row))
             continue
+        task_id = row["id"]
+        task = reg.get(task_id)
         # Consume (atomic once-guard); a concurrent wait may already have consumed
         # it, in which case this no-ops. The terminal emission below is separately
         # once-gated, so we ALWAYS attempt it (exactly-once regardless of order).

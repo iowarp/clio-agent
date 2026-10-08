@@ -54,7 +54,7 @@ from clio_agent.gact.spawn_context import current_session_depth as _current_sess
 from clio_agent.gact.tool_observer import _append_live_assistant_part
 
 if TYPE_CHECKING:
-    from clio_agent.gact.agents.types import AgentDef
+    from clio_agent.gact.types import AgentDef
 
 logger = logging.getLogger(__name__)
 _resolve_verbatim_output = resolve_verbatim_output
@@ -578,7 +578,9 @@ def build_spawn_runtime_tools(
                 wait_tasks(tid)
                 task_result = registry.get(tid)
                 if task_result is None:
-                    raise SpawnError("unknown_task")
+                    raise SpawnError(
+                        f"Task {tid!r} disappeared during collection", reason="unknown_task"
+                    )
             except (InvokerError, SpawnError) as exc:
                 payload = {"task_id": tid, "error": exc.reason}
                 structured_row = wait_structured_row(tid, exc.reason, 0.0, "")
