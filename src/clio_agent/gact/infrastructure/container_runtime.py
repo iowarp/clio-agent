@@ -342,8 +342,13 @@ def status_command(runtime: RuntimeName, name: str) -> CommandSpec:
             program="sh",
             args=[
                 "-c",
-                'if apptainer instance list "$0" 2>/dev/null | tail -n +2 | grep -q .; '
-                "then echo running; else echo stopped; fi",
+                # An instance outlives the server it ran (F034): it is only
+                # running while the instance process still has a child.
+                "pid=$(apptainer instance list \"$0\" 2>/dev/null | awk 'NR==2{print $2}'); "
+                'if [ -z "$pid" ]; then echo stopped; '
+                "elif ! command -v pgrep >/dev/null 2>&1; then echo running; "
+                'elif pgrep -P "$pid" >/dev/null 2>&1; then echo running; '
+                "else echo exited; fi",
                 name,
             ],
         )
