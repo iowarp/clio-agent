@@ -576,12 +576,12 @@ def test_container_readiness_proves_identity(
 ) -> None:
     """Ready only when the keyless request is refused and the key lists our model (F026)."""
 
-    from clio_agent.gact.infrastructure.model_runtimes import _identity_health_command
+    from clio_agent.gact.infrastructure.model_runtime_readiness import identity_health_command
 
     server = _fake_model_server(keyless_status, served)
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        command = _identity_health_command(
+        command = identity_health_command(
             f"{base}/health",
             f"{base}/v1/models",
             "/models/downloaded",
