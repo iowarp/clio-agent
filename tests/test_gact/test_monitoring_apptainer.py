@@ -249,3 +249,34 @@ def test_start_runs_the_host_initialize_step_after_readiness(
     backend.start(root, {"components": [component]}, {"POSTGRES_PASSWORD": "pw"})
     execs = [args for args in calls if args[1] == "exec"]
     assert [args[4:] for args in execs] == [["true"], ["sh", "-c", "createdb clio"]]
+
+
+def test_a_workdir_component_changes_directory_inside_the_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = owned_root(tmp_path)
+    component = {
+        "name": "clio-cmf-x-server",
+        "role": "server",
+        "image": "docker.io/library/python@sha256:" + "0" * 64,
+        "workdir": "/cmf-server/src",
+        "host_arguments": ["/cmf-server/venv/bin/uvicorn", "server.app.main:app"],
+    }
+    path = root / "containers/images/server.sif"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"py")
+    (root / "images.json").write_text(json.dumps({component["name"]: backend.digest(path)}))
+    calls: list[list[str]] = []
+
+    def run(arguments: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(backend, "instances", lambda root: {})
+    monkeypatch.setattr(subprocess, "run", run)
+    backend.start(root, {"components": [component]}, {})
+    (launch,) = [args for args in calls if args[1:3] == ["instance", "run"]]
+    assert "--pwd" not in launch
+    tail = launch[launch.index("clio-cmf-x-server") + 1 :]
+    assert tail[:5] == ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", "/cmf-server/src"]
+    assert tail[5:] == component["host_arguments"]

@@ -184,8 +184,6 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
         env = secret_environment(component, private)
         if owned_instance(root, component) is None:
             arguments = ["instance", "run", "--cleanenv", "--containall", "--writable-tmpfs"]
-            if component.get("workdir"):
-                arguments += ["--pwd", component["workdir"]]
             for relative, destination, readonly in component.get("mounts", []):
                 source = owned_path(root, relative)
                 if not readonly:
@@ -194,6 +192,16 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
             launch = component.get("host_arguments", component.get("arguments", []))
             if component.get("entrypoint"):
                 launch = [component["entrypoint"], *launch]
+            if component.get("workdir"):
+                # `instance run` has no --pwd: change directory inside the instance.
+                launch = [
+                    "sh",
+                    "-c",
+                    'cd "$1" && shift && exec "$@"',
+                    "sh",
+                    component["workdir"],
+                    *launch,
+                ]
             apptainer(root, [*arguments, str(path), component["name"], *launch], env=env)
         check = component.get("host_check", component.get("check"))
         if check:
