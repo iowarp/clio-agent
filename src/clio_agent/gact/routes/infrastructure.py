@@ -11,6 +11,10 @@ from clio_agent.gact.infrastructure.configuration_keys import (
     UnknownConfigurationKeyError,
     validate_configuration_keys,
 )
+from clio_agent.gact.infrastructure.context_sizing.preview import (
+    ContextSizingPreviewRequest,
+    preview_context,
+)
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     DesktopExitRequest,
@@ -177,6 +181,21 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Infrastructure target not found") from exc
         return row.model_dump(mode="json")
+
+    @app.post("/v1/infrastructure/services/{service_id}/context-sizing")
+    async def context_sizing(
+        service_id: str, request: ContextSizingPreviewRequest
+    ) -> dict[str, object]:
+        """The context control (number, Max, Fit to GPU) for a deployment form's model."""
+        try:
+            controls = await preview_context(runtime(), service_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown {exc.args[0]!r}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return controls.model_dump(mode="json")
 
     @app.get("/v1/infrastructure/operations/{operation_id}")
     async def operation(operation_id: str) -> dict[str, object]:
