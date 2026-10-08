@@ -246,3 +246,37 @@ def test_db_record_report_records_only_live() -> None:
     db_mod.record_report(rep)
     assert db_mod.lookup_context("vendor/live-model") == 99999  # server_report recorded
     assert db_mod.lookup_context("vendor/dev-model") is None  # cascade-sourced NOT recorded
+
+
+def test_db_record_report_does_not_store_a_served_context_as_the_model_limit() -> None:
+    """F016: vLLM's max_model_len is what one deployment serves, not the model's ceiling."""
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import DeploymentCapabilities, Fact
+    from clio_agent.providers.handshake.model import (
+        AuthState,
+        ConnectivityState,
+        DiscoveredModel,
+        HandshakeReport,
+    )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="vllm",
+            api_base="http://127.0.0.1:37153/v1",
+            model_id="/models/Qwen3-4B",
+            model_key=Fact(value="Qwen/Qwen3-4B", source="server_report", observed_at=now),
+            context_served=Fact(value=16384, source="server_report", observed_at=now),
+        )
+    )
+    rep = HandshakeReport(
+        provider_id="vllm",
+        provider_kind="openai",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.OK,
+        api_base="http://127.0.0.1:37153/v1",
+        models=(DiscoveredModel(id="/models/Qwen3-4B"),),
+    )
+    db_mod.record_report(rep)
+    assert db_mod.lookup_context("/models/Qwen3-4B") is None

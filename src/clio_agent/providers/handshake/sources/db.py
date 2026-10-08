@@ -245,12 +245,11 @@ def record_report(report: Any) -> None:
 
     A handshake no longer carries a flat ``context_window``/``context_source``
     per model (that was ``ModelProfile``, split into the capability records) --
-    a discovered row's real limit is read back from whichever of
+    a discovered row's real context limit is read back from
     :class:`~clio_agent.providers.capabilities.records.ModelCapabilities.
-    context_max` (the model's own ceiling) or
-    :class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities.
-    context_served` (what this server is currently serving) the adapter itself
-    evidenced this run (``source="server_report"``) -- never a value this same
+    context_max` (the model's own ceiling; a deployment's ``context_served`` is
+    not a model limit and is never stored here) when the adapter itself
+    evidenced it this run (``source="server_report"``) -- never a value this same
     cascade already supplied (``models.dev``/``litellm``/``db``), which would
     just be writing a lookup back into itself.
     """
@@ -272,18 +271,15 @@ def record_report(report: Any) -> None:
         model = invalidation.get_model_capabilities(model_key) if model_key else None
 
         ctx = out = None
+        # Only a model's own ceiling is a model limit. A deployment's served context
+        # (vLLM ``max_model_len``) is a launch choice: stored under the model id it
+        # came back as that model's ceiling and capped the next deployment (F016).
         if (
             model is not None
             and model.context_max.source == "server_report"
             and model.context_max.known
         ):
             ctx = model.context_max.value
-        elif (
-            deployment is not None
-            and deployment.context_served.source == "server_report"
-            and deployment.context_served.known
-        ):
-            ctx = deployment.context_served.value
         if (
             model is not None
             and model.output_max.source == "server_report"
