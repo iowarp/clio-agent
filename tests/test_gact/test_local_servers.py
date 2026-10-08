@@ -102,6 +102,20 @@ def test_a_catalog_runtime_has_one_entry_and_custom_servers_get_unique_ids(
     assert store.saved_address_for_preset(store.CUSTOM_SERVER_PRESET_ID) is None
 
 
+def test_a_turn_config_uses_the_saved_runtime_address_not_the_preset_default(
+    config_file: Path,
+) -> None:
+    """F011: a ModelRef names only the provider; the turn must reach the saved server."""
+    from clio_agent.config import LMProviderConfig  # noqa: PLC0415
+
+    assert LMProviderConfig(provider_id="vllm", model="m").api_base == "http://127.0.0.1:8000/v1"
+    store.add_server(address="127.0.0.1:37153", preset_id="vllm")
+
+    assert LMProviderConfig(provider_id="vllm", model="m").api_base == "http://127.0.0.1:37153/v1"
+    explicit = LMProviderConfig(provider_id="vllm", model="m", api_base="http://h:1/v1")
+    assert explicit.api_base == "http://h:1/v1"
+
+
 def test_update_and_remove(config_file: Path) -> None:
     entry = store.add_server(address="gpu-7:8000", label="GPU node")
     updated = store.update_server(entry.id, address="gpu-7:9000", label="Big node")

@@ -295,7 +295,14 @@ class LMProviderConfig:
             self.provider, self.model, self.thinking_level, self.thinking_budget
         )
         if not self.api_base:
-            self.api_base = defaults["api_base"]
+            # A runtime saved on Settings > Providers (for example a CLIO-managed
+            # deployment on its own port) is where this preset serves; the
+            # catalog default address may belong to someone else's server.
+            from clio_agent.gact.local_server_store import (  # noqa: PLC0415
+                saved_address_for_preset,
+            )
+
+            self.api_base = saved_address_for_preset(preset.id) or defaults["api_base"]
         if not self.model:
             self.model = defaults["model"]
         if not self.api_key:
