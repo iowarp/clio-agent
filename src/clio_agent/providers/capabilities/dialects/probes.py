@@ -74,6 +74,21 @@ def _message(response: ProbeResponse) -> dict[str, Any] | None:
     return message if isinstance(message, dict) else None
 
 
+#: The tools probe's retry budget when its first reply is truncated before any call.
+TOOLS_PROBE_RETRY_MAX_TOKENS = 512
+
+
+def _truncated_without_calls(response: ProbeResponse) -> bool:
+    """Whether a 2xx reply stopped at ``finish_reason="length"`` with no tool call yet."""
+    if response.status_code >= 400 or not isinstance(response.body, dict):
+        return False
+    choices = response.body.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return False
+    message = _message(response) or {}
+    return choices[0].get("finish_reason") == "length" and not message.get("tool_calls")
+
+
 def _error_field_name(response: ProbeResponse) -> str | None:
     """The field name a 400 response blames, when it names one (brief 5.3 parameters probe)."""
     if not isinstance(response.body, dict):
@@ -96,18 +111,29 @@ async def probe_tools(send: Any, *, model_id: str, max_tokens: int = 64) -> Fact
     BODY and how to read the result, so it works unchanged against every
     OpenAI-shaped dialect.
     """
-    body = {
-        "model": model_id,
-        "messages": [{"role": "user", "content": "What is 21 + 21? Use the record_sum tool."}],
-        "tools": [RECORD_SUM_TOOL],
-        "tool_choice": "auto",
-        "max_tokens": max_tokens,
-        "temperature": 0,
-    }
-    try:
-        response = await send(body)
-    except Exception:  # noqa: BLE001 - a failed probe is unknown, never False
-        return unknown("probe: tools request failed")
+    for budget in (max_tokens, max(max_tokens, TOOLS_PROBE_RETRY_MAX_TOKENS)):
+        body = {
+            "model": model_id,
+            "messages": [{"role": "user", "content": "What is 21 + 21? Use the record_sum tool."}],
+            "tools": [RECORD_SUM_TOOL],
+            "tool_choice": "auto",
+            "max_tokens": budget,
+            "temperature": 0,
+        }
+        try:
+            response = await send(body)
+        except Exception:  # noqa: BLE001 - a failed probe is unknown, never False
+            return unknown("probe: tools request failed")
+        # A reply cut off by the budget before any call says nothing about tool
+        # support: a reasoning model spends a small budget thinking first (Qwen3
+        # on vLLM, F016). Retry once with room to finish, else stay unknown.
+        if not _truncated_without_calls(response):
+            break
+    else:
+        return unknown(
+            f"probe: response truncated (finish_reason=length) before any tool call "
+            f"at max_tokens={budget}"
+        )
     if response.status_code >= 400:
         blamed = _error_field_name(response)
         if response.status_code == 400 and blamed and "tool" in blamed.casefold():
