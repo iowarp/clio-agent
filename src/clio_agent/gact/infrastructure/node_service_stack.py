@@ -22,6 +22,18 @@ OWNER_LABEL = "ai.iowarp.clio.deployment"
 RUNTIME_PARENT = Path("/run/user")
 
 
+def host_network(manifest: dict[str, Any]) -> bool:
+    """Apptainer instances share the host network (no publish, no daemon)."""
+    return manifest.get("container_runtime") == "apptainer"
+
+
+def apptainer_backend() -> Any:
+    """The shipped Apptainer backend beside this file."""
+    import stack_apptainer  # type: ignore[import-not-found]
+
+    return stack_apptainer
+
+
 def flowcept_environment(root: Path) -> None:
     """Bind the managed collector and probes to their private deployment settings."""
     for name in tuple(os.environ):
@@ -174,8 +186,15 @@ def private_configuration(root: Path, manifest: dict[str, Any]) -> dict[str, str
         # JSON is a valid YAML subset and can be read by Flowcept/OmegaConf.
         (root / "settings.yaml").write_text(json.dumps(settings))
         (root / "settings.yaml").chmod(0o600)
+        # Behind a published port Redis listens on the container's interface;
+        # on the host network it binds loopback at its private port.
+        listen = (
+            f"bind 127.0.0.1\nport {manifest['redis_port']}\n"
+            if host_network(manifest)
+            else "bind 0.0.0.0\n"
+        )
         (root / "redis.conf").write_text(
-            f"bind 0.0.0.0\nprotected-mode yes\nrequirepass {password}\nappendonly yes\ndir /data\n"
+            f"{listen}protected-mode yes\nrequirepass {password}\nappendonly yes\ndir /data\n"
         )
         (root / "redis.conf").chmod(0o600)
     return {
@@ -190,7 +209,11 @@ def private_configuration(root: Path, manifest: dict[str, Any]) -> dict[str, str
 
 def install(root: Path, manifest: dict[str, Any]) -> None:
     """Resolve pinned definition images; leave the service and databases stopped."""
-    private_configuration(root, manifest)
+    private = private_configuration(root, manifest)
+    if host_network(manifest):
+        apptainer_backend().cleanup(root, manifest, private)
+        apptainer_backend().install(root, manifest)
+        return
     # Replacement keeps database/evidence files but cannot retain old container
     # specifications after ports, images or environment have changed.
     cleanup(root, manifest, remove=True)
@@ -273,6 +296,12 @@ def build_definition(root: Path, upstream: Path, build: dict[str, Any]) -> Path:
 
 def start(root: Path, manifest: dict[str, Any]) -> None:
     """Start only owned dependency containers, with data in the chosen host root."""
+    if host_network(manifest):
+        if manifest["service"] == "cmf":
+            for directory in ("static", "env", "labels", "tensorboard-logs"):
+                (root / "data/cmf" / directory).mkdir(parents=True, exist_ok=True)
+        apptainer_backend().start(root, manifest, private_configuration(root, manifest))
+        return
     owner = json.loads((root / "owner.json").read_text())["owner"]
     network = manifest["network"]
     images = json.loads((root / "images.json").read_text())
@@ -368,6 +397,9 @@ def start(root: Path, manifest: dict[str, Any]) -> None:
 def collect_logs(root: Path, manifest: dict[str, Any]) -> None:
     """Refresh bounded logs from existing owned containers without changing their state."""
     private = json.loads((root / "credentials.json").read_text())
+    if host_network(manifest):
+        apptainer_backend().collect_logs(root, manifest, private)
+        return
     for component in manifest["components"]:
         name = component["name"]
         if inspect(root, "container", name) is None:
@@ -381,6 +413,10 @@ def collect_logs(root: Path, manifest: dict[str, Any]) -> None:
 
 def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
     """Stop/remove only matching owned containers, retaining every data directory."""
+    if host_network(manifest):
+        private = json.loads((root / "credentials.json").read_text())
+        apptainer_backend().cleanup(root, manifest, private)
+        return
     collect_logs(root, manifest)
     for component in reversed(manifest["components"]):
         name = component["name"]
@@ -415,6 +451,9 @@ def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
 
 def delete_images(root: Path, manifest: dict[str, Any]) -> None:
     """Delete only this deployment's retained image store, after all runtimes are removed."""
+    if host_network(manifest):
+        apptainer_backend().delete_images(root, manifest)
+        return
     if manifest.get("image_storage") != "service":
         return
     if command(root, ["ps", "-a", "--quiet"]).strip():
@@ -455,6 +494,14 @@ def delete_podman_data(root: Path, manifest: dict[str, Any]) -> None:
             raise RuntimeError("Owned service data remains after rootless deletion")
 
 
+def running(root: Path, manifest: dict[str, Any], component: dict[str, Any]) -> bool:
+    """Runtime-neutral liveness of one owned component."""
+    if host_network(manifest):
+        return bool(apptainer_backend().running(root, component))
+    row = inspect(root, "container", component["name"])
+    return bool(row and row["State"]["Running"])
+
+
 def main() -> None:
     """Run a definition-owned installation or cleanup hook."""
     os.umask(0o077)
@@ -469,7 +516,12 @@ def main() -> None:
         collect_logs(root, manifest)
     elif action == "delete_data":
         if any(
-            inspect(root, "container", row["name"]) is not None for row in manifest["components"]
+            (
+                apptainer_backend().running(root, row)
+                if host_network(manifest)
+                else inspect(root, "container", row["name"]) is not None
+            )
+            for row in manifest["components"]
         ):
             raise ValueError("Remove the monitoring runtime before deleting retained data")
         delete_podman_data(root, manifest)

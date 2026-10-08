@@ -42,18 +42,23 @@ def monitoring_port(service: str, configuration: dict[str, str]) -> int:
     return int(port)
 
 
-def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
-    """Render monitoring services without inference or each other as prerequisites."""
-    engines = [
-        row.name
-        for row in facts.container_runtimes
-        if row.usable and row.name in {"docker", "podman"}
-    ]
+def monitoring_engines(service: str, facts: TargetFacts) -> list[str]:
+    """Usable container runtimes this service's dependencies can run on."""
+    # The CMF server is built from a Dockerfile, which Apptainer cannot build.
+    supported = {"docker", "podman"} | ({"apptainer"} if service == "flowcept" else set())
+    engines = [row.name for row in facts.container_runtimes if row.usable and row.name in supported]
     if not engines and facts.docker_available:
         engines = ["docker"]
-    compatible = facts.os == "linux" and facts.uv_available and bool(engines)
+    return [str(engine) for engine in engines]
+
+
+def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
+    """Render monitoring services without inference or each other as prerequisites."""
     result = []
     for service, label in (("flowcept", "Flowcept"), ("cmf", "HPE CMF")):
+        engines = monitoring_engines(service, facts)
+        compatible = facts.os == "linux" and facts.uv_available and bool(engines)
+        runtimes = "Docker, Podman or Apptainer" if service == "flowcept" else "Docker or Podman"
         result.append(
             ManagedServiceDefinition(
                 id=service,
@@ -74,21 +79,21 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                         compatible=compatible,
                         reason="Ready on this host."
                         if compatible
-                        else "Requires Linux, uv and usable Docker or Podman on this execution host.",
+                        else f"Requires Linux, uv and usable {runtimes} on this execution host.",
                     )
                 ],
                 configuration_fields=[
                     ServiceConfigurationField(
                         id="container_runtime",
                         label="Dependency runtime",
-                        options=[str(engine) for engine in engines],
+                        options=engines,
                         placeholder=engines[0] if engines else "No supported engine",
                     ),
                     ServiceConfigurationField(
                         id="image_storage",
                         label="Container images",
                         options=["engine", "service"],
-                        placeholder="engine",
+                        placeholder="service" if engines[:1] == ["apptainer"] else "engine",
                     ),
                     ServiceConfigurationField(
                         id="port",
@@ -176,17 +181,30 @@ def monitoring_plan(
     engine = (
         configuration.get("container_runtime") or definition.configuration_fields[0].placeholder
     )
-    if engine not in {"docker", "podman"}:
-        raise ValueError("Choose Docker or Podman for monitoring dependencies")
-    image_storage = configuration.get("image_storage") or "engine"
+    if engine not in {"docker", "podman"} and engine not in monitoring_engines(service, facts):
+        raise ValueError(
+            f"Choose a usable runtime for {definition.label} dependencies: "
+            + ", ".join(monitoring_engines(service, facts) or ["none on this host"])
+        )
+    # Apptainer has no image store of its own: its SIFs always live in the service folder.
+    image_storage = configuration.get("image_storage") or (
+        "service" if engine == "apptainer" else "engine"
+    )
     if image_storage not in {"engine", "service"}:
         raise ValueError("Choose engine storage or the service folder for container images")
-    if image_storage == "service" and engine != "podman":
-        raise ValueError("Container images in the service folder require Podman on this host")
+    if image_storage == "service" and engine not in {"podman", "apptainer"}:
+        raise ValueError(
+            "Container images in the service folder require Podman or Apptainer on this host"
+        )
+    if engine == "apptainer" and image_storage != "service":
+        raise ValueError("Apptainer keeps its images in the service folder")
     port = monitoring_port(service, configuration)
     files = {
         "stack.py": Path(__file__).with_name("node_service_stack.py").read_text(encoding="utf-8"),
         "verify.py": Path(__file__).with_name("monitoring_verify.py").read_text(encoding="utf-8"),
+        "stack_apptainer.py": Path(__file__)
+        .with_name("node_service_stack_apptainer.py")
+        .read_text(encoding="utf-8"),
     }
     dependencies = ["httpx==0.28.1"]
     manifest: dict[str, Any] = {
@@ -267,6 +285,11 @@ def monitoring_plan(
                     "arguments": ["/etc/redis.conf"],
                     "secrets": ["REDISCLI_AUTH"],
                     "check": ["sh", "-c", 'test "$(redis-cli --raw ping)" = PONG'],
+                    "host_check": [
+                        "sh",
+                        "-c",
+                        f'test "$(redis-cli -p {redis_port} --raw ping)" = PONG',
+                    ],
                 },
                 {
                     "name": prefix + "-mongo",
@@ -275,6 +298,22 @@ def monitoring_plan(
                     "ports": [[mongo_port, 27017]],
                     "mounts": [["data/mongo", "/data/db", False]],
                     "secrets": ["MONGO_INITDB_ROOT_USERNAME", "MONGO_INITDB_ROOT_PASSWORD"],
+                    # On the host network (Apptainer) mongod listens on loopback at its private port.
+                    "host_arguments": [
+                        "mongod",
+                        "--bind_ip",
+                        "127.0.0.1",
+                        "--port",
+                        str(mongo_port),
+                    ],
+                    "host_check": [
+                        "mongosh",
+                        "--quiet",
+                        "--port",
+                        str(mongo_port),
+                        "--eval",
+                        "quit(db.adminCommand({ping:1}).ok ? 0 : 1)",
+                    ],
                     "check": [
                         "mongosh",
                         "--quiet",
