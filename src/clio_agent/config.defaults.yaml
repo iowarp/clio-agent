@@ -434,7 +434,7 @@ scheduler.min_interval_s: 60
 # Most tries one BestOfN / Refine run may draft (draft_alternatives, a spawn
 # strategy); a larger request is capped to it. Each try is a full agent run,
 # so it bounds the cost.
-variants.max_n: 4
+variants.max_n: 8
 
 # CLIO_WORKFLOW_STEP_INACTIVITY_S  (float)  <- src/clio_agent/gact/workflow_step_watch.py
 # No-activity window (seconds) before a declared-workflow step's child is
