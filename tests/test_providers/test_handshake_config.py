@@ -12,6 +12,7 @@ report carrying only the bare discovered identity, exactly what
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -410,3 +411,58 @@ async def test_native_context_window_populated_from_catalog_and_warning_fires(
     assert str(facts.model.context_max.value) in warning_records[0].message
     # chosen_context reflects the served window, not the native max.
     assert cfg.chosen_context == 16384
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("stored", "purged"), [(16384, True), (65536, False)])
+async def test_vllm_served_window_purges_a_smaller_stored_db_ceiling(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stored: int, purged: bool
+) -> None:
+    """F016 self-heal: a model-limits DB ``context`` below what vLLM is live-serving
+    cannot be the model's ceiling (an old deployment's served window recorded by
+    the pre-fix code), so the handshake drops it from the user DB instead of
+    capping the served window with it. A stored value above the served window is
+    a plausible ceiling and is kept, labelled with its real ``db`` source.
+    """
+    import json
+
+    from clio_agent.providers.handshake.base import HandshakeContext
+    from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
+
+    model_id = "/models/acme--never-in-a-catalog--abc123"
+    db_file = tmp_path / "model_limits.json"
+    db_file.write_text(
+        json.dumps({model_id: {"context": stored, "provider": "openai", "source": "live"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLIO_MODEL_DB", str(db_file))
+
+    class _NoNetClient:
+        async def get(self, url: str, **_: object) -> None:
+            raise AssertionError("No network call expected in discover_model_config")
+
+    ctx = HandshakeContext(
+        provider_id="vllm-test",
+        provider_kind="vllm",
+        api_base="http://localhost:8000/v1",
+        allow_external_sources=False,
+    )
+    row = {"id": model_id, "object": "model", "max_model_len": 32768}
+    facts = await OpenAICompatHandshake(provider=object()).discover_model_config(
+        _NoNetClient(), ctx, row
+    )
+
+    assert facts.deployment.context_served.value == 32768
+    remaining = json.loads(db_file.read_text(encoding="utf-8"))
+    mismatches = db_file.with_suffix(".mismatches.jsonl")
+    if purged:
+        assert not facts.model.context_max.known
+        assert model_id not in remaining
+        rows = [json.loads(line) for line in mismatches.read_text(encoding="utf-8").splitlines()]
+        assert rows[-1]["action"] == "purged"
+        assert (rows[-1]["stored"], rows[-1]["discovered"]) == (16384, 32768)
+    else:
+        assert facts.model.context_max.value == 65536
+        assert facts.model.context_max.source == "db"
+        assert remaining[model_id]["context"] == 65536
+        assert not mismatches.exists()

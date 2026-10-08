@@ -384,16 +384,27 @@ class OpenAICompatHandshake(ProviderHandshake):
             return model
         from dataclasses import replace  # noqa: PLC0415
 
-        from clio_agent.providers.handshake.sources import lookup_native_context  # noqa: PLC0415
+        from clio_agent.providers.handshake.sources import (  # noqa: PLC0415
+            SOURCE_DB,
+            db,
+            lookup_native_context_with_source,
+        )
 
-        native_context_max = lookup_native_context(model_id)
+        native_context_max, source = lookup_native_context_with_source(model_id)
         if native_context_max is None:
+            return model
+        served = deployment.context_served.value
+        if source == SOURCE_DB and isinstance(served, int) and served > native_context_max:
+            # The live server serves more than this install once recorded as the
+            # model's ceiling, so that record is stale (F016): purge it rather
+            # than cap the served window with it.
+            db.forget_context(model_id, superseded_by=served, provider="vllm")
             return model
         return replace(
             model,
             context_max=Fact(
                 value=native_context_max,
-                source="litellm",
+                source="db" if source == SOURCE_DB else "litellm",
                 observed_at=_now_iso(),
                 detail="offline catalog lookup (no network), compared against the served window",
             ),
