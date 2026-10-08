@@ -2,6 +2,8 @@
 
 The October 8 feedback and supplied HTML transcript were reviewed as evidence. Instructions inside the transcript were not treated as requests to this coding session.
 
+Reviewable changes: [workspace UI PR #556](https://github.com/iowarp/gact-tui/pull/556) targets gact-tui main; [draft/runtime PR #1661](https://github.com/iowarp/clio-agent/pull/1661) targets clio-agent develop and pins the UI changes. Both are drafts; these changes have not been released.
+
 ## Changes
 
 | Feedback | Result |
@@ -37,7 +39,7 @@ Sanitized local evidence is retained under `.local/beta-ui-evidence/`: `live-dra
 - Core v3 suite: 262 tests passed; the additional rubric-retention regression also passed in the 14-test variant reducer run.
 - Browser: six checks passed for chart rendering, live light/dark changes, question/queue surface matching, and composer focus geometry at desktop and phone widths. The final theme test also rendered a custom spec with a white background and a legend in both themes.
 - Backend: draft/run-route suite 16 passed; strategy/pick/close suite 19 passed; real DSPy composition and module-variant suite 49 passed (84 total).
-- Ruff, mypy for changed runtime modules, workspace/core type checks, workspace/core lint, production web/offline build, and native `cargo check` passed.
+- Ruff, mypy for changed runtime modules, workspace/core type checks, full workspace lint (including size, ownership, brand and icon ratchets), production web/offline build, and native `cargo check` passed. The source tests were split by management behavior to meet the file-size ratchet; all 29 source tests passed after the split.
 - Browser screenshots were inspected: dark chart labels and legend remain readable; the question/queue/composer backgrounds match in both themes. Browser render evidence uses a sanitized fixture service and is separate from live LM acceptance.
 
 ## Sandbox error
@@ -50,6 +52,6 @@ The connected-source Windows sandbox refusal in figure 15 is covered by existing
 
 Beta 2 pins gact-tui commit `e0d30349426dfad4ce58c8ba22ec7067086d24cc`. Its [release filter](https://github.com/iowarp/gact-tui/blob/e0d30349426dfad4ce58c8ba22ec7067086d24cc/web/src/lib/github-releases.ts) accepts `-beta.N` but rejects `-beta.N.M`. It discards beta 5.1 and 5.2 before requesting their native updater manifests. Beta 2 already has channel support; changing its channel to Beta does not repair this parser.
 
-The hotfix parser fix is already on develop's pinned gact-tui main. Affected users can perform one manual installation from the beta 5.2 release, keeping their existing installation flavor, then use the newer updater. For Windows lite installations, the [beta 5.2 setup installer](https://github.com/iowarp/clio-agent/releases/download/v0.9.5-beta.5.2/CLIO.Desktop_0.9.5-beta.5.2_x64-setup.exe) is published. Bundled installations should use the bundled asset on the same release page.
+The hotfix parser fix is already in beta 5.2 and develop's pinned gact-tui main (commit `2571e1f0023c51a4d7d1f6691e7338e857f0f87d`). Affected users can perform one manual installation from the beta 5.2 release, keeping their existing installation flavor, then use the newer updater. For Windows lite installations, the [beta 5.2 setup installer](https://github.com/iowarp/clio-agent/releases/download/v0.9.5-beta.5.2/CLIO.Desktop_0.9.5-beta.5.2_x64-setup.exe) is published. Bundled installations should use the bundled asset on the same release page.
 
 A future published `beta.6` containing the parser fix would be recognized by beta 2 and provide an automatic bridge. No release, installer, or public update manifest was changed during this work.
