@@ -37,6 +37,7 @@ already handled generically by :mod:`clio_agent.providers.capabilities.link`
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -51,6 +52,7 @@ from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
     Fact,
     ModelCapabilities,
+    ThinkingMechanism,
     ThinkingSpec,
     modalities_from_capabilities,
     task_fact,
@@ -278,6 +280,32 @@ def parameters_from_show(data: Any, arch: str | None, observed_at: str) -> Fact:
     return Fact(count, "server_report", observed_at, f"ollama /api/show {' '.join(stated)}")
 
 
+#: A Go-template reference to the request's think switch (``.Think``) or level
+#: (``.ThinkLevel``) -- not the message field ``.Thinking`` nor ``.IsThinkSet``.
+_THINK_SWITCH_RE = re.compile(r"\.Think(?:Level)?\b")
+
+
+def thinking_mechanism(caps: tuple[str, ...], template: Any) -> ThinkingMechanism:
+    """The thinking mechanism from ``/api/show`` ``capabilities`` + ``template``.
+
+    ``thinking`` in the capabilities says the model reasons; whether a request
+    can turn it OFF is the template's to say. A template that opens ``<think>``
+    but never reads the think switch always reasons -- e.g. qwen3:4b (the 2507 thinking
+    build) -- so "off" only leaks the reasoning into the answer (F040): that
+    is ``always_on``. A template that neither opens ``<think>`` nor reads the
+    switch (or no template) says nothing either way, so ``on_off`` stands.
+    """
+    if "thinking" not in caps:
+        return "none"
+    if (
+        isinstance(template, str)
+        and "<think>" in template
+        and not _THINK_SWITCH_RE.search(template)
+    ):
+        return "always_on"
+    return "on_off"
+
+
 def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> ModelCapabilities:
     """Build the MODEL half of ``POST /api/show`` (brief Part 6 Ollama section).
 
@@ -345,10 +373,10 @@ def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> 
         ),
         thinking=(
             Fact(
-                value=ThinkingSpec(mechanism="on_off" if "thinking" in caps else "none"),
+                value=ThinkingSpec(mechanism=thinking_mechanism(caps, data.get("template"))),
                 source="server_report",
                 observed_at=observed_at,
-                detail="ollama /api/show capabilities",
+                detail="ollama /api/show capabilities + template",
             )
             if capabilities_known
             else unknown()
