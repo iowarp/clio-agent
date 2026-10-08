@@ -437,13 +437,22 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
     except CompactionPromptError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
 
+    from clio_agent.gact.compaction_lm import pinned_summary_lm  # noqa: PLC0415
     from clio_agent.providers.stateful_common import outside_stateful_scope  # noqa: PLC0415
+
+    try:  # a pinned session is summarised by its own model (F011c)
+        summary_lm = pinned_summary_lm(app, sid)
+    except Exception as exc:  # noqa: BLE001 - re-raised typed, never another model
+        raise CompactionError(
+            502, "pinned_model_unresolved", f"session model could not be resolved: {exc!r}"
+        ) from exc
 
     def _call() -> str:
         # Not a step of the agent's conversation (auto compaction runs inside its
         # forward): never continue or replace the agent's kept provider conversation.
         with outside_stateful_scope():
-            return str(agent._run_chat_agent(prompt, "") or "")
+            pinned = {"lm": summary_lm} if summary_lm is not None else {}
+            return str(agent._run_chat_agent(prompt, "", **pinned) or "")
 
     retry_call = getattr(agent, "_call_with_transient_provider_retries", None)
     try:
