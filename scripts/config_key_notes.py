@@ -723,6 +723,12 @@ KEY_NOTES: dict[str, str] = {
         "Sets the OpenAI-standard top-p sampling parameter; tune for reasoning models needing "
         "fuller sampling than the temp-0 default."
     ),
+    "paths.default_workspace": (
+        "Absolute directory a fresh install's default workspace (ws_default) is rooted at, "
+        "created if missing; unset uses the server's working directory at first start. It only "
+        "seeds: an existing ws_default keeps its root (repoint it with PATCH "
+        "/v1/workspaces/ws_default or the Workspaces page)."
+    ),
     "paths.model_catalog": (
         "Overrides the file path for the discovered-model catalog cache; set to relocate it off "
         "the default user-data directory."

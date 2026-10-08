@@ -111,6 +111,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_MEMPROF_OUT` | `debug.memprof_out` | str | _(unset)_ | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `base-agent` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
+| `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |

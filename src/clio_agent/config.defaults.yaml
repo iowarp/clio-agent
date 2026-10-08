@@ -16,6 +16,13 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
+# CLIO_DEFAULT_WORKSPACE  (str)  <- src/clio_agent/gact/workspaces.py
+# Absolute directory a fresh install's default workspace (ws_default) is
+# rooted at, created if missing; unset uses the server's working directory
+# at first start. It only seeds: an existing ws_default keeps its root
+# (repoint it with PATCH /v1/workspaces/ws_default or the Workspaces page).
+# paths.default_workspace:  # default unset; resolved in code
+
 # CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Overrides the file path for the discovered-model catalog cache; set to
 # relocate it off the default user-data directory.
