@@ -136,6 +136,12 @@ def _codex_to_level() -> dict[str, str]:
     return CODEX_TO_LEVEL
 
 
+#: The one level an on/off thinking model offers besides "off". The message
+#: contract has no "on" token, so the catalog marks the block ``control:
+#: "toggle"`` and the picker shows this level as "On".
+ON_OFF_LEVEL = "high"
+
+
 def _reasoning_wire_block(
     effective_thinking: Any, profile: DiscoveredModel, *, dialect: str = ""
 ) -> dict[str, Any]:
@@ -165,9 +171,14 @@ def _reasoning_wire_block(
     if spec.mechanism in ("none", "always_on"):
         levels: list[str] = []
     else:
-        # "off" only where the request builder sends it (dialect_wire.off_sendable);
-        # no per-model levels (on_off/budget_tokens): CLIO's generic ladder.
-        ladder = [x for x in spec.levels if x != "off"] or ["low", "medium", "high"]
+        # "off" only where the request builder sends it (dialect_wire.off_sendable).
+        # A toggle has no strengths: one level stands for "on" (every level above
+        # off sends the same switch, F017), so no ladder is shown (DIRECTIVES 15,
+        # F039). Budgets without per-model levels keep CLIO's generic ladder.
+        if spec.mechanism == "on_off":
+            ladder = [ON_OFF_LEVEL]
+        else:
+            ladder = [x for x in spec.levels if x != "off"] or ["low", "medium", "high"]
         levels = [*(["off"] if dialect_wire.off_sendable(dialect, spec) else []), *ladder]
 
     default = ""
@@ -191,6 +202,9 @@ def _reasoning_wire_block(
         "default_source": default_source,
         "source": effective_thinking.decided_by,
     }
+    if spec.mechanism == "on_off":
+        # Render as an Off/On switch: ON_OFF_LEVEL is the wire value for "on".
+        block["control"] = "toggle"
     failure = str(profile.raw.get("effort_evidence_failure") or "")
     if failure:
         block["reason"] = failure
