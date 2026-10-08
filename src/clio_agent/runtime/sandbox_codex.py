@@ -37,6 +37,7 @@ The proven invocation:
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import re
@@ -115,7 +116,8 @@ class CodexDetection:
     ``reason`` is the typed ladder rung the verdict implies
     (:data:`REASON_CODEX_NOT_INSTALLED`, :data:`REASON_CODEX_VERSION_UNSUPPORTED`,
     :data:`REASON_CODEX_DETECTED`). ``source`` is :data:`CODEX_SOURCE_BUNDLED` when the desktop's
-    own shipped ``codex.exe`` was used, :data:`CODEX_SOURCE_PATH` when resolved off ``PATH``, or
+    own shipped ``codex.exe`` or active Python wheel was used, :data:`CODEX_SOURCE_PATH`
+    when resolved off ``PATH``, or
     ``""`` when nothing was found. ``bundled_codex_absent`` is ``True`` when a desktop runtime
     root WAS found but its bundled ``codex.exe`` was missing on disk, so detection fell back to
     the ``PATH`` lookup -- a desktop install shipping without its expected binary is a real
@@ -199,12 +201,25 @@ def _bundled_codex_root() -> Optional[Path]:
     return resolve_bundled_runtime_root()
 
 
+def _wheel_codex_binary() -> Optional[Path]:
+    """Find the active Python wheel's Windows binary without importing or running it."""
+    try:
+        spec = importlib.util.find_spec("codex_cli_bin")
+    except (ImportError, ValueError):
+        return None
+    if spec is None or not spec.origin:
+        return None
+    binary = Path(spec.origin).parent / "bin" / "codex.exe"
+    return binary if binary.is_file() else None
+
+
 def detect_codex(
     *,
     which: Callable[[str], Optional[str]] = shutil.which,
     version_reader: Callable[[str], str] = _read_codex_version,
     platform: str = sys.platform,
     bundled_root: Callable[[], Optional[Path]] = _bundled_codex_root,
+    wheel_binary: Callable[[], Optional[Path]] = _wheel_codex_binary,
 ) -> CodexDetection:
     """Probe for the codex runtime + its version. DETECTION ONLY.
 
@@ -214,7 +229,9 @@ def detect_codex(
     defaults to :func:`_bundled_codex_root`); when this process runs from that bundled runtime
     AND the bundled binary exists on disk, it is preferred FIRST (:data:`CODEX_SOURCE_BUNDLED`) —
     a desktop install must not depend on the user separately installing codex on PATH. Otherwise
-    falls back to the ``which``-based PATH lookup (:data:`CODEX_SOURCE_PATH`). On win32 the
+    falls back to the ``which``-based PATH lookup (:data:`CODEX_SOURCE_PATH`). If PATH has
+    no Windows client, the active Python wheel is checked (:data:`CODEX_SOURCE_BUNDLED`),
+    including source/venv installs without a Desktop runtime manifest. On win32 the
     launchable ``codex.cmd``/``codex.exe`` are preferred over the extensionless ``codex`` (a
     POSIX shim ``which`` returns first cannot be exec'd by CreateProcess — the #1025 srt.cmd
     lesson). The returned :attr:`CodexDetection.reason` is the typed ladder reason the
@@ -242,6 +259,11 @@ def detect_codex(
         )
         binary = next((p for p in (which(n) for n in names) if p), "")
         source = CODEX_SOURCE_PATH
+        if not binary and platform.startswith("win"):
+            wheel = wheel_binary()
+            if wheel is not None:
+                binary = str(wheel)
+                source = CODEX_SOURCE_BUNDLED
 
     if not binary:
         return CodexDetection(

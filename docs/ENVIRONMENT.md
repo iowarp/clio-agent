@@ -330,6 +330,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
+| `CLIO_CODEX_RELEASE_TOKEN` | unmigrated | `src/clio_agent/runtime/codex_windows_helpers.py` |
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |

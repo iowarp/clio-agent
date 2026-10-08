@@ -17,6 +17,7 @@ INJECTED fakes (faked ``which`` + ``version_reader``, an explicit ``platform`` s
 
 from __future__ import annotations
 
+from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,8 @@ def test_detect_codex_absent_is_typed_not_installed() -> None:
         which=_fake_which({}),
         version_reader=lambda _b: "should-not-be-called",
         platform="win32",
+        bundled_root=lambda: None,
+        wheel_binary=lambda: None,
     )
     assert det.installed is False
     assert det.binary_path == ""
@@ -410,7 +413,56 @@ def test_write_layer_elevated_win32_shape_and_no_bom(tmp_path: Path) -> None:
     assert "[permissions.clio.filesystem]" in text
     # Windows path backslashes are DOUBLED (real TOML), and the grants are present.
     assert '"D:\\\\ws" = "write"' in text
-    assert '"D:\\\\" = "read"' in text
+    assert '":root" = "read"' in text
+    assert '"D:\\\\" = "read"' not in text
+
+
+def test_detect_windows_wheel_without_manifest_or_path(tmp_path: Path) -> None:
+    """A source/venv install can use its active wheel without a Desktop manifest."""
+    binary = tmp_path / "codex_cli_bin" / "bin" / "codex.exe"
+    seen: list[str] = []
+    detection = sc.detect_codex(
+        which=lambda _name: None,
+        platform="win32",
+        bundled_root=lambda: None,
+        wheel_binary=lambda: binary,
+        version_reader=lambda path: seen.append(path) or "0.161.0",
+    )
+    assert detection.installed and detection.reason == sc.REASON_CODEX_DETECTED
+    assert detection.source == sc.CODEX_SOURCE_BUNDLED
+    assert detection.binary_path == str(binary) and seen == [str(binary)]
+
+
+def test_detect_windows_path_precedes_active_wheel() -> None:
+    """The wheel fallback does not replace an already resolved host client."""
+
+    def unexpected_wheel() -> None:
+        raise AssertionError("The active wheel should not be queried when PATH resolves")
+
+    detection = sc.detect_codex(
+        which=_fake_which({"codex.cmd": "C:/test/codex.cmd"}),
+        platform="win32",
+        bundled_root=lambda: None,
+        wheel_binary=unexpected_wheel,
+        version_reader=lambda _path: "0.161.0",
+    )
+    assert detection.installed and detection.source == sc.CODEX_SOURCE_PATH
+    assert detection.binary_path == "C:/test/codex.cmd"
+
+
+def test_active_windows_wheel_discovery_only_reads_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolve existing wheel bytes without importing the package or launching them."""
+    package = tmp_path / "codex_cli_bin"
+    (package / "bin").mkdir(parents=True)
+    binary = package / "bin" / "codex.exe"
+    binary.write_bytes(b"test-only inert executable")
+    spec = ModuleSpec("codex_cli_bin", loader=None, origin=str(package / "__init__.py"))
+    monkeypatch.setattr(sc.importlib.util, "find_spec", lambda _name: spec)
+    assert sc._wheel_codex_binary() == binary
+    binary.unlink()
+    assert sc._wheel_codex_binary() is None
 
 
 def test_write_layer_omits_windows_block_off_win32(tmp_path: Path) -> None:
