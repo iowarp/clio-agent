@@ -31,6 +31,10 @@ def runtime_provider_probe_env(live_lm: object) -> dict[str, str]:
             )
             return env
         lm = {"provider": boot.provider, "api_base": boot.api_base, "model": boot.model}
+    provider_id = str(lm.get("provider_id") or "")
+    if provider_id and _has_saved_key(provider_id):
+        # A non-secret marker: the bound provider's key lives in CLIO's store (F024).
+        env["CLIO_LM_KEY_SOURCE"] = f"store:{provider_id}"
     for key, value in (
         ("CLIO_LM_PROVIDER", lm.get("provider")),
         ("CLIO_LM_API_BASE", lm.get("api_base")),
@@ -40,3 +44,10 @@ def runtime_provider_probe_env(live_lm: object) -> dict[str, str]:
         if value is not None:
             env[key] = str(value)
     return env
+
+
+def _has_saved_key(provider_id: str) -> bool:
+    """Whether CLIO's credential store holds a key for this bound provider."""
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    return bool(stored_api_key(provider_id))

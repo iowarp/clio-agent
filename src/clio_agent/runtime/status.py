@@ -21,6 +21,7 @@ from clio_agent.conf import ConfigStore
 from clio_agent.config import _CLOUD_API_KEY_ENV as _CONFIG_CLOUD_API_KEY_ENV
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.runtime.humanize import format_bytes as _format_bytes
+from clio_agent.runtime.lm_key_source import fallback_key
 from clio_agent.runtime.status_gateway import (
     _list_gateway_capabilities as _list_gateway_capabilities,
 )
@@ -1031,8 +1032,7 @@ class RuntimeProbe:
             api_key = self.env.get(native_key_env, "")
             key_source = f"env:{native_key_env}" if api_key else ""
         if not api_key:
-            api_key = defaults["api_key"]
-            key_source = f"default:{provider}"
+            api_key, key_source = fallback_key(self.env, provider, defaults["api_key"])
 
         if provider in _CLOUD_API_KEY_ENV and not api_key:
             raise ValueError(
