@@ -1,4 +1,4 @@
-"""Target-side model jobs; executed on the selected Linux host, never its controller.
+"""Target-side model jobs; executed on the selected host, never its controller.
 
 This file is standalone so the host need not already have CLIO installed.
 Acquisition runs in an owned uv project with a pinned Hugging Face client.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -16,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -35,7 +38,9 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def process_identity(pid: int) -> str:
-    """Identify the exact Linux process, including boot and start time; reject zombies."""
+    """Identify a live process by creation time, never by its reusable PID alone."""
+    if sys.platform == "win32":
+        return _windows_process_identity(pid)
     try:
         stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
         if stat[0] == "Z":
@@ -43,6 +48,68 @@ def process_identity(pid: int) -> str:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
     except (OSError, IndexError):
         return ""
+
+
+def _windows_process_identity(pid: int) -> str:
+    """Read Windows process creation FILETIME with a query-only, closed handle."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    handle = kernel.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return ""
+    try:
+        code = wintypes.DWORD()
+        if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != 259:
+            return ""
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+            return ""
+        return f"windows:{times[0].dwHighDateTime}:{times[0].dwLowDateTime}"
+    finally:
+        kernel.CloseHandle(handle)
+
+
+@contextmanager
+def control_lock(root: Path) -> Iterator[None]:
+    """Serialize acquisition control on Linux and Windows using an OS file lock."""
+    with (root / ".control.lock").open("a+b") as lock:
+        if sys.platform == "win32":
+            import msvcrt
+
+            if lock.tell() == 0:
+                lock.write(b"\0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def cancel_checkpoint(receipt: Path, job: dict[str, Any]) -> bool:
+    """Publish cancellation only when the worker observes its durable request."""
+    if not (receipt.parent / "cancel").exists():
+        return False
+    job.update(state="cancelled", phase="Cancelled; cached bytes retained", updated_at=time.time())
+    write_json(receipt, job)
+    return True
 
 
 def alive(job: dict[str, Any]) -> bool:
@@ -103,8 +170,6 @@ def inspect_jobs(root: Path) -> list[dict[str, Any]]:
 
 def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     """Start or reuse one durable acquisition, with a target-owned process and cache."""
-    import fcntl
-
     uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
     if not Path(uv).is_file():
         raise ValueError("Install uv on this execution host before downloading models")
@@ -124,8 +189,7 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     job_id = hashlib.sha256(f"{repository}\0{revision}\0{destination}".encode()).hexdigest()[:24]
     folder = root / job_id
     folder.mkdir(parents=True, exist_ok=True)
-    with (root / ".control.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with control_lock(root):
         receipt = folder / "receipt.json"
         previous = None
         if receipt.exists():
@@ -209,7 +273,8 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
                 stdout=log,
                 stderr=log,
                 env=env,
-                start_new_session=True,
+                start_new_session=sys.platform != "win32",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         job.update(pid=process.pid, process_identity=process_identity(process.pid))
         write_json(receipt, job)
@@ -218,10 +283,7 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
 
 def cancel(root: Path, job_id: str) -> dict[str, Any]:
     """Stop only the recorded process group, keeping partial and complete model files."""
-    import fcntl
-
-    with (root / ".control.lock").open("a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    with control_lock(root):
         return _cancel_locked(root, job_id)
 
 
@@ -235,7 +297,8 @@ def _cancel_locked(root: Path, job_id: str) -> dict[str, Any]:
         return public(job)
     (folder / "cancel").touch()
     if alive(job):
-        os.killpg(job["pid"], signal.SIGTERM)
+        if sys.platform != "win32":
+            os.killpg(job["pid"], signal.SIGTERM)
         deadline = time.monotonic() + 10
         while alive(job) and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -263,6 +326,8 @@ def download(receipt: Path) -> None:
         time.sleep(0.02)
 
     try:
+        if cancel_checkpoint(receipt, job):
+            return
         job.update(state="running", phase="Resolving immutable model revision")
         write_json(receipt, job)
         info = HfApi().model_info(
@@ -304,6 +369,10 @@ def download(receipt: Path) -> None:
 
         def observe() -> None:
             while not stopped.wait(0.5):
+                if cancel_checkpoint(receipt, job):
+                    # This is the detached worker: stop all SDK download threads,
+                    # leaving cache files for retry. Never kill an unowned PID tree.
+                    os._exit(0)
                 paths = [destination / row.rfilename for row in siblings]
                 paths.extend((destination / ".cache/huggingface/download").rglob("*.incomplete"))
                 sizes = 0
@@ -333,6 +402,8 @@ def download(receipt: Path) -> None:
         write_json(receipt, job)
         verified = {}
         for row in siblings:
+            if cancel_checkpoint(receipt, job):
+                return
             path = destination / row.rfilename
             if (
                 path.is_symlink()
@@ -400,7 +471,7 @@ def main() -> None:
     root = Path(request["root"])
     if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
         raise ValueError("Model operations require an absolute owned storage root")
-    hostname = re.sub(r"[^A-Za-z0-9_.-]", "_", os.uname().nodename)
+    hostname = re.sub(r"[^A-Za-z0-9_.-]", "_", platform.node())
     root = root.resolve() / "model-operations" / hostname
     action = request["action"]
     if action == "list":

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import posixpath
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,7 @@ from clio_agent.gact.infrastructure.model_registry import (
 from clio_agent.gact.infrastructure.models import CommandSpec
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.storage import resolved_locations
+from clio_agent.gact.infrastructure.terminal_output import structured_stdout
 
 
 def register_infrastructure_model_routes(app: FastAPI) -> None:
@@ -41,9 +44,9 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 facts = await probe_target(target, run if target.kind == "ssh" else None)
                 if facts.transport_state != "connected":
                     raise ValueError("Connect this execution host to inspect and download models.")
-                if facts.os != "linux":
+                if facts.os not in {"linux", "windows"}:
                     raise ValueError(
-                        "Managed model downloads currently require a Linux execution host"
+                        "Managed model downloads support Linux and Windows execution hosts"
                     )
                 locations = resolved_locations(target, facts)
                 selected_root = locations.root
@@ -53,7 +56,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                         + "--"
                         + body["revision"].replace("/", "--")
                     )
-                    body["destination"] = posixpath.join(locations.models, suffix)
+                    module = ntpath if facts.os == "windows" else posixpath
+                    body["destination"] = module.join(locations.models, suffix)
             if action == "start":
                 app.state.infrastructure_store.register_model_root(target_id, selected_root)
             script = Path(node_models.__file__).read_text(encoding="utf-8")
@@ -62,7 +66,11 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 payload["script"] = script
             result = await run(
                 CommandSpec(
-                    program="python3",
+                    program=sys.executable
+                    if target.kind == "local"
+                    else (
+                        "python" if target.ssh and target.ssh.platform == "windows" else "python3"
+                    ),
                     args=["-c", script],
                     stdin=json.dumps(payload),
                     timeout_seconds=30,
@@ -74,7 +82,7 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                     if result.stderr.strip()
                     else "Host model operation failed"
                 )
-            rows = json.loads(result.stdout)
+            rows = json.loads(structured_stdout(result.stdout))
             if action == "list":
                 found = {row["id"] for row in rows}
                 for prior in app.state.infrastructure_store.model_acquisitions(target_id):
@@ -117,8 +125,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
             facts = await probe_target(target, run if target.kind == "ssh" else None)
             if facts.transport_state != "connected":
                 unavailable = "Connect this execution host to inspect and download models."
-            elif facts.os != "linux":
-                unavailable = "Managed model downloads require a Linux execution host. Select a connected Linux host."
+            elif facts.os not in {"linux", "windows"}:
+                unavailable = "Managed model downloads support Linux and Windows execution hosts."
             elif not facts.uv_available:
                 unavailable = "Install uv on this execution host before downloading models."
         except (OSError, ValueError, RuntimeError):

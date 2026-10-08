@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Awaitable, Callable
 
-import anyio
+from anyio.to_thread import run_sync
 
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
@@ -22,6 +22,7 @@ from clio_agent.gact.infrastructure.runtime_probe import (
     local_runtime_facts,
     parse_probe,
 )
+from clio_agent.gact.infrastructure.terminal_output import structured_stdout
 from clio_agent.paths import user_data_dir
 
 CommandExecutor = Callable[[CommandSpec], Awaitable[CommandResult]]
@@ -107,7 +108,7 @@ async def probe_target(
     """Inspect a target without inferring capabilities from its display name."""
 
     if target.kind == "local":
-        return await anyio.to_thread.run_sync(_local_facts, target)
+        return await run_sync(_local_facts, target)
     if target.kind == "direct":
         return TargetFacts(
             target_id=target.id,
@@ -174,11 +175,13 @@ async def probe_target(
     result = await execute(spec)
     if result.exit_code != 0:
         raise RuntimeError(result.stderr.strip() or "Remote target inspection failed")
-    line = next((item.strip() for item in result.stdout.splitlines() if item.count("|") == 5), "")
+    # Desktop SSH uses a terminal transport; terminal display sequences are not host facts.
+    stdout = structured_stdout(result.stdout)
+    line = next((item.strip() for item in stdout.splitlines() if item.count("|") == 5), "")
     fields = line.split("|")
     if len(fields) != 6:
         raise RuntimeError("Remote target returned an invalid capability probe")
-    runtimes, identity, home, hostname = parse_probe(result.stdout)
+    runtimes, identity, home, hostname = parse_probe(stdout)
     return TargetFacts(
         target_id=target.id,
         label=target.label,
@@ -195,7 +198,7 @@ async def probe_target(
         agent_data_root=next(
             (
                 line.split("|", 1)[1]
-                for line in result.stdout.splitlines()
+                for line in stdout.splitlines()
                 if line.startswith("clio-agent-data|")
             ),
             "",

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from clio_agent.gact.infrastructure.models import CommandSpec, InfrastructureTarget, TargetFacts
 from clio_agent.gact.infrastructure.probe import CommandExecutor
 from clio_agent.gact.infrastructure.storage_probe import inspect_path
+from clio_agent.gact.infrastructure.terminal_output import structured_stdout
 
 
 class StorageInspectionRequest(BaseModel):
@@ -35,6 +36,10 @@ def resolved_locations(target: InfrastructureTarget, facts: TargetFacts) -> Host
         raise ValueError("The target's Agent data directory is unknown; select a storage root")
     if not module.isabs(root):
         raise ValueError("Storage root must be absolute on the selected host")
+    if any(ord(character) < 32 for character in root):
+        raise ValueError(
+            "The host reported an invalid storage root. Inspect it again or choose a storage root."
+        )
     return HostStorageLocations(
         root=root,
         models=paths.models or module.join(root, "models"),
@@ -73,7 +78,7 @@ async def inspect_target_path(
                 or "Host filesystem inspection failed"
             )
         try:
-            result = json.loads(result_command.stdout)
+            result = json.loads(structured_stdout(result_command.stdout))
         except (ValueError, TypeError) as exc:
             raise ValueError("Host returned an invalid storage inspection") from exc
         if not isinstance(result, dict) or not isinstance(result.get("free_bytes"), int):
