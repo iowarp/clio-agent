@@ -98,21 +98,21 @@ def test_catalog_provider_routes_to_exact_litellm_prefix(
         assert kwargs[key] == value
 
 
-def test_ollama_connection_strips_saved_v1_suffix() -> None:
-    """A config saved before #1413 (api_base still carrying /v1) is repaired.
+@pytest.mark.parametrize("saved", ["http://127.0.0.1:11434/v1", "http://127.0.0.1:11434"])
+def test_ollama_connection_uses_the_openai_compatible_v1_base(saved: str) -> None:
+    """DSPy 3.4's lm15 engine POSTs ``<api_base>/chat/completions`` for ollama_chat (F037).
 
-    ``_connection_kwargs`` -- not just the catalog default -- must strip a
-    trailing ``/v1`` for the resolved ``ollama_chat`` prefix, or an existing
-    saved config keeps 404ing after the fix ships.
+    Ollama serves that only under ``/v1``; a root base 404s on every turn. A
+    base saved with or without ``/v1`` gives the same ``/v1`` connection.
     """
     config = LMProviderConfig(
         provider="ollama",  # type: ignore[arg-type]
         provider_id="ollama",
         model="qwen3",
-        api_base="http://127.0.0.1:11434/v1",
+        api_base=saved,
         api_key="ollama",
     )
-    assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:11434"}
+    assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:11434/v1"}
 
 
 def test_ollama_connection_leaves_v1_suffix_for_non_ollama_dialects() -> None:
@@ -127,30 +127,17 @@ def test_ollama_connection_leaves_v1_suffix_for_non_ollama_dialects() -> None:
     assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:8088/v1"}
 
 
-def test_ollama_connection_combined_url_matches_litellm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The connection this factory builds must combine into the REAL Ollama URL.
+def test_ollama_chat_routes_to_lm15_openai_chat_preset() -> None:
+    """The engine ``dspy.LM`` uses maps ollama_chat onto its OpenAI-chat ``ollama`` preset.
 
-    Regression for #1413: the previous tests checked the prefix and the base
-    URL separately, which is exactly how a base that still doubled into
-    ``/v1/api/chat`` slipped through. This calls LiteLLM's own
-    ``OllamaChatConfig.get_complete_url`` (litellm 1.91.3) on what the factory
-    actually produces.
+    That is why the connection carries ``/v1`` (F037); if the vendored router
+    ever routes it natively again, this fails and the base rule must follow.
     """
-    from litellm.llms.ollama.chat.transformation import OllamaChatConfig
+    from dspy._vendor.lm15.router import LITELLM_PROVIDER_PREFIXES
 
     config = LMProviderConfig(provider="ollama", model="qwen3", api_key="ollama")  # type: ignore[arg-type]
-    connection = _connection_kwargs(config)
-    model_name = _resolve_model_name(config)
-    assert model_name == "ollama_chat/qwen3"
-
-    url = OllamaChatConfig().get_complete_url(
-        api_base=connection.get("api_base"),
-        api_key=config.api_key,
-        model=model_name,
-        optional_params={},
-        litellm_params={},
-    )
-    assert url == "http://127.0.0.1:11434/api/chat"
+    assert _resolve_model_name(config) == "ollama_chat/qwen3"
+    assert LITELLM_PROVIDER_PREFIXES["ollama_chat"] == "ollama"
 
 
 def test_legacy_catalog_id_recovers_identity_before_runtime_kind() -> None:

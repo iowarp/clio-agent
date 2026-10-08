@@ -86,8 +86,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
 
     For openai/anthropic, uses the provider prefix (e.g., 'openai/gpt-4o-mini').
     For lm_studio, uses 'openai/{model}' with custom api_base. For ollama, uses
-    LiteLLM's native 'ollama_chat/{model}' (see :func:`_connection_kwargs` for
-    why its api_base must NOT carry a trailing ``/v1``).
+    the 'ollama_chat/{model}' route (see :func:`_connection_kwargs` for
+    the ``/v1`` base it needs).
     For codex/claude_code, uses a provider-specific prefix routed through
     the LiteLLM ``CustomLLM`` registered by ``providers.*_litellm``.
 
@@ -279,15 +279,15 @@ def _resolved_litellm_prefix(config: LMProviderConfig) -> str:
 
 
 def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
-    """Build the ``api_base`` kwarg LiteLLM needs to reach ``config``'s endpoint.
+    """Build the ``api_base`` kwarg the LM engine needs to reach ``config``'s endpoint.
 
-    LiteLLM's native ``ollama_chat`` provider appends its own ``/api/chat`` to
-    whatever ``api_base`` it is given (``OllamaChatConfig.get_complete_url``).
-    An ``api_base`` that still carries the OpenAI-compatible ``/v1`` suffix —
-    the shape every other dialect here uses — doubles into ``/v1/api/chat``
-    and 404s (iowarp/clio-agent#1413). Routing through the shared
-    :func:`~clio_agent.providers.api_base.native_root` helper here repairs a
-    config a user already saved with a ``/v1`` base, not just new ones.
+    ``dspy.LM`` (DSPy 3.4) runs on its vendored lm15 engine, whose router
+    maps the ``ollama_chat`` prefix onto its OpenAI-chat-bound ``ollama``
+    preset: it POSTs ``<api_base>/chat/completions``, so the base must be
+    Ollama's OpenAI-compatible ``/v1`` surface (F037). The earlier rule --
+    strip ``/v1`` because LiteLLM's native provider appends ``/api/chat``
+    (iowarp/clio-agent#1413) -- sent every turn to ``/chat/completions`` at
+    the host root, a 404. A base saved either way is normalized here.
     """
     if not config.api_base:
         return {}
@@ -295,7 +295,7 @@ def _connection_kwargs(config: LMProviderConfig) -> dict[str, str]:
     if _resolved_litellm_prefix(config) == "ollama_chat":
         from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
-        api_base = native_root(api_base)
+        api_base = native_root(api_base) + "/v1"
     return {"api_base": api_base}
 
 
