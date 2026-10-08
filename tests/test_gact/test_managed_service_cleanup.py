@@ -562,3 +562,34 @@ async def test_parents_shared_by_two_deployments_go_with_the_last_uninstall(
         assert removed.state == "succeeded", removed.error
 
     assert target.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (
+            'CLIO_SERVICE_OBSERVATION {"phase": "untouched", "running": false}',
+            "Nothing this operation started needed cleaning up.",
+        ),
+        (
+            'CLIO_SERVICE_OBSERVATION {"phase": "stopped", "running": false}',
+            "Stopped the owned operation; retained its environment, model cache and evidence.",
+        ),
+    ],
+)
+def test_failure_cleanup_reports_whether_the_operation_started_anything(
+    stdout: str, expected: str
+) -> None:
+    """F020: a refused start's cleanup says nothing needed undoing, not "incomplete"."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
+    from clio_agent.gact.infrastructure.plan import DriverPlan
+
+    async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
+        return CommandResult(exit_code=0, stdout=stdout)
+
+    plan = DriverPlan((), failure_cleanup=(CommandSpec(program="python3"),))
+    runtime = SimpleNamespace(_execute=execute)
+    message = asyncio.run(InfrastructureRuntime._teardown(runtime, "local", plan, None))  # type: ignore[arg-type]
+    assert message == expected
