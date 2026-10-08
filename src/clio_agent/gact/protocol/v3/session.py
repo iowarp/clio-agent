@@ -85,4 +85,10 @@ def session_to_v3(session: Any) -> dict[str, Any]:
             "approval_mode": str(getattr(session, "approval_mode", "ask") or "ask"),
         }
     )
+    # Expose only the composer's public pause state, not unrelated private
+    # session metadata. A legacy cancelled row also represents a paused queue.
+    if "composer_queue_paused" in metadata or status == "cancelled":
+        row["metadata"] = {
+            "composer_queue_paused": bool(metadata.get("composer_queue_paused", True))
+        }
     return row

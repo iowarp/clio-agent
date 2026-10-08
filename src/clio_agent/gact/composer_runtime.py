@@ -97,32 +97,28 @@ def register_composer_routes(app: Any, deps: Any) -> None:
 
 
 def session_autostart_suspended(app: Any, session_id: str) -> bool:
-    """True when a session must not START work on its own.
+    """Whether future queued messages are paused, independently of sent feedback.
 
-    A cancelled session is the one such state today: ``/cancel`` is the user
-    saying *stop*, and the durable composer planes (a residual steer, a queued
-    head) would otherwise re-drive the agent the instant the cancelled turn's
-    slot cleared — Esc restarting the very turn it stopped. The SESSION STATUS is
-    the server truth here, not a cancel flag: the flag is already cleared by the
-    time the idle hook runs, whereas the cancelled turn's finalize (and
-    ``cancel_session_state`` before it) stamps ``status="cancelled"`` and it
-    stays until the user explicitly sends again.
+    Persist the pause across follow-up feedback turns and restarts. Legacy
+    cancelled sessions without this metadata retain their previous queue pause.
+    An explicit idle send resumes the queue; automatically delivered feedback
+    does not. Already accepted steers remain eligible at the next idle boundary.
     """
 
     session = app.state.sessions.get(session_id)
-    return str(getattr(session, "status", "") or "") == "cancelled"
+    metadata = getattr(session, "metadata", {}) or {}
+    return bool(
+        metadata.get("composer_queue_paused", getattr(session, "status", "") == "cancelled")
+    )
 
 
 def stop_session_composer_autostart(app: Any, session_id: str) -> dict[str, Any]:
-    """Quiesce the composer's two turn producers for a cancelled session.
+    """Pause future queued messages without suspending already submitted feedback.
 
-    The canonical-stop sibling of ``stop_session_loop`` / ``stop_session_goal``,
-    called from ``cancel_session_state``. Cancelling stops a session from
-    STARTING work; it does NOT delete the user's durable intent, so the pending
-    steers and queued messages stay listed, editable and cancellable — they
-    simply stop auto-promoting until the user sends again. The retained counts
-    ride the cancellation payload so the suspension is a recorded fact, never a
-    silent swallow.
+    Stop cancels the current turn. Pending steers are separate human messages
+    already accepted into the transcript, so they run after that turn releases
+    its slot. Neither plane is deleted, and the future queue stays paused even
+    after those feedback turns finish.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415
@@ -130,9 +126,12 @@ def stop_session_composer_autostart(app: Any, session_id: str) -> dict[str, Any]
     intents = getattr(app.state, "message_intents", None)
     if intents is None:
         return {"reason": "composer_state_unavailable", "suspended": False}
+    app.state.sessions.update(session_id, metadata_patch={"composer_queue_paused": True})
     summary = {
         "reason": "session_cancelled",
         "suspended": True,
+        "queued_messages_paused": True,
+        "pending_steers_suspended": False,
         "retained_pending_steers": len(intents.list_pending(session_id)),
         "retained_queued_messages": len(intents.list_queued(session_id)),
     }

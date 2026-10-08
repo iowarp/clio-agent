@@ -410,7 +410,7 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
     loses its accepted id. Non-steer events (Producer A child wakes enqueued at
     the boundary) are put back — they are not turn-drivers and their next-turn
     ``notify_pending`` fallback still delivers them. If the session is gone /
-    agent unavailable / cancelled / a turn re-acquired the slot, every event stays
+    agent unavailable / a turn re-acquired the slot, every event stays
     buffered for the next idle transition.
     """
 
@@ -424,17 +424,17 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
         return  # not ready — leave buffered for the next idle transition
     from clio_agent.gact.composer_runtime import session_autostart_suspended  # noqa: PLC0415
 
-    if session_autostart_suspended(app, sid):
-        # /cancel means STOP. Re-driving a residual steer here would restart the
-        # very agent the user just stopped. The steer stays buffered AND its
-        # durable intent stays listed/cancellable; the user's next explicit send
-        # lifts the suspension and the next idle boundary promotes it.
-        logger.info("loop_inbox steer re-drive suspended session=%s reason=session_cancelled", sid)
-        return
+    queue_paused = session_autostart_suspended(app, sid)
     events = inbox.drain()
-    steers = [e for e in events if e.kind == "user_message"]
+    # Stop pauses future work, not feedback already accepted into the transcript.
+    # Internal resumes without a durable human message remain suspended.
+    steers = [
+        e
+        for e in events
+        if e.kind == "user_message" and (not queue_paused or bool(e.steer_message_id))
+    ]
     for residual in events:
-        if residual.kind != "user_message":
+        if residual.kind != "user_message" or (queue_paused and not residual.steer_message_id):
             inbox_for(app, sid).put(residual)
     if not steers:
         return
@@ -467,6 +467,10 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
             metadata["mid_turn_steer"] = True
             metadata["consumed_at"] = _now_iso()
         try:
+            # These signals belong to the interrupted turn, whose slot has now
+            # been released. They must not cancel the accepted feedback's turn.
+            app.state.cancel_flags.discard(sid)
+            app.state.cancel_events.pop(sid, None)
             resumed_msg = _start_background_user_turn(
                 app,
                 sid,

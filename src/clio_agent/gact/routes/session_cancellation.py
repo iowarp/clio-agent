@@ -72,10 +72,8 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     provider_streams_killed = abort_session_streams(sid)
     stop_session_loop(app, sid)
     stop_session_goal(app, sid)
-    # The composer planes are turn PRODUCERS too: a residual steer and a queued
-    # head would each re-drive the agent the moment the cancelled turn's slot
-    # cleared. Quiesce them like the loop/goal producers -- retaining, never
-    # deleting, the user's durable intent.
+    # Pause the explicit future queue. Already submitted feedback belongs to
+    # the next turn and is delivered after this cancelled turn releases its slot.
     composer_autostart = stop_session_composer_autostart(app, sid)
     in_flight = app.state.in_flight_turns.get(sid)
     cancellation_pending = in_flight is not None and not in_flight.done()
