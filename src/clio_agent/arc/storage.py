@@ -37,7 +37,7 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import frame, unframe
+from clio_agent.arc.blob_frame import BlobNameDecodeError, frame, unframe
 from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
@@ -674,8 +674,15 @@ class ClioCoreStore:
         # scan() is a generator: the decorator would guard only building it, not
         # iterating. Guard the ONE listing RPC inline; per-blob reads use guarded get().
         self._live()
+
+        def _list() -> list[str]:
+            try:  # the binding decodes every name; one corrupt name fails the listing
+                return list(self._cte.Tag(self.tag(kind)).GetContainedBlobs())
+            except UnicodeDecodeError as exc:
+                raise BlobNameDecodeError(self.tag(kind), exc) from exc
+
         blobs = call_with_liveness(
-            lambda: list(self._cte.Tag(self.tag(kind)).GetContainedBlobs()),
+            _list,
             op_name="scan",
             port=self._gate.port,
             reconnect=self._reconnect,

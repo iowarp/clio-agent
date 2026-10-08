@@ -21,7 +21,7 @@ import binascii
 
 from clio_agent.errors import ClioError
 
-__all__ = ["BlobDecodeError", "BlobFrameError", "frame", "unframe"]
+__all__ = ["BlobDecodeError", "BlobFrameError", "BlobNameDecodeError", "frame", "unframe"]
 
 _SEP = b":"
 _MAX_HEADER = 20  # digits of the length; a body is far below 10**19 characters
@@ -38,6 +38,25 @@ class BlobFrameError(ClioError):
             f"characters and {present} are stored",
             error_type=self.reason,
             details={"name": name, "declared": declared, "present": present},
+        )
+
+
+class BlobNameDecodeError(ClioError):
+    """A clio-core tag lists a blob NAME that is not UTF-8 (a corrupt persisted name, F018).
+
+    The binding cannot list the tag at all, nor delete a name it cannot decode,
+    so the store cannot be read past it; recovery is to quarantine the per-host
+    store directory (rename it aside; CLIO creates a fresh one on next start).
+    """
+
+    reason = "clio_core_blob_name_undecodable"
+
+    def __init__(self, tag: str, exc: UnicodeDecodeError) -> None:
+        excerpt = exc.object[: exc.start + 8] if isinstance(exc.object, bytes) else b""
+        super().__init__(
+            f"clio-core tag {tag!r} lists an undecodable blob name near {excerpt!r}",
+            error_type=self.reason,
+            details={"tag": tag, "name_excerpt": repr(excerpt), "recovery": "quarantine_store"},
         )
 
 
