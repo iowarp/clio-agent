@@ -74,17 +74,28 @@ class StorageService:
     async def shutdown(self) -> None:
         """Cooperatively stop local transfers and retain native jobs for later reconciliation."""
         tasks = list(self.tasks.items())
+        interrupted = set()
         for identifier, task in tasks:
             operation = self.store.get("operation", identifier, TransferOperation)
             if operation.native_request:
                 task.cancel()
             else:
+                if not operation.cancel_requested:
+                    interrupted.add(identifier)
                 self.store.update_operation(identifier, cancel_requested=True)
         if tasks:
             _, pending = await asyncio.wait([task for _, task in tasks], timeout=10)
             for task in pending:
                 task.cancel()
             await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
+        for identifier in interrupted:
+            operation = self.store.get("operation", identifier, TransferOperation)
+            if operation.state == "cancelled":
+                self.store.update_operation(
+                    identifier,
+                    state="interrupted",
+                    error="Service stopped the local operation after cleanup",
+                )
 
     def create(
         self, workspace_id: str, body: CreateSource, workspace_root: Path | None = None
@@ -387,7 +398,20 @@ class StorageService:
                 return True
 
         try:
-            while not await asyncio.to_thread(step):
+            while True:
+                worker = asyncio.create_task(asyncio.to_thread(step))
+                try:
+                    settled = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    current = self.store.get("operation", operation.id, TransferOperation)
+                    if not current.native_request:
+                        self.store.update_operation(operation.id, cancel_requested=True)
+                    # asyncio cancellation cannot stop the provider's worker thread.
+                    # Keep custody until that thread and staging cleanup actually exit.
+                    await asyncio.gather(worker, return_exceptions=True)
+                    raise
+                if settled:
+                    break
                 await asyncio.sleep(5)
         except asyncio.CancelledError:
             # The provider job may still be running. Keep its immutable request

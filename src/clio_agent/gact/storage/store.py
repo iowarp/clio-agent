@@ -114,6 +114,8 @@ class SourceStore:
                 self.update_operation(
                     operation.id, state="interrupted", error="CLIO restarted; resume the transfer."
                 )
+                if operation.kind == "indexing":
+                    continue  # Its previously published manifest remains intact.
                 source = self.get("source", operation.source_id, SourceRecord)
                 source.source = source.source.model_copy(
                     update={"materialization": "stale" if source.manifest_id else "failed"}

@@ -66,6 +66,7 @@ class DownloadSelection(BaseModel):
     access: Literal["read_only", "editable"] | None = None
     paths: list[str] | None = Field(default=None, min_length=1, max_length=1000)
     draft_id: str = ""
+    session_id: str = ""
 
 
 class DraftSelection(BaseModel):
@@ -75,3 +76,4 @@ class DraftSelection(BaseModel):
     confirm_remote: bool = False
 
     draft_id: str = ""
+    session_id: str = ""
