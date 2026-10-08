@@ -442,3 +442,28 @@ def test_readiness_requires_this_deployments_identity(tmp_path: Path) -> None:
     assert answer(True, layout.deployment_id) == "ready"
     assert answer(True, "clio-ws-000000000000") == "foreign_endpoint"
     assert answer(False, layout.deployment_id) == "waiting"
+
+
+@posix_only
+def test_launch_hands_the_host_proxy_to_the_instance_by_environment(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    Path(layout.images_dir).mkdir(parents=True)
+    Path(layout.sif).write_bytes(b"image-bytes")
+    env = _tools(tmp_path, None)
+    seen = tmp_path / "seen-env"
+    (tmp_path / "bin" / "apptainer").write_text(
+        f'#!/bin/sh\necho "$*" >> "{tmp_path}/argv"\nenv | grep "^APPTAINERENV_" >> "{seen}"\n'
+    )
+    assert _run(backend.receipt_command(layout), env).returncode == 0
+    proxy = "http://user:secret@proxy.example:3128"
+    env = {**env, "https_proxy": proxy, "NO_PROXY": "localhost"}
+    env.pop("http_proxy", None)
+
+    launch = backend.run_command(layout, backend._ports({}), "")  # noqa: SLF001
+    assert _run(launch, env).returncode == 0
+
+    exported = seen.read_text().splitlines()
+    assert f"APPTAINERENV_https_proxy={proxy}" in exported
+    assert "APPTAINERENV_NO_PROXY=localhost" in exported
+    assert not any(line.startswith("APPTAINERENV_http_proxy=") for line in exported)
+    assert "secret" not in (tmp_path / "argv").read_text()

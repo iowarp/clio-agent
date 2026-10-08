@@ -305,6 +305,15 @@ def logs_command(layout: Layout, lines: int = 80) -> CommandSpec:
 _FINGERPRINT = 'fp="$real:$(stat -L -c "%d:%i:%s:%.9Y:%.9Z" "$real" 2>/dev/null)"'
 
 
+#: ``--cleanenv`` drops the host's proxy settings, which search and paper downloads need on
+#: a proxied network: hand any that are set to the instance through its environment (a proxy
+#: URL may carry credentials, so never as argv).
+_PROXY_PASSTHROUGH = (
+    "for v in http_proxy https_proxy no_proxy HTTP_PROXY HTTPS_PROXY NO_PROXY; do "
+    'eval "x=\\${$v:-}"; [ -z "$x" ] || export "APPTAINERENV_$v=$x"; done; '
+)
+
+
 def receipt_command(layout: Layout) -> CommandSpec:
     """Record the installed SIF's sha256 (its immutable identity) and file identity beside it."""
 
@@ -372,6 +381,7 @@ def run_command(layout: Layout, ports: dict[str, int], email: str) -> CommandSpe
         program="sh",
         args=[
             "-c",
+            f"{_PROXY_PASSTHROUGH}"
             'real=$(readlink -f "$0") || exit 65; want=$(sed -n 1p "$1" 2>/dev/null || true); '
             f'seen=$(sed -n 2p "$1" 2>/dev/null || true); {_FINGERPRINT}; sum=$want; '
             '[ -n "$seen" ] && [ "${fp%:}" = "$fp" ] && [ "$fp" = "$seen" ] || sum=$(sha256sum "$real" | cut -d " " -f 1); '
