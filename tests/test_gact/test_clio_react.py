@@ -323,8 +323,62 @@ def test_cancel_during_a_step_stops_before_the_next_call() -> None:
     assert len(engine.requests) == 1
 
 
+def _one_message(model: str) -> Request:
+    from dspy.lm15 import Message, TextPart
+
+    return Request(model=model, messages=(Message(role="user", parts=(TextPart(text="q"),)),))
+
+
+class _HangingLM:
+    """An LM whose call streams nothing for a long time (a long prefill), recording its fate."""
+
+    model = "hanging"
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    async def acall(self, request: Request) -> Any:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.closed.set()
+            raise
+        raise AssertionError("the call was not cancelled")
+
+
+def test_cancel_mid_call_closes_the_in_flight_call() -> None:
+    # F038: the server-side request ends at the cancel, not when the answer is done.
+    from clio_agent.gact.agents.clio_react import _call_lm
+
+    lm = _HangingLM()
+    deadline = time.monotonic() + 0.5
+    started = time.monotonic()
+    with (
+        cancellation_checker(lambda: time.monotonic() > deadline),
+        pytest.raises(_TurnCancelled),
+    ):
+        _call_lm(lm, _one_message(lm.model))
+    assert lm.closed.is_set()
+    assert time.monotonic() - started < 5
+
+
+def test_an_uncancelled_call_returns_without_waiting_on_the_watch() -> None:
+    from clio_agent.gact.agents.clio_react import _call_lm
+
+    class _Quick:
+        model = "quick"
+
+        async def acall(self, request: Request) -> str:
+            return "done"
+
+    started = time.monotonic()
+    with cancellation_checker(lambda: False):
+        assert _call_lm(_Quick(), _one_message("quick")) == "done"
+    assert time.monotonic() - started < 0.2
+
+
 # --------------------------------------------------------------------------- #
-# tool-result media placement                                                 #
+# tool-result media placement                                                #
 # --------------------------------------------------------------------------- #
 def _media_step() -> tuple[list[Any], Any]:
     from dspy.lm15 import ImagePart, Message, TextPart

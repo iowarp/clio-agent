@@ -605,6 +605,10 @@ class _Loop:
 # --------------------------------------------------------------------------- #
 # The streamed LM call                                                        #
 # --------------------------------------------------------------------------- #
+#: How often an in-flight LM call checks the turn's cooperative cancellation.
+_CANCEL_POLL_SECONDS = 0.25
+
+
 def _call_lm(lm: Any, request: Request) -> Response:
     """One streamed call: text and thinking reach the live lanes as they arrive."""
 
@@ -617,13 +621,26 @@ def _call_lm(lm: Any, request: Request) -> Response:
                 async for chunk in receive:
                     _route_chunk(chunk)
 
+        async def watch_cancel() -> None:
+            # A cancel lands mid-call too (F038): raising here cancels the call's
+            # scope, which closes the HTTP stream so the server stops generating
+            # instead of finishing a prefill and a full answer nobody reads.
+            while not finished.is_set():
+                with anyio.move_on_after(_CANCEL_POLL_SECONDS):
+                    await finished.wait()
+                if not finished.is_set():
+                    _raise_if_cancelled()
+
+        finished = anyio.Event()
         try:
             async with anyio.create_task_group() as group:
                 group.start_soon(consume)
+                group.start_soon(watch_cancel)
                 try:
                     with dspy.context(send_stream=send):
                         response = await lm.acall(request)
                 finally:
+                    finished.set()
                     await send.aclose()
         except BaseExceptionGroup as group_error:
             # The task group wraps the call's own error; the caller handles it typed.
