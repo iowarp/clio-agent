@@ -38,26 +38,25 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 
-WEB_SEARCH_VERSION = "0.3.1"
+WEB_SEARCH_VERSION = "0.3.2"
 #: Docker and Podman run the release tag (the Docker-only driver's behaviour).
 WEB_SEARCH_IMAGE = f"ghcr.io/iowarp/clio-web-search:{WEB_SEARCH_VERSION}"
 #: Apptainer runs only a digest-pinned image (its SIF is keyed by this digest).
-#: ghcr.io/iowarp/clio-web-search:0.3.1 (OCI image index), resolved 2026-10-08
-#: from the registry. Re-check after a tag change with:
-#:   crane digest ghcr.io/iowarp/clio-web-search:0.3.1
-#:   skopeo inspect --format '{{.Digest}}' docker://ghcr.io/iowarp/clio-web-search:0.3.1
+#: ghcr.io/iowarp/clio-web-search:0.3.2 (OCI image index, amd64+arm64, ~1.8 GB
+#: compressed), resolved 2026-10-08 from the registry. Re-check after a tag change:
+#:   crane digest ghcr.io/iowarp/clio-web-search:0.3.2
+#:   skopeo inspect --format '{{.Digest}}' docker://ghcr.io/iowarp/clio-web-search:0.3.2
 WEB_SEARCH_PINNED_IMAGE = (
     "ghcr.io/iowarp/clio-web-search@sha256:"
-    "60ff8b979bd495a5ba63e8e1eaa61f053ff25564b8fc62714bd92a52a3e0769d"
+    "c2cb347b035410230105f10252db0251f7d29c9766d0637ba802a8d8ac2a8994"
 )
 #: The slim, search-only image (gateway + SearXNG + Valkey; no Docling, GROBID or
-#: models): a much smaller, faster install. NOT PUBLISHED YET -- until this ONE
-#: constant holds its OCI index digest, ``documents=off`` still installs the full
-#: image above. Filling it switches the default (documents off) to the slim image
-#: on Docker, Podman and Apptainer alike. Resolve it once the tag is published with:
-#:   crane digest ghcr.io/iowarp/clio-web-search:0.3.1-slim
+#: models; ~0.11 GB compressed): the default install when ``documents`` is off.
+#: ghcr.io/iowarp/clio-web-search:0.3.2-slim (OCI image index, amd64+arm64),
+#: resolved 2026-10-08. Re-check after a tag change with:
+#:   crane digest ghcr.io/iowarp/clio-web-search:0.3.2-slim
 #: and paste only the 64 hex characters after ``sha256:``.
-WEB_SEARCH_SLIM_DIGEST = ""
+WEB_SEARCH_SLIM_DIGEST = "f0bb4a7d03e879d4e19e8b2271993b5dd478165e10133f8c224425f457a5fd75"
 WEB_SEARCH_REPOSITORY = "ghcr.io/iowarp/clio-web-search"
 DOCUMENTS_FIELD = "documents"
 #: Recorded at install: which image variant the deployment runs (``full``/``slim``).
