@@ -95,6 +95,7 @@ auth="$data/tmp/valkey-auth.conf"
 pw="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \\n')"
 [ ${#pw} -eq 48 ] || { echo "valkey_password_unavailable" >&2; exit 1; }
 (umask 077; printf 'requirepass %s\\n' "$pw" > "$auth")
+chmod 600 "$auth"  # a default ACL (e.g. a shared project dir) can widen the umask
 export CLIO_WEB_SEARCH_TASK_BACKEND_URL="redis://:$pw@127.0.0.1:$task/0"
 unset pw
 export CLIO_WEB_SEARCH_TASK_BACKEND_PUBLIC_PORT="$task"

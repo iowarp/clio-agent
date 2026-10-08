@@ -286,6 +286,7 @@ def test_valkey_requires_a_per_launch_password_kept_off_argv() -> None:
     launcher = backend.LAUNCHER
     assert "/dev/urandom" in launcher  # fresh at every start, never persisted by CLIO
     assert "umask 077" in launcher and "requirepass" in launcher
+    assert 'chmod 600 "$auth"' in launcher  # a default ACL must not widen it
     assert '--include "$auth"' in launcher  # the secret is read from a 0600 file
     assert "--requirepass" not in launcher  # never on the valkey-server argv
     assert "redis://:$pw@127.0.0.1:$task/0" in launcher  # the gateway authenticates
