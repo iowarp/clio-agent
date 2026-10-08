@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       # Reproduce default Desktop storage: MSI property values contain spaces.
-      CLIO_AGENT_HOME: ${{ runner.temp }}/CLIO Desktop document smoke
+      CLIO_AGENT_HOME: ${{ github.workspace }}/.tmp/CLIO Desktop document smoke
     timeout-minutes: 20
     strategy:
       fail-fast: false
