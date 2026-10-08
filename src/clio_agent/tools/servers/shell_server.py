@@ -443,6 +443,7 @@ async def bash(
     cwd: str | None = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
     max_output_bytes: int = _SHELL_LIMITS.default_output_bytes,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
@@ -452,8 +453,8 @@ async def bash(
     ``timeout_s`` is positive (or an operator ceiling applies) and the working
     directory must be inside ``CLIO_ALLOWED_ROOTS``. Output that does not fit the
     result budget is spilled in full under Agent-managed ``tool-output/`` state and excerpted
-    (:mod:`clio_agent.tools.servers.shell_output`). A cancelled turn or a
-    timeout kills the command's whole process tree.
+    (:mod:`clio_agent.tools.servers.shell_output`). Foreground turn cancellation
+    kills its process tree. Accepted background tasks require explicit cancellation.
     """
 
     if not isinstance(command, str) or not command.strip():
@@ -462,6 +463,22 @@ async def bash(
             "command must be a non-empty string.",
             details={"field": "command"},
         )
+    background_app, background_sid = None, ""
+    if background:
+        from clio_agent.gact import context as task_context
+
+        background_app, background_sid = task_context.active_app(), task_context.active_session_id()
+        if background_app is None or not background_sid:
+            return _error(
+                "background_unavailable",
+                "Background shell requires an application-owned conversation",
+            )
+        from clio_agent.tools.task_call_context import require_admission
+
+        try:
+            require_admission(background_app, background_sid)
+        except RuntimeError as exc:
+            return _error("task_admission_closed", str(exc))
     command = command.strip()
     max_chars = _SHELL_LIMITS.max_command_chars
     if len(command) > max_chars:
@@ -539,25 +556,6 @@ async def bash(
     # or an explicit command subdirectory. The existing write fence still applies.
     run_env["CLIO_AGENT_WORKSPACE_STATE_DIR"] = str(workspace_state_dir(_spill_root(safe_cwd)))
 
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *run_argv,
-            cwd=str(safe_cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=run_env,
-            **confined.popen_kwargs,
-            # Give the child an immediately-EOF stdin. Without this the spawned
-            # shell inherits clio-agent's own stdin (a pipe the parent holds open
-            # and never closes), and PowerShell/cmd block at startup waiting on
-            # that stream — every command then hits the timeout with empty output.
-            stdin=subprocess.DEVNULL,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _error("execution_failed", str(exc), details={"command": command})
-
-    assert process.stdout is not None
-    assert process.stderr is not None
     spill_root = _spill_root(safe_cwd)
     spill_dir = spill_directory(spill_root, session_id=active_session_id())
     call_id = new_call_id()
@@ -569,6 +567,46 @@ async def bash(
         )
         for name in ("stdout", "stderr")
     ]
+    try:
+        from clio_agent.runtime.task_process_tree import task_spawn_options
+
+        process_options = (
+            task_spawn_options(confined.popen_kwargs) if background else confined.popen_kwargs
+        )
+        spawn = asyncio.create_subprocess_exec(
+            *run_argv,
+            cwd=str(safe_cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=run_env,
+            **process_options,
+            # Give the child an immediately-EOF stdin. Without this the spawned
+            # shell inherits clio-agent's own stdin (a pipe the parent holds open
+            # and never closes), and PowerShell/cmd block at startup waiting on
+            # that stream — every command then hits the timeout with empty output.
+            stdin=subprocess.DEVNULL,
+        )
+        if background:
+            from clio_agent.gact.task_shell_owner import spawn_owned_shell
+            from clio_agent.tools.task_call_context import TASK_CALL
+
+            return await spawn_owned_shell(
+                background_app,
+                background_sid,
+                spawn,
+                captures,
+                command=command,
+                cwd=safe_cwd,
+                spill_root=spill_root,
+                timeout=timeout,
+                invocation_id=TASK_CALL.get().invocation_id,
+            )
+        process = await spawn
+    except Exception as exc:  # noqa: BLE001
+        return _error("execution_failed", str(exc), details={"command": command})
+
+    assert process.stdout is not None
+    assert process.stderr is not None
     readers = [
         asyncio.create_task(read_process_stream(pipe, capture=capture, ctx=ctx))
         for pipe, capture in zip((process.stdout, process.stderr), captures, strict=True)

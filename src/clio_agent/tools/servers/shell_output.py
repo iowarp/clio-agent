@@ -38,9 +38,7 @@ import json
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import IO, Any
-
-from fastmcp import Context
+from typing import IO, Any, Protocol
 
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import trace
@@ -50,6 +48,17 @@ from clio_agent.tools.mcp_result_projection import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ProgressReporter(Protocol):
+    """The shared progress seam for request contexts and application task owners."""
+
+    async def report_progress(
+        self, progress: float, total: float | None = None, message: str | None = None
+    ) -> None:
+        """Publish bounded progress without owning the process lifetime."""
+        ...
+
 
 #: Typed reason stamped on (and logged for) every stream written to a spill file.
 SPILLED_REASON = "shell_output_spilled"
@@ -319,7 +328,7 @@ async def read_process_stream(
     reader: Any,
     *,
     capture: StreamCapture,
-    ctx: Context,
+    ctx: ProgressReporter,
 ) -> None:
     """Drain one process stream into ``capture``, forwarding live terminal chunks.
 
@@ -342,7 +351,7 @@ async def read_process_stream(
         capture.finish()
 
 
-async def _forward(ctx: Context, capture: StreamCapture, text: str) -> None:
+async def _forward(ctx: ProgressReporter, capture: StreamCapture, text: str) -> None:
     """Send one live terminal chunk; display delivery can never fail the command."""
 
     if not text:

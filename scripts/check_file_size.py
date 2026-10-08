@@ -276,7 +276,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1406,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    "src/clio_agent/gact/agents/builders.py": 1267,  # MCP task bridge moved to external_mcp_calls.py
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -393,7 +393,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
-    "src/clio_agent/gact/turn_spawn.py": 810,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -478,7 +477,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 2404,
+    "src/clio_agent/gact/app.py": 2403,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -958,7 +957,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1081,  # path hints moved to tools/path_hints.py
+    "src/clio_agent/tools/execution.py": 1079,  # shared task submission replaces transparent waits
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
