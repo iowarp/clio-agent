@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import httpx
@@ -29,6 +30,7 @@ def mock_release(
     version: str = "0.161.0",
     target: str = "x86_64",
     defect: str = "",
+    requests: list[httpx.Request] | None = None,
 ) -> list[str]:
     """Serve test release metadata and bytes through the actual HTTP and hash code."""
     calls: list[str] = []
@@ -52,6 +54,8 @@ def mock_release(
         assets[0]["size"] = helpers._MAX_BYTES + 1
 
     def respond(request: httpx.Request) -> httpx.Response:
+        if requests is not None:
+            requests.append(request)
         calls.append(str(request.url))
         if request.url.host == "api.github.com":
             return httpx.Response(
@@ -243,3 +247,62 @@ def test_non_windows_install_never_downloads_helpers() -> None:
     assert helpers.ensure_codex_windows_helpers(
         Path("missing"), "invalid", platform_name="linux"
     ) == {"status": "not_required"}
+
+
+def test_release_token_is_limited_to_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Authenticate metadata without leaking the scoped token to assets or receipts."""
+    binary = pe_binary(tmp_path / "codex.exe")
+    requests: list[httpx.Request] = []
+    mock_release(monkeypatch, requests=requests)
+    helpers.ensure_codex_windows_helpers(
+        binary, "0.161.0", platform_name="win32", release_token="test-only-token"
+    )
+    assert len(requests) == 3
+    assert requests[0].url.host == "api.github.com"
+    assert requests[0].headers["Authorization"] == "Bearer test-only-token"
+    assert all("Authorization" not in request.headers for request in requests[1:])
+    assert "test-only-token" not in (binary.parent / helpers._RECEIPT).read_text()
+
+
+def test_release_token_never_follows_metadata_redirect() -> None:
+    """A redirected metadata response must fail before forwarding authorization."""
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(302, headers={"Location": "https://untrusted.example/metadata"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond), follow_redirects=True) as client:
+        with pytest.raises(httpx.HTTPStatusError) as error:
+            helpers._release_assets(client, "0.161.0", "x86_64-pc-windows-msvc", "test-only-token")
+    assert len(requests) == 1
+    assert requests[0].url.host == "api.github.com"
+    assert "test-only-token" not in str(error.value)
+
+
+def test_bundled_helpers_forward_only_explicit_release_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Installation can supply a scoped CI token without reusing unrelated auth."""
+    module = ModuleType("codex_cli_bin")
+    module.__file__ = str(tmp_path / "codex_cli_bin" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "codex_cli_bin", module)
+    monkeypatch.setattr(helpers.sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_codex, "_read_codex_version", lambda _binary: "0.161.0")
+    monkeypatch.setenv("CLIO_CODEX_RELEASE_TOKEN", "test-only-token")
+    monkeypatch.setenv("GH_TOKEN", "unrelated-test-token")
+    observed: list[tuple[Path, str, str | None]] = []
+
+    def prepare(binary: Path, version: str, *, release_token: str | None = None) -> dict[str, Any]:
+        observed.append((binary, version, release_token))
+        return {"status": "available"}
+
+    monkeypatch.setattr(helpers, "ensure_codex_windows_helpers", prepare)
+    assert helpers.ensure_bundled_codex_windows_helpers() == {"status": "available"}
+    assert observed[-1][2] == "test-only-token"
+    assert observed[-1][0] == tmp_path / "codex_cli_bin" / "bin" / "codex.exe"
+    monkeypatch.delenv("CLIO_CODEX_RELEASE_TOKEN")
+    helpers.ensure_bundled_codex_windows_helpers()
+    assert observed[-1][2] is None

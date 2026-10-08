@@ -46,6 +46,18 @@ required.
 
 ## Qualification
 
+CI's installation-time helper provisioning can receive an explicit scoped
+`CLIO_CODEX_RELEASE_TOKEN` from the workflow's read-only token, avoiding the anonymous
+GitHub API limit on shared runners. Authorization applies only to the fixed release
+metadata endpoint: metadata redirects fail, asset downloads receive no token, and the
+receipt stores no token. Version, architecture, size and hash validation remain required.
+No unrelated `GH_TOKEN`, provider account or global sign-in is reused.
+
+The Windows process-query function also guards its own platform-specific body, so Linux
+type checks do not resolve an unavailable Windows API. Four additional focused cases
+cover metadata authorization/redirect containment, explicit installer token forwarding
+and the real Windows process/lock path. Linux-targeted Mypy and scoped Pyright pass.
+
 Nine focused backend cases pass individually with one worker. They cover decorated SSH
 paths, invalid-path diagnostics, actual Windows locking/process identity with a test-only
 launch seam, cancellation checkpoints, platform-aware API commands, handshake health,

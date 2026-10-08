@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sys
 import tempfile
@@ -63,9 +64,15 @@ def _cached(directory: Path, version: str, target: str) -> bool:
         return False
 
 
-def _release_assets(client: httpx.Client, version: str, target: str) -> dict[str, dict[str, Any]]:
+def _release_assets(
+    client: httpx.Client, version: str, target: str, release_token: str | None = None
+) -> dict[str, dict[str, Any]]:
     tag = f"rust-v{version}"
-    response = client.get(f"https://api.github.com/repos/openai/codex/releases/tags/{tag}")
+    response = client.get(
+        f"https://api.github.com/repos/openai/codex/releases/tags/{tag}",
+        headers={"Authorization": f"Bearer {release_token}"} if release_token else {},
+        follow_redirects=False,
+    )
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict) or payload.get("tag_name") != tag:
@@ -116,13 +123,18 @@ def _download(client: httpx.Client, asset: dict[str, Any], output: Path) -> None
 
 
 def ensure_codex_windows_helpers(
-    binary: Path, version: str, *, platform_name: str = sys.platform
+    binary: Path,
+    version: str,
+    *,
+    platform_name: str = sys.platform,
+    release_token: str | None = None,
 ) -> dict[str, Any]:
     """Install both exact-version official helpers beside a managed Windows Codex exe.
 
     Verify cached bytes before reuse, verify both downloads before replacing any
     executable, and record a receipt last. A failed download never replaces a
     working pair. No latest-version fallback or unrelated global helper is used.
+    An explicit release token is sent only to the fixed metadata API, never assets.
     """
     if platform_name != "win32":
         return {"status": "not_required"}
@@ -147,7 +159,7 @@ def ensure_codex_windows_helpers(
                 ) as client,
                 tempfile.TemporaryDirectory(prefix=".clio-helpers-", dir=directory) as staging,
             ):
-                assets = _release_assets(client, version, target)
+                assets = _release_assets(client, version, target, release_token)
                 stage = Path(staging)
                 for name, asset in assets.items():
                     _download(client, asset, stage / f"{name}.exe")
@@ -178,4 +190,8 @@ def ensure_bundled_codex_windows_helpers() -> dict[str, Any]:
     if not codex_cli_bin.__file__:
         raise CodexWindowsHelpersError("Codex Python distribution has no package location")
     binary = Path(codex_cli_bin.__file__).parent / "bin" / "codex.exe"
-    return ensure_codex_windows_helpers(binary, _read_codex_version(str(binary)))
+    return ensure_codex_windows_helpers(
+        binary,
+        _read_codex_version(str(binary)),
+        release_token=os.environ.get("CLIO_CODEX_RELEASE_TOKEN"),
+    )

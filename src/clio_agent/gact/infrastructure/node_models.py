@@ -52,6 +52,8 @@ def process_identity(pid: int) -> str:
 
 def _windows_process_identity(pid: int) -> str:
     """Read Windows process creation FILETIME with a query-only, closed handle."""
+    if sys.platform != "win32":
+        return ""
     import ctypes
     from ctypes import wintypes
 

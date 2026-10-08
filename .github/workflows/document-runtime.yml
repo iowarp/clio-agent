@@ -1,5 +1,8 @@
 name: Document runtime
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   pull_request:
@@ -9,6 +12,7 @@ on:
       - "src/clio_agent/runtime/document_stack/**"
       - "src/clio_agent/runtime/document_runtime.py"
       - "src/clio_agent/runtime/document_install.py"
+      - "src/clio_agent/runtime/codex_windows_helpers.py"
       - "src/clio_agent/runtime/execution_environment.py"
       - "src/clio_agent/tools/servers/shell_server.py"
       - "scripts/qualification/document_runtime/**"
@@ -45,6 +49,9 @@ jobs:
         if: runner.os == 'Windows'
         run: uv run --frozen python -c "from clio_agent import paths; from clio_agent.runtime.document_stack.office import VERSION, ensure_office; print(ensure_office(paths.user_cache_dir() / 'document-office' / VERSION))"
       - name: Run installation-time package and renderer provisioning
+        env:
+          # Avoid shared-runner anonymous API limits when verifying official assets.
+          CLIO_CODEX_RELEASE_TOKEN: ${{ github.token }}
         run: uv run --frozen python -m clio_agent.runtime.document_install --workspace document-evidence/workspace
       - name: Verify managed shells, workspace scratch and all four document formats
         run: uv run --frozen python scripts/qualification/document_runtime/verify_install.py document-evidence/workspace
