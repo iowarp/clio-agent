@@ -62,5 +62,14 @@ async def refresh_bound_window(app: Any, agent: Any) -> None:
         app.state, "lm_handshake_report", None
     ):
         return
+    match = getattr(report, "match_model", None)
+    if not getattr(report, "ok", False) or match is None or match(cfg.model) is None:
+        # e.g. the managed server is stopped: the window is found on the next bind or turn.
+        logger.warning(
+            "boot provider discovery found no model reason=boot_handshake_unmatched model=%s",
+            cfg.model,
+        )
+        app.state.boot_handshake_error = "boot_handshake_unmatched"
+        return
     cfg.apply_handshake(report)
     app.state.lm_handshake_report = report

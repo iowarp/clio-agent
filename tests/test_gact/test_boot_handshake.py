@@ -16,6 +16,10 @@ class _Report:
     ok = True
     provider_id = "ollama"
     api_base = "http://127.0.0.1:11434/v1"
+    models = ("qwen3:4b",)
+
+    def match_model(self, model: str) -> str | None:
+        return model if model in self.models else None
 
 
 def _app_and_agent() -> tuple[Any, Any]:
@@ -94,3 +98,18 @@ def test_no_model_bound_skips_discovery(monkeypatch: pytest.MonkeyPatch) -> None
     asyncio.run(boot_handshake.refresh_bound_window(app, agent))
 
     assert seen == []
+
+
+def test_a_stopped_server_is_reported_and_leaves_no_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+    _fake_handshake(monkeypatch, seen)
+    monkeypatch.setattr(_Report, "models", ())
+    app, agent = _app_and_agent()
+
+    asyncio.run(boot_handshake.refresh_bound_window(app, agent))
+
+    assert app.state.boot_handshake_error == "boot_handshake_unmatched"
+    assert app.state.lm_handshake_report is None
+    assert agent._provider_config.context_window is None
