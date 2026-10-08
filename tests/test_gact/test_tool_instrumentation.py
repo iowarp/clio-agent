@@ -624,7 +624,6 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
                 "root": "not-a-repository",
                 "label": "Missing repository",
             },
-            "github_cli": {"source_id": "missing-source", "arguments": ["repo", "view"]},
             "connected_data_open": {"source_id": "missing-source"},
             "connected_data_write": {
                 "source_id": "missing-source",

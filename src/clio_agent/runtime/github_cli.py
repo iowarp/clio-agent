@@ -76,8 +76,7 @@ def _binary(archive: bytes, name: str) -> bytes:
         return stream.read()
 
 
-def ensure_github_cli(*, cache_root: Path | None = None) -> Path:
-    """Install the pinned CLI from verified official bytes, or reuse those bytes."""
+def _installation(cache_root: Path | None) -> tuple[str, str, Path]:
     machine = (platform.machine() or sysconfig.get_platform().rsplit("-", 1)[-1]).lower()
     architecture = (
         "arm64"
@@ -98,13 +97,38 @@ def ensure_github_cli(*, cache_root: Path | None = None) -> Path:
         / suffix.removesuffix(".tar.gz").removesuffix(".zip")
     )
     executable = root / ("gh.exe" if sys.platform == "win32" else "gh")
+    return suffix, digest, executable
+
+
+def installed_github_cli(*, cache_root: Path | None = None) -> Path | None:
+    """Find an already verified managed CLI without downloading or changing its account."""
+    try:
+        _, _, executable = _installation(cache_root)
+    except RuntimeError:
+        return None
+    receipt = executable.parent / "executable.sha256"
+    with _LOCK:
+        try:
+            if not executable.is_file() or not receipt.is_file():
+                return None
+            if not 0 < executable.stat().st_size <= _MAX_BYTES:
+                return None
+            expected = receipt.read_text(encoding="utf-8").strip()
+            if hashlib.sha256(executable.read_bytes()).hexdigest() == expected:
+                return executable
+        except (OSError, UnicodeError):
+            # An absent/unreadable cache must not prevent unrelated shell commands.
+            return None
+    return None
+
+
+def ensure_github_cli(*, cache_root: Path | None = None) -> Path:
+    """Install the pinned CLI from verified official bytes, or reuse those bytes."""
+    suffix, digest, executable = _installation(cache_root)
+    root = executable.parent
     receipt = root / "executable.sha256"
     with _LOCK:
-        if (
-            executable.is_file()
-            and receipt.is_file()
-            and hashlib.sha256(executable.read_bytes()).hexdigest() == receipt.read_text().strip()
-        ):
+        if installed_github_cli(cache_root=cache_root) is not None:
             return executable
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         name = f"gh_{VERSION}_{suffix}"

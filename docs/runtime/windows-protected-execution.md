@@ -30,6 +30,12 @@ permission profiles need an updated runtime containing this correction before
 the setup action can recover their fence. Signing in to GitHub or another model
 provider does not supply the missing helpers or verification receipt.
 
+Ordinary GitHub inspection and cloning use the full `gh` CLI through the normal
+shell. The shared GitHub prompt does not request connected-source setup merely
+because a repository URL was supplied. Existing host CLI/account configuration
+takes precedence; an already verified managed CLI is a PATH fallback. This does
+not change the shell permission gate or connected-source credential exclusions.
+
 ## Enforcement proof
 
 Windows profiles use Codex's supported `:root` read token, explicit workspace
