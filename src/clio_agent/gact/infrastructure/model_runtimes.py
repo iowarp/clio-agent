@@ -90,8 +90,25 @@ from clio_agent.gact.infrastructure.server_parameters import (
 
 VLLM_VERSION = "0.28.0"
 OLLAMA_VERSION = "0.34.4"
-LLAMA_CPU_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-{LLAMA_BUILD}"
-LLAMA_VULKAN_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-vulkan-{LLAMA_BUILD}"
+# Images are pinned by registry digest, not by tag: a tag can be re-pushed. The
+# tag each digest was resolved from is kept beside it for readers; container
+# runtimes reject a reference that carries both a tag and a digest.
+VLLM_IMAGES = {
+    # vllm/vllm-openai*:v0.28.0, resolved 2026-10-08.
+    "cuda": "vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14",
+    "rocm": "vllm/vllm-openai-rocm@sha256:e0a3b2bd3fe7ec563916c3a5d949898d133458c18d6b2f460c906885cfb32032",
+    "cpu": "vllm/vllm-openai-cpu@sha256:197354e6475e638eb5ccca09beb078488046a82de0e204e7429bf1a804df9647",
+}
+# ghcr.io/ggml-org/llama.cpp:server[-vulkan]-b11206, resolved 2026-10-08.
+LLAMA_CPU_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f"
+LLAMA_VULKAN_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00810eb17c7b816f4e4b16ac9467ed177f125ff3d72abc61e4a8b717f4430bdc"
+# ollama/ollama:0.34.4 and :0.34.4-rocm, resolved 2026-10-08.
+OLLAMA_IMAGE = (
+    "ollama/ollama@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551"
+)
+OLLAMA_ROCM_IMAGE = (
+    "ollama/ollama@sha256:f1f51e73691bd77e38a30b61f745f8d074fc664967ba8e209989091bd73b5adc"
+)
 MODEL_RUNTIME_SERVICES = frozenset({"vllm", "llama_cpp", "ollama"})
 RUNTIME_FIELD = "container_runtime"
 PORT_FIELD = "port"
@@ -141,15 +158,9 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-vllm",
         health_path="/health",
         variants=(
-            VariantSpec(
-                "cuda", "NVIDIA CUDA", VLLM_VERSION, f"vllm/vllm-openai:v{VLLM_VERSION}", "nvidia"
-            ),
-            VariantSpec(
-                "rocm", "AMD ROCm", VLLM_VERSION, f"vllm/vllm-openai-rocm:v{VLLM_VERSION}", "amd"
-            ),
-            VariantSpec(
-                "cpu", "CPU", VLLM_VERSION, f"vllm/vllm-openai-cpu:v{VLLM_VERSION}", x86_only=True
-            ),
+            VariantSpec("cuda", "NVIDIA CUDA", VLLM_VERSION, VLLM_IMAGES["cuda"], "nvidia"),
+            VariantSpec("rocm", "AMD ROCm", VLLM_VERSION, VLLM_IMAGES["rocm"], "amd"),
+            VariantSpec("cpu", "CPU", VLLM_VERSION, VLLM_IMAGES["cpu"], x86_only=True),
         ),
         fields=(_field("model", "Model", "Qwen/Qwen3-8B", required=True),),
     ),
@@ -177,13 +188,9 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-ollama",
         health_path="/api/version",
         variants=(
-            VariantSpec("cpu", "CPU", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}"),
-            VariantSpec(
-                "cuda", "NVIDIA CUDA", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}", "nvidia"
-            ),
-            VariantSpec(
-                "rocm", "AMD ROCm", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}-rocm", "amd"
-            ),
+            VariantSpec("cpu", "CPU", OLLAMA_VERSION, OLLAMA_IMAGE),
+            VariantSpec("cuda", "NVIDIA CUDA", OLLAMA_VERSION, OLLAMA_IMAGE, "nvidia"),
+            VariantSpec("rocm", "AMD ROCm", OLLAMA_VERSION, OLLAMA_ROCM_IMAGE, "amd"),
         ),
         fields=(_field("model", "Model", "qwen2.5:0.5b", required=True),),
     ),

@@ -12,7 +12,7 @@ from clio_agent.gact.infrastructure.drivers import (
     service_connection_port,
     service_definitions,
 )
-from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_VERSION, VLLM_VERSION
+from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_IMAGE, VLLM_IMAGES
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     ContainerRuntimeFact,
@@ -129,7 +129,7 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
         facts=_facts("docker"),
     )
 
-    image = f"ollama/ollama:{OLLAMA_VERSION}"
+    image = OLLAMA_IMAGE
     assert (
         CommandSpec(program="docker", args=["pull", image], timeout_seconds=1800) in plan.commands
     )
@@ -271,8 +271,8 @@ def test_vllm_cpu_launch_carries_parallelism_flags_and_cpu_environment() -> None
     )
 
     run = _run(plan.commands, "docker")
-    assert f"vllm/vllm-openai-cpu:v{VLLM_VERSION}" in run.args
-    tail = run.args[run.args.index(f"vllm/vllm-openai-cpu:v{VLLM_VERSION}") + 1 :]
+    assert VLLM_IMAGES["cpu"] in run.args
+    tail = run.args[run.args.index(VLLM_IMAGES["cpu"]) + 1 :]
     assert tail[:6] == [
         "--model",
         "Qwen/Qwen2.5-0.5B-Instruct",
@@ -306,7 +306,7 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
         "pull",
         "--force",
         f"{service_dir}/images/clio-ollama.sif",
-        f"docker://ollama/ollama:{OLLAMA_VERSION}",
+        f"docker://{OLLAMA_IMAGE}",
     ]
     run = _run(plan.commands, "apptainer")
     assert run.args[:4] == ["instance", "run", "--cleanenv", "--writable-tmpfs"]
@@ -398,7 +398,7 @@ def test_uninstall_removes_exactly_the_ledger_running_things_first() -> None:
         OwnedResource(
             kind="directory", ref="/home/alice/.local/share/clio/services/clio-ollama/cache"
         ),
-        OwnedResource(kind="image", ref=f"ollama/ollama:{OLLAMA_VERSION}", runtime="docker"),
+        OwnedResource(kind="image", ref=OLLAMA_IMAGE, runtime="docker"),
         OwnedResource(kind="container", ref="clio-ollama", runtime="docker"),
     ]
     plan = build_driver_plan(
@@ -413,7 +413,7 @@ def test_uninstall_removes_exactly_the_ledger_running_things_first() -> None:
     steps = [(spec.args[1].split(" ")[:3], spec.args[2:]) for spec in plan.commands]
     assert steps == [
         (["docker", "rm", "--force"], ["clio-ollama"]),
-        (["docker", "rmi", '"$0"'], [f"ollama/ollama:{OLLAMA_VERSION}"]),
+        (["docker", "rmi", '"$0"'], [OLLAMA_IMAGE]),
         (["rm", "-rf", "--"], ["/home/alice/.local/share/clio/services/clio-ollama/cache"]),
         (["rmdir", "--", '"$0"'], ["/home/alice/.local/share/clio"]),
     ]
@@ -439,7 +439,7 @@ def test_reinstall_replaces_the_server_but_keeps_the_image_and_models() -> None:
         OwnedResource(
             kind="directory", ref="/home/alice/.local/share/clio/services/ares/clio-ollama/cache"
         ),
-        OwnedResource(kind="image", ref=f"ollama/ollama:{OLLAMA_VERSION}", runtime="docker"),
+        OwnedResource(kind="image", ref=OLLAMA_IMAGE, runtime="docker"),
         OwnedResource(kind="container", ref="clio-ollama", runtime="docker"),
     ]
     plan = build_driver_plan(
@@ -512,3 +512,17 @@ def test_native_windows_llama_passes_server_parameters_to_the_process() -> None:
         "@('-m','C:/models/q.gguf','--host','127.0.0.1','--port','8088','--parallel','3')" in script
     )
     assert "$args" not in script
+
+
+def test_every_container_image_is_digest_pinned() -> None:
+    """A tag can be re-pushed; every managed engine image names a registry digest (F028)."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import ENGINES
+
+    for spec in ENGINES.values():
+        for variant in spec.variants:
+            if not variant.image:
+                continue
+            name, _, digest = variant.image.partition("@sha256:")
+            assert len(digest) == 64, variant.image
+            assert ":" not in name.rsplit("/", 1)[-1], variant.image

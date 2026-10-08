@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_VERSION
+from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_IMAGE
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -27,7 +27,7 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
-IMAGE = f"ollama/ollama:{OLLAMA_VERSION}"
+IMAGE = OLLAMA_IMAGE
 HOME = "/home/alice"
 PROBE = (
     "Linux|x86_64|none|1|1|0\n"
