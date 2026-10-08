@@ -11,6 +11,7 @@ from clio_agent.gact.infrastructure.models import (
     TargetFacts,
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
+from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
 from clio_agent.gact.infrastructure.server_parameters import compile_parameters
 from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
@@ -139,6 +140,8 @@ def native_vllm_plan(
                 f"flowcept[extras] @ git+https://github.com/spotter-ai-genesis/flowcept.git@{FLOWCEPT_REVISION}",
             ]
         )
+    if action in {"install", "reinstall", "start"}:
+        configuration = {**configuration, **parser_defaults(model, configuration)}
     compiled = compile_parameters("vllm", "cuda", configuration)
     ownership = hashlib.sha256(
         f"{facts.target_id}:{facts.hostname}:{directory}".encode()
