@@ -661,6 +661,10 @@ def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtim
     assert ("--nv" if runtime == "apptainer" else "--gpus") in run.args
     assert run.args[run.args.index("--n-gpu-layers") + 1] == "999"
     assert any(LLAMA_DIGEST in arg for arg in run.args) or runtime == "apptainer"
+    # The image's libraries resolve from its WORKDIR, which Apptainer does not
+    # apply (F033); Docker/Podman take it from the image.
+    library_path = "LD_LIBRARY_PATH=/app:/usr/local/cuda/lib64"
+    assert (library_path in run.args) == (runtime == "apptainer")
 
 
 def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> None:

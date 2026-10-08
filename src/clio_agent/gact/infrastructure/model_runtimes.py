@@ -478,6 +478,11 @@ def _launch(
                 "Provide either a GGUF model path on the target or a Hugging Face GGUF model"
             )
         env.append(("LLAMA_CACHE", "/cache/llama.cpp"))
+        if runtime == "apptainer":
+            # The images find /app/*.so through their WORKDIR, which Apptainer
+            # does not apply (`instance run` has no --pwd); keep the image's
+            # own CUDA path, which an explicit value would replace (F033).
+            env.append(("LD_LIBRARY_PATH", "/app:/usr/local/cuda/lib64"))
         if model_path:
             _check_value("model_path", model_path)
             mounts.append((model_path, "/models/model.gguf"))
