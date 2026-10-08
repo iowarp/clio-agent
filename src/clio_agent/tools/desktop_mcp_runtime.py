@@ -92,7 +92,7 @@ def prepare_desktop_stdio(
     launcher_env: dict[str, str] = {}
     if launcher is not None:
         command, resolved_args, launcher_env = launcher
-    child_env = stdio_environment(dict(env) if env else {})
+    child_env = stdio_environment(dict(env) if env else {}, command=command, args=resolved_args)
     child_env.update(launcher_env)
     return command, resolved_args, child_env
 

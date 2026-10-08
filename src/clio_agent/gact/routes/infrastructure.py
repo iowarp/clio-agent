@@ -41,6 +41,7 @@ from clio_agent.gact.routes.infrastructure_provenance import (
     register_infrastructure_provenance_routes,
 )
 from clio_agent.gact.routes.infrastructure_storage import register_infrastructure_storage_routes
+from clio_agent.gact.routes.search import register_search_routes
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.providers.capabilities.server_defaults import (
     register_context_default_lookup,
@@ -67,6 +68,7 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
     register_infrastructure_model_routes(app)
     register_infrastructure_provenance_routes(app)
     register_infrastructure_operation_routes(app)
+    register_search_routes(app)
     # Discovery learns the default context a CLIO-deployed Ollama applies before
     # a model loads (no Ollama endpoint reports it).
     register_context_default_lookup("infrastructure", ollama_context_default_lookup(durable_store))
