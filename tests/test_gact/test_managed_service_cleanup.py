@@ -96,6 +96,10 @@ class FakeLinuxTarget:
             return CommandResult(exit_code=0)
         if program == "docker":
             return self._docker(args)
+        if program == "curl" and "/api/show" in args[-5]:
+            # The Ollama context step (no model server here): it records why
+            # Ollama's own default stays.
+            return CommandResult(exit_code=7, stderr="connection refused")
         raise AssertionError(f"unexpected command {program} {args}")
 
     def _verified_removal(self, script: str, ref: str) -> CommandResult:
