@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
+import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -253,6 +256,7 @@ def test_provenance_verification_expires_with_configuration_or_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    monkeypatch.setattr(node_service, "owned_listener", lambda receipt: True)
     monkeypatch.setattr(
         node_service,
         "build_opener",
@@ -425,3 +429,81 @@ def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> N
     assert "VIRTUAL_ENV" not in env and "PYTHONPATH" not in env
     assert env["TMPDIR"] == str(tmp_path / "tmp")
     assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
+
+
+def _listen_in_own_group(address: str) -> tuple[subprocess.Popen[bytes], int]:
+    """A listener in its own session, as the supervised server would be."""
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import socket,sys,time\n"
+            "s=socket.socket(); s.bind((sys.argv[1], 0)); s.listen()\n"
+            "print(s.getsockname()[1], flush=True); time.sleep(60)",
+            address,
+        ],
+        stdout=subprocess.PIPE,
+        start_new_session=True,
+    )
+    assert child.stdout is not None
+    return child, int(child.stdout.readline())
+
+
+def test_readiness_refuses_a_foreign_listener_on_the_service_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F010: a 200 from another user's server on the port is not "serving"."""
+    with socket.socket() as foreign:
+        foreign.bind(("0.0.0.0", 0))
+        foreign.listen()
+        port = foreign.getsockname()[1]
+        owned, _ = _listen_in_own_group("127.0.0.1")
+        try:
+            receipt = {"pid": owned.pid, "health_url": f"http://127.0.0.1:{port}/health"}
+            # Only the foreign wildcard listener holds the port.
+            assert node_service.listeners(port)
+            assert not node_service.owned_listener(receipt)
+            monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+            monkeypatch.setattr(
+                node_service,
+                "build_opener",
+                lambda *args: SimpleNamespace(
+                    open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))
+                ),
+            )
+            node_service.write_json(tmp_path / "receipt.json", {**receipt, "phase": "running"})
+            assert not node_service.observation(tmp_path)["serving"]
+        finally:
+            owned.kill()
+            owned.wait()
+
+
+def test_readiness_accepts_the_owned_loopback_listener() -> None:
+    owned, port = _listen_in_own_group("127.0.0.1")
+    try:
+        receipt = {"pid": owned.pid, "health_url": f"http://127.0.0.1:{port}/health"}
+        assert node_service.owned_listener(receipt)
+        assert not node_service.owned_listener({**receipt, "pid": os.getpid()})
+    finally:
+        owned.kill()
+        owned.wait()
+
+
+def test_start_refuses_a_port_with_any_existing_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F010: the old SO_REUSEADDR probe bound beside a foreign 0.0.0.0 listener."""
+    manifest = {"port": 0, "model_path": ""}
+    monkeypatch.setattr(node_service, "observation", lambda root, health=True: {"installed": True})
+    with socket.socket() as foreign:
+        foreign.bind(("0.0.0.0", 0))
+        foreign.listen()
+        manifest["port"] = foreign.getsockname()[1]
+        revision = node_service.hashlib.sha256(
+            json.dumps(manifest, sort_keys=True).encode()
+        ).hexdigest()
+        node_service.write_json(
+            tmp_path / "receipt.json", {"phase": "stopped", "configuration_revision": revision}
+        )
+        with pytest.raises(ValueError, match="already has a listener"):
+            node_service.launch(tmp_path, {"action": "start", "manifest": manifest})

@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
@@ -145,6 +146,68 @@ def hook(root: Path, action: str, *, timeout: int = 90) -> None:
         raise RuntimeError(f"Service {action} hook failed; inspect retained logs and resources")
 
 
+#: Loopback addresses as written in /proc/net/tcp{,6} (little-endian hex).
+LOOPBACK_HEX = {"0100007F", "0000000000000000FFFF00000100007F", "00000000000000000000000001000000"}
+
+
+def listeners(port: int) -> list[tuple[str, str]]:
+    """Every TCP socket listening on ``port`` on this host, as (address, inode).
+
+    /proc/net lists sockets of every user, so a listener held by another
+    account on a shared node is visible even though its process is not.
+    """
+    found = []
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            rows = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            address, _, hex_port = fields[1].partition(":")
+            if fields[3] == "0A" and int(hex_port, 16) == port:
+                found.append((address, fields[9]))
+    return found
+
+
+def group_socket_inodes(group: int) -> set[str]:
+    """Socket inodes held open by any process of the owned process group."""
+    inodes: set[str] = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if os.getpgid(int(entry.name)) != group:
+                continue
+            for descriptor in (entry / "fd").iterdir():
+                target = os.readlink(descriptor)
+                if target.startswith("socket:["):
+                    inodes.add(target[len("socket:[") : -1])
+        except OSError:
+            continue
+    return inodes
+
+
+def owned_listener(receipt: dict[str, Any]) -> bool:
+    """Whether loopback connections to the health port reach the owned server.
+
+    A 200 from the health URL proves only that *something* answered. On a
+    shared node another user's server may hold the same port (for example on
+    0.0.0.0), so the owned process group must hold a listener on that port and
+    no foreign socket may hold the exact loopback address, which the kernel
+    would prefer over a wildcard.
+    """
+    port = urlsplit(receipt.get("health_url", "")).port
+    group = int(receipt.get("pid") or 0)
+    if not port or group <= 0:
+        return False
+    ours = group_socket_inodes(group)
+    sockets = listeners(port)
+    if not any(inode in ours for _, inode in sockets):
+        return False
+    return not any(address in LOOPBACK_HEX and inode not in ours for address, inode in sockets)
+
+
 def read_receipt(root: Path) -> dict[str, Any]:
     """Read the durable receipt, including an interrupted worker's last result."""
     file = root / "receipt.json"
@@ -181,6 +244,7 @@ def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
                 serving = response.status == 200
         except (OSError, URLError):
             serving = False
+        serving = serving and owned_listener(receipt)
     verification = root / "evidence/verification.json"
     verified = json.loads(verification.read_text()) if verification.is_file() else {}
     current_verification = verified.get("configuration_revision") == receipt.get(
@@ -254,6 +318,12 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         model = manifest.get("model_path")
         if model and not (Path(model).is_absolute() and (Path(model) / "config.json").is_file()):
             raise ValueError("The model directory is unavailable on this execution host")
+        # SO_REUSEADDR lets this probe bind beside another user's 0.0.0.0
+        # listener, so any existing listener on the port refuses the start.
+        if listeners(manifest["port"]):
+            raise ValueError(
+                f"Port {manifest['port']} already has a listener on this host; choose a free port"
+            )
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", manifest["port"]))
