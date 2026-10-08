@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -71,3 +72,21 @@ def test_group_members_lists_the_live_group(branch: str) -> None:
 
 def test_no_pid_has_no_identity() -> None:
     assert node_service._ps_identity(0) == ""
+
+
+def test_the_shipped_process_group_helper_runs_without_clio(tmp_path: Path) -> None:
+    # Targets run it beside the supervisor as clio_process_group.py, stdlib only (-S: no site).
+    (tmp_path / process_group.SHIPPED_NAME).write_text(process_group.source(), encoding="utf-8")
+    probe = (
+        "import os, sys; sys.path.insert(0, sys.argv[1]); import clio_process_group as g; "
+        "print(g.group_members(os.getpgrp(), lambda pid: 'x'))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", probe, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip().startswith("[")
