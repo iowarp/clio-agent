@@ -83,7 +83,7 @@ def materialize(
 
         adapter = SelectedDownload(store, record, adapter, operation.selected_paths)
     owner_root = store.root / source.id
-    owner_root.mkdir(parents=True, exist_ok=True)
+    os.makedirs(win_extended_path(owner_root), exist_ok=True)
     stage = owner_root / ("stage-" + operation.id)
     baseline_id = "snapshot_" + uuid.uuid4().hex
     baseline = owner_root / baseline_id
@@ -101,7 +101,7 @@ def materialize(
             raise ValueError("Insufficient capacity for the source baseline and working copy")
         if not record.download_read_only and shutil.disk_usage(workspace_root).free < total:
             raise ValueError("Insufficient workspace capacity for the working copy")
-        stage.mkdir()
+        os.mkdir(win_extended_path(stage))
         done = 0
         hashes: dict[str, str] = {}
         seen: set[str] = set()
