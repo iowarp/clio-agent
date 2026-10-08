@@ -39,7 +39,7 @@ from clio_agent.gact.infrastructure.container_runtime import (
     logs_command,
     negotiate_runtime,
     parse_runtime_name,
-    pull_command,
+    pull_commands,
     remove_container_command,
     run_command,
     start_command,
@@ -680,6 +680,9 @@ def build_model_runtime_plan(
     module = ntpath if windows else posixpath
     cache_dir = configuration.get("storage.model_cache") or module.join(service_dir, "cache")
     temporary_dir = configuration.get("storage.temporary") or module.join(service_dir, "tmp")
+    # Pulled images outlive one deployment's failure (they are a cache of a
+    # pinned digest, not a half-built deployment) and are shared across hosts.
+    image_store = module.join(module.dirname(service_dir.rstrip("/\\")), "apptainer-images")
     if target and any(target.storage.model_dump().values()):
         from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
 
@@ -690,6 +693,8 @@ def build_model_runtime_plan(
         temporary_dir = configuration.get("storage.temporary") or module.join(
             locations.temporary, facts.hostname or facts.target_id, spec.container_name
         )
+        image_store = module.join(locations.service_data, "apptainer-images")
+    image_store = configuration.get("storage.image_store") or image_store
     resolved.update(
         {
             "storage.service_directory": service_dir,
@@ -779,19 +784,20 @@ def build_model_runtime_plan(
     commands.append(remove_container_command(runtime, name))
     if not windows:
         commands.append(_port_free_command(port))
-    directories = [cache_dir, temporary_dir] + (
-        [images_dir, module.join(temporary_dir, "apptainer-cache")]
-        if runtime == "apptainer"
-        else []
-    )
+    directories = [cache_dir, temporary_dir] + ([images_dir] if runtime == "apptainer" else [])
     for directory in directories:
         recorders[len(commands)] = directory_recorder(directory, facts.os)
         commands.append(create_directory_command(directory, facts.os))
     recorders[len(commands)] = image_recorder(runtime, variant.image)
     commands.append(image_present_command(runtime, variant.image, images_dir, name))
-    commands.append(
-        pull_command(
-            runtime, variant.image, images_dir, module.join(temporary_dir, "apptainer-cache"), name
+    commands.extend(
+        pull_commands(
+            runtime,
+            variant.image,
+            images_dir,
+            image_store,
+            name,
+            module.join(temporary_dir, "apptainer-tmp"),
         )
     )
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)

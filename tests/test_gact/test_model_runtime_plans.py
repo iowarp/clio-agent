@@ -302,16 +302,18 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
     )
 
     service_dir = "/home/alice/.local/share/clio-agent/services/ares/clio-ollama"
-    pull = next(spec for spec in plan.commands if spec.program == "env")
-    assert pull.args == [
-        f"APPTAINER_CACHEDIR={service_dir}/tmp/apptainer-cache",
-        f"APPTAINER_TMPDIR={service_dir}/tmp/apptainer-cache",
-        "apptainer",
-        "pull",
-        "--force",
+    pulls = [spec for spec in plan.commands if spec.args[2:3] == ["clio-apptainer-pull"]]
+    assert [spec.allowed_exit_codes for spec in pulls] == [[0, 124], [0]]
+    store = "/home/alice/.local/share/clio-agent/services/ares/apptainer-images"
+    assert pulls[0].args[3:] == [
+        store,
+        OLLAMA_IMAGE,
+        "sha256-" + OLLAMA_IMAGE.rsplit("@sha256:", 1)[1],
         f"{service_dir}/images/clio-ollama.sif",
-        f"docker://{OLLAMA_IMAGE}",
+        f"{service_dir}/tmp/apptainer-tmp",
+        "1740",
     ]
+    assert all(spec.timeout_seconds <= 1800 for spec in plan.commands)
     run = _run(plan.commands, "apptainer")
     assert run.args[:4] == ["instance", "run", "--cleanenv", "--writable-tmpfs"]
     assert "OLLAMA_HOST=127.0.0.1:21434" in run.args

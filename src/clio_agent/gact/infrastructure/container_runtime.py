@@ -183,30 +183,73 @@ def image_present_command(
     )
 
 
-def pull_command(
-    runtime: RuntimeName, image: str, images_dir: str, cache_dir: str, name: str
-) -> CommandSpec:
-    """Fetch the pinned image (Apptainer: convert to a SIF in a CLIO-owned directory).
+# One Apptainer pull attempt, bounded inside the script so a timeout stops
+# apptainer itself (not only the shell). The SIF of a pinned image is kept in
+# a shared store keyed by its digest, with a ``.ref`` sidecar written only
+# after a complete pull; a store hit is reused instead of re-pulled, and the
+# service's own SIF path is a symlink to it.
+_APPTAINER_PULL_SCRIPT = """set -eu
+store=$1; image=$2; key=$3; link=$4; scratch=$5; budget=$6
+sif="$store/$key.sif"
+mkdir -p "$store/cache" "$scratch"
+if [ -f "$sif" ] && [ "$(cat "$sif.ref" 2>/dev/null)" = "$image" ]; then
+  echo "clio: reusing $sif"
+else
+  APPTAINER_CACHEDIR="$store/cache" APPTAINER_TMPDIR="$scratch" \\
+    timeout -k 15 "$budget" apptainer pull --force "$sif.partial" "docker://$image"
+  mv -f "$sif.partial" "$sif"
+  printf '%s\\n' "$image" > "$sif.ref"
+fi
+ln -sfn "$sif" "$link"
+"""
 
-    Apptainer's layer cache and its conversion scratch both live in the
-    CLIO-owned ``cache_dir`` (a login node's small ``/tmp`` is not used).
+# Two attempts of at most this many seconds each: the first may run out of
+# time (exit 124) with the downloaded layers kept in the persistent layer
+# cache; the second resumes from them, or is a no-op when the first finished.
+APPTAINER_PULL_ATTEMPT_SECONDS = 1740
+
+
+def image_store_key(image: str) -> str:
+    """A file-name-safe key for a pinned image (its digest when it has one)."""
+
+    if "@sha256:" in image:
+        return "sha256-" + image.rsplit("@sha256:", 1)[1]
+    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in image)
+
+
+def pull_commands(
+    runtime: RuntimeName,
+    image: str,
+    images_dir: str,
+    store_dir: str,
+    name: str,
+    scratch_dir: str | None = None,
+) -> list[CommandSpec]:
+    """Fetch the pinned image.
+
+    Apptainer converts it to a SIF in ``store_dir`` (a persistent image store
+    with its own layer cache, so a failed or timed-out pull resumes and a new
+    node does not re-download) using ``scratch_dir`` (the target's temporary
+    location, which an operator may point at node-local scratch) for the
+    conversion. The pull runs as two bounded attempts so a large image is not
+    cut off by one command's timeout.
     """
 
-    if runtime == "apptainer":
-        return CommandSpec(
-            program="env",
-            args=[
-                f"APPTAINER_CACHEDIR={cache_dir}",
-                f"APPTAINER_TMPDIR={cache_dir}",
-                "apptainer",
-                "pull",
-                "--force",
-                sif_path(images_dir, name),
-                f"docker://{image}",
-            ],
-            timeout_seconds=1800,
-        )
-    return CommandSpec(program=runtime, args=["pull", image], timeout_seconds=1800)
+    if runtime != "apptainer":
+        return [CommandSpec(program=runtime, args=["pull", image], timeout_seconds=1800)]
+    args = [
+        "-c",
+        _APPTAINER_PULL_SCRIPT,
+        "clio-apptainer-pull",
+        store_dir.rstrip("/"),
+        image,
+        image_store_key(image),
+        sif_path(images_dir, name),
+        scratch_dir or f"{store_dir.rstrip('/')}/tmp",
+        str(APPTAINER_PULL_ATTEMPT_SECONDS),
+    ]
+    first = CommandSpec(program="sh", args=args, timeout_seconds=1800, allowed_exit_codes=[0, 124])
+    return [first, first.model_copy(update={"allowed_exit_codes": [0]})]
 
 
 def remove_container_command(runtime: RuntimeName, name: str) -> CommandSpec:
