@@ -204,7 +204,9 @@ def saved_address_for_preset(preset_id: str) -> str | None:
     """
     try:
         entry = get_server(preset_id)
-    except LocalServerStoreError as exc:
+    except (LocalServerStoreError, paths.HomeDirectoryUnavailable) as exc:
+        # No readable config (or no user config directory at all, e.g. a
+        # service user with no home): there is no saved address to honour.
         logger.warning(
             "saved_server_address_unreadable preset=%s reason=%s -- probing the preset's own address",
             preset_id,
