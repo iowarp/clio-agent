@@ -357,3 +357,28 @@ def test_an_estimated_usage_is_not_taken_for_a_real_count(arc, monkeypatch):
     assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
         "no_token_count"
     ]
+
+
+def test_a_models_working_context_is_the_compaction_window(arc, monkeypatch):
+    """Model semantics: a working context saved for a model CLIO cannot configure is
+    the denominator the auto trigger uses (the builders set the window from
+    ``_resolve_expert_context_window`` every turn), bounded by the served maximum."""
+    from clio_agent.gact.providers.working_context import save_working_context
+
+    cfg = types.SimpleNamespace(
+        provider_id="openai", model="gpt-5", context_window=400_000, chosen_context=400_000
+    )
+    _patch_prompt_tokens(monkeypatch, prompt_tokens=90_000)
+    _populate(arc)
+    before = _view(arc)
+    window = context_tokens._resolve_expert_context_window(cfg)
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=window):
+        maybe_autocompact(AutoCompactionGuard())
+    assert _view(arc) == before  # 90k of the served 400k: no compaction
+
+    save_working_context("openai", "gpt-5", 100_000)
+    window = context_tokens._resolve_expert_context_window(cfg)
+    assert window == 100_000
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=window):
+        maybe_autocompact(AutoCompactionGuard())
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]  # 90k of 100k crosses 0.85

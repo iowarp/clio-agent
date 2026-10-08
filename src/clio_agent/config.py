@@ -351,7 +351,9 @@ class LMProviderConfig:
         retained for callers using the earlier signature. No-op with no usable
         discovered model.
 
-        Context precedence: an explicit ``lm.context_window`` /
+        Context precedence: the working context a person chose for this
+        provider/model (``providers.working_context``, bounded by the reported
+        maximum), else an explicit ``lm.context_window`` /
         ``CLIO_LM_CONTEXT_WINDOW`` override (>0), else the effective context
         (the smaller of the model's own ceiling and what this deployment is
         actually serving) — logging a ``context_window_below_native`` warning
@@ -392,6 +394,11 @@ class LMProviderConfig:
             "lm.context_window", env="CLIO_LM_CONTEXT_WINDOW", default=0, cast=conf.as_int
         )
         self.chosen_context = override if override and override > 0 else window
+        # A working context the person chose for this model (model semantics:
+        # CLIO cannot configure the server) wins, bounded by the reported maximum.
+        from clio_agent.gact.providers.working_context import working_context_for  # noqa: PLC0415
+
+        self.chosen_context = working_context_for(self) or self.chosen_context
 
         # Warn when the served window is below the model's native max, even
         # with the override in effect — the mismatch is a config fact, not intent.

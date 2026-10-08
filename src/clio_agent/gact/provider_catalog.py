@@ -16,6 +16,7 @@ from typing import Any
 
 from clio_agent.gact.catalog_context import context_wire
 from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
+from clio_agent.gact.providers.working_context import model_context_controls
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.lm import dialect_wire
 from clio_agent.providers import model_discovery
@@ -334,6 +335,14 @@ def model_catalog_row(
         "native_tool_calling": bool(effective.tools.value),
         # context_window + loaded/native + the basis it rests on (catalog_context).
         **context_wire(effective, deployment),
+        # The working-context control (number / Max; no Fit to GPU for a server
+        # CLIO does not run): what the agent loop budgets this model against.
+        "context_controls": model_context_controls(
+            preset.id,
+            profile.id,
+            maximum=effective.context.value,
+            maximum_reason=effective.context.reason or effective.context.decided_by,
+        ).model_dump(mode="json"),
         "output_limit": effective.output_max.value,
         "availability": availability,
         "evidence": {
