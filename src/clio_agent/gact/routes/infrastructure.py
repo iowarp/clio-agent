@@ -7,6 +7,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, status
 
 from clio_agent.gact.auth import has_valid_bearer
+from clio_agent.gact.infrastructure.configuration_keys import (
+    UnknownConfigurationKeyError,
+    validate_configuration_keys,
+)
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     DesktopExitRequest,
@@ -153,6 +157,21 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def service_action(service_id: str, request: ServiceActionRequest) -> dict[str, object]:
+        installed = store().service(request.target_id, service_id)
+        try:
+            validate_configuration_keys(
+                service_id, request.configuration, installed.configuration if installed else None
+            )
+        except UnknownConfigurationKeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": exc.code,
+                    "message": str(exc),
+                    "key": exc.key,
+                    "accepted": exc.accepted,
+                },
+            ) from exc
         try:
             row = runtime().start_action(service_id, request)
         except KeyError as exc:
