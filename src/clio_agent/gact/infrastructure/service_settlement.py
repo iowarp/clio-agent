@@ -79,7 +79,14 @@ async def settle_service(
                 if k not in {"on_conflict", "conflict_pid", "conflict_root"}
             },
             state=state,
-            observation=observation or (previous.observation if previous else None),
+            # A previous observation survives only for the same variant: a
+            # variant switch (native -> container) must not inherit it (F032).
+            observation=observation
+            or (
+                previous.observation
+                if previous and previous.variant_id == request.variant_id
+                else None
+            ),
             connection_url=connection_url,
             connection_strategy=strategy,
             owned_resources=owned

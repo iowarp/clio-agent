@@ -300,8 +300,13 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 if any(value in observed for value in ("exited", "created", "stopped"))
                 else "unknown"
             )
-            if state != record.state:
-                self.store.update_service(target_id, record.service_id, state=state)
+            # This variant's status carries no structured observation (a
+            # container), so any stored one describes an earlier deployment
+            # and would contradict ``state`` (F032).
+            if state != record.state or record.observation is not None:
+                self.store.update_service(
+                    target_id, record.service_id, state=state, observation=None
+                )
             return state
         except (OSError, RuntimeError, ValueError):
             return "unknown"
