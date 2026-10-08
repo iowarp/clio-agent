@@ -8,7 +8,7 @@ Reviewable changes: [workspace UI PR #556](https://github.com/iowarp/gact-tui/pu
 
 | Feedback | Result |
 | --- | --- |
-| Downloads, figures 1–3 | The header opens Windows WebView2's native Downloads dialog. File and visualization exports also open it after starting a download. Other desktop platforms open the Downloads folder. The terminal remains available through the canvas launcher and session actions. |
+| Downloads, figures 1–3 | The header opens Windows WebView2's native Downloads dialog. File, visualization and session exports (HTML or ZIP) also open it after starting a download. Other desktop platforms open the Downloads folder. The terminal remains available through the canvas launcher and session actions. |
 | Sources, figures 4–6 | Existing sources can be relinked and downloaded from Files → Sources, using the same access choices as Attach. Relinking here updates the source directly without creating a composer attachment. |
 | Export menu, figure 7 | Transcript-only HTML is the default. Visible checkboxes say “Include session artifacts” and “Include workspace files.” Workspace inclusion checks artifacts too; the action changes to “Download ZIP.” |
 | Chart themes, figures 8–9 | The renderer owns a transparent plot background, including specs with a white config background, so the canvas and legend match the theme-aware labels. |
@@ -36,6 +36,7 @@ Sanitized local evidence is retained under `.local/beta-ui-evidence/`: `live-dra
 ## Validation
 
 - 104 focused workspace UI tests passed, including real Vega embedding, source relinking, export dependencies, native-download dispatch, reasoning separation, scores and criteria.
+- Export/download follow-up: 19 export/helper tests passed, including six new navigation cases covering HTML and both ZIP modes on desktop and browser hosts. They verify the real session menu reaches the common download handler, preserves proxy paths, filenames and no-referrer policy, and opens native Downloads only on desktop. The preparing message uses HTML/ZIP terminology.
 - Core v3 suite: 262 tests passed; the additional rubric-retention regression also passed in the 14-test variant reducer run.
 - Browser: six checks passed for chart rendering, live light/dark changes, question/queue surface matching, and composer focus geometry at desktop and phone widths. The final theme test also rendered a custom spec with a white background and a legend in both themes.
 - Backend: draft/run-route suite 16 passed; strategy/pick/close suite 19 passed; real DSPy composition and module-variant suite 49 passed (84 total).
