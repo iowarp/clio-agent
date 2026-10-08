@@ -33,7 +33,6 @@ from clio_agent.gact.modality_evidence import (
     image_input_capability,
     live_model_modalities,
 )
-from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
@@ -62,6 +61,7 @@ from clio_agent.gact.runtime.globals import (
 from clio_agent.gact.selected_model_refresh import refresh_for_selected_model
 from clio_agent.gact.session_host_agent import ensure_host_agent
 from clio_agent.gact.session_model_ref import remember_session_model
+from clio_agent.gact.thinking_level_guard import raise_if_selection_unusable
 from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -316,9 +316,8 @@ def _validate_provider_and_payload(
     if removed is not None:
         raise HTTPException(status_code=400, detail=removed.model_dump(exclude_none=True))
     raise_if_deployment_removed(app, selected_model, session_id=sid, source=_source)
-    surrogate = surrogate_selection_error(app, selected_model.provider_id, selected_model.model_id)
-    if surrogate is not None:
-        raise HTTPException(status_code=422, detail=surrogate.model_dump(exclude_none=True))
+    # A surrogate chat model or a thinking level the model does not offer: typed 422s.
+    raise_if_selection_unusable(app, selected_model, req.behavior.reasoning_effort, sid)
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
         # the provider catalog holds real discovery EVIDENCE for that exact
