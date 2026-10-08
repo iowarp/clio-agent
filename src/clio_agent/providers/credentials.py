@@ -30,6 +30,11 @@ Backends, keyed by the ``credential_ref``:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from clio_agent.providers.lm_spec import LMSpec
+
 import os
 import re
 
@@ -182,6 +187,27 @@ def resolve(provider: str, credential_ref: str = "") -> str:
     if env_var:
         return os.environ.get(env_var, "")
     return ""
+
+
+def boot_credential_stays_current(spec: LMSpec) -> bool:
+    """Whether a key captured at bind/boot time may stand in for a fresh resolution.
+
+    Not for argonne: its default credential is a short-lived Globus token
+    re-minted per call. Not when a key is durably saved for the provider: a
+    managed deployment's key rotates on reinstall while CLIO keeps running, and
+    the per-call resolution reads the store, so the fresh key must win.
+
+    Args:
+        spec: The expert's resolved spec on the boot provider's default profile.
+
+    Returns:
+        ``True`` when the captured boot key is still authoritative.
+    """
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    if spec.provider == "argonne":
+        return False
+    return not stored_api_key(spec.provider_id or spec.provider)
 
 
 class CredentialResolver:

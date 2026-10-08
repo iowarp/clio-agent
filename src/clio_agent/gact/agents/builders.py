@@ -179,14 +179,12 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
         )
     spec = build_spec(agent_def, default_spec)
     # Thread the boot credential only when the expert resolves to the boot
-    # provider's default profile. Skip argonne: its default credential is a
-    # short-lived Globus token re-minted fresh per call by the resolver, so a
-    # captured boot token would go stale — the fresh resolution must win there.
-    default_credential = (
-        boot_key
-        if (boot_key and spec.provider == boot_provider and boot_provider != "argonne")
-        else ""
-    )
+    # provider's default profile and that captured key cannot go stale
+    # (see boot_credential_stays_current).
+    from clio_agent.providers.credentials import boot_credential_stays_current  # noqa: PLC0415
+
+    current = boot_key and spec.provider == boot_provider
+    default_credential = boot_key if current and boot_credential_stays_current(spec) else ""
     return resolve_endpoint_and_handshake(spec, default_credential=default_credential)
 
 
