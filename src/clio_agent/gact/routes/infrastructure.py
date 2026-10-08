@@ -32,6 +32,9 @@ from clio_agent.gact.infrastructure.transport_admission import (
     transport_refusal,
 )
 from clio_agent.gact.routes.infrastructure_models import register_infrastructure_model_routes
+from clio_agent.gact.routes.infrastructure_operations import (
+    register_infrastructure_operation_routes,
+)
 from clio_agent.gact.routes.infrastructure_provenance import (
     register_infrastructure_provenance_routes,
 )
@@ -60,6 +63,7 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
     register_infrastructure_storage_routes(app)
     register_infrastructure_model_routes(app)
     register_infrastructure_provenance_routes(app)
+    register_infrastructure_operation_routes(app)
     # Discovery learns the default context a CLIO-deployed Ollama applies before
     # a model loads (no Ollama endpoint reports it).
     register_context_default_lookup("infrastructure", ollama_context_default_lookup(durable_store))
@@ -199,6 +203,10 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
 
     @app.get("/v1/infrastructure/operations/{operation_id}")
     async def operation(operation_id: str) -> dict[str, object]:
+        """The operation record: state, steps, per-step progress, reuse, log cursor.
+
+        Its live progress and log stream at ``.../operations/{id}/events``.
+        """
         row = store().operation(operation_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Infrastructure operation not found")

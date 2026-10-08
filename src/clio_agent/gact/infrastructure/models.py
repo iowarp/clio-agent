@@ -10,6 +10,7 @@ from uuid import uuid4
 from clio_schemas.connected_resources import HostStorageLocations
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+from clio_agent.gact.infrastructure.operation_models import OperationProgressFields
 from clio_agent.gact.infrastructure.server_parameters import ServerParameter
 
 _NULLABLE_SSH_STRING_FIELDS = ("profile", "host", "user", "identity_file")
@@ -448,8 +449,12 @@ class VersionConflictDetail(BaseModel):
     port: int = 17800
 
 
-class InfrastructureOperation(BaseModel):
-    """Durable operation state returned immediately to callers."""
+class InfrastructureOperation(OperationProgressFields):
+    """Durable operation state returned immediately to callers.
+
+    The structured-progress fields (steps, reuse, live log cursor) come from
+    :class:`~clio_agent.gact.infrastructure.operation_models.OperationProgressFields`.
+    """
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     service_id: str

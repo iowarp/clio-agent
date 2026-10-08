@@ -11,13 +11,15 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 
-from clio_agent.gact.infrastructure import node_models
+from clio_agent.gact.infrastructure import node_models, reuse
 from clio_agent.gact.infrastructure.model_registry import (
     ModelAcquisition,
     ModelDownloadRequest,
     search_models,
 )
 from clio_agent.gact.infrastructure.models import CommandSpec
+from clio_agent.gact.infrastructure.operation_models import ReuseReport
+from clio_agent.gact.infrastructure.operation_progress import redact
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.storage import resolved_locations
 
@@ -106,6 +108,10 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                     else "Host model operation failed"
                 )
             rows = json.loads(result.stdout)
+            if action == "log":
+                return rows
+            if action == "start" and rows.pop("reused", False):
+                rows["reuse"] = _reuse_report(rows)
             if action == "list":
                 found = {row["id"] for row in rows}
                 for prior in app.state.infrastructure_store.model_acquisitions(target_id):
@@ -185,6 +191,29 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
             raise HTTPException(404, "Model operation not found on this execution host")
         return await execute(target_id, "cancel", {"id": job_id}, root=row.storage_root)
 
+    @app.get("/v1/infrastructure/targets/{target_id}/models/{job_id}/log")
+    async def download_log(target_id: str, job_id: str, offset: int = 0) -> dict[str, Any]:
+        """Whole lines of the download's log from byte ``offset`` (redacted).
+
+        Poll with ``offset`` set to the previous reply's ``next_offset``; a log
+        that restarted is read again from 0.
+        """
+        row = next(
+            (
+                row
+                for row in app.state.infrastructure_store.model_acquisitions(target_id)
+                if row.id == job_id
+            ),
+            None,
+        )
+        if row is None:
+            raise HTTPException(404, "Model operation not found on this execution host")
+        chunk = await execute(
+            target_id, "log", {"id": job_id, "offset": max(0, offset)}, root=row.storage_root
+        )
+        chunk["text"] = "\n".join(redact(line) for line in chunk["text"].split("\n"))
+        return chunk
+
     @app.post("/v1/infrastructure/targets/{target_id}/models/{job_id}/retry", status_code=202)
     async def retry(target_id: str, job_id: str) -> dict[str, Any]:
         """Resume the original immutable revision and location, even after defaults change."""
@@ -210,3 +239,23 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
             },
             root=row.storage_root,
         )
+
+
+def _reuse_report(row: dict[str, Any]) -> dict[str, Any]:
+    """The reuse of a verified model revision a download found already present."""
+
+    found = reuse.Reuse(
+        kind="model",
+        thing=f"model {row.get('repository', '')}".strip(),
+        identity=str(row.get("revision") or row.get("requested_revision") or ""),
+        path=str(row.get("destination") or ""),
+        size_bytes=row.get("bytes_total"),
+    )
+    return ReuseReport(
+        kind=found.kind,
+        thing=found.thing,
+        identity=found.identity,
+        path=found.path,
+        size_bytes=found.size_bytes,
+        message=found.message(),
+    ).model_dump(mode="json")

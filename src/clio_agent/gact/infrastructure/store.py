@@ -371,6 +371,13 @@ class InfrastructureStore:
                         "progress": "Interrupted by CLIO restart; inspect actual service state.",
                         "error": "operation_interrupted",
                         "updated_at": utc_now(),
+                        "current_step": None,
+                        "steps": [
+                            step.model_copy(update={"state": "failed"})
+                            if step.state == "running"
+                            else step
+                            for step in row.steps
+                        ],
                     }
                 )
                 changed = True

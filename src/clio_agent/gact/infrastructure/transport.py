@@ -1,10 +1,19 @@
-"""Desktop-attached execution transport used by local CLIO SSH targets."""
+"""Desktop-attached execution transport used by local CLIO SSH targets.
+
+Live output: a Desktop that can stream a command's output announces it once
+with ``{"type": "capabilities", "exec_output": true}``. Its ``exec`` requests
+then carry ``"stream_output": true`` and it may send any number of
+``{"type": "exec_output", "request_id": ..., "stream": "stdout"|"stderr",
+"data": "..."}`` frames before the ``exec_result``. A Desktop that never
+announces it gets the unchanged protocol (output arrives with the result).
+"""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
 from contextlib import suppress
+from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -25,21 +34,41 @@ class _Connection:
         self.websocket = websocket
         self.send_lock = asyncio.Lock()
         self.pending: dict[str, asyncio.Future[dict[str, object]]] = {}
+        self.listeners: dict[str, Callable[[str, str], None]] = {}
+        self.streams_output = False
 
-    async def request(self, payload: dict[str, object], *, timeout: float) -> dict[str, object]:
+    async def request(
+        self,
+        payload: dict[str, object],
+        *,
+        timeout: float,
+        on_output: Callable[[str, str], None] | None = None,
+    ) -> dict[str, object]:
         request_id = str(uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, object]] = loop.create_future()
         self.pending[request_id] = future
+        if on_output is not None:
+            self.listeners[request_id] = on_output
         try:
             async with self.send_lock:
                 await self.websocket.send_json({**payload, "request_id": request_id})
             return await asyncio.wait_for(future, timeout=timeout)
         finally:
             self.pending.pop(request_id, None)
+            self.listeners.pop(request_id, None)
 
-    def resolve(self, payload: dict[str, object]) -> None:
+    def resolve(self, payload: dict[str, Any]) -> None:
+        if payload.get("type") == "capabilities":
+            self.streams_output = payload.get("exec_output") is True
+            return
         request_id = str(payload.get("request_id") or "")
+        if payload.get("type") == "exec_output":
+            listener = self.listeners.get(request_id)
+            data = payload.get("data")
+            if listener is not None and isinstance(data, str):
+                listener(data, "stderr" if payload.get("stream") == "stderr" else "stdout")
+            return
         future = self.pending.get(request_id)
         if future is not None and not future.done():
             future.set_result(payload)
@@ -102,8 +131,16 @@ class InfrastructureTransportRegistry:
                     self._on_state(target_id, "disconnected")
             connection.fail_pending("Desktop SSH transport disconnected")
 
-    async def execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
-        """Execute one CLIO-generated command through an attached Desktop bridge."""
+    async def execute(
+        self,
+        target_id: str,
+        spec: CommandSpec,
+        on_output: Callable[[str, str], None] | None = None,
+    ) -> CommandResult:
+        """Execute one CLIO-generated command through an attached Desktop bridge.
+
+        ``on_output`` gets live output chunks when the Desktop streams them.
+        """
 
         connection = self._connections.get(target_id)
         if connection is None:
@@ -111,9 +148,15 @@ class InfrastructureTransportRegistry:
                 f"This local CLIO backend has no Desktop SSH bridge for target {target_id!r}. "
                 "Reconnect the SSH host from Desktop, then retry. The remote agent may still be running."
             )
+        streaming = on_output is not None and connection.streams_output
         payload = await connection.request(
-            {"type": "exec", "command": spec.model_dump(mode="json")},
+            {
+                "type": "exec",
+                "command": spec.model_dump(mode="json"),
+                **({"stream_output": True} if streaming else {}),
+            },
             timeout=spec.timeout_seconds + 10,
+            on_output=on_output if streaming else None,
         )
         if payload.get("type") != "exec_result":
             raise RuntimeError("Desktop transport returned an invalid execution response")

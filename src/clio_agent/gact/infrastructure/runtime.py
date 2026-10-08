@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
-import socket
-import subprocess
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -15,6 +13,7 @@ from urllib.parse import urlsplit
 import httpx
 from anyio.to_thread import run_sync
 
+from clio_agent.gact.infrastructure import reuse
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
@@ -31,6 +30,8 @@ from clio_agent.gact.infrastructure.drivers import (
     service_definitions,
 )
 from clio_agent.gact.infrastructure.external_connections import ExternalConnectionsMixin
+from clio_agent.gact.infrastructure.local_executor import OutputSink, run_local, tcp_reachable
+from clio_agent.gact.infrastructure.local_executor import bounded as _bounded
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -44,6 +45,8 @@ from clio_agent.gact.infrastructure.models import (
     TargetFacts,
     VersionConflictDetail,
 )
+from clio_agent.gact.infrastructure.operation_events import TERMINAL_EVENT, OperationEventLog
+from clio_agent.gact.infrastructure.operation_progress import OperationTracker
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, stop_desktop_launches
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
@@ -67,55 +70,7 @@ from clio_agent.gact.infrastructure.transport import (
 )
 from clio_agent.providers.credentials import resolve as resolve_credential
 
-MAX_OPERATION_LOG_CHARS = 16_000
-
 logger = logging.getLogger(__name__)
-
-
-def _bounded(value: str) -> str:
-    if len(value) <= MAX_OPERATION_LOG_CHARS:
-        return value
-    return f"…{value[-MAX_OPERATION_LOG_CHARS:]}"
-
-
-def _run_local(spec: CommandSpec) -> CommandResult:
-    try:
-        completed = subprocess.run(
-            [spec.program, *spec.args],
-            input=spec.stdin or None,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-            timeout=spec.timeout_seconds,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except FileNotFoundError as exc:
-        return CommandResult(exit_code=127, stderr=f"{spec.program} is not installed: {exc}")
-    except subprocess.TimeoutExpired as exc:
-        return CommandResult(
-            exit_code=124,
-            stdout=str(exc.stdout or ""),
-            stderr=f"Command timed out after {spec.timeout_seconds:g} seconds",
-        )
-    return CommandResult(
-        exit_code=completed.returncode,
-        stdout=_bounded(completed.stdout),
-        stderr=_bounded(completed.stderr),
-    )
-
-
-def _tcp_reachable(url: str) -> bool:
-    parsed = urlsplit(url)
-    if not parsed.hostname:
-        return False
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        with socket.create_connection((parsed.hostname, port), timeout=2):
-            return True
-    except OSError:
-        return False
 
 
 class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
@@ -141,6 +96,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         self._http_transport = http_transport
         self._remote_launches: dict[str, RemoteLaunch] = {}
         self._exiting_desktops: set[str] = set()
+        # Live progress and output of each operation (the SSE stream's source).
+        self.events = OperationEventLog()
+        self._streams_locally = local_executor is None
 
     async def stop_desktop_agents(self, desktop_id: str) -> list[str]:
         """Stop this Desktop's launches while its SSH bridges can still carry commands."""
@@ -151,25 +109,34 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         )
 
     async def _check_tcp_reachable(self, url: str) -> bool:
-        return await run_sync(_tcp_reachable, url)
+        return await run_sync(tcp_reachable, url)
 
-    async def _execute_local(self, spec: CommandSpec) -> CommandResult:
-        return await run_sync(_run_local, spec)
+    async def _execute_local(
+        self, spec: CommandSpec, on_output: OutputSink | None = None
+    ) -> CommandResult:
+        return await run_local(spec, on_output)
 
     async def execute_on_target(self, target_id: str, spec: CommandSpec) -> CommandResult:
         """Execute a server-generated host operation through the owning transport."""
         return await self._execute(target_id, spec)
 
-    async def _execute(self, target_id: str, spec: CommandSpec) -> CommandResult:
+    async def _execute(
+        self, target_id: str, spec: CommandSpec, on_output: OutputSink | None = None
+    ) -> CommandResult:
+        """Run ``spec`` on the target; ``on_output`` gets its output live where it streams."""
         target = self.store.target(target_id)
         if target is None:
             raise KeyError(target_id)
         if target.kind == "direct":
             raise ValueError("Direct endpoints are connection-only and have no lifecycle catalog")
         if spec.scope == "controller" or target.kind == "local":
+            if self._streams_locally:
+                return await self._execute_local(spec, on_output)
             return await self._local_executor(spec)
         if target.kind != "ssh":
             raise ValueError("Connection-only targets do not support lifecycle commands")
+        if on_output is not None and isinstance(self.transports, InfrastructureTransportRegistry):
+            return await self.transports.execute(target_id, spec, on_output)
         return await self.transports.execute(target_id, spec)
 
     async def catalog(self, target_id: str) -> ManagedServiceCatalog:
@@ -359,6 +326,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                     }
                 )
             )
+            self.events.publish(operation_id, TERMINAL_EVENT, current.model_dump(mode="json"))
         return current
 
     async def _run_operation(
@@ -374,9 +342,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
         row: InfrastructureOperation,
         request: ServiceActionRequest,
     ) -> None:
-        row = self.store.put_operation(
-            row.model_copy(update={"state": "running", "progress": "Inspecting target"})
-        )
+        tracker = OperationTracker(self.store, self.events, row)
+        tracker.begin(from_scratch=reuse.from_scratch(request.configuration))
         plan: DriverPlan | None = None
         claim: ClaimResult | None = None
         created: list[OwnedResource] = []
@@ -398,9 +365,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
             )
             if definition is None:
                 raise ValueError(f"Unknown managed service {row.service_id!r}")
-            row = self.store.put_operation(
-                row.model_copy(update={"progress": f"Running {request.action}"})
-            )
+            tracker.message(f"Running {request.action}")
             installed = self.store.service(request.target_id, row.service_id)
             if installed is not None and request.action in {"install", "reinstall"}:
                 previous_directory = installed.configuration.get("storage.service_directory")
@@ -487,22 +452,43 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 previous_key = load_key(request.target_id, row.service_id)
                 store_key(request.target_id, row.service_id, api_key)
                 made_key = True
+            # The reuse bypass is this operation's alone: never on a record.
+            from_scratch = reuse.from_scratch(request.configuration)
+            request = request.model_copy(
+                update={"configuration": reuse.without_transient(request.configuration)}
+            )
+            if plan.configuration is not None:
+                plan = dataclasses.replace(
+                    plan, configuration=reuse.without_transient(plan.configuration)
+                )
             if plan.before_launch is not None:
                 plan = await plan.before_launch(
                     lambda spec: self._execute(request.target_id, spec),
                     lambda msg: self.store.put_operation(row.model_copy(update={"progress": msg})),
                 )
+            tracker.add_secrets(api_key)
+            tracker.plan(plan)
             output: list[str] = []
+            skipped: set[int] = set()
             for index, spec in enumerate(plan.commands):
+                if index in skipped:
+                    tracker.command_skipped(index)
+                    continue
                 if plan.remote_launch and spec.args[1].startswith("# clio-deploy:start"):
                     if plan.remote_launch.desktop_id in self._exiting_desktops:
                         raise RuntimeError("Desktop is closing; remote deployment was cancelled")
                     self._remote_launches[request.target_id] = plan.remote_launch
-                result = await self._execute(request.target_id, spec)
+                tracker.command_started(index, spec)
+                result = await self._execute(request.target_id, spec, tracker.output)
+                ok = result.exit_code in spec.allowed_exit_codes
+                tracker.command_finished(index, result, ok=ok)
                 output.extend(part for part in (result.stdout, result.stderr) if part)
-                row = self.store.put_operation(
-                    row.model_copy(update={"logs": _bounded("\n".join(output))})
-                )
+                tracker.put(logs=_bounded("\n".join(output)))
+                check = None if from_scratch else plan.reuse_checks.get(index)
+                if ok and check is not None and (found := check.report(result)) is not None:
+                    first = check.skip[0] if check.skip else index
+                    tracker.reused(found, step=tracker.step_of(first))
+                    skipped.update(check.skip)
                 if (recorder := plan.recorders.get(index)) is not None:
                     # Before the exit check: a failed `run` can still leave a
                     # created container. Durable at once, so a CLIO that stops
@@ -554,23 +540,19 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                             f"(pid {claim.pid or 'unknown'}), but it isn't answering."
                         )
                     )
-                    self.store.put_operation(
-                        row.model_copy(
-                            update={
-                                "state": "failed",
-                                "progress": progress,
-                                "error": "clio_deploy_version_conflict",
-                                "conflict": VersionConflictDetail(
-                                    installed_version=claim.installed_version or "unknown",
-                                    pid=claim.pid or "",
-                                    health=health,
-                                    target_version=clio_agent_version(),
-                                    owner=claim.owner or "",
-                                    port=plan.connection_port or 17800,
-                                ),
-                                "logs": _bounded("\n".join(output)),
-                            }
-                        )
+                    tracker.finish(
+                        "failed",
+                        progress,
+                        error="clio_deploy_version_conflict",
+                        conflict=VersionConflictDetail(
+                            installed_version=claim.installed_version or "unknown",
+                            pid=claim.pid or "",
+                            health=health,
+                            target_version=clio_agent_version(),
+                            owner=claim.owner or "",
+                            port=plan.connection_port or 17800,
+                        ),
+                        logs=_bounded("\n".join(output)),
                     )
                     return
                 if claim is not None and claim.result == "adopted":
@@ -580,19 +562,19 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
 
-            def report(message: str, current: InfrastructureOperation = row) -> None:
-                self.store.put_operation(current.model_copy(update={"progress": message}))
-
             async def execute(spec: CommandSpec) -> CommandResult:
                 return await self._execute(request.target_id, spec)
 
             if plan.readiness is not None:
-                await wait_until_ready(plan.readiness, execute, report)
-            for spec in plan.after_ready:
-                row = self.store.put_operation(
-                    row.model_copy(update={"progress": "Preparing the model"})
+                tracker.enter("readiness", f"Waiting for {plan.readiness.label}")
+                await wait_until_ready(
+                    plan.readiness, execute, tracker.message, sink=tracker.log_text
                 )
-                result = await self._execute(request.target_id, spec)
+            for spec in plan.after_ready:
+                tracker.enter("after-ready", "Preparing the model")
+                tracker.command_started(None, spec)
+                result = await self._execute(request.target_id, spec, tracker.output)
+                tracker.command_finished(None, result)
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 if result.exit_code not in spec.allowed_exit_codes:
                     raise RuntimeError(
@@ -601,9 +583,11 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
             if plan.after_ready_hook is not None:
-                chosen = await plan.after_ready_hook(execute, report)
+                tracker.enter("after-ready", "Preparing the model")
+                chosen = await plan.after_ready_hook(execute, tracker.message)
                 base = plan.configuration or request.configuration
                 plan = dataclasses.replace(plan, configuration={**base, **chosen})
+            tracker.enter("finish", "Recording the deployment")
             # A reinstall replaces only the server; the image and caches stay
             # on the ledger, so both install and reinstall merge.
             owned = merge_owned(installed.owned_resources if installed else [], created)
@@ -643,16 +627,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 # Uninstall removes the key; a keyless (shareable) install drops an old one.
                 forget_key(request.target_id, row.service_id)
             await self._record_access(request.target_id, row.service_id, plan.connection_port)
-            self.store.put_operation(
-                row.model_copy(
-                    update={
-                        "state": "succeeded",
-                        "progress": "Completed",
-                        "logs": _bounded("\n".join(output)),
-                        "error": None,
-                    }
-                )
-            )
+            tracker.finish("succeeded", "Completed", logs=_bounded("\n".join(output)), error=None)
         except asyncio.CancelledError:
             cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
             if created and cleanup.startswith("Removed the"):
@@ -665,14 +640,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                     launched=any(item.kind == "container" for item in created),
                     cleaned_up=cleanup.startswith("Removed the"),
                 )
-            self.store.put_operation(
-                row.model_copy(
-                    update={
-                        "state": "cancelled",
-                        "progress": f"Cancelled. {cleanup}",
-                    }
-                )
-            )
+            tracker.finish("cancelled", f"Cancelled. {cleanup}")
             raise
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
             cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
@@ -686,11 +654,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                     launched=any(item.kind == "container" for item in created),
                     cleaned_up=cleanup.startswith("Removed the"),
                 )
-            self.store.put_operation(
-                row.model_copy(
-                    update={"state": "failed", "progress": f"Failed. {cleanup}", "error": str(exc)}
-                )
-            )
+            tracker.finish("failed", f"Failed. {cleanup}", error=str(exc))
 
     async def _teardown(
         self,
