@@ -98,7 +98,7 @@ def test_javascript_failure_keeps_verified_python_and_reports_partial(
     }
     monkeypatch.setattr(runtime, "_python_runtime", lambda cache, uv: (cache / "python", inventory))
 
-    def fail(*args: Any) -> tuple[Path, Path]:
+    def fail(*args: Any, **kwargs: Any) -> tuple[Path, Path]:
         raise runtime.DocumentRuntimeError("module resolution failed")
 
     monkeypatch.setattr(runtime, "_javascript_runtime", fail)
@@ -143,7 +143,7 @@ def test_javascript_preserves_changed_task_manifest(
     (work / "package.json").write_text(custom)
     monkeypatch.setattr(runtime, "_run", lambda *args, **kwargs: runtime.PNPM_VERSION)
     with pytest.raises(runtime.DocumentRuntimeError, match="manifest was changed"):
-        runtime._javascript_runtime(cache, tmp_path, Path("python"), {"node": "node"})
+        runtime._javascript_runtime(cache, tmp_path, {"node": "node"})
     assert (work / "package.json").read_text() == custom
 
 
@@ -165,6 +165,10 @@ def test_damaged_pnpm_gets_one_verified_pinned_repair(
         )
     )
     (package / "pnpm").touch()
+    node = tmp_path / "managed node" / "node.exe"
+    npm = node.parent / "lib/node_modules/npm/bin/npm-cli.js"
+    npm.parent.mkdir(parents=True)
+    npm.touch()
     work = tmp_path / ".tmp/clio-documents/javascript"
     (work / "node_modules").mkdir(parents=True)
     installs: list[list[str]] = []
@@ -180,13 +184,12 @@ def test_damaged_pnpm_gets_one_verified_pinned_repair(
         return ""
 
     monkeypatch.setattr(runtime, "_run", run)
-    prepared, pnpm = runtime._javascript_runtime(
-        tmp_path / "cache", tmp_path, Path("python"), {"node": "node"}
-    )
+    prepared, pnpm = runtime._javascript_runtime(tmp_path / "cache", tmp_path, {"node": str(node)})
     assert prepared == work
     assert pnpm == package / "pnpm"
     assert len(installs) == 1
     assert f"pnpm@{runtime.PNPM_VERSION}" in installs[0]
+    assert installs[0][:2] == [str(node), str(npm)]
 
 
 def test_failed_helper_exit_retains_manifest_result(

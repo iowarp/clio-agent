@@ -6,6 +6,13 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5b5.post2] - 2026-10-08
+
+### Fixed
+
+- Normalize Windows verbatim paths before invoking the managed Node/npm entry points, preventing fresh Desktop package setup from failing with EISDIR at the drive root.
+- Show runtime preparation stages in the Windows installer details as they happen.
+
 ## [0.9.5-beta.5.1] — 2026-10-07
 
 ### Fixed
