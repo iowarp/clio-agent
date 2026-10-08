@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from clio_agent.gact.infrastructure.ollama_context import (
     CONTEXT_GRANULE,
+    UNKNOWN_BUDGET_CAP,
     kv_bytes_per_token,
     ollama_context_default,
 )
@@ -58,12 +59,17 @@ def test_no_room_still_serves_a_minimal_context() -> None:
     assert chosen.tokens == CONTEXT_GRANULE
 
 
-def test_unknown_gpu_or_layout_falls_back_to_the_trained_context() -> None:
+def test_unknown_gpu_or_layout_caps_at_a_ram_safe_context() -> None:
     chosen = ollama_context_default(QWEN3_4B, None, QWEN3_4B_SIZE)
-    assert chosen is not None and chosen.tokens == 262144
+    assert chosen is not None
+    assert (chosen.tokens, chosen.trained) == (UNKNOWN_BUDGET_CAP, 262144)
+    assert "no GPU memory budget" in chosen.reason
     partial = {"general.architecture": "qwen3", "qwen3.context_length": 40960}
     chosen = ollama_context_default(partial, 38 * GIB, QWEN3_4B_SIZE)
-    assert chosen is not None and chosen.tokens == 40960
+    assert chosen is not None and chosen.tokens == UNKNOWN_BUDGET_CAP
+    small = {"general.architecture": "qwen3", "qwen3.context_length": 8192}
+    chosen = ollama_context_default(small, None, QWEN3_4B_SIZE)
+    assert chosen is not None and chosen.tokens == 8192
 
 
 def test_no_trained_context_leaves_ollamas_default() -> None:

@@ -22,6 +22,8 @@ HEADROOM_BYTES = 1 << 30
 WEIGHTS_OVERHEAD = 1.25
 #: f16 KV cache: bytes per element (Ollama's default cache type).
 KV_ELEMENT_BYTES = 2
+#: The ceiling when no GPU budget is known: the KV cache then lands in system RAM.
+UNKNOWN_BUDGET_CAP = 32768
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,8 @@ def ollama_context_default(
 
     Args:
         model_info: Ollama ``/api/show`` ``model_info`` for the pulled model.
-        gpu_free_bytes: Free GPU memory before the model loads; None when unknown.
+        gpu_free_bytes: Free GPU memory before the model loads; None when unknown
+            (the context is then capped at :data:`UNKNOWN_BUDGET_CAP`).
         weights_bytes: The model's size (``/api/tags`` ``size``).
         num_parallel: Sequences Ollama allocates a context for at once.
 
@@ -82,7 +85,14 @@ def ollama_context_default(
         return None
     per_token = kv_bytes_per_token(model_info)
     if per_token is None or gpu_free_bytes is None:
-        return ContextDefault(trained, trained, f"model's trained context {trained}")
+        if trained <= UNKNOWN_BUDGET_CAP:
+            return ContextDefault(trained, trained, f"model's trained context {trained}")
+        return ContextDefault(
+            UNKNOWN_BUDGET_CAP,
+            trained,
+            f"trained context {trained} capped to {UNKNOWN_BUDGET_CAP}: "
+            "no GPU memory budget is known to size the KV cache against",
+        )
     budget = gpu_free_bytes - int(weights_bytes * WEIGHTS_OVERHEAD) - HEADROOM_BYTES
     fit = max(budget, 0) // (per_token * max(num_parallel, 1))
     fit -= fit % CONTEXT_GRANULE
