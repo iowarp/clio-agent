@@ -327,7 +327,9 @@ class OpenAICompatHandshake(ProviderHandshake):
                 props or {}, provider_id=ctx.provider_id, api_base=ctx.api_base, model_id=model_id
             )
             model_key = deployment.model_key.value or model_id
-            model = llama_cpp_dialect.build_model_capabilities(model_key, {"data": [raw]}, model_id)
+            model = llama_cpp_dialect.build_model_capabilities(
+                model_key, {"data": [raw]}, model_id, props
+            )
         elif dialect in cloud_dialect.CLOUD_DIALECTS:
             deployment = cloud_dialect.build_deployment_capabilities(
                 ctx.provider_id, ctx.api_base, model_id
