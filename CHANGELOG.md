@@ -6,7 +6,7 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.5b5.post2] - 2026-10-08
+## [0.9.5-beta.5.2] - 2026-10-08
 
 ### Fixed
 
