@@ -98,8 +98,11 @@ def user_config_path() -> Path:
     return paths.user_config_dir() / "config.yaml"
 
 
-def normalize_server_address(address: str) -> str:
-    """Return an address as an ``http(s)://host[:port]/path`` URL, defaulting the path to ``/v1``.
+def normalize_server_address(address: str, *, default_path: str = "/v1") -> str:
+    """Return an HTTP(S) URL, using ``default_path`` for a server root.
+
+    OpenAI-compatible servers default to ``/v1``; Ollama supplies an empty
+    default because its native ``/api`` endpoints are relative to the host.
 
     Raises:
         LocalServerStoreError: When the address is empty or not an http(s) URL.
@@ -114,7 +117,7 @@ def normalize_server_address(address: str) -> str:
     parts = urlsplit(text)
     if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
         raise LocalServerStoreError(f"not an http(s) server address: {address!r}")
-    path = parts.path.rstrip("/") or "/v1"
+    path = parts.path.rstrip("/") or default_path
     return urlunsplit((parts.scheme.lower(), parts.netloc, path, "", ""))
 
 
@@ -241,7 +244,9 @@ def add_server(
     custom OpenAI-compatible server is added under a fresh ``server-<slug>`` id.
     ``credential_ref`` links a CLIO-managed deployment's key (see the module doc).
     """
-    normalized = normalize_server_address(address)
+    normalized = normalize_server_address(
+        address, default_path="" if preset_id == "ollama" else "/v1"
+    )
     with _LOCK:
         path = user_config_path()
         document = _read_document(path)
@@ -301,7 +306,13 @@ def update_server(
             id=current.id,
             preset_id=current.preset_id,
             label=label.strip() if label and label.strip() else current.label,
-            address=normalize_server_address(address) if address is not None else current.address,
+            address=(
+                normalize_server_address(
+                    address, default_path="" if current.preset_id == "ollama" else "/v1"
+                )
+                if address is not None
+                else current.address
+            ),
             credential_ref=(
                 credential_ref
                 if credential_ref is not None

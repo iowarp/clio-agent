@@ -164,11 +164,8 @@ class ProviderDiscoveryResult:
     default_model_reason: str = ""
     failed_reason: str | None = None
     #: Individually-rejected candidates on an otherwise-successful discovery run
-    #: — informational, never silently dropped. Currently unused by any in-tree
-    #: provider (claude_code trusts the maintained catalog directly rather than
-    #: probing per-candidate rejections); kept as a typed extension point for a
-    #: future discovery mechanism that can invalidate individual candidates
-    #: without failing the whole refresh.
+    #: — informational, never silently dropped. Claude Code uses documented
+    #: minimum client versions from its maintained catalog, without model probes.
     rejected: list[dict[str, str]] = field(default_factory=list)
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 

@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 import yaml
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import local_server_store as store
@@ -63,6 +64,23 @@ def test_address_normalization() -> None:
         store.normalize_server_address("")
     with pytest.raises(store.LocalServerStoreError):
         store.normalize_server_address("ftp://host/x")
+
+
+def test_ollama_saved_address_preserves_native_api_root(config_file: Path) -> None:
+    """Ollama's /api endpoints are relative to the host, not OpenAI's /v1."""
+    entry = store.add_server(address="gpu-7:11434", preset_id="ollama")
+    assert entry.address == "http://gpu-7:11434"
+    changed = store.update_server("ollama", address="http://gpu-8:11434/")
+    assert changed.address == "http://gpu-8:11434"
+    assert store.saved_address_for_preset("ollama") == changed.address
+
+
+def test_ollama_saved_address_keeps_an_explicit_proxy_path(config_file: Path) -> None:
+    """An explicit proxy prefix stays intact through an address edit."""
+    entry = store.add_server(address="https://gpu-7/ollama/", preset_id="ollama")
+    assert entry.address == "https://gpu-7/ollama"
+    changed = store.update_server("ollama", address="https://gpu-8/ollama/")
+    assert changed.address == "https://gpu-8/ollama"
 
 
 def test_store_keeps_every_other_key_in_the_user_config(config_file: Path) -> None:
@@ -144,7 +162,23 @@ def test_add_a_catalog_runtime_address_checks_it_and_it_becomes_the_probed_addre
     assert presets["lm_studio"]["api_base"] == "http://127.0.0.1:9999/v1"
     from clio_agent.gact.provider_catalog_snapshot import _resolve_presets
 
+    assert isinstance(client.app, FastAPI)
     assert _resolve_presets(client.app)["lm_studio"].api_base == "http://127.0.0.1:9999/v1"
+
+
+def test_ollama_endpoint_edit_checks_native_root(
+    client: TestClient, probes: list[tuple[str, str]]
+) -> None:
+    """The save route checks and publishes Ollama's native root immediately."""
+    response = client.post(
+        "/v1/providers/servers",
+        json={"address": "gpu-7:11434", "preset_id": "ollama"},
+    )
+    assert response.status_code == 200
+    assert response.json()["address"] == "http://gpu-7:11434"
+    assert probes == [("ollama", "http://gpu-7:11434")]
+    presets = {p["id"]: p for p in client.get("/v1/providers/lm").json()["presets"]}
+    assert presets["ollama"]["api_base"] == "http://gpu-7:11434"
 
 
 def test_add_a_custom_server_list_check_and_remove(client: TestClient) -> None:
@@ -184,7 +218,7 @@ def test_list_with_check_probes_every_saved_address(
     servers = client.get("/v1/providers/servers", params={"check": "true"}).json()["servers"]
 
     assert sorted(probes) == [
-        ("ollama", "http://10.0.0.5:11434/v1"),
+        ("ollama", "http://10.0.0.5:11434"),
         ("vllm", "http://gpu-7:9999/v1"),
     ]
     assert [s["check"]["reachable"] for s in servers] == [False, True]
