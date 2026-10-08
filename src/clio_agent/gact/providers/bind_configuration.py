@@ -93,7 +93,9 @@ async def prepare_bind_configuration(
     # eagerly here so the bound ``cfg`` (and the main agent's LMs built
     # from it) carry the real token, and so a missing token surfaces the
     # actionable structured 401 below instead of a later opaque LM error.
-    resolved_api_key = req.api_key
+    # The request's "x" default is a no-auth placeholder, not a key: leave it
+    # empty so the config resolves a saved or CLIO-managed deployment key (F011b).
+    resolved_api_key = "" if _is_placeholder_api_key(req.api_key) else req.api_key
     if req.provider == "argonne" and _is_placeholder_api_key(resolved_api_key):
         auth_exc: Exception | None
         try:
@@ -130,7 +132,7 @@ async def prepare_bind_configuration(
         provider_id=req.provider_id,
         api_base=req.api_base,
         model=req.model,
-        api_key=resolved_api_key or "x",
+        api_key=resolved_api_key,
         provider_options=req.provider_options,
         **response_settings.config_kwargs(req),
         thinking_budget=req.thinking_budget,
@@ -182,7 +184,7 @@ async def prepare_bind_configuration(
                 provider_id=req.provider_id or req.provider,
                 provider_kind=req.provider,
                 api_base=req.api_base,
-                api_key=resolved_api_key or "",
+                api_key=cfg.api_key,
                 target_model=req.model,
                 auth_mode="active",
             ),

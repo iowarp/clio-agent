@@ -419,3 +419,43 @@ async def test_the_handshake_sends_the_key_on_every_request_it_makes() -> None:
         assert client.headers.get("authorization") == "Bearer deployment-key"
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_default_bind_without_a_key_uses_the_saved_deployments_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F011b: the default model bind must not stamp a placeholder over the deployment key."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact import local_server_store
+    from clio_agent.gact.providers.bind_configuration import prepare_bind_configuration
+    from clio_agent.gact.types import LMProviderRequest
+    from clio_agent.providers import handshake
+
+    ref = deployment_key_ref("t1", "vllm")
+    ProviderApiKeyStore().save(ref, "deployment-key")
+    local_server_store.add_server(
+        address="http://127.0.0.1:37153/v1", preset_id="vllm", credential_ref=ref
+    )
+    seen: list[str] = []
+
+    async def fake_handshake(ctx: Any, **_: Any) -> None:
+        seen.append(ctx.api_key)
+
+    monkeypatch.setattr(handshake, "run_handshake", fake_handshake)
+    app = SimpleNamespace(state=SimpleNamespace())
+    req = LMProviderRequest(
+        provider="openai",
+        provider_id="vllm",
+        api_base="http://127.0.0.1:37153/v1",
+        model="qwen",
+    )
+
+    def ready() -> tuple[str, str, bool, str]:
+        return "ready", "", True, ""
+
+    cfg, _ = await prepare_bind_configuration(app, req, ready, ready)  # type: ignore[arg-type]
+
+    assert cfg.api_key == "deployment-key"
+    assert seen == ["deployment-key"]
