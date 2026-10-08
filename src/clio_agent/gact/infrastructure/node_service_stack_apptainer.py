@@ -194,6 +194,9 @@ def start(root: Path, manifest: dict[str, Any], private: dict[str, str]) -> None
                 launch = [component["entrypoint"], *launch]
             if component.get("workdir"):
                 # `instance run` has no --pwd: change directory inside the instance.
+                # --no-eval: the OCI runscript otherwise re-evaluates the arguments
+                # through the shell, expanding the wrapper's "$1"/"$@" too early.
+                arguments.append("--no-eval")
                 launch = [
                     "sh",
                     "-c",

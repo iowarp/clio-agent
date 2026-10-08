@@ -276,7 +276,7 @@ def test_a_workdir_component_changes_directory_inside_the_instance(
     monkeypatch.setattr(subprocess, "run", run)
     backend.start(root, {"components": [component]}, {})
     (launch,) = [args for args in calls if args[1:3] == ["instance", "run"]]
-    assert "--pwd" not in launch
+    assert "--pwd" not in launch and "--no-eval" in launch
     tail = launch[launch.index("clio-cmf-x-server") + 1 :]
     assert tail[:5] == ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", "/cmf-server/src"]
     assert tail[5:] == component["host_arguments"]
