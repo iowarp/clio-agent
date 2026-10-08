@@ -619,6 +619,9 @@ _CANCEL_POLL_SECONDS = 0.25
 
 def _call_lm(lm: Any, request: Request) -> Response:
     """One streamed call: text and thinking reach the live lanes as they arrive."""
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    session_id = _ctx.active_session_id() or ""
 
     async def run() -> Response:
         send, receive = anyio.create_memory_object_stream(math.inf)
@@ -642,8 +645,10 @@ def _call_lm(lm: Any, request: Request) -> Response:
                     _raise_if_cancelled()
 
         finished = anyio.Event()
+        handle = None
         try:
             async with anyio.create_task_group() as group:
+                handle = stream.register_stream(lm, session_id, group.cancel_scope)
                 group.start_soon(consume)
                 group.start_soon(watch_cancel)
                 try:
@@ -652,12 +657,15 @@ def _call_lm(lm: Any, request: Request) -> Response:
                 finally:
                     finished.set()
                     await send.aclose()
+                    stream.unregister_stream(handle)
         except BaseExceptionGroup as group_error:
             # The task group wraps the call's own error; the caller handles it typed.
             # (Not ``from None``: that would erase the leaf's own ``__cause__``.)
             leaf = _sole(group_error)
             leaf.__suppress_context__ = True
             raise leaf  # noqa: B904 - the leaf keeps its own cause chain
+        if response is None and handle is not None and handle.aborted:
+            raise _turn_cancelled()  # the session cancel closed the stream (abort handle)
         assert response is not None
         return response
 
@@ -693,16 +701,21 @@ def _raise_if_cancelled() -> None:
     """Typed cooperative cancellation at a loop boundary."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
 
+    if cancellation_requested():
+        raise _turn_cancelled()
+
+
+def _turn_cancelled() -> BaseException:
+    """The typed cooperative cancellation of the active session's turn."""
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _cancelled_error_info,
         _TurnCancelled,
     )
 
-    if cancellation_requested():
-        raise _TurnCancelled(
-            _cancelled_error_info(_ctx.active_session_id(), execution_cancellation="cooperative")
-        )
+    return _TurnCancelled(
+        _cancelled_error_info(_ctx.active_session_id(), execution_cancellation="cooperative")
+    )
 
 
 def _declared_default(field: Any) -> tuple[bool, Any]:

@@ -65,7 +65,9 @@ another one):
 - `asyncio_task_cancel_scheduled`
 - `asyncio_task_cancel_sent`
 - `children_cancelled` — count of descendant agent-task turns cancelled
-- `provider_streams_killed` — count of in-flight SDK streams aborted
+- `provider_streams_killed` — count of in-flight provider streams aborted: Claude Code
+  SDK streams and the HTTP streams of every other provider (vLLM, llama.cpp,
+  Ollama, remote), whose call scope the cancel closes at once
 - `composer_autostart_suspended` — whether pending steers/queued messages were
   suspended from auto-promoting
 

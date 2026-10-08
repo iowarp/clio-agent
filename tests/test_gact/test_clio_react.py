@@ -377,6 +377,79 @@ def test_an_uncancelled_call_returns_without_waiting_on_the_watch() -> None:
     assert time.monotonic() - started < 0.2
 
 
+def _in_session(sid: str) -> Any:
+    import contextlib
+
+    from clio_agent.gact import context as gact_context
+
+    @contextlib.contextmanager
+    def bound() -> Any:
+        token = gact_context.set_session_id(sid)
+        try:
+            yield
+        finally:
+            gact_context.reset(token)
+
+    return bound()
+
+
+def test_a_session_cancel_kills_the_in_flight_http_stream_and_counts_it() -> None:
+    # provider_streams_killed counted only Claude Code SDK streams: an HTTP call
+    # (vLLM, llama.cpp, Ollama) closed by the cancel was reported as 0 killed.
+    from clio_agent.gact.agents.clio_react import _call_lm
+    from clio_agent.providers.claude_code_cancel import (
+        abort_session_streams,
+        active_stream_sessions,
+    )
+
+    lm = _HangingLM()
+    killed: list[int] = []
+
+    def cancel_when_in_flight() -> None:
+        deadline = time.monotonic() + 10
+        while "sess-kill" not in active_stream_sessions() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        killed.append(abort_session_streams("sess-kill"))
+
+    canceller = threading.Thread(target=cancel_when_in_flight)
+    canceller.start()
+    started = time.monotonic()
+    # The cooperative flag never fires: only the abort handle can end this call.
+    with (
+        _in_session("sess-kill"),
+        cancellation_checker(lambda: False),
+        pytest.raises(_TurnCancelled),
+    ):
+        _call_lm(lm, _one_message(lm.model))
+    canceller.join()
+    assert killed == [1]
+    assert lm.closed.is_set()
+    assert time.monotonic() - started < 5
+    assert "sess-kill" not in active_stream_sessions()
+
+
+def test_the_stream_handle_lives_only_while_the_call_runs() -> None:
+    from clio_agent.gact.agents.clio_react import _call_lm
+    from clio_agent.providers.claude_code_cancel import active_stream_sessions
+
+    seen: list[bool] = []
+
+    class _Probe:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        async def acall(self, request: Request) -> str:
+            seen.append("sess-probe" in active_stream_sessions())
+            return "done"
+
+    with _in_session("sess-probe"), cancellation_checker(lambda: False):
+        assert _call_lm(_Probe("hosted_vllm/qwen"), _one_message("q")) == "done"
+        # Claude Code registers its own SDK kill handle: not counted twice.
+        assert _call_lm(_Probe("claude_code/sonnet"), _one_message("q")) == "done"
+    assert seen == [True, False]
+    assert "sess-probe" not in active_stream_sessions()
+
+
 # --------------------------------------------------------------------------- #
 # reasoning: provider field vs inline <think> (live == recorded == reloaded)  #
 # --------------------------------------------------------------------------- #
