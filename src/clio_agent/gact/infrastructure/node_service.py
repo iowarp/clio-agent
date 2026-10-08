@@ -583,7 +583,19 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
                 "serving": False,
             }
         raise ValueError("Install this native service before managing it")
-    owner(root, request["owner"])
+    try:
+        owner(root, request["owner"])
+    except ValueError:
+        if (
+            action == "stop"
+            and request.get("require_operation_id")
+            and read_receipt(root).get("operation_id") != request["require_operation_id"]
+        ):
+            # A failed operation's cleanup where that operation launched nothing
+            # (its start was refused, e.g. another host owns the directory): there
+            # is nothing to undo, so do not raise the same refusal again (F020).
+            return {"phase": "untouched", "installed": False, "running": False, "serving": False}
+        raise
     with locked(root):
         if action in {"install", "start"}:
             launch(root, request)

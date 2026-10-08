@@ -689,12 +689,16 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
 
         if plan and plan.failure_cleanup:
             try:
+                untouched = True
                 for spec in plan.failure_cleanup:
                     result = await self._execute(target_id, spec)
                     if result.exit_code not in spec.allowed_exit_codes:
                         return (
                             f"Cleanup incomplete; retained data: {result.stderr or result.stdout}"
                         )
+                    untouched = untouched and '"phase": "untouched"' in result.stdout
+                if untouched:
+                    return "Nothing this operation started needed cleaning up."
                 return "Stopped the owned operation; retained its environment, model cache and evidence."
             except (OSError, RuntimeError) as exc:
                 return f"Cleanup incomplete; retained data: {exc}"

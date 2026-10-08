@@ -251,6 +251,24 @@ def test_cleanup_cannot_stop_a_previous_operation(
     assert result["phase"] == "stopped"
 
 
+def test_failure_cleanup_of_a_refused_foreign_host_start_has_nothing_to_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F020: the cleanup stop after a refused start must not repeat the refusal."""
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    root = tmp_path / "owned"
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua078")
+    node_service.prepare(root, "local:gpua078")
+    node_service.write_json(root / "receipt.json", {"phase": "stopped", "operation_id": "install"})
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua012")
+    monkeypatch.setattr(node_service, "stop", lambda root: pytest.fail("Must not stop"))
+    request = {"root": str(root), "owner": "local:gpua012", "action": "stop"}
+    with pytest.raises(ValueError, match="installed on host gpua078"):
+        node_service.control(dict(request))  # a person's own stop still explains the host
+    result = node_service.control({**request, "require_operation_id": "refused-start"})
+    assert result["phase"] == "untouched" and not result["running"]
+
+
 def test_reused_pid_is_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(node_service, "identity", lambda pid: "new-boot:new-start")
     assert not node_service.alive({"pid": 12, "process_identity": "old-boot:old-start"})
