@@ -198,6 +198,46 @@ def image_present_command(
 # every few seconds. ``fresh`` (install from scratch) skips the store hit and
 # Apptainer's layer cache; the second attempt only finishes what the first
 # left (a ``done`` flag in the scratch directory), so it never re-pulls.
+# Converting an image to a SIF unpacks every layer: on a network filesystem
+# (Lustre, NFS, GPFS, ...) that took 18 of the 20 minutes of a cold web search
+# install on Delta. ``clio_local_scratch <dir>`` prints where to convert: the
+# configured directory when it is local, else a fresh directory on node-local
+# scratch ($TMPDIR when local, else /tmp) with room for ~3x the largest pinned
+# image; with none, the configured directory and a warning. The persistent
+# image store and layer cache stay where they are.
+LOCAL_SCRATCH_NEED_KB = 30 * 1024 * 1024
+LOCAL_SCRATCH_FUNCTION = (
+    """clio_fs_type() { stat -f -c %T "$1" 2>/dev/null || echo unknown; }
+clio_networked_fs() {
+  case "$1" in
+    lustre|nfs|nfs4|gpfs|beegfs|cifs|smb2|smbfs|ceph|panfs|wekafs|glusterfs|fuse.glusterfs) return 0 ;;
+  esac
+  return 1
+}
+clio_local_scratch() {
+  want=$1; probe=$want
+  while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe=$(dirname "$probe"); done
+  fs=$(clio_fs_type "$probe")
+  if ! clio_networked_fs "$fs"; then printf '%s\\n' "$want"; return 0; fi
+  for base in "${TMPDIR:-}" /tmp; do
+    if [ -z "$base" ] || [ ! -d "$base" ] || [ ! -w "$base" ]; then continue; fi
+    if clio_networked_fs "$(clio_fs_type "$base")"; then continue; fi
+    free=$(df -Pk "$base" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ "${free:-0}" -ge """
+    + str(LOCAL_SCRATCH_NEED_KB)
+    + """ ]; then
+      if dir=$(mktemp -d "$base/clio-apptainer-XXXXXX"); then
+        echo "clio: Using node-local scratch $dir (target temporary is on $fs)" >&2
+        printf '%s\\n' "$dir"; return 0
+      fi
+    fi
+  done
+  echo "clio: warning: $want is on $fs and no node-local scratch has room; converting there (slow)" >&2
+  printf '%s\\n' "$want"
+}
+"""
+)
+
 _APPTAINER_PULL_SCRIPT = (
     """set -eu
 store=$1; image=$2; key=$3; link=$4; scratch=$5; budget=$6
@@ -206,6 +246,7 @@ sif="$store/$key.sif"; done_flag="$scratch/.clio-pulled-$key"; pull=""; sampler=
 mkdir -p "$store/cache" "$scratch"
 """
     + SHELL_FUNCTIONS
+    + LOCAL_SCRATCH_FUNCTION
     + """if [ "$attempt" = 1 ]; then rm -f "$done_flag"; fi
 if [ -f "$done_flag" ] && [ -f "$sif" ]; then
   echo "clio: the first attempt completed the pull"
@@ -235,9 +276,13 @@ else
   # must reach it explicitly, or the pull would go on without an owner.
   trap 'kill $sampler $pull 2>/dev/null || true' EXIT
   trap 'exit 143' TERM INT HUP
+  convert=$(clio_local_scratch "$scratch")
+  if [ "$convert" != "$scratch" ]; then
+    trap 'kill $sampler $pull 2>/dev/null || true; rm -rf "$convert"' EXIT
+  fi
   flags=""
   if [ "$fresh" = 1 ]; then flags="--disable-cache"; fi
-  APPTAINER_CACHEDIR="$store/cache" APPTAINER_TMPDIR="$scratch" \\
+  APPTAINER_CACHEDIR="$store/cache" APPTAINER_TMPDIR="$convert" \\
     timeout -k 15 "$budget" apptainer pull --force $flags "$sif.partial" "docker://$image" &
   pull=$!
   status=0
@@ -314,9 +359,7 @@ def pull_commands(
     return [first, first.model_copy(update={"args": second, "allowed_exit_codes": [0]})]
 
 
-def image_reuse_check(
-    runtime: RuntimeName, image: str, skip: tuple[int, ...]
-) -> ReuseCheck | None:
+def image_reuse_check(runtime: RuntimeName, image: str, skip: tuple[int, ...]) -> ReuseCheck | None:
     """Skip a Docker/Podman pull when the image is present under its pinned digest.
 
     Only a digest reference is verifiable (``image inspect name@sha256:...``
