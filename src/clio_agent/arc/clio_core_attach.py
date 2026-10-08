@@ -478,6 +478,23 @@ def _initialize_cte_while_daemon_progresses(cte: object, *, config_path: str, po
     raise error
 
 
+def _daemon_crash_suffix() -> str:
+    """Name a daemon crash recorded since the spawn, with its log path (F019).
+
+    A daemon that died under the attach leaves the probe unanswered; without this
+    the error names only the port, hiding the crash and where its log is.
+    """
+    from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415 - cycle
+    from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash  # noqa: PLC0415
+
+    try:
+        record = read_crash_record(runtime_state_dir())
+    except OSError as exc:
+        logger.warning("daemon crash record lookup failed: %r", exc)
+        return ""
+    return f"; {summarize_crash(record)}" if record else ""
+
+
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
     """Prove a freshly attached store answers ONE real RPC, within a bound, before handing it out.
 
@@ -531,6 +548,7 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
         }.get(outcome.reason, "the daemon process could not be located")
         detail = f"the first RPC after the attach got no answer and {what} (wait={outcome.reason})"
         reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
+        detail += _daemon_crash_suffix()
     on_failure()
     error = ClioCoreAttachError(
         port=store._gate.port,
