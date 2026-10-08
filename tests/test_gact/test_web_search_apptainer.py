@@ -282,6 +282,15 @@ def test_the_launcher_binds_every_listener_to_the_loopback() -> None:
     assert launcher.count("--host 127.0.0.1") == 2  # gateway and SearXNG
 
 
+def test_valkey_requires_a_per_launch_password_kept_off_argv() -> None:
+    launcher = backend.LAUNCHER
+    assert "/dev/urandom" in launcher  # fresh at every start, never persisted by CLIO
+    assert "umask 077" in launcher and "requirepass" in launcher
+    assert '--include "$auth"' in launcher  # the secret is read from a 0600 file
+    assert "--requirepass" not in launcher  # never on the valkey-server argv
+    assert "redis://:$pw@127.0.0.1:$task/0" in launcher  # the gateway authenticates
+
+
 @posix_only
 def test_the_launcher_is_valid_posix_shell(tmp_path: Path) -> None:
     script = tmp_path / "entrypoint.sh"

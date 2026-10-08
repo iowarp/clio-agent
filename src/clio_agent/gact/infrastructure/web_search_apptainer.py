@@ -89,7 +89,14 @@ grobid="$CLIO_WS_GROBID_PORT"
 admin="$CLIO_WS_GROBID_ADMIN_PORT"
 export CLIO_WEB_SEARCH_SEARXNG_URL="http://127.0.0.1:$searx"
 export CLIO_WEB_SEARCH_GROBID_URL="http://127.0.0.1:$grobid"
-export CLIO_WEB_SEARCH_TASK_BACKEND_URL="redis://127.0.0.1:$task/0"
+# Valkey listens on the shared host loopback: require a fresh per-launch password,
+# kept off argv (0600 include file) and handed to the gateway through its env.
+auth="$data/tmp/valkey-auth.conf"
+pw="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \\n')"
+[ ${#pw} -eq 48 ] || { echo "valkey_password_unavailable" >&2; exit 1; }
+(umask 077; printf 'requirepass %s\\n' "$pw" > "$auth")
+export CLIO_WEB_SEARCH_TASK_BACKEND_URL="redis://:$pw@127.0.0.1:$task/0"
+unset pw
 export CLIO_WEB_SEARCH_TASK_BACKEND_PUBLIC_PORT="$task"
 settings_path="$(/app/.venv/bin/python -m clio_web_search.configure)"
 
@@ -106,7 +113,7 @@ trap shutdown INT TERM
 trap cleanup EXIT
 
 valkey-server /etc/clio-web-search/valkey.conf --bind 127.0.0.1 --port "$task" \\
-    --protected-mode yes --dir "$data/valkey" > "$logs/valkey.log" 2>&1 &
+    --protected-mode yes --dir "$data/valkey" --include "$auth" > "$logs/valkey.log" 2>&1 &
 valkey_pid=$!
 
 cd /app
