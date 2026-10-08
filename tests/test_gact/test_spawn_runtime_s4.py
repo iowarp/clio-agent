@@ -555,10 +555,10 @@ def test_spawn_uses_invoker_and_compatibility_wait_uses_shared_controls(monkeypa
     _capture_emits(monkeypatch)
     from clio_agent.gact import task_controls
 
-    calls: list[str] = []
+    calls: list[str | list[str]] = []
     original = task_controls.wait_tasks
 
-    def shared(tasks: str) -> dict[str, Any]:
+    def shared(tasks: str | list[str]) -> dict[str, Any]:
         calls.append(tasks)
         return original(tasks)
 
@@ -570,7 +570,7 @@ def test_spawn_uses_invoker_and_compatibility_wait_uses_shared_controls(monkeypa
         tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(spy.specs) == 1
-    assert calls == ["task_done"]
+    assert calls == [["task_done"]]
     assert spy.wait_calls == []
     assert spy.check_calls == []
 

@@ -146,17 +146,17 @@ CI and executor-only probes are separate evidence.
 | --- | --- |
 | Pre-change model baseline | `model-baseline-1`: actual Codex/Luna fetch returned terminal document content before the next model tool action. |
 | MCP model overlap | `model-mcp-overlap-1`: actual production Web fetch accepted a handle; the model queried that handle while working. Earlier feature state; final requalification required. |
-| Shell model overlap | `model-shell-acceptance-4`: actual Codex/Luna handle, running query, expired wait, incremental observation and successful stored output. Independent file-read call failed and is not credited. Earlier feature state; final requalification required. |
+| Shell model overlap | `integrated-47f-shell-ws-1`: actual Codex/Luna accepted handle, successful independent file read, later running snapshot, expired wait, incremental stdout, completed owner/exit 0 and stored result. Source fingerprint remained unchanged. Earlier failed parallel-read runs remain separate. |
 | Subagent and Download model overlap | `model-subagent-acceptance-1` and `model-download-acceptance-2` proved running queries and actual owner outcomes, but independent file reads failed. Their older broad verdicts are superseded by `qualification-correction.md`. Strict final model acceptance remains outstanding. |
 | Indexing model overlap | Outstanding. Must prove receipt and another successful action before settlement, then manifest/counts. |
 | Mixed waits, partial errors, input/permission handling | Outstanding live matrix. Focused tests do not replace it. |
 | Automatic completion, next-turn delivery, duplicate prevention | Outstanding live matrix, including veto/overflow/collection races. |
-| Stop, UI cancellation and subtree settlement | Outstanding live matrix on the integrated UI/service. |
+| Stop, UI cancellation and subtree settlement | `integrated-47f-shell-ws-1` recorded actual model wait and UI Stop with the shell still running and no cancellation intent. Earlier shell then completed after Stop. UI cancellation and subtree settlement remain outstanding; retained harness failures were the cancelled-turn status expectation and a hidden duplicate-heading locator. |
 | Reconnect and isolated service interruption | Outstanding live matrix for each distinct execution route. Lost nonrecoverable work must be honest. |
 | Desktop and phone UI | Outstanding real-service browser interaction and visual review. |
 | Five final lifecycle race repetitions | Outstanding; run after the final integrated changes. |
-| Focused checks and CI | GACT `85e04c9e` passed both full workspace runs; native/build routes still pending. Core `dd4cb684` exposed legacy response/fixture failures. Nine first-shard cases now pass separately; remaining affected cases are running separately. New exact-head CI and final checks remain required. |
-| Parallel Codex arguments | `model-parallel-argument-diagnostic-1` recorded correct actual model arguments and empty tool inputs on the coalesced parallel path. The provider bridge now reconciles completed argument snapshots on WebSocket and SSE, with three focused passing cases. Fresh model acceptance remains required. |
+| Focused checks and CI | GACT `85e04c9e` passed both full workspace runs and Linux/Windows debug builds; fixture WebView results do not establish native model acceptance. Core `47f0359c` passed four Python shards; both shard-2 runs exposed one stale assertion expecting a scalar from the now-grouped compatibility delegation. The repaired exact case passed separately (`compat-round12`); all 28 final compatibility cases passed separately (`compat-round11`). New exact-head CI remains required. |
+| Parallel Codex arguments | `model-parallel-argument-diagnostic-1` recorded correct actual model arguments and empty tool inputs on the coalesced parallel path. The repaired bridge reconciles completed snapshots on WebSocket and SSE. Three focused cases pass, and `integrated-47f-shell-ws-1` proves the actual model's parallel query/file-read succeeds with the supplied arguments. Distinct SSE model acceptance remains outstanding. |
 
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
