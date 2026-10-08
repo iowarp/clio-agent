@@ -211,6 +211,22 @@ def test_target_refuses_foreign_directory_and_changed_owner(
         node_service.prepare(owned, "deployment-two")
 
 
+def test_a_directory_installed_on_another_host_names_that_host_and_the_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F020: a shared-filesystem directory from another HPC node explains how to recover."""
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    owned = tmp_path / "owned"
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua018")
+    node_service.prepare(owned, "local:gpua018")
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua078")
+    with pytest.raises(
+        ValueError, match="installed on host gpua018, not on this host .gpua078.; install"
+    ):
+        node_service.owner(owned, "local:gpua078")
+    assert json.loads((owned / "owner.json").read_text())["host"] == "gpua018"
+
+
 def test_cleanup_cannot_stop_a_previous_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

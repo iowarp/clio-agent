@@ -105,7 +105,15 @@ def owner(root: Path, expected: str) -> None:
         if (root / relative).is_symlink():
             raise ValueError("A native service ownership path was replaced by a symlink")
     marker = json.loads((root / "owner.json").read_text())
-    if marker != {"owner": expected, "host": socket.gethostname(), "root": str(root)}:
+    host = socket.gethostname()
+    if marker != {"owner": expected, "host": host, "root": str(root)}:
+        if marker.get("root") == str(root) and marker.get("host") not in {None, host}:
+            # Shared filesystems (HPC jobs) move a "local" target between hosts (F020).
+            raise ValueError(
+                f"This native service directory was installed on host {marker['host']}, "
+                f"not on this host ({host}); install the service here instead of starting "
+                "it (downloaded models are kept)"
+            )
         raise ValueError("This native service directory belongs to another deployment or host")
 
 
