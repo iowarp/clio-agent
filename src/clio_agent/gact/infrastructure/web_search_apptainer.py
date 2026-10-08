@@ -481,6 +481,9 @@ def apptainer_web_search_plan(
             configuration=resolved,
             recorders=recorders or {},
             readiness=readiness,
+            # Uninstall keeps the data folder, so it keeps the record that
+            # locates it: a later delete_data still knows where to look.
+            retain_record=action == "uninstall",
         )
 
     if action == "status":

@@ -44,6 +44,9 @@ async def settle_service(
         state = "running"
     elif request.action == "stop":
         state = "stopped"
+    elif request.action == "uninstall":
+        # A retained uninstall (data kept for delete_data) serves nothing.
+        state = "not_installed"
     elif request.action == "status" and output:
         observed = output[-1].strip().casefold()
         state = (
@@ -87,8 +90,8 @@ async def settle_service(
                 if previous and previous.variant_id == request.variant_id
                 else None
             ),
-            connection_url=connection_url,
-            connection_strategy=strategy,
+            connection_url=None if state == "not_installed" else connection_url,
+            connection_strategy=None if state == "not_installed" else strategy,
             owned_resources=owned
             if owned is not None
             else (previous.owned_resources if previous else []),

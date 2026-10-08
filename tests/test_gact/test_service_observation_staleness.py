@@ -60,3 +60,20 @@ async def test_a_variant_switch_does_not_inherit_the_previous_observation(
     record = store.service(target_id, "ollama")
     assert record is not None and record.variant_id == "cuda"
     assert record.observation is None
+
+
+@pytest.mark.asyncio
+async def test_a_retained_uninstall_keeps_the_record_as_not_installed(tmp_path: Path) -> None:
+    runtime, store, target_id = _runtime(tmp_path, FakeLinuxTarget())
+    installed = await _finish(runtime, store, "ollama", _install(target_id))
+    assert installed.state == "succeeded", installed.error
+
+    uninstall = _install(target_id).model_copy(update={"action": "uninstall"})
+    await settle_service(runtime, "ollama", uninstall, None, [], retain_record=True)
+
+    record = store.service(target_id, "ollama")
+    assert record is not None and record.state == "not_installed"
+    assert record.connection_url is None
+    catalog = await runtime.catalog(target_id)
+    service = next(row for row in catalog.services if row.id == "ollama")
+    assert service.state == "not_installed"  # not probed back to running/unknown

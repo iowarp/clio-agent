@@ -258,7 +258,9 @@ def test_apptainer_uninstall_is_ownership_scoped_and_delete_data_removes_the_fol
     assert uninstall.commands[0].args[-2:] == ["clio-web-search", sif]
     assert "foreign_instance" in uninstall.commands[0].args[1]
     assert not any(f"{SERVICE_DIR}/data" in spec.args for spec in uninstall.commands)
+    assert uninstall.retain_record  # the kept data stays locatable for delete_data
     delete = plan("delete_data", owned=owned)
+    assert not delete.retain_record
     assert delete.commands[1].args[-1] == f"{SERVICE_DIR}/data"
     assert len(delete.commands) == len(uninstall.commands) + 1
 

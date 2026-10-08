@@ -240,6 +240,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
     ) -> ServiceState:
         """Observe actual service state without replaying any lifecycle action."""
 
+        if record.state == "not_installed":
+            return "not_installed"  # uninstalled, record kept for delete_data
         try:
             plan = build_driver_plan(
                 service_id=record.service_id,
