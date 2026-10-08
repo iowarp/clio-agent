@@ -523,6 +523,15 @@ def _launch(
     )
 
 
+def _llama_served_id(args: tuple[str, ...]) -> str:
+    """The model id llama-server lists: its ``--alias``, else the ``-hf`` repo spec."""
+
+    for flag in ("--alias", "-hf"):
+        if flag in args and args.index(flag) + 1 < len(args):
+            return args[args.index(flag) + 1]
+    return ""
+
+
 def _check_value(key: str, value: str) -> None:
     if any(character in value for character in ("\0", "\r", "\n")) or value.startswith("-"):
         raise ValueError(f"{key} is not a valid value")
@@ -679,7 +688,9 @@ def build_model_runtime_plan(
             identity_health_command(
                 health_url,
                 f"http://127.0.0.1:{port}/v1/models",
-                served_model(launch.args[1], launch.args) if spec.engine == "vllm" else "",
+                served_model(launch.args[1], launch.args)
+                if spec.engine == "vllm"
+                else _llama_served_id(launch.args),
                 KEY_VARIABLES[spec.engine],
                 api_key,
                 windows,

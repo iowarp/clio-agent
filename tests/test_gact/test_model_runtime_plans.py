@@ -669,6 +669,29 @@ def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtim
     assert (library_path in run.args) == (runtime == "apptainer")
 
 
+@pytest.mark.parametrize(
+    ("configuration", "served"),
+    [
+        ({"model_path": "/models/q.gguf"}, "/models/q.gguf"),
+        ({"hf_model": "Qwen/Qwen3-4B-GGUF:Q4_K_M"}, "Qwen/Qwen3-4B-GGUF:Q4_K_M"),
+    ],
+)
+def test_llama_cpp_identity_expects_the_served_model(
+    configuration: dict[str, str], served: str
+) -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="cuda",
+        configuration={**configuration, "container_runtime": "apptainer"},
+        facts=_gpu_facts("nvidia", "apptainer"),
+        target=None,
+        api_key="launch-key",
+    )
+    assert plan.readiness is not None
+    assert served in plan.readiness.health.args
+
+
 def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
