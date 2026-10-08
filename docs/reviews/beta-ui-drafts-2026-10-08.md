@@ -8,7 +8,7 @@ Reviewable changes: [workspace UI PR #556](https://github.com/iowarp/gact-tui/pu
 
 | Feedback | Result |
 | --- | --- |
-| Downloads, figures 1–3 | The header opens Windows WebView2's native Downloads dialog. File, visualization and session exports (HTML or ZIP) also open it after starting a download. Other desktop platforms open the Downloads folder. The terminal remains available through the canvas launcher and session actions. |
+| Downloads, figures 1–3 | The header opens Windows WebView2's native Downloads dialog, or the Downloads folder on macOS/Linux. Native transfer events reveal that panel at start on Windows and the folder after a successful save on WebKit platforms, including embedded-frame downloads. Downloaded files open only when the user chooses. The terminal remains available through the canvas launcher and session actions. |
 | Sources, figures 4–6 | Existing sources can be relinked and downloaded from Files → Sources, using the same access choices as Attach. Relinking here updates the source directly without creating a composer attachment. |
 | Export menu, figure 7 | Transcript-only HTML is the default. Visible checkboxes say “Include session artifacts” and “Include workspace files.” Workspace inclusion checks artifacts too; the action changes to “Download ZIP.” |
 | Chart themes, figures 8–9 | The renderer owns a transparent plot background, including specs with a white config background, so the canvas and legend match the theme-aware labels. |
@@ -36,7 +36,7 @@ Sanitized local evidence is retained under `.local/beta-ui-evidence/`: `live-dra
 ## Validation
 
 - 104 focused workspace UI tests passed, including real Vega embedding, source relinking, export dependencies, native-download dispatch, reasoning separation, scores and criteria.
-- Export/download follow-up: 19 export/helper tests passed, including six new navigation cases covering HTML and both ZIP modes on desktop and browser hosts. They verify the real session menu reaches the common download handler, preserves proxy paths, filenames and no-referrer policy, and opens native Downloads only on desktop. The preparing message uses HTML/ZIP terminology.
+- Export/download follow-up: 19 export/helper tests passed, including six new navigation cases covering HTML and both ZIP modes on desktop and browser hosts. They verify the real session menu reaches the common download handler and preserves proxy paths, filenames and no-referrer policy. Automatic reveal subsequently moved from anchor-click dispatch to native transfer events; see the general audit below. The preparing message uses HTML/ZIP terminology.
 - Core v3 suite: 262 tests passed; the additional rubric-retention regression also passed in the 14-test variant reducer run.
 - Browser: six checks passed for chart rendering, live light/dark changes, question/queue surface matching, and composer focus geometry at desktop and phone widths. The final theme test also rendered a custom spec with a white background and a legend in both themes.
 - Backend: draft/run-route suite 16 passed; strategy/pick/close suite 19 passed; real DSPy composition and module-variant suite 49 passed (84 total).
@@ -54,7 +54,7 @@ Sanitized local evidence is retained under `.local/beta-ui-evidence/`: `live-dra
 
 ## General download-routing audit
 
-The subsequent [general download-routing audit](download-routing-2026-10-08.md) closes independent evidence-ZIP and reusable Markdown download paths and adds automatic Windows history opening for browser/embedded-editor downloads. It records the complete routing inventory, 70 focused tests, browser ZIP/file checks and real WebView2 direct/frame acceptance.
+The subsequent [general download-routing audit](download-routing-2026-10-08.md) closes independent evidence-ZIP and reusable Markdown download paths, adds Windows history observation and macOS/Linux WebKit download handling, and moves automatic reveal to native transfer events. It records the complete routing inventory, 76 focused UI tests, three Rust lifecycle/fallback regressions, browser ZIP/file checks and real Windows/Linux direct/frame acceptance. Missing Downloads settings fall back to `~/Downloads` rather than saving into the working directory. Native CI now covers all three desktop platforms; macOS acceptance remains pending.
 
 CI follow-up on the branch head aligned the SDK contract with inherited branch settings and identified the elicitation fixture as a delegated worker. The real stdio reconnect test now retains the app event loop through its connection lifecycle. All 64 SDK/elicitation/reconnect regressions passed. Browser checks now assert the compact current-location mark and matching composer/queue surface, and document navigation waits for the actual workspace to hydrate before opening its canvas. The three formerly failing browser cases passed locally.
 
