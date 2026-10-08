@@ -194,6 +194,34 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             companion_flags=["--enable-auto-tool-choice"],
         ),
         ServerParameter(
+            id="reasoning_parser",
+            label="Reasoning parser",
+            description=(
+                "Separates the model's thinking from its answer and returns it as "
+                "reasoning_content (Qwen3 uses qwen3). Without it a thinking model's "
+                "<think> text arrives inside the answer."
+            ),
+            kind="choice",
+            delivery="flag",
+            name="--reasoning-parser",
+            options=[
+                "qwen3",
+                "deepseek_r1",
+                "deepseek_v3",
+                "openai_gptoss",
+                "granite",
+                "glm45",
+                "hunyuan_a13b",
+                "kimi_k2",
+                "minimax_m2",
+                "mistral",
+                "seed_oss",
+                "step3",
+            ],
+            default_behavior="Thinking left inside the answer",
+            effective_key="reasoning_parser",
+        ),
+        ServerParameter(
             id="dtype",
             label="Weight precision",
             description="Data type for weights and activations.",
