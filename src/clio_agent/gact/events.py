@@ -143,6 +143,9 @@ class EventBus:
     """
 
     def __init__(self, *, queue_capacity: int = 256, history_per_session: int = 256) -> None:
+        from uuid import uuid4
+
+        self.task_cursor_epoch = uuid4().hex
         self._capacity = queue_capacity
         self._history_cap = history_per_session
         # session_id -> list of subscriber queues
@@ -525,6 +528,7 @@ class EventBus:
         session_ids: list[str],
         *,
         after_event_id: int,
+        timeout_s: float | None = None,
     ) -> None:
         """Block until a requested session receives a newer recorded event.
 
@@ -551,7 +555,7 @@ class EventBus:
             )
 
         with self._history_condition:
-            self._history_condition.wait_for(has_new_event)
+            self._history_condition.wait_for(has_new_event, timeout=timeout_s)
 
     def latest_session_event_id(self, session_ids: list[str]) -> int:
         """Return the newest event id recorded directly for the requested sessions."""

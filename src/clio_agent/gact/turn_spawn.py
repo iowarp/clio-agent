@@ -92,6 +92,7 @@ class TaskSpec:
     parent_turn_id: str = ""
     depth: int = 1
     mode: str = "async"  # "sync" (a waiter will collect) | "async" (notify-later)
+    description: str = ""
     workflow_state: Optional[dict[str, Any]] = None
     # Fan-out admission bound (#948 S5): when > 0, the declaring parent's
     # ``fanout.max_workers`` — at most this many of the same (parent, requesting
@@ -252,6 +253,13 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     """
 
     # ---- structural guards -------------------------------------------------
+    parent_session = app.state.sessions.get(spec.parent_session_id)
+    if spec.parent_session_id in getattr(app.state, "task_admission_closed", set()) or bool(
+        parent_session and parent_session.metadata.get("task_admission_closed")
+    ):
+        raise SpawnError(
+            "Task subtree cancellation has closed child admission", reason="cancelled_by_parent"
+        )
     workspace_id, parent_mode, session_scope_metadata = validate_task_spec(app, spec)
     parent = app.state.sessions.get(spec.parent_session_id)
     if (
@@ -344,6 +352,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
         parent_session_id=spec.parent_session_id,
         child_session_id=child.id,
         parent_turn_id=spec.parent_turn_id,
+        description=spec.description or spec.task_text,
         agent_ref={
             "expert_id": spec.child_expert_id,
             "requesting_expert_id": spec.requesting_expert_id,
@@ -458,79 +467,32 @@ def spawn_child_turn_threadsafe(app: "FastAPI", spec: TaskSpec) -> AgentTask:
 
 
 def _cancel_one_child_task(app: "FastAPI", reg: Any, task: "AgentTask") -> Optional["AgentTask"]:
-    """Cooperatively + hard-cancel one non-terminal child task's in-flight turn and mark
-    the task cancelled. Returns the updated record, or ``None`` if it raced to terminal.
-    The single per-task cancel primitive shared by the cascade + the per-task cancel."""
+    """Request child cancellation; its owner publishes terminal state after cleanup."""
 
-    child_sid = task.child_session_id
-    app.state.cancel_flags.add(child_sid)
-    event = app.state.cancel_events.get(child_sid)
-    if event is not None:
-        event.set()
-    in_flight = app.state.in_flight_turns.get(child_sid)
-    if in_flight is not None and not in_flight.done():
-        in_flight.cancel()
-    # #993: the cooperative flag / future cancel above stops the ReAct loop at its next
-    # decision point, but an LM call ALREADY in flight keeps its provider transport
-    # streaming — on the pooled claude_code SDK that is a CLI subprocess that keeps
-    # producing late ops the settled transcript must refuse. Kill that child's in-flight
-    # SDK stream NOW (typed cancelled_transport_killed) so it stops producing. Only this
-    # child session's stream is terminated; unrelated sessions on the shared pool survive.
-    # No-op for a child with no in-flight SDK stream (non-claude_code transport / idle).
-    from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
+    from clio_agent.gact.task_subagent_owner import request_subagent_cancel
 
-    abort_session_streams(child_sid)
-    try:
-        updated = reg.transition(task.task_id, STATUS_CANCELLED, updated_at=_now())
-    except Exception:  # noqa: BLE001 - already terminal via a racing completion
-        return None
-    persist_agent_task(app, updated)
-    publish_agent_task_event(app, updated, AGENT_TASK_EVENTS[STATUS_CANCELLED])
-    # #1305 review round F3: this path previously bypassed SubagentStop AND
-    # the #1305 provider-connection release entirely (only the completion
-    # fold funneled through finish_agent_task_transition) -- a cancelled
-    # child's connection was left ENTIRELY to the idle-TTL sweep. Admission
-    # stays with the caller (cancel_children_of batches it once per cascade).
-    finalize_child_task_terminal(app, updated, child_sid)
-    return updated
+    del reg
+    return request_subagent_cancel(app, task)
 
 
 def cancel_children_of(app: "FastAPI", parent_session_id: str) -> int:
-    """Cancel every non-terminal DESCENDANT task of ``parent_session_id`` (the cancel
-    cascade): cooperatively + hard-cancel each descendant's in-flight turn and mark the
-    task cancelled. Returns the count cancelled. Called when a parent turn/task is
-    cancelled so no child turn outlives the parent that spawned it.
+    """Explicitly request descendant cancellation, including below completed children.
 
-    TRANSITIVE (#953 [3]): S5 makes nested spawns first-class (declared workflows,
-    nested experts, ``run_workflow`` reachable from a child), so a direct child may have
-    its own children. This recurses depth-first into each child's own ``for_parent`` set
-    (cycle-safe via a ``seen`` set over session ids) — a grandchild is descended into even
-    when its parent already settled, since a grandchild can outlive a completed child."""
+    Conversation Stop never calls this operation. Owners retain running state until
+    their turns and descendant workloads have actually settled.
+    """
 
     reg = getattr(app.state, "agent_task_registry", None)
     if reg is None:
         return 0
+    from clio_agent.gact.session_descendants import descendant_session_ids
+
     n = 0
-    seen: set[str] = set()
-    stack: list[str] = [parent_session_id]
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
+    for pid in [parent_session_id, *descendant_session_ids(app, parent_session_id)]:
         for task in reg.for_parent(pid):
-            # Descend into the child's OWN children regardless of the child's terminality
-            # (a grandchild can still be running under a completed child).
-            if task.child_session_id and task.child_session_id not in seen:
-                stack.append(task.child_session_id)
-            if task.is_terminal:
-                continue
             if _cancel_one_child_task(app, reg, task) is not None:
                 n += 1
-    # Cancelling running children frees concurrency slots — admit queued tasks
-    # (possibly of OTHER parents) into them, else they strand forever (the
-    # completion hook won't: a cancelled task is already terminal when its
-    # done-callback fires, so it early-returns before the admission).
+    # Admission still counts cancelling workers until their completion hooks run.
     if n:
         _admit_next_queued(app)
     return n
@@ -548,9 +510,10 @@ def cancel_agent_task(app: "FastAPI", task_id: str) -> bool:
     task = reg.get(task_id)
     if task is None:
         return False
-    updated = None
-    if not task.is_terminal:
-        updated = _cancel_one_child_task(app, reg, task)
+    from clio_agent.gact.task_subagent_owner import close_subtree_admission
+
+    close_subtree_admission(app, task.child_session_id)
+    updated = _cancel_one_child_task(app, reg, task)
     descendants = cancel_children_of(app, task.child_session_id)
     if updated is not None:
         _admit_next_queued(app)
@@ -680,18 +643,24 @@ def _on_child_done(
     task = reg.get(task_id)
     if task is None or task.is_terminal:
         return
+    from clio_agent.gact.task_subagent_owner import defer_subagent_settlement
+
+    if defer_subagent_settlement(app, task):
+        return
     now = _now()
 
     # HITL-in-child (#1113): see child_forward.forward_waiting_child.
     from clio_agent.gact.child_forward import forward_waiting_child  # noqa: PLC0415
 
     child_sess = app.state.sessions.get(child_sid)
-    if forward_waiting_child(app, task, child_sess, child_sid, mode):
+    if not task.cancel_requested and forward_waiting_child(app, task, child_sess, child_sid, mode):
         return
 
     # A residual steer accepted mid-turn is promoted to a continuation turn the
     # turn-runner's idle hook owns; see agent_task_wake.resume_on_continuation_turn.
-    if resume_on_continuation_turn(app, task_id, child_sid, mode, finished_turn, _on_child_done):
+    if not task.cancel_requested and resume_on_continuation_turn(
+        app, task_id, child_sid, mode, finished_turn, _on_child_done
+    ):
         return
 
     msgs = app.state.messages.get(child_sid, []) or []
@@ -699,11 +668,10 @@ def _on_child_done(
     code = _err_code(getattr(final, "error_info", None) if final is not None else None)
 
     try:
-        if code == "cancelled":
-            # A cancelled child is NOT observed-later: cancellation is parent-driven
-            # (session cancel cascade), so the parent already knows — no notify.
+        if code == "cancelled" or task.cancel_requested:
+            # Explicit subtree cancellation settles here, after descendant owners.
             outcome = fold_agent_task_transition(
-                app, task_id, STATUS_CANCELLED, notify_pending=False, updated_at=now
+                app, task_id, STATUS_CANCELLED, notify_pending=(mode == "async"), updated_at=now
             )
         elif code:
             error_info = getattr(final, "error_info", None)
@@ -777,7 +745,10 @@ def _admit_next_queued(app: "FastAPI") -> None:
                     t.parent_session_id, t.agent_ref.get("requesting_expert_id", ""), t.depth
                 )
                 running_by_batch[key] = running_by_batch.get(key, 0) + 1
-        queued = sorted((t for t in snap if t.status == STATUS_QUEUED), key=lambda t: t.created_at)
+        queued = sorted(
+            (t for t in snap if t.status == STATUS_QUEUED and not t.cancel_requested),
+            key=lambda t: t.created_at,
+        )
         task = next(
             (t for t in queued if _queued_admissible(t, running_by_depth, running_by_batch, cap)),
             None,

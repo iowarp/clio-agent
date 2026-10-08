@@ -49,9 +49,6 @@ from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
 )
-from clio_agent.gact.enrichment import (
-    consume_pending_agent_task_notifications,
-)
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.message_intents import stage_intent_user_message
@@ -325,12 +322,9 @@ async def _run_turn_in_background(
         # wait/check) into this turn's already-open transcript.
         # Consuming records into clio-core (store writes): on the turn executor, never
         # the event loop (a write there is refused and the turn failed).
-        await _run_turn_setup_off_loop(
-            state,
-            lambda: consume_pending_agent_task_notifications(
-                state.app, state.sid, state.pending_notification_task_ids
-            ),
-        )
+        from clio_agent.gact.task_delivery import commit_staged_completions
+
+        await _run_turn_setup_off_loop(state, lambda: commit_staged_completions(state))
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
         # forward -> expert-pack delegation settle lives in ``turn_forward.py``.

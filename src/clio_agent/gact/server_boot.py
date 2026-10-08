@@ -50,13 +50,29 @@ def reconcile_connected_storage(app: FastAPI) -> None:
     storage = getattr(app.state, "connected_storage", None)
     if storage is not None:
         storage.reconcile({row.id: Path(row.root_path) for row in app.state.workspaces.list()})
+    from clio_agent.gact.task_recovery import start_task_recovery
+
+    start_task_recovery(app)
 
 
 async def shutdown_connected_storage(app: FastAPI) -> None:
     """Drain trusted source operations before the server tears down its runtime."""
     storage = getattr(app.state, "connected_storage", None)
+    from clio_agent.gact.task_supervisor import task_supervisor
+
+    task_supervisor(app).closing = True
     if storage is not None:
         await storage.shutdown()
+        from clio_agent.gact.storage.task_adapter import recover_storage_handles
+
+        recover_storage_handles(app)
+
+
+async def shutdown_tasks(app: FastAPI) -> None:
+    """Settle supervised tasks before the application's sessions and bus close."""
+    from clio_agent.gact.task_supervisor import task_supervisor
+
+    await task_supervisor(app).shutdown()
 
 
 def start_provider_catalog(app: FastAPI) -> asyncio.Task | None:
