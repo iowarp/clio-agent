@@ -184,9 +184,7 @@ class SearxngJsonBackend(SearchBackend):
                 f"The {self.name} search backend returned malformed JSON.", self._fix()
             )
         results = [_normalized_hit(item) for item in rows if isinstance(item, dict)][:limit]
-        unresponsive = [
-            str(pair[0]) for pair in payload.get("unresponsive_engines") or [] if pair
-        ]
+        unresponsive = [str(pair[0]) for pair in payload.get("unresponsive_engines") or [] if pair]
         return {
             "ok": True,
             "backend": self.name,

@@ -239,7 +239,11 @@ def test_boot_prepares_unmodified_searxng(tmp_path: Path, monkeypatch: pytest.Mo
     (root / "manifest.json").write_text(json.dumps(manifest))
     _fake_source(root)
     monkeypatch.setattr(sys, "path", list(sys.path))
-    environ = {engine_key_variable("braveapi"): "brave-key"}
+    # SearXNG reads os.environ on import, as the launcher's real process does.
+    for name in ("SEARXNG_SECRET", "SEARXNG_SETTINGS_PATH", "PYTHONPATH"):
+        monkeypatch.setenv(name, "")
+    monkeypatch.setenv(engine_key_variable("braveapi"), "brave-key")
+    environ = os.environ
     try:
         searxng_launch.boot(root, environ)
         import searx  # type: ignore[import-not-found]  # the fake source above
@@ -250,9 +254,7 @@ def test_boot_prepares_unmodified_searxng(tmp_path: Path, monkeypatch: pytest.Mo
         assert searx.settings["engines"][0]["api_key"] == "brave-key"
         written = (root / "searxng-settings.yml").read_text()
         assert secret not in written and "brave-key" not in written
-        assert json.loads(written)["general"]["instance_name"] == searxng_hook.instance_name(
-            secret
-        )
+        assert json.loads(written)["general"]["instance_name"] == searxng_hook.instance_name(secret)
         assert environ["SEARXNG_SETTINGS_PATH"] == str(root / "searxng-settings.yml")
         if sys.platform != "win32":
             mode = stat.S_IMODE((root / "searxng-settings.yml").stat().st_mode)
