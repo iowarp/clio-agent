@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from clio_agent.search.backend import is_web_search_mcp, resolve_search_backend
+from clio_agent.search.backend import WEB_SEARCH_TOOL, is_web_search_mcp, resolve_search_backend
 from clio_agent.search.settings import SearchConfigurationError, SearchSettings
 from clio_agent.tools.mcp_config import MCPServerSpec, load_mcp_servers
 
@@ -90,3 +90,39 @@ def load_agent_mcp_servers(**kwargs: Any) -> dict[str, MCPServerSpec]:
     """:func:`load_mcp_servers` as the agent sees it: with the Web MCP declaration."""
 
     return with_default_web_mcp(load_mcp_servers(**kwargs))
+
+
+def degraded_web_mcp_placeholder(namespace: str, spec: MCPServerSpec | None) -> dict[str, Any]:
+    """A stand-in ``web_search`` while the Web MCP namespace has not listed its tools.
+
+    The Web MCP server cannot start while its backend is not ready (a CLIO Web Search
+    gateway still starting fails the server's own startup discovery), so discovery
+    marks namespace ``web`` degraded and, without this, the agent has no
+    ``web_search`` at all. The stand-in keeps the tool present: CLIO's guard
+    (:func:`clio_agent.search.backend.web_search_guard`) answers its calls with the
+    typed ``search_backend_unavailable`` error naming the fix, and the namespace
+    healer replaces it with the real tools once the server lists them (same key).
+    ``{}`` for any other namespace.
+    """
+
+    if namespace != DEFAULT_WEB_MCP_NAME or spec is None or not _is_web_mcp(spec):
+        return {}
+    from mcp.types import Tool  # noqa: PLC0415 - the MCP SDK is heavy; only on degrade
+
+    name = WEB_SEARCH_TOOL
+    tool = Tool(
+        name=name,
+        description=(
+            "Search the web. The search backend is not ready yet; a call returns "
+            "what to do, and the full tool appears once the backend serves."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query."},
+                "count": {"type": "integer", "description": "Maximum results to return."},
+            },
+            "required": ["query"],
+        },
+    )
+    return {name: tool}

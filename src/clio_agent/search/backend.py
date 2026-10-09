@@ -15,8 +15,9 @@ The agent's ``web_search`` tool is the Web MCP server (``clio-kit mcp-server web
 module: :func:`web_mcp_environment` points the server at the resolved backend when
 it is spawned (an explicit ``--remote-url``/``WEB_*`` declaration still wins), and
 :func:`web_search_guard` answers a call with the typed error instead of running it
-when the resolved backend cannot serve (search off, or the local SearXNG not
-answering yet). :meth:`SearchBackend.search` is the direct path CLIO itself uses.
+when the resolved backend cannot serve (search off, the local SearXNG not
+answering yet, or the gateway's ``/readyz`` failing). :meth:`SearchBackend.search`
+is the direct path CLIO itself uses.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import logging
 import os
 import socket
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import PurePath
 from typing import Any
@@ -52,6 +54,10 @@ _LOCAL_ENDPOINT: list[LocalEndpointResolver] = []
 _ROUTING_LOCK = threading.Lock()
 #: Whether the live Web MCP server was spawned routed by ``search.backend``.
 _ROUTED_BY_BACKEND = {"value": False}
+#: Gateway URL -> (monotonic time, last /readyz answer); a turn's calls share one probe.
+_READYZ_CACHE: dict[str, tuple[float, "SearchNotConfiguredError | None"]] = {}
+_READYZ_CACHE_S = 3.0
+_READYZ_TIMEOUT_S = 2.0
 
 
 class SearchNotConfiguredError(RuntimeError):
@@ -106,6 +112,11 @@ class SearchBackend:
         """Why a search cannot run now (cheap: loopback checks only), or ``None``."""
 
         return None
+
+    def readiness_problem(self) -> SearchNotConfiguredError | None:
+        """:meth:`problem`, plus whether the backend answers now (what the guard asks)."""
+
+        return self.problem()
 
     def web_mcp_environment(self) -> dict[str, str]:
         """Environment that points the Web MCP server at this backend."""
@@ -275,6 +286,42 @@ class ClioWebSearchBackend(SearxngJsonBackend):
             "http://search-host:8089), or set search.backend: local_searxng.",
         )
 
+    def readiness_problem(self) -> SearchNotConfiguredError | None:
+        problem = self.problem()
+        if problem is not None:
+            return problem
+        url = self.base_url().rstrip("/")
+        now = time.monotonic()
+        with _ROUTING_LOCK:
+            cached = _READYZ_CACHE.get(url)
+        if cached is not None and now - cached[0] < _READYZ_CACHE_S:
+            return cached[1]
+        result = self._probe_readyz(url)
+        with _ROUTING_LOCK:
+            _READYZ_CACHE[url] = (now, result)
+        return result
+
+    def _probe_readyz(self, url: str) -> SearchNotConfiguredError | None:
+        # The gateway listens before it can serve; its Web MCP server cannot even
+        # start until /readyz passes (task-runtime discovery answers 502).
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(_READYZ_TIMEOUT_S), trust_env=not self._loopback()
+            ) as http:
+                response = http.get(f"{url}/readyz")
+        except httpx.HTTPError as exc:
+            return SearchBackendUnavailableError(
+                f"The CLIO Web Search gateway at {url} is not answering ({type(exc).__name__}).",
+                self._fix(),
+            )
+        if response.is_success:
+            return None
+        return SearchBackendUnavailableError(
+            f"The CLIO Web Search gateway at {url} is not ready yet "
+            f"(/readyz answered HTTP {response.status_code}).",
+            self._fix(),
+        )
+
     def _fix(self) -> str:
         return (
             f"Check that the CLIO Web Search gateway at {self.base_url()} is running and "
@@ -365,7 +412,7 @@ def web_search_guard(
     if not routed:
         return None
     try:
-        problem = resolve_search_backend(settings).problem()
+        problem = resolve_search_backend(settings).readiness_problem()
     except SearchConfigurationError as exc:
         problem = SearchNotConfiguredError(str(exc), "Correct the search.* configuration.")
     return problem.as_tool_result() if problem is not None else None
