@@ -674,6 +674,11 @@ def test_inventory_lists_a_chosen_hub_cache_models_location(
             refused = client.post(f"{route}/{row['id']}/{action}")
             assert refused.status_code == 409
             assert "shared Hugging Face cache" in refused.json()["detail"]
+        import shutil
+
+        shutil.rmtree(hub / "models--org--model")
+        (gone,) = client.get(route).json()["models"]
+        assert (gone["state"], gone["error_code"]) == ("stale", "hf_cache_missing")
         store.set_storage("local", HostStorageLocations(root=str(tmp_path), models=str(plain)))
         assert client.get(route).json()["errors"] == []
     assert not (hub / "model-operations").exists()

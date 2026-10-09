@@ -34,7 +34,17 @@ def missing_receipt(prior: ModelAcquisition) -> ModelAcquisition:
 
     A verified model is not a stopped download: without a receipt this host cannot vouch
     for its files, so it is stale (retry re-verifies) rather than interrupted.
+    A shared-cache row never had a receipt: its snapshot left the cache.
     """
+    if prior.origin == "hf_cache":
+        return prior.model_copy(
+            update={
+                "state": "stale",
+                "error_code": "hf_cache_missing",
+                "error": "This revision is no longer in the shared Hugging Face cache; "
+                "download it through CLIO to use it here.",
+            }
+        )
     finished = prior.state in {"ready", "stale"} or (
         prior.bytes_total is not None
         and prior.bytes_done == prior.bytes_total
