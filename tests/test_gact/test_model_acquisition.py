@@ -558,3 +558,69 @@ def test_missing_receipt_never_calls_a_finished_download_interrupted(
     )
     relabeled = missing_receipt(prior)
     assert relabeled.state == state and relabeled.error_code == "receipt_missing"
+
+
+def _hub_snapshot(hub: Path, repository: str, revision: str, files: dict[str, bytes]) -> Path:
+    """Lay out one revision the way huggingface_hub's cache does (snapshot -> blob links)."""
+    repo = hub / ("models--" + repository.replace("/", "--"))
+    (repo / "blobs").mkdir(parents=True, exist_ok=True)
+    (repo / "refs").mkdir(exist_ok=True)
+    (repo / "refs" / "main").write_text(revision)
+    snapshot = repo / "snapshots" / revision
+    for name, data in files.items():
+        blob = repo / "blobs" / hashlib.sha256(data).hexdigest()
+        blob.write_bytes(data)
+        link = snapshot / name
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(os.path.relpath(blob, link.parent))
+    return snapshot
+
+
+def test_hub_cache_snapshots_are_listed_as_ready_revisions(tmp_path: Path) -> None:
+    snapshot = _hub_snapshot(
+        tmp_path,
+        "unsloth/Llama-3.2-1B-Instruct",
+        "a" * 40,
+        {"config.json": b"{}", "sub/w.bin": b"xx"},
+    )
+    assert node_models.is_hub_cache(tmp_path)
+    (row,) = node_models.hub_snapshots(tmp_path)
+    assert row["repository"] == "unsloth/Llama-3.2-1B-Instruct"
+    assert row["revision"] == "a" * 40
+    assert row["requested_revision"] == "main"
+    assert row["destination"] == str(snapshot)
+    assert row["state"] == "ready"
+    assert row["bytes_total"] == 4
+    ModelAcquisition.model_validate({**row, "target_id": "t", "storage_root": str(tmp_path)})
+
+
+def test_hub_cache_unfinished_revision_is_never_ready(tmp_path: Path) -> None:
+    snapshot = _hub_snapshot(tmp_path, "org/model", "b" * 40, {"config.json": b"{}"})
+    (snapshot.parent.parent / "blobs" / "deadbeef.incomplete").write_bytes(b"")
+    (row,) = node_models.hub_snapshots(tmp_path)
+    assert (row["state"], row["error_code"]) == ("interrupted", "hf_cache_incomplete")
+    (snapshot.parent.parent / "blobs" / "deadbeef.incomplete").unlink()
+    (snapshot / "gone.bin").symlink_to("../../blobs/missing")
+    assert node_models.hub_snapshots(tmp_path)[0]["state"] == "interrupted"
+
+
+def test_list_on_hub_cache_root_without_receipts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _hub_snapshot(tmp_path, "org/model", "c" * 40, {"config.json": b"{}"})
+    monkeypatch.setattr(sys, "argv", ["node_models.py"])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        SimpleNamespace(read=lambda: json.dumps({"root": str(tmp_path), "action": "list"})),
+    )
+    node_models.main()
+    rows = json.loads(capsys.readouterr().out)
+    assert [row["repository"] for row in rows] == ["org/model"]
+    assert not (tmp_path / "model-operations").exists()
+
+
+def test_plain_root_is_not_a_hub_cache(tmp_path: Path) -> None:
+    (tmp_path / "org--model--main").mkdir()
+    assert not node_models.is_hub_cache(tmp_path)
+    assert node_models.hub_snapshots(tmp_path) == []

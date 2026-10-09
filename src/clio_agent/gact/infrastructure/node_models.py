@@ -167,6 +167,67 @@ def inspect_jobs(root: Path, peers: Path | None = None) -> list[dict[str, Any]]:
     return rows
 
 
+def is_hub_cache(root: Path) -> bool:
+    """A Hugging Face hub cache holds ``models--<org>--<name>`` repository folders."""
+    return root.is_dir() and any(path.is_dir() for path in root.glob("models--*"))
+
+
+def hub_snapshots(root: Path) -> list[dict[str, Any]]:
+    """List each snapshot of a Hugging Face hub cache as a model revision on this host.
+
+    The cache is shared (other tools and users download into it), so no CLIO receipt
+    exists: a snapshot is ready when its files resolve to complete blobs; a repository
+    with ``.incomplete`` blobs is reported as an unfinished download, never as ready.
+    """
+    rows = []
+    for repo in sorted(root.glob("models--*")):
+        repository = repo.name.removeprefix("models--").replace("--", "/", 1)
+        refs = {}
+        for ref in sorted((repo / "refs").glob("*")) if (repo / "refs").is_dir() else []:
+            try:
+                refs.setdefault(ref.read_text().strip(), ref.name)
+            except OSError:
+                continue
+        partial = any((repo / "blobs").glob("*.incomplete"))
+        for snapshot in sorted((repo / "snapshots").glob("*")):
+            files = sorted(p for p in snapshot.rglob("*") if p.is_file() or p.is_symlink())
+            missing = [p for p in files if not p.exists()]
+            try:
+                size = sum(p.stat().st_size for p in files if p.exists())
+                mtime = snapshot.stat().st_mtime
+            except OSError:
+                continue
+            ready = bool(files) and not missing and not partial
+            rows.append(
+                {
+                    "id": hashlib.sha256(f"hf-cache\0{snapshot}".encode()).hexdigest()[:24],
+                    "repository": repository,
+                    "requested_revision": refs.get(snapshot.name, snapshot.name),
+                    "revision": snapshot.name,
+                    "destination": str(snapshot),
+                    "files": [],
+                    "file_path": None,
+                    "state": "ready" if ready else "interrupted",
+                    "phase": "Model available (Hugging Face cache)"
+                    if ready
+                    else "Unfinished download in the Hugging Face cache",
+                    "bytes_done": size,
+                    "bytes_total": size if ready else None,
+                    "created_at": mtime,
+                    "updated_at": mtime,
+                    "error": None
+                    if ready
+                    else "Some files of this revision are missing or still downloading; "
+                    "download it again to complete it.",
+                    "error_code": None if ready else "hf_cache_incomplete",
+                    "exit_code": None,
+                    "log_tail": [],
+                    "log_path": None,
+                }
+            )
+    return rows
+
+
 def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     """Start or reuse one durable acquisition, with a target-owned process and cache."""
     import fcntl
@@ -538,10 +599,16 @@ def main() -> None:
     if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
         raise ValueError("Model operations require an absolute owned storage root")
     hostname = re.sub(r"[^A-Za-z0-9_.-]", "_", os.uname().nodename)
-    root = root.resolve() / "model-operations" / hostname
+    storage = root.resolve()
+    root = storage / "model-operations" / hostname
     action = request["action"]
-    if action == "list":
-        result: Any = inspect_jobs(root, peers=root.parent)
+    if action == "list" and is_hub_cache(storage):
+        # A shared hub cache may hold no CLIO receipt for this host yet.
+        result: Any = inspect_jobs(root, peers=root.parent) if root.is_dir() else []
+        owned = {row["destination"] for row in result}
+        result += [row for row in hub_snapshots(storage) if row["destination"] not in owned]
+    elif action == "list":
+        result = inspect_jobs(root, peers=root.parent)
     elif action == "start":
         result = start(root, request, request["script"])
     elif action == "cancel":
