@@ -201,6 +201,7 @@ class FakeHost:
         self.installed = False
         self.running = False
         self.actions: list[str] = []
+        self.fail_next = ""
 
     def observation(self) -> dict[str, Any]:
         return {
@@ -220,6 +221,9 @@ class FakeHost:
             return CommandResult(exit_code=0, stdout="")
         action = body(spec)["action"]
         self.actions.append(action)
+        if action == self.fail_next:
+            self.fail_next = ""
+            return CommandResult(exit_code=1, stdout="", stderr=f"{action} refused")
         if action == "install":
             self.installed = True
         elif action == "start":
@@ -352,6 +356,9 @@ async def test_the_lifecycle_phase_follows_operations_and_the_record(
         assert phase() is None
         assert await finish(runtime, "stop") == "succeeded"
         assert phase() == "stopped"
+        host.fail_next = "start"
+        assert await finish(runtime, "start") == "failed"
+        assert phase() is None
     finally:
         register_local_endpoint_resolver(None)
     await asyncio.sleep(0)

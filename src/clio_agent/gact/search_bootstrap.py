@@ -48,12 +48,29 @@ def register_local_endpoint(app: Any) -> None:
         store = getattr(app.state, "infrastructure_store", None)
         if runtime is not None and _in_flight(runtime):
             return "starting"
+        if runtime is not None and _last_failed(runtime):
+            # A failed install/start is not fixed by "start it": report it unavailable.
+            return None
         record = store.service(LOCAL_TARGET, SERVICE_ID) if store is not None else None
         if record is not None and record.state == "stopped":
             return "stopped"
         return None
 
     register_local_endpoint_resolver(resolve, phase)
+
+
+def _last_failed(runtime: Any) -> bool:
+    """Whether the newest install/start/stop of the local SearXNG failed."""
+
+    rows = [
+        row
+        for row in runtime.store.operations()
+        if row.service_id == SERVICE_ID
+        and row.target_id == LOCAL_TARGET
+        and row.action in {*_STARTING, "stop"}
+    ]
+    rows.sort(key=lambda row: str(row.created_at))
+    return bool(rows) and rows[-1].state == "failed"
 
 
 def _in_flight(runtime: Any) -> bool:
