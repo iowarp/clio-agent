@@ -511,6 +511,7 @@ class _Loop:
     def _run_tool(self, call: ToolCallPart, tool: dspy.Tool) -> _CallOutcome:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
+        from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
 
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
@@ -524,7 +525,12 @@ class _Loop:
                 if refusal is not None
                 else (err if isinstance(err, _TurnCancelled) else None)
             )
-            return _CallOutcome(f"Execution error in {call.name}: {_fmt_exc(err)}", True, escalate)
+            if isinstance(err, FilePolicyError):
+                # An expected, typed refusal: the model needs the reason, not our stack.
+                detail = f"{type(err).__name__}: {err}"
+            else:
+                detail = _fmt_exc(err)
+            return _CallOutcome(f"Execution error in {call.name}: {detail}", True, escalate)
 
     def _submitted(
         self, calls: list[ToolCallPart], outcomes: list[_CallOutcome]

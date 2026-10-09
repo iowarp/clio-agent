@@ -302,3 +302,43 @@ def test_generic_crash_escalates_unchanged_no_arc_enrichment(
         "a generic crash must leave no synthesized closing observation -- "
         "only the pre-execution step_open breadcrumb, per the ARC crash contract"
     )
+
+
+def test_a_file_policy_refusal_reaches_the_model_without_a_traceback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """c41 live: prepare_document on a directory was refused correctly, but the model
+    got a 5-frame Python traceback with internal paths instead of the reason."""
+    from clio_agent.tools.file_policy import FilePolicyError
+
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    step_events: list[dict] = []
+    monkeypatch.setattr(
+        runtime_globals, "_emit_react_step_event", lambda **kw: step_events.append(kw)
+    )
+
+    def _refuse(path: str) -> str:
+        """Refuses."""
+        raise FilePolicyError(
+            code="not_a_file",
+            message=f"Path is not a regular file: {path}",
+            field="path",
+            path=path,
+            next_action="Pass a file path.",
+        )
+
+    agent = ClioReAct(
+        "question -> answer", tools=[dspy.Tool(_refuse, name="read")], max_iters=4
+    )
+    lm, _ = scripted_lm(
+        [
+            calls(("read", {"path": "/w"}), text="try"),
+            calls(("submit", {"answer": "FINAL"}), text="finish"),
+        ]
+    )
+    _run_in_plane(arc, agent, lm)
+
+    observation = step_events[0]["tool_calls"][0]["observation"]
+    assert step_events[0]["tool_calls"][0]["is_error"] is True
+    assert "Execution error in read: FilePolicyError: Path is not a regular file: /w" in observation
+    assert "Traceback" not in observation
