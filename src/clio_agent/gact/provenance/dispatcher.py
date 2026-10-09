@@ -87,6 +87,9 @@ class _ProviderWorker:
         A deferred provider (F047) that is still detached reports
         ``unavailable`` with its attach error even before any event failed.
         """
+        recheck = getattr(self.provider, "recheck", None)
+        if callable(recheck):
+            recheck()
         reason = str(getattr(self.provider, "unavailable_reason", "") or "")
         with self._lock:
             if reason:

@@ -91,6 +91,14 @@ class DeferredProvider:
             self.unavailable_reason = ""
             return self._inner
 
+    def recheck(self) -> bool:
+        """Retry attaching (bounded by the retry interval); True when attached.
+
+        Health reads call this so an idle CLIO notices a Flowcept that came up
+        after boot, without waiting for the next event or a restart.
+        """
+        return self._attach() is not None
+
     def _require(self) -> Any:
         inner = self._attach()
         if inner is None:

@@ -187,3 +187,22 @@ def test_missing_flowcept_settings_file_is_unavailable_not_silently_ready(tmp_pa
     assert not provider.attached
     assert "settings file not found" in provider.unavailable_reason
     assert str(missing) in provider.unavailable_reason
+
+
+def test_health_read_reattaches_idle_provider_without_events() -> None:
+    # F047 live (c37): Flowcept started through CLIO after boot; with no turn
+    # running nothing emitted, so health stayed unavailable until a restart.
+    build, clock = _FlakyBuild(), _Clock()
+    provider = _deferred(build, clock)
+    dispatcher = ProvenanceDispatcher([provider], queue_size=8)
+    try:
+        assert dispatcher.health()[0]["status"] == "unavailable"
+        build.up = True
+        clock.now = 10.0
+        assert dispatcher.health()[0]["status"] == "unavailable"  # interval-bounded
+        assert build.calls == 1
+        clock.now = 31.0
+        assert dispatcher.health()[0]["status"] == "ready"
+        assert provider.attached
+    finally:
+        dispatcher.close()
