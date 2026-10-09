@@ -254,7 +254,8 @@ def test_off_a_replace_switches_generation_and_drops_the_old_one(tmp_path: Path)
         segments = first.state.arc._segments
         old_base = generation_base(MESSAGE_PART_SCOPE, 1)
         old_chunks = lane_scopes(segments, sid, old_base)
-        assert len(old_chunks) == 3
+        # Replacement stores a part and one authoritative envelope per message.
+        assert len(old_chunks) == 5
         _replace_session_messages(first, sid, _rows(sid, 2))
         assert current_generation(segments, sid, MESSAGE_PART_SCOPE) == 2
         assert _ids(client, sid) == ["msg_1", "msg_2"]
