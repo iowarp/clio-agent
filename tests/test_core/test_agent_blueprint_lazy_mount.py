@@ -297,6 +297,34 @@ class TestDiscoverPackServers:
             "active_blueprint_disabled"
         )
 
+    def test_explicit_session_path_passes_the_gateway_workspace_to_placeholders(
+        self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session-pinned blueprint's ${CLIO_PROVENANCE_CONFIG} gets the gateway's
+        workspace: a gateway mount has no ambient turn, and a workspace-less handoff
+        made SPOTTER's MCP exit (native queries need a workspace root)."""
+
+        explicit_blueprint = tmp_path / "AGENT.md"
+        explicit_blueprint.write_text(
+            "---\nid: workspace-pack\ntitle: Explicit\n"
+            "mcp_servers:\n  explicit: spotter-mcp --clio-config ${CLIO_PROVENANCE_CONFIG}\n---\n",
+            encoding="utf-8",
+        )
+        seen: list[Path | None] = []
+
+        def _supplied(*_args: Any, workspace_root: Path | None = None, **_kw: Any) -> dict:
+            seen.append(workspace_root)
+            return {"CLIO_PROVENANCE_CONFIG": "/handoff.yaml"}
+
+        monkeypatch.setattr("clio_agent.gact.blueprint_placeholders.supplied_values", _supplied)
+        workspace = tmp_path / "workspace"
+
+        with tool_blueprint_context("workspace-pack", explicit_blueprint):
+            servers = agent._discover_pack_servers("workspace-pack", cwd=str(workspace))
+
+        assert seen == [workspace]
+        assert "/handoff.yaml" in str(servers["workspace-pack"]["explicit"])
+
     def test_explicit_session_path_precedes_cwd_discovery(
         self, agent: ClioAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

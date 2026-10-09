@@ -284,7 +284,7 @@ def blueprint_mcp_servers(
 
     if not blueprint_id:
         return {}
-    resolved = resolve_active_blueprint_servers(blueprint_id, verbose=verbose)
+    resolved = resolve_active_blueprint_servers(blueprint_id, verbose=verbose, workspace_root=cwd)
     if resolved is not None:
         return resolved
     from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
@@ -318,7 +318,7 @@ def blueprint_mcp_servers(
 
 
 def resolve_active_blueprint_servers(
-    blueprint_id: str, *, verbose: bool = False
+    blueprint_id: str, *, verbose: bool = False, workspace_root: Path | None = None
 ) -> dict[str, Any] | None:
     """Resolve declared MCP servers via the active session's explicit blueprint path.
 
@@ -367,7 +367,9 @@ def resolve_active_blueprint_servers(
     if not blueprint.enabled:
         _record_resolution_reason("active_blueprint_disabled", blueprint_id)
         return {}
-    servers = blueprint_server_map(blueprint)
+    # The caller's workspace (the gateway's cwd) supplies the provenance handoff's
+    # workspace root; the ambient turn context is empty when a gateway mounts.
+    servers = blueprint_server_map(blueprint, workspace_root=workspace_root)
     if servers:
         return {blueprint.id: servers}
     _record_resolution_reason("installed_blueprint_no_servers", blueprint_id)
