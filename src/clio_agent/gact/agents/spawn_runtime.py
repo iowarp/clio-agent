@@ -710,7 +710,7 @@ def build_spawn_runtime_tools(
     def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
         """Fan out several declared children at once. ``spawns`` is a list of
         {agent, task, input_task_ids?}; returns their task_ids (collect with
-        wait_agent_tasks). Each entry's optional input_task_ids works exactly
+        wait_tasks). Each entry's optional input_task_ids works exactly
         like spawn_agent_task's own parameter — hands that ONE child the full
         stored output of your own already-finished tasks as labeled evidence.
 

@@ -245,7 +245,11 @@ def observe_tasks(
     pattern: str | None = None,
     timeout_s: float | None = None,
 ) -> dict[str, Any]:
-    """Read incremental output without collecting completion; pattern waits for output or settlement."""
+    """Observe without collecting; a pattern waits for output or settlement.
+
+    Drain earlier bounded pages with the returned cursor while ``has_more`` is true.
+    ``matched`` always refers to evidence in this returned page.
+    """
     from clio_agent.runtime.commitment_activity import track
 
     with track(pattern is not None and timeout_s is None):
@@ -285,7 +289,9 @@ def _observe_tasks(
                 session_ids.append(row["child_session_id"])
             for owner in session_ids:
                 for event in app.state.bus.session_events_since(owner, cursor=start + 1):
-                    if not start < event.id <= version:
+                    # The shared SSE reader also includes global events. Those are
+                    # not evidence from this task's authorized owner/child session.
+                    if event.session_id != owner or not start < event.id <= version:
                         continue
                     key = event.payload.get("key")
                     selected = (
@@ -303,12 +309,11 @@ def _observe_tasks(
         unique = {e.id: _observation(e) for e in events}
         all_output = sorted(unique.values(), key=lambda row: row["id"])
         output = all_output[:40]
-        matched = regex is not None and any(
-            regex.search(json.dumps(row)[:4000]) for row in all_output
-        )
+        has_more = len(all_output) > len(output)
+        matched = regex is not None and any(regex.search(json.dumps(row)[:4000]) for row in output)
         settled = any(r["effective_status"] in TERMINAL for r in rows)
         expired = deadline is not None and time.monotonic() >= deadline
-        if regex is None or errors or settled or expired or matched:
+        if regex is None or errors or settled or expired or matched or has_more:
             return {
                 "tasks": [public_task(row) for row in rows],
                 "events": output,
@@ -317,11 +322,12 @@ def _observe_tasks(
                     json.dumps(
                         {
                             "bus": app.state.bus.task_cursor_epoch,
-                            "after": output[-1]["id"] if len(all_output) > len(output) else version,
+                            "after": output[-1]["id"] if has_more else version,
                         }
                     ).encode()
                 ).decode(),
                 "matched": bool(matched),
+                "has_more": has_more,
                 "cursor_recovered": recovered,
                 "timed_out": expired and not settled,
             }

@@ -39,6 +39,11 @@ outcomes and do not cancel peers. Query and observe do not consume completion.
 Wait, terminal collection and automatic delivery share the durable delivery
 guard. Later explicit result reads remain available.
 
+Observation pages contain at most 40 authorized task events. A pattern match
+always refers to evidence in the returned page. When `has_more` is true, advance
+its cursor to drain earlier output without losing events; global SSE traffic
+cannot count as progress from a selected task.
+
 Conversation Stop stops the current turn and waiter. Accepted tasks continue.
 Explicit subagent cancellation closes admission to its subtree, cancels its
 descendant task owners and publishes cancellation only after required cleanup
@@ -234,7 +239,30 @@ rejected. The before-fix unit reproduction is `spawn-nullable-before.log`.
 Twelve affected cases pass individually/sequentially with no skips, including
 installed-blueprint commissioning, foreign-input rejection and placement
 precedence. Scoped Ruff/format/Pyright0/0 and three existing guards pass.
-Fresh affected Subagent lifecycle repetitions remain required.
+On core448735/GACTb610, fresh Subagent idle and busy series each passed five
+actual Luna cycles (`final-spawn-schema-subagent-idle-1` and `-busy-1`). The idle
+parent finished while the child ran; completion started no turn, arrived on the
+next turn once and did not repeat. In busy cases the child finished during a
+controlled foreground timing command; queued output reached the parent at its
+next safe model boundary. These are real 120-second Python data jobs with
+122,880 bytes and matching SHA256 per run, not GPU-conversion acceptance.
+
+The same head's original-Subagent controls series passed two cycles, then exposed
+a real observation failure. Global SSE events filled the bounded page, while
+matching scanned later output and announced a match absent from the returned
+page. `observe-live-failure-diagnosis.json` retains the exact invocation/model
+evidence. The repair requires the event's actual owner session and matches only
+the returned page; `has_more` and its cursor preserve the remaining events.
+Five focused cases pass individually/sequentially with zero skips, including an
+unbounded patterned read across a page boundary. Production Pyright reports
+zero errors/warnings; the existing test file retains the same 15 inherited
+diagnostics before/after, with no new diagnostics or suppressions. Scoped
+Ruff/format and three guards pass. Fresh affected live repetitions are required;
+the incomplete controls series is not counted as five passes.
+
+Core448735's Python3.12 shard2 was still progressing at 99% before cancellation
+at the unchanged 18-minute limit. One exact-head same-job rerun passed in
+13 minutes; dependent coverage is pending. No budget, tests or workers changed.
 
 Corecced2296 repairs an actual malformed-PNG CI timeout by restricting Pillow to
 its PNG decoder. A controlled test reproduced the same timeout before correction;

@@ -426,6 +426,67 @@ def test_observation_cursor_is_incremental_and_recovers_after_restart(
     assert observe_tasks("output", cursor=10**15)["cursor_recovered"]
 
 
+def test_subagent_observation_excludes_global_and_foreign_matching_events(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+) -> None:
+    app, sid, _store = scoped_app
+    task = seed_agent_task(
+        app, parent_session_id=sid, agent_ref={"expert_id": "child"}, status="running"
+    )
+    excluded_ids = set()
+    for _ in range(45):
+        global_event = Event(
+            type="task.output",
+            session_id="",
+            payload={"handle": task.handle_id, "text": "progress 9 bytes 999"},
+        )
+        app.state.bus.publish(global_event)
+        excluded_ids.add(global_event.id)
+    foreign_event = Event(
+        type="task.output",
+        session_id="unrelated-conversation",
+        payload={"handle": task.handle_id, "text": "progress 8 bytes 888"},
+    )
+    app.state.bus.publish(foreign_event)
+    excluded_ids.add(foreign_event.id)
+    actual = Event(
+        type="task.output",
+        session_id=task.child_session_id,
+        payload={"text": "progress 0 bytes 1024"},
+    )
+    app.state.bus.publish(actual)
+    observed = observe_tasks(task.handle_id, pattern=r"progress \d+ bytes \d+", timeout_s=0)
+    assert observed["matched"]
+    returned_ids = {event["id"] for event in observed["events"]}
+    assert actual.id in returned_ids and not returned_ids.intersection(excluded_ids)
+    assert any(
+        event["payload"].get("text") == "progress 0 bytes 1024" for event in observed["events"]
+    )
+
+
+def test_pattern_match_is_in_returned_page_and_cursor_does_not_skip_output(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+) -> None:
+    app, sid, store = scoped_app
+    record(store, sid, "paged-output")
+    published = []
+    for number in range(41):
+        event = Event(
+            type="task.output",
+            session_id=sid,
+            payload={"handle": "paged-output", "text": "target" if number == 40 else str(number)},
+        )
+        app.state.bus.publish(event)
+        published.append(event.id)
+    first = observe_tasks("paged-output", pattern="target")
+    assert not first["matched"], "Never announce a match outside the returned bounded page"
+    assert first["has_more"]
+    assert [event["id"] for event in first["events"]] == published[:40]
+    second = observe_tasks("paged-output", cursor=first["cursor"], pattern="target", timeout_s=0)
+    assert second["matched"] and not second["has_more"]
+    assert [event["id"] for event in second["events"]] == published[40:]
+
+
 def test_shared_subagent_large_result_spills_full_stored_output_in_callers_scope(
     scoped_app: tuple[Any, str, SessionMetadataTaskStore], tmp_path: Path, monkeypatch
 ) -> None:
