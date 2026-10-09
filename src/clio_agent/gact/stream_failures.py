@@ -262,7 +262,29 @@ def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -
     leaf = _provider_error_leaf(exc)
     named = provider_id or str(getattr(leaf, "provider", "") or "")
     message = provider_failure_message(exc, provider_label=provider_label(named))
-    return message if message is not None else otherwise
+    if message is None:
+        return otherwise
+    if getattr(leaf, "status", None) == 401 and _managed_service_kind(named):
+        message += f" {MANAGED_SERVER_KEY_HINT}"
+    return message
+
+
+#: Appended to an HTTP 401 from a provider kind CLIO can deploy (vLLM,
+#: llama.cpp, Ollama): a CLIO-managed deployment is keyed per launch, and only
+#: "Use in Models" hands that key to the binding -- the provider's own
+#: "check your API key" never names it.
+MANAGED_SERVER_KEY_HINT = (
+    "If this is a CLIO-managed deployment, choose “Use in Models” on it in "
+    "Infrastructure so CLIO uses its key; otherwise save the server's key in Models."
+)
+
+
+def _managed_service_kind(provider_id: str) -> bool:
+    """Whether ``provider_id``'s catalog preset is a service CLIO can deploy."""
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(provider_id) if provider_id else None
+    return bool(getattr(preset, "managed_service_id", None))
 
 
 def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:

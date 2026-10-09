@@ -243,3 +243,35 @@ def test_plan_limit_is_a_typed_provider_error() -> None:
     assert info.details["reason"] == CLAUDE_CODE_PLAN_LIMIT_REASON
     assert info.details["model"] == "claude-sonnet-5"
     assert info.details["rate_limit_type"] is None  # the 429 result path carries none
+
+
+def _unauthorized(provider: str) -> Exception:
+    return _wrapped(
+        litellm.AuthenticationError(
+            message='OpenAIException - {"error":{"message":"Unauthorized","code":401}}',
+            model="qwen3",
+            llm_provider=provider,
+        )
+    )
+
+
+@pytest.mark.parametrize("provider_id", ["vllm", "ollama", "llama_cpp"])
+def test_a_401_from_a_deployable_server_kind_names_use_in_models(provider_id: str) -> None:
+    """c33: a keyed CLIO-managed vLLM bound without "Use in Models" answered 401
+    and the only advice was the provider's "check your API key"."""
+    from clio_agent.gact.stream_failures import MANAGED_SERVER_KEY_HINT
+
+    info = forward_error_info(_state(provider_id), _unauthorized("openai"), "")
+
+    assert info.error == "provider_error"
+    assert info.message.endswith("(HTTP 401) " + MANAGED_SERVER_KEY_HINT)
+    assert "Use in Models" in info.message
+
+
+def test_other_failures_of_a_deployable_server_kind_get_no_key_hint() -> None:
+    from clio_agent.gact.stream_failures import MANAGED_SERVER_KEY_HINT
+
+    message = turn_failure_message(_not_found(), provider_id="vllm", otherwise="x")
+
+    assert message.endswith("(HTTP 404)")
+    assert MANAGED_SERVER_KEY_HINT not in message
