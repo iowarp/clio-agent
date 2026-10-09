@@ -510,8 +510,8 @@ class _Loop:
 
     def _run_tool(self, call: ToolCallPart, tool: dspy.Tool) -> _CallOutcome:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
-        from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
         from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
+        from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
 
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):

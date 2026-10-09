@@ -446,14 +446,23 @@ def test_tool_call_arguments_render_as_vllm_parses_them(tiny_tokenizer_dir: Path
         "{% set a = tc.function.arguments %}"
         "<call>{{ a | tojson if a is mapping else a }}</call>{% endfor %}\n{% endfor %}"
     )
-    renderer = ChatRenderer(tokenizer_json=tok, chat_template=template, special_tokens={}, identity="t")
-    call = {"id": "c1", "type": "function", "function": {"name": "ls", "arguments": '{"path":"/w"}'}}
+    renderer = ChatRenderer(
+        tokenizer_json=tok, chat_template=template, special_tokens={}, identity="t"
+    )
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "ls", "arguments": '{"path":"/w"}'},
+    }
     messages = [
         {"role": "user", "content": "list"},
         {"role": "assistant", "content": "", "tool_calls": [call]},
         {"role": "assistant", "content": "x", "tool_calls": []},
-        {"role": "assistant", "content": "", "tool_calls": [
-            {"type": "function", "function": {"name": "f", "arguments": ""}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": ""}}],
+        },
     ]
     text = renderer.render(messages)
     assert '<call>{"path": "/w"}</call>' in text

@@ -327,9 +327,7 @@ def test_a_file_policy_refusal_reaches_the_model_without_a_traceback(
             next_action="Pass a file path.",
         )
 
-    agent = ClioReAct(
-        "question -> answer", tools=[dspy.Tool(_refuse, name="read")], max_iters=4
-    )
+    agent = ClioReAct("question -> answer", tools=[dspy.Tool(_refuse, name="read")], max_iters=4)
     lm, _ = scripted_lm(
         [
             calls(("read", {"path": "/w"}), text="try"),
