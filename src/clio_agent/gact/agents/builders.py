@@ -25,7 +25,7 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
-from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+from clio_agent.gact.agents.auto_tools import build_configured_auto_tools
 from clio_agent.gact.agents.blueprint_tool_recording import (
     recorded_load_skill_tool as _recorded_load_skill_tool,
 )
@@ -1016,7 +1016,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         )
                         tools.append(_spawn_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-                _auto_tools = build_auto_react_tools(agent_def)
+                _auto_tools = build_configured_auto_tools(agent_def, self.config)
                 toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
                 tools += _auto_tools
                 # THE assembly seam (owner 2026-08-05): every tool is observed by
@@ -1273,7 +1273,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                 self.tools.append(_skill_tool)
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-            _auto_tools = build_auto_react_tools(agent_def)
+            _auto_tools = build_configured_auto_tools(agent_def, self.config)
             toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
             self.tools += _auto_tools
             # THE assembly seam (owner 2026-08-05): same default-on instrumentation as above.

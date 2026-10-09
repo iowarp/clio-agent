@@ -48,9 +48,11 @@ from typing import Any
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui_catalogs.activation import session_a2ui_producers_enabled
 from clio_agent.gact.a2ui_producer import (
+    build_capture_a2ui_surface_tool,
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
     build_inspect_a2ui_surface_tool,
+    build_publish_dashboard_report_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -74,7 +76,20 @@ from clio_agent.gact.weather_tools import build_weather_forecast_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
 
 
-def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None) -> list[Any]:
+def build_configured_auto_tools(agent_def: Any, config: Any) -> list[Any]:
+    """Attach auto tools using the compiled model's evidenced native capabilities."""
+    from clio_agent.gact.agents.declared_native_tools import (  # noqa: PLC0415
+        declared_native_capabilities,
+    )
+
+    return build_auto_react_tools(
+        agent_def, supports_vision=declared_native_capabilities(config)["supports_vision"]
+    )
+
+
+def build_auto_react_tools(
+    agent_def: Any, *, a2ui_producers: bool | None = None, supports_vision: bool = False
+) -> list[Any]:
     """Return the auto-attached tool list for one react expert (order-stable).
 
     Order is fixed so the react prompt's tool prefix stays byte-stable across builds — a
@@ -141,8 +156,14 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
             ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
             ("inspect_a2ui_surface", build_inspect_a2ui_surface_tool),
+            ("capture_a2ui_surface", build_capture_a2ui_surface_tool),
+            ("publish_dashboard_report", build_publish_dashboard_report_tool),
         ):
-            if a2ui_producers and name not in declared:
+            if (
+                a2ui_producers
+                and name not in declared
+                and (name != "capture_a2ui_surface" or supports_vision)
+            ):
                 tools.append(build())
         if a2ui_producers and "get_weather_forecast" not in declared:
             tools.append(build_weather_forecast_tool())

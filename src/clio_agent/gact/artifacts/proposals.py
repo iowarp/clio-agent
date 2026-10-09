@@ -41,6 +41,7 @@ from clio_agent.gact.artifacts.minting import (
     artifact_name_for_path,
     mint_artifact_outcome,
 )
+from clio_agent.gact.artifacts.presentation import PURPOSES
 from clio_agent.gact.artifacts.proposal_effects import (
     PROPOSED_ARTIFACT_EVENT,
     _dedup_enrich,
@@ -129,6 +130,7 @@ class RejectionReason(str, Enum):
 
     MISSING_INPUT = "missing_input"  # neither a path nor inline content (+name) given
     INVALID_KIND = "invalid_kind"  # kind not in the enum, or a RESERVED kind (plan)
+    INVALID_PURPOSE = "invalid_purpose"
     PATH_MISSING = "path_missing"  # a named workspace path does not exist on disk
     ESCAPES_ROOT = "escapes_root"  # path resolves OUTSIDE the bound workspace root
     CONTAINMENT_UNRESOLVED = "containment_unresolved"  # workspace root unresolvable
@@ -160,9 +162,10 @@ class Proposal:
     content: str = ""
     annotation: str = ""
     pdf_preview: bool | None = None
+    purpose: str = "deliverable"
 
     @classmethod
-    def from_mapping(cls, raw: Any) -> "Proposal":
+    def from_mapping(cls, raw: Any, *, purpose: str = "deliverable") -> "Proposal":
         """Build a proposal from a model-supplied mapping, ignoring unknown keys.
 
         Notably ignores any ``sha256`` / ``hash`` / ``digest`` key: the harness is
@@ -178,6 +181,7 @@ class Proposal:
             path=str(raw.get("path") or "").strip(),
             content=content if isinstance(content, str) else "",
             annotation=str(raw.get("annotation") or "").strip(),
+            purpose=str(raw.get("purpose", purpose)).strip(),
             pdf_preview=raw.get("pdf_preview")
             if isinstance(raw.get("pdf_preview"), bool)
             else None,
@@ -320,6 +324,23 @@ def promote_proposal(
     returns the existing record with ``created=False`` (``already_registered``) and
     consumes no cap budget. Every outcome emits an ``artifact.proposed`` trace event.
     """
+    if proposal.purpose not in PURPOSES:
+        outcome = _rejected(
+            proposal.name,
+            RejectionReason.INVALID_PURPOSE,
+            "Use deliverable, intermediate or verification.",
+        )
+        _emit_proposal_event(
+            app,
+            sid,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            agent_id=agent_id,
+            outcome=outcome,
+            proposal=proposal,
+            source="none",
+        )
+        return outcome
     try:
         kind = validate_kind(proposal.kind)
     except ValueError as exc:
@@ -527,6 +548,7 @@ def promote_proposal(
             name=name,
             version=existing_version,
             turn_id=turn_id,
+            purpose=proposal.purpose,
         )
         return outcome
 
@@ -557,7 +579,7 @@ def promote_proposal(
         evidence=evidence,
         kind=kind,
         mechanism=Mechanism.MODEL,
-        producer=_mint_producer(sid, turn_id, agent_id),
+        producer={**_mint_producer(sid, turn_id, agent_id), "purpose": proposal.purpose},
         custody=path_ingest.custody if path_ingest is not None else Custody.WORKSPACE_REFERENCED,
         path=str(path),
         ingested=path_ingest,
@@ -622,6 +644,7 @@ def promote_proposal(
             name=name,
             version=mint.version,
             turn_id=turn_id,
+            purpose=proposal.purpose,
         )
         return outcome
     _increment_proposal_count(app, sid, turn_id)
@@ -726,6 +749,7 @@ def parse_proposals(
     content: str,
     annotation: str,
     artifacts: Any,
+    purpose: str = "deliverable",
 ) -> list[Proposal]:
     """Normalize the tool's single-item OR batch args into a proposal list.
 
@@ -735,7 +759,7 @@ def parse_proposals(
     the model gets a typed reason rather than a silent no-op.
     """
     if isinstance(artifacts, list) and artifacts:
-        return [Proposal.from_mapping(item) for item in artifacts]
+        return [Proposal.from_mapping(item, purpose=purpose) for item in artifacts]
     return [
         Proposal(
             name=(name or "").strip(),
@@ -743,6 +767,7 @@ def parse_proposals(
             path=(path or "").strip(),
             content=content if isinstance(content, str) else "",
             annotation=(annotation or "").strip(),
+            purpose=purpose,
         )
     ]
 

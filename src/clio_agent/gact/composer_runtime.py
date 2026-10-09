@@ -90,6 +90,7 @@ def register_composer_routes(app: Any, deps: Any) -> None:
     register_message_intent_routes(app, deps)
     register_resource_routes(app, deps)
     register_normalized_provider_catalog_routes(app, deps)
+    app.state.redrive_message_queue = lambda sid: promote_queue_head(app, deps, sid)
     _install_composer_idle_hook(app, deps)
     # Runs here, not in initialize_composer_state: recovery re-enqueues onto
     # app.state.loop_inboxes, which build_app creates between the two calls.
@@ -184,6 +185,11 @@ def promote_queue_head(app: Any, deps: Any, session_id: str) -> None:
     from clio_agent.gact.types import PostMessageRequest  # noqa: PLC0415
 
     if app.state.turn_runner.busy(session_id):
+        return
+    if any(
+        row.session_id == session_id and row.status == "pending" and row.response_mode == "blocking"
+        for row in app.state.user_questions.values()
+    ):
         return
     if session_autostart_suspended(app, session_id):
         # Typed, not silent: the queue is intact and the user's next explicit

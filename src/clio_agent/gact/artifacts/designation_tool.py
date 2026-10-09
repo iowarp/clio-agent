@@ -34,6 +34,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         artifacts: Optional[list[dict[str, Any]]] = None,
         used: Optional[list[str]] = None,
         pdf_preview: Optional[bool] = None,
+        purpose: str = "deliverable",
     ) -> dict[str, Any]:
         """Register a session output as an artifact (model contract lives in the dspy ``desc``).
 
@@ -69,6 +70,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             content=content,
             annotation=annotation,
             artifacts=artifacts,
+            purpose=purpose,
         )
         result = promote_proposals(
             app,
@@ -139,9 +141,13 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "a specific destination is required, name must be that full path, not a "
             "bare filename. kind is one of "
             "dataset|image|report|script|config|model|ui_payload|other. Put your "
-            "intent (why it matters, deliverable vs scratch) in annotation. To "
+            "intent (why it matters) in annotation. Set purpose=deliverable for requested "
+            "outputs, purpose=verification for review images/PDFs, or purpose=intermediate "
+            "for working files. All remain in Observability and lineage; only deliverables "
+            "appear on the final response, using the latest deliverable version per file. "
+            "Do not list review/working files in the final answer unless requested. To "
             "designate several at once pass artifacts=[{name,kind,path|content,"
-            "annotation}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
+            "annotation,purpose?}, ...]. OPTIONAL: cite what this deliverable was DERIVED "
             "FROM via used=[...] (paths, artifact ids, an uploaded attachment's "
             "res_... id or its returned working-copy path, "
             "and/or exact source URLs) so its lineage graph "
@@ -162,6 +168,12 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
             "only because you called this."
         ),
         args={
+            "purpose": {
+                "type": "string",
+                "enum": ["deliverable", "intermediate", "verification"],
+                "default": "deliverable",
+                "description": "Response output, working intermediate, or review evidence; all are retained. Batch items may override this default.",
+            },
             "pdf_preview": {
                 "type": ["boolean", "null"],
                 "default": None,

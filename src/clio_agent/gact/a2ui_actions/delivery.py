@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 def _correlated_pending_question(
-    app: "FastAPI", session_id: str, surface_id: str, context: Mapping[str, Any]
+    app: "FastAPI", session_id: str, surface_id: str, context: Mapping[str, Any], action_name: str
 ) -> "UserQuestion | None":
     """Resolve the ONE pending question this action/error resumes, if any.
 
@@ -38,11 +38,16 @@ def _correlated_pending_question(
     for question in app.state.user_questions.values():
         if question.session_id != session_id or question.status != "pending":
             continue
+        answer_action = question.metadata.get("a2ui_answer_action")
+        if answer_action and answer_action != action_name:
+            continue
+        tagged = str((question.metadata or {}).get("a2ui_surface_id") or "")
+        if answer_action and tagged != surface_id:
+            continue
         if question_id:
             if question.id == question_id:
                 return question
             continue
-        tagged = str((question.metadata or {}).get("a2ui_surface_id") or "")
         if tagged and tagged == surface_id:
             return question
     return None
@@ -96,8 +101,30 @@ async def deliver_to_agent(
     if record.client_data_model is not None:
         metadata["a2ui_client_data_model"] = record.client_data_model
 
-    if sess is not None and sess.status == "waiting_user":
-        question = _correlated_pending_question(app, session_id, record.surface_id, context)
+    question = _correlated_pending_question(
+        app, session_id, record.surface_id, context, record.action_name
+    )
+    if question is None:
+        closed = next(
+            (
+                row
+                for row in app.state.user_questions.values()
+                if row.session_id == session_id
+                and row.status != "pending"
+                and row.metadata.get("a2ui_surface_id") == record.surface_id
+                and row.metadata.get("a2ui_answer_action") == record.action_name
+                and (not context.get("question_id") or context["question_id"] == row.id)
+            ),
+            None,
+        )
+        if closed is not None:
+            # A completed question's answer button cannot become an ordinary steer.
+            from clio_agent.gact.routes.session_question_helpers import question_already_resolved
+
+            exc = question_already_resolved(session_id, closed.id)
+            fail_and_publish(app, session_id, record, exc)
+            raise exc
+    if question is not None or (sess is not None and sess.status == "waiting_user"):
         if question is None:
             failed = record.transition(
                 state="failed",

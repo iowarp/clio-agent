@@ -83,7 +83,9 @@ def register_session_export_routes(app: FastAPI) -> None:
             )
         return _ExportFileResponse(
             item.path,
-            media_type="text/html" if item.filename.endswith(".html") else "application/zip",
+            media_type={".html": "text/html", ".png": "image/png"}.get(
+                Path(item.filename).suffix, "application/zip"
+            ),
             headers={
                 "Content-Disposition": content_disposition(item.filename),
                 "Cache-Control": "no-store",

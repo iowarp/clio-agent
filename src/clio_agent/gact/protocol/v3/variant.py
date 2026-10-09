@@ -27,7 +27,7 @@ from clio_agent.gact.protocol.v3 import Projection
 
 __all__ = ["project_variant_event"]
 
-_RUN_KEYS = ("agent_id", "origin", "strategy", "judge", "n")
+_RUN_KEYS = ("agent_id", "origin", "strategy", "judge", "n", "rubric")
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:

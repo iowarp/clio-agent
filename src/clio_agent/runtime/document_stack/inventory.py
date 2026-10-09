@@ -7,6 +7,7 @@ import importlib.metadata
 import json
 import platform
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,31 @@ PACKAGES = {
     "defusedxml": "defusedxml",
     "nodejs-wheel-binaries": "nodejs_wheel",
 }
+
+NATIVE_TOOLS = ("soffice", "pandoc", "pdftoppm", "tesseract")
+
+
+def _native_tool(name: str, cwd: Path) -> dict[str, Any]:
+    """Discover one optional converter and retain its bounded execution failure."""
+    try:
+        executable = find_native(name)
+        result: dict[str, Any] = {
+            "status": "available" if executable else "missing",
+            "path": executable,
+        }
+        if executable:
+            version_flag = "-v" if name == "pdftoppm" else "--version"
+            result["version"] = run([executable, version_flag], cwd=cwd, timeout=10).strip()[:300]
+        return result
+    except DocumentError as exc:
+        return {"status": "failed", "error": str(exc)}
+
+
+def native_inventory(cwd: Path) -> dict[str, dict[str, Any]]:
+    """Probe independent converters with at most two concurrent child processes."""
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="document-native-probe") as pool:
+        futures = {name: pool.submit(_native_tool, name, cwd) for name in NATIVE_TOOLS}
+        return {name: future.result() for name, future in futures.items()}
 
 
 def inventory() -> dict[str, Any]:
@@ -57,18 +83,7 @@ def inventory() -> dict[str, Any]:
     if node is None:
         raise DocumentError("Managed Node.js package has no supported executable layout")
     node_version = run([str(node), "--version"], cwd=node_root).strip()
-    native: dict[str, Any] = {}
-    for name in ("soffice", "pandoc", "pdftoppm", "tesseract"):
-        try:
-            executable = find_native(name)
-            native[name] = {"status": "available" if executable else "missing", "path": executable}
-            if executable:
-                version_flag = "-v" if name == "pdftoppm" else "--version"
-                native[name]["version"] = run(
-                    [executable, version_flag], cwd=node_root, timeout=10
-                ).strip()[:300]
-        except DocumentError as exc:
-            native[name] = {"status": "failed", "error": str(exc)}
+    native = native_inventory(node_root)
     fonts: list[str] = []
     roots = [Path("/usr/share/fonts"), Path("/Library/Fonts"), Path("C:/Windows/Fonts")]
     for root in roots:

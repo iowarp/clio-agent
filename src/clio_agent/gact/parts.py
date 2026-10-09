@@ -347,6 +347,10 @@ class Part(DocumentPartFields):
         wire["id"] = self.id
         wire["type"] = self.type
         wire["agent_id"] = self.agent_id
+        # A recorded zero is timing evidence; an old result without a measurement
+        # must still omit the default rather than invent a zero-duration call.
+        if self.type == "tool_result" and "duration_ms" in self.model_fields_set:
+            wire["duration_ms"] = self.duration_ms
         if self.content:
             wire["content"] = [child.to_wire() for child in self.content]
         return wire

@@ -181,7 +181,9 @@ from clio_agent.gact.app import build_app
 # and composed through the existing Settings route registrar.
 # 348 -> 352 (campaign integration): visual export POST, bounded capture GET,
 # prepare-download POST and one-use download GET, owned by routes/session_export.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 352
+# 352 -> 355: dashboard list, pinned report and offline export, routes/dashboard_reports.py.
+# 355 -> 356: bounded renderer feedback/capture bridge, routes/a2ui_visual.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 356
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

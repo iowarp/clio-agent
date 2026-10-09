@@ -147,6 +147,92 @@ def test_a_composer_message_with_an_attachment_answers_the_question(
     assert "user_question.answered" in events and "user_question.resumed" in events
 
 
+def test_async_composer_answer_keeps_attachment_and_reaches_agent_once_from_queue(
+    harness: tuple[TestClient, _RecordingAgent],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, agent = harness
+    workspace_id = _workspace(client, tmp_path / "workspace")
+    sid = client.post("/v1/sessions", json={"workspace_id": workspace_id}).json()["id"]
+    question = client.post(
+        f"/v1/sessions/{sid}/questions",
+        json={"prompt": "Which station list?", "response_mode": "async"},
+    ).json()
+    ready = _upload(
+        client, workspace_id, name="stations.csv", content=b"id\nP123\n", media_type="text/csv"
+    )
+    request = {
+        "parts": [
+            {"type": "text", "text": "Use this list."},
+            {"type": "resource_ref", "resource_id": ready["id"], "resource_revision": "1"},
+        ],
+        "metadata": {"answers_question_id": question["id"]},
+        "idempotency_key": "question-answer-once",
+    }
+    immediate = client.post(f"/v1/sessions/{sid}/messages", json=request)
+    assert immediate.status_code == 422, immediate.text
+    assert "async_question_needs_queue" in immediate.text
+    assert agent.questions == []
+    with monkeypatch.context() as patch:
+        patch.setattr(client.app.state.turn_runner, "busy", lambda _sid: True)
+        queued = client.post(f"/v1/sessions/{sid}/queued-messages", json=request)
+        assert queued.status_code == 201, queued.text
+        retry = client.post(f"/v1/sessions/{sid}/queued-messages", json=request)
+        assert retry.json()["id"] == queued.json()["id"]
+        assert len(client.app.state.message_intents.list_queued(sid)) == 1
+        assert agent.questions == []
+    settled = client.app.state.user_questions[question["id"]]
+    assert settled.status == "answered"
+    assert settled.answer == "Use this list."
+    assert settled.answer_metadata["queued_message_id"] == queued.json()["id"]
+    assert settled.answer_metadata["attachments"][0]["resource_id"] == ready["id"]
+    cursor = client.app.state.bus.latest_event_id(sid)
+    promoted = client.post(
+        f"/v1/sessions/{sid}/queued-messages/{queued.json()['id']}/promote",
+        json={"revision": queued.json()["revision"]},
+    )
+    assert promoted.status_code == 200, promoted.text
+    assert _settled_after(client, sid, cursor) == "idle"
+    assert len(agent.questions) == 1
+    assert "stations.csv" in agent.questions[0]
+    assert "Question: Which station list?" in agent.questions[0]
+    assert "Use this list." in agent.questions[0]
+    assert not client.app.state.message_intents.list_queued(sid)
+
+
+def test_async_answer_waits_for_blocking_question_then_runs_after_dismissal(
+    harness: tuple[TestClient, _RecordingAgent],
+) -> None:
+    client, agent = harness
+    sid = client.post("/v1/sessions", json={}).json()["id"]
+    blocking = _ask(client, sid, "Units?")
+    question = client.post(
+        f"/v1/sessions/{sid}/questions",
+        json={"prompt": "What does X mean?", "response_mode": "async"},
+    ).json()
+    answered = client.post(
+        f"/v1/sessions/{sid}/questions/{question['id']}/answer", json={"answer": "Stiffness"}
+    )
+    assert answered.status_code == 200, answered.text
+    assert len(client.app.state.message_intents.list_queued(sid)) == 1
+    assert agent.questions == []
+    cursor = client.app.state.bus.latest_event_id(sid)
+    cancelled = client.post(f"/v1/sessions/{sid}/questions/{blocking['id']}/cancel")
+    assert cancelled.status_code == 200, cancelled.text
+    # Dismissal emits its own idle event before the queued turn starts. Wait
+    # past that transition, rather than mistaking it for the answer's completion.
+    running = next(
+        event
+        for event in client.app.state.bus.session_events_since(sid, cursor=cursor + 1)
+        if event.type == "session.status_changed" and event.payload.get("status") == "running"
+    )
+    assert _settled_after(client, sid, running.id) == "idle"
+    assert len(agent.questions) == 1
+    assert agent.questions[0].endswith("Question: What does X mean?\nAnswer: Stiffness")
+    assert not client.app.state.message_intents.list_queued(sid)
+
+
 def test_answering_a_settled_question_by_message_is_refused(
     harness: tuple[TestClient, _RecordingAgent],
 ) -> None:

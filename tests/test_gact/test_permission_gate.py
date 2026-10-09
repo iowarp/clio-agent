@@ -225,6 +225,7 @@ def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) 
             workspace_id=root.workspace_id,
             title="child",
             parent_session_id=root_id,
+            agent={"id": "child", "mode": "subagent"},
         )
         gate = _make_permission_gate(app)
         result: dict[str, str] = {}

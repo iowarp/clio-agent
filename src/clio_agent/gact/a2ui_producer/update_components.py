@@ -24,17 +24,16 @@ def build_update_a2ui_components_tool() -> Any:
         surface_id: str,
         components: Optional[list[dict[str, Any]]] = None,
         components_path: str = "",
+        expected_revision: int | None = None,
     ) -> dict[str, Any]:
         """Replace one or more components on an existing inline view or widget.
 
-        Find the live ``surface_id`` with ``inspect_a2ui_surface`` if needed.
-        Pass exactly one of ``components`` or ``components_path``.
-        Load ``a2ui-catalog-<slug>`` for guidance; inspect one schema at
-        ``catalog.json#/components/<ExactComponentId>``. The renderer owns
-        pan, zoom, selection, export, and Reference this controls.
-        For trajectory maps, revise the data reference or track/order fields;
-        the renderer draws the paths from the resulting rows. Revise
-        ``filterFields`` when the useful exploration dimensions change.
+        Inspect first and pass expected_revision to reject concurrent changes.
+        Pass exactly one of components or components_path.
+        Load a2ui-catalog-<slug>; read the exact component schema as needed.
+        Preserve other properties and source measurements while changing
+        layout, encodings, labels or supported annotation marks.
+        Use capture_a2ui_surface to inspect actual rendered pixels afterward.
         """
 
         resolved = _common.active_app_and_session()
@@ -70,7 +69,15 @@ def build_update_a2ui_components_tool() -> Any:
             "version": A2UI_V091_WIRE,
             "updateComponents": {"surfaceId": surface_id, "components": components},
         }
-        outcome = _common.apply_messages(app, session_id, [message], catalog_id=existing.catalog_id)
+        outcome = _common.apply_messages(
+            app,
+            session_id,
+            [message],
+            catalog_id=existing.catalog_id,
+            expected_revisions={surface_id: expected_revision}
+            if expected_revision is not None
+            else None,
+        )
         if isinstance(outcome, dict):
             # A refused batch is never minted/overwritten (#1533 adversarial
             # review): nothing was applied, so the surface's definition
@@ -82,7 +89,7 @@ def build_update_a2ui_components_tool() -> Any:
         # this call may only upsert a SUBSET of a multi-component surface, so
         # the stored definition must be the whole live surface, never just
         # this call's own payload.
-        merged_components = _common.merged_surface_components(existing, components)
+        merged_components = _common.current_surface_components(surface)
         definition = _definition_artifact.mint_surface_definition_artifact(
             app, session_id, surface_id, merged_components
         )
@@ -113,6 +120,10 @@ def build_update_a2ui_components_tool() -> Any:
         domain="surfaces",
         args={
             "surface_id": {"type": "string", "description": "Existing live surface id."},
+            "expected_revision": {
+                "type": "integer",
+                "description": "Inspected revision; a concurrent change rejects this update.",
+            },
             "components": {
                 "type": "array",
                 "items": {"type": "object"},
