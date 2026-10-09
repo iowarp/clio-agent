@@ -12,7 +12,7 @@ recorded too, with its error. Recording never fails a call: an emit error is tra
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -83,7 +83,7 @@ def call_record(
     if response_id_join_enabled():
         # Stage 3 kvnorm crosslink: the provider response id keys this call to its
         # kv_token_importance record in the fused Flowcept store.
-        record["response_id"] = str(getattr(outputs, "id", "") or "")
+        record["response_id"] = _response_id(outputs)
     if (declaration := current_declaration()) is not None:
         record["attention"] = declaration
     if (wire_messages := current_wire_messages()) is not None:
@@ -91,6 +91,21 @@ def call_record(
     if exception is not None:
         record["error"] = f"{type(exception).__name__}: {exception}"
     return record
+
+
+def _response_id(outputs: Any) -> str:
+    """The provider response id (``chatcmpl-*``), also for streamed calls.
+
+    lm15 materializes a streamed Chat Completions call with ``id=None`` (its chat
+    stream emits no start event), but the end event's ``provider_data`` is the
+    final chunk frame, which carries the same id.
+    """
+    if response_id := getattr(outputs, "id", None):
+        return str(response_id)
+    provider_data = getattr(outputs, "provider_data", None)
+    if isinstance(provider_data, Mapping):
+        return str(provider_data.get("id") or "")
+    return ""
 
 
 def _request_messages(request: Any) -> list[dict[str, Any]]:
