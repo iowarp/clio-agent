@@ -23,6 +23,11 @@ from clio_agent.gact.infrastructure.operation_progress import redact
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.storage import resolved_locations
 
+_SHARED_CACHE_ROW = (
+    "This model was found in a shared Hugging Face cache; CLIO holds no download for it. "
+    "Download the revision through CLIO to retry, cancel or follow it here."
+)
+
 
 def missing_receipt(prior: ModelAcquisition) -> ModelAcquisition:
     """Relabel a record whose host receipt is gone, never calling a finished download interrupted.
@@ -195,6 +200,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         )
         if row is None:
             raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
         return await execute(target_id, "cancel", {"id": job_id}, root=row.storage_root)
 
     @app.get("/v1/infrastructure/targets/{target_id}/models/{job_id}/log")
@@ -214,6 +221,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         )
         if row is None:
             raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
         chunk = await execute(
             target_id, "log", {"id": job_id, "offset": max(0, offset)}, root=row.storage_root
         )
@@ -233,6 +242,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         )
         if row is None:
             raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
         return await execute(
             target_id,
             "start",

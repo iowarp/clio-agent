@@ -223,6 +223,7 @@ def hub_snapshots(root: Path) -> list[dict[str, Any]]:
                     "exit_code": None,
                     "log_tail": [],
                     "log_path": None,
+                    "origin": "hf_cache",
                 }
             )
     return rows

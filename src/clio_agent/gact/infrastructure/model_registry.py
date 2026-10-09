@@ -40,6 +40,9 @@ class ModelAcquisition(BaseModel):
     file_path: str | None = None
     #: Set on the reply to a download whose verified revision was already there.
     reuse: ReuseReport | None = None
+    #: ``hf_cache``: a snapshot found in a shared Hugging Face hub cache. CLIO holds no
+    #: receipt for it and never hashed its files, so it cannot retry or cancel it.
+    origin: Literal["receipt", "hf_cache"] = "receipt"
 
 
 class ModelDownloadRequest(BaseModel):

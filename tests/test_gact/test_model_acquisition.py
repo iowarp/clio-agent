@@ -664,11 +664,16 @@ def test_inventory_lists_a_chosen_hub_cache_models_location(
         body = client.get(route).json()
         assert body["errors"] == []
         (row,) = body["models"]
-        assert (row["repository"], row["state"], row["storage_root"]) == (
+        assert (row["repository"], row["state"], row["storage_root"], row["origin"]) == (
             "org/model",
             "ready",
             str(hub),
+            "hf_cache",
         )
+        for action in ("retry", "cancel"):
+            refused = client.post(f"{route}/{row['id']}/{action}")
+            assert refused.status_code == 409
+            assert "shared Hugging Face cache" in refused.json()["detail"]
         store.set_storage("local", HostStorageLocations(root=str(tmp_path), models=str(plain)))
         assert client.get(route).json()["errors"] == []
     assert not (hub / "model-operations").exists()
