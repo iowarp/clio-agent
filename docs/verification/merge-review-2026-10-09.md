@@ -3,7 +3,7 @@
 The integration branch combines the reviewed workspace, drafts, dashboard,
 question, session-column, file-opening, tool-timing, visual-feedback and
 artifact-presentation branches. It also includes the published website guides.
-The UI pin is `84582a460bc4188a8a0caa06d13b5f3ea7c72ef1`; canonical schema
+The UI pin is `25a7ae1166e22e63067befbb1e806c84663074cf`; canonical schema
 commit `90f55a3b990e9fb7c29aa7aa73b9a410a33d2e2d` is reachable from schema main.
 
 The merge review found a real map selection defect in Linux browser CI:
@@ -21,6 +21,12 @@ uses untransformed fractional CSS border-box height. All four layout browser
 checks pass with the original assertions unchanged, plus eight allocation/height
 unit tests, lint and production/offline builds. The diagnostic logs and rejected
 floating-point hypothesis are retained with the merge evidence.
+
+Linux CI then passed the natural-height checks, but a different test read Work
+and panel bounds on successive animation frames. It now waits for opening
+animations on the panel/ancestors to finish before the same exact assertions.
+All four layout browser checks pass. Descendant spinners do not block the wait;
+no geometry or screenshot tolerance was increased.
 
 An actual previously downloaded dashboard exposed a second defect when opened
 with networking disabled: CSP blocked the glTF loader's embedded buffer fetch.
