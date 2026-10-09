@@ -174,7 +174,8 @@ probes, fixtures and CI do not satisfy that gate.
 | Executed gate | Evidence and scope |
 | --- | --- |
 | Pre-change model baseline | `model-baseline-1`: actual Codex/Luna production fetch returned terminal content before the model's next action. The earlier direct-executor probe was not model acceptance. |
-| MCP stdio model overlap | `final-06799-mcp-stdio-1` (actual core83d22/GACT1e382) and `final-integrated-mcp-ui-2` (actual core1e678/GACT1e382) passed strict actual Codex/Luna acceptance, independent file action in a later model step, subsequent uncancelled running query, expired wait with work continuing, observation and original result collection. Each real 11,264-byte fetch matched its hash. Directory names do not override recorded source identities. Five UI cancellation cycles remain pending. |
+| MCP stdio model overlap | `final-e35e4-mcp-ui-3` passed strict actual Codex/Luna acceptance, independent file action in a later model step, subsequent uncancelled running query, expired wait with work continuing, observation and original result collection on coree35e4/GACT898a54. Its real 11,264-byte fetch matched its hash. Earlier passes retain their recorded source identities. |
+| MCP Stop/UI cancellation | `final-e35e4-mcp-ui-4/stop-mcp-disconnect-recorded` passed five fresh actual-model cycles on coree35e4/GACT898a54. Stop ended the model waiter while accepted work continued. Desktop/phone confirmation sent one cancellation per original handle, the raw provider settled cancelled, and the actual HTTP transfer disconnected without replay. Setup-only receipts are not counted as model acceptance. Earlier browser/recorder failures remain retained. |
 | MCP HTTP overlap and reconnect | `integrated-2cdd-http-overlap-2` and `integrated-2cdd-http-recovery-2`: actual Codex/Luna handle, independent file read, running snapshot and stored result. The recovery retained the full backend identity and original session after API loss and lease expiry, with one actual 11,264-byte payload request and no operation replay. Earlier failed external-search and probe-binding attempts are retained separately. Final-state five-cycle recovery is pending. |
 | Shell model overlap | WebSocket evidence includes `integrated-47f-shell-ws-1`; final-state SSE is `integrated-4dc4-shell-lifecycle-1`. Actual model acceptance, subsequent successful independent read, uncancelled running query, expired wait, observe, unbounded wait, stdout, exit 0 and filesystem marker passed. |
 | Subagent model overlap | WebSocket evidence includes `integrated-context-final-subagent-1`; final-state SSE is `integrated-4dc4-subagent-mixed-1`. Actual parent-model handle, later independent action, running child, expired wait and actual child output/marker passed. |
@@ -194,6 +195,7 @@ probes, fixtures and CI do not satisfy that gate.
 | Native permission handling | `integrated-4dc4-shell-lifecycle-1/permission-verdict.json`: a fresh actual-model Shell request waited for real UI Allow once, then continued under the original invocation/handle and produced its result/marker. This is native permission evidence, not MCP `input_required` acceptance. |
 | Real-service desktop/phone UI | Final-state Shell, Subagent and Indexing cancellation/delivery runs used the production UI against the actual source API. Download subtree evidence uses the current unchanged cancellation UI at GACTd51. Captures and hit tests verify readable assignment, visible controls, descendant warning, one confirmation request and pending-cancellation state. The long-assignment scroll region repair is included in GACT5e8. |
 | Graceful Shell interruption | `integrated-4dc4-shell-graceful-1` passed four complete model/process/restart/readback/no-replay cycles. The fifth stopped the actual process chain but its replacement API failed Core attachment before model readback. The verdict remains false; four is not five. `orphan-api-retirement.json` verifies the exact remaining source API exited through its authenticated shutdown endpoint and the installed Core identity remained alive. |
+| Fresh graceful Shell recovery | `final-e35e4-shell-graceful-2` passed five complete actual-model cycles on coree35e4/GACT898a54. Each model received a running handle, performed a later independent action and queried it running. Authenticated source-service shutdown ended every recorded process chain. A replacement API preserved the original interrupted handle; Luna queried and retrieved it without command replay. The private real-Core launcher exited successfully and released its owned daemon. |
 
 ### Focused checks and CI
 
@@ -231,11 +233,12 @@ and the matching core/UI/document logs.
   successfully recovered a permitted source runtime without restarting the
   installed Core or retired services. A later original-task model readback
   actually executed, but its source-freeze guard failed during concurrent
-  integration and its false verdict remains retained. Final Shell crash and
-  graceful recovery repetitions remain pending. No accepted operation may
+  integration and its false verdict remains retained. Five fresh graceful
+  recovery cycles subsequently passed; final Shell crash repetitions remain
+  pending. No accepted operation may
   be replayed when resuming qualification.
-- Five MCP Stop/UI-cancel cycles, HTTP reconnect
-  repetitions and nonrecoverable backend-loss qualification remain pending.
+- Five MCP Stop/UI-cancel cycles passed. HTTP reconnect repetitions and
+  nonrecoverable backend-loss qualification remain pending.
   Prepared external probes are not executed evidence. Native Shell permission
   success does not qualify MCP elicitation/input-answer/reconnect semantics;
   the tested production Web backend exposes no input-required operation.
@@ -245,7 +248,8 @@ and the matching core/UI/document logs.
   kind, assignment, status, progress and confirmed cancellation. Focused MCP
   case reproduced the missing controls before the repair. MCP and Subagent
   cases qualify confirmation, Keep running, pending progress and duplicate-request
-  suppression after it. Full live lifecycle repetition is still required.
+  suppression after it. Five actual-model MCP Stop/cancel repetitions passed
+  through the repaired compact inventory at desktop and phone widths.
 - The connected-source Download-plus-Shell subtree route was rejected by the
   actual host fence in `integrated-context-final-subagent-1`: it cannot enforce
   connected-source child-process exclusions. The already accepted storage work
@@ -266,6 +270,8 @@ These limits prevent claiming implementation completion under the requested
 full qualification gate. Both PRs remain drafts. Preserve every rejected-launch,
 installed-runtime, private-data and manual-only cleanup boundary. Source task
 services/controllers are retired; unrelated active human work is preserved.
-The primary retains the released tracked main/gitlink state, with unrelated
-untracked `.local/` content left intact. Disk/manual cleanup remains a separate
-incomplete monitor obligation.
+Concurrent human integration changed the primary and feature source heads;
+each receipt records the actual identity it tested. This task does not promote
+the async drafts or alter installed Desktop, authentication, defaults or released
+pins. Unrelated human changes are preserved. Disk/manual cleanup remains a
+separate incomplete monitor obligation.
