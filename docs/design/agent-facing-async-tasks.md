@@ -181,6 +181,17 @@ The focused collected/delivered regressions reproduce that stale frame and pass
 after updating it at the existing commit boundary. Fresh actual-model delivery,
 collection, veto and overflow repetitions remain required for this correction.
 
+`integrated-487f-delivery-sse-1/delivery-races-collection-explicit-read-accounted`
+now passes five actual-model collection cycles with no automatic reinjection,
+no explicit result reads and truthful committed frames. The first collection
+batch retained a probe failure when a model explicitly requested the stored
+result despite its instructions. That permitted read supplied its quoted nonce;
+it was not automatic delivery. The revised probe accounts for actual explicit
+read telemetry and still requires the absence of automatic injection. Veto and
+overflow repetitions remain outstanding. Exact-head CI on `487f6aab` found the
+new test's imported fixture missing under full-suite collection. The regression
+fixture is now module-local; its behavior and assertions are unchanged.
+
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
 backend outcomes and filesystem/process evidence. A source change during a

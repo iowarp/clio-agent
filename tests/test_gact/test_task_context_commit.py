@@ -1,19 +1,46 @@
 """Observability must reflect the completion text actually committed to a model."""
 
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from clio_agent.gact import context
+from clio_agent.gact.agent_tasks import AgentTaskRegistry
 from clio_agent.gact.enrichment import _estimate_context_tokens, _record_context_frame
+from clio_agent.gact.events import EventBus
 from clio_agent.gact.mcp_task_store import SessionMetadataTaskStore
+from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.task_controls import wait_tasks
 from clio_agent.gact.task_delivery import commit_staged_completions, pending_completions
 from clio_agent.gact.types import Message
 from clio_agent.tools.mcp_tasks import utcnow_iso
 from tests.test_gact.test_shared_task_controls import record
 
-pytest_plugins = ("tests.test_gact.test_shared_task_controls",)
+
+@pytest.fixture
+def scoped_app(tmp_path: Path) -> Iterator[tuple[Any, str, SessionMetadataTaskStore]]:
+    """Keep real-store fixture ownership local under full-suite/sharded collection."""
+    sessions = SessionStore(path=tmp_path / "sessions.json")
+    sid = sessions.create(workspace_id="ws", title="parent").id
+    store = SessionMetadataTaskStore(sessions)
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions=sessions,
+            agent_task_registry=AgentTaskRegistry(),
+            mcp_task_store=store,
+            bus=EventBus(),
+            cancel_flags=set(),
+        )
+    )
+    app_token, sid_token = context.set_app(app), context.set_session_id(sid)
+    try:
+        yield app, sid, store
+    finally:
+        context.reset(sid_token)
+        context.reset(app_token)
 
 
 @pytest.mark.parametrize("collected", [True, False], ids=["collected", "delivered"])
