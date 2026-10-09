@@ -233,6 +233,23 @@ def render_without_tools(
     return renderer.render(messages, template_kwargs=kwargs)
 
 
+def _tool_call_names(messages: list[dict[str, Any]]) -> dict[str, str]:
+    """``tool_call_id -> function name`` from the assistant messages' ``tool_calls``.
+
+    OpenAI-format tool messages carry only the call id, so a tool result's
+    range is labelled with the name of the call that produced it.
+    """
+    names: dict[str, str] = {}
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            name = (call.get("function") or {}).get("name")
+            if call.get("id") and name:
+                names[str(call["id"])] = str(name)
+    return names
+
+
 def declare_ranges(
     messages: list[dict[str, Any]],
     encoded: Encoded,
@@ -253,7 +270,11 @@ def declare_ranges(
     cursor = 0
     sections: list[tuple[int, int, str, str, int | None]] = []
     unlocated: list[int] = []
+    call_names = _tool_call_names(messages)
     for index, message in enumerate(messages):
+        if message.get("role") == "tool" and not message.get("name"):
+            name = call_names.get(str(message.get("tool_call_id") or ""))
+            message = {**message, "name": name} if name else message
         content = _content_text(message).strip()
         if not content:
             continue

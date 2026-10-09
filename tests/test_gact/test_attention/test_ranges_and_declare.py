@@ -435,6 +435,29 @@ def test_tool_schema_rendered_twice_is_left_undeclared() -> None:
     assert [r.domain for r in declaration.ranges] == ["user"]
 
 
+def test_tool_result_ranges_are_labelled_with_the_calling_tool() -> None:
+    # c41 live: OpenAI tool messages carry only tool_call_id, so every result
+    # range was labelled "tool"; the name comes from the assistant's tool call.
+    text = "u: list it\na: call\ntool: a.txt b.txt\nu2"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    messages = [
+        {"role": "user", "content": "list it"},
+        {
+            "role": "assistant",
+            "content": "call",
+            "tool_calls": [{"id": "c1", "function": {"name": "fs_list_dir", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "a.txt b.txt"},
+        {"role": "tool", "tool_call_id": "unknown", "content": "u2"},
+    ]
+    declaration = declare_ranges(messages, encoded)
+    got = [(r.domain, r.label) for r in declaration.ranges if r.domain == "tool_result"]
+    assert got == [("tool_result", "fs_list_dir"), ("tool_result", "tool")]
+    assert "name" not in messages[2]  # the caller's messages are not mutated
+
+
 def test_tool_call_arguments_render_as_vllm_parses_them(tiny_tokenizer_dir: Path) -> None:
     # F051 (c41 live): vLLM json.loads an assistant tool call's string arguments
     # before templating, so `arguments | tojson` prints {"path": "/w"}; rendering
