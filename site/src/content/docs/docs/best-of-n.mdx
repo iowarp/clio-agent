@@ -1,0 +1,99 @@
+---
+title: Best of N and refinement
+description: Compare independent drafts generated in parallel, inspect their evaluation criteria, and choose an answer or refine one sequentially.
+---
+
+import { Aside, CardGrid, LinkCard, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+
+Ask CLIO for several alternatives when a task benefits from different approaches:
+a summary, a report introduction, an explanation, or a plan. **Best of N** makes
+independent attempts at the same task. Each candidate has its own tab, so you can
+compare complete answers without mixing their text together.
+
+<Aside type="note" title="Development preview">
+This guide describes the reviewed development build. Its corrections for five
+individual candidates, separate reasoning, and evaluation criteria are not
+included in beta 5.2.
+</Aside>
+
+## Ask for alternatives
+
+<Steps>
+
+1. State the task, the number of drafts, and what makes a good answer.
+
+   ```text
+   Use Best of N to write five different introductions to this report.
+   Each should be one paragraph for a general scientific audience.
+   Compare clarity, fidelity to the supplied results, and concision.
+   Let me choose the one to continue with.
+   ```
+
+2. Open the **Alternative drafts** block. Select each **Try** tab to read its
+   candidate. Reasoning and tool activity can be expanded separately.
+
+3. Open **Evaluation criteria** to check the instructions used for the comparison.
+   When you are choosing, select **Pick Try** on the candidate you want.
+
+</Steps>
+
+The agent decides when to use the draft tool; asking for numbered alternatives
+in ordinary prose does not by itself establish a Best of N run. Check for the
+draft block and its individual tries. The default maximum is eight attempts;
+an operator can configure a lower limit.
+
+## Choose who judges
+
+<Tabs>
+<TabItem label="You choose">
+
+Include “let me choose” in the request. The run waits for your selection, and the
+conversation continues from the selected candidate. Other candidates remain
+available in the recorded run.
+
+For example, five user-judged attempts in a real Codex/Luna check each produced
+one short poem. The five tabs represented five separate candidates, rather than
+five sets of poems.
+
+</TabItem>
+<TabItem label="The model chooses">
+
+Ask CLIO to select against specific criteria, such as “accurate to the source,
+plain language, under 150 words.” Each evaluated candidate receives a score
+from 0 to 1. **Selected** identifies the chosen candidate.
+
+In a separate real Codex/Luna check, three short poems received scores of 0.85,
+0.95, and 0.92 against the same criteria. The second candidate was selected.
+These are one model's judgments for that example, not measured correctness or
+a promise that the selected answer is better for every reader.
+
+</TabItem>
+</Tabs>
+
+## Parallel drafts or sequential refinement?
+
+| Approach | How attempts relate | When to use it |
+|---|---|---|
+| Best of N | Independent candidates run in parallel, then a person or model selects. | Explore different approaches to one task. |
+| Refine | Each attempt uses feedback from the previous one and runs sequentially. | Improve a candidate against a concrete criticism. |
+
+In a user-judged refinement run, add an optional comment to the candidate.
+**Refine Try** requests another attempt using that feedback; picking without a
+comment accepts the candidate. For example: “Keep the opening, remove the
+repetition, and define the acronym.”
+
+Several attempts use more model work than one answer. Check their activity and
+the session's usage when deciding how many to request. For factual work, verify
+the evidence behind the selected answer as well as its wording.
+
+## Keep the result useful
+
+Tell CLIO what to do with the chosen result: revise a document, develop the
+selected plan, or use the selected explanation in a dashboard. Selection chooses
+an answer; it does not independently approve a protected file change or publish
+a result outside the workspace.
+
+<CardGrid>
+	<LinkCard title="Dashboards" description="Develop the chosen analysis into a connected interactive report." href="/docs/dashboards/" />
+	<LinkCard title="Memory and evidence" description="Inspect the recorded work and sources behind an answer." href="/docs/memory-and-evidence/" />
+</CardGrid>
