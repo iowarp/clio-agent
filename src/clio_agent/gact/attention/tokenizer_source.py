@@ -36,8 +36,12 @@ def configured_tokenizer() -> str:
     ).strip()
 
 
-def served_model_root(api_base: str, served_model: str) -> str:
-    """The HF id vLLM loaded for ``served_model`` (``/v1/models`` ``root``)."""
+def served_model_root(api_base: str, served_model: str, api_key: str = "") -> str:
+    """The HF id vLLM loaded for ``served_model`` (``/v1/models`` ``root``).
+
+    ``api_key`` is the call's own credential: a CLIO-managed vLLM requires it
+    on every route, ``/v1/models`` included (F049b: 401 without it).
+    """
     key = (api_base.rstrip("/"), served_model)
     with _lock:
         if key in _served_roots:
@@ -45,7 +49,8 @@ def served_model_root(api_base: str, served_model: str) -> str:
     import requests  # noqa: PLC0415
 
     try:
-        response = requests.get(f"{key[0]}/models", timeout=10)
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        response = requests.get(f"{key[0]}/models", headers=headers, timeout=10)
         response.raise_for_status()
         rows = response.json().get("data") or []
     except (requests.RequestException, ValueError) as exc:
@@ -91,9 +96,9 @@ def renderer_for(identity: str) -> ChatRenderer:
     return renderer
 
 
-def resolve_renderer(api_base: str, served_model: str) -> ChatRenderer:
+def resolve_renderer(api_base: str, served_model: str, api_key: str = "") -> ChatRenderer:
     """Write-path resolution: operator override, else the served model's root."""
-    identity = configured_tokenizer() or served_model_root(api_base, served_model)
+    identity = configured_tokenizer() or served_model_root(api_base, served_model, api_key)
     return renderer_for(identity)
 
 

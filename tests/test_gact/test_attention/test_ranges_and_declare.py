@@ -293,3 +293,27 @@ def test_typed_attention_request_preserves_wire_and_trace(
     ]
     assert current_declaration() is None
     assert declare_mod.current_wire_messages() is None
+
+
+def test_served_model_root_sends_the_calls_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # F049b (c37 live): a CLIO-managed vLLM answers /v1/models with 401 without its key.
+    import requests
+
+    seen: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"data": [{"id": "served", "root": "Qwen/Qwen3-4B"}]}
+
+    def _get(url: str, headers: dict[str, str] | None = None, timeout: float = 0) -> _Resp:
+        seen["url"], seen["headers"] = url, headers or {}
+        return _Resp()
+
+    monkeypatch.setattr(requests, "get", _get)
+    monkeypatch.setattr(tokenizer_source, "_served_roots", {})
+    root = tokenizer_source.served_model_root("http://127.0.0.1:1/v1", "served", "k-test")
+    assert root == "Qwen/Qwen3-4B"
+    assert seen["headers"] == {"Authorization": "Bearer k-test"}

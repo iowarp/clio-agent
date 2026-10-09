@@ -91,7 +91,9 @@ def build_declaration(
             resolve_renderer,
         )
 
-        renderer = resolve_renderer(str(merged.get("api_base") or ""), served_model)
+        renderer = resolve_renderer(
+            str(merged.get("api_base") or ""), served_model, str(merged.get("api_key") or "")
+        )
         encoded = renderer.render_encoded(messages, template_kwargs)
     except AttentionUnavailable as exc:
         return call_kwargs, _not_declared(exc.reason, exc.detail)
