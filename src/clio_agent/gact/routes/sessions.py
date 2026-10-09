@@ -70,7 +70,7 @@ from clio_agent.gact.types import (
 )
 from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
-from clio_agent.gact.user_question_resume import resume_answered_question
+from clio_agent.gact.user_question_resume import resume_answered_question, settled_question_metadata
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -766,6 +766,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             owner_session_id=sid,
             attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
+            response_mode=req.response_mode,
             kind=req.kind,
             options=normalize_question_options(req),
             allow_freeform=req.allow_freeform,
@@ -778,12 +779,13 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             metadata=req.metadata,
         )
         record_user_question(app, row)
-        _set_session_status(
-            sid,
-            "waiting_user",
-            prev_status=sess.status,
-            metadata_patch={"pending_user_question_id": row.id},
-        )
+        if row.response_mode == "blocking":
+            _set_session_status(
+                sid,
+                "waiting_user",
+                prev_status=sess.status,
+                metadata_patch={"pending_user_question_id": row.id},
+            )
         app.state.bus.publish(
             Event(
                 type="user_question.created",
@@ -852,7 +854,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             deps,
             sid,
             updated,
-            has_pending=bool(pending_user_questions(app, sid)),
+            has_pending=any(
+                q.response_mode == "blocking" for q in pending_user_questions(app, sid)
+            ),
             set_session_status=_set_session_status,
         )
         app.state.bus.publish(
@@ -879,14 +883,20 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
         row = claim_question_transition(app, question_id, "cancelled") or row
+        metadata_patch = settled_question_metadata(app, sid, row)
+        app.state.sessions.update(sid, metadata_patch=metadata_patch)
         # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not await resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
+        if (
+            not await resolve_cancelled_question(app, row)
+            and not any(q.response_mode == "blocking" for q in pending_user_questions(app, sid))
+            and row.response_mode == "blocking"
+        ):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,
                 "idle",
                 prev_status=sess.status if sess is not None else "waiting_user",
-                metadata_patch={"pending_user_question_id": ""},
+                metadata_patch=metadata_patch,
             )
         app.state.bus.publish(
             Event(
@@ -895,6 +905,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                 payload=row.model_dump(exclude_none=True),
             )
         )
+        app.state.redrive_message_queue(sid)
         return row
 
     app.state.answer_user_question = answer_user_question

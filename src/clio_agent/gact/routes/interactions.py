@@ -233,12 +233,14 @@ def _question_interaction(app: FastAPI, question: UserQuestion) -> PendingIntera
             protocol="mcp" if is_mcp else "native",
             tool_name="plan_exit" if is_plan_exit else correlation["tool_name"],
             invocation_id=correlation["invocation_id"],
+            surface_id=str(question.metadata.get("a2ui_surface_id") or ""),
         ),
         created_at=question.created_at,
         revision=question.updated_at,
         payload={
             key: value
             for key, value in {
+                "response_mode": question.response_mode,
                 "question_id": question.id,
                 "question_kind": question.kind,
                 "metadata": dict(question.metadata),  # e.g. a drafts question's ``variant``
@@ -364,6 +366,11 @@ def _a2ui_interactions(
     rows: list[PendingInteraction] = []
     if not surfaces:
         return rows, list(quarantined)
+    question_surfaces = {
+        str(row.metadata.get("a2ui_surface_id"))
+        for row in app.state.user_questions.values()
+        if row.session_id == owner and row.metadata.get("a2ui_surface_id")
+    }
     owner_task_id = _task_id_for_owner(app, owner)
     owner_attended = attended_session_id(app, owner)
     for surface in surfaces:
@@ -371,6 +378,8 @@ def _a2ui_interactions(
         if surface.get("state") == "deleted" or not actions:
             continue
         surface_id = str(surface.get("id") or "")
+        if surface_id in question_surfaces:
+            continue  # the question owns its presentation and response lifecycle
         latest_record = _latest_action_record(surface)
         # A responded surface is SETTLED once its latest record has actually
         # DELIVERED or been CONSUMED by a turn (S5) -- a ``received`` or
