@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.gact.infrastructure.service_paths import this_host_counterpart
 from clio_agent.gact.provenance.deferred import DeferredProvider
 from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
 from clio_agent.gact.provenance.flowcept import FlowceptProviderConfig
@@ -134,7 +136,7 @@ def _deferred_flowcept(config: FlowceptProviderConfig) -> DeferredProvider:
 
     return DeferredProvider(
         "flowcept",
-        lambda: FlowceptProvenanceProvider(config),
+        lambda: FlowceptProvenanceProvider(_on_this_host(config)),
         durable=FlowceptProvenanceProvider.durable,
         queryable=FlowceptProvenanceProvider.queryable,
         flush_durable=FlowceptProvenanceProvider.flush_durable,
@@ -142,14 +144,28 @@ def _deferred_flowcept(config: FlowceptProviderConfig) -> DeferredProvider:
     )
 
 
+def _on_this_host(config: FlowceptProviderConfig) -> FlowceptProviderConfig:
+    """Re-resolve the settings path at attach time (28a).
+
+    Flowcept is often installed on this node only after CLIO booted, under this
+    host's deployment directory, while the saved path names an earlier node's.
+    """
+    settings_path = this_host_counterpart(config.settings_path)
+    if settings_path == config.settings_path:
+        return config
+    return dataclasses.replace(config, settings_path=settings_path)
+
+
 def _flowcept_config() -> FlowceptProviderConfig:
     return FlowceptProviderConfig(
-        settings_path=conf.resolve(
-            "provenance.agentic.flowcept.settings_path",
-            env="FLOWCEPT_SETTINGS_PATH",
-            default="",
-            cast=conf.as_str,
-        ).strip(),
+        settings_path=this_host_counterpart(
+            conf.resolve(
+                "provenance.agentic.flowcept.settings_path",
+                env="FLOWCEPT_SETTINGS_PATH",
+                default="",
+                cast=conf.as_str,
+            ).strip()
+        ),
         workflow_scope=conf.resolve(
             "provenance.agentic.flowcept.workflow_scope",
             env="CLIO_FLOWCEPT_WORKFLOW_SCOPE",
