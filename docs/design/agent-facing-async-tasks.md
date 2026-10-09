@@ -147,7 +147,7 @@ Implementation is present on the integrated feature branch. **Release
 qualification is incomplete.** The live matrix below describes executed gates,
 including partial and blocked results; it is not a claim that every route passes.
 
-The latest model-run runtime state is core
+The historical broad model-run runtime state is core
 `4dc4b1c1c2757be716f094c5cbe1058b34a7a26c` with GACT
 `5e8cee6cf38c9329d82f151d2305b8e2c0783507`. Later documentation-only commits
 must preserve the runtime file hashes and matching GACT gitlink. A subsequent
@@ -158,7 +158,8 @@ The correction changes only `task_controls.py` in runtime source; it does not
 relabel the earlier model runs as acceptance of the current head. Older evidence
 retains its actual source identity and is not relabelled as a final-state run.
 
-Draft review branches are core PR1662 into `develop` and GACT PR557 into `main`.
+Draft review branches are core PR1662 and GACT PR557 into `develop`; the latter
+target was changed during the separate human integration campaign.
 Their retained PR1658/PR555 bases remain dependencies. Released branches,
 installed Desktop, authentication, defaults and released pins are preserved.
 
@@ -173,7 +174,7 @@ probes, fixtures and CI do not satisfy that gate.
 | Executed gate | Evidence and scope |
 | --- | --- |
 | Pre-change model baseline | `model-baseline-1`: actual Codex/Luna production fetch returned terminal content before the model's next action. The earlier direct-executor probe was not model acceptance. |
-| MCP stdio model overlap | `model-mcp-overlap-1` established early task acceptance. Its older source and overlap predicate do not replace the stricter final route gate, which remains pending. |
+| MCP stdio model overlap | `final-06799-mcp-stdio-1` (actual core83d22/GACT1e382) and `final-integrated-mcp-ui-2` (actual core1e678/GACT1e382) passed strict actual Codex/Luna acceptance, independent file action in a later model step, subsequent uncancelled running query, expired wait with work continuing, observation and original result collection. Each real 11,264-byte fetch matched its hash. Directory names do not override recorded source identities. Five UI cancellation cycles remain pending. |
 | MCP HTTP overlap and reconnect | `integrated-2cdd-http-overlap-2` and `integrated-2cdd-http-recovery-2`: actual Codex/Luna handle, independent file read, running snapshot and stored result. The recovery retained the full backend identity and original session after API loss and lease expiry, with one actual 11,264-byte payload request and no operation replay. Earlier failed external-search and probe-binding attempts are retained separately. Final-state five-cycle recovery is pending. |
 | Shell model overlap | WebSocket evidence includes `integrated-47f-shell-ws-1`; final-state SSE is `integrated-4dc4-shell-lifecycle-1`. Actual model acceptance, subsequent successful independent read, uncancelled running query, expired wait, observe, unbounded wait, stdout, exit 0 and filesystem marker passed. |
 | Subagent model overlap | WebSocket evidence includes `integrated-context-final-subagent-1`; final-state SSE is `integrated-4dc4-subagent-mixed-1`. Actual parent-model handle, later independent action, running child, expired wait and actual child output/marker passed. |
@@ -221,19 +222,30 @@ and the matching core/UI/document logs.
 
 ### Blocking and unverified gates
 
-- The fifth final graceful interruption readback failed with
+- The historical fifth graceful interruption readback failed with
   `clio_core_client_attach_failed`. The native client could not create its
   per-process shared memory (`shm_open`: `Resource temporarily unavailable`).
   The existing machine-wide installed Core daemon adopted its own configuration;
   it was not restarted or reconfigured. The root cause is not established by
-  this error alone. Final Shell crash/recovery repetitions and the remaining
-  model runs are blocked on an available permitted Core runtime. No accepted
-  operation may be replayed when resuming qualification.
-- Strict final MCP stdio overlap, five Stop/UI-cancel cycles, HTTP reconnect
+  this error alone. On October 9 the existing isolated real-Core launcher
+  successfully recovered a permitted source runtime without restarting the
+  installed Core or retired services. A later original-task model readback
+  actually executed, but its source-freeze guard failed during concurrent
+  integration and its false verdict remains retained. Final Shell crash and
+  graceful recovery repetitions remain pending. No accepted operation may
+  be replayed when resuming qualification.
+- Five MCP Stop/UI-cancel cycles, HTTP reconnect
   repetitions and nonrecoverable backend-loss qualification remain pending.
   Prepared external probes are not executed evidence. Native Shell permission
   success does not qualify MCP elicitation/input-answer/reconnect semantics;
   the tested production Web backend exposes no input-required operation.
+- Human integration introduced a compact Work inventory that omitted shared
+  task controls. Actual service/browser probes exposed it; those failures
+  remain retained. The inventory now reuses the shared task component for
+  kind, assignment, status, progress and confirmed cancellation. Focused MCP
+  case reproduced the missing controls before the repair. MCP and Subagent
+  cases qualify confirmation, Keep running, pending progress and duplicate-request
+  suppression after it. Full live lifecycle repetition is still required.
 - The connected-source Download-plus-Shell subtree route was rejected by the
   actual host fence in `integrated-context-final-subagent-1`: it cannot enforce
   connected-source child-process exclusions. The already accepted storage work
