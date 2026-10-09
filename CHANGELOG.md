@@ -6,6 +6,12 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- Desktop release summaries bundle matching CLIO notes separately from the UI's
+  own version history, avoiding unrelated old release entries. Product labels,
+  clearer formatting and expandable details make both sources easier to read.
+
 ## [0.9.5-beta.5.2] - 2026-10-08
 
 ### Fixed
