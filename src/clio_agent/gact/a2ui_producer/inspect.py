@@ -21,6 +21,9 @@ def build_inspect_a2ui_surface_tool() -> Any:
         With no ``surface_id``, list live surfaces in this conversation with
         their ids, titles, types, and revisions. Pass one id to read its current
         components and ordered data-model updates, including control bindings.
+        This is structural inspection, not a screenshot or a report of every
+        viewer-local camera, filter or tab. Inspect rendered pixels separately
+        through a declared capture capability when available.
         Reuse that id with ``update_a2ui_components`` or
         ``create_a2ui_surface`` to correct the displayed surface in place.
         If an action supplies only a selected ID and a later question asks

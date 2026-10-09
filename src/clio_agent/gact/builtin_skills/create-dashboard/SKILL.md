@@ -24,6 +24,18 @@ tabs or other catalog-supported navigation to make substantial content readable.
 Keep an overview, comparisons, and supporting details easy to find. Do not ask
 the person to supply component payloads.
 
+Use the declared `review-visual-presentation` skill to close the loop on
+substantial reports. Inspect the actual rendered overview and relevant tabs
+when capture is available, revise what is unclear, and inspect the correction.
+Check the docked view as well as an expanded one. Surface acceptance alone
+does not establish readable pixels; state when rendered inspection is unavailable.
+Choose a useful default rather than showing every graph or series at once.
+Retain the source data and let people reveal useful detail through supported
+tabs, filters, selectors or optional-view controls. Do not invent visibility
+properties or make hidden content the only place the answer can be found.
+Annotations and linked selections can connect an explanation or question to
+specific evidence; they do not replace the question's explicit answer action.
+
 Choose layout deliberately. `Grid` suits a group of KPI cards or side-by-side
 analyses; `Frame` gives a section its own title and explanatory context. Use
 `Row` for a short horizontal group rather than squeezing many cards onto one

@@ -26,6 +26,9 @@ def build_update_a2ui_data_model_tool() -> Any:
         ``delete=True`` removes the key at ``path`` (the protocol's
         omitted-value delete form; ``value`` is ignored); otherwise the value
         at ``path`` is replaced (``value=None`` sets it to null).
+        Use the surface's declared bindings for filters, selections and view
+        controls. Changing an unbound path does not control a viewer, and an
+        accepted update does not establish that its rendered image was checked.
         """
 
         resolved = _common.active_app_and_session()

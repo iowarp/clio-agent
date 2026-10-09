@@ -290,7 +290,18 @@ submit event carried only its ID.
 
 Call `create_a2ui_surface` once per coherent revision (leave `catalog_id` empty
 to use the session's negotiated catalog). Require `rendered=true` and
-`state=ready` before saying the view is available. A refusal names what to load
+`state=ready` before saying the definition was accepted. These values do not
+establish that you inspected the browser's rendered pixels.
+For a complex view, visual investigation or dashboard, use the declared
+`review-visual-presentation` skill. Inspect a matching screenshot when the
+runtime exposes capture, adjust supported controls or component definitions,
+and inspect the result again. Apply this to maps, charts, tables and images as
+well as 3D views. Check the question's answer against the underlying data.
+When dense graphs obscure the result, start with a meaningful slice and keep
+useful detail available through supported filters, selectors or tabs.
+Use supported annotations to point to evidence in explanations and questions;
+keep the original data and the question's answer ownership intact.
+A refusal names what to load
 next (`hint`) — load exactly that component's schema, correct the call, and
 retry a bounded number of times; do not print the payload as chat text, silently
 replace an interactive component with a static image, or claim success on a
