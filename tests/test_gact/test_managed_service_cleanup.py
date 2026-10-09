@@ -100,6 +100,11 @@ class FakeLinuxTarget:
             # The Ollama context step (no model server here): it records why
             # Ollama's own default stays.
             return CommandResult(exit_code=7, stderr="connection refused")
+        if program == "nproc":
+            # The Ollama CPU variant's thread sizing (F044) and its /api/create.
+            return CommandResult(exit_code=0, stdout="4\n")
+        if program == "curl" and any(arg.endswith("/api/create") for arg in args):
+            return CommandResult(exit_code=0, stdout='{"status":"success"}\n')
         raise AssertionError(f"unexpected command {program} {args}")
 
     def _verified_removal(self, script: str, ref: str) -> CommandResult:
