@@ -209,6 +209,37 @@ scroll region while keeping the warning and controls visible. Two focused
 short/long cases, scoped checks, all six guards, TypeScript and both builds pass;
 fresh real-service visual and five lifecycle repetitions remain required.
 
+On core `959e2238` / GACT `d51b77a4`, the native Download-only subtree probe
+passes five actual-model/UI lifecycle cycles with one confirmed cancellation
+request each, honest pending cancellation, cancelled descendant owners and
+stored parent result readback. Desktop and phone captures and hit tests show
+the complete warning and controls above the originating popover. All five
+durable storage audits retain original manifest pointers, unchanged upstream
+payload bytes/hash and absent staging trees. These are native storage routes;
+the connected-source Shell route remains blocked.
+
+The original 24,001-file selection also completed after real UI Stop ended its
+model waiter. Byte progress continued without a cancellation request; all
+18,228,063 selected bytes and file hashes match. Its coordinator delegated
+submission, so that run does not qualify submitting-model overlap. The direct
+single-agent native Download gate in `integrated-959e-download-root-1` does:
+the actual Codex/Luna model receives acceptance in one model step, performs a
+successful checklist action in a later step, observes the original handle
+running, expires a wait without cancellation, then waits and retrieves its
+completed result. All 6,001 selected files / 6,132,063 bytes and hashes match.
+The separate five-cycle overlap audit is retained honestly: only one child
+cycle established its independent action before a query with no cancellation
+request. It is not five complete overlap passes.
+
+GACT's exact `d51b77a4` CI passed 71 browser cases and failed its existing chart
+fullscreen case after a wheel scroll unmounted the virtualized tail. Retained
+CI trace/context show the missing chart and available Scroll-to-bottom control.
+The original focused case passed locally; it was not reproduced as a local
+failure. The test now returns through that real reader control and asserts
+canvas remount before fullscreen. Its focused Chromium case and scoped checks
+pass. All existing canvas/fullscreen/return/no-error assertions and budgets are
+retained; production code and the qualified build are unchanged by this repair.
+
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
 backend outcomes and filesystem/process evidence. A source change during a
