@@ -106,6 +106,11 @@ overflow remains queued, and collection between staging and commit cannot
 cause duplicate automatic delivery. Submission, progress and result use the
 same invocation and handle. Supervisor polling does not fabricate tool calls.
 
+The existing Observability context frame is refreshed at commitment with the
+exact surviving task injections. Collection between staging and commitment
+must remove the staged text from both model input and its recorded context
+frame, while preserving unrelated context and the frame identity.
+
 The task dock, Observability and Runs use the same cancellation operation as
 agent controls. An active cancellable task has a confirmation control naming
 the assignment; subagent confirmation warns about descendants. Acknowledged
@@ -159,6 +164,22 @@ CI and executor-only probes are separate evidence.
 | Five final lifecycle race repetitions | Earlier five Shell cycles passed lifecycle behavior; the final integrated UI state must be repeated and visually accepted, with complete process identity evidence. |
 | Focused checks and CI | GACT `16cffbbf` has 13 successful checks and seven conditional event/release jobs. Core `2cdd6b3d` exposed a renewal worker that starved a no-delay polling test and a renewal assertion tied to a 150ms scheduling window. The existing divergence case passes with an independent event-loop renewal timer; the competing-resume test now observes actual renewal and advances its lease clock explicitly. No test limit, production TTL or assertion was relaxed. Fresh exact-head CI remains required. Existing skipped Python tests and the chat-only WebView permission-card exclusion do not count as passed acceptance. |
 | Parallel Codex arguments | `model-parallel-argument-diagnostic-1` recorded correct actual model arguments and empty tool inputs on the coalesced parallel path. The repaired bridge reconciles completed snapshots on WebSocket and SSE. Three focused cases pass; actual model parallel query/file-read succeeds through both transports in the Shell runs above. |
+
+Later integrated evidence on core `5e791be8` and GACT `16cffbbf`:
+`integrated-5e79-shell-sse-1` passed strict model overlap and native permission
+approval; `stop-shell-final2` passed five Stop/UI-cancel cycles with desktop and
+phone dialog review and direct PID/birth/parent-chain evidence for all five
+PowerShell owners and their Python descendants. `delivery-shell-fresh1` passed
+five fresh-conversation idle/next-turn/no-duplicate cycles. The earlier long
+SSE conversation hit the unchanged 65,536-byte parser limit and remains an
+unqualified route; fresh-conversation evidence does not repair or qualify it.
+
+The actual collection hook in `delivery-races-collection` collected the result
+after staging and before commitment. The real model correctly reported "nonce
+absent", but the finalized Observability frame still included staged task text.
+The focused collected/delivered regressions reproduce that stale frame and pass
+after updating it at the existing commit boundary. Fresh actual-model delivery,
+collection, veto and overflow repetitions remain required for this correction.
 
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
