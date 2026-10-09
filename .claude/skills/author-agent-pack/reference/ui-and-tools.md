@@ -23,15 +23,13 @@
   - Other components bound to the same path re-render locally.
   - The server only sees the data model when an action is sent or `sendDataModel` is set.
 - **Precedent:** mesh-viewport's `camera` binding (a debounced write, and it follows external writes).
-- **Selection convention** (planned with `clio.chart.v1`): the path `/selection/<key>` = `{field, values[], source?}`. Charts, tables, maps and viewports write and read it. Use `source` to avoid feedback loops.
+- **Selection convention:** bind related charts, tables and maps to the same `/selection/<key>` path, whose value is `{field, values[], source?}`. Bound selections write back and highlight related records locally. Check the component's declared binding and field; use `source` to avoid feedback loops.
 - **Across surfaces:** there's no shared data model, so use a module-level store like `mesh-viewport-sync.ts` `syncGroup` (it shares camera, bounds and colour range, view state only).
-- **Gaps at the time of writing:**
-  - `selectData` is a no-op;
-  - `clio.data-table.v1` `selection` and `clio.map.v1` `selected` are static and don't write back. The `feat/chart-kernel` work addresses this.
+- Map `selected` is the initial single-point fallback. Use its bound `selection` property for linked selection rather than treating that initial value as shared state.
 
 ## Charts
 - **`clio.time-series.v1`** (recharts): at most 5 `yKeys` (wide format), at most 10k inline rows, and artifact-backed previews sample about 1-2k rows from CSV with at most 6 columns. **Unsuitable for hundreds of entity trajectories.**
-- **Planned replacement: `clio.chart.v1`**, a **Vega-Lite** spec in the style of marimo's `mo.ui.altair_chart`:
+- **`clio.chart.v1`** supports guarded **Vega-Lite** specifications and presets:
   - a spec guard: data only via `{name:"source"}`, no URLs, size and view caps, no `eval`;
   - core preset templates (`trajectories`, `heatmap`, `spectra`, `boxplot`, `scatter`), each with a highlight-the-selected-entity param;
   - data from `POST /v1/artifacts/{id}/table-query` (filter, aggregate, per-entity LTTB downsampling).
