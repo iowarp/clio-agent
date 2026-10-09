@@ -49,7 +49,7 @@ def register_search_routes(app: FastAPI) -> None:
         except SearchConfigurationError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         backend = resolve_search_backend(settings)
-        problem = await asyncio.to_thread(backend.problem)
+        problem = await asyncio.to_thread(backend.readiness_problem)
         return {
             "backend": backend.name,
             "ready": problem is None,
