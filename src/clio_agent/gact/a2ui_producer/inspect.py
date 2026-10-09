@@ -20,7 +20,8 @@ def build_inspect_a2ui_surface_tool() -> Any:
 
         With no ``surface_id``, list live surfaces in this conversation with
         their ids, titles, types, and revisions. Pass one id to read its current
-        components. Reuse that id with ``update_a2ui_components`` or
+        components and ordered data-model updates, including control bindings.
+        Reuse that id with ``update_a2ui_components`` or
         ``create_a2ui_surface`` to correct the displayed surface in place.
         If an action supplies only a selected ID and a later question asks
         about fields from that item, inspect the existing surface to recover
@@ -39,7 +40,11 @@ def build_inspect_a2ui_surface_tool() -> Any:
                     "a2ui_surface_not_found", detail=f"A2UI surface not found: {requested_id}"
                 )
             components = _common.current_surface_components(surface)
-            if len(json.dumps(components, ensure_ascii=False)) > MAX_DEFINITION_CHARS:
+            data_model_messages = [
+                message for message in surface.messages if "updateDataModel" in message
+            ]
+            definition = {"components": components, "data_model_messages": data_model_messages}
+            if len(json.dumps(definition, ensure_ascii=False)) > MAX_DEFINITION_CHARS:
                 return {
                     "surface_id": surface.id,
                     "revision": surface.revision,
@@ -51,7 +56,7 @@ def build_inspect_a2ui_surface_tool() -> Any:
                 "surface_id": surface.id,
                 "revision": surface.revision,
                 "catalog_id": surface.catalog_id,
-                "components": components,
+                **definition,
             }
 
         rows = [

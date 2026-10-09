@@ -36,6 +36,7 @@ from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.dashboard_reports import register_dashboard_report_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_creation import register_session_creation_route
@@ -623,6 +624,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
 
     register_session_export_routes(app)
+    register_dashboard_report_routes(app)
 
     @app.post("/v1/sessions/import", response_model=Session)
     async def import_session(blob: dict[str, Any]) -> Session:

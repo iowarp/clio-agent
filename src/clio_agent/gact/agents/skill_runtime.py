@@ -66,6 +66,7 @@ _A2UI_PRODUCER_TOOL_NAMES = frozenset(
         "update_a2ui_components",
         "update_a2ui_data_model",
         "delete_a2ui_surface",
+        "publish_dashboard_report",
     }
 )
 

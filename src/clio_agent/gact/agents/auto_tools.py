@@ -51,6 +51,7 @@ from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
     build_inspect_a2ui_surface_tool,
+    build_publish_dashboard_report_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -141,6 +142,7 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
             ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
             ("inspect_a2ui_surface", build_inspect_a2ui_surface_tool),
+            ("publish_dashboard_report", build_publish_dashboard_report_tool),
         ):
             if a2ui_producers and name not in declared:
                 tools.append(build())

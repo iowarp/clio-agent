@@ -117,6 +117,11 @@ def component_tree_error(components: list[dict[str, Any]]) -> str | None:
         child = component.get("child")
         if isinstance(child, str):
             pending.append(child)
+        if component.get("component") == "Modal":
+            for slot in ("trigger", "content"):
+                reference = component.get(slot)
+                if isinstance(reference, str):
+                    pending.append(reference)
         children = component.get("children")
         if isinstance(children, list):
             pending.extend(value for value in children if isinstance(value, str))
