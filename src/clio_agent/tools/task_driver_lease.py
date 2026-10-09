@@ -14,7 +14,14 @@ Result = TypeVar("Result")
 async def _renew(lease: TaskLease) -> None:
     """Renew the same claim until its driver ends or custody is lost."""
     while True:
-        await asyncio.sleep(lease.renewal_interval)
+        # Custody uses its own loop timer. Poll cadence may be injected or removed
+        # independently; it must never turn this worker into a non-yielding loop.
+        wake = asyncio.Event()
+        timer = asyncio.get_running_loop().call_later(lease.renewal_interval, wake.set)
+        try:
+            await wake.wait()
+        finally:
+            timer.cancel()
         lease.renew()
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import time
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -51,11 +52,25 @@ async def test_custody_loss_stops_pending_operation_and_preserves_replacement_ow
 
 
 @pytest.mark.asyncio
-async def test_long_rpc_renews_driver_lease_and_refuses_concurrent_resume() -> None:
+async def test_long_rpc_renews_driver_lease_and_refuses_concurrent_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A pending RPC cannot expose an expired lease to a second poll/answer owner."""
-    import time
+    from clio_agent.tools import mcp_task_lease
 
-    store = InMemoryTaskRecordStore()
+    # Observe an actual periodic renewal, then advance only the lease clock past
+    # the original expiry. This does not depend on a 150ms scheduling window.
+    clock = [1000.0]
+    monkeypatch.setattr(mcp_task_lease, "time", SimpleNamespace(time=lambda: clock[0]))
+    renewed = asyncio.Event()
+
+    class WitnessStore(InMemoryTaskRecordStore):
+        def put(self, record: TaskRecord) -> None:
+            super().put(record)
+            if record.lease_owner == "first" and (record.lease_expires_at or 0) > 1000.15:
+                renewed.set()
+
+    store = WitnessStore()
     key = TaskKey("backend", "conversation", "long-accepted-work")
     store.put(TaskRecord(key=key, status="working"))
     started, release = asyncio.Event(), asyncio.Event()
@@ -77,8 +92,12 @@ async def test_long_rpc_renews_driver_lease_and_refuses_concurrent_resume() -> N
     driver = asyncio.create_task(drive_task_to_terminal(first, key, store=store, lease=lease))
     try:
         await asyncio.wait_for(started.wait(), 5)
-        while time.time() <= initial_expiry + 0.1:
-            await asyncio.sleep(0.01)
+        clock[0] = 1000.06
+        await asyncio.wait_for(renewed.wait(), 5)
+        clock[0] = initial_expiry + 0.001
+        current = store.get(key)
+        assert current is not None and current.lease_expires_at is not None
+        assert initial_expiry < clock[0] < current.lease_expires_at
         second: Any = ScriptedSession([_task_payload(key.task_id, "completed", result={})])
         with pytest.raises(ToolError) as refused:
             await resume_task(second, key, store=store)
