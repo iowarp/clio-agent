@@ -90,7 +90,11 @@ with its evidence in `offline-canonical-final/`.
 ## Targeted checks and remaining limits
 
 Local checks were deliberately focused: 33 backend tests, 57 renderer/unit
-checks, and one transcript-disclosure browser regression passed with no skips.
+checks, one transcript-disclosure browser regression and five workflow-guide
+browser checks passed with no skips. The guide checks cover 390/1440-pixel
+light/dark layouts, navigation and the full-size image dialog. Their original
+assertions were retained; availability notes and the caption were corrected
+after CI exposed missing wording.
 Ruff, scoped mypy (five changed production files), scoped frontend lint,
 TypeScript and renderer builds were checked. The site built all 76 pages with
 valid internal links; the three dedicated guides were visually inspected, with
