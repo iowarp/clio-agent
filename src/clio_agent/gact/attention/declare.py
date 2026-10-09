@@ -23,7 +23,7 @@ from typing import Any
 
 from jinja2 import TemplateError
 
-from clio_agent.gact.attention.ranges import declare_ranges
+from clio_agent.gact.attention.ranges import declare_ranges, render_without_tools
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 
 DECLARATION_SCHEMA = "clio.attention.declaration.v1"
@@ -96,13 +96,14 @@ def build_declaration(
             str(merged.get("api_base") or ""), served_model, str(merged.get("api_key") or "")
         )
         encoded = renderer.render_encoded(messages, template_kwargs)
+        without_tools = render_without_tools(renderer, messages, template_kwargs)
     except AttentionUnavailable as exc:
         return call_kwargs, _not_declared(exc.reason, exc.detail)
     except (OSError, ValueError, TypeError, RuntimeError, LookupError, TemplateError) as exc:
         return call_kwargs, _not_declared(
             "attention_tokenizer_unavailable", f"render failed: {type(exc).__name__}"
         )
-    declaration = declare_ranges(messages, encoded)
+    declaration = declare_ranges(messages, encoded, template_kwargs.get("tools"), without_tools)
     # DSPy merges the LM's kwargs under the call's, so a call-level extra_body would
     # replace the LM-level one wholesale: carry both forward explicitly.
     body = {**(lm_kwargs.get("extra_body") or {}), **(call_kwargs.get("extra_body") or {})}

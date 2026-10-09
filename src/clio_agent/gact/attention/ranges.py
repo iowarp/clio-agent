@@ -72,7 +72,7 @@ class DeclaredRange:
     hi: int
     domain: str
     label: str
-    message_index: int
+    message_index: int | None  # None: rendered by the template, not from a message
     char_lo: int
     char_hi: int
 
@@ -183,17 +183,75 @@ def _tool_result_entries(text: str, lo: int, hi: int) -> list[tuple[int, int, st
     return out or whole
 
 
-def declare_ranges(messages: list[dict[str, Any]], encoded: Encoded) -> Declaration:
+def _tool_sections(text: str, tools: list[Any]) -> list[tuple[int, int, str, str]]:
+    """``(char_lo, char_hi, "tool_definitions", name)`` per tool schema in ``text``.
+
+    Chat templates (Qwen3, Llama, Granite) render each tool with ``tojson`` into
+    the system turn, where no message contains it. Each schema is serialised as
+    the templates' ``tojson`` does (key order kept, no ASCII escaping) and
+    declared only on a unique exact match; anything else stays a gap.
+    """
+    out: list[tuple[int, int, str, str]] = []
+    for tool in tools:
+        rendered = json.dumps(tool, ensure_ascii=False)
+        found = text.find(rendered)
+        if found < 0 or text.find(rendered, found + 1) >= 0:
+            continue
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = (function or {}).get("name") if isinstance(function, dict) else None
+        out.append((found, found + len(rendered), "tool_definitions", str(name or "tool")))
+    return out
+
+
+def _tools_block(text: str, without_tools: str) -> list[tuple[int, int, str, str]]:
+    """The span ``text`` adds over the same prompt rendered without tools.
+
+    Template-agnostic fallback for templates that format schemas their own way
+    (Granite's ``tool_to_json`` macro): common prefix/suffix of the two renders.
+    """
+    prefix = 0
+    limit = min(len(text), len(without_tools))
+    while prefix < limit and text[prefix] == without_tools[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < limit - prefix
+        and text[len(text) - 1 - suffix] == without_tools[len(without_tools) - 1 - suffix]
+    ):
+        suffix += 1
+    lo, hi = _strip_span(text, prefix, len(text) - suffix)
+    return [(lo, hi, "tool_definitions", "tools")] if hi > lo else []
+
+
+def render_without_tools(
+    renderer: Any, messages: list[dict[str, Any]], template_kwargs: dict[str, Any]
+) -> str | None:
+    """``messages`` rendered with no tools, for :func:`_tools_block`; None without tools."""
+    if not template_kwargs.get("tools"):
+        return None
+    kwargs = {k: v for k, v in template_kwargs.items() if k != "tools"}
+    return renderer.render(messages, template_kwargs=kwargs)
+
+
+def declare_ranges(
+    messages: list[dict[str, Any]],
+    encoded: Encoded,
+    tools: list[Any] | None = None,
+    without_tools: str | None = None,
+) -> Declaration:
     """Labelled token ranges for every section of ``messages`` in ``encoded``.
 
     Each message's content is located in the rendered string by a forward
     search (templates may trim content or strip earlier thinking, so offsets
     are never assumed). A message that cannot be located is reported in
-    ``unlocated_messages``, not dropped silently.
+    ``unlocated_messages``, not dropped silently. ``tools`` are the schemas the
+    template rendered; each found verbatim gets its own ``tool_definitions``
+    range. When none is found verbatim, ``without_tools`` (the same request
+    rendered with no tools) bounds the whole tools block as one range.
     """
     text = encoded.text
     cursor = 0
-    ranges: list[DeclaredRange] = []
+    sections: list[tuple[int, int, str, str, int | None]] = []
     unlocated: list[int] = []
     for index, message in enumerate(messages):
         content = _content_text(message).strip()
@@ -206,12 +264,20 @@ def declare_ranges(messages: list[dict[str, Any]], encoded: Encoded) -> Declarat
         end = found + len(content)
         cursor = end
         for char_lo, char_hi, domain, label in _char_sections(message, text, found, end):
-            lo, hi = encoded.token_span(char_lo, char_hi)
-            if ranges and lo < ranges[-1].hi:  # truncate overlaps, as the connector does
-                lo = ranges[-1].hi
-            if hi <= lo:
-                continue
-            ranges.append(DeclaredRange(lo, hi, domain, label, index, char_lo, char_hi))
+            sections.append((char_lo, char_hi, domain, label, index))
+    tool_sections = _tool_sections(text, tools or [])
+    if tools and not tool_sections and without_tools is not None:
+        tool_sections = _tools_block(text, without_tools)
+    for char_lo, char_hi, domain, label in tool_sections:
+        sections.append((char_lo, char_hi, domain, label, None))
+    ranges: list[DeclaredRange] = []
+    for char_lo, char_hi, domain, label, index in sorted(sections, key=lambda s: s[0]):
+        lo, hi = encoded.token_span(char_lo, char_hi)
+        if ranges and lo < ranges[-1].hi:  # truncate overlaps, as the connector does
+            lo = ranges[-1].hi
+        if hi <= lo:
+            continue
+        ranges.append(DeclaredRange(lo, hi, domain, label, index, char_lo, char_hi))
     return Declaration(
         ranges=ranges, prompt_token_count=len(encoded.ids), unlocated_messages=unlocated
     )

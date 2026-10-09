@@ -13,7 +13,11 @@ from clio_agent.gact.attention import aggregate as agg
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.contract import AttentionSummary
 from clio_agent.gact.attention.lm_calls import LmCall
-from clio_agent.gact.attention.ranges import DeclaredRange, declare_ranges
+from clio_agent.gact.attention.ranges import (
+    DeclaredRange,
+    declare_ranges,
+    render_without_tools,
+)
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.store import AttentionStore
 
@@ -37,7 +41,7 @@ def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]
             hi=int(r["hi"]),
             domain=str(r["domain"]),
             label=str(r["label"]),
-            message_index=int(r["message_index"]),
+            message_index=None if r.get("message_index") is None else int(r["message_index"]),
             char_lo=int(r["char_lo"]),
             char_hi=int(r["char_hi"]),
         )
@@ -94,7 +98,8 @@ def load_capture(
         )
     renderer = renderer_for(identity)
     template_kwargs = dict(declaration.get("template_kwargs") or {})
-    if tools := _declared_tools(declaration):
+    tools = _declared_tools(declaration)
+    if tools:
         template_kwargs["tools"] = tools
     encoded = renderer.render_encoded(call.messages, template_kwargs)
     _check_prompt(encoded, summary)
@@ -107,7 +112,8 @@ def load_capture(
             )
         sections_source = "declared"
     else:
-        ranges = declare_ranges(call.messages, encoded).ranges
+        without_tools = render_without_tools(renderer, call.messages, template_kwargs)
+        ranges = declare_ranges(call.messages, encoded, tools, without_tools).ranges
         sections_source = "derived"
     sections = agg.sections_with_gaps(ranges, summary.prompt_tokens)
 

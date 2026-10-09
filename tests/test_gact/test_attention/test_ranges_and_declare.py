@@ -360,3 +360,76 @@ def test_declared_tools_survive_the_trace_writers_key_sorting(
     # The key-sorted form (what a plain "tools" list came back as) is not the prompt.
     sorted_tools = json.loads(json.dumps(tools, sort_keys=True))
     assert renderer.render(MESSAGES, template_kwargs={"tools": sorted_tools}) != written
+
+
+def test_rendered_tool_schemas_get_their_own_ranges() -> None:
+    # c39 live: the template renders tool schemas into the system turn, where no
+    # message holds them, so 12.5K tokens showed up as one unlabelled "prose gap".
+    # Qwen3-style templates render each schema with tojson: one range per tool.
+    import json
+
+    tools = [{"type": "function", "function": {"name": n, "parameters": {}}} for n in ("a", "b")]
+    body = "\n".join(json.dumps(t, ensure_ascii=False) for t in tools)
+    text = f"<|im_start|>system\nsys\n# Tools\n<tools>\n{body}\n</tools><|im_end|> user hi"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    declaration = declare_ranges(messages, encoded, tools)
+    got = [(r.domain, r.label, r.message_index) for r in declaration.ranges]
+    assert got == [
+        ("system", "adapter_instructions", 0),
+        ("tool_definitions", "a", None),
+        ("tool_definitions", "b", None),
+        ("user", "user", 1),
+    ]
+    for r, tool in zip(declaration.ranges[1:3], tools, strict=True):
+        assert text[r.char_lo : r.char_hi] == json.dumps(tool)
+
+
+def test_template_formatted_tools_are_declared_as_one_block(
+    tiny_tokenizer_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Granite formats schemas with its own macro (no tojson): the block the tools
+    # add over a tool-less render is declared as one "tools" range.
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_TOKENIZER", str(tiny_tokenizer_dir))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"The {name} tool.",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        }
+        for name in ("web_search", "read_file")
+    ]
+    _, record = build_declaration(
+        model="hosted_vllm/granite-4.2-30b",
+        messages=MESSAGES,
+        lm_kwargs={"api_base": "http://127.0.0.1:1/v1"},
+        call_kwargs={"tools": tools},
+    )
+    renderer = ChatRenderer.from_dir(tiny_tokenizer_dir)
+    text = renderer.render(MESSAGES, template_kwargs={"tools": tools})
+    ranges = record["ranges"]
+    block = [r for r in ranges if r["domain"] == "tool_definitions"]
+    assert [(r["label"], r["message_index"]) for r in block] == [("tools", None)]
+    covered = text[block[0]["char_lo"] : block[0]["char_hi"]]
+    assert covered.startswith("# Tools") and "web_search" in covered and "read_file" in covered
+    spans = [(r["lo"], r["hi"]) for r in ranges]
+    assert spans == sorted(spans)
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:], strict=False))
+
+
+def test_tool_schema_rendered_twice_is_left_undeclared() -> None:
+    import json
+
+    tool = {"type": "function", "function": {"name": "t"}}
+    rendered = json.dumps(tool)
+    text = f"<tools>{rendered}\n{rendered}</tools> user hi"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    declaration = declare_ranges([{"role": "user", "content": "hi"}], encoded, [tool])
+    assert [r.domain for r in declaration.ranges] == ["user"]
