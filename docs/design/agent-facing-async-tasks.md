@@ -219,7 +219,22 @@ composition, declared-child context and existing GitHub guidance also pass.
 New helper/test Pyright reports zero errors/warnings. The wider changed-file
 check has the same 24 inherited diagnostics before/after, with zero new messages.
 Scoped Ruff/format, size/instrumentation/class guards and diff checks pass.
-Fresh actual-model prompt/lifecycle repetitions remain required.
+`final-task-prompt-shell-idle-1` passed five actual Luna cycles on
+core467de496/GACTb610. The mission did not tell the model to finish immediately:
+it asked for a handle and independent file content, with the terminal result for
+the next conversation turn. Each parent finished while its real 120-second Shell
+was running; completion started no turn, arrived once on the next user turn,
+and was absent on a later turn. Actual bytes/hash and transcripts are retained.
+The matching Subagent series passed one cycle, then refused a second submission
+because the model supplied `blueprint_id: null`. The owner already supports null,
+but the native tool schema required a string. No second handle was accepted.
+The schema now matches nullable blueprint, placement and input-task defaults,
+including batch placement. Invalid types and explicit empty placement remain
+rejected. The before-fix unit reproduction is `spawn-nullable-before.log`.
+Twelve affected cases pass individually/sequentially with no skips, including
+installed-blueprint commissioning, foreign-input rejection and placement
+precedence. Scoped Ruff/format/Pyright0/0 and three existing guards pass.
+Fresh affected Subagent lifecycle repetitions remain required.
 
 Corecced2296 repairs an actual malformed-PNG CI timeout by restricting Pillow to
 its PNG decoder. A controlled test reproduced the same timeout before correction;
