@@ -176,7 +176,8 @@ probes, fixtures and CI do not satisfy that gate.
 | Pre-change model baseline | `model-baseline-1`: actual Codex/Luna production fetch returned terminal content before the model's next action. The earlier direct-executor probe was not model acceptance. |
 | MCP stdio model overlap | `final-e35e4-mcp-ui-3` passed strict actual Codex/Luna acceptance, independent file action in a later model step, subsequent uncancelled running query, expired wait with work continuing, observation and original result collection on coree35e4/GACT898a54. Its real 11,264-byte fetch matched its hash. Earlier passes retain their recorded source identities. |
 | MCP Stop/UI cancellation | `final-e35e4-mcp-ui-4/stop-mcp-disconnect-recorded` passed five fresh actual-model cycles on coree35e4/GACT898a54. Stop ended the model waiter while accepted work continued. Desktop/phone confirmation sent one cancellation per original handle, the raw provider settled cancelled, and the actual HTTP transfer disconnected without replay. Setup-only receipts are not counted as model acceptance. Earlier browser/recorder failures remain retained. |
-| MCP HTTP overlap and reconnect | `integrated-2cdd-http-overlap-2` and `integrated-2cdd-http-recovery-2`: actual Codex/Luna handle, independent file read, running snapshot and stored result. The recovery retained the full backend identity and original session after API loss and lease expiry, with one actual 11,264-byte payload request and no operation replay. Earlier failed external-search and probe-binding attempts are retained separately. Final-state five-cycle recovery is pending. |
+| MCP HTTP overlap and reconnect | `final-7810-http-recovery-1`: five actual Codex/Luna cycles on core7810d5ae/GACTfe1cad75. Each model received a handle, read an independent file in a later step, and queried the same running task. After API loss and the unchanged exclusive lease, recovery retained the full backend identity and original session, with one actual 11,264-byte payload request/hash per cycle and no operation replay. The private Core/API/backend were released. Earlier failed external-search and probe-binding attempts remain retained. |
+| MCP input and actual UI answer | `final-eea8-input-five-cycles.json`: five actual Codex/Luna cycles through production CLIO and a labelled real FastMCP reference backend on coreeea8/GACTde58. Handle, later independent work and input-required query preceded real UI answers; original stored results contained those answers. A separate accepted attempt lost the provider WebSocket after partial output and was not replayed or counted. Input recovery across API interruption remains unverified. |
 | MCP human input | `final-eea8-input-five-cycles.json` links five successful actual Codex/Luna cycles on coreeea8/GACTde58. Each model received a handle, read an independent file in another model iteration and queried the original input-required task. The real desktop/phone UI supplied the answer; CLIO persisted it and the model collected the original result. This uses a real FastMCP reference input backend with production CLIO, not the production Web backend. A separate accepted attempt lost its provider connection after partial output; its failed receipt is retained, and the accepted operation was not replayed. Input reconnect remains unverified. |
 | Shell model overlap | WebSocket evidence includes `integrated-47f-shell-ws-1`; final-state SSE is `integrated-4dc4-shell-lifecycle-1`. Actual model acceptance, subsequent successful independent read, uncancelled running query, expired wait, observe, unbounded wait, stdout, exit 0 and filesystem marker passed. |
 | Subagent model overlap | WebSocket evidence includes `integrated-context-final-subagent-1`; final-state SSE is `integrated-4dc4-subagent-mixed-1`. Actual parent-model handle, later independent action, running child, expired wait and actual child output/marker passed. |
@@ -218,6 +219,30 @@ TypeScript/online/offline builds passing. GACTfe1cad75 contains the repair.
 Evidence: `sdk-bump-ci-*`, `transcript-anchor-*`, `transcript-ci-*` and original
 exact-head CI logs. New-head CI and affected live UI gates remain pending.
 
+On core7810/GACTfe1, both workspace runs passed 3,024 unit cases and builds,
+then exposed an additional unchanged resize-browser regression. It reproduced
+locally. Native compensation could replace the stable reading anchor before
+the viewport width observer ran; after restoration, first measurement of the
+partially visible anchor itself could move its top again. The repair retains
+the capture width, refreshes ordinary navigation anchors as a gesture settles,
+and compensates measured rows before the anchored row using its current index.
+Three new focused cases reproduce these causes before correction. Eight affected
+viewport cases passed individually/sequentially, and the unchanged virtualized
+resize, in-flow resize and desktop/phone disclosure contracts each passed five
+times (15 executed / 15 passed). Scoped lint/format and six guards passed.
+Full TypeScript/online/offline builds passed. GACTb61006a7 contains this repair.
+Evidence: `transcript-compensation-*` and `transcript-anchor-width-before.log`.
+Earlier candidate failures remain retained, including one Chromium
+`ERR_NETWORK_CHANGED` that prevented initial JavaScript loading; none are
+counted as passing qualification.
+
+Core7810's Python3.12 shard0 exceeded the unchanged 18-minute CI budget without
+a recorded failing test; its dependent coverage job lacked that shard artifact.
+A separate BuildKit image-bootstrap failure passed one same-job rerun before
+any project/workflow/authentication changes. Current CI is not green; replacement
+head CI and affected actual-model gates must still pass. No assertion, execution
+budget, worker count or guard was weakened.
+
 Focused unit/integration cases were run individually and sequentially with one
 worker. They cover durable acceptance, complete identity and collisions, caller
 authorization, legacy records, filters/cursors, mixed controls, task input,
@@ -258,10 +283,10 @@ and the matching core/UI/document logs.
   accepted command's descendants; restart preserved the original interrupted
   handle, and the real model collected it without command replay. No accepted operation may
   be replayed when resuming qualification.
-- Five MCP Stop/UI-cancel cycles passed. HTTP reconnect repetitions and
-  nonrecoverable backend-loss qualification remain pending.
-  Prepared external probes are not executed evidence. Native Shell permission
-  success does not qualify MCP elicitation/input-answer/reconnect semantics;
+- Five MCP Stop/UI-cancel cycles and five HTTP reconnect cycles passed, retaining
+  their exact source identities above. Nonrecoverable backend-loss and input
+  recovery qualification remain pending. Prepared external probes are not
+  executed evidence. The input backend is explicitly a real FastMCP reference;
   the tested production Web backend exposes no input-required operation.
 - Human integration introduced a compact Work inventory that omitted shared
   task controls. Actual service/browser probes exposed it; those failures
