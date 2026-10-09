@@ -21,10 +21,7 @@ from clio_agent.gact.artifacts.provenance_presentation import with_provenance_bl
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
-from clio_agent.gact.evidence import (
-    _bounded_tool_call_result,
-    _tool_result_preview,
-)
+from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -38,6 +35,7 @@ from clio_agent.gact.runtime.globals import (
     _resolve_tool_session,
 )
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
+from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
@@ -880,9 +878,7 @@ def _make_tool_observer(app: "FastAPI"):
             )
             if representation == "handoff":
                 return None
-            result_text = completion_error or (
-                _tool_result_preview(result) if result is not None else "completed"
-            )
+            result_text = completed_tool_text(result, completion_error)
             _append_live_assistant_part(
                 app,
                 sid,
@@ -910,18 +906,12 @@ def _make_tool_observer(app: "FastAPI"):
                             text=result_text,
                         )
                     ],
-                    metadata={
-                        "stream_source": "live",
-                        "completed_at": _iso_from_epoch(completed_epoch),
-                        "telemetry_source": "live_observer",
-                        **(
-                            {"result": _bounded_tool_call_result(result)}
-                            if result is not None
-                            else {}
-                        ),
-                        **cancellation_metadata,
-                        **provenance,
-                    },
+                    metadata=completed_tool_metadata(
+                        result,
+                        completed_at=_iso_from_epoch(completed_epoch),
+                        cancellation=cancellation_metadata,
+                        provenance=provenance,
+                    ),
                 ),
             )
         return None
