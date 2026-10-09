@@ -126,3 +126,17 @@ def degraded_web_mcp_placeholder(namespace: str, spec: MCPServerSpec | None) -> 
         },
     )
     return {name: tool}
+
+
+def with_web_placeholders(
+    tools: dict[str, Any], degraded: Any, specs: dict[str, MCPServerSpec]
+) -> dict[str, Any]:
+    """``tools`` plus :func:`degraded_web_mcp_placeholder` for each degraded namespace.
+
+    A heal's merge later replaces the stand-in with the real tool (same key).
+    """
+
+    merged = dict(tools)
+    for namespace in degraded:
+        merged.update(degraded_web_mcp_placeholder(namespace, specs.get(namespace)))
+    return merged

@@ -58,10 +58,7 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_checker,
     cancellation_requested,
 )
-from clio_agent.search.web_mcp_default import (
-    degraded_web_mcp_placeholder,
-    load_agent_mcp_servers,
-)
+from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -427,11 +424,7 @@ class ClioAgent(dspy.Module):
 
         def _initial_pass() -> None:
             outcome = discover_declared_tools_bounded(specs)
-            tools = dict(outcome.tools)
-            for namespace in outcome.degraded:
-                # A heal's merge replaces the stand-in with the real tool (same key).
-                tools.update(degraded_web_mcp_placeholder(namespace, specs.get(namespace)))
-            if tools:
+            if tools := with_web_placeholders(outcome.tools, outcome.degraded, specs):
                 self._merge_discovered_tools(tool_gateway, experts, None, tools)
             for namespace, reason in outcome.degraded.items():
                 healer.mark_degraded(namespace, reason)
