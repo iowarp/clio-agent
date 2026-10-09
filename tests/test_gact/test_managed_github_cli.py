@@ -1,4 +1,4 @@
-"""The managed CLI uses fresh CLIO auth and cannot escape source permissions."""
+"""Internal connected-source checks preserve grants independently of agent shell gh."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.storage import github_tool
+from clio_agent.gact.storage import github_preflight as github_tool
 from clio_agent.gact.storage.models import CreateSource
 from clio_agent.gact.storage.service import StorageService
 from clio_agent.runtime import github_cli

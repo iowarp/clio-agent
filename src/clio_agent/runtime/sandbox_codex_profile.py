@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 #: Typed reason surfaced when a synthesized profile fails clio's pinned key set (no silent fallback).
@@ -48,23 +48,14 @@ class CodexProfileError(ValueError):
         self.reason = reason
 
 
-def _default_read_roots(write_roots: Sequence[str], *, platform: str) -> list[str]:
-    """The read-anywhere roots for a spawn: drive anchors on win32, ``/`` off-win32.
+def _default_read_roots(*, platform: str) -> list[str]:
+    """Use Codex's Windows root token for read-anywhere, ``/`` off Windows.
 
-    On win32 codex grants ``"read"`` at the DRIVE level (``C:\\``, ``D:\\``) so reads are open
-    everywhere the write roots' drives live; off-win32 the single filesystem root ``/`` is the
-    read-anywhere grant. Deduplicated, order-preserving.
+    Elevated Windows execution requires effective ``:root`` read access. Native
+    drive anchors fail the client's permission-path round trip before any child
+    can start. Explicit protected read/deny entries still override this root.
     """
-    if platform.startswith("win"):
-        anchors: list[str] = []
-        seen: set[str] = set()
-        for root in write_roots:
-            anchor = PureWindowsPath(root).anchor
-            if anchor and anchor not in seen:
-                seen.add(anchor)
-                anchors.append(anchor)
-        return anchors or ["C:\\"]
-    return ["/"]
+    return [":root"] if platform.startswith("win") else ["/"]
 
 
 def synthesize_codex_profile(
@@ -78,7 +69,7 @@ def synthesize_codex_profile(
 
     ``filesystem`` maps every read root to ``"read"`` and every write root to ``"write"`` (a
     write grant WINS over an overlapping read grant — the write territory is the ONE shared
-    boundary). ``read_roots`` defaults to the filesystem/drive roots (:func:`_default_read_roots`)
+    boundary). ``read_roots`` defaults to the filesystem root (:func:`_default_read_roots`)
     so reads are open. Paths are normalized with ``str(Path(r))``. The returned table is
     validated by :func:`validate_codex_profile` before it is returned (typed on drift).
     """
@@ -86,7 +77,7 @@ def synthesize_codex_profile(
     reads = (
         [str(Path(r)) for r in read_roots]
         if read_roots is not None
-        else _default_read_roots(writes, platform=platform)
+        else _default_read_roots(platform=platform)
     )
     filesystem: dict[str, str] = {}
     for root in reads:

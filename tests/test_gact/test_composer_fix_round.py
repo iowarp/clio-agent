@@ -202,7 +202,7 @@ def test_a_cancelled_steer_is_never_surfaced_by_a_racing_drain(tmp_path: Path) -
 
 
 # --------------------------------------------------------------------------- #
-# F2 — cancel must stop the composer producers, not start them.                 #
+# F2 — Stop pauses future work while delivering already submitted feedback.    #
 # --------------------------------------------------------------------------- #
 
 
@@ -240,8 +240,8 @@ def test_cancel_does_not_auto_start_the_queued_head(tmp_path: Path) -> None:
         assert all(row["id"] != "msg_queued_cancel" for row in _user_messages(client, sid))
 
 
-def test_cancel_leaves_a_residual_steer_buffered_instead_of_restarting(tmp_path: Path) -> None:
-    """A residual steer must not re-drive a new turn on a cancelled session."""
+def test_cancel_delivers_a_residual_steer_without_another_send(tmp_path: Path) -> None:
+    """Stop closes the current turn, then delivers already submitted feedback."""
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=1.0))
     with TestClient(app) as client:
@@ -260,12 +260,20 @@ def test_cancel_leaves_a_residual_steer_buffered_instead_of_restarting(tmp_path:
         ).json()["message_id"]
         assert client.post(f"/v1/sessions/{sid}/cancel").status_code == 204
 
-        _wait_idle(app, sid)
-        time.sleep(0.4)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not app.state.turn_runner.busy(sid) and not app.state.message_intents.list_pending(
+                sid
+            ):
+                break
+            time.sleep(0.02)
         assert not app.state.turn_runner.busy(sid)
-        assert client.get(f"/v1/sessions/{sid}").json()["status"] == "cancelled"
         listed = client.get(f"/v1/sessions/{sid}/pending-steers").json()["pending_steers"]
-        assert [row["message_id"] for row in listed] == [steer_id]
+        assert listed == []
+        message = next(row for row in _user_messages(client, sid) if row["id"] == steer_id)
+        assert message["turn_id"] == steer_id
+        assert message["metadata"]["pending_steer"] is False
+        assert client.get(f"/v1/sessions/{sid}").json()["metadata"]["composer_queue_paused"]
 
 
 def test_an_explicit_send_after_cancel_resumes_queue_promotion(tmp_path: Path) -> None:

@@ -24,16 +24,17 @@ runtime problem to diagnose, not evidence that the user must reconnect data.
 For GitHub releases, issues, pull requests and workflow state, use live GitHub
 records. Local git tags and logs describe the checkout and cannot establish
 what GitHub has published. Identify the repository from the request or its
-actual git remote. Prefer the managed `github_cli` for supported reads of an
-approved source; use `connected_data_status` to check CLIO sign-in and source
-access when needed. The machine's shell gh login is a separate account.
+actual git remote. Use `gh` through the normal shell for GitHub work, including
+cloning and inspection. Follow the shared GitHub shell guidance. A repository
+URL does not require source connection or a source ID.
 For releases, inspect published notes, dates, URLs and draft/prerelease flags;
 distinguish the latest stable release from the newest published prerelease.
-If managed access is unavailable for a public repository, use its public
+If CLI access is unavailable for a public repository, use its public
 GitHub API or release page through available HTTP/browser tools or read-only
-shell HTTP requests. Public facts
-do not require connecting a source or signing in. For private access, follow
-the discovered connection skill's sign-in flow. If live access fails, explain
+shell HTTP requests. Public facts do not require connecting a source or signing
+in. Use the CLI's configured account for authorized private repository work.
+Use the discovered connection skill when repository data needs to be attached
+to the workspace. If live access fails, explain
 the limitation and label local history as unverified publication evidence.
 Use git for local changes and commit history behind a verified release.
 

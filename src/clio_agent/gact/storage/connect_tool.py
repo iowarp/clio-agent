@@ -28,6 +28,8 @@ def connected_data_connect(
     changes originals. Sign-in remains private and user-operated; if missing,
     return the login action for an A2UI Button in the answer. No credentials
     may be passed in configuration. Linking exposes references, not a shell mount.
+    A GitHub URL or a request to inspect, clone or work on a repository does not
+    request source attachment: use gh through the normal shell for that work.
     """
     app = context.active_app()
     sid = context.active_session_id()
@@ -80,7 +82,7 @@ def connected_data_connect(
         return result
     if not existing.linked_manifest_id:
         if provider == "github":
-            from clio_agent.gact.storage.github_tool import source_cli
+            from clio_agent.gact.storage.github_preflight import source_cli
             from clio_agent.gact.storage.linked import github_location
 
             org, repo, _, folder = github_location(

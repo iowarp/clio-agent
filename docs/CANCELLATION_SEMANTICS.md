@@ -66,8 +66,11 @@ another one):
 - `asyncio_task_cancel_sent`
 - `children_cancelled` — count of descendant agent-task turns cancelled
 - `provider_streams_killed` — count of in-flight SDK streams aborted
-- `composer_autostart_suspended` — whether pending steers/queued messages were
-  suspended from auto-promoting
+- `composer_autostart_suspended` — whether the future-message queue was paused.
+  Already submitted pending steers are not suspended: each starts with its
+  accepted identity after the cancelled turn releases its slot. The queue pause
+  persists across those feedback turns and restarts; an explicit idle send
+  resumes the queue. Stop never deletes either kind of message.
 
 This makes post-hoc inspection possible after transient SSE events are gone.
 

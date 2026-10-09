@@ -1,8 +1,9 @@
 """``ClioReAct`` -- clio's agent loop on DSPy 3.4's direct LM interface.
 
 Each step is ONE ``lm(dspy.lm15.Request)`` call -- no ``dspy.Predict``, no adapter, no
-field format. The request carries the system prompt (the signature's instructions + the
-expert's system prompt), the task as one user message, every earlier step of this turn
+field format. The request carries the expert's system prompt (or the signature's
+instructions), shared guidance for its declared tools, the task as one user message,
+every earlier step of this turn
 as typed messages, and the tools as native function tools (``submit`` among them for
 structured outputs). The reply comes back typed: thinking (with the provider's
 continuation state, sent back as-is on the next call), the visible text (shown as
@@ -75,6 +76,7 @@ from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
+from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
@@ -236,10 +238,14 @@ def _function_tool(tool: dspy.Tool) -> FunctionTool:
     )
 
 
-def _system(signature: Any, inputs: dict[str, Any]) -> str:
-    """The expert's system prompt; the signature's instructions when there is none."""
+def _system(signature: Any, inputs: dict[str, Any], tools: Iterable[str] = ()) -> str:
+    """Compose the expert's prompt with guidance for its actual declared capabilities."""
     expert = str(inputs.get(_SYSTEM_INPUT) or "").strip()
-    return expert or signature.instructions.strip()
+    return "\n\n".join(
+        part
+        for part in (expert or signature.instructions.strip(), github_shell_guidance(tools))
+        if part
+    )
 
 
 def _head(signature: Any, inputs: dict[str, Any]) -> Message:
@@ -341,7 +347,7 @@ class _Loop:
         self.lm = agent.lm or dspy.settings.lm
         if self.lm is None:
             raise NoLanguageModelError()
-        self.system = _system(agent.signature, self.inputs)
+        self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
         self.tools = tuple(_function_tool(t) for t in agent.tools.values())
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)

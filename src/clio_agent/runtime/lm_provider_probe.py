@@ -104,6 +104,8 @@ def _probe_codex_direct(
     ``~/.codex``).
     """
     from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
+    from clio_agent.providers.handshake import cache  # noqa: PLC0415
+    from clio_agent.providers.handshake.model import AuthState, ConnectivityState  # noqa: PLC0415
 
     details: dict[str, Any] = {
         "provider": "codex",
@@ -122,15 +124,33 @@ def _probe_codex_direct(
             details={**details, "reason": "auth_absent"},
             required=True,
         )
+    report = cache.get_cached(cache.cache_key("codex", config.api_base))
+    if (
+        report
+        and report.auth == AuthState.OK
+        and report.connectivity == ConnectivityState.OK
+        and report.models_source == "live"
+    ):
+        return IntegrationStatus(
+            name="lm_provider",
+            state=IntegrationState.READY,
+            summary="The default Codex provider connection was checked successfully.",
+            config_source=source,
+            next_action="",
+            endpoint=config.api_base,
+            auth_mode=auth_mode,
+            capabilities=["chat-completions", "websocket-transport", "sse-transport"],
+            details={**details, "reason": "auth_verified", "checked_at": report.generated_at},
+            required=True,
+        )
     return IntegrationStatus(
         name="lm_provider",
         state=IntegrationState.DEGRADED,
         summary=(
-            "Codex credentials are present, but authentication has not been "
-            "verified with the provider."
+            "The default Codex provider is signed in. Its connection has not been checked recently."
         ),
         config_source=source,
-        next_action="Run Check provider in Settings to validate Codex and discover live models.",
+        next_action="Open Provider setup, select Codex and refresh its models to check the connection.",
         endpoint=config.api_base,
         auth_mode=auth_mode,
         capabilities=["chat-completions", "websocket-transport", "sse-transport"],

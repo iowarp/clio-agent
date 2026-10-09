@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import sys
 import tempfile
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+from clio_agent.runtime.github_cli import installed_github_cli
 
 _ENVIRONMENTS: dict[Path, dict[str, str]] = {}
 _LOCK = RLock()
@@ -67,7 +70,19 @@ def publish_environment(workspace: Path, runtime: dict[str, Any], cache: Path) -
 def shell_environment(workspace: Path) -> dict[str, str]:
     """Return only this process's verified workspace binding, never workspace input."""
     with _LOCK:
-        return dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
+        environment = dict(_ENVIRONMENTS.get(workspace.resolve(), {}))
+    path = environment.get("PATH", os.environ.get("PATH", ""))
+    if shutil.which("gh", path=path):
+        return environment
+    executable = installed_github_cli()
+    if executable is not None:
+        directory = str(executable.parent)
+        environment["PATH"] = os.pathsep.join([directory, path])
+        prefix = environment.get("CLIO_EXECUTION_PATH", "")
+        environment["CLIO_EXECUTION_PATH"] = os.pathsep.join(
+            part for part in (directory, prefix) if part
+        )
+    return environment
 
 
 def posix_command(command: str, environment: dict[str, str]) -> str:

@@ -26,7 +26,28 @@ are reused. Registration, sign-in and a completed linked index are separate
 states. Linking produces source references, rather than an operating-system mount.
 Existing read-only, working-copy review and write-enabled rules are preserved.
 
-## Managed GitHub CLI
+## GitHub through the normal shell
+
+Ordinary GitHub work uses the full `gh` CLI through `shell_bash`, including
+cloning, repository inspection, issues, pull requests, Actions and releases.
+The shared editable `clio.runtime.github_shell` prompt is included at the common
+GACT agent-loop request boundary whenever the agent declares a shell. It applies
+to every provider and to root and child agents with that capability. It does not
+attach a shell to agents without one. A repository URL does not request a source
+connection. Public API/browser reads remain available when the CLI cannot read.
+
+The shell keeps an existing `gh` on its PATH and its configured CLI account.
+When none is available, it adds the already installed, verified managed CLI to
+the child process's PATH. This lookup downloads nothing, mutates no global PATH
+and injects no CLIO account grant. The ordinary shell permission gate and
+filesystem boundary continue to apply. There is no `github_cli` agent tool or
+restricted wrapper around ordinary shell commands.
+
+Release guidance inspects live publication records, excludes drafts, and
+distinguishes stable releases from prereleases. Local tags and the latest-stable
+endpoint do not establish the newest published beta.
+
+### Explicit connected-source validation
 
 The normal document/runtime installation hook installs official `gh` 2.102.0
 into CLIO's private cache. Version and archive SHA-256 values are pinned for
@@ -34,15 +55,15 @@ Linux, macOS and Windows on AMD64/ARM64. The executable is verified on reuse;
 archive paths are not extracted wholesale. This does not add the CLI archives
 to the Desktop installer payload.
 
-The `github_cli` native tool accepts bounded repository reads on an approved
-source. It resolves the current CLIO account privately for each invocation and
+For an explicitly requested source attachment, internal connection validation
+resolves the current CLIO account privately and
 enforces source ownership, workspace, repository, folder and revision. Inherited
 host CLI authentication/debug variables are removed. CLIO supplies a private
 process grant and a separate CLI config directory; it never runs `gh auth login`
 or exposes tokens to the agent. Sign-out prevents later authenticated calls.
 
-This is a source-scoped read interface, not the entire unrestricted `gh` command
-surface. Writes continue through connected-source editing/review/publication.
+These checks belong to connected-source validation, not the agent's tool catalog.
+Connected-source writes continue through editing/review/publication.
 GitHub app permissions determine upstream repository access independently of
 CLIO's source approval. Existing linked-source filesystem adapters are retained.
 

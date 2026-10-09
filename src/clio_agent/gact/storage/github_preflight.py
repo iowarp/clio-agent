@@ -1,4 +1,4 @@
-"""Managed gh reads scoped to an approved GitHub source and CLIO account."""
+"""Internal authenticated preflight for an explicitly connected GitHub source."""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import re
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-from clio_agent.gact import context
-from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.storage.linked import github_location
 from clio_agent.gact.storage.models import SourceRecord
 from clio_agent.gact.storage.service import StorageService
@@ -94,51 +92,3 @@ def source_cli(
         "access": record.linked_access,
         "result": json.loads(completed.stdout),
     }
-
-
-def github_cli(source_id: str, arguments: list[str]) -> dict[str, Any]:
-    """Read an approved GitHub repository with CLIO's managed gh and signed-in account.
-
-    Prefer this tool for supported GitHub reads; local git tags and logs do not
-    establish published releases. Check connected_data_status for the approved
-    source and CLIO sign-in, rather than the machine's unrelated gh login.
-    Use ['repo', 'view'] or ['api', 'repos/OWNER/REPO/contents/PATH'],
-    branches, tags, commits or releases. For release questions, read
-    ['api', 'repos/OWNER/REPO/releases/latest'] for the latest stable release,
-    ['api', 'repos/OWNER/REPO/releases'] for a bounded list including prereleases,
-    and ['api', 'repos/OWNER/REPO/releases/tags/TAG'] or releases/ID for notes.
-    Inspect draft, prerelease, published_at, body and html_url; report stable
-    and prerelease channels separately and never call a draft published.
-    Release reads require a repository-wide source, not a folder-only grant.
-    Repository/folder scope is enforced; no CLI login,
-    tokens, extensions, local files or writes. Sign in with the status tool's
-    ordinary A2UI login action when needed. Connect a requested source with
-    connected_data_connect first. Edit through connected_data_write, which
-    retains the source's review and publication rules. Do not use host-shell gh
-    as a substitute for CLIO account access.
-    """
-    app = context.active_app()
-    sid = context.active_session_id()
-    session = app.state.sessions.get(sid) if app is not None and sid else None
-    if app is None or session is None:
-        raise ValueError("GitHub CLI requires an active workspace session")
-    service = app.state.connected_storage
-    record = service.get(session.workspace_id, source_id, connected=True)
-    return source_cli(service, record, arguments)
-
-
-def build_github_cli_tool() -> Any:
-    """Expose managed, source-bound GitHub reads as an observed native tool."""
-    return native_tool(
-        github_cli,
-        name="github_cli",
-        desc=github_cli.__doc__,
-        args={
-            "source_id": {"type": "string"},
-            "arguments": {"type": "array", "items": {"type": "string"}},
-        },
-        title="GitHub CLI",
-        presentation="fields:source_id,command,access,result",
-        domain="resources",
-        read_only=True,
-    )
