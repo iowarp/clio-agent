@@ -17,7 +17,12 @@ def owned_input_callback(app: Any, session: Any, key: TaskKey, store: TaskRecord
     if callback is None or row is None:
         return callback
     invocation = MCPInvocationContext(
-        row.invocation_id, key.session_id, key.server_id, row.tool, task_id=key.task_id
+        row.invocation_id,
+        key.session_id,
+        key.server_id,
+        row.tool,
+        task_id=key.task_id,
+        task_key=key,
     )
 
     async def answer(request_context: Any, params: Any) -> Any:

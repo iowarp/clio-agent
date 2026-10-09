@@ -52,6 +52,11 @@ from clio_agent.gact.elicitation_schema import (
     validate_elicitation_answer,
 )
 from clio_agent.gact.permission_delivery import attended_session_id
+from clio_agent.gact.task_input_questions import (
+    TaskInputIdentityError,
+    preserve_input_on_disconnect,
+    recover_input_question,
+)
 from clio_agent.gact.types import UserQuestion, UserQuestionOption
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPClientCapabilities, MCPInvocationContext
@@ -93,6 +98,7 @@ ELICITATION_REASONS: dict[str, str] = {
     "elicitation_url_insecure_scheme": "url-mode elicitation is not https; declined",
     "elicitation_wait_timeout": "no answer within the elicitation window; cancelled",
     "elicitation_unknown_mode": "elicitation mode is neither form nor url; declined",
+    "elicitation_task_identity_invalid": "task input owner or stored question is ambiguous; declined",
     "child_waiting_without_question": "child paused for input but has no pending question to forward",
     "forwarded_child_question_gone": "forwarded parent answer arrived but the child question is gone",
     "forwarded_child_not_resumable": "forwarded child question is not resumable; task terminated",
@@ -279,6 +285,8 @@ async def _await_answer(
     timeout: float,
     *,
     on_published: Callable[[UserQuestion], None] | None = None,
+    publish: bool = True,
+    preserve_on_cancel: Callable[[], bool] | None = None,
 ) -> ElicitResolution:
     """Register the waiter, publish the question, then park until it is resolved.
 
@@ -300,10 +308,19 @@ async def _await_answer(
     loop = asyncio.get_running_loop()
     future: asyncio.Future[ElicitResolution] = loop.create_future()
     _register_waiter(app, question.id, (future, loop))
-    _publish_question_created(app, question)
-    if on_published is not None:
-        on_published(question)
     try:
+        if publish:
+            _publish_question_created(app, question)
+        else:
+            # Answering while no driver is attached is valid. Re-read AFTER
+            # registering so an answer racing reattachment cannot be lost.
+            question = app.state.user_questions.get(question.id, question)
+            if question.id not in app.state.user_questions:
+                record_user_question(app, question)
+            if question.status != "pending":
+                return _resolution_from_question(question)
+        if on_published is not None:
+            on_published(question)
         return await asyncio.wait_for(asyncio.shield(future), timeout=timeout)
     except (TimeoutError, asyncio.TimeoutError):
         if _terminalize_question(app, question.id, "expired", "user_question.expired"):
@@ -311,10 +328,12 @@ async def _await_answer(
             return ElicitResolution(action="cancel")
         # The answer won the atomic transition; its result is (being) delivered onto
         # the shielded, still-live future — await it so the tool gets the real answer.
-        return await future
+        current = app.state.user_questions.get(question.id)
+        return _resolution_from_question(current) if current is not None else await future
     except asyncio.CancelledError:
         # Outer tool failure / loop teardown / cancel cascade: claim cancelled + re-raise.
-        _terminalize_question(app, question.id, "cancelled", "user_question.cancelled")
+        if preserve_on_cancel is None or not preserve_on_cancel():
+            _terminalize_question(app, question.id, "cancelled", "user_question.cancelled")
         raise
     finally:
         _pop_waiter(app, question.id)
@@ -415,7 +434,7 @@ def resolve_answered_question(app: Any, deps: Any, sid: str, question: UserQuest
 def _resolution_from_question(question: UserQuestion) -> ElicitResolution:
     """Map an answered/cancelled UserQuestion to an SDK-shaped resolution."""
 
-    if question.status == "cancelled":
+    if question.status in {"cancelled", "expired"}:
         return ElicitResolution(action="cancel")
     elicitation = question.metadata.get("elicitation") or {}
     # An explicit decline rides the answer metadata (the user rejected the ask).
@@ -637,6 +656,12 @@ async def handle_elicitation(
         _record_reason("elicitation_unknown_mode", mode=mode, tool=invocation.tool_name)
         return _build_elicit_result(ElicitResolution(action="decline"))
 
+    try:
+        question, publish, timeout = recover_input_question(app, invocation, question, timeout)
+    except TaskInputIdentityError as exc:
+        _record_reason("elicitation_task_identity_invalid", error=str(exc))
+        return _build_elicit_result(ElicitResolution(action="decline"))
+
     # Regression lock: with no audience hint, ``decide_routing`` returns a pure
     # no-route/no-reason decision, ``routing_fields`` is empty, and
     # ``on_question_published`` is a no-op -- the question is untouched from its
@@ -666,7 +691,14 @@ async def handle_elicitation(
     def _on_published(published: UserQuestion) -> None:
         agent_elicitation.on_question_published(app, published, invocation, translation, decision)
 
-    resolution = await _await_answer(app, question, timeout, on_published=_on_published)
+    resolution = await _await_answer(
+        app,
+        question,
+        timeout,
+        on_published=_on_published,
+        publish=publish,
+        preserve_on_cancel=lambda: preserve_input_on_disconnect(app, invocation),
+    )
     return _build_elicit_result(resolution)
 
 
@@ -690,7 +722,7 @@ def make_elicitation_hook(
         params: Any,
         request_context: Any,
     ) -> Any:
-        correlated = invocation_with_request_correlation(invocation, request_context)
+        correlated = invocation_with_request_correlation(invocation, request_context, app=app)
         return await handle_elicitation(
             app, correlated, message, params, url_trusted_origins=url_trusted_origins
         )

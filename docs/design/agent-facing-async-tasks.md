@@ -404,3 +404,54 @@ each receipt records the actual identity it tested. This task does not promote
 the async drafts or alter installed Desktop, authentication, defaults or released
 pins. Unrelated human changes are preserved. Disk/manual cleanup remains a
 separate incomplete monitor obligation.
+
+### Subsequent actual-model task guidance and input recovery
+
+Core `44357f5eae4f30121891128c095b123035fbb594` with GACT
+`b61006a7242b96d996f1a35222d2f530b5b96ae6` passed five fresh original-Subagent
+control cycles in `final-44357-subagent-controls-1`. Actual Codex/Luna parents
+queried and observed the original child, did independent work during its
+120-second data job, expired a short wait without stopping it, and collected
+its result. Mixed parent/descendant task pagination and child scope were checked.
+Five genuine accepted-Subagent failure-delivery cycles also passed in
+`final-44357-queued-subagent-failure-1`: an intentionally unavailable child model
+queued behind a successful Codex/Luna worker, then actually failed through the
+provider. The idle parent received the original failed handle and error once on
+its next user turn. This negative path does not establish inference acceptance
+of the unavailable model. Both series retained unchanged source fingerprints and
+actual private-runtime absence receipts. The earlier failed series stay failed.
+
+The actual-model `input-recovery-44357-before-1` baseline exposed a different
+bug. The model received an MCP handle and acted independently while input was
+pending. After only the owned API restarted, the real browser answered the
+original durable question successfully. When the unchanged exclusive lease
+expired, recovery asked a duplicate question instead of using that answer.
+Its failing verdict and both question identities are retained. This backend is
+the labelled real FastMCP conformance reference, not the deployed Web service.
+
+The repair binds input callbacks to the complete task key and reuses the
+original durable question/answer under its owner, server, backend session, task,
+invocation and input key. Ambiguous legacy records decline explicitly. A waiter
+registers before checking a recovered answer, preserving answers delivered while
+the observer was absent. Recoverable observer shutdown preserves pending input;
+explicit or nonrecoverable driver cancellation does not. Recovery retains the
+original human deadline and expired questions remain cancelled. The existing
+question mirror retains undelivered task answers until their backend receipt,
+independently of the bounded unrelated resolved history. Production legacy
+correlation reads the caller's app-owned store.
+
+Seventeen new cases and eight existing input/recovery cases passed individually
+and sequentially with one worker and zero skips. Scoped Ruff/format, Pyright
+zero errors/warnings and eight existing guards passed. The affected live recovery
+gate must still pass on the repair commit; these checks do not replace it.
+Cancellation of a task while its human input is pending also needs a distinct
+shared-control live gate; cancelling a driver in a unit test does not prove it.
+
+Core `44357` CI run `38002239297` failed two Python 3.12 cases: post-permission
+tool completion and queued Claude connection completion. The permission failure
+reproduces individually after transport returns; the full cause and repair are
+still unresolved. An individual Windows/Python 3.13 Claude pass does not clear
+its CI failure. No timeout, assertion, worker or guard was relaxed. This source
+also needs careful reconciliation with its advanced target branch. Full
+qualification remains incomplete, and no promotion or installed-state change is
+authorized by these receipts.

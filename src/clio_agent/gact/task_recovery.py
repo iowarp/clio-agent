@@ -103,7 +103,12 @@ async def recover_http(app: Any, key: TaskKey) -> None:
             raise ValueError("Older task lacks original negotiation for safe reconnect")
 
         invocation = MCPInvocationContext(
-            row.invocation_id, key.session_id, key.server_id, row.tool, task_id=key.task_id
+            row.invocation_id,
+            key.session_id,
+            key.server_id,
+            row.tool,
+            task_id=key.task_id,
+            task_key=key,
         )
         context = make_elicitation_client(
             app,
