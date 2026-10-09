@@ -28,6 +28,12 @@ def test_installer_records_only_complete_provisioning(
     monkeypatch.setattr(installer, "prepare_document_runtime", lambda *a, **kw: result)
     monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "private soffice")
     monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+    monkeypatch.setattr(
+        installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
+    )
+    monkeypatch.setattr(
+        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+    )
     stages: list[str] = []
     receipt = cache / "locked" / "installed.json"
     if javascript == "failed":
@@ -51,6 +57,7 @@ def test_installer_records_only_complete_provisioning(
             "Office rendering is ready.",
             "Preparing and checking the GitHub command-line tool...",
             "GitHub command-line tool is ready.",
+            "Preparing and checking protected execution helpers...",
         }
         assert stages[-1] == "All managed runtime packages are installed and verified."
 
@@ -95,6 +102,12 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
     monkeypatch.setattr(installer, "prepare_document_runtime", packages)
     monkeypatch.setattr(installer, "prepare_office_runtime", office)
     monkeypatch.setattr(installer, "ensure_github_cli", github)
+    monkeypatch.setattr(
+        installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
+    )
+    monkeypatch.setattr(
+        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+    )
     installer.install_document_runtime(tmp_path / "workspace", cache_root=cache)
     assert office_done.is_set() and github_done.is_set()
     assert receipt.exists()

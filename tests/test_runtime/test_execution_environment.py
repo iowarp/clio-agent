@@ -94,3 +94,55 @@ def test_scratch_path_can_be_checked_before_creating_it(tmp_path: Path) -> None:
     root = scratch_root(tmp_path, create=False)
     assert root == tmp_path / ".tmp" / "clio-documents"
     assert not root.exists()
+
+
+def test_shell_keeps_the_existing_host_github_cli_and_account_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/host/bin")
+    monkeypatch.setenv("GH_CONFIG_DIR", "/host/account")
+    monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: "/host/bin/gh")
+
+    def lookup() -> Path | None:
+        raise AssertionError("An existing host gh takes precedence over the managed CLI")
+
+    monkeypatch.setattr(execution, "installed_github_cli", lookup)
+    assert execution.shell_environment(tmp_path) == {}
+    assert os.environ["GH_CONFIG_DIR"] == "/host/account"
+
+
+def test_shell_can_find_installed_gh_before_document_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "/host/bin")
+    monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
+    executable = tmp_path / "managed cli" / "gh"
+    monkeypatch.setattr(execution, "installed_github_cli", lambda: executable)
+    environment = execution.shell_environment(tmp_path / "workspace")
+    assert environment == {
+        "PATH": os.pathsep.join([str(executable.parent), "/host/bin"]),
+        "CLIO_EXECUTION_PATH": str(executable.parent),
+    }
+    assert os.environ["PATH"] == "/host/bin"
+
+
+def test_github_fallback_retains_prepared_workspace_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = {"PATH": "/prepared/bin", "CLIO_EXECUTION_PATH": "/prepared/bin"}
+    monkeypatch.setitem(execution._ENVIRONMENTS, tmp_path.resolve(), original)
+    monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
+    executable = tmp_path / "gh" / "gh"
+    monkeypatch.setattr(execution, "installed_github_cli", lambda: executable)
+    environment = execution.shell_environment(tmp_path)
+    expected = os.pathsep.join([str(executable.parent), "/prepared/bin"])
+    assert environment == {"PATH": expected, "CLIO_EXECUTION_PATH": expected}
+    assert original == {"PATH": "/prepared/bin", "CLIO_EXECUTION_PATH": "/prepared/bin"}
+
+
+def test_shell_without_any_gh_still_runs_other_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(execution.shutil, "which", lambda name, *, path: None)
+    monkeypatch.setattr(execution, "installed_github_cli", lambda: None)
+    assert execution.shell_environment(tmp_path) == {}

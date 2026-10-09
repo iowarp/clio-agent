@@ -756,6 +756,9 @@ def accept_message(
         turn_agent_id=req.extract_agent_id().strip(),
         user_msg_id=message_id,
     )
+    # Only an explicit idle send resumes the future-message queue. Pending
+    # feedback uses the inbox re-drive and must leave this pause intact.
+    app.state.sessions.update(sid, metadata_patch={"composer_queue_paused": False})
     _commit_resource_deliveries(app, sid, resource_deliveries)
     ack = PostMessageResponse(
         message_id=user_msg.id,
