@@ -54,6 +54,14 @@ Inspect at the size the person will use. Check the overview, relevant tabs,
 labels, legends, units, contrast, clipping, framing and controls. Ask whether
 the view answers the question and is valuable to a human: can the reader find
 the important comparison without deciphering a dense wall of marks?
+Also review the explanation: what conclusion can a person see in this image,
+which marks support it, and what uncertainty remains? Compare related panels'
+category meanings, ranges, dates and selected records. Use direct labels or
+reference marks where they reduce the effort of finding the evidence. Remove
+redundant panels and give the central comparison more space. Load the dashboard
+skill's `references/report-design.md` when composing a substantial report.
+Perform this review yourself before presenting a complex visual; the person
+should not need to request a screenshot check separately.
 When a view is crowded, show the meaningful subset or aggregate first. Retain
 the complete source data and explain the initial slice. Make additional series,
 layers or views available through catalog-supported selectors, filters, tabs

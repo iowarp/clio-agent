@@ -17,6 +17,13 @@ when useful. For example, show an original shape once with two chosen evolutions
 Keep units, source identity, and limitations clear. Do not invent measurements
 or imply that a derived visual was part of the original recording.
 
+Before authoring, identify the reader's question and supported finding. Decide
+the role of each panel, shared colour meanings, useful annotations and the
+initial level of detail. Load `references/report-design.md` for worked layouts
+using this catalog. Prefer a few complementary views over repeated views of
+the same data. Choose a custom guarded chart when it explains the finding
+better than a preset; a technically fitting preset is not a design requirement.
+
 Load the active catalog index and exact component schemas with `load_skill`.
 The catalog remains the authority for shapes and actions. Reuse its tabs, rows,
 columns, lists, text, metrics, charts, tables, meshes, images, and inputs. Use
@@ -31,6 +38,8 @@ relevant tab, revise what is unclear, and capture the correction. Capture a
 published version with its exact `artifact_id`; keep revisions immutable.
 Check the docked view as well as an expanded one. Surface acceptance alone
 does not establish readable pixels; state when rendered inspection is unavailable.
+Review the explanation as well as geometry: is the finding apparent, does every
+panel earn its space, and do labels, colour meanings, units and filters agree?
 Choose a useful default rather than showing every graph or series at once.
 Retain the source data and let people reveal useful detail through supported
 tabs, filters, selectors or optional-view controls. Do not invent visibility
