@@ -12,6 +12,7 @@ import multiprocessing
 import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -66,24 +67,56 @@ def test_a_queue_of_holders_is_waited_out_past_the_hold_ceiling(
     **Sabotage:** time the whole wait (the old flat runaway deadline), or identify the
     holder by pid alone (every in-process holder has the same pid) -> the waiter raises.
     """
-    monkeypatch.setattr(lcl, "_POLL_INTERVAL_S", 0.05)
     order: list[str] = []
-    first_held = threading.Event()
+    held = [threading.Event() for _ in range(3)]
+    observed = [threading.Event() for _ in range(3)]
+    siblings_done = threading.Event()
+    real_read_owner = lcl._read_owner_record
+    poll_count = 0
+
+    def _observe_owner(owner_path: Any) -> str | None:
+        record = real_read_owner(owner_path)
+        if record and order:
+            observed[len(order) - 1].set()
+        return record
+
+    def _wait_for_next_holder(_seconds: float) -> None:
+        nonlocal poll_count
+        poll_count += 1
+        next_held = held[poll_count] if poll_count < len(held) else siblings_done
+        assert next_held.wait(5.0), "sibling lock handoff never completed"
+
+    # A file lock has no FIFO guarantee. Schedule each waiter poll while the
+    # next real holder owns it, rather than racing acquisition in the tiny
+    # unlocked handoff gap. Owner tokens and elapsed time remain real.
+    monkeypatch.setattr(lcl, "_read_owner_record", _observe_owner)
+    monkeypatch.setattr(
+        lcl, "time", SimpleNamespace(monotonic=time.monotonic, sleep=_wait_for_next_holder)
+    )
 
     def _sibling_spawns() -> None:
         for n in range(3):
             with acquire_launcher_cache_lock(f"h{n}", timeout_s=30.0):
                 order.append(f"h{n}")
-                first_held.set()
+                held[n].set()
+                assert observed[n].wait(5.0), "waiter never observed this real holder"
                 time.sleep(0.4)
+        siblings_done.set()
 
     siblings = threading.Thread(target=_sibling_spawns)
     siblings.start()
-    assert first_held.wait(5.0)
-    with acquire_launcher_cache_lock("waiter", timeout_s=0.6):
-        order.append("waiter")
-    siblings.join(timeout=10.0)
-    assert order.index("waiter") >= 2, order  # it waited through at least one hand-off
+    assert held[0].wait(5.0)
+    started = time.monotonic()
+    try:
+        with acquire_launcher_cache_lock("waiter", timeout_s=0.6):
+            order.append("waiter")
+    finally:
+        for signal in observed:
+            signal.set()
+        siblings.join(timeout=10.0)
+    assert not siblings.is_alive()
+    assert order == ["h0", "h1", "h2", "waiter"]
+    assert time.monotonic() - started > 0.6
 
 
 def test_uses_shared_launcher_cache_true_for_plain_stdio_spec() -> None:

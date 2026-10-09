@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from clio_agent.gact.events import Event
+from clio_agent.gact.session_kind import session_kind
 
 PermissionEventType = Literal["permission.requested", "permission.resolved"]
 
@@ -30,6 +31,8 @@ def attended_session_id(app: Any, session_id: str) -> str:
     while current and current not in seen:
         seen.add(current)
         session = sessions.get(current)
+        if session is not None and session_kind(session) == "branch":
+            return current
         parent = str(getattr(session, "parent_session_id", "") or "") if session is not None else ""
         if not parent:
             return current

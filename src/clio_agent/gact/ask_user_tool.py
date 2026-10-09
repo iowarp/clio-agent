@@ -1,4 +1,4 @@
-"""Declaration-scoped native ``ask_user`` turn-ending runtime tool."""
+"""Declaration-scoped native questions with explicit blocking or async delivery."""
 
 from __future__ import annotations
 
@@ -137,15 +137,24 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         reason: str = "",
         expiresInSeconds: int = 0,  # noqa: N803 - public tool schema is camelCase
         surface_id: str = "",
+        answer_action: str = "question.submit",
+        response_mode: str = "blocking",
     ) -> str:
-        """Ask the user one necessary question and end this turn.
+        """Ask the user for intent, an explanation, or a choice.
 
-        Use only when progress genuinely requires user intent or a tradeoff. Supply
-        ``options`` for choice questions. This ends the turn; do not call more tools
-        or continue the answer after this succeeds. The exact owning child/task is
-        resumed when the attended user responds. Pass ``surface_id`` when this
-        question resumes a specific A2UI surface (S5): the dispatcher correlates a
-        ``waiting_user`` action against it via ``metadata["a2ui_surface_id"]``.
+        response_mode="blocking" (default) ends this turn when the answer is needed
+        to continue. response_mode="async" leaves a question open while you keep
+        working; its answer arrives as a normal queued message. Supply options for
+        choices, or use freeform for a text answer. Pass surface_id to present an
+        existing A2UI surface with images, text, charts, or bound form controls.
+        For a visual question, create that surface first using the active catalog,
+        then pass its surface ID here so the visual opens with the question.
+        Only the named answer_action (default question.submit) submits the surface's
+        structured context and input values as the answer. Other visual controls
+        do not answer the question. Each open visual question owns its surface;
+        omit surface_id for text-only questions.
+        Leave pause and queue explanations to the native question UI; the A2UI
+        surface supplies visual context and controls, not the question lifecycle.
         """
 
         app = _ctx.active_app()
@@ -155,6 +164,20 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         session = app.state.sessions.get(session_id)
         if session is None:
             raise AskUserError("ask_user could not resolve the active session.")
+        if response_mode not in {"blocking", "async"}:
+            raise AskUserError("response_mode must be blocking or async.")
+        answer_action = answer_action.strip() or "question.submit"
+        if surface_id:
+            surface = app.state.a2ui_store.get(session_id, surface_id)
+            if surface is None or surface.state == "deleted":
+                raise AskUserError("surface_id must name an existing surface in this session.")
+            if any(
+                row.session_id == session_id
+                and row.status == "pending"
+                and row.metadata.get("a2ui_surface_id") == surface_id
+                for row in app.state.user_questions.values()
+            ):
+                raise AskUserError("This surface already belongs to an open question.")
         prompt = _validated_question(question)
         normalized_kind = str(kind or "freeform").strip().lower()
         if normalized_kind not in _KINDS:
@@ -190,7 +213,16 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "caller": {"agent_id": str(getattr(agent_def, "id", "") or "")},
             "surfaced": False,
             "a2ui_surface_id": str(surface_id or "").strip(),
+            "a2ui_answer_action": answer_action.strip(),
         }
+        if response_mode == "async":
+            from clio_agent.gact.async_user_question import publish_async_question
+
+            row = publish_async_question(app, pending, _ctx.active_turn_id())
+            return (
+                f"Async question {row.id} submitted. You can continue working. "
+                "The user's answer will arrive through the message queue."
+            )
         app.state.sessions.update(owner, metadata_patch={PENDING_ASK_USER_META: pending})
         return (
             "Question submitted to the user. END YOUR TURN now; the exact owning "
@@ -205,7 +237,12 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         desc=ask_user.__doc__,
         title="Ask User",
         args={
-            "question": {"type": "string", "description": "The necessary user-facing question."},
+            "response_mode": {
+                "type": "string",
+                "enum": ["blocking", "async"],
+                "description": "blocking: pause for the answer (default); async: ask and keep working.",
+            },
+            "question": {"type": "string", "description": "The user-facing question."},
             "kind": {
                 "type": "string",
                 "description": "Question kind: freeform, choice, or confirmation.",
@@ -230,9 +267,13 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "surface_id": {
                 "type": "string",
                 "description": (
-                    "Optional: the A2UI surface id this question resumes, so a later "
-                    "waiting_user action on that surface correlates to it."
+                    "Optional: an existing A2UI surface in this session to show with the question. "
+                    "The named answer_action answers with structured form values."
                 ),
+            },
+            "answer_action": {
+                "type": "string",
+                "description": "Surface action that submits the answer (default: question.submit). Exploring other controls does not answer.",
             },
         },
     )
@@ -315,12 +356,16 @@ def restore_pending_ask_user_questions(app: Any) -> int:
                     "resume_on_answer": True,
                     "selected_agent": str(caller.get("agent_id") or ""),
                     "a2ui_surface_id": str(pending_raw.get("a2ui_surface_id") or ""),
+                    "a2ui_answer_action": str(pending_raw.get("a2ui_answer_action") or ""),
                 },
             )
 
         record_user_question(app, question)
         arm_ask_user_deadline(app, question)
         restored += 1
+    for question in app.state.user_questions.values():
+        if question.status == "pending" and question.response_mode == "async":
+            arm_ask_user_deadline(app, question)
     return restored
 
 
@@ -388,22 +433,25 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
                     )
                 )
         session = app.state.sessions.get(updated.session_id)
-        metadata = getattr(session, "metadata", {}) or {}
-        metadata_patch: dict[str, Any] = {"pending_user_question_id": ""}
-        pending = metadata.get(PENDING_ASK_USER_META)
-        if isinstance(pending, Mapping) and pending.get("question_id") == question.id:
-            metadata_patch[PENDING_ASK_USER_META] = {
-                **pending,
-                "resolved_status": "expired",
-            }
+        from clio_agent.gact.user_question_resume import settled_question_metadata
+
+        metadata_patch = settled_question_metadata(app, updated.session_id, updated)
         other_pending = any(
             row.id != updated.id
             and row.session_id == updated.session_id
             and row.status == "pending"
+            and row.response_mode == "blocking"
             for row in app.state.user_questions.values()
         )
         root_owned = updated.owner_session_id == updated.attended_session_id
-        next_status = "idle" if root_owned and not other_pending else None
+        next_status = (
+            "idle"
+            if root_owned
+            and not other_pending
+            and updated.response_mode == "blocking"
+            and getattr(session, "status", "") == "waiting_user"
+            else None
+        )
         app.state.sessions.update(
             updated.session_id,
             status=next_status,
@@ -416,6 +464,8 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
                 payload=updated.model_dump(exclude_none=True),
             )
         )
+        if next_status == "idle":
+            app.state.redrive_message_queue(updated.session_id)
 
     timer = threading.Timer(delay, expire)
     timer.daemon = True

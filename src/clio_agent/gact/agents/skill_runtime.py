@@ -66,6 +66,7 @@ _A2UI_PRODUCER_TOOL_NAMES = frozenset(
         "update_a2ui_components",
         "update_a2ui_data_model",
         "delete_a2ui_surface",
+        "publish_dashboard_report",
     }
 )
 
@@ -200,6 +201,10 @@ def effective_declared_skills(
         for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
             if skill_id not in declared:
                 declared.append(skill_id)
+    if _declares_a2ui_producer_tool(agent_def) and "review-visual-presentation" not in declared:
+        # Producer experts need the review procedure as well as shape catalogs.
+        # Normal skill resolution still preserves pack/workspace overrides.
+        declared.append("review-visual-presentation")
     return declared
 
 

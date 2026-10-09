@@ -329,8 +329,10 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(listing_root, catalog) == [
         "user-skill",
         "connect-data",
+        "create-dashboard",
         "planning",
         "present-interactive-analysis",
+        "review-visual-presentation",
         "update-models",
         "work-with-pdfs",
         "work-with-presentations",

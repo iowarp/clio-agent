@@ -228,24 +228,23 @@ def resource_link_part(
 def append_turn_resource_links(
     app: "FastAPI", sid: str, turn_id: str, transcript: Any, *, agent_id: str = ""
 ) -> None:
-    """Append one ``resource_link`` part per artifact explicitly returned this turn.
+    """Append the latest deliverable version per family selected this turn.
 
     Drains the mint funnel's turn buffer (filtered to this turn — a leaked entry
     from a prior turn is popped with the list, never rides this message), projects
-    each buffered output version to a ``resource_link`` Part, and appends it to the transcript
+    eligible output versions to ``resource_link`` Parts, and appends them to the transcript
     ledger so it persists + streams as a batch part. Owns the whole finalize-wire
     seam so ``turn_finalize`` stays a one-line caller (no-accretion). Fully guarded
     — a wire-identity append must never break the turn's answer.
     """
     try:
         from clio_agent.gact.artifacts.minting import drain_turn_artifacts  # noqa: PLC0415
+        from clio_agent.gact.artifacts.presentation import response_deliverables
         from clio_agent.gact.runtime.globals import _new_part_id  # noqa: PLC0415
 
-        for entry in drain_turn_artifacts(app, sid, turn_id):
+        for entry in response_deliverables(drain_turn_artifacts(app, sid, turn_id)):
             version = entry.get("version")
             if version is None:
-                continue
-            if version.producer.get("designation") == "document-rendition":
                 continue
             transcript.append_part(
                 resource_link_part(
@@ -303,6 +302,10 @@ def append_turn_child_resource_links(
         if not direct_children:
             return
 
+        from clio_agent.gact.artifacts.presentation import (
+            child_response_owners,
+            response_deliverables,
+        )
         from clio_agent.gact.artifacts.registry import get_registry  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _new_part_id  # noqa: PLC0415
         from clio_agent.gact.session_descendants import descendant_session_ids  # noqa: PLC0415
@@ -317,25 +320,40 @@ def append_turn_child_resource_links(
             if part.type == "resource_link"
         }
 
+        published = child_response_owners(app, session_ids)
         rows: list[tuple[str, str, ArtifactVersion]] = []
         for record in get_registry(app).all_records():
             for version in record.versions:
                 if version.producer.get("designation") == "document-rendition":
                     continue
                 producer_sid = str((version.producer or {}).get("session_id") or "")
-                if producer_sid not in session_ids or version.artifact_id in already:
+                if (
+                    producer_sid not in session_ids and version.artifact_id not in published
+                ) or version.artifact_id in already:
                     continue
                 rows.append((record.workspace_id, record.name, version))
-        # Immutable artifact IDs, not workspace/name, define wire identity. Two
-        # child runs can intentionally produce same-named outputs; both causal
-        # results must remain visible in the parent conversation. Exact IDs
-        # already present on the message are still skipped above.
+        # Keep distinct child identities, then project the latest deliverable
+        # per family within each producer. Every older/review version remains
+        # in the registry and evidence; exact IDs already on the message are skipped.
         rows.sort(key=lambda row: row[2].created_at or "")
 
-        for workspace_id, name, version in rows:
+        for entry in response_deliverables(
+            {
+                "workspace_id": workspace_id,
+                "name": name,
+                "version": version,
+                "purpose": "deliverable" if version.artifact_id in published else None,
+                "response_session_id": published.get(version.artifact_id),
+            }
+            for workspace_id, name, version in rows
+        ):
             transcript.append_part(
                 resource_link_part(
-                    workspace_id, name, version, part_id=_new_part_id(), agent_id=agent_id
+                    entry["workspace_id"],
+                    entry["name"],
+                    entry["version"],
+                    part_id=_new_part_id(),
+                    agent_id=agent_id,
                 ),
                 stream_source="batch",
             )

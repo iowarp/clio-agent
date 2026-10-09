@@ -339,8 +339,8 @@ class SessionsAPI:
         title: str | None = None,
     ) -> Session:
         """POST /v1/sessions/{id}/fork — ``at_message_id`` truncation
-        is inclusive; the fork gets store defaults, not the parent's
-        modes/model (SPEC §6.2)."""
+        is inclusive. The independent branch preserves the parent's model,
+        behavior settings and narrowing permission policies."""
 
         body = _drop_missing({"at_message_id": at_message_id, "title": title})
         response = self._client._request("POST", f"/v1/sessions/{session_id}/fork", json=body)

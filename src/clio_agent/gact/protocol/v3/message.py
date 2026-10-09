@@ -474,6 +474,12 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         running=state == "running",
         tool_name=str(part.get("tool_name") or current.get("name") or ""),
     ) or current.get("presentation")
+    metadata = _mapping(part.get("metadata"))
+    timing = {
+        key: str(metadata.get(key) or current.get(key))
+        for key in ("started_at", "completed_at")
+        if metadata.get(key) or current.get(key)
+    }
     context.tools[tool_id] = {
         "id": tool_id,
         "session_id": context.session_id,
@@ -488,7 +494,12 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         "input": current.get("input", part.get("input")),
         "output": _bounded_tool_call_result(output),
         **({"presentation": presentation} if presentation is not None else {}),
-        "duration_ms": part.get("duration_ms") or current.get("duration_ms"),
+        "duration_ms": (
+            part["duration_ms"]
+            if part.get("duration_ms") is not None
+            else current.get("duration_ms")
+        ),
+        **timing,
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
     }
 
@@ -567,6 +578,13 @@ def _project_artifact(
             part.get("mime_type") or part.get("media_type") or "application/octet-stream"
         ),
         "uri": str(part.get("uri") or ""),
+        **(
+            {"version": metadata["version"]}
+            if isinstance(metadata.get("version"), int)
+            and not isinstance(metadata["version"], bool)
+            and metadata["version"] > 0
+            else {}
+        ),
         **({"workspace_id": str(metadata["workspace_id"])} if metadata.get("workspace_id") else {}),
         **({"fetch_path": str(metadata["fetch_url"])} if metadata.get("fetch_url") else {}),
         **({"custody": str(metadata["custody"])} if metadata.get("custody") else {}),

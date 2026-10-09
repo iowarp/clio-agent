@@ -16,6 +16,11 @@ from clio_agent.gact.message_intents import (
 )
 from clio_agent.gact.message_submission import accept_message, prepare_references
 from clio_agent.gact.off_loop import run_off_loop
+from clio_agent.gact.question_answer_message import (
+    ANSWERS_QUESTION_KEY,
+    prepare_queued_question_answer,
+    settle_queued_question_answer,
+)
 from clio_agent.gact.runtime.globals import _new_message_id
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -207,13 +212,20 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         if existing is not None:
             return existing
         parts = await authorize_context_reference_parts(app, session, parts)
+        answer = prepare_queued_question_answer(app, sid, req.metadata)
+        answer_parts = parts
+        metadata = dict(req.metadata)
+        if answer is not None:
+            metadata.pop(ANSWERS_QUESTION_KEY, None)
+            metadata.update(answer.metadata)
+            parts = [Part(type="text", text=answer.model_text_prefix), *parts]
         try:
             row = app.state.message_intents.create_queued(
                 QueuedMessage(
                     id=message_id,
                     session_id=sid,
                     parts=parts,
-                    metadata=req.metadata,
+                    metadata=metadata,
                     client_message_id=req.client_message_id,
                     idempotency_key=req.idempotency_key,
                     behavior=req.behavior,
@@ -247,6 +259,8 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         retain_attachment_resources(
             app, {part.resource_id for part in parts if part.type == "resource_ref"}
         )
+        if answer is not None:
+            settle_queued_question_answer(app, sid, answer, row.id, answer_parts)
         redrive_queue(sid)
         return row
 

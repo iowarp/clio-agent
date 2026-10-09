@@ -65,6 +65,7 @@ from clio_agent.gact.artifacts.table_query_models import (
     TableSort,
     table_format_for,
 )
+from clio_agent.platform_paths import win_extended_path
 
 
 @dataclass
@@ -87,8 +88,8 @@ class QueryCancellation:
 def _read_schema(source: Path, fmt: TableFormat) -> pa.Schema:
     try:
         if fmt == "parquet":
-            return pq.read_schema(source)
-        reader = pacsv.open_csv(source)
+            return pq.read_schema(win_extended_path(source))
+        reader = pacsv.open_csv(win_extended_path(source))
         try:
             return reader.schema
         finally:
@@ -209,10 +210,10 @@ def _validate_requested_output_columns(
 def _read_table(source: Path, fmt: TableFormat, columns: list[str]) -> pa.Table:
     try:
         if fmt == "parquet":
-            table = pq.read_table(source, columns=columns, use_threads=False)
+            table = pq.read_table(win_extended_path(source), columns=columns, use_threads=False)
         else:
             table = pacsv.read_csv(
-                source,
+                win_extended_path(source),
                 read_options=pacsv.ReadOptions(use_threads=False),
                 # Empty / NA cells are nulls in every column, text included.
                 convert_options=pacsv.ConvertOptions(

@@ -293,7 +293,7 @@ mcp.run(show_banner=False)
 
 
 def test_reconnect_waits_for_a_server_still_starting(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """No flat 15 s: a real stdio server working for 3 s before it serves outlasts a 1 s
     no-progress window and the reconnect still lands it.
@@ -309,7 +309,9 @@ def test_reconnect_waits_for_a_server_still_starting(
         client, {"transport": "stdio", "command": sys.executable, "args": [str(script), "3"]}
     )
 
-    resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["tools"] == ["ping"]
+    # Keep the app's event loop alive while a real stdio client connects;
+    # per-request portals can wait on its live reader tasks during teardown.
+    with client:
+        resp = client.post(f"/v1/mcp/servers/{sid}/reconnect")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["tools"] == ["ping"]
