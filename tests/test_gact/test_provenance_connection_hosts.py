@@ -127,3 +127,21 @@ def test_this_hosts_row_and_cmf_rows_are_unchanged(isolated: Path) -> None:
         service_id="cmf", label="cmf", url="http://127.0.0.1:38380"
     ).record()
     assert connections.on_this_host(cmf) is cmf
+
+
+def test_attention_folder_of_another_host_is_never_used(
+    isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_settings, old_captures = _deployment(isolated, "gpub081")
+    new_settings, new_captures = _deployment(isolated, "gpub099")
+    new_captures.rmdir()  # Flowcept installed here, the attention vLLM not yet
+    row = _row(old_settings, old_captures)
+    monkeypatch.setattr(
+        connections.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("must not verify with another node's capture folder"),
+    )
+
+    with pytest.raises(ValueError, match="attention folder names another host's deployment"):
+        connections.verify_connection(row)
+    assert not connections.connection_selected(row)

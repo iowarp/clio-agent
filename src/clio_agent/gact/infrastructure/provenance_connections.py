@@ -94,10 +94,20 @@ def on_this_host(row: ExternalServiceConnection) -> ExternalServiceConnection:
             f"This Flowcept connection names another host's deployment ({saved}); "
             "install and start Flowcept on this host, then verify again"
         )
-    if configuration.get("attention_files_dir"):
-        configuration["attention_files_dir"] = this_host_counterpart(
-            configuration["attention_files_dir"]
-        )
+    saved = configuration.get("attention_files_dir", "")
+    if saved:
+        # vLLM writes captures into this host's deployment; another host's folder is never live.
+        configuration["attention_files_dir"] = this_host_counterpart(saved, live_service=True)
+        if (
+            configuration["attention_files_dir"] != saved
+            and configuration.get("capture_attention") == "true"
+            and not Path(configuration["attention_files_dir"]).is_dir()
+        ):
+            raise ValueError(
+                f"This Flowcept connection's attention folder names another host's deployment "
+                f"({saved}); install and start the attention vLLM service on this host, "
+                "then verify again"
+            )
     return row.model_copy(update={"configuration": configuration})
 
 
