@@ -413,7 +413,7 @@ def decode_png(encoded: str) -> tuple[bytes, dict[str, int]]:
         data = base64.b64decode(encoded, validate=True)
         if not 0 < len(data) <= MAX_IMAGE_BYTES:
             raise ValueError("Image exceeds the 5 MB capture limit.")
-        with Image.open(io.BytesIO(data)) as image:
+        with Image.open(io.BytesIO(data), formats=["PNG"]) as image:
             width, height = image.size
             if image.format != "PNG" or not (0 < width <= 4096 and 0 < height <= 4096):
                 raise ValueError("Capture must be a PNG no larger than 4096 × 4096.")
