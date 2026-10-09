@@ -516,8 +516,9 @@ def build_spawn_runtime_tools(
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
         untied to this turn — collect it now with wait_tasks, inspect progress
-        with observe_tasks, or let its result surface in your NEXT turn. Prefer to spawn
-        ALL independent children before waiting on any.
+        with observe_tasks, or receive queued results at the next safe model boundary or
+        next conversation turn (completion alone starts no turn). Spawn independent children first.
+        Placement: omit/pass null to inherit; otherwise "local" or "relay:<cluster>", never "".
 
         Pass input_task_ids to hand THIS child the FULL stored output of tasks
         you already spawned yourself — as labeled evidence in ITS OWN briefing,

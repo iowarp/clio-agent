@@ -44,6 +44,15 @@ Explicit subagent cancellation closes admission to its subtree, cancels its
 descendant task owners and publishes cancellation only after required cleanup
 settles. Messaging and restart remain subagent-specific.
 
+The editable `clio.runtime.tasks` snippet is composed at the common model-request
+boundary for roots and children with shared task controls, independent of their
+provider or blueprint body. It teaches immediate handles, all five task kinds,
+queued success/failure/interruption, busy-boundary versus next-turn delivery and
+Stop versus task cancellation. Agents continue independent work, finish an
+acknowledgement-only turn without waiting, or commit one wait when the current
+request needs the result. Keeping a turn open is not required to keep work alive.
+Orchestrator and spawn descriptions use the same lifecycle vocabulary.
+
 ## Ownership and lifetime
 
 The existing `AgentTaskRegistry`, `TaskRecordStore` and storage
@@ -200,6 +209,37 @@ probes, fixtures and CI do not satisfy that gate.
 | Fresh graceful Shell recovery | `final-e35e4-shell-graceful-2` passed five complete actual-model cycles on coree35e4/GACT898a54. Each model received a running handle, performed a later independent action and queried it running. Authenticated source-service shutdown ended every recorded process chain. A replacement API preserved the original interrupted handle; Luna queried and retrieved it without command replay. The private real-Core launcher exited successfully and released its owned daemon. |
 
 ### Focused checks and CI
+
+The shared task-prompt change has 12 focused cases passing individually and
+sequentially, with no skips. Six request-boundary cases cover root/child requests
+for Codex, Claude and vLLM using the test scripted engine; these are request
+composition tests, not live acceptance of those providers. Editable resolution,
+missing-snippet errors, absence of unavailable controls, stable orchestrator
+composition, declared-child context and existing GitHub guidance also pass.
+New helper/test Pyright reports zero errors/warnings. The wider changed-file
+check has the same 24 inherited diagnostics before/after, with zero new messages.
+Scoped Ruff/format, size/instrumentation/class guards and diff checks pass.
+Fresh actual-model prompt/lifecycle repetitions remain required.
+
+Corecced2296 repairs an actual malformed-PNG CI timeout by restricting Pillow to
+its PNG decoder. A controlled test reproduced the same timeout before correction;
+five relevant cases pass individually/sequentially with zero skips and unchanged
+2-second/15-second budgets. Scoped Ruff/format/Pyright0/0 and guards pass. Its
+three Docker jobs subsequently failed during BuildKit token-service bootstrap,
+before project builds; this is not source-build acceptance. Retained logs identify
+the exact CI heads and infrastructure failures.
+
+`final-9bd4-shell-queued-failure-2` passed five actual Codex/Luna cycles on
+core9bd4/GACTb610: 120-second background Python work, independent later model
+action, 122,880 real bytes and matching SHA256 per cycle, idle completion,
+single next-turn result delivery and no later duplicate. Python exited 7;
+the outer PowerShell process exited 1. Both outcomes are recorded distinctly.
+The first Subagent controls mission targeted its descendant Shell after
+pagination and failed the strict original-Subagent assertion. The corrected
+mission passed two cycles on corecced/GACTb610 before a third spawn was refused
+for explicit empty placement; no handle was accepted in that third cycle.
+Neither incomplete series is counted as five passes. Fresh missions specify
+local placement, preserve the assertions and use the shared lifecycle prompt.
 
 On coreeea8/GACTde58, current CI exposed two additional failures. The provider
 SDK check-mode test paired a recorded release feed with moving repository pins,

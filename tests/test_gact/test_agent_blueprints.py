@@ -2662,7 +2662,9 @@ Coordinate genomics work.
     # than just their state.
     assert "returns the requested children's output into your" in context
     assert "do not repeatedly poll" in context
-    assert "NEXT turn" in context  # observe-later: results inject into the next turn
+    assert "before your next safe model iteration" in context
+    assert "next conversation turn if this turn has ended" in context
+    assert "Completion alone does not start a turn" in context
     assert "observe_tasks" in context  # shared non-consuming task observation
     assert "wait_tasks" in context
     assert "observe_agent_tasks" not in context  # compatibility names aren't taught by default
