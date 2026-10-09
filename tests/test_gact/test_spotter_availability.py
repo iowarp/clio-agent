@@ -27,7 +27,10 @@ from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_UNMOUNTABLE,
     validate_watcher_arming,
 )
-from clio_agent.gact.spotter_availability import UNAVAILABLE_BLUEPRINT_NOT_INSTALLED
+from clio_agent.gact.spotter_availability import (
+    UNAVAILABLE_BLUEPRINT_NOT_INSTALLED,
+    UNAVAILABLE_WATCHER_MCP_START_FAILED,
+)
 
 _BLUEPRINT_ID = "spotter-ai"
 
@@ -311,3 +314,97 @@ def test_availability_resolves_the_session_workspace(tmp_path: Path) -> None:
     assert unscoped is not None
     assert unscoped.reason == REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE
     assert "provenance_workspace_unresolved" in unscoped.detail
+
+
+# --------------------------------------------------------------------------- #
+# Runtime start failures (c43: available=true while the SPOTTER MCP could not start)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def _mount_outcomes():
+    from clio_agent.gact import spotter_mount_outcome
+
+    spotter_mount_outcome.reset()
+    yield spotter_mount_outcome
+    spotter_mount_outcome.reset()
+
+
+def test_static_pass_says_it_is_static(tmp_path: Path, _mount_outcomes) -> None:
+    _install(tmp_path)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        wid = _workspace(client, tmp_path / "ws")
+        body = client.get("/v1/spotter/availability", params={"workspace_id": wid}).json()
+
+    assert body["available"] is True
+    assert body["details"] == {"verified": "static"}
+
+
+def test_recorded_watcher_start_failure_is_a_typed_unavailable(
+    tmp_path: Path, _mount_outcomes
+) -> None:
+    _install(tmp_path)
+    _mount_outcomes.record_failure("spotter", "mcp_server_exited")
+    _mount_outcomes.record_failure("unrelated", "mcp_server_exited")
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        wid = _workspace(client, tmp_path / "ws")
+        scoped = client.get("/v1/spotter/availability", params={"workspace_id": wid}).json()
+        bare = client.get("/v1/spotter/availability").json()
+
+    for body in (scoped, bare):
+        assert body["available"] is False
+        assert body["reason"] == UNAVAILABLE_WATCHER_MCP_START_FAILED
+        assert "mcp_server_exited" in body["message"]
+        assert body["remedy"]
+        assert body["details"]["verified"] == "runtime"
+        assert body["details"]["mcp_server"] == "spotter"
+
+
+def test_a_later_successful_mount_clears_the_failure(tmp_path: Path, _mount_outcomes) -> None:
+    _install(tmp_path)
+    _mount_outcomes.record_failure("spotter", "mcp_server_exited")
+    _mount_outcomes.record_success("spotter")
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/spotter/availability").json()
+
+    assert body["available"] is True
+
+
+def test_unrelated_namespace_failure_does_not_affect_spotter(
+    tmp_path: Path, _mount_outcomes
+) -> None:
+    _install(tmp_path)
+    _mount_outcomes.record_failure("other", "mcp_server_exited")
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/spotter/availability").json()
+
+    assert body["available"] is True
+
+
+def test_mount_namespaces_records_and_clears_outcomes(_mount_outcomes) -> None:
+    from clio_agent.gact import mcp_readiness
+
+    calls = {"n": 0}
+
+    def fake_mount(_executor, namespace, _spec, *, connect):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return {"t": object()}
+
+    orig = mcp_readiness.mount_namespace_for_session
+    mcp_readiness.mount_namespace_for_session = fake_mount
+    try:
+        _mounted, failures = mcp_readiness.mount_namespaces_for_session(
+            object(), {"spotter": {}}, connect=False
+        )
+        assert "spotter" in failures
+        assert _mount_outcomes.last_failure("spotter").reason == failures["spotter"]
+        mcp_readiness.mount_namespaces_for_session(object(), {"spotter": {}}, connect=False)
+        assert _mount_outcomes.last_failure("spotter") is None
+    finally:
+        mcp_readiness.mount_namespace_for_session = orig

@@ -25,10 +25,16 @@ from clio_agent.runtime import trace
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.spotter_mount_outcome import MountFailure
+
 logger = logging.getLogger(__name__)
 
 #: The configured watcher Agent Blueprint is not installed anywhere discovery scans.
 UNAVAILABLE_BLUEPRINT_NOT_INSTALLED = "spotter_watcher_blueprint_not_installed"
+
+#: Declarations resolve, but the watcher's MCP server failed to start on its
+#: last use in this process (recorded by ``mcp_readiness``; cleared on success).
+UNAVAILABLE_WATCHER_MCP_START_FAILED = "spotter_watcher_mcp_start_failed"
 
 _NOT_INSTALLED_MESSAGE = "SPOTTER needs its watcher Agent Blueprint, which is not installed."
 
@@ -67,6 +73,24 @@ def _blueprint_installed(
 
     cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
     return any(row.id == blueprint_id for row in discover_agent_blueprints(cwd=cwd))
+
+
+def _watcher_mount_failure(
+    app: "FastAPI", blueprint_id: str, *, session_id: str, workspace_id: str
+) -> Optional["MountFailure"]:
+    """The watcher's declared server whose last runtime start failed, if any."""
+
+    from clio_agent.gact.spotter_arming import _declared_watcher_servers  # noqa: PLC0415
+    from clio_agent.gact.spotter_mount_outcome import last_failure  # noqa: PLC0415
+
+    servers, _raw, _root = _declared_watcher_servers(
+        app, blueprint_id, session_id=session_id, workspace_id=workspace_id
+    )
+    for name in servers:
+        failure = last_failure(str(name))
+        if failure is not None:
+            return failure
+    return None
 
 
 def spotter_availability(
@@ -112,15 +136,42 @@ def spotter_availability(
             require_workspace=bool(session_id or workspace_id),
         )
         if refusal is None:
-            return SpotterAvailability(available=True, blueprint_id=blueprint_id)
-        result = SpotterAvailability(
-            available=False,
-            reason=refusal.reason,
-            message=refusal.message,
-            remedy=refusal.remedy,
-            blueprint_id=blueprint_id,
-            details=refusal.details(session_id),
-        )
+            failed = _watcher_mount_failure(
+                app, blueprint_id, session_id=session_id, workspace_id=workspace_id
+            )
+            if failed is None:
+                # Declarations resolve; the server is not started from a GET,
+                # so say how far this answer was checked.
+                return SpotterAvailability(
+                    available=True, blueprint_id=blueprint_id, details={"verified": "static"}
+                )
+            result = SpotterAvailability(
+                available=False,
+                reason=UNAVAILABLE_WATCHER_MCP_START_FAILED,
+                message=(
+                    f"SPOTTER's watcher MCP server {failed.namespace!r} failed to start "
+                    f"on its last use: {failed.reason}"
+                ),
+                remedy=(
+                    "fix the cause above, then start a new SPOTTER session "
+                    "(a successful start clears this)"
+                ),
+                blueprint_id=blueprint_id,
+                details={
+                    "verified": "runtime",
+                    "mcp_server": failed.namespace,
+                    "mount_reason": failed.reason,
+                },
+            )
+        else:
+            result = SpotterAvailability(
+                available=False,
+                reason=refusal.reason,
+                message=refusal.message,
+                remedy=refusal.remedy,
+                blueprint_id=blueprint_id,
+                details=refusal.details(session_id),
+            )
     logger.info(
         "spotter_unavailable reason=%s session=%s workspace=%s",
         result.reason,
@@ -155,6 +206,7 @@ def register_spotter_routes(app: "FastAPI") -> None:
 
 __all__ = [
     "UNAVAILABLE_BLUEPRINT_NOT_INSTALLED",
+    "UNAVAILABLE_WATCHER_MCP_START_FAILED",
     "SpotterAvailability",
     "register_spotter_routes",
     "spotter_availability",
