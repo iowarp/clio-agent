@@ -1,5 +1,7 @@
 """Conversation to-dos, shared asynchronous controls and retained results coexist."""
 
+import base64
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -84,3 +86,36 @@ def test_cancelled_subagent_result_route_commits_provenance_without_blocking_loo
         second = client.get(url)
         assert second.status_code == 200 and second.json() == first.json()
         assert app.state.agent_task_registry.get(task.task_id).consumed_at == claimed.consumed_at
+
+
+def test_task_query_rejects_malformed_cursor_without_collecting_results(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app, raise_server_exceptions=False) as client:
+        sid = client.post("/v1/sessions", json={"title": "cursor owner"}).json()["id"]
+        store = app_task_store(app)
+        for index, handle in enumerate(["task_older", "task_newer"]):
+            store.put(
+                TaskRecord(
+                    key=TaskKey("server", sid, handle),
+                    handle=handle,
+                    created_at=f"2026-10-09T00:00:0{index}Z",
+                    status="completed",
+                    result={"text": handle},
+                    notify_pending=True,
+                )
+            )
+        url = f"/v1/sessions/{sid}/async-tasks"
+        first = client.get(url, params={"limit": 1})
+        assert first.status_code == 200
+        cursor = first.json()["cursor"]
+        envelope = json.loads(base64.urlsafe_b64decode(cursor))
+        envelope["after"] = [1, "task_older"]
+        malformed = base64.urlsafe_b64encode(json.dumps(envelope).encode()).decode()
+        rejected = client.get(url, params={"limit": 1, "cursor": malformed})
+        assert rejected.status_code == 422
+        assert rejected.json()["error"]["message"] == "invalid task cursor"
+        assert rejected.json()["error"]["recoverable"] is True
+        resumed = client.get(url, params={"limit": 1, "cursor": cursor})
+        assert resumed.status_code == 200
+        assert [row["handle"] for row in resumed.json()["tasks"]] == ["task_older"]
+        assert all(record.notify_pending and not record.consumed_at for record in store.list())

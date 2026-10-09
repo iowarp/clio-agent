@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import threading
 from collections.abc import Iterator
 from dataclasses import replace
@@ -80,6 +82,26 @@ def test_composite_alias_collision_does_not_hide_or_collect_a_member(
     assert len(outcome["results"]) == 2
     assert outcome["errors"] == [{"handle": "same", "error": "ambiguous_task"}]
     assert {r["handle"] for r in outcome["results"]} == {"first", "second"}
+
+
+def test_malformed_query_cursor_preserves_authorized_page_and_pending_completion(
+    scoped_app: tuple[Any, str, SessionMetadataTaskStore],
+) -> None:
+    app, sid, store = scoped_app
+    record(store, sid, "a-older", task_id="older", status="completed")
+    record(store, sid, "b-newer", task_id="newer", status="completed")
+    page = query_snapshot(app, sid, limit=1)
+    cursor = json.loads(base64.urlsafe_b64decode(page["cursor"]))
+    for position in [{}, [1, "older"], ["older"], ["older", "older", "extra"], "aa", ["", ""]]:
+        malformed = base64.urlsafe_b64encode(
+            json.dumps({**cursor, "after": position}).encode()
+        ).decode()
+        with pytest.raises(ValueError, match="invalid task cursor"):
+            query_snapshot(app, sid, limit=1, cursor=malformed)
+    resumed = query_snapshot(app, sid, limit=1, cursor=page["cursor"])
+    assert [row["handle"] for row in resumed["tasks"]] == ["a-older"]
+    assert resumed["total"] == 2 and resumed["cursor"] is None
+    assert set(pending_completions(app, sid)[1]) == {"a-older", "b-newer"}
 
 
 def test_backend_sessions_and_stale_callback_keep_custody_and_delivery_once(

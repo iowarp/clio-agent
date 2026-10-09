@@ -59,7 +59,15 @@ def query_snapshot(
             token = json.loads(base64.urlsafe_b64decode(cursor))
             if token["scope"] != fingerprint:
                 raise ValueError("cursor scope changed")
-            after = tuple(token["after"])
+            position = token["after"]
+            if (
+                not isinstance(position, list)
+                or len(position) != 2
+                or any(not isinstance(value, str) for value in position)
+                or not position[1]
+            ):
+                raise ValueError("invalid cursor position")
+            after = (position[0], position[1])
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError("invalid task cursor") from exc
     rows = [

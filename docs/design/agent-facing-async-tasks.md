@@ -147,10 +147,15 @@ Implementation is present on the integrated feature branch. **Release
 qualification is incomplete.** The live matrix below describes executed gates,
 including partial and blocked results; it is not a claim that every route passes.
 
-The latest runtime qualification state is core
+The latest model-run runtime state is core
 `4dc4b1c1c2757be716f094c5cbe1058b34a7a26c` with GACT
 `5e8cee6cf38c9329d82f151d2305b8e2c0783507`. Later documentation-only commits
-must preserve the runtime file hashes and matching GACT gitlink. Older evidence
+must preserve the runtime file hashes and matching GACT gitlink. A subsequent
+cursor-validation correction rejects malformed pagination positions before
+key comparison; its focused controls and real HTTP-route checks are recorded
+in `query-cursor-*`. That input path has not been exercised by a live model.
+The correction changes only `task_controls.py` in runtime source; it does not
+relabel the earlier model runs as acceptance of the current head. Older evidence
 retains its actual source identity and is not relabelled as a final-state run.
 
 Draft review branches are core PR1662 into `develop` and GACT PR557 into `main`.
