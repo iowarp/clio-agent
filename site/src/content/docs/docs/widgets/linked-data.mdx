@@ -18,3 +18,7 @@ When CLIO draws several views of the same records, the views can share selection
 Views reading the same dataset share each row's stable identity. Inline map, chart, and table views can also link by a unique entity field. When different datasets describe one conceptual entity, the agent can bind them to a shared selection path. [See the chart contract](/docs/widgets/chart/) and [map contract](/docs/widgets/map/) for the data fields.
 
 A control can write to a data-model path that another component reads. In the thermal example, elapsed time is bound to the viewport's frame. The two viewports also share a camera synchronization group, so the comparison keeps the same viewing angle. [See the numeric slider](/docs/widgets/numeric-slider/) and [3D viewport](/docs/widgets/mesh-viewport/) for their inputs.
+
+For a larger agent-authored report, see [Dashboards](/docs/dashboards/). The
+development workflow uses these same linking and layout semantics in a saved
+artifact with tabs, explanations, and supporting evidence.

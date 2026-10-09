@@ -1,0 +1,107 @@
+---
+title: Dashboards
+description: Ask CLIO to author and revise a connected report in the side panel, with tabs, shared controls, visual references, and downloadable results.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import dashboard from '../../../assets/captures/dashboard-overview.png';
+
+A dashboard brings an analysis into one interactive report beside the
+conversation. Ask the agent to decide what belongs together: explain the main
+finding, compare selected results, remove repeated views, and keep the supporting
+data accessible. It can combine text, metrics, charts, maps, tables, images, and
+3D views using the same [widget components](/docs/widgets/components/).
+
+<Aside type="note" title="Development preview">
+Saved dashboard artifacts are implemented in a development build and are not
+included in beta 5.2. The capture below comes from a real agent review using
+explicitly synthetic data.
+</Aside>
+
+<Capture client:visible image={await captureImage(dashboard)} alt="Saved CLIO dashboard with Overview, Storm and correlation, and Linked mesh evidence tabs; the overview labels its data synthetic and shows storm locations on a map" caption="One saved dashboard with three tabs. This is an agent-authored synthetic example, not observed storm data or an engineering result." sizes="(min-width: 50rem) 46rem, 100vw" />
+
+## Ask the agent to compose the report
+
+```text
+Build a dashboard from our design review. Show the original once and compare
+the two useful evolutions. Add an overview, a comparison tab, and an evidence
+tab. Link the comparisons to the same selected design. Explain the mass and
+stiffness trade-off, keep units visible, and remove repeated charts.
+```
+
+This is an authoring task. The agent reads relevant earlier outputs and their
+data, chooses a structure, and can add a new figure or explanation when it helps
+answer the question. You can also specify which views to keep or omit.
+
+The dashboard opens as an artifact in the side panel. Follow-up requests revise
+that report over multiple tool calls; it does not have to fit in a single widget
+generation or a pair of graphs.
+
+## Explore one connected system
+
+| Element | What to ask for |
+|---|---|
+| Overview | The finding, a few key measures, and the scope of the data. |
+| Tabs and sections | Separate the overview, comparisons, and supporting evidence. |
+| Shared controls | One filter or selected entity driving the relevant views. |
+| Linked views | Highlight the same records across a map, chart, or table. |
+| Explanations | Units, definitions, captions, limitations, and why a view matters. |
+| Optional detail | A readable default with additional series or sections you can reveal. |
+
+Views only move together when their controls and data are connected. Two plots
+on the same page do not automatically share filters, and paired 3D views need a
+shared camera binding to rotate together. See [Linked data](/docs/widgets/linked-data/).
+
+## Point to a part and revise it
+
+<Steps>
+
+1. Open the dashboard and find the relevant tab or view.
+
+2. Select records and use **Reference this**, or use **Capture labelled regions**
+   to attach a visual area to the next message.
+
+3. Give a concrete request: “Explain this cluster,” “Show the original only once,”
+   or “Hide the minor series by default and let me turn them on.”
+
+4. Open the revised artifact. **Versions** keeps earlier reports;
+   **Lineage** shows the inputs and steps behind them.
+
+</Steps>
+
+The reference carries the selected data or visual context, so you do not need
+to describe a location from memory. The same interaction is demonstrated in
+[Human-agent interaction](/docs/widgets/interaction/).
+
+## Ask for a visual check
+
+For a dense report, ask CLIO to inspect the rendered overview and relevant tabs,
+adjust the view, capture it, and review the resulting image. For example:
+
+```text
+Check this dashboard at side-panel size. Inspect each tab for clipped labels,
+overlapping legends, and too many visible series. Fix unclear views, keep the
+underlying data, and recheck the result before presenting the final version.
+```
+
+The development build can inspect supported view bindings and capture the
+resulting image. The check should follow the controls the view actually exposes;
+it does not establish numerical correctness or add arbitrary interactions.
+An agent should say when rendered inspection was unavailable.
+
+## Download an image or an interactive report
+
+Use the dashboard's **PNG** action for an image of the displayed view. Use **HTML**
+for a self-contained report with its tabs, supported interactions, and referenced
+data bundled. Dependencies that cannot be captured are reported rather than
+quietly left out. A saved report cannot call a live agent on its own.
+
+If the dashboard belongs to a larger investigation, [export the session](/docs/exports/)
+with its artifacts to retain the conversation and evidence alongside it.
+
+<CardGrid>
+	<LinkCard title="Widget gallery" description="Explore the views, inputs, layouts, and media a dashboard can use." href="/docs/widgets/" />
+	<LinkCard title="Exports and downloads" description="Choose between a view, a report, and the whole investigation." href="/docs/exports/" />
+</CardGrid>
