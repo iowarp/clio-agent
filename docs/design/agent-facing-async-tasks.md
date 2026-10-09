@@ -192,6 +192,23 @@ overflow repetitions remain outstanding. Exact-head CI on `487f6aab` found the
 new test's imported fixture missing under full-suite collection. The regression
 fixture is now module-local; its behavior and assertions are unchanged.
 
+`integrated-context-final-subagent-1` passed strict model overlap on core
+`59ce2dbd` before connecting any source. Its later connected-source descendant
+probe accepted a real Download, but the host rejected Shell because its child
+process fence cannot enforce connected-source exclusions. That combined route
+is blocked and unverified; do not retry or bypass it without the human's fence
+state changing. Native storage and task controls remain independently available.
+
+Cancellation of that already accepted Subagent and Download through the real
+phone UI passed owner settlement and cleanup custody once. Read-only durable
+records, original source pointers, staging absence and upstream bytes/hash are
+retained in `existing-download-phone-early/storage-cancel-proof.json`. Its visual
+gate failed: the long assignment pushed the warning and action buttons below
+the viewport. GACT `d51b77a4` preserves the complete assignment in a focusable
+scroll region while keeping the warning and controls visible. Two focused
+short/long cases, scoped checks, all six guards, TypeScript and both builds pass;
+fresh real-service visual and five lifecycle repetitions remain required.
+
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
 backend outcomes and filesystem/process evidence. A source change during a
