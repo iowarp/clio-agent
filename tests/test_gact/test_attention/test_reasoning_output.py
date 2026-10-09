@@ -57,3 +57,23 @@ def test_reasoning_that_does_not_explain_the_count_is_not_a_shifted_guess() -> N
 def test_content_only_capture_ignores_reasoning() -> None:
     span = output_steps(_CharRenderer(), "abc", 0, 2, _record(4), reasoning="r")
     assert span.steps == [0, 1]
+
+
+def test_drilldown_token_text_skips_the_reasoning_prefix() -> None:
+    import numpy as np
+
+    from clio_agent.gact.attention.service import _drilldown
+
+    prompt = _CharRenderer().encode("ab")
+    step = SimpleNamespace(
+        step=9,
+        token_index=9,
+        residual=0.5,
+        pos=np.array([0, 1]),
+        max=np.array([0.1, 0.2]),
+        mean=np.array([0.1, 0.2]),
+    )
+    rows = _drilldown(
+        _CharRenderer(), "xyz", [step], [SimpleNamespace(lo=0)], prompt, content_offset=8
+    )
+    assert (rows[0]["token_index"], rows[0]["text"]) == (9, "y")

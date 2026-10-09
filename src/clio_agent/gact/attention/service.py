@@ -361,7 +361,14 @@ def explain_selection(
             }
             for a, score, intensity in zip(anchors, block_scores, intensities, strict=True)
         ],
-        "tokens": _drilldown(renderer, call.content or "", steps, sections, encoded),
+        "tokens": _drilldown(
+            renderer,
+            call.content or "",
+            steps,
+            sections,
+            encoded,
+            content_offset=step_span.steps[0] - step_span.token_lo,
+        ),
     }
 
 
@@ -378,7 +385,9 @@ def _drilldown(
     steps: list[Any],
     sections: list[agg.Section],
     prompt: Encoded,
+    content_offset: int = 0,
 ) -> list[dict[str, Any]]:
+    """Per-step top prompt positions; ``content_offset`` = produced tokens before the content."""
     out_enc = renderer.encode(content)
     starts = [s.lo for s in sections]
     rows: list[dict[str, Any]] = []
@@ -401,7 +410,8 @@ def _drilldown(
                 }
             )
         tidx = step.token_index
-        a, b = out_enc.offsets[tidx] if 0 <= tidx < len(out_enc.offsets) else (0, 0)
+        cidx = tidx - content_offset
+        a, b = out_enc.offsets[cidx] if 0 <= cidx < len(out_enc.offsets) else (0, 0)
         rows.append(
             {
                 "step": step.step,
