@@ -404,6 +404,20 @@ def record_default_agent_blueprint_source(
         if source_id in forgotten_sources(sources_path().with_suffix(".removed.json")):
             return {}
         rows = load_agent_blueprint_sources()
+        # One bundled marketplace: a default row recorded from a previous CLIO
+        # install path is replaced, not joined by a second default (F054).
+        moved = [row for row in rows if row.get("is_default") and row.get("id") != source_id]
+        if moved:
+            rows = [row for row in rows if row not in moved]
+            save_agent_blueprint_sources(rows)
+            for row in moved:
+                logger.info(
+                    "default_source_repointed old_id=%s old_source=%s new_id=%s new_source=%s",
+                    row.get("id"),
+                    row.get("source"),
+                    source_id,
+                    source,
+                )
         existing = next((row for row in rows if row.get("id") == source_id), {})
         if existing:
             return dict(existing)
