@@ -122,5 +122,8 @@ export default defineConfig({
 	],
 	vite: {
 		plugins: [tailwindcss()],
+		// Keep Satteri's native loader beside its platform package during
+		// prerendering; bundling it changes createRequire(import.meta.url).
+		ssr: { external: ['satteri'] },
 	},
 });

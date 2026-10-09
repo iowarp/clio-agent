@@ -1,6 +1,6 @@
 {
   "format": "clio.dashboard.document.v1",
-  "title": "Morning bike imbalance \u2014 synthetic example",
+  "title": "Morning availability \u2014 Hill loses 37 bikes",
   "components": [
     {
       "id": "root",
@@ -8,7 +8,11 @@
       "children": [
         "scope",
         "metrics",
-        "tabs"
+        "finding",
+        "primary",
+        "secondary",
+        "limits",
+        "sourceFrame"
       ]
     },
     {
@@ -36,48 +40,69 @@
     {
       "id": "loss",
       "component": "clio.metric.v1",
-      "label": "Hill net loss",
-      "value": 37,
+      "label": "Hill net change",
+      "value": -37,
       "unit": "bikes",
       "detail": "6\u20139 am, two stations"
     },
     {
       "id": "gain",
       "component": "clio.metric.v1",
-      "label": "Downtown net gain",
-      "value": 37,
+      "label": "Downtown net change",
+      "value": "+37",
       "unit": "bikes",
       "detail": "Same interval, two stations"
     },
     {
-      "id": "tabs",
-      "component": "Tabs",
-      "activeTab": {
-        "path": "/activeTab"
-      },
-      "tabs": [
-        {
-          "title": "Overview",
-          "child": "overview"
-        },
-        {
-          "title": "Stations",
-          "child": "stations"
-        },
-        {
-          "title": "Evidence",
-          "child": "evidence"
-        }
+      "id": "primary",
+      "component": "Row",
+      "align": "stretch",
+      "children": [
+        "trendFrame",
+        "balanceFrame"
       ]
     },
     {
-      "id": "overview",
-      "component": "Column",
+      "id": "trendFrame",
+      "component": "Frame",
+      "weight": 2,
+      "child": "occupancy"
+    },
+    {
+      "id": "balanceFrame",
+      "component": "Frame",
+      "weight": 1,
+      "child": "balance"
+    },
+    {
+      "id": "secondary",
+      "component": "Row",
+      "align": "stretch",
       "children": [
-        "finding",
-        "occupancy",
-        "limits"
+        "mapFrame",
+        "comparisonFrame"
       ]
+    },
+    {
+      "id": "mapFrame",
+      "component": "Frame",
+      "weight": 1.5,
+      "child": "locations"
+    },
+    {
+      "id": "comparisonFrame",
+      "component": "Frame",
+      "weight": 1.5,
+      "title": "Compare the same stations",
+      "description": "Select a station in the map, chart or table to highlight it across the report.",
+      "child": "comparison"
+    },
+    {
+      "id": "sourceFrame",
+      "component": "Frame",
+      "title": "Every source snapshot",
+      "description": "Five fictional stations, all six recorded times. The editable data remains intact.",
+      "child": "evidence"
     },
     {
       "id": "finding",
@@ -87,7 +112,7 @@
     {
       "id": "occupancy",
       "component": "clio.chart.v1",
-      "title": "The morning change, by station",
+      "title": "Bike availability, 6\u20139 am",
       "height": 290,
       "data": [
         {
@@ -300,21 +325,13 @@
     {
       "id": "limits",
       "component": "Text",
-      "text": "The five stations conserve 54 bikes in every recorded interval. These synthetic snapshots do not measure missed trips or prove that an individual bike travelled between districts. Open Stations for net balance and locations; Evidence retains every input count."
-    },
-    {
-      "id": "stations",
-      "component": "Column",
-      "children": [
-        "balance",
-        "locations"
-      ]
+      "text": "The five stations conserve 54 bikes in every recorded interval. These synthetic snapshots do not measure missed trips or prove that an individual bike travelled between districts. The related views below share station identities; the source table retains every input count."
     },
     {
       "id": "balance",
       "component": "clio.chart.v1",
-      "title": "Net change between 6 and 9 am",
-      "height": 220,
+      "title": "Net change by station, 6\u20139 am",
+      "height": 290,
       "data": [
         {
           "station_id": "fern",
@@ -479,6 +496,110 @@
       ]
     },
     {
+      "id": "comparison",
+      "component": "clio.data-table.v1",
+      "rows": [
+        {
+          "station_id": "fern",
+          "name": "Fernhill",
+          "category": "Hill",
+          "capacity": 24,
+          "latitude": 41.885,
+          "longitude": -87.675,
+          "net_bikes": -21,
+          "at_6": 21,
+          "at_7": 16,
+          "at_8": 4,
+          "at_815": 0,
+          "at_830": 0,
+          "at_9": 0
+        },
+        {
+          "station_id": "orchard",
+          "name": "Orchard",
+          "category": "Hill",
+          "capacity": 18,
+          "latitude": 41.89,
+          "longitude": -87.668,
+          "net_bikes": -16,
+          "at_6": 18,
+          "at_7": 15,
+          "at_8": 8,
+          "at_815": 5,
+          "at_830": 3,
+          "at_9": 2
+        },
+        {
+          "station_id": "canal",
+          "name": "Canal Street",
+          "category": "Downtown",
+          "capacity": 24,
+          "latitude": 41.88,
+          "longitude": -87.637,
+          "net_bikes": 21,
+          "at_6": 3,
+          "at_7": 8,
+          "at_8": 20,
+          "at_815": 24,
+          "at_830": 24,
+          "at_9": 24
+        },
+        {
+          "station_id": "market",
+          "name": "Market Square",
+          "category": "Downtown",
+          "capacity": 18,
+          "latitude": 41.875,
+          "longitude": -87.631,
+          "net_bikes": 16,
+          "at_6": 2,
+          "at_7": 5,
+          "at_8": 12,
+          "at_815": 15,
+          "at_830": 17,
+          "at_9": 18
+        },
+        {
+          "station_id": "park",
+          "name": "Park",
+          "category": "Other areas",
+          "capacity": 20,
+          "latitude": 41.898,
+          "longitude": -87.645,
+          "net_bikes": 0,
+          "at_6": 10,
+          "at_7": 10,
+          "at_8": 10,
+          "at_815": 10,
+          "at_830": 10,
+          "at_9": 10
+        }
+      ],
+      "selectionField": "station_id",
+      "columns": [
+        {
+          "key": "name",
+          "label": "Station"
+        },
+        {
+          "key": "capacity",
+          "label": "Docks"
+        },
+        {
+          "key": "at_6",
+          "label": "6 am"
+        },
+        {
+          "key": "at_9",
+          "label": "9 am"
+        },
+        {
+          "key": "net_bikes",
+          "label": "Net bikes"
+        }
+      ]
+    },
+    {
       "id": "evidence",
       "component": "Column",
       "children": [
@@ -629,7 +750,6 @@
     }
   ],
   "data_model": {
-    "activeTab": "overview",
     "camera": {
       "longitude": -87.655,
       "latitude": 41.886,

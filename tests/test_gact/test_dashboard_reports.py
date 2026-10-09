@@ -100,6 +100,31 @@ def test_edit_and_publish_preserves_old_artifact(dashboard: tuple[Any, str, Path
     assert list_dashboard_reports(app, sid)[0]["artifact_id"] == second["artifact_id"]
 
 
+def test_dashboard_names_are_readable_distinct_and_stable_on_rename(
+    dashboard: tuple[Any, str, Path],
+) -> None:
+    """Two equally titled reports remain independent; a title edit retains version history."""
+    from clio_agent.gact.artifacts.minting import get_registry
+
+    app, sid, path = dashboard
+    first = publish_dashboard_report(app, sid, definition_path=str(path))
+    independent = publish_dashboard_report(app, sid, definition_path=str(path))
+    registry = get_registry(app)
+    first_record, _ = registry.get_by_artifact_id(first["artifact_id"])
+    other_record, _ = registry.get_by_artifact_id(independent["artifact_id"])
+    assert first_record.name.startswith("Design-evolution-")
+    assert first_record.name.endswith(".dashboard.json")
+    assert other_record.name != first_record.name
+    source = json.loads(path.read_text())
+    source["title"] = "Revised finding"
+    path.write_text(json.dumps(source))
+    revised = publish_dashboard_report(app, sid, definition_path=str(path), report_id=first["id"])
+    revised_record, version = registry.get_by_artifact_id(revised["artifact_id"])
+    assert revised_record.name == first_record.name
+    assert version.version == 2
+    assert version.producer["title"] == "Revised finding"
+
+
 @pytest.mark.parametrize("uri", [False, True])
 def test_artifact_reference_revises_owned_report_family(
     dashboard: tuple[Any, str, Path], uri: bool

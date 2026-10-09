@@ -55,6 +55,8 @@ For complex A2UI views and dashboards, use `review-visual-presentation` and
 available control/capture tools to inspect, refine and recheck the rendered result
 before presenting it. Check that the finding is clear at the person's viewing
 size and that related panels use consistent meanings, units and emphasis.
+Compose related evidence together in the initial report; reserve tabs for
+separate workflows or optional depth so a whole-report image remains useful.
 Obtain and inspect matching pixels for the overview and relevant tabs before
 finishing, or state why capture could not complete. Publication or definition
 inspection alone is not rendered review.

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
+from collections.abc import Callable
 from typing import Any
 
 import dspy
@@ -10,6 +12,25 @@ import dspy
 
 class ClioNativeTool(dspy.Tool):
     """DSPy tool whose JSON schema honors declared argument defaults."""
+
+    def __init__(
+        self,
+        func: Callable[..., Any],
+        name: str | None = None,
+        desc: str | None = None,
+        args: dict[str, Any] | None = None,
+        arg_types: dict[str, Any] | None = None,
+        arg_desc: dict[str, str] | None = None,
+    ) -> None:
+        # Strict provider schemas require optional fields to be present. A
+        # callable's None default must be expressible as null, both on the
+        # wire and in DSPy's argument validator, rather than a guessed zero.
+        if args is not None:
+            args = copy.deepcopy(args)
+            for arg_name, parameter in inspect.signature(func).parameters.items():
+                if parameter.default is None and arg_name in args:
+                    args[arg_name] = {"anyOf": [args[arg_name], {"type": "null"}]}
+        super().__init__(func, name, desc, args, arg_types, arg_desc)
 
     def format_as_litellm_function_call(self) -> dict[str, Any]:
         """Return a LiteLLM schema requiring only arguments without defaults."""

@@ -59,6 +59,9 @@ importers:
       react-dom:
         specifier: ^19.3.0
         version: 19.3.0(react@19.3.0)
+      satteri:
+        specifier: 0.10.5
+        version: 0.10.5
       shadcn:
         specifier: ^4.21.0
         version: 4.21.0(typescript@5.9.3)

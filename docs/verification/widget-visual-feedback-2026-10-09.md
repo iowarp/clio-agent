@@ -118,10 +118,17 @@ on Windows. Linux and macOS desktop visual-loop acceptance was not performed.
 
 ## Unresolved release blockers and unverified scope
 
-1. A longer saved-dashboard Sol review crashed the isolated native context-store
-   daemon with `0xC0000005` during `put`; its RPC stalled and the run did not
-   complete. The underlying crash has not been fixed. Shorter successful runs
-   after restarting the private test profile do not resolve that failure.
+1. The all-tabs saved-dashboard Sol review crashed the isolated native
+   context-store daemon during `put`, with exit code `3221225477`
+   (`0xC0000005`). This was a multi-step agent run: inspect and capture the
+   tabs, change map and mesh cameras, then restore Overview, with a maximum
+   of 28 model iterations. It was not a single screenshot operation. The log's
+   62 seconds measures an unanswered write RPC; total run duration was not
+   recorded, so it does not establish a crash after hours of work. The retained
+   crash record dates the exit to `2026-10-09T08:32:33.545137+00:00` and has no
+   native stack or log tail. It used `iowarp-core` 2.2.1. The cause remains
+   unconfirmed; disk pressure is not established as its cause. Shorter
+   successful runs after restarting the private profile do not resolve it.
 2. The merge review reopened retained report data in Chromium with networking
    disabled, using the final renderer and production HTML page generator. It
    exposed a CSP bug blocking contained glTF buffers. The fixed policy permits
@@ -151,5 +158,9 @@ and `dashboard-export-analysis.png`. Final renderer evidence includes
 `final-kernel-dashboard-export.png`. Test/build logs are under
 `D:/Temp/clio-document-tests/visual-*`.
 
-The installed beta and primary checkout were not changed. These changes remain
-in draft branches; nothing was merged or released.
+At the original qualification checkpoint, the installed beta and primary
+checkout were not changed and the work remained in drafts. This describes
+that checkpoint, not the current merge state. The original runtime changes
+were subsequently integrated; the retained failures still limit the original
+acceptance claims. See the [report-quality follow-up](report-quality-2026-10-09.md) for its exact
+source revisions, new media and new live checks.

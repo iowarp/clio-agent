@@ -6,6 +6,12 @@ public/widgets/
 # generated types
 .astro/
 
+# Private browser profile and local capture intermediates.
+.capture-profile/
+.capture-commands/
+public/takes/
+out/
+
 # dependencies
 node_modules/
 

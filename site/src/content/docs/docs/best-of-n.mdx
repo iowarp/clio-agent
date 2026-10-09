@@ -3,7 +3,14 @@ title: Best of N and refinement
 description: Compare independent drafts generated in parallel, inspect their evaluation criteria, and choose an answer or refine one sequentially.
 ---
 
-import { Aside, CardGrid, LinkCard, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import {
+  Aside,
+  CardGrid,
+  LinkCard,
+  Steps,
+  Tabs,
+  TabItem,
+} from "@astrojs/starlight/components";
 
 Ask CLIO for several alternatives when a task benefits from different approaches:
 a summary, a report introduction, an explanation, or a plan. **Best of N** makes
@@ -11,9 +18,8 @@ independent attempts at the same task. Each candidate has its own tab, so you ca
 compare complete answers without mixing their text together.
 
 <Aside type="note" title="Development preview">
-This guide describes the reviewed development build. Its corrections for five
-individual candidates, separate reasoning, and evaluation criteria are not
-included in beta 5.2.
+  This guide shows the reviewed development build, with individual candidate
+  tabs, separate reasoning and recorded evaluation criteria.
 </Aside>
 
 ## Ask for alternatives
@@ -29,17 +35,17 @@ included in beta 5.2.
    Let me choose the one to continue with.
    ```
 
-2. Open the **Alternative drafts** block. Select each **Try** tab to read its
+2. Open the **Alternative drafts** block. Select each **Draft** tab to read its
    candidate. Reasoning and tool activity can be expanded separately.
 
 3. Open **Evaluation criteria** to check the instructions used for the comparison.
-   When you are choosing, select **Pick Try** on the candidate you want.
+   When you are choosing, select **Pick Draft** on the candidate you want.
 
 </Steps>
 
 The agent decides when to use the draft tool; asking for numbered alternatives
 in ordinary prose does not by itself establish a Best of N run. Check for the
-draft block and its individual tries. The default maximum is eight attempts;
+draft block and its individual drafts. The default maximum is eight attempts;
 an operator can configure a lower limit.
 
 ## Choose who judges
@@ -72,13 +78,13 @@ a promise that the selected answer is better for every reader.
 
 ## Parallel drafts or sequential refinement?
 
-| Approach | How attempts relate | When to use it |
-|---|---|---|
-| Best of N | Independent candidates run in parallel, then a person or model selects. | Explore different approaches to one task. |
-| Refine | Each attempt uses feedback from the previous one and runs sequentially. | Improve a candidate against a concrete criticism. |
+| Approach  | How attempts relate                                                     | When to use it                                    |
+| --------- | ----------------------------------------------------------------------- | ------------------------------------------------- |
+| Best of N | Independent candidates run in parallel, then a person or model selects. | Explore different approaches to one task.         |
+| Refine    | Each attempt uses feedback from the previous one and runs sequentially. | Improve a candidate against a concrete criticism. |
 
 In a user-judged refinement run, add an optional comment to the candidate.
-**Refine Try** requests another attempt using that feedback; picking without a
+**Refine Draft** requests another attempt using that feedback; picking without a
 comment accepts the candidate. For example: “Keep the opening, remove the
 repetition, and define the acronym.”
 
@@ -94,6 +100,14 @@ an answer; it does not independently approve a protected file change or publish
 a result outside the workspace.
 
 <CardGrid>
-	<LinkCard title="Dashboards" description="Develop the chosen analysis into a connected interactive report." href="/docs/dashboards/" />
-	<LinkCard title="Memory and evidence" description="Inspect the recorded work and sources behind an answer." href="/docs/memory-and-evidence/" />
+  <LinkCard
+    title="Dashboards"
+    description="Develop the chosen analysis into a connected interactive report."
+    href="/docs/dashboards/"
+  />
+  <LinkCard
+    title="Memory and evidence"
+    description="Inspect the recorded work and sources behind an answer."
+    href="/docs/memory-and-evidence/"
+  />
 </CardGrid>

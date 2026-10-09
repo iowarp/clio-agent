@@ -44,14 +44,14 @@ instead of replacing the root data model with a guessed set of properties.
 Compare the actual captured camera, frame and filters with the requested
 values. If a declared control did not move, inspect its binding and correct
 the update, then capture again before claiming the change worked.
-If a viewer is still loading, omit the optional `expected_view_revision`
+If a viewer is still loading, pass `expected_view_revision=null` (or omit it)
 to let capture wait for readiness within its deadline. Pin a view epoch
 when an already-ready human view must match exactly; a loading epoch
 intentionally becomes stale as tiles or layout finish.
 After publication, the newly opened viewer can still be mounting. A single
 `a2ui_view_stale` or `a2ui_render_not_ready` result is not the end of the review:
 inspect the same immutable artifact again and retry capture with its current
-viewer. If `ready` is false, omit `expected_view_revision` rather than guessing
+viewer. If `ready` is false, pass `expected_view_revision=null` rather than guessing
 zero. Retry at most twice for each requested view; stop and report the actual limitation if the viewer
 is absent or still cannot supply pixels. After each successful declared tab or
 camera change, use the acknowledged epoch or inspect afresh before capture.
@@ -69,6 +69,11 @@ category meanings, ranges, dates and selected records. Use direct labels or
 reference marks where they reduce the effort of finding the evidence. Remove
 redundant panels and give the central comparison more space. Load the dashboard
 skill's `references/report-design.md` when composing a substantial report.
+Check composition as a whole: can related charts, images, viewports and text
+be interpreted together without tab switching? Review a whole-report image,
+not only individual views. Preserve unequal row proportions when expanded
+and readable stacking when docked. Optional tabs must not hide essential
+evidence from the initial view or PNG.
 Perform this review yourself before presenting a complex visual; the person
 should not need to request a screenshot check separately.
 When a view is crowded, show the meaningful subset or aggregate first. Retain
