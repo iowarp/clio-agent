@@ -152,8 +152,20 @@ async def read_ollama_inputs(
     return profile, budget, ""
 
 
+def usable_cpus(text: str) -> int | None:
+    """The CPU count ``nproc`` printed (it honours the affinity mask), or ``None``."""
+
+    value = text.strip().splitlines()[-1].strip() if text.strip() else ""
+    return int(value) if value.isdigit() and int(value) > 0 else None
+
+
 def ollama_context_hook(
-    port: int, model: str, logs: CommandSpec, windows: bool, request: SizingRequest
+    port: int,
+    model: str,
+    logs: CommandSpec,
+    windows: bool,
+    request: SizingRequest,
+    cpu_threads: bool = False,
 ) -> AfterReadyHook:
     """The after-ready step that serves ``model`` at the chosen context.
 
@@ -161,6 +173,10 @@ def ollama_context_hook(
     ``effective.context_reason``, ``effective.context_choice``); the length is
     empty when the model does not report its trained context, so Ollama's own
     default stays in force.
+
+    With ``cpu_threads`` (the CPU variant) the model also gets ``num_thread`` =
+    the CPUs this process may use: Ollama otherwise sizes its pool from the
+    machine's cores, which oversubscribes a Slurm/cgroup-limited allocation (F044).
     """
 
     async def apply(execute: Execute, progress: Progress) -> dict[str, str]:
@@ -169,22 +185,32 @@ def ollama_context_hook(
             execute, port, model, logs, windows, request
         )
         chosen: ContextDecision = decide("ollama", request, profile, budget, why=why)
-        if not chosen.tokens:
-            return chosen.entries()
-        progress(f"Serving {model} with context {chosen.tokens}")
+        entries = chosen.entries()
+        parameters: dict[str, int] = {}
+        if chosen.tokens:
+            parameters["num_ctx"] = chosen.tokens
+        if cpu_threads and not windows:
+            threads = usable_cpus((await execute(CommandSpec(program="nproc", args=[]))).stdout)
+            if threads:
+                parameters["num_thread"] = threads
+                entries["effective.threads"] = str(threads)
+                entries["effective.threads_reason"] = f"CPUs this deployment may use ({threads})"
+        if not parameters:
+            return entries
+        progress(f"Serving {model} with " + ", ".join(f"{k} {v}" for k, v in parameters.items()))
         created = await execute(
             _http(
                 f"http://127.0.0.1:{port}/api/create",
-                {"model": model, "from": model, "parameters": {"num_ctx": chosen.tokens}},
+                {"model": model, "from": model, "parameters": parameters},
                 windows,
                 120,
             )
         )
         if created.exit_code != 0 or '"success"' not in created.stdout:
             raise RuntimeError(
-                f"Could not set the context of {model} to {chosen.tokens}: "
+                f"Could not set the context of {model} ({parameters}): "
                 + (created.stderr.strip() or created.stdout.strip()[-500:] or "no answer")
             )
-        return chosen.entries()
+        return entries
 
     return apply

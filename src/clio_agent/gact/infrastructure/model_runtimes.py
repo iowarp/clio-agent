@@ -696,7 +696,12 @@ def build_model_runtime_plan(
         if not resolved.get("param.context_length"):
             # A person's value keeps the OLLAMA_CONTEXT_LENGTH launch setting.
             context_hook = ollama_context_hook(
-                port, model, readiness.logs, windows, sizing_request("ollama", resolved)
+                port,
+                model,
+                readiness.logs,
+                windows,
+                sizing_request("ollama", resolved),
+                cpu_threads=variant_id == "cpu",
             )
     if action == "start":
         command = (

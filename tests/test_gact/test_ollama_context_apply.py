@@ -13,6 +13,7 @@ from clio_agent.gact.infrastructure.ollama_context_apply import (
     gpu_available_bytes,
     model_info_from_show,
     ollama_context_hook,
+    usable_cpus,
 )
 
 GIB = 1 << 30
@@ -119,3 +120,36 @@ def test_hook_leaves_ollama_default_when_the_model_reports_no_context() -> None:
 def test_hook_failure_is_reported_not_swallowed() -> None:
     with pytest.raises(RuntimeError, match="Could not set the context"):
         _run(FakeTarget({"model_info": MODEL_INFO}, create_ok=False))
+
+
+class CpuTarget(FakeTarget):
+    """A CPU-only Ollama on an allocation that may use 16 of the machine's CPUs."""
+
+    async def __call__(self, spec: CommandSpec) -> CommandResult:
+        if spec.program == "nproc":
+            return CommandResult(exit_code=0, stdout="16\n", stderr="")
+        return await super().__call__(spec)
+
+
+def test_cpu_variant_pins_num_thread_to_the_usable_cpus() -> None:
+    # F044: without num_thread Ollama sized its pool from all 128 cores of a
+    # node whose Slurm allocation allowed 16 (259 threads, ~48 s per token).
+    target = CpuTarget({"model_info": MODEL_INFO})
+    logs = CommandSpec(program="sh", args=["-c", "true"])
+    hook = ollama_context_hook(11434, "qwen3:4b", logs, False, FIT, cpu_threads=True)
+    chosen = asyncio.run(hook(target, lambda _message: None))
+    assert target.created[0]["parameters"]["num_thread"] == 16
+    assert target.created[0]["parameters"]["num_ctx"] == int(chosen["effective.context_length"])
+    assert chosen["effective.threads"] == "16"
+
+
+def test_gpu_variant_leaves_ollama_threads_alone() -> None:
+    target = CpuTarget({"model_info": MODEL_INFO})
+    _run(target)
+    assert "num_thread" not in target.created[0]["parameters"]
+
+
+def test_usable_cpus_ignores_noise() -> None:
+    assert usable_cpus("16\n") == 16
+    assert usable_cpus("") is None
+    assert usable_cpus("nproc: not found") is None
