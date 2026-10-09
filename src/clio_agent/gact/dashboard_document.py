@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
@@ -61,8 +63,11 @@ def compile_dashboard_surface(
     components, export_report = exported
     # Preserve the agent's chosen groups while isolating this artifact's cameras.
     for component in components:
-        if isinstance(component.get("syncGroup"), str) and component["syncGroup"]:
-            component["syncGroup"] = f"dashboard:{report_id}:{component['syncGroup']}"
+        group = component.get("syncGroup")
+        if isinstance(group, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", group):
+            identity = json.dumps([report_id, group]).encode()
+            component["syncGroup"] = "dashboard_" + hashlib.sha256(identity).hexdigest()[:40]
+        # Invalid authored names remain invalid for ordinary catalog validation.
     reference_error = _data_reference.validate_component_data_references(app, components)
     if reference_error:
         raise ValueError(json.dumps(reference_error))

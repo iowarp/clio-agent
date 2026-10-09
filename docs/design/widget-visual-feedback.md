@@ -31,17 +31,23 @@ drive the real view. Existing guarded Vega-Lite layered chart specs can mark
 and label selected observations. Registered data references, shared selection
 and queries remain authoritative.
 
-PNG export includes live map and mesh canvases. `view_image` can hydrate a
-saved, hashed workspace image as native model media. Neither an export link nor
-a server-side `rendered=true` result establishes agent inspection of the
-browser frame. Producer inspection does not expose every viewer-local camera,
-filter or active tab. Map camera bindings, a general view-state manifest,
-agent capture delivery, and exact rendered-revision acknowledgments still
-require runtime integration. Instructions must distinguish these boundaries.
+`capture_a2ui_surface` now requests a fresh PNG from one mounted viewer and
+hydrates its immutable image snapshot into native model media. Inspection
+reports declared bindings, current values, actual map/mesh cameras, active
+tabs, reference/query/selection context, viewport and readiness. The map's
+canonical `camera` binding supports pan, zoom, bearing and pitch;
+`Tabs.activeTab` supports agent navigation through tab child IDs. Shared
+bindings retain ordinary human interaction and existing linked selections.
+Neither an export link nor a server-side `rendered=true` result establishes
+agent inspection of the browser frame. Only a delivered image does.
 
 Saved dashboards remain immutable artifact versions. Review uses a temporary
 preview against a named version; deliberate definition changes publish a new
 version through the existing report tool.
+`update_a2ui_data_model` can also change a declared local binding in an open
+saved dashboard by naming the pinned artifact, viewer and expected view epoch.
+The viewer acknowledges a new epoch before a subsequent matching capture;
+the immutable definition and other open viewers are retained.
 
 ## Controls and inspection
 
@@ -58,26 +64,31 @@ Examples include a map center/zoom/bounds, a chart domain or grouped-series
 filter, a table sort/page, and shared dashboard tab/filter state. Controls
 must preserve the underlying records and stable selection identity.
 
-View updates use expected revisions and report their new revision. Stale
-commands reject rather than silently overwriting a person's newer changes.
+View updates accept expected definition revisions and report their new revision.
+Concurrent producer revisions reject atomically. Viewer epochs independently
+detect human navigation during capture; a human's local bound values are reported
+by the renderer and are not a substitute for a persisted definition revision.
 Definition revisions and viewer-state revisions are distinct; the same
 definition can have many cameras, filters and tabs. Ordinary inspection,
 camera changes, filtering, annotation and capture do not answer a question.
 
 ## Bounded capture
 
-The proposed peek operation names the session/surface or saved artifact
-version, optional component, expected definition and view-state revisions,
-viewport dimensions, tab, crop or whole-view extent, and bounded timeout and
-image size. Claim one eligible viewer per request; different viewers must not
-race to produce mismatched results.
+The capture operation names the surface or saved artifact version, optional
+displayed component, expected definition and optional view-state revisions,
+and a timeout up to 20 seconds. It records the actual viewport rather than
+resizing the person's window. Select tabs and framing through declared controls
+before capture. Whole-view and component captures retain images up to 5 MB and
+4096 pixels per dimension. A request belongs to one viewer; different viewers
+cannot complete it or race to substitute their state.
 
-The viewer applies the requested state and waits for fonts, required data,
+The viewer renders the producer state and waits for fonts, required data,
 chart layout, map tiles and WebGL frames as appropriate. Report failure for
 missing data, failed rendering, unavailable pixels or timeout. Do not return a
 previous frame as success. Recheck the view after capture: a human change
 during the operation makes it stale. Hidden or unmounted content is unavailable
 unless a separately declared headless viewer uses the same renderer and data.
+No headless viewer is implemented in this patch; the intended view must be open.
 
 A successful result retains an immutable image artifact and native model
 image delivery, with its pixel hash, dimensions and timestamp; source surface
@@ -143,6 +154,12 @@ control capabilities. Stop when the relevant question is resolved and views
 are useful; repeat captures to resolve actual remaining concerns.
 
 ## Runtime acceptance
+
+The implementation now includes the mounted-view bridge, saved-view local
+controls, native screenshot delivery, map camera and tab bindings, and ordinary
+PNG/HTML download preparation. It is still a draft, not fully accepted for
+release. See [the recorded acceptance review](../verification/widget-visual-feedback-2026-10-09.md)
+for real model runs, production-session evidence and remaining blockers.
 
 Prove agent control and native matching-image delivery on a map and chart as
 well as a mesh, using registered data and current declared controls. Reject

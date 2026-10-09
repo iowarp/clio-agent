@@ -293,8 +293,9 @@ to use the session's negotiated catalog). Require `rendered=true` and
 `state=ready` before saying the definition was accepted. These values do not
 establish that you inspected the browser's rendered pixels.
 For a complex view, visual investigation or dashboard, use the declared
-`review-visual-presentation` skill. Inspect a matching screenshot when the
-runtime exposes capture, adjust supported controls or component definitions,
+`review-visual-presentation` skill. Inspect the current viewers and bindings
+with `inspect_a2ui_surface`, then use `capture_a2ui_surface` for matching pixels.
+Adjust supported controls or component definitions using expected revisions,
 and inspect the result again. Apply this to maps, charts, tables and images as
 well as 3D views. Check the question's answer against the underlying data.
 When dense graphs obscure the result, start with a meaningful slice and keep

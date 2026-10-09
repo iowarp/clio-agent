@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 _PersistPart = Callable[["Part"], bool]
 
 
+class A2UIRevisionConflictError(ValueError):
+    """A conditional producer attempted to overwrite a newer surface revision."""
+
+
 @dataclass
 class _ProjectionCache:
     """One session's incrementally-foldable A2UI projection (S8, issue
@@ -578,6 +582,7 @@ class A2UIStore:
         message_id: str = "",
         part_id: str = "",
         persist_part: _PersistPart | None = None,
+        expected_revisions: Mapping[str, int] | None = None,
     ) -> A2UIBatchOutcome:
         """Apply a batch and report what it created plus the session's registry.
 
@@ -610,6 +615,12 @@ class A2UIStore:
         from clio_agent.gact.parts import Part  # noqa: PLC0415
 
         with self._session_lock(session_id):
+            for surface_id, expected in (expected_revisions or {}).items():
+                surface = self.get(session_id, surface_id)
+                if surface is None or surface.state == "deleted" or surface.revision != expected:
+                    raise A2UIRevisionConflictError(
+                        f"Surface {surface_id} changed since revision {expected}; inspect before updating."
+                    )
             persisted_part_id = part_id or f"a2ui_{uuid4().hex}"
             if persisted_part_id in self._all_part_ids(session_id):
                 # A reused id would be dropped by the projection's part dedupe,

@@ -1016,7 +1016,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         )
                         tools.append(_spawn_skill_tool)
                 # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-                _auto_tools = build_auto_react_tools(agent_def)
+                _auto_tools = build_auto_react_tools(
+                    agent_def,
+                    supports_vision=declared_native_capabilities(self.config)["supports_vision"],
+                )
                 toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
                 tools += _auto_tools
                 # THE assembly seam (owner 2026-08-05): every tool is observed by
@@ -1273,7 +1276,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 toolset_inventory.register_tool_sources(_sources, [_skill_tool], "native")
                 self.tools.append(_skill_tool)
             # create_artifact (#969) + plan_exit (#1066) + write_todos (#1067): auto-attached.
-            _auto_tools = build_auto_react_tools(agent_def)
+            _auto_tools = build_auto_react_tools(
+                agent_def,
+                supports_vision=declared_native_capabilities(self.config)["supports_vision"],
+            )
             toolset_inventory.register_tool_sources(_sources, _auto_tools, "native")
             self.tools += _auto_tools
             # THE assembly seam (owner 2026-08-05): same default-on instrumentation as above.

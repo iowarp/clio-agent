@@ -25,8 +25,10 @@ Keep an overview, comparisons, and supporting details easy to find. Do not ask
 the person to supply component payloads.
 
 Use the declared `review-visual-presentation` skill to close the loop on
-substantial reports. Inspect the actual rendered overview and relevant tabs
-when capture is available, revise what is unclear, and inspect the correction.
+substantial reports. Bind `Tabs.activeTab` when agent review needs to select tabs.
+Use `inspect_a2ui_surface` and `capture_a2ui_surface` for the overview and each
+relevant tab, revise what is unclear, and capture the correction. Capture a
+published version with its exact `artifact_id`; keep revisions immutable.
 Check the docked view as well as an expanded one. Surface acceptance alone
 does not establish readable pixels; state when rendered inspection is unavailable.
 Choose a useful default rather than showing every graph or series at once.
@@ -82,6 +84,13 @@ returned report id and source path. For follow-ups, inspect the referenced
 artifact version, edit the source through additional tool calls, and publish
 again with `report_id`. Earlier artifact versions remain available. Add, remove,
 rearrange, annotate, or interconnect content as the person's goals require.
+
+Review the published artifact's own viewer, including each tab. Inspect with
+`artifact_id`, then navigate declared local bindings using
+`update_a2ui_data_model` with that artifact id, the inspected surface revision,
+viewer id and `expected_view_revision`. Capture the changed view and inspect
+its pixels. Local navigation preserves the saved artifact version; changing
+its authored contents requires editing the source and publishing a new version.
 
 The viewer supplies standard Reference this and labelled image capture actions
 for the dashboard and its individual views. References identify the artifact

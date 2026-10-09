@@ -228,3 +228,21 @@ def export_dashboard_report(
     with os.fdopen(fd, "wb") as output:
         output.write(html.encode())
     return Path(filename), exported_id
+
+
+def export_dashboard_image(
+    app: FastAPI, sid: str, artifact_id: str, png_base64: str
+) -> tuple[Path, str]:
+    """Retain verified displayed PNG bytes and prepare the common native download."""
+    import os  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    from clio_agent.gact.a2ui_visual import decode_png  # noqa: PLC0415
+
+    report = read_dashboard_report(app, sid, artifact_id)
+    pixels, _ = decode_png(png_base64)
+    exported_id = _store(app, sid, report, payload=pixels, extension="png")
+    fd, filename = tempfile.mkstemp(prefix="clio-dashboard-", suffix=".png")
+    with os.fdopen(fd, "wb") as output:
+        output.write(pixels)
+    return Path(filename), exported_id

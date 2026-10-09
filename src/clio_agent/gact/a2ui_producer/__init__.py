@@ -13,6 +13,7 @@ an exception.
 
 from __future__ import annotations
 
+from clio_agent.gact.a2ui_producer.capture import build_capture_a2ui_surface_tool
 from clio_agent.gact.a2ui_producer.create import build_create_a2ui_surface_tool
 from clio_agent.gact.a2ui_producer.dashboard import build_publish_dashboard_report_tool
 from clio_agent.gact.a2ui_producer.delete import build_delete_a2ui_surface_tool
@@ -21,6 +22,7 @@ from clio_agent.gact.a2ui_producer.update_components import build_update_a2ui_co
 from clio_agent.gact.a2ui_producer.update_data_model import build_update_a2ui_data_model_tool
 
 __all__ = [
+    "build_capture_a2ui_surface_tool",
     "build_create_a2ui_surface_tool",
     "build_publish_dashboard_report_tool",
     "build_delete_a2ui_surface_tool",
