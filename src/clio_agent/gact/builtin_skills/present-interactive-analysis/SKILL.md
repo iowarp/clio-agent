@@ -94,9 +94,11 @@ Match the surface to the shape of the evidence, not to what looks impressive:
   representative subset, state the criterion, and let them refine it.
 - Many entities or grouped comparisons (one line per sample over time, spectra,
   distributions per group, a matrix of values) → the same `clio.chart.v1`
-  component. Use one of its **named presets** by filling in field names; don't
-  write a chart spec by hand unless no preset fits. That's longer, more likely to
-  fail, and still has to pass the catalog's spec guard.
+  component. Start with a named preset when it communicates the comparison well.
+  Use an authored spec when layering, direct labels, a reference line, a shared
+  scale or a deliberate facet layout makes the evidence easier to understand,
+  even if a preset could technically plot the rows. Keep the spec guarded and
+  the source data unchanged.
 - For anything non-trivial in size, pass a registered artifact reference instead
   of inlined rows. Let the server-side query filter, aggregate or downsample it
   (for example, a bounded number of points per entity) instead of trimming the
@@ -197,6 +199,12 @@ repeating the original dashboard or the reference's technical payload.
 
 ## Composing surfaces
 
+For a report, first decide the reader's question, the supported finding, and
+what each view contributes. Load `create-dashboard` for a substantial saved
+report and its `references/report-design.md` for composition examples. Give
+colour, size and emphasis consistent jobs across related views. A collection
+of correctly plotted charts is not yet an explained report.
+
 Prefer one small surface at the step it explains. Reuse a stable semantic
 `surface_id` to update that view in place. Do not accumulate unrelated work into
 one final tabbed dashboard. Tabs are appropriate only when several views of the
@@ -216,8 +224,8 @@ should replace the earlier view so both versions do not compete in the chat.
 
 ## Custom charts with Altair
 
-The general chart component renders **Vega-Lite**. When no named preset fits
-(a layered overlay, a particular facet layout, a custom encoding), write the
+The general chart component renders **Vega-Lite**. When an authored view explains
+the result better (a layered overlay, direct labels, a facet layout), write the
 chart in Python with **Altair**, which produces Vega-Lite, and pass the
 exported spec to the component instead of writing Vega-Lite JSON by hand.
 
