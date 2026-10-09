@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
 from collections.abc import Sequence
 
@@ -19,7 +20,18 @@ from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 CONNECTOR_REVISION = "95ab2acd6fe1be74ad9a3fa2aca1ecbee60a6284"
 FLOWCEPT_REVISION = "e638b4e2072290a2921965a03a150db124e11c2e"
 ATTENTION_PROFILE = "vllm-0.27.0-attention-1"
+#: Overrides the pinned connector source with a PEP 508 direct reference
+#: (git+file://... or a wheel path) to qualify an unreleased connector build.
+CONNECTOR_SOURCE_ENV = "CLIO_VLLM_ATTN_CONNECTOR"
 NATIVE_VARIANTS = frozenset({"native-cuda", "native-cuda-attention"})
+
+
+def connector_source() -> str:
+    """The connector's direct reference: the pinned revision unless overridden."""
+    override = os.environ.get(CONNECTOR_SOURCE_ENV, "").strip()
+    if override:
+        return override
+    return f"git+https://github.com/spotter-ai-genesis/vllm-attn-connector.git@{CONNECTOR_REVISION}"
 
 
 def served_model(model: str, flags: Sequence[str]) -> str:
@@ -147,7 +159,7 @@ def native_vllm_plan(
     if attention:
         dependencies.extend(
             [
-                f"vllm-attn-connector @ git+https://github.com/spotter-ai-genesis/vllm-attn-connector.git@{CONNECTOR_REVISION}",
+                f"vllm-attn-connector @ {connector_source()}",
                 f"flowcept[extras] @ git+https://github.com/spotter-ai-genesis/flowcept.git@{FLOWCEPT_REVISION}",
             ]
         )

@@ -107,6 +107,16 @@ def test_native_install_and_start_are_distinct_and_pinned() -> None:
     )
 
 
+def test_connector_source_override_replaces_only_the_connector_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "git+file:///data/src/vllm-attn-connector@4c1a9fa"
+    monkeypatch.setenv("CLIO_VLLM_ATTN_CONNECTOR", source)
+    project = json.loads(plan().commands[-1].stdin)["manifest"]["project"]
+    assert f"vllm-attn-connector @ {source}" in project
+    assert CONNECTOR_REVISION not in project and FLOWCEPT_REVISION in project
+
+
 def test_native_remove_retains_receipt_and_delete_is_separate() -> None:
     assert plan("uninstall").retain_record
     assert not plan("delete_data").retain_record
