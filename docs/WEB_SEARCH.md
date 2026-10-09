@@ -31,6 +31,15 @@ backend cannot serve. A Web MCP declaration that names its own endpoint
 declared. `GET /v1/search/backend` reports the resolved backend and whether it is
 ready; `POST /v1/search/query {"query": ...}` runs one search through it.
 
+You do not declare the Web MCP server yourself. Unless `search.backend` is `none`,
+CLIO declares it for the main agent as namespace `web` (`clio-kit mcp-server web`,
+source `clio-default`), loaded by default. Your own Web MCP declaration (any name)
+replaces it and is also loaded by default. Every Web MCP spawn gets
+`WEB_STATE_DIR` under CLIO's data directory (`<data>/web-mcp`), because the
+server's own default (`~/.config/clio-kit`) is not writable under the tool
+sandbox. If `clio-kit` is not installed, nothing is declared, and the server log
+records `web mcp not declared reason=launcher_missing`.
+
 ## The private SearXNG
 
 * **First run.** With `search.backend: local_searxng` and

@@ -19,12 +19,16 @@ def stdio_environment(
     declaration sets those knobs itself. The Web MCP server (``command``/``args``
     launch it) is pointed at the ``search.backend`` CLIO resolved
     (:func:`clio_agent.search.backend.web_mcp_environment`) beneath the
-    declaration's own values.
+    declaration's own values, with a writable state directory under CLIO's data
+    root (:func:`clio_agent.search.web_mcp_default.web_mcp_state_dir`).
     """
 
-    from clio_agent.search.backend import web_mcp_environment  # noqa: PLC0415
+    from clio_agent.search.backend import is_web_search_mcp, web_mcp_environment  # noqa: PLC0415
+    from clio_agent.search.web_mcp_default import web_mcp_state_dir  # noqa: PLC0415
 
     search = web_mcp_environment(command, args, spec_env) if command else {}
+    if command and is_web_search_mcp(command, args) and "WEB_STATE_DIR" not in spec_env:
+        search["WEB_STATE_DIR"] = str(web_mcp_state_dir())
     env = {**os.environ, **_QUIET_SERVER_DEFAULTS, **search, **dict(spec_env)}
     for name in ("PYTHONHOME", "PYTHONPATH"):
         if name not in spec_env:

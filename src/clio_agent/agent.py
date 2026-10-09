@@ -58,6 +58,7 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_checker,
     cancellation_requested,
 )
+from clio_agent.search.web_mcp_default import load_agent_mcp_servers
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -78,7 +79,6 @@ from clio_agent.tools.gateway import (
     namespace_specs,
 )
 from clio_agent.tools.jarvis_jobs import JarvisJobs
-from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
@@ -326,7 +326,7 @@ class ClioAgent(dspy.Module):
         # server process cwd silently found no blueprint, minted a toolless fleet,
         # and rejected every declared child before inference.
         pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
-        specs = load_mcp_servers(pack_servers=pack_servers)
+        specs = load_agent_mcp_servers(pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
         # app-agnostic (it resolves its invocation from the correlation record the tool

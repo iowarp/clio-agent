@@ -77,6 +77,8 @@ class TestDiscoverPackServers:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         assert agent._discover_pack_servers("") == {}
         assert agent._discover_pack_servers() == {}
 
@@ -92,6 +94,8 @@ class TestDiscoverPackServers:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         servers = agent._discover_pack_servers("pack-a")
         assert set(servers) == {"pack-a"}
         assert "a-server" in servers["pack-a"]
@@ -417,6 +421,8 @@ class TestBootGatewayNeverMountsPackServers:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         agent = ClioAgent()
         try:
             specs = namespace_specs(agent._tool_gateway)
@@ -491,6 +497,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         spy_calls: list[object] = []
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
@@ -529,6 +537,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         # Bounded discovery would otherwise try to spawn "uvx a-mcp" for real;
         # stub it out so this stays a fast, hermetic unit test of the MOUNT
         # decision (which specs land on the gateway), not live connectivity.
@@ -570,6 +580,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
             lambda specs, **_kw: type(
@@ -612,6 +624,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
             lambda specs, **_kw: type(
@@ -645,6 +659,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
             lambda specs, **_kw: type(
@@ -680,6 +696,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
             lambda specs, **_kw: type(
@@ -718,6 +736,8 @@ class TestActiveToolExecutorBlueprintScoping:
         monkeypatch.setattr(
             "clio_agent.gact.agent_blueprints.discover_agent_blueprints", _fake_discover
         )
+        # Only the blueprints' namespaces: no default Web MCP when clio-kit is on PATH.
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
         monkeypatch.setattr(
             "clio_agent.agent.discover_declared_tools_bounded",
             lambda specs, **_kw: type(
