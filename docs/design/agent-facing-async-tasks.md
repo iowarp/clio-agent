@@ -177,6 +177,7 @@ probes, fixtures and CI do not satisfy that gate.
 | MCP stdio model overlap | `final-e35e4-mcp-ui-3` passed strict actual Codex/Luna acceptance, independent file action in a later model step, subsequent uncancelled running query, expired wait with work continuing, observation and original result collection on coree35e4/GACT898a54. Its real 11,264-byte fetch matched its hash. Earlier passes retain their recorded source identities. |
 | MCP Stop/UI cancellation | `final-e35e4-mcp-ui-4/stop-mcp-disconnect-recorded` passed five fresh actual-model cycles on coree35e4/GACT898a54. Stop ended the model waiter while accepted work continued. Desktop/phone confirmation sent one cancellation per original handle, the raw provider settled cancelled, and the actual HTTP transfer disconnected without replay. Setup-only receipts are not counted as model acceptance. Earlier browser/recorder failures remain retained. |
 | MCP HTTP overlap and reconnect | `integrated-2cdd-http-overlap-2` and `integrated-2cdd-http-recovery-2`: actual Codex/Luna handle, independent file read, running snapshot and stored result. The recovery retained the full backend identity and original session after API loss and lease expiry, with one actual 11,264-byte payload request and no operation replay. Earlier failed external-search and probe-binding attempts are retained separately. Final-state five-cycle recovery is pending. |
+| MCP human input | `final-eea8-input-five-cycles.json` links five successful actual Codex/Luna cycles on coreeea8/GACTde58. Each model received a handle, read an independent file in another model iteration and queried the original input-required task. The real desktop/phone UI supplied the answer; CLIO persisted it and the model collected the original result. This uses a real FastMCP reference input backend with production CLIO, not the production Web backend. A separate accepted attempt lost its provider connection after partial output; its failed receipt is retained, and the accepted operation was not replayed. Input reconnect remains unverified. |
 | Shell model overlap | WebSocket evidence includes `integrated-47f-shell-ws-1`; final-state SSE is `integrated-4dc4-shell-lifecycle-1`. Actual model acceptance, subsequent successful independent read, uncancelled running query, expired wait, observe, unbounded wait, stdout, exit 0 and filesystem marker passed. |
 | Subagent model overlap | WebSocket evidence includes `integrated-context-final-subagent-1`; final-state SSE is `integrated-4dc4-subagent-mixed-1`. Actual parent-model handle, later independent action, running child, expired wait and actual child output/marker passed. |
 | Download model overlap and bytes | `integrated-959e-download-root-1`: the submitting Codex/Luna model received a handle, performed a later checklist action, queried running work, expired a wait without cancellation, observed, waited and retrieved the result. All 6,001 selected files / 6,132,063 bytes and hashes match. This run retains its earlier core959e/GACTd51 identity; the native adapter is unchanged by the later REST response and browser-test repairs. Final-state repetition remains pending. |
@@ -198,6 +199,24 @@ probes, fixtures and CI do not satisfy that gate.
 | Fresh graceful Shell recovery | `final-e35e4-shell-graceful-2` passed five complete actual-model cycles on coree35e4/GACT898a54. Each model received a running handle, performed a later independent action and queried it running. Authenticated source-service shutdown ended every recorded process chain. A replacement API preserved the original interrupted handle; Luna queried and retrieved it without command replay. The private real-Core launcher exited successfully and released its owned daemon. |
 
 ### Focused checks and CI
+
+On coreeea8/GACTde58, current CI exposed two additional failures. The provider
+SDK check-mode test paired a recorded release feed with moving repository pins,
+so its expected upgrade vanished. The corrected test pins both outdated and
+current feed floors, verifies exact change/no-change output and proves check
+mode leaves the project untouched. Both cases passed individually/sequentially;
+scoped Ruff/format/Pyright passed. No dependency or production SDK behavior changed.
+
+GACT's 3,023 unit cases and production build passed before one transcript browser
+case failed. The same case reproduced locally. Saved history could move a live
+message to another index, and layout scrolls could replace the reader's explicit
+anchor. The repair retains that anchor and resolves it using the message ID.
+The new focused case reproduced both causes before repair; four viewport cases
+passed individually/sequentially. The unchanged browser scenario passed five
+consecutive desktop/phone runs, with scoped lint/format, six guards and full
+TypeScript/online/offline builds passing. GACTfe1cad75 contains the repair.
+Evidence: `sdk-bump-ci-*`, `transcript-anchor-*`, `transcript-ci-*` and original
+exact-head CI logs. New-head CI and affected live UI gates remain pending.
 
 Focused unit/integration cases were run individually and sequentially with one
 worker. They cover durable acceptance, complete identity and collisions, caller
@@ -234,8 +253,10 @@ and the matching core/UI/document logs.
   installed Core or retired services. A later original-task model readback
   actually executed, but its source-freeze guard failed during concurrent
   integration and its false verdict remains retained. Five fresh graceful
-  recovery cycles subsequently passed; final Shell crash repetitions remain
-  pending. No accepted operation may
+  recovery cycles subsequently passed, followed by five abrupt API-crash cycles
+  in `final-eea8-shell-crash-1`. Actual Windows process ownership stopped each
+  accepted command's descendants; restart preserved the original interrupted
+  handle, and the real model collected it without command replay. No accepted operation may
   be replayed when resuming qualification.
 - Five MCP Stop/UI-cancel cycles passed. HTTP reconnect repetitions and
   nonrecoverable backend-loss qualification remain pending.
