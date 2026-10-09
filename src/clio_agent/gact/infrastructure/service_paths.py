@@ -51,7 +51,7 @@ def service_directory(name: str, facts: TargetFacts, target: InfrastructureTarge
     return module.join(root, "services", host, name)
 
 
-def this_host_counterpart(path: str, host: str | None = None) -> str:
+def this_host_counterpart(path: str, host: str | None = None, *, live_service: bool = False) -> str:
     """Re-root a path inside another host's deployment directory at this host's.
 
     Settings that point into a managed deployment (``…/services/<host>/<name>/…``,
@@ -61,6 +61,13 @@ def this_host_counterpart(path: str, host: str | None = None) -> str:
     the saved path would still name the previous node's copy. When this host's
     counterpart exists it is the live one; otherwise ``path`` is returned
     unchanged (nothing installed here yet, or not a managed path at all).
+
+    ``live_service`` is for settings that describe a running service (e.g.
+    Flowcept's Redis/MongoDB endpoints and credentials). Managed services
+    listen on the installing host's loopback, so another host's copy is never
+    the live one: the path resolves to this host's location even when nothing
+    is installed there yet, and the caller reports it missing instead of
+    connecting with the previous node's settings.
     """
     if not path:
         return path
@@ -73,6 +80,14 @@ def this_host_counterpart(path: str, host: str | None = None) -> str:
             return path
         candidate = Path(*parts[: index + 1], host, *parts[index + 2 :])
         if not candidate.exists():
+            if live_service:
+                logger.info(
+                    "%s belongs to host %s; this host has no deployment at %s yet",
+                    path,
+                    parts[index + 1],
+                    candidate,
+                )
+                return str(candidate)
             return path
         logger.info(
             "using this host's deployment path %s instead of %s (saved on host %s)",

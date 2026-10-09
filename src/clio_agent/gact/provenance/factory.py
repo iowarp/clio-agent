@@ -150,7 +150,7 @@ def _on_this_host(config: FlowceptProviderConfig) -> FlowceptProviderConfig:
     Flowcept is often installed on this node only after CLIO booted, under this
     host's deployment directory, while the saved path names an earlier node's.
     """
-    settings_path = this_host_counterpart(config.settings_path)
+    settings_path = this_host_counterpart(config.settings_path, live_service=True)
     if settings_path == config.settings_path:
         return config
     return dataclasses.replace(config, settings_path=settings_path)
@@ -164,7 +164,8 @@ def _flowcept_config() -> FlowceptProviderConfig:
                 env="FLOWCEPT_SETTINGS_PATH",
                 default="",
                 cast=conf.as_str,
-            ).strip()
+            ).strip(),
+            live_service=True,
         ),
         workflow_scope=conf.resolve(
             "provenance.agentic.flowcept.workflow_scope",

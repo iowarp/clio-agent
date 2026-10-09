@@ -87,8 +87,8 @@ def test_flowcept_installed_after_boot_attaches_with_this_hosts_settings(
 
         def __init__(self, config: FlowceptProviderConfig) -> None:
             seen.append(config.settings_path)
-            if "gpub099" not in config.settings_path:
-                raise ConnectionError("Connection refused (previous node's Redis)")
+            if not Path(config.settings_path).is_file():
+                raise FileNotFoundError("Flowcept settings file not found")
 
         def close(self) -> None:
             return None
@@ -97,9 +97,56 @@ def test_flowcept_installed_after_boot_attaches_with_this_hosts_settings(
     monkeypatch.setenv("FLOWCEPT_SETTINGS_PATH", str(old))
     provider: Any = factory._deferred_flowcept(factory._flowcept_config())
     assert not provider.attached
-    assert seen == [str(old)]
+    # Never the previous node's settings: its services listen on that node's loopback.
+    new_path = tmp_path / "services" / "gpub099" / "flowcept" / "settings.yaml"
+    assert seen == [str(new_path)]
+    assert str(old) not in seen
 
     new = _settings(tmp_path, "gpub099")
     provider._next_attempt = 0.0
     assert provider.recheck()
     assert seen[-1] == str(new)
+
+
+@pytest.mark.usefixtures("on_gpub099")
+def test_live_service_settings_never_resolve_to_another_hosts_copy(tmp_path: Path) -> None:
+    old = _settings(tmp_path, "gpub081")
+    expected = tmp_path / "services" / "gpub099" / "flowcept" / "settings.yaml"
+    assert this_host_counterpart(str(old), live_service=True) == str(expected)
+    # Unmanaged and own-host paths are unchanged either way.
+    plain = tmp_path / "flowcept" / "settings.yaml"
+    assert this_host_counterpart(str(plain), live_service=True) == str(plain)
+    own = _settings(tmp_path, "gpub099")
+    assert this_host_counterpart(str(own), live_service=True) == str(own)
+
+
+@pytest.mark.usefixtures("on_gpub099")
+def test_flowcept_config_without_this_hosts_install_reads_as_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
+
+    old = _settings(tmp_path, "gpub081")
+    monkeypatch.setenv("FLOWCEPT_SETTINGS_PATH", str(old))
+    config = factory._flowcept_config()
+    assert "gpub099" in config.settings_path
+    with pytest.raises(FileNotFoundError, match="install/start Flowcept on this host"):
+        FlowceptProvenanceProvider(config)
+
+
+def test_flowcept_refuses_settings_other_than_the_ones_it_loaded(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Flowcept reads settings once at import; a new file needs a restart, said so."""
+    import sys
+    import types
+
+    from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
+
+    first = _settings(tmp_path, "gpub081")
+    second = _settings(tmp_path, "gpub099")
+    loaded = types.ModuleType("flowcept.configs")
+    loaded.SETTINGS_PATH = str(first)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "flowcept.configs", loaded)
+    with pytest.raises(RuntimeError, match="restart CLIO"):
+        FlowceptProvenanceProvider(FlowceptProviderConfig(settings_path=str(second)))

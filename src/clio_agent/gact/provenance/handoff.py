@@ -166,7 +166,8 @@ def build_provenance_handoff(app: Any, *, workspace_root: Path | None) -> Proven
 
     if "flowcept" in providers or query_default == "flowcept":
         settings_path = this_host_counterpart(
-            _text("provenance.agentic.flowcept.settings_path", "FLOWCEPT_SETTINGS_PATH")
+            _text("provenance.agentic.flowcept.settings_path", "FLOWCEPT_SETTINGS_PATH"),
+            live_service=True,
         )
         if settings_path:
             agentic["flowcept"] = {"settings_path": str(Path(settings_path).expanduser())}

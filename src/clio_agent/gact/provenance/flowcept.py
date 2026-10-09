@@ -215,6 +215,16 @@ class FlowceptProvenanceProvider:
                 f"Flowcept settings file not found: {config.settings_path} "
                 "(install/start Flowcept on this host or fix provenance.agentic.flowcept.settings_path)"
             )
+        loaded = sys.modules.get("flowcept.configs")
+        loaded_path = getattr(loaded, "SETTINGS_PATH", None)
+        if config.settings_path and loaded_path not in (None, config.settings_path):
+            # Flowcept reads its settings once, at import; a re-attach with
+            # another file would silently keep the first file's endpoints and
+            # credentials (28a: an earlier node's copy).
+            raise RuntimeError(
+                f"Flowcept settings changed since this process loaded them "
+                f"({loaded_path} -> {config.settings_path}); restart CLIO to use the new file"
+            )
         if config.settings_path:
             os.environ["FLOWCEPT_SETTINGS_PATH"] = config.settings_path
         try:
