@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from clio_agent import paths
@@ -26,17 +28,40 @@ def install_document_runtime(
 ) -> dict[str, Any]:
     """Provision and verify all required packages without enlarging the installer payload."""
     workspace.mkdir(parents=True, exist_ok=True)
-    result = prepare_document_runtime(workspace, cache_root=cache_root, progress=progress)
-    if result["javascript"]["status"] != "ready":
-        raise DocumentRuntimeError(f"Node/pnpm package installation failed: {result['javascript']}")
-    if progress is not None:
-        progress("Preparing and checking the Office renderer...")
-    office = prepare_office_runtime()
+    # These installers own separate cache trees and locks. Overlap the native
+    # downloads/extraction with Python/Node preparation, without changing the
+    # package setup's internal ordering or publishing an incomplete receipt.
+    progress_lock = Lock()
+
+    def report(message: str) -> None:
+        if progress is not None:
+            with progress_lock:
+                progress(message)
+
+    def prepare_office() -> str:
+        report("Preparing and checking the Office renderer...")
+        office = prepare_office_runtime()
+        report("Office rendering is ready.")
+        return office
+
+    def prepare_github() -> Path:
+        report("Preparing and checking the GitHub command-line tool...")
+        github = ensure_github_cli()
+        report("GitHub command-line tool is ready.")
+        return github
+
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="clio-install") as workers:
+        office_job = workers.submit(prepare_office)
+        github_job = workers.submit(prepare_github)
+        result = prepare_document_runtime(workspace, cache_root=cache_root, progress=report)
+        if result["javascript"]["status"] != "ready":
+            raise DocumentRuntimeError(
+                f"Node/pnpm package installation failed: {result['javascript']}"
+            )
+        office = office_job.result()
+        github = github_job.result()
     result["native_tools"]["soffice"] = {"status": "available", "path": office}
     result["capabilities"]["office_render_recalculate"] = "available"
-    if progress is not None:
-        progress("Office rendering is ready. Preparing the GitHub command-line tool...")
-    github = ensure_github_cli()
     result["native_tools"]["gh"] = {
         "status": "available",
         "path": str(github),
@@ -48,8 +73,7 @@ def install_document_runtime(
         / "installed.json"
     )
     receipt.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    if progress is not None:
-        progress("All managed runtime packages are installed and verified.")
+    report("All managed runtime packages are installed and verified.")
     return result
 
 
