@@ -212,6 +212,7 @@ def explain_selection(
         span.out_lo,
         span.out_hi,
         summary.record,
+        reasoning=call.reasoning,
     )
     selected_steps = set(step_span.steps)
     for item in selected[1:]:
@@ -219,7 +220,12 @@ def explain_selection(
             raise AttentionUnavailable("selection_ambiguous", "one profile is required for a union")
         selected_steps.update(
             output_steps(
-                renderer, call.content or "", item.span.out_lo, item.span.out_hi, summary.record
+                renderer,
+                call.content or "",
+                item.span.out_lo,
+                item.span.out_hi,
+                summary.record,
+                reasoning=call.reasoning,
             ).steps
         )
     if len(selected_steps) > 4096:

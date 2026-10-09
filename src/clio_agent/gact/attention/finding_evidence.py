@@ -63,7 +63,9 @@ def bind_finding_evidence(
     if capture.summary.record.sha256 != request.capture_sha256:
         raise AttentionUnavailable("capture_changed", "reviewer and CLIO capture hashes differ")
     content = call.content or ""
-    span = output_steps(capture.renderer, content, 0, len(content), capture.summary.record)
+    span = output_steps(
+        capture.renderer, content, 0, len(content), capture.summary.record, reasoning=call.reasoning
+    )
     selected = sorted(set(request.steps))
     if not set(selected).issubset(span.steps):
         raise AttentionUnavailable(
@@ -82,7 +84,7 @@ def bind_finding_evidence(
         (text, hits[0]) for text in fields if len(hits := locate_all(content, text.text)) == 1
     ]
     for step in selected:
-        lo, hi = encoded.offsets[step]
+        lo, hi = encoded.offsets[step - (span.steps[0] - span.token_lo)]
         candidates = []
         for text, hit in anchored:
             chars = hit.from_haystack(lo, hi)
