@@ -421,7 +421,7 @@ def test_repair_across_a_chunk_family_drops_every_chunk_no_orphan_survives(
     running loop -- ``schedule_off_loop`` runs the repair mint inline before
     returning) must drop chunks 1-3 entirely and re-mint the family from the
     retained ledger alone: ``lane_scopes`` afterwards is EXACTLY the re-minted
-    family (chunk 1 only, for a 2-message ledger under capacity 2), and chunks 2
+    family (two chunks, for two parts and two envelopes under capacity 2), and chunks 2
     and 3 are provably gone (zero segments, not merely unreachable)."""
 
     monkeypatch.setenv("CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS", "2")
@@ -447,10 +447,10 @@ def test_repair_across_a_chunk_family_drops_every_chunk_no_orphan_survives(
     assert result is not None
     assert [m.id for m in result] == ["new0", "new1"]
     # The repair is a whole-lane replace: the re-minted family is a NEW generation,
-    # EXACTLY its chunk 1 (2 messages under capacity 2).
+    # Two lean part/envelope pairs under capacity 2.
     new_base = generation_base(MESSAGE_PART_SCOPE, 1)
     assert current_base(arc._segments, SID, MESSAGE_PART_SCOPE) == new_base
-    assert lane_scopes(arc._segments, SID, new_base) == [new_base]
+    assert lane_scopes(arc._segments, SID, new_base) == [new_base, chunk_scope(new_base, 2)]
     # And the old generation is provably gone, not merely unreachable by the dense
     # walk: a direct read of each old chunk scope finds zero segments.
     for old_chunk in (MESSAGE_PART_SCOPE, chunk2, chunk3):
