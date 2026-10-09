@@ -21,10 +21,7 @@ from clio_agent.gact.artifacts.provenance_presentation import with_provenance_bl
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.elicitation_correlation import close_invocation, open_invocation
 from clio_agent.gact.events import Event
-from clio_agent.gact.evidence import (
-    _bounded_tool_call_result,
-    _tool_result_preview,
-)
+from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -38,6 +35,7 @@ from clio_agent.gact.runtime.globals import (
     _resolve_tool_session,
 )
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
+from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
@@ -674,6 +672,7 @@ def _make_tool_observer(app: "FastAPI"):
             # _build_semantic_event copies rather than mutating it).
             started_payload = {
                 "call_id": call_id,
+                "started_at": _iso_from_epoch(_OBSERVER_CALL_T0.value),
                 "tool": name,
                 "args": dict(args),
                 "presentation": initial_presentation,
@@ -722,6 +721,7 @@ def _make_tool_observer(app: "FastAPI"):
                     head=raw_step_thought[:120],
                 )
             call_metadata = {
+                "started_at": _iso_from_epoch(_OBSERVER_CALL_T0.value),
                 "stream_source": "live",
                 "telemetry_source": "live_observer",
                 **({"thought_step_id": thought_step_id} if thought_step_id else {}),
@@ -755,7 +755,8 @@ def _make_tool_observer(app: "FastAPI"):
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             terminal_output = progress_registry.completed(call_id)
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
-            duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
+            completed_epoch = time.time()
+            duration_ms = (completed_epoch - t0) * 1000 if t0 else 0.0
             cancel_event = app.state.cancel_events.get(sid)
             completed_after_cancel = sid in app.state.cancel_flags or (
                 cancel_event is not None and cancel_event.is_set()
@@ -807,6 +808,7 @@ def _make_tool_observer(app: "FastAPI"):
             # author UI labels; the envelope ``summary`` below is the one short caption.
             payload = {
                 "call_id": call_id,
+                "completed_at": _iso_from_epoch(completed_epoch),
                 "tool": name,
                 "ok": ok,
                 "presentation": presentation,
@@ -876,9 +878,7 @@ def _make_tool_observer(app: "FastAPI"):
             )
             if representation == "handoff":
                 return None
-            result_text = completion_error or (
-                _tool_result_preview(result) if result is not None else "completed"
-            )
+            result_text = completed_tool_text(result, completion_error)
             _append_live_assistant_part(
                 app,
                 sid,
@@ -906,17 +906,12 @@ def _make_tool_observer(app: "FastAPI"):
                             text=result_text,
                         )
                     ],
-                    metadata={
-                        "stream_source": "live",
-                        "telemetry_source": "live_observer",
-                        **(
-                            {"result": _bounded_tool_call_result(result)}
-                            if result is not None
-                            else {}
-                        ),
-                        **cancellation_metadata,
-                        **provenance,
-                    },
+                    metadata=completed_tool_metadata(
+                        result,
+                        completed_at=_iso_from_epoch(completed_epoch),
+                        cancellation=cancellation_metadata,
+                        provenance=provenance,
+                    ),
                 ),
             )
         return None

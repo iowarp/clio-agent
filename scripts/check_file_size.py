@@ -764,7 +764,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1048,  # L1: -3, executor_work_may_continue deleted from cancellation_metadata
+    "src/clio_agent/gact/tool_observer.py": 1043,  # Result metadata/text moved to tool_observer_parts.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
