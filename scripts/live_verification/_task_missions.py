@@ -48,6 +48,7 @@ def folder_input(proof: Path, kind: str) -> dict[str, Any]:
         "root": str(root),
         "entries": count + (count + 499) // 500 + 2,
         "selected_path": "payload.bin",
+        "selected_paths": ["payload.bin", *sorted(p.name for p in root.iterdir() if p.is_dir())],
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
     }
@@ -77,7 +78,8 @@ def mission(kind: str, workspace: Path, *, source: dict[str, Any] | None = None)
     elif kind == "Download" and source is not None:
         submit = (
             f"Call connected_data_download(source_id={source['source_id']!r}, "
-            "selected_paths=['payload.bin'], description='Download owned live payload')."
+            f"selected_paths={source['selected_paths']!r}, "
+            "description='Download owned live payload and directory selections')."
         )
     else:
         raise ValueError(f"No mission for {kind}")

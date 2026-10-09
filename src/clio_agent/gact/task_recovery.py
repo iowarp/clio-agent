@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from typing import Any
 
+from clio_agent.errors import MCP_TASK_LEASE_HELD, ToolError
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.task_projection import TERMINAL
 from clio_agent.gact.task_supervisor import task_supervisor
@@ -80,11 +82,14 @@ async def recover_http(app: Any, key: TaskKey) -> None:
     row = store.get(key)
     if row is None:
         raise ValueError("Task custody disappeared")
-    locator = {"url": row.backend["url"]}
+    locator = {"transport": row.backend["transport"], "url": row.backend["url"]}
     # Reuse current configured credentials only for an identical approved backend.
     for info in (getattr(app.state, "external_mcp_servers", {}) or {}).values():
         spec = info.get("spec", {})
-        if spec.get("url") == locator["url"]:
+        if spec.get("url") == locator["url"] and spec.get("transport") in {
+            "http",
+            "streamable-http",
+        }:
             locator = dict(spec)
             break
     try:
@@ -121,15 +126,25 @@ async def recover_http(app: Any, key: TaskKey) -> None:
             current = store.get(key)
             if current is not None and current.cancel_requested and not current.cancel_acknowledged:
                 await cancel_task(client.session, key, store=store)
-            await resume_task(
-                client.session,
-                key,
-                store=store,
-                timeout_seconds=None,
-                elicitation_callback=session_elicitation_callback(client.session),
-                on_poll=resolve_task_observer(key),
-                final_validator=lambda result: validate_terminal(row, result),
-            )
+            while True:
+                try:
+                    await resume_task(
+                        client.session,
+                        key,
+                        store=store,
+                        timeout_seconds=None,
+                        elicitation_callback=session_elicitation_callback(client.session),
+                        on_poll=resolve_task_observer(key),
+                        final_validator=lambda result: validate_terminal(row, result),
+                    )
+                    break
+                except ToolError as exc:
+                    if exc.details.get("reason") != MCP_TASK_LEASE_HELD:
+                        raise
+                    # A crash does not revoke a still-valid exclusive lease. Poll
+                    # only after release/expiry; never replay or announce interruption.
+                    expires = float(exc.details.get("lease_expires_at") or time.time())
+                    await asyncio.sleep(min(1.0, max(0.01, expires - time.time())))
     except TaskResultValidationError as exc:
         logger.exception("Recovered task violated its output contract identity=%s", key.row_key)
         record_invalid_result(store, key, exc)

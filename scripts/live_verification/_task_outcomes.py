@@ -56,8 +56,38 @@ def outcomes(
             result["pass"] &= (
                 size == source["bytes"]
                 and digest == source["sha256"]
-                and manifest["hashes"] == {source["selected_path"]: digest}
-                and {p.relative_to(path.parent).as_posix() for p in path.parent.rglob("*")}
-                == {source["selected_path"]}
+                and manifest["hashes"].get(source["selected_path"]) == digest
+            )
+            upstream = Path(source["root"])
+            expected = {
+                p.relative_to(upstream).as_posix()
+                for p in upstream.rglob("*")
+                if any(
+                    p.relative_to(upstream).as_posix() == selected
+                    or p.relative_to(upstream).as_posix().startswith(selected + "/")
+                    for selected in source["selected_paths"]
+                )
+            }
+            actual = {p.relative_to(path.parent).as_posix() for p in path.parent.rglob("*")}
+            expected_hashes = {
+                name: hashlib.sha256((upstream / name).read_bytes()).hexdigest()
+                for name in expected
+                if (upstream / name).is_file()
+            }
+            actual_hashes = {
+                name: hashlib.sha256((path.parent / name).read_bytes()).hexdigest()
+                for name in actual
+                if (path.parent / name).is_file()
+            }
+            result.update(
+                exact_selections_match=actual == expected,
+                all_file_hashes_match=actual_hashes == expected_hashes == manifest["hashes"],
+                actual_file_count=len(actual_hashes),
+                actual_total_bytes=sum(
+                    (path.parent / name).stat().st_size for name in actual_hashes
+                ),
+            )
+            result["pass"] &= (
+                actual == expected and actual_hashes == expected_hashes == manifest["hashes"]
             )
     return result

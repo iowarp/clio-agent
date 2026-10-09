@@ -420,7 +420,9 @@ async def drive_task_to_terminal(
     if owned_lease:
         active.acquire()
     try:
-        return await _poll_until_terminal(
+        from clio_agent.tools.task_driver_lease import drive_with_lease
+
+        operation = _poll_until_terminal(
             session,
             key,
             elicitation_callback,
@@ -432,6 +434,7 @@ async def drive_task_to_terminal(
             on_poll=on_poll,
             final_validator=final_validator,
         )
+        return await drive_with_lease(operation, active)
     finally:
         if owned_lease:
             active.release()
