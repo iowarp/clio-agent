@@ -610,9 +610,16 @@ def mint_message_part_atoms(
 ) -> list[Segment]:
     """Mint + durably append one message's ``message_part`` atoms to the canonical log.
 
-    Builds the atoms (:func:`build_message_part_atoms`) and appends each through
+    Whole-lane replacement uses the lean ("atom" authority) profile, as the live
+    minter writes a finished turn:
+    one sealed part atom per part (:func:`build_sealed_part_atom`, no envelope), then
+    the envelope atom (:func:`build_envelope_atom`), each through
     :func:`append_part_atom` (the chunked writer seam), into the lane's current
-    generation or, from a whole-lane replace, into ``lane``.
+    generation supplied in ``lane``. Legacy appends retain the inline profile.
+    The inline profile
+    (:func:`build_message_part_atoms`) copied the whole envelope onto every part: a
+    message with a large ``metadata`` (a deep-research child's reasoning log) became
+    one copy per part, and a transcript replace re-put a chunk of tens of MB per atom.
 
     Args:
         arc: The process ARC memory (``ARCMemory``); its ``_segments`` store is used.
@@ -624,10 +631,29 @@ def mint_message_part_atoms(
         The appended segments (one per atom).
     """
     store = arc._segments
-    return [
-        append_part_atom(store, session_id, content, lane=lane)
-        for content in build_message_part_atoms(message)
+    if lane is None:
+        # A replacement owns a fresh generation and can adopt lean atoms.
+        # Preserve the append contract of existing inline message groups.
+        return [
+            append_part_atom(store, session_id, content)
+            for content in build_message_part_atoms(message)
+        ]
+    stub = message_stub(
+        message_id=message.id,
+        turn_id=message.turn_id or "",
+        session_id=session_id,
+        created_at=message.created_at,
+    )
+    stub["role"] = message.role
+    sealed_at = message.updated_at or message.created_at
+    contents = [
+        build_sealed_part_atom(
+            stub, part.model_dump(), index, sealed_at=sealed_at, seal_source="mint"
+        )
+        for index, part in enumerate(message.parts)
     ]
+    contents.append(build_envelope_atom(message))
+    return [append_part_atom(store, session_id, content, lane=lane) for content in contents]
 
 
 def load_message_part_atoms(arc: Any, session_id: str) -> dict[str, list[dict[str, Any]]]:
