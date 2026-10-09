@@ -92,12 +92,19 @@ def test_describe_links_release_notes() -> None:
     assert "https://github.com/anthropics/claude-agent-sdk-python/releases" in body
 
 
+@pytest.mark.parametrize("current", [False, True])
 def test_check_mode_writes_github_outputs_and_changes_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, current: bool
 ) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     original = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # Recorded releases must be compared with deterministic fixture floors,
+    # rather than today's repository dependencies, which can already be newer.
+    floors = {"openai-codex-cli-bin": "0.157.1", "claude-agent-sdk": "0.2.159"}
+    if not current:
+        floors = dict.fromkeys(floors, "0.0.0")
+    original = bump.rewrite_floors(original, floors)
     (project / "pyproject.toml").write_text(original, encoding="utf-8")
     output = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
@@ -105,8 +112,10 @@ def test_check_mode_writes_github_outputs_and_changes_nothing(
     monkeypatch.setattr(sys, "argv", ["bump", "--check", "--project", str(project)])
     assert bump.main() == 0
     written = output.read_text(encoding="utf-8")
-    assert "changed=true" in written
+    assert f"changed={str(not current).lower()}" in written
     assert "body<<__CLIO_BODY__" in written
+    if current:
+        assert "title=\nbody<<__CLIO_BODY__\n\n__CLIO_BODY__" in written
     assert (project / "pyproject.toml").read_text(encoding="utf-8") == original
 
 

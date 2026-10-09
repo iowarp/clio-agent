@@ -85,6 +85,7 @@ from clio_agent.providers.codex.stream_errors import (
     RetryLog,
     terminal_error,
 )
+from clio_agent.providers.codex.tool_arguments import ToolArgumentCompletion
 from clio_agent.providers.stateful_common import (
     active_stateful_scope,
     register_scope_registry,
@@ -642,6 +643,7 @@ async def _stream(
     first = True
     usage: Any = None
     calls: list[str] = []
+    tool_arguments = ToolArgumentCompletion(call_index)
     await socket.send(json.dumps({"type": "response.create", **frame}))
     async for raw in socket:
         payload = json.loads(raw)
@@ -663,7 +665,14 @@ async def _stream(
         if kind == "response.output_item.done":
             calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
         if parsed is None:
-            parsed = wire.parse_stream_events(request, _WireEvent(event=kind, data=raw))
+            parsed = []
+            for missing in tool_arguments.consume(payload):
+                parsed.extend(
+                    wire.parse_stream_events(
+                        request, _WireEvent(event=missing["type"], data=json.dumps(missing))
+                    )
+                )
+            parsed.extend(wire.parse_stream_events(request, _WireEvent(event=kind, data=raw)))
         for event in parsed:
             if first and event.type == "delta":
                 first = False

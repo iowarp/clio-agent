@@ -10,11 +10,15 @@ const commandDir = resolve('.capture-commands');
 await mkdir(commandDir, {recursive: true});
 const browser = await puppeteer.launch({headless: true, executablePath:process.env.DEMO_CHROME_PATH || undefined, userDataDir:resolve('.capture-profile'), defaultViewport: {width: 1280, height: 870, deviceScaleFactor: 1}});
 const page = await browser.newPage();
+const diagnostics=[];
+page.on('pageerror',error=>diagnostics.push(String(error)));
+page.on('console',message=>{if(message.type()==='error') diagnostics.push(message.text().slice(0,1000));});
 let recorder;
 let began;
 let takeName;
 let marks = [];
 let closing = false;
+let downloadClient;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function pointer() {
@@ -23,12 +27,21 @@ async function pointer() {
 }
 
 async function run(action) {
+  if (action.op === 'diagnostics') return diagnostics.slice(-25);
   if (action.op === 'viewport') {
     if(recorder) throw new Error('Set framing before starting a take');
     if(!Number.isInteger(action.width) || !Number.isInteger(action.height) || action.width<640 || action.height<480) throw new Error('Supply a viewport at least 640 x 480');
     await page.setViewport({width:action.width,height:action.height,deviceScaleFactor:action.scale??1});
   }
   if (action.op === 'goto') {await page.goto(action.url, {waitUntil:'networkidle2', timeout:60000}); await pointer();}
+  if (action.op === 'downloads') {
+    if(recorder) throw new Error('Set the download directory before recording');
+    const downloadPath=resolve(action.path);
+    await mkdir(downloadPath,{recursive:true});
+    downloadClient ??= await page.createCDPSession();
+    await downloadClient.send('Browser.setDownloadBehavior',{behavior:'allow',downloadPath});
+    return {downloadPath};
+  }
   if (action.op === 'inspect') return page.evaluate(() => ({title:document.title,url:location.href,text:document.body.innerText.slice(-16000), controls:[...document.querySelectorAll('button,input,textarea,a,[contenteditable],[role="button"]')].map((el) => {const r=el.getBoundingClientRect();return {tag:el.tagName,text:el.innerText,value:el.value,href:el.getAttribute('href'),aria:el.getAttribute('aria-label'),title:el.getAttribute('title'),placeholder:el.getAttribute('placeholder'),type:el.getAttribute('type'),rect:{x:r.x,y:r.y,w:r.width,h:r.height}};}).filter((el)=>el.rect.w && el.rect.h && el.rect.y>=0 && el.rect.y<innerHeight)}));
   if (action.op === 'shot') {await page.screenshot({path: resolve(takeDir, action.name + '.png')}); return resolve(takeDir, action.name + '.png');}
   if (action.op === 'click') {if(action.selector) await page.click(action.selector);else await page.mouse.click(action.x,action.y);}

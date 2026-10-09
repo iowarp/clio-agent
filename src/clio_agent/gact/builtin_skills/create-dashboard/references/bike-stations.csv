@@ -1,0 +1,6 @@
+station_id,name,category,capacity,latitude,longitude,net_bikes,at_6,at_7,at_8,at_815,at_830,at_9
+fern,Fernhill,Hill,24,41.885,-87.675,-21,21,16,4,0,0,0
+orchard,Orchard,Hill,18,41.89,-87.668,-16,18,15,8,5,3,2
+canal,Canal Street,Downtown,24,41.88,-87.637,21,3,8,20,24,24,24
+market,Market Square,Downtown,18,41.875,-87.631,16,2,5,12,15,17,18
+park,Park,Other areas,20,41.898,-87.645,0,10,10,10,10,10,10
