@@ -287,7 +287,7 @@ def test_http_html_download_retains_artifact_and_all_model_data(
         download = client.get(value["download_path"])
         assert download.status_code == 200
         assert "CLIO_DASHBOARD_DATA" in download.text
-        assert "connect-src 'none'" in unescape(download.text)
+        assert "connect-src blob: data:" in unescape(download.text)
         assert client.get(value["download_path"]).status_code == 404
         assert read_dashboard_report(app, sid, saved["artifact_id"]) == report
         assert drain_turn_artifacts(app, sid, "dashboard_turn") == []

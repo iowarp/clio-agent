@@ -122,9 +122,13 @@ on Windows. Linux and macOS desktop visual-loop acceptance was not performed.
    daemon with `0xC0000005` during `put`; its RPC stalled and the run did not
    complete. The underlying crash has not been fixed. Shorter successful runs
    after restarting the private test profile do not resolve that failure.
-2. Independently reopening the downloaded HTML offline remains unverified due
-   to the browser's file-URL restriction. Offline packaging, data retention and
-   local component tests passed, but are not substitutes for that live check.
+2. The merge review reopened retained report data in Chromium with networking
+   disabled, using the final renderer and production HTML page generator. It
+   exposed a CSP bug blocking contained glTF buffers. The fixed policy permits
+   only `data:` and `blob:` fetches, retaining the network prohibition. All three
+   tabs then rendered, including both meshes, the annotated chart and all nine
+   table rows. Map points remain available offline; external basemap tiles do
+   not. This check rebuilt the retained report rather than making a new UI export.
 3. Linux/macOS desktop acceptance and larger data/longer investigation coverage
    remain outstanding. Generic annotation overlays, arbitrary undeclared widget
    controls and hidden/headless captures are not implemented. VIGIL is deferred.
