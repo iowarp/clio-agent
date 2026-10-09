@@ -240,6 +240,25 @@ canvas remount before fullscreen. Its focused Chromium case and scoped checks
 pass. All existing canvas/fullscreen/return/no-error assertions and budgets are
 retained; production code and the qualified build are unchanged by this repair.
 
+The single-agent native Indexing gate `integrated-4c7c-indexing-root-1` passes
+actual Codex/Luna acceptance, a subsequent checklist action while running,
+expired wait, observation, unbounded wait and stored result. Its atomically
+published manifest exactly matches 48,098 real entries. Five fresh owned-folder
+UI cycles also pass Stop independence, confirmation hit tests at desktop/phone
+widths, exactly one cancellation request and actual owner settlement. Durable
+audits show progress before cancellation and no partial manifests. Reconnecting
+an already linked source correctly returns its existing link instead of starting
+another index; the first reuse probe is retained as a probe failure.
+
+An explicit public refresh exposed a real acceptance response defect: storage
+custody persisted its handle, but the REST link/transfer routes serialized the
+older operation object. The Indexing regression reproduces the empty handle.
+Both routes now reload the persisted operation before returning 202. Two focused
+real API cases pass identity/query/result joins and actual entry or byte/hash
+checks; scoped Ruff/Pyright and guards pass. The initial refresh finished normally
+before service retirement; it is not an interruption acceptance pass. Fresh live
+refresh cancellation against an existing manifest remains required after this fix.
+
 Every live run must record source fingerprints **before** service start, actual
 runtime/model identities, invocation IDs, handles, timestamps, transcripts,
 backend outcomes and filesystem/process evidence. A source change during a

@@ -639,6 +639,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
             from clio_agent.gact.storage.task_adapter import storage_handle
 
             storage_handle(app, body.session_id, operation, f"Download {record.source.label}")
+            operation = service.store.get("operation", operation.id, TransferOperation)
         return operation.model_dump()
 
     @app.post("/v1/workspaces/{wid}/sources/{source_id}/link", status_code=202)
@@ -670,6 +671,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
             from clio_agent.gact.storage.task_adapter import storage_handle
 
             storage_handle(app, body.session_id, operation, f"Index {record.source.label}")
+            operation = service.store.get("operation", operation.id, TransferOperation)
         return {**visible(record), "indexing_operation": operation.model_dump()}
 
     @app.post("/v1/workspaces/{wid}/sources/{source_id}/unlink")
