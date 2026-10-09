@@ -39,6 +39,7 @@ from clio_agent.gact.infrastructure.searxng_service import (
     searxng_plan,
 )
 from clio_agent.gact.infrastructure.store import InfrastructureStore
+from clio_agent.search import backend as search_backend
 from clio_agent.search.backend import register_local_endpoint_resolver, resolve_search_backend
 from clio_agent.search.settings import DEFAULT_ENGINES, build_settings, is_opt_in_only
 
@@ -322,6 +323,35 @@ async def test_the_recorded_instance_is_what_web_search_uses(
         assert backend.base_url() == "http://127.0.0.1:19999"  # type: ignore[attr-defined]
         await search_bootstrap.ensure_local_searxng(runtime, build_settings(), poll_seconds=0.01)
         assert backend.base_url() == "http://127.0.0.1:18890"  # type: ignore[attr-defined]
+    finally:
+        register_local_endpoint_resolver(None)
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_the_lifecycle_phase_follows_operations_and_the_record(
+    host: FakeHost, tmp_path: Path
+) -> None:
+    store = InfrastructureStore(tmp_path / "infrastructure.json")
+    runtime = make_runtime(store, host)
+    app = SimpleNamespace(
+        state=SimpleNamespace(infrastructure_store=store, infrastructure_runtime=runtime)
+    )
+    search_bootstrap.register_local_endpoint(app)
+    phase = search_backend._local_phase  # noqa: SLF001
+    try:
+        assert phase() is None
+        row = runtime.start_action(
+            SERVICE_ID,
+            ServiceActionRequest(target_id="local", action="install", variant_id=VARIANT_ID),
+        )
+        assert phase() == "starting"
+        assert await search_bootstrap._finish(runtime, row.id, 0.01) == "succeeded"  # noqa: SLF001
+        assert phase() == "stopped"
+        assert await finish(runtime, "start") == "succeeded"
+        assert phase() is None
+        assert await finish(runtime, "stop") == "succeeded"
+        assert phase() == "stopped"
     finally:
         register_local_endpoint_resolver(None)
     await asyncio.sleep(0)

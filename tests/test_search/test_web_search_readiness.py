@@ -13,6 +13,8 @@ from clio_agent.search import backend as search_backend
 from clio_agent.search.backend import (
     WEB_SEARCH_TOOL,
     ClioWebSearchBackend,
+    SearchBackendStartingError,
+    SearchBackendStoppedError,
     SearchBackendUnavailableError,
     SearchNotConfiguredError,
     register_local_endpoint_resolver,
@@ -135,11 +137,12 @@ def test_a_ready_gateway_has_no_readiness_problem(readyz: Any) -> None:
     assert [str(r.url) for r in seen] == ["http://gw:8089/readyz"]
 
 
-def test_a_gateway_whose_readyz_fails_is_unavailable(readyz: Any) -> None:
+def test_a_gateway_whose_readyz_fails_is_starting(readyz: Any) -> None:
     readyz(lambda _r: httpx.Response(503))
     problem = resolve_search_backend(gateway_settings()).readiness_problem()
+    assert isinstance(problem, SearchBackendStartingError)
     assert isinstance(problem, SearchBackendUnavailableError)
-    assert problem.code == "search_backend_unavailable"
+    assert problem.code == "search_backend_starting"
     assert "HTTP 503" in problem.detail and "http://gw:8089" in problem.detail
     assert "http://gw:8089" in problem.fix
 
@@ -151,6 +154,7 @@ def test_a_gateway_that_times_out_is_unavailable(readyz: Any) -> None:
     readyz(timeout)
     problem = resolve_search_backend(gateway_settings()).readiness_problem()
     assert isinstance(problem, SearchBackendUnavailableError)
+    assert problem.code == "search_backend_unavailable"
     assert "ReadTimeout" in problem.detail
 
 
@@ -206,7 +210,7 @@ def test_the_guard_answers_a_typed_error_while_the_gateway_is_not_ready(readyz: 
     result = web_search_guard(WEB_SEARCH_TOOL, {"query": "x"}, settings=settings)
     assert result is not None
     assert result["ok"] is False
-    assert result["error"] == "search_backend_unavailable"
+    assert result["error"] == "search_backend_starting"
     assert "HTTP 502" in result["detail"]
     assert "http://gw:8089" in result["fix"]
     assert web_search_guard("web_fetch", {}, settings=settings) is None
@@ -230,3 +234,52 @@ def test_an_unrouted_web_mcp_is_not_probed(readyz: Any) -> None:
     seen = readyz(lambda _r: httpx.Response(503))
     assert web_search_guard(WEB_SEARCH_TOOL, {}, settings=gateway_settings()) is None
     assert seen == []
+
+
+# -- the local SearXNG's lifecycle phase picks the code ----------------------------------
+
+
+def _local_settings(port: int) -> Any:
+    return build_settings(backend="local_searxng", port=port)
+
+
+@pytest.mark.parametrize(
+    ("phase", "error", "code", "hint"),
+    [
+        ("starting", SearchBackendStartingError, "search_backend_starting", "Wait"),
+        ("stopped", SearchBackendStoppedError, "search_backend_stopped", "Start it"),
+        (None, SearchBackendUnavailableError, "search_backend_unavailable", "Infrastructure"),
+    ],
+)
+def test_a_silent_local_searxng_reports_its_lifecycle_phase(
+    phase: str | None, error: type, code: str, hint: str
+) -> None:
+    port = free_port()
+    register_local_endpoint_resolver(lambda: f"http://127.0.0.1:{port}", lambda: phase)
+    settings = _local_settings(port)
+    problem = resolve_search_backend(settings).readiness_problem()
+    assert type(problem) is error
+    assert problem.code == code and hint in problem.fix
+    web_mcp_environment(*WEB_MCP, {}, settings=settings)
+    result = web_search_guard(WEB_SEARCH_TOOL, {}, settings=settings)
+    assert result is not None and result["error"] == code
+
+
+def test_a_listening_local_searxng_ignores_the_phase() -> None:
+    with socket.socket() as server:
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = int(server.getsockname()[1])
+        register_local_endpoint_resolver(lambda: f"http://127.0.0.1:{port}", lambda: "stopped")
+        assert resolve_search_backend(_local_settings(port)).readiness_problem() is None
+
+
+def test_a_failing_phase_resolver_falls_back_to_unavailable() -> None:
+    port = free_port()
+
+    def broken() -> str | None:
+        raise KeyError("record")
+
+    register_local_endpoint_resolver(lambda: f"http://127.0.0.1:{port}", broken)
+    problem = resolve_search_backend(_local_settings(port)).readiness_problem()
+    assert problem is not None and problem.code == "search_backend_unavailable"

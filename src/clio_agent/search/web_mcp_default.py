@@ -100,7 +100,7 @@ def degraded_web_mcp_placeholder(namespace: str, spec: MCPServerSpec | None) -> 
     marks namespace ``web`` degraded and, without this, the agent has no
     ``web_search`` at all. The stand-in keeps the tool present: CLIO's guard
     (:func:`clio_agent.search.backend.web_search_guard`) answers its calls with the
-    typed ``search_backend_unavailable`` error naming the fix, and the namespace
+    typed ``search_backend_starting`` / ``search_backend_unavailable`` error naming the fix, and the namespace
     healer replaces it with the real tools once the server lists them (same key).
     ``{}`` for any other namespace.
     """

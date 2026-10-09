@@ -29,6 +29,7 @@ LOCAL_TARGET = "local"
 #: The person's own decisions that auto-start must respect.
 _DECLINED = frozenset({"stop", "uninstall", "delete_data"})
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
+_STARTING = frozenset({"install", "reinstall", "start"})
 
 
 def register_local_endpoint(app: Any) -> None:
@@ -42,7 +43,29 @@ def register_local_endpoint(app: Any) -> None:
         port = record.configuration.get("port", "").strip()
         return record.connection_url or (f"http://127.0.0.1:{port}" if port else None)
 
-    register_local_endpoint_resolver(resolve)
+    def phase() -> str | None:
+        runtime = getattr(app.state, "infrastructure_runtime", None)
+        store = getattr(app.state, "infrastructure_store", None)
+        if runtime is not None and _in_flight(runtime):
+            return "starting"
+        record = store.service(LOCAL_TARGET, SERVICE_ID) if store is not None else None
+        if record is not None and record.state == "stopped":
+            return "stopped"
+        return None
+
+    register_local_endpoint_resolver(resolve, phase)
+
+
+def _in_flight(runtime: Any) -> bool:
+    """Whether an install/start of the local SearXNG is queued or running."""
+
+    return any(
+        row.service_id == SERVICE_ID
+        and row.target_id == LOCAL_TARGET
+        and row.action in _STARTING
+        and row.state not in _TERMINAL
+        for row in runtime.store.operations()
+    )
 
 
 async def _finish(runtime: Any, operation_id: str, poll_seconds: float) -> str:

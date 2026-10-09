@@ -25,8 +25,13 @@ All `search.*` keys, their environment overrides and defaults are in
 [ENVIRONMENT.md](ENVIRONMENT.md). One abstraction, `clio_agent.search.backend`,
 resolves the backend: it points the Web MCP server (`clio-kit mcp-server web`)
 at it when that server starts, and answers a `web_search` call with
-`search_not_configured` / `search_backend_unavailable` (and the fix) when the
-backend cannot serve. A Web MCP declaration that names its own endpoint
+a typed error and the fix when the backend cannot serve:
+`search_not_configured` (search is off or misconfigured),
+`search_backend_starting` (CLIO is installing or starting its SearXNG, or the
+gateway answers `/readyz` with "not ready yet": retry shortly),
+`search_backend_stopped` (CLIO's SearXNG is installed but stopped: start it in
+Infrastructure > SearXNG) or `search_backend_unavailable` (failed or
+unreachable). A Web MCP declaration that names its own endpoint
 (`--remote-url`, `--address`, `--provider` or a `WEB_*` variable) is left as
 declared. `GET /v1/search/backend` reports the resolved backend and whether it is
 ready; `POST /v1/search/query {"query": ...}` runs one search through it.

@@ -33,7 +33,7 @@ def with_search_guard(interceptor: Interceptor | None) -> Interceptor:
 
     The guard (:func:`clio_agent.search.backend.web_search_guard`) answers a
     ``web_search`` call with a typed ``search_not_configured`` /
-    ``search_backend_unavailable`` result naming the fix when ``search.backend``
+    ``search_backend_starting`` / ``_stopped`` / ``_unavailable`` result naming the fix when ``search.backend``
     cannot serve; every other call is untouched.
     """
 

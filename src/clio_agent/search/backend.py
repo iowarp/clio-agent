@@ -50,7 +50,10 @@ _EXPLICIT_FLAGS = frozenset({"--remote-url", "--remote_url", "--address", "--pro
 _WEB_MCP_COMMANDS = frozenset({"clio-web-search-mcp", "web-mcp"})
 
 LocalEndpointResolver = Callable[[], "str | None"]
+#: Lifecycle phase of the managed local SearXNG: ``starting``, ``stopped`` or ``None``.
+LocalPhaseResolver = Callable[[], "str | None"]
 _LOCAL_ENDPOINT: list[LocalEndpointResolver] = []
+_LOCAL_PHASE: list[LocalPhaseResolver] = []
 _ROUTING_LOCK = threading.Lock()
 #: Whether the live Web MCP server was spawned routed by ``search.backend``.
 _ROUTED_BY_BACKEND = {"value": False}
@@ -82,12 +85,43 @@ class SearchBackendUnavailableError(SearchNotConfiguredError):
     code = "search_backend_unavailable"
 
 
-def register_local_endpoint_resolver(resolver: LocalEndpointResolver | None) -> None:
-    """Install where the managed local SearXNG listens (gact reads its service record)."""
+class SearchBackendStartingError(SearchBackendUnavailableError):
+    """The backend is being installed or started; retrying shortly should work."""
+
+    code = "search_backend_starting"
+
+
+class SearchBackendStoppedError(SearchBackendUnavailableError):
+    """The backend is installed but stopped; someone has to start it."""
+
+    code = "search_backend_stopped"
+
+
+def register_local_endpoint_resolver(
+    resolver: LocalEndpointResolver | None, phase: LocalPhaseResolver | None = None
+) -> None:
+    """Install where the managed local SearXNG listens and its lifecycle phase.
+
+    gact reads both from its service record and operations; ``phase`` answers
+    ``starting`` (an install/start is in flight), ``stopped`` or ``None`` (unknown or
+    failed), which picks the typed error a call gets while SearXNG is not answering.
+    """
 
     _LOCAL_ENDPOINT.clear()
+    _LOCAL_PHASE.clear()
     if resolver is not None:
         _LOCAL_ENDPOINT.append(resolver)
+    if phase is not None:
+        _LOCAL_PHASE.append(phase)
+
+
+def _local_phase() -> str | None:
+    for resolver in _LOCAL_PHASE:
+        try:
+            return resolver()
+        except (OSError, ValueError, KeyError, AttributeError) as exc:
+            logger.warning("local SearXNG phase unresolved reason=resolver_error: %r", exc)
+    return None
 
 
 def _normalized_hit(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -236,9 +270,22 @@ class LocalSearxngBackend(SearxngJsonBackend):
             ):
                 return None
         except OSError:
-            return SearchBackendUnavailableError(
-                f"CLIO's local SearXNG is not answering at {self.base_url()}.", self._fix()
+            phase = _local_phase()
+        if phase == "starting":
+            return SearchBackendStartingError(
+                f"CLIO's local SearXNG at {self.base_url()} is still being installed or started.",
+                "Wait for the operation in Infrastructure > SearXNG to finish, then retry.",
             )
+        if phase == "stopped":
+            return SearchBackendStoppedError(
+                f"CLIO's local SearXNG is installed but stopped ({self.base_url()}).",
+                "Start it from Infrastructure > SearXNG, then retry. To search from another "
+                "machine instead, set search.backend: clio_web_search and "
+                "search.clio_web_search.url.",
+            )
+        return SearchBackendUnavailableError(
+            f"CLIO's local SearXNG is not answering at {self.base_url()}.", self._fix()
+        )
 
     def _fix(self) -> str:
         install = (
@@ -316,7 +363,8 @@ class ClioWebSearchBackend(SearxngJsonBackend):
             )
         if response.is_success:
             return None
-        return SearchBackendUnavailableError(
+        # It answers, so it is up but still preparing (or degraded): retrying helps.
+        return SearchBackendStartingError(
             f"The CLIO Web Search gateway at {url} is not ready yet "
             f"(/readyz answered HTTP {response.status_code}).",
             self._fix(),
