@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from clio_agent import conf
 from clio_agent.gact.infrastructure.models import ExternalServiceConnection, utc_now
+from clio_agent.gact.infrastructure.service_paths import this_host_counterpart
 from clio_agent.user_config_document import (
     USER_CONFIG_LOCK,
     read_document,
@@ -65,6 +66,41 @@ class ProvenanceConnectionInput(BaseModel):
         )
 
 
+#: Configuration paths into a managed deployment; True = a running service's settings.
+_HOST_PATH_KEYS = {
+    "provenance.agentic.flowcept.settings_path": True,
+    "provenance.attention.files_dir": False,
+}
+
+
+def on_this_host(row: ExternalServiceConnection) -> ExternalServiceConnection:
+    """Resolve a Flowcept row's managed-deployment paths at this host's copy (F056).
+
+    A row saved on another node of a shared filesystem names that node's
+    ``services/<host>/…`` settings and capture folder; the live ones are this
+    host's (28a). A settings file of a service not installed here gets a typed
+    error instead of a probe against the previous node's endpoints.
+    """
+    if row.service_id != "flowcept":
+        return row
+    configuration = dict(row.configuration)
+    saved = configuration.get("settings_path", "")
+    configuration["settings_path"] = this_host_counterpart(saved, live_service=True)
+    if (
+        configuration["settings_path"] != saved
+        and not Path(configuration["settings_path"]).is_file()
+    ):
+        raise ValueError(
+            f"This Flowcept connection names another host's deployment ({saved}); "
+            "install and start Flowcept on this host, then verify again"
+        )
+    if configuration.get("attention_files_dir"):
+        configuration["attention_files_dir"] = this_host_counterpart(
+            configuration["attention_files_dir"]
+        )
+    return row.model_copy(update={"configuration": configuration})
+
+
 def connection_revision(row: ExternalServiceConnection) -> str:
     """Invalidate verification when connection settings or the private settings file change."""
     payload: dict[str, Any] = {
@@ -92,6 +128,7 @@ def connection_revision(row: ExternalServiceConnection) -> str:
 
 def verify_connection(row: ExternalServiceConnection) -> ExternalServiceConnection:
     """Require fresh write/readback; never reconfigure Flowcept's process-global SDK in place."""
+    row = on_this_host(row)
     revision = connection_revision(row)
     try:
         result = subprocess.run(
@@ -207,6 +244,7 @@ def _save_configuration(changes: dict[str, Any]) -> None:
 
 def activate_connection(row: ExternalServiceConnection) -> dict[str, Any]:
     """Save a verified choice for the next CLIO start without replacing live providers."""
+    row = on_this_host(row)
     revision = connection_revision(row)
     if row.verification.get("revision") != revision or not row.verification.get("write_readback"):
         raise ValueError("Verify this connection and its current settings before using it")
@@ -218,15 +256,20 @@ def activate_connection(row: ExternalServiceConnection) -> dict[str, Any]:
 def connection_selected(row: ExternalServiceConnection) -> bool:
     """Whether the next-start configuration selects this exact connection."""
     resolver = conf.ConfigStore()
-    desired = desired_configuration(row)
-    return all(
-        (
-            "flowcept" in conf.as_csv(resolver.file_value(key))
-            if key == "provenance.agentic.providers"
-            else resolver.file_value(key) == value
-        )
-        for key, value in desired.items()
-    )
+    try:
+        desired = desired_configuration(on_this_host(row))
+    except ValueError:
+        return False
+
+    def saved_matches(key: str, value: Any) -> bool:
+        saved = resolver.file_value(key)
+        if key == "provenance.agentic.providers":
+            return "flowcept" in conf.as_csv(saved)
+        if key in _HOST_PATH_KEYS:  # compare this host's copies (28a, F056)
+            saved = this_host_counterpart(str(saved or ""), live_service=_HOST_PATH_KEYS[key])
+        return saved == value
+
+    return all(saved_matches(key, value) for key, value in desired.items())
 
 
 def disconnect_connection(row: ExternalServiceConnection) -> dict[str, Any]:
