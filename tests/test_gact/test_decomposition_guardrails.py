@@ -183,7 +183,11 @@ from clio_agent.gact.app import build_app
 # prepare-download POST and one-use download GET, owned by routes/session_export.py.
 # 352 -> 355: dashboard list, pinned report and offline export, routes/dashboard_reports.py.
 # 355 -> 356: bounded renderer feedback/capture bridge, routes/a2ui_visual.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 356
+# 356 -> 366 (fixes/spotter): search backend GET, query POST, engine-keys PUT/DELETE
+# (routes/search.py); operation events/log GET (routes/infrastructure_operations.py);
+# model job log GET + service context-sizing POST (routes/infrastructure.py);
+# provider working-context GET/PUT (routes/working_context.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 366
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
