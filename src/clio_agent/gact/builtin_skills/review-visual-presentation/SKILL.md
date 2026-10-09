@@ -20,7 +20,9 @@ Distinguish server state from a rendered view. A producer's `rendered=true`
 means the definition was accepted, not that you inspected its pixels.
 `inspect_a2ui_surface` reports fresh mounted viewers, declared bindings,
 current values, cameras, active tabs, data references and readiness. Choose
-the viewer you mean when several are open. Pass the inspected revision to
+the viewer you mean when several are open. `capture_targets` supplies the exact
+capture arguments for each visible matching viewer; use the chosen target
+without adding a guessed view epoch. Pass the inspected revision to
 updates, then capture the new revision with `capture_a2ui_surface`. Its result
 attaches real pixels to your next model step and retains a hashed image artifact
 with the viewer state. For a saved dashboard, pass its immutable `artifact_id`
@@ -46,6 +48,13 @@ If a viewer is still loading, omit the optional `expected_view_revision`
 to let capture wait for readiness within its deadline. Pin a view epoch
 when an already-ready human view must match exactly; a loading epoch
 intentionally becomes stale as tiles or layout finish.
+After publication, the newly opened viewer can still be mounting. A single
+`a2ui_view_stale` or `a2ui_render_not_ready` result is not the end of the review:
+inspect the same immutable artifact again and retry capture with its current
+viewer. If `ready` is false, omit `expected_view_revision` rather than guessing
+zero. Retry at most twice; stop and report the actual limitation if the viewer
+is absent or still cannot supply pixels. After each successful declared tab or
+camera change, use the acknowledged epoch or inspect afresh before capture.
 If capture or a requested control is unavailable, make supported structural
 corrections and state the remaining verification limit; do not fabricate a
 capture or describe a map camera as controllable because the person can zoom it.

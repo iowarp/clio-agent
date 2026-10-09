@@ -1,0 +1,639 @@
+{
+  "format": "clio.dashboard.document.v1",
+  "title": "Morning bike imbalance \u2014 synthetic example",
+  "components": [
+    {
+      "id": "root",
+      "component": "Column",
+      "children": [
+        "scope",
+        "metrics",
+        "tabs"
+      ]
+    },
+    {
+      "id": "scope",
+      "component": "Text",
+      "text": "SYNTHETIC EXAMPLE \u00b7 Five fictional stations \u00b7 6\u20139 am \u00b7 Counts and locations illustrate the workflow."
+    },
+    {
+      "id": "metrics",
+      "component": "Grid",
+      "columns": 3,
+      "children": [
+        "empty",
+        "loss",
+        "gain"
+      ]
+    },
+    {
+      "id": "empty",
+      "component": "clio.metric.v1",
+      "label": "Fernhill first empty",
+      "value": "8:15 am",
+      "detail": "At the first recorded zero count"
+    },
+    {
+      "id": "loss",
+      "component": "clio.metric.v1",
+      "label": "Hill net loss",
+      "value": 37,
+      "unit": "bikes",
+      "detail": "6\u20139 am, two stations"
+    },
+    {
+      "id": "gain",
+      "component": "clio.metric.v1",
+      "label": "Downtown net gain",
+      "value": 37,
+      "unit": "bikes",
+      "detail": "Same interval, two stations"
+    },
+    {
+      "id": "tabs",
+      "component": "Tabs",
+      "activeTab": {
+        "path": "/activeTab"
+      },
+      "tabs": [
+        {
+          "title": "Overview",
+          "child": "overview"
+        },
+        {
+          "title": "Stations",
+          "child": "stations"
+        },
+        {
+          "title": "Evidence",
+          "child": "evidence"
+        }
+      ]
+    },
+    {
+      "id": "overview",
+      "component": "Column",
+      "children": [
+        "finding",
+        "occupancy",
+        "limits"
+      ]
+    },
+    {
+      "id": "finding",
+      "component": "Text",
+      "text": "Hill occupancy falls as downtown occupancy rises. Fernhill reaches zero at 8:15 am; the matched totals show an imbalance, not proof of individual trip routes."
+    },
+    {
+      "id": "occupancy",
+      "component": "clio.chart.v1",
+      "title": "The morning change, by station",
+      "height": 290,
+      "data": [
+        {
+          "station_id": "fern",
+          "name": "Fernhill",
+          "category": "Hill",
+          "capacity": 24,
+          "latitude": 41.885,
+          "longitude": -87.675,
+          "net_bikes": -21,
+          "at_6": 21,
+          "at_7": 16,
+          "at_8": 4,
+          "at_815": 0,
+          "at_830": 0,
+          "at_9": 0
+        },
+        {
+          "station_id": "orchard",
+          "name": "Orchard",
+          "category": "Hill",
+          "capacity": 18,
+          "latitude": 41.89,
+          "longitude": -87.668,
+          "net_bikes": -16,
+          "at_6": 18,
+          "at_7": 15,
+          "at_8": 8,
+          "at_815": 5,
+          "at_830": 3,
+          "at_9": 2
+        },
+        {
+          "station_id": "canal",
+          "name": "Canal Street",
+          "category": "Downtown",
+          "capacity": 24,
+          "latitude": 41.88,
+          "longitude": -87.637,
+          "net_bikes": 21,
+          "at_6": 3,
+          "at_7": 8,
+          "at_8": 20,
+          "at_815": 24,
+          "at_830": 24,
+          "at_9": 24
+        },
+        {
+          "station_id": "market",
+          "name": "Market Square",
+          "category": "Downtown",
+          "capacity": 18,
+          "latitude": 41.875,
+          "longitude": -87.631,
+          "net_bikes": 16,
+          "at_6": 2,
+          "at_7": 5,
+          "at_8": 12,
+          "at_815": 15,
+          "at_830": 17,
+          "at_9": 18
+        },
+        {
+          "station_id": "park",
+          "name": "Park",
+          "category": "Other areas",
+          "capacity": 20,
+          "latitude": 41.898,
+          "longitude": -87.645,
+          "net_bikes": 0,
+          "at_6": 10,
+          "at_7": 10,
+          "at_8": 10,
+          "at_815": 10,
+          "at_830": 10,
+          "at_9": 10
+        }
+      ],
+      "selectionField": "station_id",
+      "spec": {
+        "data": {
+          "name": "source"
+        },
+        "transform": [
+          {
+            "fold": [
+              "at_6",
+              "at_7",
+              "at_8",
+              "at_815",
+              "at_830",
+              "at_9"
+            ],
+            "as": [
+              "time_key",
+              "bikes"
+            ]
+          },
+          {
+            "calculate": "datum.time_key==='at_815'?8.25:datum.time_key==='at_830'?8.5:toNumber(substring(datum.time_key,3))",
+            "as": "hour"
+          }
+        ],
+        "encoding": {
+          "x": {
+            "field": "hour",
+            "type": "quantitative",
+            "scale": {
+              "domain": [
+                6,
+                9
+              ]
+            },
+            "axis": {
+              "title": "Morning time",
+              "values": [
+                6,
+                7,
+                8,
+                8.25,
+                9
+              ],
+              "labelExpr": "datum.value===8.25?'8:15':format(datum.value,'.0f')+':00'"
+            }
+          },
+          "y": {
+            "field": "bikes",
+            "type": "quantitative",
+            "title": "Bikes docked",
+            "scale": {
+              "domain": [
+                0,
+                26
+              ]
+            }
+          },
+          "color": {
+            "field": "category",
+            "type": "nominal",
+            "legend": {
+              "title": null
+            }
+          }
+        },
+        "layer": [
+          {
+            "mark": {
+              "type": "line",
+              "point": true
+            },
+            "encoding": {
+              "detail": {
+                "field": "station_id"
+              },
+              "tooltip": [
+                {
+                  "field": "name"
+                },
+                {
+                  "field": "hour"
+                },
+                {
+                  "field": "bikes"
+                }
+              ]
+            }
+          },
+          {
+            "transform": [
+              {
+                "filter": "datum.station_id==='fern' && datum.hour===8.25"
+              }
+            ],
+            "mark": {
+              "type": "point",
+              "filled": false,
+              "size": 420,
+              "strokeWidth": 2
+            },
+            "encoding": {
+              "color": {
+                "value": "#b91c1c"
+              }
+            }
+          },
+          {
+            "transform": [
+              {
+                "filter": "datum.station_id==='fern' && datum.hour===8.25"
+              }
+            ],
+            "mark": {
+              "type": "text",
+              "align": "right",
+              "dx": -8,
+              "dy": -18
+            },
+            "encoding": {
+              "text": {
+                "value": "Fernhill empty, 8:15 am"
+              },
+              "color": {
+                "value": "#b91c1c"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "limits",
+      "component": "Text",
+      "text": "The five stations conserve 54 bikes in every recorded interval. These synthetic snapshots do not measure missed trips or prove that an individual bike travelled between districts. Open Stations for net balance and locations; Evidence retains every input count."
+    },
+    {
+      "id": "stations",
+      "component": "Column",
+      "children": [
+        "balance",
+        "locations"
+      ]
+    },
+    {
+      "id": "balance",
+      "component": "clio.chart.v1",
+      "title": "Net change between 6 and 9 am",
+      "height": 220,
+      "data": [
+        {
+          "station_id": "fern",
+          "name": "Fernhill",
+          "category": "Hill",
+          "capacity": 24,
+          "latitude": 41.885,
+          "longitude": -87.675,
+          "net_bikes": -21,
+          "at_6": 21,
+          "at_7": 16,
+          "at_8": 4,
+          "at_815": 0,
+          "at_830": 0,
+          "at_9": 0
+        },
+        {
+          "station_id": "orchard",
+          "name": "Orchard",
+          "category": "Hill",
+          "capacity": 18,
+          "latitude": 41.89,
+          "longitude": -87.668,
+          "net_bikes": -16,
+          "at_6": 18,
+          "at_7": 15,
+          "at_8": 8,
+          "at_815": 5,
+          "at_830": 3,
+          "at_9": 2
+        },
+        {
+          "station_id": "canal",
+          "name": "Canal Street",
+          "category": "Downtown",
+          "capacity": 24,
+          "latitude": 41.88,
+          "longitude": -87.637,
+          "net_bikes": 21,
+          "at_6": 3,
+          "at_7": 8,
+          "at_8": 20,
+          "at_815": 24,
+          "at_830": 24,
+          "at_9": 24
+        },
+        {
+          "station_id": "market",
+          "name": "Market Square",
+          "category": "Downtown",
+          "capacity": 18,
+          "latitude": 41.875,
+          "longitude": -87.631,
+          "net_bikes": 16,
+          "at_6": 2,
+          "at_7": 5,
+          "at_8": 12,
+          "at_815": 15,
+          "at_830": 17,
+          "at_9": 18
+        },
+        {
+          "station_id": "park",
+          "name": "Park",
+          "category": "Other areas",
+          "capacity": 20,
+          "latitude": 41.898,
+          "longitude": -87.645,
+          "net_bikes": 0,
+          "at_6": 10,
+          "at_7": 10,
+          "at_8": 10,
+          "at_815": 10,
+          "at_830": 10,
+          "at_9": 10
+        }
+      ],
+      "selectionField": "station_id",
+      "spec": {
+        "data": {
+          "name": "source"
+        },
+        "mark": "bar",
+        "encoding": {
+          "x": {
+            "field": "net_bikes",
+            "type": "quantitative",
+            "title": "Bikes gained / lost",
+            "scale": {
+              "zero": true
+            }
+          },
+          "y": {
+            "field": "name",
+            "type": "nominal",
+            "sort": {
+              "field": "net_bikes"
+            },
+            "title": null
+          },
+          "color": {
+            "field": "category",
+            "type": "nominal",
+            "legend": {
+              "title": null
+            }
+          },
+          "tooltip": [
+            {
+              "field": "name"
+            },
+            {
+              "field": "net_bikes"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "locations",
+      "component": "clio.map.v1",
+      "title": "Illustrative station locations",
+      "camera": {
+        "path": "/camera"
+      },
+      "points": [
+        {
+          "id": "fern",
+          "label": "Fernhill",
+          "latitude": 41.885,
+          "longitude": -87.675,
+          "category": "Hill"
+        },
+        {
+          "id": "orchard",
+          "label": "Orchard",
+          "latitude": 41.89,
+          "longitude": -87.668,
+          "category": "Hill"
+        },
+        {
+          "id": "canal",
+          "label": "Canal Street",
+          "latitude": 41.88,
+          "longitude": -87.637,
+          "category": "Downtown"
+        },
+        {
+          "id": "market",
+          "label": "Market Square",
+          "latitude": 41.875,
+          "longitude": -87.631,
+          "category": "Downtown"
+        },
+        {
+          "id": "park",
+          "label": "Park",
+          "latitude": 41.898,
+          "longitude": -87.645,
+          "category": "Other areas"
+        }
+      ]
+    },
+    {
+      "id": "evidence",
+      "component": "Column",
+      "children": [
+        "method",
+        "records"
+      ]
+    },
+    {
+      "id": "method",
+      "component": "Text",
+      "text": "Net change = count at 9 am minus count at 6 am. Snapshot intervals are not uniform: 6, 7, 8, 8:15, 8:30 and 9 am. Station capacities are included. All inputs are fictional; the example demonstrates composition and interaction."
+    },
+    {
+      "id": "records",
+      "component": "clio.data-table.v1",
+      "rows": [
+        {
+          "station_id": "fern",
+          "name": "Fernhill",
+          "category": "Hill",
+          "capacity": 24,
+          "latitude": 41.885,
+          "longitude": -87.675,
+          "net_bikes": -21,
+          "at_6": 21,
+          "at_7": 16,
+          "at_8": 4,
+          "at_815": 0,
+          "at_830": 0,
+          "at_9": 0
+        },
+        {
+          "station_id": "orchard",
+          "name": "Orchard",
+          "category": "Hill",
+          "capacity": 18,
+          "latitude": 41.89,
+          "longitude": -87.668,
+          "net_bikes": -16,
+          "at_6": 18,
+          "at_7": 15,
+          "at_8": 8,
+          "at_815": 5,
+          "at_830": 3,
+          "at_9": 2
+        },
+        {
+          "station_id": "canal",
+          "name": "Canal Street",
+          "category": "Downtown",
+          "capacity": 24,
+          "latitude": 41.88,
+          "longitude": -87.637,
+          "net_bikes": 21,
+          "at_6": 3,
+          "at_7": 8,
+          "at_8": 20,
+          "at_815": 24,
+          "at_830": 24,
+          "at_9": 24
+        },
+        {
+          "station_id": "market",
+          "name": "Market Square",
+          "category": "Downtown",
+          "capacity": 18,
+          "latitude": 41.875,
+          "longitude": -87.631,
+          "net_bikes": 16,
+          "at_6": 2,
+          "at_7": 5,
+          "at_8": 12,
+          "at_815": 15,
+          "at_830": 17,
+          "at_9": 18
+        },
+        {
+          "station_id": "park",
+          "name": "Park",
+          "category": "Other areas",
+          "capacity": 20,
+          "latitude": 41.898,
+          "longitude": -87.645,
+          "net_bikes": 0,
+          "at_6": 10,
+          "at_7": 10,
+          "at_8": 10,
+          "at_815": 10,
+          "at_830": 10,
+          "at_9": 10
+        }
+      ],
+      "selectionField": "station_id",
+      "columns": [
+        {
+          "key": "name",
+          "label": "Station"
+        },
+        {
+          "key": "category",
+          "label": "Area"
+        },
+        {
+          "key": "capacity",
+          "label": "Capacity"
+        },
+        {
+          "key": "at_6",
+          "label": "6 am"
+        },
+        {
+          "key": "at_7",
+          "label": "7 am"
+        },
+        {
+          "key": "at_8",
+          "label": "8 am"
+        },
+        {
+          "key": "at_815",
+          "label": "8:15 am"
+        },
+        {
+          "key": "at_830",
+          "label": "8:30 am"
+        },
+        {
+          "key": "at_9",
+          "label": "9 am"
+        },
+        {
+          "key": "net_bikes",
+          "label": "Net bikes"
+        },
+        {
+          "key": "station_id",
+          "label": "Station ID"
+        },
+        {
+          "key": "latitude",
+          "label": "Latitude"
+        },
+        {
+          "key": "longitude",
+          "label": "Longitude"
+        }
+      ]
+    }
+  ],
+  "data_model": {
+    "activeTab": "overview",
+    "camera": {
+      "longitude": -87.655,
+      "latitude": 41.886,
+      "zoom": 12
+    }
+  }
+}

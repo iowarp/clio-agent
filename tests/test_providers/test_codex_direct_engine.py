@@ -215,6 +215,76 @@ def _stateful(rows: list[dict[str, Any]]) -> list[tuple[str, str | None]]:
     ]
 
 
+@pytest.mark.parametrize("stream_mode", ["none", "partial", "full", "initial", "terminal_only"])
+def test_completed_parallel_tool_arguments_survive_without_deltas(
+    harness: Harness, stream_mode: str
+) -> None:
+    """Real Responses parsing must preserve each parallel call's canonical arguments."""
+    output: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = [{"type": "response.created", "response": {"id": "tools"}}]
+    for index, argument in enumerate([{"q": "station A"}, {"q": "station B"}]):
+        final = json.dumps(argument)
+        item = {
+            "type": "function_call",
+            "id": f"fc_{index}",
+            "call_id": f"call_{index}",
+            "name": "search",
+            "arguments": final,
+        }
+        output.append(item)
+        events.append(
+            {
+                "type": "response.output_item.added",
+                "output_index": index,
+                "item": {**item, "arguments": final if stream_mode == "initial" else ""},
+            }
+        )
+        if stream_mode in {"partial", "full"}:
+            events.append(
+                {
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": index,
+                    "delta": final[:5] if stream_mode == "partial" else final,
+                }
+            )
+        if stream_mode != "terminal_only":
+            events.append(
+                {"type": "response.output_item.done", "output_index": index, "item": item}
+            )
+    events.append(
+        {
+            "type": "response.completed",
+            "response": {"id": "tools", "status": "completed", "output": output},
+        }
+    )
+    harness.script[:] = [events]
+    response = _run(_engine(), _request(HEAD))
+    assert response.message.parts == tuple(
+        ToolCallPart(id=f"call_{index}", name="search", input={"q": f"station {label}"})
+        for index, label in enumerate(["A", "B"])
+    )
+
+
+@pytest.mark.parametrize("final", ['{"q":"changed"}', "{invalid", "[]"])
+def test_conflicting_or_invalid_completed_arguments_do_not_execute(
+    harness: Harness, final: str
+) -> None:
+    item = {"type": "function_call", "call_id": "call", "name": "search", "arguments": final}
+    harness.script[:] = [
+        [
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": {**item, "arguments": '{"q":"original'},
+            },
+            {"type": "response.output_item.done", "output_index": 0, "item": item},
+            {"type": "response.completed", "response": {"id": "bad", "output": [item]}},
+        ]
+    ]
+    with pytest.raises(ServerError, match="completed tool arguments"):
+        _run(_engine(), _request(HEAD))
+
+
 # --------------------------------------------------------------------------- #
 # continuation                                                                #
 # --------------------------------------------------------------------------- #

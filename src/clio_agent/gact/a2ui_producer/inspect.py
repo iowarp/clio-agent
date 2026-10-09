@@ -31,14 +31,23 @@ def build_inspect_a2ui_surface_tool() -> Any:
             return resolved
         app, session_id = resolved
         requested_id = surface_id.strip()
+        report_identity: dict[str, Any] = {}
         if artifact_id:
             from types import SimpleNamespace
 
             from clio_agent.gact.dashboard_reports import read_dashboard_report
 
             try:
-                saved = read_dashboard_report(app, session_id, artifact_id)["surface"]
-                surface = SimpleNamespace(**saved)
+                saved = read_dashboard_report(app, session_id, artifact_id)
+                report_identity = {
+                    "artifact": {
+                        "artifact_id": artifact_id,
+                        "report_id": saved["id"],
+                        "definition_path": saved["definition_path"],
+                        "title": saved["title"],
+                    }
+                }
+                surface = SimpleNamespace(**saved["surface"])
                 requested_id = surface.id
             except ValueError as exc:
                 return refusal("a2ui_capture_artifact_unavailable", detail=str(exc))
@@ -56,6 +65,7 @@ def build_inspect_a2ui_surface_tool() -> Any:
             definition = {"components": components, "data_model_messages": data_model_messages}
             if len(json.dumps(definition, ensure_ascii=False)) > MAX_DEFINITION_CHARS:
                 return {
+                    **report_identity,
                     "surface_id": surface.id,
                     "revision": surface.revision,
                     "component_count": len(components),
@@ -76,11 +86,25 @@ def build_inspect_a2ui_surface_tool() -> Any:
                 viewers.append(row)
                 viewer_chars += size
             return {
+                **report_identity,
                 "surface_id": surface.id,
                 "revision": surface.revision,
                 "catalog_id": surface.catalog_id,
                 "artifact_id": artifact_id,
                 "viewers": viewers,
+                "capture_targets": [
+                    {
+                        "surface_id": surface.id,
+                        "expected_revision": surface.revision,
+                        "artifact_id": artifact_id,
+                        "viewer_id": row["viewer_id"],
+                        **(
+                            {"expected_view_revision": row["view_revision"]} if row["ready"] else {}
+                        ),
+                    }
+                    for row in viewers
+                    if row["visible"] and row["revision"] == surface.revision
+                ],
                 "viewers_omitted": len(available_viewers) - len(viewers),
                 "controls": declared_controls(app, surface.catalog_id, components),
                 **definition,

@@ -95,6 +95,9 @@ def publish_dashboard_report(
             raise ValueError(f"Source view is unavailable: {source_id}")
         sources.append({"surface_id": source.id, "revision": source.revision})
     if report_id:
+        reference = report_id.removeprefix("artifact://")
+        if reference.startswith("artifact_"):
+            report_id = read_dashboard_report(app, sid, reference)["id"]
         report_id = str(uuid.UUID(report_id))
         if not any(item["id"] == report_id for item in list_dashboard_reports(app, sid)):
             raise ValueError("The report to revise does not belong to this session.")
@@ -116,6 +119,7 @@ def publish_dashboard_report(
     artifact_id = _store(app, sid, report, payload=payload, extension="json")
     return {
         "id": report_id,
+        "report_id": report_id,
         "title": document.title,
         "created_at": report["created_at"],
         "artifact_id": artifact_id,

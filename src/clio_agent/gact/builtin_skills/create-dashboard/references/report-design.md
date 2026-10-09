@@ -22,8 +22,10 @@ in a detail tab. Keep computations and source references available.
 ## Make encodings carry meaning
 
 Choose a small set of consistent category meanings across views. Label the
-categories; colour alone is insufficient. Automatic chart/map colours should
-remain associated with the same category when a subset changes. If authoring
+categories; colour alone is insufficient. Automatic nominal chart/map colours
+use the same category identity across tabs and when a subset changes. Keep
+category labels identical across related data. The finite palette can repeat;
+retain labels, filter dense groups and review the actual marks. If authoring
 an explicit chart scale, use a complete domain/range consistently in every
 related authored chart; do not imply that an unrelated map adopts that scale.
 Use muted context and stronger emphasis for the comparison being explained.
@@ -82,3 +84,10 @@ data behind claims separately. Stop when the report answers the question and
 the useful detail is accessible. If capture is unavailable, state that limit.
 Keep screenshots and intermediate versions as verification evidence; present
 the latest requested deliverable once.
+
+For a runnable composition using real catalog components, read
+`references/bike-station-report.json`. Its clearly labelled synthetic example
+connects morning occupancy, station balance, location and exact records to one
+question. Use it as a composition pattern, never as evidence about a real bike
+system. Replace its inline demonstration rows with the person's registered
+dataset, retain stable station/category fields, and capture the actual result.

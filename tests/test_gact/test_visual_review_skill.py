@@ -20,6 +20,32 @@ from clio_agent.gact.types import AgentDef
 SKILL_ID = "review-visual-presentation"
 
 
+def test_bike_report_uses_producer_validation_and_conserves_its_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loadable report is an accepted real catalog document with consistent synthetic counts."""
+    from clio_agent.gact.dashboard_document import DashboardDocument, compile_dashboard_surface
+    from tests.test_gact.test_a2ui_chart_guard import _producer_session
+
+    app, sid, _ = _producer_session(tmp_path, monkeypatch)
+    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    skill = catalog.resolve("create-dashboard").skill
+    assert skill is not None
+    document = DashboardDocument.model_validate_json(
+        (Path(skill.dir) / "references/bike-station-report.json").read_bytes()
+    )
+    surface, _ = compile_dashboard_surface(app, sid, document, "bike-report")
+    assert surface
+    rows = next(
+        component["data"] for component in document.components if component["id"] == "occupancy"
+    )
+    for field in ["at_6", "at_7", "at_8", "at_815", "at_830", "at_9"]:
+        assert sum(row[field] for row in rows) == 54
+        assert all(0 <= row[field] <= row["capacity"] for row in rows)
+    assert sum(row["net_bikes"] for row in rows if row["category"] == "Hill") == -37
+    assert sum(row["net_bikes"] for row in rows if row["category"] == "Downtown") == 37
+
+
 @pytest.mark.parametrize(
     "tool_name",
     [

@@ -100,6 +100,72 @@ def test_edit_and_publish_preserves_old_artifact(dashboard: tuple[Any, str, Path
     assert list_dashboard_reports(app, sid)[0]["artifact_id"] == second["artifact_id"]
 
 
+@pytest.mark.parametrize("uri", [False, True])
+def test_artifact_reference_revises_owned_report_family(
+    dashboard: tuple[Any, str, Path], uri: bool
+) -> None:
+    """A human's pinned dashboard reference resolves its family without duplicating it."""
+    app, sid, path = dashboard
+    first = publish_dashboard_report(app, sid, definition_path=str(path))
+    reference = first["uri"] if uri else first["artifact_id"]
+    source = json.loads(path.read_text())
+    source["title"] = "Reviewed report"
+    path.write_text(json.dumps(source))
+    second = publish_dashboard_report(app, sid, definition_path=str(path), report_id=reference)
+    assert second["report_id"] == first["id"]
+    assert second["artifact_id"] != first["artifact_id"]
+    assert len(list_dashboard_reports(app, sid)) == 1
+    from clio_agent.gact.a2ui_producer import build_inspect_a2ui_surface_tool
+
+    inspected = build_inspect_a2ui_surface_tool()(artifact_id=second["artifact_id"])
+    assert inspected["artifact"]["report_id"] == first["id"]
+    assert inspected["artifact"]["definition_path"] == str(path)
+
+
+def test_foreign_artifact_cannot_revise_report_family(dashboard: tuple[Any, str, Path]) -> None:
+    """Resolving an artifact reference retains the session ownership check."""
+    app, sid, path = dashboard
+    first = publish_dashboard_report(app, sid, definition_path=str(path))
+    other = app.state.sessions.create(workspace_id="ws_default", title="Other")
+    with pytest.raises(ValueError, match="does not belong to this session"):
+        publish_dashboard_report(app, other.id, definition_path=str(path), report_id=first["uri"])
+
+
+@pytest.mark.parametrize("ready", [False, True])
+def test_inspection_capture_target_preserves_identity_and_loading_semantics(
+    dashboard: tuple[Any, str, Path], ready: bool
+) -> None:
+    """Loading viewers must not recommend a pinned epoch that becomes stale."""
+    from clio_agent.gact.a2ui_producer import build_inspect_a2ui_surface_tool
+    from clio_agent.gact.a2ui_visual import ViewerReport
+
+    app, sid, path = dashboard
+    saved = publish_dashboard_report(app, sid, definition_path=str(path))
+    surface = read_dashboard_report(app, sid, saved["artifact_id"])["surface"]
+    app.state.a2ui_visual.report(
+        sid,
+        ViewerReport(
+            viewer_id="review",
+            surface_id=surface["id"],
+            revision=surface["revision"],
+            view_revision=4,
+            artifact_id=saved["artifact_id"],
+            visible=True,
+            ready=ready,
+        ),
+    )
+    result = build_inspect_a2ui_surface_tool()(artifact_id=saved["artifact_id"])
+    [target] = result["capture_targets"]
+    assert target["artifact_id"] == saved["artifact_id"]
+    assert target["surface_id"] == surface["id"]
+    assert target["viewer_id"] == "review"
+    assert target["expected_revision"] == surface["revision"]
+    if ready:
+        assert target["expected_view_revision"] == 4
+    else:
+        assert "expected_view_revision" not in target
+
+
 def test_saved_view_control_uses_declared_binding_and_leaves_artifact_intact(
     dashboard: tuple[Any, str, Path],
 ) -> None:
@@ -139,18 +205,19 @@ def test_saved_view_control_uses_declared_binding_and_leaves_artifact_intact(
     missing_epoch = {key: value for key, value in args.items() if key != "expected_view_revision"}
     assert update(**missing_epoch)["reason"] == "a2ui_view_control_invalid"
     with ThreadPoolExecutor(1) as pool, TestClient(app) as client:
+        endpoint = f"/v1/sessions/{sid}/a2ui/visual-feedback"
+        # Establish the HTTP viewer after application startup, before starting
+        # the bounded control lease; native session initialization can be slow.
+        assert client.post(endpoint, json=before.model_dump()).status_code == 200
         future = pool.submit(update, **args)
         job = claim(app.state.a2ui_visual, before, sid)
         after = before.model_copy(update={"view_revision": 1, "state": {"detail": args["value"]}})
-        endpoint = f"/v1/sessions/{sid}/a2ui/visual-feedback"
         assert client.post(endpoint, json=after.model_dump()).status_code == 200
-        assert (
-            client.post(
-                endpoint,
-                json=reply(job, after, png_base64="", previous_view_revision=0).model_dump(),
-            ).status_code
-            == 200
+        acknowledged = client.post(
+            endpoint,
+            json=reply(job, after, png_base64="", previous_view_revision=0).model_dump(),
         )
+        assert acknowledged.status_code == 200, acknowledged.text
         result = future.result(timeout=2)
     assert result["controlled"] is True
     assert read_dashboard_report(app, sid, saved["artifact_id"]) == original

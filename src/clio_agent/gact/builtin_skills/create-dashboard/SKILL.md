@@ -23,6 +23,12 @@ initial level of detail. Load `references/report-design.md` for worked layouts
 using this catalog. Prefer a few complementary views over repeated views of
 the same data. Choose a custom guarded chart when it explains the finding
 better than a preset; a technically fitting preset is not a design requirement.
+For a complete small example, load `references/bike-station-report.json` and
+`references/bike-stations.csv`. They connect one clearly synthetic dataset to
+an annotated time chart, station balance, map and exact source table. Adapt the
+composition to the person's evidence; never reuse the fictional measurements
+as real findings. Preserve the same category labels across related maps and
+nominal chart encodings so the shared automatic colours keep their meaning.
 
 Load the active catalog index and exact component schemas with `load_skill`.
 The catalog remains the authority for shapes and actions. Reuse its tabs, rows,
@@ -93,6 +99,11 @@ returned report id and source path. For follow-ups, inspect the referenced
 artifact version, edit the source through additional tool calls, and publish
 again with `report_id`. Earlier artifact versions remain available. Add, remove,
 rearrange, annotate, or interconnect content as the person's goals require.
+Use the returned `report_id` for revisions; an owned dashboard artifact reference
+also resolves the report family. Saved inspection returns these identities under
+`artifact`. A newly published report opens in the currently viewed conversation
+for review. Inspect its fresh viewer before capturing; a disconnected client or
+different conversation still cannot supply pixels.
 
 Review the published artifact's own viewer, including each tab. Inspect with
 `artifact_id`, then navigate declared local bindings using
