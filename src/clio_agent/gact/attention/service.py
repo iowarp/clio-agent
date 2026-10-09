@@ -85,7 +85,11 @@ def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any,
             "message_not_generated", f"{message.role} messages have no attention rows"
         )
     if request.field not in {"text", "thought", "input"}:
-        raise AttentionUnavailable("message_not_generated", "this field is not generated content")
+        raise AttentionUnavailable(
+            "field_not_supported",
+            f'field {request.field!r} is not an attention field; use field="text" for the '
+            'answer (or "thought" / "input")',
+        )
     for part in message.parts:
         if request.part_id and part.id != request.part_id:
             continue

@@ -177,6 +177,18 @@ def test_user_message_is_not_selectable() -> None:
     assert exc.value.reason == "message_not_generated"
 
 
+def test_unknown_field_names_the_valid_fields() -> None:
+    # c35 live: field="content" got a misleading message_not_generated.
+    with pytest.raises(AttentionUnavailable) as exc:
+        _explain(
+            request=SelectionRequest(
+                message_id="msg_asst_1", part_id="call_sel", field="content", start=0, end=4
+            )
+        )
+    assert exc.value.reason == "field_not_supported"
+    assert 'field="text"' in str(exc.value.detail if hasattr(exc.value, "detail") else exc.value)
+
+
 def test_text_not_in_any_output_is_selection_not_located() -> None:
     messages = fixture_transcript()
     messages[-1].parts[-1].thought = "A thought the model never produced."
