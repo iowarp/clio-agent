@@ -76,6 +76,17 @@ from clio_agent.gact.weather_tools import build_weather_forecast_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
 
 
+def build_configured_auto_tools(agent_def: Any, config: Any) -> list[Any]:
+    """Attach auto tools using the compiled model's evidenced native capabilities."""
+    from clio_agent.gact.agents.declared_native_tools import (  # noqa: PLC0415
+        declared_native_capabilities,
+    )
+
+    return build_auto_react_tools(
+        agent_def, supports_vision=declared_native_capabilities(config)["supports_vision"]
+    )
+
+
 def build_auto_react_tools(
     agent_def: Any, *, a2ui_producers: bool | None = None, supports_vision: bool = False
 ) -> list[Any]:
