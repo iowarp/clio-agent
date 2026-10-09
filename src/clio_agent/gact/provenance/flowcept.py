@@ -13,7 +13,7 @@ import os
 import socket
 import sys
 import uuid
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -206,6 +206,15 @@ class FlowceptProvenanceProvider:
 
     def __init__(self, config: FlowceptProviderConfig) -> None:
         self.config = config
+        if config.settings_path and not os.path.isfile(config.settings_path):
+            # Flowcept silently falls back to its built-in defaults when the
+            # settings file is absent, so events would be "accepted" with no
+            # backend behind them. A missing file (e.g. the managed service is
+            # not installed on this host yet) must read as unavailable.
+            raise FileNotFoundError(
+                f"Flowcept settings file not found: {config.settings_path} "
+                "(install/start Flowcept on this host or fix provenance.agentic.flowcept.settings_path)"
+            )
         if config.settings_path:
             os.environ["FLOWCEPT_SETTINGS_PATH"] = config.settings_path
         try:
@@ -244,7 +253,15 @@ class FlowceptProvenanceProvider:
             save_workflow=False,
             check_safe_stops=config.check_safe_stops,
         )
-        self._runtime.start()
+        try:
+            self._runtime.start()
+        except Exception:
+            # A failed start (e.g. Redis refused) may leave Flowcept's flush
+            # thread behind; stop it so an attach retry does not leak one per
+            # attempt. The start error is the one the caller must see.
+            with suppress(Exception):
+                self._runtime.stop()
+            raise
         self._sessions: dict[str, dict[str, str]] = {}
         self._published_workflows: set[str] = set()
         self._workflow_status: dict[str, str] = {}

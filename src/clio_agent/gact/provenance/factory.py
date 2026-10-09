@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.gact.provenance.deferred import DeferredProvider
 from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
 from clio_agent.gact.provenance.flowcept import FlowceptProviderConfig
 from clio_agent.gact.provenance.jsonl import JsonlProvenanceProvider
@@ -107,9 +108,7 @@ def build_provenance_backend(default_root: Path) -> Any:
                 JsonlProvenanceProvider(Path(raw_path).expanduser() if raw_path else default_root)
             )
         elif name == "flowcept":
-            from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
-
-            providers.append(FlowceptProvenanceProvider(_flowcept_config()))
+            providers.append(_deferred_flowcept(_flowcept_config()))
         else:
             providers.append(_build_legacy_factory(default_root))
 
@@ -122,6 +121,25 @@ def build_provenance_backend(default_root: Path) -> Any:
     if queue_size < 1:
         raise ValueError("provenance.agentic.queue_size must be at least 1")
     return ProvenanceDispatcher(providers, queue_size=queue_size)
+
+
+def _deferred_flowcept(config: FlowceptProviderConfig) -> DeferredProvider:
+    """Flowcept attaches when its services are up; CLIO never waits on it (F047).
+
+    Flowcept's Redis/MongoDB are commonly a CLIO-managed service, started
+    through this very server, so a down backend at boot must degrade to
+    ``unavailable`` (typed reason in provider health) and re-attach later.
+    """
+    from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
+
+    return DeferredProvider(
+        "flowcept",
+        lambda: FlowceptProvenanceProvider(config),
+        durable=FlowceptProvenanceProvider.durable,
+        queryable=FlowceptProvenanceProvider.queryable,
+        flush_durable=FlowceptProvenanceProvider.flush_durable,
+        flush_note=FlowceptProvenanceProvider.flush_note,
+    )
 
 
 def _flowcept_config() -> FlowceptProviderConfig:
