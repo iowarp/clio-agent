@@ -433,3 +433,29 @@ def test_tool_schema_rendered_twice_is_left_undeclared() -> None:
     )
     declaration = declare_ranges([{"role": "user", "content": "hi"}], encoded, [tool])
     assert [r.domain for r in declaration.ranges] == ["user"]
+
+
+def test_tool_call_arguments_render_as_vllm_parses_them(tiny_tokenizer_dir: Path) -> None:
+    # F051 (c41 live): vLLM json.loads an assistant tool call's string arguments
+    # before templating, so `arguments | tojson` prints {"path": "/w"}; rendering
+    # the client's compact string gave 16430 vs 16434 captured tokens.
+    tok = (tiny_tokenizer_dir / "tokenizer.json").read_text(encoding="utf-8")
+    template = (
+        "{% for m in messages %}{{ m.role }}:{{ m.content or '' }}"
+        "{% for tc in m.tool_calls or [] %}"
+        "{% set a = tc.function.arguments %}"
+        "<call>{{ a | tojson if a is mapping else a }}</call>{% endfor %}\n{% endfor %}"
+    )
+    renderer = ChatRenderer(tokenizer_json=tok, chat_template=template, special_tokens={}, identity="t")
+    call = {"id": "c1", "type": "function", "function": {"name": "ls", "arguments": '{"path":"/w"}'}}
+    messages = [
+        {"role": "user", "content": "list"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "assistant", "content": "x", "tool_calls": []},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"type": "function", "function": {"name": "f", "arguments": ""}}]},
+    ]
+    text = renderer.render(messages)
+    assert '<call>{"path": "/w"}</call>' in text
+    assert "<call>{}</call>" in text
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"path":"/w"}'  # not mutated

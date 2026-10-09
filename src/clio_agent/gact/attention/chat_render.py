@@ -143,7 +143,7 @@ class ChatRenderer:
         ``enable_thinking``), which vLLM passes to the template the same way.
         """
         return self._template.render(
-            messages=messages,
+            messages=_as_vllm_sees(messages),
             add_generation_prompt=add_generation_prompt,
             **{**self._special_tokens, **(template_kwargs or {})},
         )
@@ -160,6 +160,48 @@ class ChatRenderer:
     ) -> Encoded:
         """Render then tokenize: the prompt exactly as the connector scores it."""
         return self.encode(self.render(messages, template_kwargs=template_kwargs))
+
+
+def _as_vllm_sees(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Apply vLLM's pre-template message rewrite (``chat_utils._postprocess_messages``).
+
+    vLLM parses an assistant tool call's JSON-string ``arguments`` into a dict
+    before rendering, so a template's ``arguments | tojson`` emits ``{"k": "v"}``
+    rather than the client's compact string; empty ``tool_calls`` are dropped and
+    empty arguments become ``{}``. Rendering the raw string instead drifts a few
+    tokens per tool call (F051). Inputs are not mutated.
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        if message.get("role") != "assistant" or not isinstance(calls, list):
+            out.append(message)
+            continue
+        message = dict(message)
+        if not calls:
+            message.pop("tool_calls", None)
+            out.append(message)
+            continue
+        rewritten: list[Any] = []
+        for item in calls:
+            function = item.get("function") if isinstance(item, dict) else None
+            if not isinstance(function, dict):
+                rewritten.append(item)
+                continue
+            function = dict(function)
+            arguments = function.get("arguments")
+            if not arguments:
+                function["arguments"] = {}
+            elif not isinstance(arguments, (dict, list)):
+                try:
+                    parsed = json.loads(arguments)
+                except (TypeError, ValueError):
+                    parsed = arguments  # vLLM rejects this request; keep the text
+                function["arguments"] = {} if parsed is None else parsed
+            rewritten.append({**item, "function": function})
+        message["tool_calls"] = rewritten
+        out.append(message)
+    return out
 
 
 def _token_text(value: Any) -> str:
