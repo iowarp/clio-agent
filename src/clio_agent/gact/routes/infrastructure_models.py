@@ -159,9 +159,15 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         except (OSError, ValueError, RuntimeError):
             unavailable = "Connect this execution host to inspect and download models."
         errors = []
-        for root in store.model_roots(target_id):
+        roots = [(root, {}) for root in store.model_roots(target_id)]
+        chosen = target.storage.models
+        if unavailable is None and chosen and chosen not in store.model_roots(target_id):
+            # A chosen models location that is a shared Hugging Face hub cache lists its
+            # snapshots before CLIO downloads anything there; any other folder lists nothing.
+            roots.append((chosen, {"hub_only": True}))
+        for root, body in roots:
             try:
-                await execute(target_id, "list", {}, root=root)
+                await execute(target_id, "list", body, root=root)
             except HTTPException as exc:
                 errors.append({"storage_root": root, "error": exc.detail})
         return {

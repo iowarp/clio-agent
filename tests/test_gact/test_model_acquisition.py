@@ -624,3 +624,52 @@ def test_plain_root_is_not_a_hub_cache(tmp_path: Path) -> None:
     (tmp_path / "org--model--main").mkdir()
     assert not node_models.is_hub_cache(tmp_path)
     assert node_models.hub_snapshots(tmp_path) == []
+
+
+def test_inventory_lists_a_chosen_hub_cache_models_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    hub = tmp_path / "hub"
+    _hub_snapshot(hub, "org/model", "d" * 40, {"config.json": b"{}"})
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    app = FastAPI()
+    register_infrastructure_routes(app, tmp_path)
+
+    async def facts(target: Any, execute: Any = None) -> TargetFacts:
+        return TargetFacts(
+            target_id=target.id,
+            label=target.label,
+            os="linux",
+            arch="x86_64",
+            agent_data_root=str(tmp_path / "data"),
+            uv_available=True,
+            transport_state="connected",
+        )
+
+    async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
+        done = subprocess.run(
+            [sys.executable, *spec.args], input=spec.stdin, capture_output=True, text=True
+        )
+        return CommandResult(exit_code=done.returncode, stdout=done.stdout, stderr=done.stderr)
+
+    monkeypatch.setattr("clio_agent.gact.routes.infrastructure_models.probe_target", facts)
+    monkeypatch.setattr(app.state.infrastructure_runtime, "execute_on_target", execute)
+    with TestClient(app) as client:
+        route = "/v1/infrastructure/targets/local/models"
+        store = app.state.infrastructure_store
+        store.set_storage("local", HostStorageLocations(root=str(tmp_path), models=str(hub)))
+        body = client.get(route).json()
+        assert body["errors"] == []
+        (row,) = body["models"]
+        assert (row["repository"], row["state"], row["storage_root"]) == (
+            "org/model",
+            "ready",
+            str(hub),
+        )
+        store.set_storage("local", HostStorageLocations(root=str(tmp_path), models=str(plain)))
+        assert client.get(route).json()["errors"] == []
+    assert not (hub / "model-operations").exists()
+    assert not (plain / "model-operations").exists()

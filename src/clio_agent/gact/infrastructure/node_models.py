@@ -607,6 +607,8 @@ def main() -> None:
         result: Any = inspect_jobs(root, peers=root.parent) if root.is_dir() else []
         owned = {row["destination"] for row in result}
         result += [row for row in hub_snapshots(storage) if row["destination"] not in owned]
+    elif action == "list" and request.get("hub_only"):
+        result = []
     elif action == "list":
         result = inspect_jobs(root, peers=root.parent)
     elif action == "start":
