@@ -12,6 +12,7 @@ from clio_agent.gact.agents.skill_runtime import (
     SkillRuntime,
     build_load_skill_tool,
     effective_declared_skills,
+    skills_prompt_block,
 )
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.skills import SkillCatalog
@@ -64,7 +65,11 @@ def test_producer_expert_can_load_review_and_bundled_example(
     )
     catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
     declared = effective_declared_skills(agent, catalog)
-    assert declared == [SKILL_ID]
+    assert declared == [
+        "present-interactive-analysis",
+        SKILL_ID,
+        *(["create-dashboard"] if tool_name == "publish_dashboard_report" else []),
+    ]
     runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
     resolution = runtime.resolved[SKILL_ID]
     assert resolution.skill is not None and resolution.skill.scope == "builtin"
@@ -105,11 +110,46 @@ def test_main_discovers_review_and_workspace_override_wins(tmp_path: Path) -> No
         skills=[SKILL_ID],
     )
     declared = effective_declared_skills(agent, catalog)
-    assert declared == [SKILL_ID]
+    assert declared == [SKILL_ID, "present-interactive-analysis"]
     runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
     assert runtime.resolved[SKILL_ID].skill is not None
     assert runtime.resolved[SKILL_ID].skill.scope == "workspace"
     assert "Project procedure." in build_load_skill_tool(agent, runtime).func(skill_id=SKILL_ID)
+
+
+@pytest.mark.parametrize("agent_id", ["appl", "factorio", "earthscope", "custom-scientist"])
+def test_automatic_producer_roots_receive_shared_loadable_guidance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent_id: str
+) -> None:
+    """Any catalog-enabled root gets current guidance, independently of its pack name."""
+    from tests.test_gact.test_a2ui_chart_guard import _producer_session
+
+    app, sid, _ = _producer_session(tmp_path, monkeypatch)
+    agent = AgentDef(id=agent_id, title="Scientific collaborator", source="expert_pack")
+    catalog = SkillCatalog(
+        home=tmp_path / "home", cwd=tmp_path / "workspace", app=app, session_id=sid
+    )
+    declared = effective_declared_skills(agent, catalog, app=app, session_id=sid)
+    assert any(skill.startswith("a2ui-catalog-") for skill in declared)
+    assert {"present-interactive-analysis", "create-dashboard", SKILL_ID} <= set(declared)
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(declared))
+    prompt = skills_prompt_block(runtime)
+    assert "Review matching pixels at the user's viewing size" in prompt
+    tool = build_load_skill_tool(agent, runtime)
+    assert "Surface acceptance alone" in tool.func(skill_id="create-dashboard")
+    design = tool.func(skill_id="create-dashboard", file="references/report-design.md")
+    assert "Compose related evidence in one initial space" in design
+    assert "inspect the resulting image, reason, and refine" in tool.func(skill_id=SKILL_ID)
+
+
+def test_root_without_producible_catalogs_keeps_explicit_skills(tmp_path: Path) -> None:
+    """Being a custom root does not invent presentation capabilities or procedures."""
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    agent = AgentDef(id="custom", title="Text analyst", skills=["planning"])
+    assert effective_declared_skills(agent, catalog, app=app, session_id="session") == ["planning"]
 
 
 def test_annotation_example_uses_real_producer_validation(
