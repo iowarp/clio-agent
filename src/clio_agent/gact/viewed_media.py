@@ -16,6 +16,8 @@ import hashlib
 import hmac
 from pathlib import Path
 
+from clio_agent.platform_paths import win_extended_path
+
 __all__ = ["ViewedMediaUnavailable", "read_snapshot", "snapshot"]
 _MANAGED_REFERENCE = "clio-tool-output:"
 
@@ -27,7 +29,22 @@ class ViewedMediaUnavailable(ValueError):
 def _workspace_root() -> Path:
     from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
 
-    return Path(get_active_tool_workspace_root() or Path.cwd()).resolve()
+    explicit = get_active_tool_workspace_root()
+    if explicit:
+        return Path(explicit).resolve()
+    # Context folding may run outside a tool call. Its media still belongs to
+    # the session's workspace, never the server's installation directory.
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    sid = context.active_react_session() or context.active_session_id()
+    if app is not None and sid:
+        session = app.state.sessions.get(sid)
+        workspace = app.state.workspaces.get(session.workspace_id) if session else None
+        if workspace is None or not workspace.root_path:
+            raise ViewedMediaUnavailable("the session has no resolved media workspace")
+        return Path(workspace.root_path).resolve()
+    return Path.cwd().resolve()
 
 
 def snapshot(data: bytes, suffix: str) -> tuple[str, str]:
@@ -43,7 +60,8 @@ def snapshot(data: bytes, suffix: str) -> tuple[str, str]:
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"viewed-{digest[:24]}{suffix}"
     if not path.exists():
-        path.write_bytes(data)
+        with open(win_extended_path(path), "wb") as stream:
+            stream.write(data)
     if path.is_relative_to(root):
         return path.relative_to(root).as_posix(), digest
     # Canonical state lives outside the authored workspace. Bind the reference
@@ -66,7 +84,8 @@ def read_snapshot(relative: str, sha256: str) -> bytes:
     if requested.is_absolute() or not path.is_relative_to(base):
         raise ViewedMediaUnavailable("the snapshot reference escapes its workspace storage")
     try:
-        data = path.read_bytes()
+        with open(win_extended_path(path), "rb") as stream:
+            data = stream.read()
     except OSError as exc:
         raise ViewedMediaUnavailable(f"the snapshot {relative} is gone ({exc})") from exc
     if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), sha256):

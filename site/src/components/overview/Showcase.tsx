@@ -1,4 +1,5 @@
 import { ArrowRight, ChartNoAxesCombined, FileText, Layers } from 'lucide-react';
+import { useState } from 'react';
 import Capture, { type CaptureImage } from './Capture';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -18,8 +19,9 @@ const icons = { figures: ChartNoAxesCombined, documents: FileText, evidence: Lay
 
 /** Real product captures with keyboard-accessible tabs and full-size viewing. */
 export default function Showcase({ items }: { items: ShowcaseItem[] }) {
+	const [active, setActive] = useState('documents');
 	return (
-		<Tabs defaultValue="documents" className="product-showcase">
+		<Tabs value={active} onValueChange={(value) => setActive(String(value))} className="product-showcase">
 			<TabsList aria-label="Explore the CLIO workspace" activateOnFocus variant="line" className="showcase-tabs">
 				{items.map(({ id, label }) => {
 					const Icon = icons[id];
@@ -27,7 +29,7 @@ export default function Showcase({ items }: { items: ShowcaseItem[] }) {
 				})}
 			</TabsList>
 			{items.map((item) => (
-				<TabsContent key={item.id} value={item.id}>
+				<TabsContent key={item.id} value={item.id} aria-hidden={active !== item.id} inert={active !== item.id}>
 					<div className="showcase-copy">
 						<div>
 							<h2>{item.title}</h2>

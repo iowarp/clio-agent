@@ -222,7 +222,9 @@ def _supersede(app: Any, sid: str, variants_id: str, message_id: str) -> None:
                 (
                     q
                     for q in app.state.user_questions.values()
-                    if q.session_id == claimed.session_id and q.status == "pending"
+                    if q.session_id == claimed.session_id
+                    and q.status == "pending"
+                    and q.response_mode == "blocking"
                 ),
                 key=lambda q: str(q.created_at or ""),
             )

@@ -1,0 +1,60 @@
+---
+import { ArrowRight, ChartNoAxesCombined, Download, GitCompareArrows } from 'lucide-react';
+import SectionHeading from './overview/SectionHeading.astro';
+
+const guides = [
+	{
+		icon: GitCompareArrows,
+		title: 'Compare alternative answers',
+		status: 'Development preview',
+		body: 'Ask for independent drafts, inspect the criteria, and choose a result or let the model judge.',
+		href: '/docs/best-of-n/',
+		link: 'Best of N guide',
+	},
+	{
+		icon: ChartNoAxesCombined,
+		title: 'Build a connected dashboard',
+		status: 'Development preview',
+		body: 'Ask the agent to compose an interactive report with tabs, shared controls, explanations, and evidence.',
+		href: '/docs/dashboards/',
+		link: 'Dashboard guide',
+	},
+	{
+		icon: Download,
+		title: 'Share the work and its files',
+		status: 'Includes development controls',
+		body: 'Choose a readable HTML transcript or a ZIP with artifacts and workspace files. Check what travels with it.',
+		href: '/docs/exports/',
+		link: 'Exports and downloads guide',
+	},
+];
+---
+
+<section class="workflow-guides not-content" aria-labelledby="more-workflows">
+	<SectionHeading id="more-workflows" label="Explore the workflows" title="Compare, assemble," emphasis="and share." />
+	<ul>
+		{guides.map(({ icon: Icon, title, status, body, href, link }) => (
+			<li>
+				<p class="status">{status}</p>
+				<Icon size={24} aria-hidden="true" />
+				<h3>{title}</h3>
+				<p class="description">{body}</p>
+				<a href={href}>{link} <ArrowRight size={16} aria-hidden="true" /></a>
+			</li>
+		))}
+	</ul>
+</section>
+
+<style>
+	.workflow-guides { padding-block: 3rem; border-top: 1px solid var(--line); }
+	ul { display: grid; gap: 1.5rem; margin: 1.75rem 0 0; padding: 0; list-style: none; }
+	li { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding-block: 1rem; border-top: 1px solid var(--line); }
+	.status { margin: 0 0 1rem; font-size: .78rem; font-weight: 600; color: var(--muted); }
+	li :global(svg) { flex-shrink: 0; color: var(--accent); }
+	h3 { margin: .8rem 0 0; font-size: 1.15rem; line-height: 1.3; color: var(--ink); }
+	.description { flex: 1; margin: .7rem 0 1rem; font-size: .95rem; line-height: 1.6; color: var(--ink-soft); }
+	a { display: inline-flex; align-items: center; gap: .4rem; padding-block: .35rem; color: var(--accent); font-size: .9rem; font-weight: 600; text-decoration: none; }
+	a:hover { text-decoration: underline; }
+	a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: .2rem; }
+	@media (min-width: 64rem) { ul { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2rem; } }
+</style>

@@ -307,7 +307,9 @@ def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResu
     try:
         media = _media(value)
     except ValueError as exc:  # ViewImageError / ViewPdfError / ViewedMediaUnavailable
-        logger.warning("tool media unavailable reason=%s call=%s", type(exc).__name__, call_id)
+        logger.warning(
+            "tool media unavailable reason=%s call=%s detail=%s", type(exc).__name__, call_id, exc
+        )
         note = (
             f"[clio: media_unavailable] The media this call returned can no longer be shown: {exc}"
         )
@@ -317,6 +319,20 @@ def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResu
     content: tuple[Any, ...] = (
         (media,) if media is not None else (TextPart(text=_observation_text(value)),)
     )
+    if media is not None and isinstance(value, Mapping) and value.get("capture"):
+        # Pixels remain ephemeral provider media; their compact, exact provenance
+        # must also reach the model instead of being lost during hydration.
+        content += (
+            TextPart(
+                text=_observation_text(
+                    {
+                        key: item
+                        for key, item in value.items()
+                        if key not in {"snapshot", "snapshot_sha256"}
+                    }
+                )
+            ),
+        )
     return ToolResultPart(id=call_id, content=content, name=name, is_error=is_error)
 
 

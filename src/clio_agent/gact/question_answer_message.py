@@ -23,7 +23,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Part
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,9 @@ __all__ = [
     "ANSWERS_QUESTION_KEY",
     "QuestionAnswerMessage",
     "prepare_question_answer",
+    "prepare_queued_question_answer",
     "settle_question_answer",
+    "settle_queued_question_answer",
 ]
 
 #: Client metadata key on ``POST /messages``: the question this message answers.
@@ -57,7 +59,7 @@ def _refuse(status_code: int, error: str, message: str, **details: Any) -> HTTPE
 
 
 def prepare_question_answer(
-    app: Any, sid: str, metadata: dict[str, Any]
+    app: Any, sid: str, metadata: dict[str, Any], *, queued: bool = False
 ) -> QuestionAnswerMessage | None:
     """Validate the question a message answers; ``None`` for an ordinary message.
 
@@ -87,6 +89,14 @@ def prepare_question_answer(
             question_id=question_id,
             status=question.status,
         )
+    if question.response_mode == "async" and not queued:
+        raise _refuse(
+            422,
+            "async_question_needs_queue",
+            "Send this answer through the message queue so the agent can keep working.",
+            session_id=sid,
+            question_id=question.id,
+        )
     if (question.metadata or {}).get("variants_id"):
         # A drafts pick names one draft (selected_options), which a message cannot
         # carry: it is answered through the answer route, the message text its comment.
@@ -112,11 +122,42 @@ def prepare_question_answer(
     )
 
 
-def _attachments(message: Any) -> list[dict[str, str]]:
+def prepare_queued_question_answer(
+    app: Any, sid: str, metadata: dict[str, Any]
+) -> QuestionAnswerMessage | None:
+    """Validate a composer answer that must join the ordinary future-message queue."""
+    from clio_agent.gact.messaging import RESERVED_CLIENT_METADATA_KEYS, raise_on_reserved_metadata
+
+    raise_on_reserved_metadata(sid, metadata)
+    answer = prepare_question_answer(app, sid, metadata, queued=True)
+    if answer is None:
+        return None
+    question = app.state.user_questions[answer.question_id]
+    if question.response_mode != "async":
+        raise _refuse(
+            422,
+            "blocking_question_needs_answer",
+            "Answer this question now to continue the paused work.",
+            session_id=sid,
+            question_id=question.id,
+        )
+    return QuestionAnswerMessage(
+        question_id=answer.question_id,
+        model_text_prefix=answer.model_text_prefix,
+        metadata={
+            key: value
+            for key, value in answer.metadata.items()
+            if key not in RESERVED_CLIENT_METADATA_KEYS
+        }
+        | {"question_response_mode": "async"},
+    )
+
+
+def _attachments(parts: list[Part]) -> list[dict[str, str]]:
     """The non-text parts a person attached, as display rows for the record."""
 
     rows: list[dict[str, str]] = []
-    for part in getattr(message, "parts", None) or []:
+    for part in parts:
         if part.type == "text":
             continue
         rows.append(
@@ -135,15 +176,32 @@ def settle_question_answer(
 ) -> None:
     """Mark the question answered by the accepted message (its turn is the resume)."""
 
-    from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
-    from clio_agent.gact.events import Event  # noqa: PLC0415
-    from clio_agent.gact.user_question_resume import settled_question_metadata  # noqa: PLC0415
-
     message = next((row for row in app.state.messages.get(sid, []) if row.id == message_id), None)
-    text = "\n".join(
-        part.text for part in (getattr(message, "parts", None) or []) if part.type == "text"
-    ).strip()
-    attachments = _attachments(message)
+    _settle_answer(app, sid, answer, message_id, getattr(message, "parts", None) or [])
+
+
+def settle_queued_question_answer(
+    app: Any, sid: str, answer: QuestionAnswerMessage, message_id: str, parts: list[Part]
+) -> None:
+    """Settle an async answer only after its files and references are safely queued."""
+    _settle_answer(app, sid, answer, message_id, parts, queued=True)
+
+
+def _settle_answer(
+    app: Any,
+    sid: str,
+    answer: QuestionAnswerMessage,
+    message_id: str,
+    parts: list[Part],
+    *,
+    queued: bool = False,
+) -> None:
+    from clio_agent.gact.elicitation_bridge import claim_question_transition
+    from clio_agent.gact.events import Event
+    from clio_agent.gact.user_question_resume import settled_question_metadata
+
+    text = "\n".join(part.text for part in parts if part.type == "text").strip()
+    attachments = _attachments(parts)
     updated = claim_question_transition(
         app,
         answer.question_id,
@@ -151,9 +209,10 @@ def settle_question_answer(
         answer=text,
         answer_metadata={
             **({"attachments": attachments} if attachments else {}),
-            "answer_message_id": message_id,
+            "queued_message_id" if queued else "answer_message_id": message_id,
         },
         answered_by="human",
+        answer_already_delivered=True,
     )
     if updated is None:
         # A concurrent answer or dismissal won; the message still reached the agent

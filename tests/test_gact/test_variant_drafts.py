@@ -221,6 +221,8 @@ def test_lm_judged_drafts_run_at_once_and_bestofn_keeps_the_highest_reward(world
         assert not any(d in t for t in seen for d in ("Draft A", "Draft B", "Draft C"))
     # selection by reward: the judge scored every try (no threshold reached), 0.9 won
     assert len(engine.by_scope[""]) == 3
+    assert "Evaluate ONE candidate independently" in engine.by_scope[""][0].system
+    assert "Do not penalize a candidate for containing only one" in engine.by_scope[""][0].system
     # the winner's line continues the conversation: one question, its answer, no drafts call
     assert _line(world.arc, world.sid) == [("user", ASK), ("assistant", "Draft B")]
     [record] = preference_records(world.app, world.sid)
@@ -415,6 +417,61 @@ def test_n_is_capped_by_config(world: World, monkeypatch: pytest.MonkeyPatch) ->
     assert RUN2 not in engine.by_scope
     [note] = [e.payload for e in world.events if e.event_type == "variant.try"][:1]
     assert note["n"] == 2
+    assert note["rubric"] == "clear and polite"
+
+
+def test_five_poems_are_five_single_candidate_attempts(world: World) -> None:
+    """A plural request stays intact, while every real try receives a singular boundary."""
+    question = "Make drafts with the tool of 5 different poems for a friend."
+    script = {SCOPE: [_draft(5)]}
+    for index in range(5):
+        script[f"{SCOPE}#run{index}"] = [Reply(text=f"Poem {index + 1}")]
+    lm, engine = routed_lm(script)
+    _forward(world.app, world.sid, lm, question, "turn_poems")
+    run = load_run(world.app, world.sid, _only_run(world))
+    assert run.n == run.n_requested == len(run.tries) == 5
+    for index in range(5):
+        [request] = engine.by_scope[f"{SCOPE}#run{index}"]
+        assert "Return exactly one complete draft" in request.system
+        assert question in _texts(request)
+        assert run.try_at(index).text == f"Poem {index + 1}"
+
+
+def test_planning_deltas_are_reasoning_instead_of_candidate_content(world: World) -> None:
+    """Native planner text and provider reasoning stay off the draft's text lane."""
+    from clio_agent.gact.agents.variant_events import _delta_emitter
+    from clio_agent.gact.agents.variant_records import VariantRun
+
+    tokens = _bind(world.app, world.sid, "turn_deltas")
+    try:
+        run = VariantRun(
+            variants_id="var_deltas",
+            session_id=world.sid,
+            agent_id=SCOPE,
+            turn_id="turn_deltas",
+            origin="draft_alternatives",
+            strategy="best_of_n",
+            judge="user",
+            n=2,
+            n_requested=2,
+            rubric="one poem",
+        )
+        emit = _delta_emitter(run, 0)
+
+        async def stream() -> None:
+            for field in ("next_thought", "reasoning", "provider_thinking:model", "answer"):
+                await emit(field, SCOPE, field)
+
+        asyncio.run(stream())
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+    assert [(row["kind"], row["delta"]) for row in _variant_events(world, "variant.try.delta")] == [
+        ("thinking", "next_thought"),
+        ("thinking", "reasoning"),
+        ("thinking", "provider_thinking:model"),
+        ("text", "answer"),
+    ]
 
 
 def test_a_drafts_answer_must_pick_exactly_one(world: World) -> None:

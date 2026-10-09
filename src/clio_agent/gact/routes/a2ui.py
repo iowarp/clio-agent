@@ -19,6 +19,7 @@ from clio_agent.gact.a2ui_catalogs.routes.a2ui_capabilities import register_a2ui
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_catalogs import register_a2ui_catalog_routes
 from clio_agent.gact.protocol_v3 import A2UI_V091
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.a2ui_visual import register_a2ui_visual_routes
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -36,6 +37,8 @@ def _error(status: int, code: str, message: str, *, recoverable: bool = False) -
 
 def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register A2UI routes against the app's persistent surface store."""
+
+    register_a2ui_visual_routes(app)
 
     def require_session(sid: str) -> Any:
         sess = app.state.sessions.get(sid)

@@ -43,11 +43,13 @@ that as ``a2ui_validation_failed``, so this module never duplicates it.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.a2ui_producer._refusal import refusal
+from clio_agent.platform_paths import win_extended_path
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -103,7 +105,7 @@ def _validate_mesh_source(
     """Check a mesh's declared or recognizable format before a client loads it."""
 
     try:
-        with path.open("rb") as stream:
+        with open(win_extended_path(path), "rb") as stream:
             head = stream.read(512)
     except OSError as exc:
         return refusal(
@@ -154,7 +156,7 @@ def _validate_mesh_source(
         )
     if chosen in {"glb", "gltf"}:
         try:
-            with path.open("rb") as stream:
+            with open(win_extended_path(path), "rb") as stream:
                 if chosen == "glb":
                     header = stream.read(20)
                     if len(header) != 20 or header[:4] != b"glTF" or header[16:20] != b"JSON":
@@ -164,7 +166,7 @@ def _validate_mesh_source(
                         raise ValueError("GLB JSON chunk exceeds the 8 MiB metadata limit")
                     document = json.loads(stream.read(json_size))
                 else:
-                    if path.stat().st_size > 8 * 1024 * 1024:
+                    if os.stat(win_extended_path(path)).st_size > 8 * 1024 * 1024:
                         raise ValueError("glTF JSON exceeds the 8 MiB metadata limit")
                     document = json.load(stream)
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
@@ -412,7 +414,7 @@ def _read_text_streaming(path: Path) -> str:
 
     decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
     parts: list[str] = []
-    with path.open("rb") as handle:
+    with open(win_extended_path(path), "rb") as handle:
         while True:
             chunk = handle.read(_STREAM_CHUNK_BYTES)
             if not chunk:
@@ -435,7 +437,7 @@ def _check_text_readable_streaming(path: Path) -> None:
     import codecs  # noqa: PLC0415
 
     decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
-    with path.open("rb") as handle:
+    with open(win_extended_path(path), "rb") as handle:
         while True:
             chunk = handle.read(_STREAM_CHUNK_BYTES)
             if not chunk:
@@ -615,7 +617,7 @@ def validate_component_data_references(
                     return material
                 _, material_path = material
                 try:
-                    with material_path.open("rb") as stream:
+                    with open(win_extended_path(material_path), "rb") as stream:
                         material_text = stream.read(65536).decode("utf-8")
                 except (OSError, UnicodeError) as exc:
                     return refusal(

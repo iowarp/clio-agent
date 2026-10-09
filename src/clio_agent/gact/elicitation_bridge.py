@@ -185,6 +185,7 @@ def claim_question_transition(
     answer_metadata: Mapping[str, Any] | None = None,
     answered_by: str = "",
     metadata_patch: Mapping[str, Any] | None = None,
+    answer_already_delivered: bool = False,
 ) -> UserQuestion | None:
     """Atomically transition a PENDING question to ``new_status`` (first-wins).
 
@@ -195,6 +196,9 @@ def claim_question_transition(
     when THIS caller made the ``pending`` -> ``new_status`` transition; ``None`` when
     the question is absent or already non-pending (the loser). Answer fields apply
     inside the same lock, so a timeout cannot overwrite an accepted answer (or v.v.).
+
+    ``answer_already_delivered`` is server-only: composer acceptance has already
+    saved the answer's message or queue entry. Client metadata never bypasses delivery.
 
     ``answered_by`` (#1309, C1-S7) is the agent-driven-elicitation attribution:
     empty (the default) leaves :attr:`UserQuestion.answered_by` at its
@@ -221,6 +225,23 @@ def claim_question_transition(
         if metadata_patch:
             update["metadata"] = {**row.metadata, **metadata_patch}
         updated = row.model_copy(update=update)
+        if (
+            new_status == "answered"
+            and row.response_mode == "async"
+            and not answer_already_delivered
+        ):
+            from clio_agent.gact.async_user_question import queue_async_answer
+
+            answer_metadata = dict(updated.answer_metadata)
+            answer_metadata.pop("answer_message_id", None)
+            answer_metadata.pop("queued_message_id", None)
+            updated = updated.model_copy(update={"answer_metadata": answer_metadata})
+            queued_id = queue_async_answer(app, updated)
+            updated = updated.model_copy(
+                update={
+                    "answer_metadata": {**updated.answer_metadata, "queued_message_id": queued_id}
+                }
+            )
         record_user_question(app, updated)
     # The ONE serialization point is also the one place the armed expiry timer is
     # released, so no settled question leaves a live timer behind (outside the lock).

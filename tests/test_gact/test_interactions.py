@@ -152,7 +152,10 @@ def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
 def _root_and_child(app: object) -> tuple[str, str]:
     root = app.state.sessions.create(workspace_id="ws_default", title="root")
     child = app.state.sessions.create(
-        workspace_id="ws_default", title="child", parent_session_id=root.id
+        workspace_id="ws_default",
+        title="child",
+        parent_session_id=root.id,
+        agent={"id": "child", "mode": "subagent"},
     )
     app.state.agent_task_registry.register(
         AgentTask(

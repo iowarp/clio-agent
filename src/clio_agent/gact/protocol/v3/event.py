@@ -172,6 +172,7 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
         "name": str(payload.get("tool") or "Tool"),
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "running",
+        "started_at": str(payload.get("started_at") or event.occurred_at),
         "input": payload.get("args"),
         **(
             {"presentation": payload["presentation"]}
@@ -228,6 +229,7 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
         "name": str(payload.get("tool") or "Tool"),
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "succeeded" if ok else "failed",
+        "completed_at": str(payload.get("completed_at") or event.occurred_at),
         "output": payload.get("result"),
         **(
             {

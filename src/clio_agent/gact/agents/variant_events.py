@@ -73,6 +73,7 @@ def _run_payload(run: VariantRun) -> dict[str, Any]:
         "strategy": run.strategy,
         "judge": run.judge,
         "n": run.n,
+        "rubric": run.rubric,
     }
 
 
@@ -168,7 +169,7 @@ def _delta_emitter(run: VariantRun, try_index: int) -> Any:
 
         if app is None or not sid or not text:
             return
-        thinking = field.startswith("provider_thinking:")
+        thinking = field in {"reasoning", "next_thought"} or field.startswith("provider_thinking:")
         _emit_semantic_event(
             app,
             sid,

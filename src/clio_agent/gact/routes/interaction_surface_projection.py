@@ -1,7 +1,20 @@
 """Read actions from folded A2UI surfaces for the interaction projection."""
 
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+
+
+def _task_id_for_owner(app: "FastAPI", owner: str) -> str:
+    """Return the newest registered agent task belonging to this session."""
+    registry = getattr(app.state, "agent_task_registry", None)
+    if registry is None:
+        return ""
+    tasks = [task for task in registry.snapshot() if task.child_session_id == owner]
+    tasks.sort(key=lambda task: task.created_at, reverse=True)
+    return tasks[0].task_id if tasks else ""
 
 
 def _surface_actions(surface: Mapping[str, Any]) -> list[str]:

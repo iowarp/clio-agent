@@ -13,7 +13,7 @@ import zipfile
 from typing import Any
 
 from clio_agent.gact.session_export_document import document_body
-from clio_agent.gact.session_export_viewer import write_archive_review
+from clio_agent.gact.session_export_viewer import _page, write_archive_review
 
 
 def recorded_work() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -158,3 +158,15 @@ def test_workspace_media_redirect_uses_captured_bytes_without_reading_originals(
     rendered = document_body(transcript, manifest, snapshot)
     assert 'id="saved-images"' in rendered
     assert "data:image/png;base64,iVBORcaptured" in rendered
+
+
+def test_interactive_archive_allows_embedded_mesh_fetches_without_network_access() -> None:
+    rendered = html.unescape(_page("Mesh", "<main></main>", scripts=("void 0;",)))
+    match = re.search(r'http-equiv="Content-Security-Policy" content="([^"]+)"', rendered)
+    assert match is not None
+    directives = dict(entry.strip().split(" ", 1) for entry in match[1].split(";"))
+    assert directives["connect-src"].split() == ["blob:", "data:"]
+    assert directives["default-src"] == "'none'"
+    assert directives["script-src"].startswith("'sha256-")
+    # The script-free fallback has no reason to fetch even embedded buffers.
+    assert "connect-src 'none'" in html.unescape(_page("Mesh", "<main></main>"))

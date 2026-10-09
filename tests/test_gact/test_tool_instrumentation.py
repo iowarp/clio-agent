@@ -542,7 +542,9 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
         agent_def = SimpleNamespace(id="tester")
         auto_tools = {
             t.name: t
-            for t in instrument_tools(build_auto_react_tools(agent_def, a2ui_producers=True))
+            for t in instrument_tools(
+                build_auto_react_tools(agent_def, a2ui_producers=True, supports_vision=True)
+            )
         }
         # The A2UI producer triad (S4) needs a real client-capabilities
         # advertisement to select a catalog at all; advertise the builtin
@@ -609,6 +611,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             },
             "delete_a2ui_surface": {"surface_id": "test-surface"},
             "inspect_a2ui_surface": {},
+            "capture_a2ui_surface": {"surface_id": "test-surface", "expected_revision": 1},
+            "publish_dashboard_report": {"definition_path": "missing-dashboard.json"},
             "get_weather_forecast": {"location": ""},
             # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
             # (this harness's agent_def has no parent_id, so it qualifies).

@@ -1,0 +1,37 @@
+{
+  "id": "root",
+  "component": "clio.chart.v1",
+  "title": "Synthetic observation to inspect",
+  "data": [
+    {"id": "a", "x": 1, "y": 2},
+    {"id": "b", "x": 2, "y": 4},
+    {"id": "c", "x": 3, "y": 6},
+    {"id": "d", "x": 4, "y": 12}
+  ],
+  "spec": {
+    "data": {"name": "source"},
+    "encoding": {
+      "x": {"field": "x", "type": "quantitative"},
+      "y": {"field": "y", "type": "quantitative"}
+    },
+    "layer": [
+      {"mark": {"type": "point", "filled": true}},
+      {
+        "transform": [{"filter": {"field": "id", "equal": "d"}}],
+        "mark": {
+          "type": "point",
+          "shape": "circle",
+          "filled": false,
+          "color": "#dc2626",
+          "strokeWidth": 3,
+          "size": 900
+        }
+      },
+      {
+        "transform": [{"filter": {"field": "id", "equal": "d"}}],
+        "mark": {"type": "text", "dy": -24, "color": "#dc2626"},
+        "encoding": {"text": {"value": "Inspect this observation"}}
+      }
+    ]
+  }
+}

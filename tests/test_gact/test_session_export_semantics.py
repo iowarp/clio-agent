@@ -423,7 +423,7 @@ def test_visual_bootstrap_preserves_text_without_executable_interpolation(
                 )
             import html as html_module
 
-            assert "connect-src 'none'" in html_module.unescape(html)
+            assert "connect-src blob: data:" in html_module.unescape(html)
             assert "script-src 'sha256-" in html_module.unescape(html)
     finally:
         path.unlink()
