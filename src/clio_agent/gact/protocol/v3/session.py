@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.session_defaults import session_effort
+from clio_agent.gact.session_kind import session_kind
 
 _SESSION_STATE = {
     "idle": "completed",
@@ -48,6 +49,7 @@ def session_to_v3(session: Any) -> dict[str, Any]:
         "message_count": message_count,
         "pinned": bool(metadata.get("pinned", False)),
         "archived": bool(getattr(session, "archived", False)),
+        "session_kind": session_kind(session),
     }
     # Usage rollup — absent (not even null) until the session has actually
     # exchanged a message, matching this projection's missing-vs-null

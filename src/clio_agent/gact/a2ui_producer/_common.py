@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -27,6 +28,7 @@ from clio_agent.gact.a2ui import (
 from clio_agent.gact.a2ui_component_fold import upsert_components_by_id
 from clio_agent.gact.a2ui_producer import _emit
 from clio_agent.gact.a2ui_producer._refusal import catalog_hint, component_hint, refusal
+from clio_agent.gact.a2ui_store import A2UIRevisionConflictError
 
 if TYPE_CHECKING:
     from clio_agent.gact.a2ui_store import A2UIBatchOutcome
@@ -117,6 +119,11 @@ def component_tree_error(components: list[dict[str, Any]]) -> str | None:
         child = component.get("child")
         if isinstance(child, str):
             pending.append(child)
+        if component.get("component") == "Modal":
+            for slot in ("trigger", "content"):
+                reference = component.get(slot)
+                if isinstance(reference, str):
+                    pending.append(reference)
         children = component.get("children")
         if isinstance(children, list):
             pending.extend(value for value in children if isinstance(value, str))
@@ -155,6 +162,7 @@ def apply_messages(
     *,
     catalog_id: str,
     part_id: str = "",
+    expected_revisions: Mapping[str, int] | None = None,
 ) -> "A2UIBatchOutcome | dict[str, Any]":
     """Apply one ordered batch, translating every typed A2UI error into a refusal.
 
@@ -171,8 +179,14 @@ def apply_messages(
 
     try:
         return app.state.a2ui_store.apply_batch_outcome(
-            session_id, messages, part_id=minted_part_id, persist_part=persist_part
+            session_id,
+            messages,
+            part_id=minted_part_id,
+            persist_part=persist_part,
+            expected_revisions=expected_revisions,
         )
+    except A2UIRevisionConflictError as exc:
+        return refusal("a2ui_view_stale", detail=str(exc))
     except A2UITranscriptFrozenError:
         # The batch was valid but the turn's ledger is already settled, so
         # nothing was persisted or published: report the typed reason rather

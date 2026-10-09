@@ -471,11 +471,12 @@ jobs:
           // 20,000+ File/Delete instructions for the Python distribution.
           // Other platforms retain their existing exploded resource layout.
           if (variant === "bundled" && process.env.RUNNER_OS === "Windows") {
-            config.bundle ??= {};
-            config.bundle.resources = [
-              "gact-runtime.tar.zst",
-              "gact-runtime.pack.json",
-            ];
+            // Keep payload layout and outer compression owned by the pinned
+            // UI's shared Windows-pack overlay, including future optimizations.
+            const windowsPack = JSON.parse(fs.readFileSync(
+              "desktop/src-tauri/tauri.bundled.windows-pack.conf.json", "utf8",
+            ));
+            config.bundle = merge(config.bundle ?? {}, windowsPack.bundle);
           }
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.

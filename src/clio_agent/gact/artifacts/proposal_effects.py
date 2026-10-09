@@ -100,6 +100,7 @@ def _emit_proposal_event(
                 "name": outcome.name,
                 "kind": proposal.kind,
                 "annotation": proposal.annotation,
+                "purpose": proposal.purpose,
                 "accepted": outcome.accepted,
                 "created": outcome.created,
                 "reason": outcome.reason,

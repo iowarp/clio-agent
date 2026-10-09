@@ -35,6 +35,7 @@ from clio_agent.providers.model_discovery.claude_code_catalog import (
     ClaudeCodeCatalogError,
     refresh_claude_code_catalog,
 )
+from clio_agent.providers.model_discovery.claude_code_compatibility import models_for_client
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
@@ -205,9 +206,16 @@ def discover_claude_code(
     # Per-model effort levels come from the CLI's own model catalog (one SDK
     # initialize read, no model turn); the maintained catalog still decides
     # which models exist.
+    models = catalog.models
+    waiting: list[dict[str, str]] = []
+    if any(model.get("minimum_client_version") for model in models):
+        from clio_agent.providers.components.client_binary import claude_client  # noqa: PLC0415
+
+        selected = claude_client().client
+        models, waiting = models_for_client(models, selected.version if selected else "")
     cli_models, effort_failure = claude_code_effort.read_cli_model_catalog()
     rows = claude_code_effort.attach_effort_levels(
-        [dict(model) for model in catalog.models], cli_models, effort_failure
+        [dict(model) for model in models], cli_models, effort_failure
     )
     discovered = attach_context_limits(rows, "claude_code")
     return ProviderDiscoveryResult(
@@ -216,6 +224,7 @@ def discover_claude_code(
         source=CLAUDE_CODE_SOURCE,
         default_model=catalog.default_model,
         default_model_reason=catalog.default_model_reason,
+        rejected=waiting,
     )
 
 

@@ -293,7 +293,7 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
         _record_declaration(seen, tool)
     for tool_name in main.tools:
         seen.setdefault(tool_name, (tool_name, tool_name.replace("_", " ").title(), "", None))
-    for tool in build_auto_react_tools(main, a2ui_producers=True):
+    for tool in build_auto_react_tools(main, a2ui_producers=True, supports_vision=True):
         _record_declaration(seen, tool)
     for tool in assemble_spawn_runtime_tools(
         main,

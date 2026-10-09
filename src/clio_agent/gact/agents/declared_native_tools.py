@@ -6,9 +6,11 @@ from collections.abc import Callable
 from typing import Any
 
 from clio_agent.gact.a2ui_producer import (
+    build_capture_a2ui_surface_tool,
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
     build_inspect_a2ui_surface_tool,
+    build_publish_dashboard_report_tool,
     build_update_a2ui_components_tool,
     build_update_a2ui_data_model_tool,
 )
@@ -39,6 +41,8 @@ DECLARABLE_NATIVE_TOOLS: frozenset[str] = frozenset(
         "update_a2ui_data_model",
         "delete_a2ui_surface",
         "inspect_a2ui_surface",
+        "capture_a2ui_surface",
+        "publish_dashboard_report",
         "memory_search_sessions",
         "memory_read_session_summary",
         "memory_read_context_frame",
@@ -130,7 +134,8 @@ def resolve_declared_native_tools(
     requested = [
         name
         for name in declared
-        if (name != "view_image" or supports_vision) and (name != "view_pdf" or supports_pdf)
+        if (name not in {"view_image", "capture_a2ui_surface"} or supports_vision)
+        and (name != "view_pdf" or supports_pdf)
     ]
     available: dict[str, Any] = {}
     builders: dict[str, Callable[[], Any]] = {
@@ -143,6 +148,8 @@ def resolve_declared_native_tools(
         "update_a2ui_data_model": build_update_a2ui_data_model_tool,
         "delete_a2ui_surface": build_delete_a2ui_surface_tool,
         "inspect_a2ui_surface": build_inspect_a2ui_surface_tool,
+        "capture_a2ui_surface": build_capture_a2ui_surface_tool,
+        "publish_dashboard_report": build_publish_dashboard_report_tool,
         "memory_search_sessions": lambda: build_memory_search_tool(agent_def),
         "memory_read_session_summary": lambda: build_memory_summary_tool(agent_def),
         "memory_read_context_frame": lambda: build_memory_context_frame_tool(agent_def),

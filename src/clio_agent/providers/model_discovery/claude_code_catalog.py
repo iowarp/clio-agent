@@ -147,6 +147,16 @@ def _parse_catalog(payload: bytes) -> ClaudeCodeCatalog:
             "capabilities": capabilities,
             "capability_evidence": evidence,
         }
+        minimum_client = row.get("minimum_client_version")
+        if minimum_client is not None:
+            if not isinstance(minimum_client, str) or not re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+", minimum_client
+            ):
+                raise ClaudeCodeCatalogError(
+                    f"Claude Code model catalog has an invalid minimum_client_version "
+                    f"for {model_id!r}"
+                )
+            candidate["minimum_client_version"] = minimum_client
         shipped_default = row.get("shipped_default_effort")
         if shipped_default is not None:
             if not isinstance(shipped_default, str) or shipped_default not in THINKING_LEVELS:

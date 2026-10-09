@@ -1,0 +1,100 @@
+---
+title: Exports and downloads
+description: Save a file or dashboard, export a self-contained session, and choose whether to include artifacts or the workspace.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import WidgetRecording from '../../../components/WidgetRecording.astro';
+
+Choose how much of the work to send. A file download saves one output. A dashboard
+export saves one presentation. A session export includes the conversation and
+recorded activity, with optional artifacts and workspace files.
+
+## Choose the scope
+
+| What you need | What to save | What it preserves |
+|---|---|---|
+| One original or editable output | **Download file** in its viewer. | The file's bytes, such as a Word document, PDF, image, or dataset. |
+| One displayed visual | The view's image export, where supported. | An image of the displayed view; it does not retain interactive controls. |
+| One connected dashboard | **HTML** in the dashboard viewer, in the development build. | The report, tabs, supported interactions, and captured data. |
+| The recorded conversation | Transcript HTML. | The conversation, activity, embedded viewer resources, and supported saved views. |
+| The conversation and its files | Session export with artifacts. | A ZIP containing the review plus the session's referenced and produced artifacts and recorded inputs. |
+| The investigation and workspace | Session export with workspace files. | The artifact export plus a current snapshot of registered workspace folders. |
+
+Downloading an original and converting it are separate actions. For example, keep
+the editable document when you need to revise it; use its PDF preview or PDF
+export when you need a rendered copy. See [Working with files](/docs/working-with-files/).
+
+## Export a session
+
+<Steps>
+
+1. Open the session's sidebar menu and choose **Export session**.
+
+2. Choose the scope. Transcript-only exports use HTML. Adding session artifacts
+   or workspace files changes the download to ZIP.
+
+3. Download the result. Send the HTML directly, or extract the ZIP and open
+   **index.html** while keeping the extracted folder together.
+
+</Steps>
+
+The controls differ by build:
+
+| Scope | Earlier menu | Development menu |
+|---|---|---|
+| Transcript only | Transcript HTML | Leave both checkboxes clear; **Download HTML**. |
+| Include session files | Effects | **Include session artifacts**; **Download ZIP**. |
+| Include the workspace | Full | **Include workspace files** also checks artifacts; **Download ZIP**. |
+
+<Aside type="note" title="Development controls">
+The named checkboxes, automatic Downloads reveal, and saved dashboard workflow
+are not included in beta 5.2. Transcript, Effects, and Full describe the existing
+export scopes. Older recordings and installed builds may use those labels.
+</Aside>
+
+Artifact inclusion follows this session and its child agents, rather than every
+session in the workspace. Workspace inclusion also captures the workspace's other
+files as they exist at export time, and can make the archive much larger.
+
+## Inspect the saved result
+
+<WidgetRecording name="clio-session-export" title="Read and inspect an exported session" caption="Real Opal 1 exports: expand Activity, inspect saved skill instructions and command results, open a saved plot, and find included files." formatLabel="Screenshot walkthrough" timingNote="Five actual archive states with reading pauses; this is an explanation made from screenshots, not a continuous interaction recording." />
+
+The recipient can read the review without CLIO running. **Activity** shows the
+recorded calls and results. **Files** lists included inputs and outputs.
+**Evidence & skills** reports recording coverage and uncaptured dependencies.
+Supported saved views retain their captured interactions; no tool call is rerun
+when the recipient inspects it.
+
+Exports preserve the recorded content. They do not recreate external services or
+the installed execution environment. Missing historical artifact versions or
+skill bodies are reported explicitly. Check that coverage before treating an
+archive as a complete reproduction package.
+
+See [Sessions and modes](/docs/sessions/#export-a-session-for-someone-else) for the
+full export contents and the distinction between importing history and restoring
+a workspace.
+
+## Find a completed download
+
+HTML and ZIP session exports both count as downloads. In the development desktop
+build, the header's **Downloads** button opens the native history on Windows;
+on macOS and Linux it opens the Downloads folder. Native transfers reveal that
+location automatically. Opening the downloaded file itself remains your choice.
+
+In a regular browser, use the browser's downloads controls. Saving a file does
+not launch an associated desktop program automatically.
+
+## Keep answers clear and evidence available
+
+In the development build, an updated artifact appears once in the response at
+its latest deliverable version. Intermediate files and review images stay
+available in the evidence and version views. If you explicitly request a PNG,
+PDF, or other file, it remains a deliverable; its format does not make it
+intermediate evidence.
+
+<CardGrid>
+	<LinkCard title="Dashboards" description="Author and revise one connected interactive report." href="/docs/dashboards/" />
+	<LinkCard title="Memory and evidence" description="Inspect artifact versions, lineage, and recorded activity." href="/docs/memory-and-evidence/" />
+</CardGrid>

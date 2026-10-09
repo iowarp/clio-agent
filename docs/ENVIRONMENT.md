@@ -314,7 +314,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/tools/mcp_result_projection.py` |
 | `CLIO_TRANSCRIPT_FILE` | `transcript.file` | bool | `true` | `src/clio_agent/gact/transcript_file.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
-| `CLIO_VARIANTS_MAX_N` | `variants.max_n` | int | `4` | `src/clio_agent/gact/agents/variant_drafts.py` |
+| `CLIO_VARIANTS_MAX_N` | `variants.max_n` | int | `8` | `src/clio_agent/gact/agents/variant_drafts.py` |
 | `CLIO_VIEW_PDF_MAX_PAGES` | `limits.view_pdf_max_pages` | int | `100` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_VIEW_PDF_SOURCE_MAX_BYTES` | `limits.view_pdf_source_max_bytes` | int | `536870912` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |

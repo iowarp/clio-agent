@@ -1,9 +1,9 @@
 """Resume ordinary ask-user turns after an authoritative answer.
 
 Every answer reaches the agent (#1448): an answer resumes the agent with that
-answer, even while other questions are still pending. When a turn is already
-running (for example the resume of an earlier answer), the answer is delivered
-into it as a steer instead, so no answer is ever left unconsumed.
+answer, even while other questions are still pending. Blocking answers resume
+or steer the owning turn. Async answers join the composer's ordinary FIFO and
+wait until current work and blocking questions finish.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
+from clio_agent.gact.types import UserQuestion
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,10 @@ def settled_question_metadata(app: Any, sid: str, question: Any) -> dict[str, An
         (
             row
             for row in app.state.user_questions.values()
-            if row.session_id == sid and row.status == "pending" and row.id != question.id
+            if row.session_id == sid
+            and row.status == "pending"
+            and row.id != question.id
+            and row.response_mode == "blocking"
         ),
         key=lambda row: str(row.created_at or ""),
     )
@@ -44,7 +48,7 @@ def settled_question_metadata(app: Any, sid: str, question: Any) -> dict[str, An
     ):
         patch["pending_ask_user"] = {
             **pending_ask,
-            "resolved_status": "answered",
+            "resolved_status": question.status,
             "resolved_at": question.updated_at,
         }
     return patch
@@ -70,6 +74,18 @@ def resume_answered_question(
     session = app.state.sessions.get(sid)
     should_resume = bool(question.metadata.get("resume_on_answer")) and session is not None
     metadata_patch = settled_question_metadata(app, sid, question)
+    if question.response_mode == "async":
+        from clio_agent.gact.composer_runtime import promote_queue_head
+
+        app.state.sessions.update(sid, metadata_patch=metadata_patch)
+        queued_id = question.answer_metadata.get("queued_message_id")
+        queued = app.state.message_intents.get_queued(sid, queued_id) if queued_id else None
+        if queued is not None:
+            app.state.bus.publish(
+                Event(type="queued_message.created", session_id=sid, payload=queued.model_dump())
+            )
+            promote_queue_head(app, deps, sid)
+        return
     resume_metadata = {
         "ask_user_question_id": question.id,
         "ask_user_prompt": question.prompt,
@@ -144,4 +160,40 @@ def resume_answered_question(
     )
 
 
-__all__ = ["resume_answered_question", "settled_question_metadata"]
+async def finish_cancelled_question(
+    app: Any,
+    sid: str,
+    question: UserQuestion,
+    *,
+    set_session_status: Callable[..., None],
+) -> None:
+    """Settle cancellation ownership and release the ordinary message queue."""
+    from clio_agent.gact.elicitation_forwarding import resolve_cancelled_question
+    from clio_agent.gact.routes.session_question_helpers import pending_user_questions
+
+    metadata_patch = settled_question_metadata(app, sid, question)
+    app.state.sessions.update(sid, metadata_patch=metadata_patch)
+    # Forwarded elicitation resolves down; async cancellation never pauses work.
+    if (
+        not await resolve_cancelled_question(app, question)
+        and not any(q.response_mode == "blocking" for q in pending_user_questions(app, sid))
+        and question.response_mode == "blocking"
+    ):
+        session = app.state.sessions.get(sid)
+        set_session_status(
+            sid,
+            "idle",
+            prev_status=session.status if session is not None else "waiting_user",
+            metadata_patch=metadata_patch,
+        )
+    app.state.bus.publish(
+        Event(
+            type="user_question.cancelled",
+            session_id=sid,
+            payload=question.model_dump(exclude_none=True),
+        )
+    )
+    app.state.redrive_message_queue(sid)
+
+
+__all__ = ["finish_cancelled_question", "resume_answered_question", "settled_question_metadata"]

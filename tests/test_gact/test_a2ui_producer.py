@@ -119,12 +119,23 @@ def test_inspect_surface_finds_prior_turn_definition(tmp_path: Path, monkeypatch
     create = build_create_a2ui_surface_tool()
     inspect = build_inspect_a2ui_surface_tool()
     component = {"id": "root", "component": "Text", "text": "Original"}
-    create(surface_id="recipe", components=[component])
+    create(surface_id="recipe", components=[component], data_model={"selected": "original"})
+    build_update_a2ui_data_model_tool()(surface_id="recipe", path="/selected", value="evolution")
+    build_update_a2ui_data_model_tool()(surface_id="recipe", path="/temporary", delete=True)
 
     listed = inspect()
     assert listed["total"] == 1
     assert listed["surfaces"][0]["surface_id"] == "recipe"
     assert inspect(surface_id="recipe")["components"] == [component]
+    updates = inspect(surface_id="recipe")["data_model_messages"]
+    assert [message["updateDataModel"]["path"] for message in updates] == [
+        "/",
+        "/selected",
+        "/temporary",
+    ]
+    assert updates[0]["updateDataModel"]["value"] == {"selected": "original"}
+    assert updates[1]["updateDataModel"]["value"] == "evolution"
+    assert "value" not in updates[2]["updateDataModel"]
     assert inspect(surface_id="other")["reason"] == "a2ui_surface_not_found"
 
 
@@ -1034,6 +1045,26 @@ def test_create_accepts_a_layout_referencing_every_child(tmp_path: Path, monkeyp
 
     assert result.get("ok") is not False, result
     assert app.state.a2ui_store.get(sid, "composed") is not None
+
+
+def test_create_accepts_modal_trigger_and_nested_content(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    components = [
+        {"id": "root", "component": "Modal", "trigger": "open", "content": "body"},
+        {"id": "open", "component": "Text", "text": "Methodology"},
+        {"id": "body", "component": "Frame", "title": "Methodology", "child": "detail"},
+        {"id": "detail", "component": "Text", "text": "Full methodology"},
+    ]
+    result = build_create_a2ui_surface_tool()(surface_id="methodology", components=components)
+    assert result.get("ok") is not False, result
+    assert app.state.a2ui_store.get(sid, "methodology") is not None
+
+    components[0]["content"] = "missing"
+    result = build_create_a2ui_surface_tool()(surface_id="broken-modal", components=components)
+    assert result["ok"] is False
+    assert 'id="missing"' in result["detail"]
+    assert app.state.a2ui_store.get(sid, "broken-modal") is None
 
 
 def test_partial_update_adding_a_new_component_appends_to_the_merged_definition(

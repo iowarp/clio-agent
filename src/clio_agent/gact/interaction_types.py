@@ -23,6 +23,7 @@ class UserQuestion(BaseModel):
     owner_session_id: str = ""
     attended_session_id: str = ""
     prompt: str
+    response_mode: Literal["blocking", "async"] = "blocking"
     status: Literal["pending", "answered", "cancelled", "expired"] = "pending"
     # "multi_choice" (SEP-1330, C1-S4/#1284): a multi-select elicitation field
     # (a flat array-of-enum) -- distinct from "choice" (a single scalar enum).
@@ -87,6 +88,7 @@ class CreateUserQuestionRequest(BaseModel):
     """Request to create one native question."""
 
     prompt: str
+    response_mode: Literal["blocking", "async"] = "blocking"
     kind: Literal["freeform", "choice", "confirmation"] = "freeform"
     options: list[UserQuestionOption] = Field(default_factory=list)
     allow_freeform: bool = False

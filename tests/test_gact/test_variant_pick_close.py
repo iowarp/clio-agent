@@ -167,6 +167,21 @@ def _no_drafts_in(rows: list[tuple[str, str]]) -> None:
 # --------------------------------------------------------------------------- #
 # A new message instead of a pick                                             #
 # --------------------------------------------------------------------------- #
+def test_superseding_drafts_does_not_anchor_an_async_question(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lm, _engine, _question = _paused(world, monkeypatch)
+    response = TestClient(world.app).post(
+        f"/v1/sessions/{world.sid}/questions",
+        json={"prompt": "What does X mean?", "response_mode": "async"},
+    )
+    assert response.status_code == 201, response.text
+    done = _turn(world.app, world.sid, lm, NEXT, "turn_2")
+    assert done.answer == SUMMARY
+    assert world.app.state.user_questions[response.json()["id"]].status == "pending"
+    assert world.app.state.sessions.get(world.sid).metadata["pending_user_question_id"] == ""
+
+
 def test_a_new_message_supersedes_the_pick_and_no_later_answer_resumes_it(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

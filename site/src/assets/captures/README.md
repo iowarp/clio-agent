@@ -33,3 +33,16 @@ full-resolution derivative.
 The other captures are earlier EarthScope and expert-agent examples, retained
 in the expandable workflow section. They are separate sessions from the OPAL
 review; their captions describe their own recorded behavior.
+
+## Dashboard development example
+
+`dashboard-overview.png` is an untouched, light-mode capture of a saved,
+agent-authored dashboard from the October 9 visual-feedback review. Its source is
+`D:/Libraries/Videos/clio_recordings/2026-10-09-widget-visual-feedback/saved-dashboard-overview.png`.
+The source and vendored PNG have SHA-256
+`d4a7449148461da966032eaf5bfafea451dd95d98823ae1771c70fb65823bc78`.
+
+The example explicitly labels the storm locations, correlation data, and mesh
+evidence synthetic. The capture shows the overview and three tabs; it does not
+establish scientific conclusions, complete cross-platform acceptance, or release
+availability. The dashboard guide keeps the development status beside it.

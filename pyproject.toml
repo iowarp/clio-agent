@@ -63,7 +63,7 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.6.0b4",
+  "clio-schemas @ git+https://github.com/iowarp/clio-schemas.git@90f55a3b990e9fb7c29aa7aa73b9a410a33d2e2d",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -252,6 +252,9 @@ clio-agent-gact = "clio_agent.gact.app:main_deprecated"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build]
 # Hard-exclude the vendored submodules/large dirs from every target's tree

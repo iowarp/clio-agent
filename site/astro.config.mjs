@@ -51,6 +51,9 @@ export default defineConfig({
 					label: 'Use CLIO',
 					items: [
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
+						{ label: 'Best of N and refinement', slug: 'docs/best-of-n' },
+						{ label: 'Dashboards', slug: 'docs/dashboards' },
+						{ label: 'Exports and downloads', slug: 'docs/exports' },
 						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{
 							label: 'Worked examples', collapsed: true,

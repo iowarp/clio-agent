@@ -21,10 +21,13 @@ def _page(title: str, body: str, *, stylesheet: str = "", scripts: tuple[str, ..
         for s in safe_scripts
     )
     script_policy = hashes + " 'unsafe-eval'" if scripts else "'none'"
+    # Contained glTF buffers and worker-produced media use fetch(data:/blob:).
+    # Permit those embedded bytes while retaining the ban on network requests.
+    connect_policy = "blob: data:" if scripts else "'none'"
     policy = (
         f"default-src 'none'; script-src {script_policy}; style-src 'unsafe-inline'; "
         "img-src 'self' blob: data:; media-src 'self' blob: data:; font-src data:; "
-        "worker-src blob:; connect-src 'none'"
+        f"worker-src blob:; connect-src {connect_policy}"
     )
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'

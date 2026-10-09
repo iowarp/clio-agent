@@ -36,6 +36,7 @@ from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.protocol_v3 import project_for_request, session_to_v3
 from clio_agent.gact.routes._body import NonObjectBodyError, json_body
+from clio_agent.gact.routes.dashboard_reports import register_dashboard_report_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui, split_preserved_a2ui
 from clio_agent.gact.routes.session_cancellation import cancel_session_state
 from clio_agent.gact.routes.session_creation import register_session_creation_route
@@ -49,6 +50,7 @@ from clio_agent.gact.routes.session_question_helpers import (
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.runtime.globals import _new_attempt_id, _new_question_id
+from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.session_tool_output import delete_session_tool_output
@@ -68,7 +70,7 @@ from clio_agent.gact.types import (
 )
 from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
-from clio_agent.gact.user_question_resume import resume_answered_question
+from clio_agent.gact.user_question_resume import finish_cancelled_question, resume_answered_question
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -567,16 +569,39 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         body = await json_body(request, route="POST /v1/sessions/{sid}/fork")
         title = body.get("title") or f"{sess.title} (fork)"
+        # Preserve conversation configuration, without copying task ownership,
+        # pending work, pinning, or ephemeral lookup state into a user branch.
+        metadata = {
+            key: value
+            for key, value in sess.metadata.items()
+            if key.startswith("active_agent_blueprint_")
+            or key in {"effort", "effort_source", "thinking_level", "branch", "git_branch"}
+        }
+        metadata["session_kind"] = "branch"
+        agent = {key: value for key, value in sess.agent.items() if key != "mode"}
         new_sess = app.state.sessions.create(
             workspace_id=sess.workspace_id,
             title=title,
             parent_session_id=sid,
+            model=dict(sess.model),
+            agent=agent,
+            metadata=metadata,
+            mode=sess.mode,
+            edit_mode=sess.edit_mode,
+            routing_mode=sess.routing_mode,
+            approval_mode=sess.approval_mode,
+            approval_profile=sess.approval_profile,
         )
+        inherit_child_session_policies(app, sid, new_sess.id)
         copied = await copy_session_context(sid, new_sess.id, body.get("at_message_id") or "")
         app.state.sessions.update(new_sess.id, message_count=copied)
-        return JSONResponse(
-            status_code=201,
-            content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
+        return project_for_request(
+            request,
+            v2=lambda: JSONResponse(
+                status_code=201,
+                content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),
+            ),
+            v3=lambda: JSONResponse(status_code=201, content=session_to_v3(new_sess)),
         )
 
     # ---- /v1/sessions/{sid}/compact ----------------------------------
@@ -599,6 +624,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     # ---- /v1/sessions/{sid}/export + /v1/sessions/import (#16) -------
 
     register_session_export_routes(app)
+    register_dashboard_report_routes(app)
 
     @app.post("/v1/sessions/import", response_model=Session)
     async def import_session(blob: dict[str, Any]) -> Session:
@@ -740,6 +766,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             owner_session_id=sid,
             attended_session_id=attended_session_id(app, sid),
             prompt=prompt,
+            response_mode=req.response_mode,
             kind=req.kind,
             options=normalize_question_options(req),
             allow_freeform=req.allow_freeform,
@@ -752,12 +779,13 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             metadata=req.metadata,
         )
         record_user_question(app, row)
-        _set_session_status(
-            sid,
-            "waiting_user",
-            prev_status=sess.status,
-            metadata_patch={"pending_user_question_id": row.id},
-        )
+        if row.response_mode == "blocking":
+            _set_session_status(
+                sid,
+                "waiting_user",
+                prev_status=sess.status,
+                metadata_patch={"pending_user_question_id": row.id},
+            )
         app.state.bus.publish(
             Event(
                 type="user_question.created",
@@ -826,7 +854,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             deps,
             sid,
             updated,
-            has_pending=bool(pending_user_questions(app, sid)),
+            has_pending=any(
+                q.response_mode == "blocking" for q in pending_user_questions(app, sid)
+            ),
             set_session_status=_set_session_status,
         )
         app.state.bus.publish(
@@ -848,27 +878,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
         # answer/timeout already terminalized it, keep the existing row (idempotent).
         from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
-        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
-            resolve_cancelled_question,
-        )
 
         row = claim_question_transition(app, question_id, "cancelled") or row
-        # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not await resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
-            sess = app.state.sessions.get(sid)
-            _set_session_status(
-                sid,
-                "idle",
-                prev_status=sess.status if sess is not None else "waiting_user",
-                metadata_patch={"pending_user_question_id": ""},
-            )
-        app.state.bus.publish(
-            Event(
-                type="user_question.cancelled",
-                session_id=sid,
-                payload=row.model_dump(exclude_none=True),
-            )
-        )
+        await finish_cancelled_question(app, sid, row, set_session_status=_set_session_status)
         return row
 
     app.state.answer_user_question = answer_user_question
