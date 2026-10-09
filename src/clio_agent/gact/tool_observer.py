@@ -674,6 +674,7 @@ def _make_tool_observer(app: "FastAPI"):
             # _build_semantic_event copies rather than mutating it).
             started_payload = {
                 "call_id": call_id,
+                "started_at": _iso_from_epoch(_OBSERVER_CALL_T0.value),
                 "tool": name,
                 "args": dict(args),
                 "presentation": initial_presentation,
@@ -722,6 +723,7 @@ def _make_tool_observer(app: "FastAPI"):
                     head=raw_step_thought[:120],
                 )
             call_metadata = {
+                "started_at": _iso_from_epoch(_OBSERVER_CALL_T0.value),
                 "stream_source": "live",
                 "telemetry_source": "live_observer",
                 **({"thought_step_id": thought_step_id} if thought_step_id else {}),
@@ -755,7 +757,8 @@ def _make_tool_observer(app: "FastAPI"):
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
             terminal_output = progress_registry.completed(call_id)
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
-            duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
+            completed_epoch = time.time()
+            duration_ms = (completed_epoch - t0) * 1000 if t0 else 0.0
             cancel_event = app.state.cancel_events.get(sid)
             completed_after_cancel = sid in app.state.cancel_flags or (
                 cancel_event is not None and cancel_event.is_set()
@@ -807,6 +810,7 @@ def _make_tool_observer(app: "FastAPI"):
             # author UI labels; the envelope ``summary`` below is the one short caption.
             payload = {
                 "call_id": call_id,
+                "completed_at": _iso_from_epoch(completed_epoch),
                 "tool": name,
                 "ok": ok,
                 "presentation": presentation,
@@ -908,6 +912,7 @@ def _make_tool_observer(app: "FastAPI"):
                     ],
                     metadata={
                         "stream_source": "live",
+                        "completed_at": _iso_from_epoch(completed_epoch),
                         "telemetry_source": "live_observer",
                         **(
                             {"result": _bounded_tool_call_result(result)}
