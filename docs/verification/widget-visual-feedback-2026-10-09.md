@@ -47,6 +47,8 @@ were used. Operation-level checks and model reasoning are distinguished below.
 
 ![Actual analysis PNG from the dashboard download menu](../assets/widget-visual-feedback/analysis-export.png)
 
+![Luna's final rendered chart after inspecting and correcting the clipped exception](../assets/widget-visual-feedback/refined-chart.png)
+
 The first ordinary-session attempt exposed a viewer reset on every parent
 render; memoizing the saved definition fixed it. Subsequent attempts exposed
 snapshot hydration under the server installation workspace; resolving the
@@ -82,6 +84,26 @@ corrections were retained, rather than being counted as successful reviews.
 - The site build and all nine existing browser tests passed. Inactive showcase
   panels are now inert and hidden from accessibility during tab transitions,
   correcting a duplicate-action failure without weakening the tests.
+- The wider browser suite initially failed 20 checks because its older fixture
+  omitted the new visual-feedback endpoint, and exposed a one-pixel Data/Work
+  allocation defect. The fixture now speaks the current report/reply contract;
+  production layout uses fractional available height and prevents section flex
+  shrink. All four existing section-allocation browser checks and six layout
+  unit tests passed with their original height tolerances. Two Windows visual
+  baselines were inspected against actual and difference images before being
+  refreshed: they predated inherited duration/question indicators, composer
+  styling and the standalone workspace brand. Screenshot thresholds were not
+  increased; Linux baselines were unchanged. These fixture checks are not live
+  model acceptance.
+- The entire configured Windows browser suite then passed: **84 passed,
+  no failed or skipped checks** (`visual-full-browser-final.log`, six minutes).
+  The final UI commit is `b2fc6e2a182dfee3771e1ecf940145591e014df6`.
+- Backend CI on `e59113d99b353e03c5b815f213ffd14914d217c8` passed all six
+  Python shards and both coverage jobs, alongside schema, document-runtime,
+  Docker and Pages workflows. This is the existing CI selection, with its
+  platform/integration skip conditions, not proof that every repository test
+  executed without skips. The final UI pin and this evidence update trigger
+  another backend run; that head is not represented by the earlier green run.
 - Ruff, focused mypy, frontend lint/ownership/size guards, TypeScript and the
   production/offline renderer builds were checked. The broad table-query
   pyright invocation also reports existing PyArrow compute typing errors; it
