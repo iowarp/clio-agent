@@ -70,7 +70,7 @@ from clio_agent.gact.types import (
 )
 from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
-from clio_agent.gact.user_question_resume import resume_answered_question, settled_question_metadata
+from clio_agent.gact.user_question_resume import finish_cancelled_question, resume_answered_question
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -878,34 +878,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # #1113 finding 6: atomic pending->cancelled (first-wins); if a concurrent
         # answer/timeout already terminalized it, keep the existing row (idempotent).
         from clio_agent.gact.elicitation_bridge import claim_question_transition  # noqa: PLC0415
-        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
-            resolve_cancelled_question,
-        )
 
         row = claim_question_transition(app, question_id, "cancelled") or row
-        metadata_patch = settled_question_metadata(app, sid, row)
-        app.state.sessions.update(sid, metadata_patch=metadata_patch)
-        # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if (
-            not await resolve_cancelled_question(app, row)
-            and not any(q.response_mode == "blocking" for q in pending_user_questions(app, sid))
-            and row.response_mode == "blocking"
-        ):
-            sess = app.state.sessions.get(sid)
-            _set_session_status(
-                sid,
-                "idle",
-                prev_status=sess.status if sess is not None else "waiting_user",
-                metadata_patch=metadata_patch,
-            )
-        app.state.bus.publish(
-            Event(
-                type="user_question.cancelled",
-                session_id=sid,
-                payload=row.model_dump(exclude_none=True),
-            )
-        )
-        app.state.redrive_message_queue(sid)
+        await finish_cancelled_question(app, sid, row, set_session_status=_set_session_status)
         return row
 
     app.state.answer_user_question = answer_user_question

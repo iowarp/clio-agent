@@ -23,7 +23,11 @@ from clio_agent.gact.routes.interaction_surface_projection import (
 from clio_agent.gact.routes.interaction_surface_projection import (
     _surface_actions as _surface_actions,
 )
+from clio_agent.gact.routes.interaction_surface_projection import (
+    _task_id_for_owner as _task_id_for_owner,
+)
 from clio_agent.gact.routes.plan_interactions import is_plan_exit_question, plan_exit_payload
+from clio_agent.gact.routes.session_question_helpers import question_surface_ids
 from clio_agent.gact.session_descendants import descendant_session_ids
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
@@ -366,11 +370,7 @@ def _a2ui_interactions(
     rows: list[PendingInteraction] = []
     if not surfaces:
         return rows, list(quarantined)
-    question_surfaces = {
-        str(row.metadata.get("a2ui_surface_id"))
-        for row in app.state.user_questions.values()
-        if row.session_id == owner and row.metadata.get("a2ui_surface_id")
-    }
+    question_surfaces = question_surface_ids(app, owner)
     owner_task_id = _task_id_for_owner(app, owner)
     owner_attended = attended_session_id(app, owner)
     for surface in surfaces:
@@ -420,15 +420,6 @@ def _a2ui_interactions(
             )
         )
     return rows, list(quarantined)
-
-
-def _task_id_for_owner(app: FastAPI, owner: str) -> str:
-    registry = getattr(app.state, "agent_task_registry", None)
-    if registry is None:
-        return ""
-    tasks = [task for task in registry.snapshot() if task.child_session_id == owner]
-    tasks.sort(key=lambda task: task.created_at, reverse=True)
-    return tasks[0].task_id if tasks else ""
 
 
 def _orphan_mcp_interaction(app: FastAPI, record: TaskRecord) -> PendingInteraction:

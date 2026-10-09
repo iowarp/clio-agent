@@ -14,6 +14,7 @@ from typing import Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
+from clio_agent.gact.types import UserQuestion
 
 logger = logging.getLogger(__name__)
 
@@ -159,4 +160,40 @@ def resume_answered_question(
     )
 
 
-__all__ = ["resume_answered_question", "settled_question_metadata"]
+async def finish_cancelled_question(
+    app: Any,
+    sid: str,
+    question: UserQuestion,
+    *,
+    set_session_status: Callable[..., None],
+) -> None:
+    """Settle cancellation ownership and release the ordinary message queue."""
+    from clio_agent.gact.elicitation_forwarding import resolve_cancelled_question
+    from clio_agent.gact.routes.session_question_helpers import pending_user_questions
+
+    metadata_patch = settled_question_metadata(app, sid, question)
+    app.state.sessions.update(sid, metadata_patch=metadata_patch)
+    # Forwarded elicitation resolves down; async cancellation never pauses work.
+    if (
+        not await resolve_cancelled_question(app, question)
+        and not any(q.response_mode == "blocking" for q in pending_user_questions(app, sid))
+        and question.response_mode == "blocking"
+    ):
+        session = app.state.sessions.get(sid)
+        set_session_status(
+            sid,
+            "idle",
+            prev_status=session.status if session is not None else "waiting_user",
+            metadata_patch=metadata_patch,
+        )
+    app.state.bus.publish(
+        Event(
+            type="user_question.cancelled",
+            session_id=sid,
+            payload=question.model_dump(exclude_none=True),
+        )
+    )
+    app.state.redrive_message_queue(sid)
+
+
+__all__ = ["finish_cancelled_question", "resume_answered_question", "settled_question_metadata"]
