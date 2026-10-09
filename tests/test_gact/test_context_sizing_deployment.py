@@ -13,6 +13,7 @@ from clio_agent.gact.infrastructure.context_sizing.deployment import (
     EFFECTIVE_CHOICE,
     EFFECTIVE_LENGTH,
     EFFECTIVE_REASON,
+    RESERVE,
     SizingRequest,
     decide,
     deployment_controls,
@@ -106,19 +107,19 @@ def test_vllm_default_fits_the_context_to_the_gpu_and_launches_it() -> None:
     sized, progress = _sized(plan, host)
 
     assert host.requests == [{"kind": "hf", "path": "/data/models/qwen3-4b"}]
-    # vLLM reserves 0.9 x 40 GiB; weights and 2 GiB of runtime memory are not KV cache.
-    kv_budget = int(40 * GIB * 0.9) - WEIGHTS - 2 * GIB
+    # vLLM reserves 0.9 x 40 GiB; weights and 2.75 GiB of runtime memory are not KV cache.
+    kv_budget = int(40 * GIB * 0.9) - WEIGHTS - RESERVE["vllm"][1]
     tokens = (kv_budget // 147_456) // 4096 * 4096
     args = _launch_args(sized)
-    assert args[args.index("--max-model-len") + 1] == str(tokens) == "192512"
+    assert args[args.index("--max-model-len") + 1] == str(tokens) == "184320"
     assert sized.configuration is not None
     assert "param.max_model_len" not in sized.configuration  # a launch input, not a choice
-    assert sized.configuration[EFFECTIVE_LENGTH] == "192512"
+    assert sized.configuration[EFFECTIVE_LENGTH] == "184320"
     assert sized.configuration[EFFECTIVE_CHOICE] == "fit_to_gpu"
     assert sized.configuration[EFFECTIVE_REASON].startswith(
-        "Fit to GPU: trained context 262144 capped to 192512"
+        "Fit to GPU: trained context 262144 capped to 184320"
     )
-    assert progress[-1] == "Serving the model with context 192512"
+    assert progress[-1] == "Serving the model with context 184320"
     assert sized.before_launch is None
 
 
@@ -221,7 +222,7 @@ def test_gpu_budget_follows_each_engines_memory_model() -> None:
     vllm = gpu_budget("vllm", "cuda", gpus, WEIGHTS, {"param.tensor_parallel_size": "2"}, request)
     assert vllm is not None
     assert vllm.memory_bytes == 70 * GIB + int(80 * GIB * 0.9)  # never more than is free
-    assert vllm.reserved_bytes == WEIGHTS + 2 * 2 * GIB
+    assert vllm.reserved_bytes == WEIGHTS + 2 * RESERVE["vllm"][1]
     shared = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu", share=0.5)
     llama = gpu_budget("llama_cpp", "cuda", gpus, 1000, {}, shared)
     assert llama is not None and llama.memory_bytes == 75 * GIB

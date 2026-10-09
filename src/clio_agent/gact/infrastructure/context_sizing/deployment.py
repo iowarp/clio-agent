@@ -79,7 +79,9 @@ EFFECTIVE_REASON = "effective.context_reason"
 EFFECTIVE_CHOICE = "effective.context_choice"
 #: Not KV cache: (weights growth factor for runtime buffers, fixed reserve per device).
 RESERVE: dict[EngineId, tuple[float, int]] = {
-    "vllm": (1.0, 2 * GIB),  # activation peak, CUDA graphs, non-torch memory
+    # Activation peak, CUDA graphs, non-torch memory (Qwen3-4B on an A40 measured
+    # 2.27 GiB) plus the gap between nvidia-smi's total and torch's.
+    "vllm": (1.0, int(2.75 * GIB)),
     "llama_cpp": (1.05, GIB),  # compute buffers and headroom
     "ollama": (1.25, GIB),
 }
