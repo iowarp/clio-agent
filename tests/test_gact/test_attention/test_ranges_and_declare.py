@@ -317,3 +317,46 @@ def test_served_model_root_sends_the_calls_api_key(monkeypatch: pytest.MonkeyPat
     root = tokenizer_source.served_model_root("http://127.0.0.1:1/v1", "served", "k-test")
     assert root == "Qwen/Qwen3-4B"
     assert seen["headers"] == {"Authorization": "Bearer k-test"}
+
+
+def test_declared_tools_survive_the_trace_writers_key_sorting(
+    tiny_tokenizer_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F049 (c38): the semantic trace writes events with sort_keys=True; schemas
+    # replayed with sorted keys render the same chars in another order, which
+    # tokenizes differently (live: 14453 vs 14561 tokens) -> range_alignment_mismatch.
+    import json
+
+    from clio_agent.gact.attention.capture import _declared_tools
+
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_TOKENIZER", str(tiny_tokenizer_dir))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    _, record = build_declaration(
+        model="hosted_vllm/granite-4.2-30b",
+        messages=MESSAGES,
+        lm_kwargs={"api_base": "http://127.0.0.1:1/v1"},
+        call_kwargs={"tools": tools},
+    )
+    assert record["status"] == "declared"
+    stored = json.loads(json.dumps(record, sort_keys=True))  # semantic_trace_file's write
+    renderer = ChatRenderer.from_dir(tiny_tokenizer_dir)
+    written = renderer.render(MESSAGES, template_kwargs={"tools": tools})
+    replayed = renderer.render(MESSAGES, template_kwargs={"tools": _declared_tools(stored)})
+    assert replayed == written
+    assert record["prompt_token_count"] == len(renderer.encode(replayed).ids)
+    # The key-sorted form (what a plain "tools" list came back as) is not the prompt.
+    sorted_tools = json.loads(json.dumps(tools, sort_keys=True))
+    assert renderer.render(MESSAGES, template_kwargs={"tools": sorted_tools}) != written

@@ -15,6 +15,7 @@ send the request undeclared (the connector then uses fixed chunks) and record
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -116,7 +117,9 @@ def build_declaration(
         "template_kwargs": {k: v for k, v in template_kwargs.items() if k != "tools"},
         # The read path re-renders the prompt to align the capture; the chat
         # template renders tool schemas into it, so they must be replayed (F049).
-        "tools": template_kwargs.get("tools") or [],
+        # Kept as JSON text: the semantic trace sorts dict keys on write, and the
+        # same schemas with reordered keys tokenize differently (c38: 14453 vs 14561).
+        "tools_json": json.dumps(template_kwargs.get("tools") or [], ensure_ascii=False),
         "prompt_token_count": declaration.prompt_token_count,
         "ranges": [r.to_record() for r in declaration.ranges],
         "unlocated_messages": declaration.unlocated_messages,

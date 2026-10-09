@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +58,18 @@ def _check_prompt(encoded: Encoded, summary: Any) -> None:
         )
 
 
+def _declared_tools(declaration: dict[str, Any]) -> list[Any]:
+    """The tool schemas the declaration rendered with, in their original key order.
+
+    ``tools_json`` keeps the order the template saw; a legacy ``tools`` list may
+    have been key-sorted by the trace writer, which then fails the token check
+    below with a typed mismatch instead of a wrong alignment.
+    """
+    if text := declaration.get("tools_json"):
+        return list(json.loads(text))
+    return list(declaration.get("tools") or [])
+
+
 def load_capture(
     call: LmCall, store: AttentionStore, renderer_for: Callable[[str], ChatRenderer]
 ) -> AlignedCapture:
@@ -81,8 +94,8 @@ def load_capture(
         )
     renderer = renderer_for(identity)
     template_kwargs = dict(declaration.get("template_kwargs") or {})
-    if declaration.get("tools"):
-        template_kwargs["tools"] = declaration["tools"]
+    if tools := _declared_tools(declaration):
+        template_kwargs["tools"] = tools
     encoded = renderer.render_encoded(call.messages, template_kwargs)
     _check_prompt(encoded, summary)
 

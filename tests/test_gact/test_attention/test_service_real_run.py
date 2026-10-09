@@ -305,7 +305,12 @@ def test_read_path_rerender_replays_declared_tool_schemas() -> None:
         def summary_for(self, response_id: str) -> Any:
             return None
 
-    declaration = {"status": "declared", "tokenizer": "t", "template_kwargs": {}, "tools": tools}
+    declaration = {
+        "status": "declared",
+        "tokenizer": "t",
+        "template_kwargs": {},
+        "tools_json": json.dumps(tools),
+    }
     call = _call(model="hosted_vllm/x", declaration=declaration)
     with pytest.raises(_Stop):
         load_capture(call, _Store(), lambda identity: _Spy())  # type: ignore[arg-type]
