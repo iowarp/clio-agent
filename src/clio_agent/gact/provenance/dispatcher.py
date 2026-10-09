@@ -88,10 +88,17 @@ class _ProviderWorker:
         ``unavailable`` with its attach error even before any event failed.
         """
         recheck = getattr(self.provider, "recheck", None)
-        if callable(recheck):
-            recheck()
+        attached = bool(recheck()) if callable(recheck) else False
         reason = str(getattr(self.provider, "unavailable_reason", "") or "")
         with self._lock:
+            if (
+                attached
+                and self.health.status == "unavailable"
+                and self.health.last_error.startswith("provider_unavailable:")
+            ):
+                # Events failed while detached; the recheck attached it since.
+                self.health.status = "ready"
+                self.health.last_error = ""
             if reason:
                 return replace(
                     self.health,

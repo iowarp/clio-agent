@@ -206,3 +206,25 @@ def test_health_read_reattaches_idle_provider_without_events() -> None:
         assert provider.attached
     finally:
         dispatcher.close()
+
+
+def test_health_read_recovers_after_an_event_failed_while_detached() -> None:
+    # c38: b0fb8ee5 live FAIL. Boot emits events while Flowcept is down, so the
+    # worker's own status became "unavailable"; the health-read recheck then
+    # attached, but nothing reset that status until the next event.
+    build, clock = _FlakyBuild(), _Clock()
+    provider = _deferred(build, clock)
+    dispatcher = ProvenanceDispatcher([provider], queue_size=8)
+    try:
+        dispatcher.emit("boot")  # type: ignore[arg-type]
+        dispatcher.flush()
+        assert dispatcher.health()[0]["failed"] == 1
+        build.up = True
+        clock.now = 31.0
+        row = dispatcher.health()[0]
+        assert provider.attached
+        assert row["status"] == "ready", row
+        assert row["last_error"] in ("", None)
+        assert row["failed"] == 1  # history is kept
+    finally:
+        dispatcher.close()
