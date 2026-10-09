@@ -16,6 +16,8 @@ from clio_agent.gact.composer_runtime import session_autostart_suspended
 from clio_agent.gact.protocol.v3.event import event_to_v3
 from clio_agent.gact.protocol.v3.session import session_to_v3
 from clio_agent.gact.sessions import SessionStore
+from clio_agent.runtime import process_census
+from clio_agent.runtime.status import IntegrationStatus
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -54,8 +56,16 @@ def _wait_for_feedback(app: Any, sid: str, ids: list[str]) -> None:
 
 def test_stop_delivers_sent_feedback_in_order_and_keeps_future_queue_paused(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The reported stalled-tool sequence needs no extra send and preserves every ID."""
+
+    async def _isolated_process_scan() -> list[IntegrationStatus]:
+        # This checks the turn/feedback lifecycle, not the host's cold process
+        # census. The deferred-scan tests cover that independent boot service.
+        return []
+
+    monkeypatch.setattr(process_census, "boot_reap_off_loop", _isolated_process_scan)
     agent = _BlockedFirstTurn()
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     agent.app = app
@@ -66,7 +76,8 @@ def test_stop_delivers_sent_feedback_in_order_and_keeps_future_queue_paused(
             json={"parts": [{"type": "text", "text": "check the repo"}]},
         )
         assert first.status_code == 200, first.text
-        assert agent.started.wait(timeout=5), "first forward never started"
+        started = agent.started.wait(timeout=5)
+        assert started, "first forward never started"
         first_id = first.json()["message_id"]
         feedback = ["can you actually use gh to clone it", "then inspect its latest release"]
         ids = ["msg_feedback_clone", "msg_feedback_release"]
