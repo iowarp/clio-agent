@@ -7,6 +7,8 @@ from typing import Any
 
 from dspy.lm15 import ServerError
 
+from clio_agent.providers.codex.audit import emit_tool_snapshot
+
 
 class ToolArgumentCompletion:
     """Append only the missing suffix of a provider's completed function call.
@@ -17,7 +19,8 @@ class ToolArgumentCompletion:
     authoritative completed item before the response is materialized.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, call_index: int) -> None:
+        self._call_index = call_index
         self._arguments: dict[int, str] = {}
         self._identities: dict[int, tuple[str, str]] = {}
 
@@ -34,6 +37,12 @@ class ToolArgumentCompletion:
                 payload.get("delta") or ""
             )
         elif kind == "response.output_item.done" and item.get("type") == "function_call":
+            emit_tool_snapshot(
+                call_index=self._call_index,
+                output_index=index,
+                item=item,
+                streamed_argument_chars=self.streamed_chars(index),
+            )
             return self._complete(index, item)
         elif kind == "response.completed":
             events: list[dict[str, Any]] = []

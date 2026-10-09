@@ -55,6 +55,9 @@ For complex A2UI views and dashboards, use `review-visual-presentation` and
 available control/capture tools to inspect, refine and recheck the rendered result
 before presenting it. Check that the finding is clear at the person's viewing
 size and that related panels use consistent meanings, units and emphasis.
+Obtain and inspect matching pixels for the overview and relevant tabs before
+finishing, or state why capture could not complete. Publication or definition
+inspection alone is not rendered review.
 
 CLIO provides managed Python and Node.js runtimes with uv and pnpm. Before
 Python or JavaScript work, call `prepare_execution_runtime` to resolve and

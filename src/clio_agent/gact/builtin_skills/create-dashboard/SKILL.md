@@ -122,8 +122,12 @@ dependencies are reported rather than silently omitted from an export.
 
 Present the completed dashboard once in the final response. Keep corrected
 versions in the same report family; earlier versions remain in Versions and
-Observability. Review captures are retained verification evidence. Register
-other review files with `create_artifact(..., purpose="verification")` and
+Observability. Review captures are retained verification evidence.
+
+Register the editable source as an intermediate only if a separate artifact is useful;
+the published report already retains its source path. Do not add a second
+deliverable card for that document unless the person requests the source file.
+Register other review files with `create_artifact(..., purpose="verification")` and
 working files with `purpose="intermediate"`; omit them from the final answer
 unless requested. A requested image/PDF/HTML export is a deliverable and uses
 `purpose="deliverable"`.

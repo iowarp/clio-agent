@@ -52,7 +52,7 @@ After publication, the newly opened viewer can still be mounting. A single
 `a2ui_view_stale` or `a2ui_render_not_ready` result is not the end of the review:
 inspect the same immutable artifact again and retry capture with its current
 viewer. If `ready` is false, omit `expected_view_revision` rather than guessing
-zero. Retry at most twice; stop and report the actual limitation if the viewer
+zero. Retry at most twice for each requested view; stop and report the actual limitation if the viewer
 is absent or still cannot supply pixels. After each successful declared tab or
 camera change, use the acknowledged epoch or inspect afresh before capture.
 If capture or a requested control is unavailable, make supported structural

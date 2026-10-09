@@ -76,7 +76,6 @@ from clio_agent.providers.codex.audit import (
     emit_call_started,
     emit_call_usage,
     emit_raw_event,
-    emit_tool_snapshot,
 )
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
 from clio_agent.providers.codex.stream_errors import (
@@ -644,12 +643,11 @@ async def _stream(
     first = True
     usage: Any = None
     calls: list[str] = []
-    tool_arguments = ToolArgumentCompletion()
+    tool_arguments = ToolArgumentCompletion(call_index)
     await socket.send(json.dumps({"type": "response.create", **frame}))
     async for raw in socket:
         payload = json.loads(raw)
         kind = str(payload.get("type") or "")
-        output_index = int(payload.get("output_index") or 0)
         if kind in {"error", "response.failed"} and _error_code(payload) == (
             c.PREVIOUS_RESPONSE_NOT_FOUND_CODE
         ):
@@ -666,12 +664,6 @@ async def _stream(
             parsed = [failure]  # lm15's typed error (lm15 parses no response.failed)
         if kind == "response.output_item.done":
             calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
-            emit_tool_snapshot(
-                call_index=call_index,
-                output_index=output_index,
-                item=payload.get("item") or {},
-                streamed_argument_chars=tool_arguments.streamed_chars(output_index),
-            )
         if parsed is None:
             parsed = []
             for missing in tool_arguments.consume(payload):
