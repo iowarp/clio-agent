@@ -113,6 +113,7 @@ def build_capture_a2ui_surface_tool() -> Any:
                 mechanism=Mechanism.HARNESS,
                 producer={
                     "designation": "a2ui_visual_capture",
+                    "purpose": "verification",
                     "session_id": sid,
                     "captured_at": utcnow_iso(),
                     **evidence,

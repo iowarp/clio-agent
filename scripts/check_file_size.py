@@ -496,7 +496,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # surface with nothing to show for it). All logic (materialize + emit) lives in
     # the owner module artifacts/versions.py (emit_artifact_used); only the guarded
     # call site is here. Ratchets back with the #714 mint/registry split.
-    "src/clio_agent/gact/artifacts/minting.py": 804,  # external-input echo classification moved to its provenance owner (#1320); #1333: 862 -> 805, identity hashing (compute_identity/_stat_and_hash/hash_max_file_bytes) moved to the new owner module gact/artifacts/hashing.py
     # #1191: not previously baselined (silently over the 800 cap already, from
     # earlier unbaselined growth on this branch — the create_artifact tool floor).
     # +19 net for the OPTIONAL used=[...] input-refs param on create_artifact (the

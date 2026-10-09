@@ -74,3 +74,12 @@ For worked decision patterns, load `references/investigation-patterns.md`
 from this skill. Stop once the question is resolved and the relevant views
 are readable; further captures should answer a remaining concern. Keep visual
 observations, calculations and unresolved uncertainty distinct in the answer.
+
+Keep the final response focused on the requested deliverables and findings.
+`capture_a2ui_surface` retains its screenshots as verification evidence; do not
+register or list each capture as another output. For other review images/PDFs,
+use `create_artifact(..., purpose="verification")`; working files use
+`purpose="intermediate"`. Both remain accessible in Observability and lineage.
+Requested images/PDFs use `purpose="deliverable"`. When revising an output,
+keep its artifact family/name; the response presents its latest deliverable
+version while Versions and Observability retain earlier attempts.

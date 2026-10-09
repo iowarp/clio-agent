@@ -567,6 +567,13 @@ def _project_artifact(
             part.get("mime_type") or part.get("media_type") or "application/octet-stream"
         ),
         "uri": str(part.get("uri") or ""),
+        **(
+            {"version": metadata["version"]}
+            if isinstance(metadata.get("version"), int)
+            and not isinstance(metadata["version"], bool)
+            and metadata["version"] > 0
+            else {}
+        ),
         **({"workspace_id": str(metadata["workspace_id"])} if metadata.get("workspace_id") else {}),
         **({"fetch_path": str(metadata["fetch_url"])} if metadata.get("fetch_url") else {}),
         **({"custody": str(metadata["custody"])} if metadata.get("custody") else {}),

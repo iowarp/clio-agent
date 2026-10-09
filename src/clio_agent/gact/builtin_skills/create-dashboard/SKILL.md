@@ -99,3 +99,11 @@ the person ask you to revise part of the system or produce a new derived visual.
 PNG downloads capture the displayed dashboard; self-contained HTML includes the
 entire dashboard, its tabs and interactions, and referenced data. Missing
 dependencies are reported rather than silently omitted from an export.
+
+Present the completed dashboard once in the final response. Keep corrected
+versions in the same report family; earlier versions remain in Versions and
+Observability. Review captures are retained verification evidence. Register
+other review files with `create_artifact(..., purpose="verification")` and
+working files with `purpose="intermediate"`; omit them from the final answer
+unless requested. A requested image/PDF/HTML export is a deliverable and uses
+`purpose="deliverable"`.
