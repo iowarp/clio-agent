@@ -58,10 +58,30 @@ corrections were retained, rather than being counted as successful reviews.
 - 267 focused backend tests passed on the pinned schema build, including the
   native-image hydration regression, ownership/revision/timeouts and dashboard
   integration. Subsequent PNG/session export regression pack: 39 passed.
-- 114 renderer tests and 59 repository/catalog tests passed, including the
+- 125 renderer tests and 59 repository/catalog tests passed, including the
   official Basic catalog corpus. Production/offline renderer builds passed.
   Dashboard tests include preservation of human input,
   selected tab and viewer epoch through parent re-renders.
+- The wider UI suite exposed a capture-wrapper regression in the existing
+  rejected-update recovery test. Capture addresses now preserve the kernel's
+  native node view and explicitly clear removed optional properties through
+  its model API. The original recovery test passed unchanged alongside the
+  input/preset checks. A fresh Luna chart run (`chart-gpt-6-luna-55bfcc23`)
+  received two new native chart images at revisions 10 and 11, noticed the
+  clipped top point, widened the scale, and rendered a real red circle and
+  label. Its retained context also contains three older Overview captures;
+  those are not counted as new chart observations.
+- Final saved-view operation checks repeated eight local controls and five
+  native captures across all three tabs, including map bearing/zoom and shared
+  mesh camera/frame/threshold. The immutable report stayed byte-for-byte
+  unchanged. A rushed first batch exhausted three stale replies during mesh
+  mounting; that failure is retained separately. Inspecting the settled ready
+  epoch before capturing completed the repeat, with one correctly refused
+  transient change. Another real menu PNG download retained the map, chart
+  annotation and all nine table rows on the final renderer.
+- The site build and all nine existing browser tests passed. Inactive showcase
+  panels are now inert and hidden from accessibility during tab transitions,
+  correcting a duplicate-action failure without weakening the tests.
 - Ruff, focused mypy, frontend lint/ownership/size guards, TypeScript and the
   production/offline renderer builds were checked. The broad table-query
   pyright invocation also reports existing PyArrow compute typing errors; it
@@ -98,7 +118,11 @@ Full traces, compact summaries, native PNGs, failure logs and downloaded exports
 are under `D:/Libraries/Videos/clio_recordings/2026-10-09-widget-visual-feedback/`.
 Key files include `main-session-final.json`, `main-session-native-capture.png`,
 `saved-view-native-operations.json`, `saved-agent-crash.log`, `dashboard-export.html`
-and `dashboard-export-analysis.png`. Test/build logs are under
+and `dashboard-export-analysis.png`. Final renderer evidence includes
+`chart-gpt-6-luna-55bfcc23.json`, `final-kernel-luna-capture-4.png` (before),
+`final-kernel-luna-capture-5.png` (after), `final-kernel-saved-native-operations.json`,
+`final-kernel-saved-native-operations-failure1.json` and
+`final-kernel-dashboard-export.png`. Test/build logs are under
 `D:/Temp/clio-document-tests/visual-*`.
 
 The installed beta and primary checkout were not changed. These changes remain
