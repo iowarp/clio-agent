@@ -89,8 +89,8 @@ with its evidence in `offline-canonical-final/`.
 
 ## Targeted checks and remaining limits
 
-Local checks were deliberately focused: 33 backend tests, 57 renderer/unit
-checks, one transcript-disclosure browser regression and five workflow-guide
+Local checks were deliberately focused: 34 backend tests, 57 renderer/unit
+checks, transcript-disclosure and chart-fullscreen browser regressions and five workflow-guide
 browser checks passed with no skips. The guide checks cover 390/1440-pixel
 light/dark layouts, navigation and the full-size image dialog. Their original
 assertions were retained; availability notes and the caption were corrected
@@ -103,6 +103,13 @@ The build exposed a native Markdown-loader bundling defect: Satteri is now an
 explicit pinned dependency kept external during server prerendering, preserving
 its platform binding resolution. The table PNG fix also has a
 regression check; actual before/after downloads provide its pixel evidence.
+GitHub's broader suites caught a nullable-schema description regression and a
+fullscreen test navigating away from an unmounted virtualized chart. The schema
+fix retains argument descriptions at their public location and leaves caller
+schemas unchanged; four focused checks passed. The fullscreen test returns to
+the chart before using its toolbar; its existing render-before/during/after
+assertions passed in a focused browser run. These fixes require their own CI
+results rather than inheriting success from a preceding head.
 Broad suites run asynchronously in GitHub and their result belongs to their
 specific head, not an earlier local run. Native binding leak warnings appeared
 on focused Python test process exit; an exit-zero test is not native-runtime
