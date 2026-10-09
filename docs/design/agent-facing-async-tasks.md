@@ -143,126 +143,112 @@ stored subagent output; it does not refer to an omitted compatibility tool.
 
 ## Qualification ledger
 
-Evidence lives under the recovery directory's `mcp-agent-tasks/`. A gate passes
-only from actual model-visible tool Parts and actual owner outcomes. Fixtures,
-CI and executor-only probes are separate evidence.
+Implementation is present on the integrated feature branch. **Release
+qualification is incomplete.** The live matrix below describes executed gates,
+including partial and blocked results; it is not a claim that every route passes.
 
-| Gate | Current evidence and remaining work |
+The latest runtime qualification state is core
+`4dc4b1c1c2757be716f094c5cbe1058b34a7a26c` with GACT
+`5e8cee6cf38c9329d82f151d2305b8e2c0783507`. Later documentation-only commits
+must preserve the runtime file hashes and matching GACT gitlink. Older evidence
+retains its actual source identity and is not relabelled as a final-state run.
+
+Draft review branches are core PR1662 into `develop` and GACT PR557 into `main`.
+Their retained PR1658/PR555 bases remain dependencies. Released branches,
+installed Desktop, authentication, defaults and released pins are preserved.
+
+Evidence is retained at
+`D:/Libraries/Videos/clio_recordings/2026-10-07-release-recovery/mcp-agent-tasks/`.
+Each run records source/runtime/model identities, actual model tool Parts,
+invocation IDs, handles, timestamps and owner outcomes. A model-overlap pass
+requires acceptance, a successful independent action in a later model step, and
+a subsequent query of the same uncancelled running handle. Direct executor
+probes, fixtures and CI do not satisfy that gate.
+
+| Executed gate | Evidence and scope |
 | --- | --- |
-| Pre-change model baseline | `model-baseline-1`: actual Codex/Luna fetch returned terminal document content before the next model tool action. |
-| MCP model overlap | `model-mcp-overlap-1`: actual production Web fetch accepted a handle; the model queried that handle while working. Earlier feature state; final requalification required. |
-| Shell model overlap | `integrated-160-shell-ws-1` and `integrated-796-shell-sse-1`: actual Codex/Luna accepted handle, successful independent file read, later running snapshot, expired wait, incremental stdout, completed owner/exit 0 and stored result through WebSocket and SSE. Source fingerprints remained unchanged. Earlier failed parallel-read runs remain separate. |
-| Subagent and Download model overlap | `integrated-ec56-subagent-ws-1` passed actual Codex/Luna acceptance, successful independent read while the child remained running, expired wait, child stdout/exit and filesystem marker. Older broad Subagent/Download verdicts are superseded by `qualification-correction.md`; strict final Download acceptance remains outstanding. |
-| Indexing model overlap | Outstanding. Must prove receipt and another successful action before settlement, then manifest/counts. |
-| Mixed waits, partial errors, input/permission handling | Actual Shell permission approval passed in `integrated-796-shell-sse-1/permission-resume-verdict.json`: the original model request was approved through the real UI, received acceptance and collected actual process output. The initial harness misread the permission row shape; the resumed probe used the same pending request without resubmission. Mixed waits and MCP input-answer persistence remain outstanding. |
-| Automatic completion, next-turn delivery, duplicate prevention | One actual model Shell cycle passed in `integrated-796-shell-sse-1/delivery-shell-diagnose`: idle completion did not start a turn, durable intent was injected once on the next normal turn, and a later turn did not reinject it. Veto/overflow/collection races remain outstanding live gates. |
-| Stop, UI cancellation and subtree settlement | Five cycles in `integrated-796-shell-sse-1/stop-shell-final` passed actual model wait, real UI Stop with Shell work continuing, one confirmed cancellation request per handle despite double click, and stored cancelled owner results. The independent OS observer failed on an HTTP read timeout and does not establish process-tree acceptance. Subagent subtree settlement remains outstanding. |
-| Reconnect and isolated service interruption | `integrated-2cdd-http-recovery-2` passed actual Codex/Luna HTTP recovery after killing the isolated API: the original handle, full backend/session identity and exclusive-lease expiry were retained, query/wait/result succeeded, and one actual payload request produced the expected bytes/hash without replay. The first attempt recovered the backend but lacked the isolated API's model binding for its follow-up; it remains a failed harness gate. Lost nonrecoverable work still needs live qualification. |
-| HTTP model overlap | `integrated-2cdd-http-overlap-2` passed actual Codex/Luna handle acceptance, successful independent file read, a later running query, wait/result and one real 11,264-byte payload with verified hash. The first attempt's external search timed out and did not qualify overlap. |
-| Desktop and phone UI | Visual review rejected the phone confirmation on GACT `e7ee1c77`: global popover layer 110 overrode the dialog utility classes and obscured its body. Real DOM diagnostics retained in `integrated-796-shell-sse-1/dialog-diagnostic.json`. The explicit task-confirmation layer repair requires fresh rendered qualification. |
-| Subagent result readback | Actual UI cascade on `integrated-ec56-subagent-ws-1` settled the child-owned Shell process tree, then GET result failed with `LoopThreadStoreWrite` while recording terminal provenance. The real-store regression reproduced that failure before the off-loop route correction and passed afterward. Five complete final live cascades remain required. |
-| Five final lifecycle race repetitions | Earlier five Shell cycles passed lifecycle behavior; the final integrated UI state must be repeated and visually accepted, with complete process identity evidence. |
-| Focused checks and CI | GACT `16cffbbf` has 13 successful checks and seven conditional event/release jobs. Core `2cdd6b3d` exposed a renewal worker that starved a no-delay polling test and a renewal assertion tied to a 150ms scheduling window. The existing divergence case passes with an independent event-loop renewal timer; the competing-resume test now observes actual renewal and advances its lease clock explicitly. No test limit, production TTL or assertion was relaxed. Fresh exact-head CI remains required. Existing skipped Python tests and the chat-only WebView permission-card exclusion do not count as passed acceptance. |
-| Parallel Codex arguments | `model-parallel-argument-diagnostic-1` recorded correct actual model arguments and empty tool inputs on the coalesced parallel path. The repaired bridge reconciles completed snapshots on WebSocket and SSE. Three focused cases pass; actual model parallel query/file-read succeeds through both transports in the Shell runs above. |
+| Pre-change model baseline | `model-baseline-1`: actual Codex/Luna production fetch returned terminal content before the model's next action. The earlier direct-executor probe was not model acceptance. |
+| MCP stdio model overlap | `model-mcp-overlap-1` established early task acceptance. Its older source and overlap predicate do not replace the stricter final route gate, which remains pending. |
+| MCP HTTP overlap and reconnect | `integrated-2cdd-http-overlap-2` and `integrated-2cdd-http-recovery-2`: actual Codex/Luna handle, independent file read, running snapshot and stored result. The recovery retained the full backend identity and original session after API loss and lease expiry, with one actual 11,264-byte payload request and no operation replay. Earlier failed external-search and probe-binding attempts are retained separately. Final-state five-cycle recovery is pending. |
+| Shell model overlap | WebSocket evidence includes `integrated-47f-shell-ws-1`; final-state SSE is `integrated-4dc4-shell-lifecycle-1`. Actual model acceptance, subsequent successful independent read, uncancelled running query, expired wait, observe, unbounded wait, stdout, exit 0 and filesystem marker passed. |
+| Subagent model overlap | WebSocket evidence includes `integrated-context-final-subagent-1`; final-state SSE is `integrated-4dc4-subagent-mixed-1`. Actual parent-model handle, later independent action, running child, expired wait and actual child output/marker passed. |
+| Download model overlap and bytes | `integrated-959e-download-root-1`: the submitting Codex/Luna model received a handle, performed a later checklist action, queried running work, expired a wait without cancellation, observed, waited and retrieved the result. All 6,001 selected files / 6,132,063 bytes and hashes match. This run retains its earlier core959e/GACTd51 identity; the native adapter is unchanged by the later REST response and browser-test repairs. Final-state repetition remains pending. |
+| Download continued after Stop | `integrated-959e-download-native-1/stop-accepted-download` and `large-download-custody.json`: UI Stop ended the original model waiter while byte progress continued without cancellation. All 24,001 files / 18,228,063 bytes and hashes completed. Submission was delegated; this is owner/Stop evidence, not submitting-coordinator overlap. |
+| Indexing model overlap and manifest | `integrated-4dc4-indexing-refresh-1`: actual Codex/Luna accepted handle, later checklist action, running query, expired wait, observe, unbounded wait and stored result. The atomically published manifest exactly matches 48,098 real entries. |
+| Indexing Stop/cancel and manifest custody | Five new-folder cycles in `integrated-4c7c-indexing-root-1/stop-indexing-cold-final-dialog` settled cancelled owners without partial publication. Five final-state public REST refresh cycles in `integrated-4dc4-indexing-refresh-1/stop-indexing-retained-published-manifest` passed Stop independence and one confirmed cancellation each. Its `refresh-manifest-custody.json` verifies the previous pointer, body hash and 48,098-entry manifest remained intact. Refresh submission was client-initiated; the native Connect run supplies the separate model-submission gate. |
+| Mixed tasks and honest partial failure | `integrated-4dc4-subagent-mixed-1/mixed-exact-child-assignment`: the root model queried/observed Subagent plus two Shell handles, collected the child, expired an all-wait, and used any/all waits with an invalid member. Actual slow Shell succeeded and the deliberately failing command returned its nonzero outcome without cancelling peers. Earlier model path/delegation probe failures were not counted. |
+| Shell Stop/UI cancellation | `integrated-4dc4-shell-lifecycle-1/stop-shell-final-native` passed five cycles. `shell-stop-process-proof.json` verifies PID, birth time and actual PowerShell/launcher/Python chains gone, with no unresolved descendants. Stop left work running; confirmed cancellation settled it. |
+| Subagent Shell subtree cancellation | `integrated-4dc4-subagent-mixed-1/cancel-subagent-private-confirmed` and `subtree-process-confirmed.json` passed five actual-model/UI cycles and all owned process-chain checks. The warning identified descendant cancellation; repeated clicks sent one request. These used private workspaces without connected sources. |
+| Subagent Download subtree cancellation | `integrated-959e-download-native-1/cancel-subagent-download-fixed-dialog` passed five actual-model/UI cycles. Its `storage-cancel-proof.json` verifies cancelled owners, staging absence and unchanged upstream bytes/hash/source pointers. The separate overlap audit passed only one of five child cycles; it is not five overlap passes. |
+| Busy completion delivery | `integrated-4dc4-shell-lifecycle-1/busy-delivery-runtime-injections` passed five rounds: a real background command completed during foreground model work; exactly one runtime tool Part delivered its hidden stdout nonce at the next safe boundary, and the model used it without task controls. A later turn had no duplicate Part or context-frame injection. |
+| Idle/next-turn delivery | `integrated-4dc4-shell-lifecycle-1/delivery-shell-final-native` passed five fresh-conversation cycles. Completion alone created no turn/message; the next user turn received one committed delivery, and a later turn received none. |
+| Veto retention | `integrated-4dc4-delivery-races-1/delivery-races-veto-final` passed five rounds using an actual trusted production UserPromptSubmit hook: a denied turn retained completion; the next eligible model turn received it once. |
+| Collection versus commitment | `integrated-4dc4-delivery-races-1/delivery-races-collection-final` passed five rounds. Actual result collection after staging and before commit removed automatic model injection and stale context-frame text. Later explicit result reads remain permitted and are accounted using actual tool telemetry. |
+| Overflow | `integrated-4dc4-delivery-races-1/delivery-overflow-original-handles` passed five rounds of nine actual tasks with bounded 8+1 batches, one delivery per original handle and no later duplicates. Round one resumed the already accepted handles after a probe expected an FS read but the model successfully read the sentinel through foreground Shell. No command was resubmitted; the original probe failure is retained. |
+| Native permission handling | `integrated-4dc4-shell-lifecycle-1/permission-verdict.json`: a fresh actual-model Shell request waited for real UI Allow once, then continued under the original invocation/handle and produced its result/marker. This is native permission evidence, not MCP `input_required` acceptance. |
+| Real-service desktop/phone UI | Final-state Shell, Subagent and Indexing cancellation/delivery runs used the production UI against the actual source API. Download subtree evidence uses the current unchanged cancellation UI at GACTd51. Captures and hit tests verify readable assignment, visible controls, descendant warning, one confirmation request and pending-cancellation state. The long-assignment scroll region repair is included in GACT5e8. |
+| Graceful Shell interruption | `integrated-4dc4-shell-graceful-1` passed four complete model/process/restart/readback/no-replay cycles. The fifth stopped the actual process chain but its replacement API failed Core attachment before model readback. The verdict remains false; four is not five. `orphan-api-retirement.json` verifies the exact remaining source API exited through its authenticated shutdown endpoint and the installed Core identity remained alive. |
 
-Later integrated evidence on core `5e791be8` and GACT `16cffbbf`:
-`integrated-5e79-shell-sse-1` passed strict model overlap and native permission
-approval; `stop-shell-final2` passed five Stop/UI-cancel cycles with desktop and
-phone dialog review and direct PID/birth/parent-chain evidence for all five
-PowerShell owners and their Python descendants. `delivery-shell-fresh1` passed
-five fresh-conversation idle/next-turn/no-duplicate cycles. The earlier long
-SSE conversation hit the unchanged 65,536-byte parser limit and remains an
-unqualified route; fresh-conversation evidence does not repair or qualify it.
+### Focused checks and CI
 
-The actual collection hook in `delivery-races-collection` collected the result
-after staging and before commitment. The real model correctly reported "nonce
-absent", but the finalized Observability frame still included staged task text.
-The focused collected/delivered regressions reproduce that stale frame and pass
-after updating it at the existing commit boundary. Fresh actual-model delivery,
-collection, veto and overflow repetitions remain required for this correction.
+Focused unit/integration cases were run individually and sequentially with one
+worker. They cover durable acceptance, complete identity and collisions, caller
+authorization, legacy records, filters/cursors, mixed controls, task input,
+submission/Stop/cancellation races, late descendant admission, owner cleanup,
+delivery/collection/veto/overflow, reconnect, storage custody and process trees.
+Evidence includes the recorded `compat-*`, `core-ci-repair-*`,
+`codex-parallel-*`, context-commit and storage-HTTP-ack results. Scoped Ruff,
+formatting, Pyright and existing guards passed. UI cases used Node 1 GiB; type
+checks/builds used 2 GiB. Guards only tightened; assertions, timeouts, worker
+counts and output budgets were not weakened.
 
-`integrated-487f-delivery-sse-1/delivery-races-collection-explicit-read-accounted`
-now passes five actual-model collection cycles with no automatic reinjection,
-no explicit result reads and truthful committed frames. The first collection
-batch retained a probe failure when a model explicitly requested the stored
-result despite its instructions. That permitted read supplied its quoted nonce;
-it was not automatic delivery. The revised probe accounts for actual explicit
-read telemetry and still requires the absence of automatic injection. Veto and
-overflow repetitions remain outstanding. Exact-head CI on `487f6aab` found the
-new test's imported fixture missing under full-suite collection. The regression
-fixture is now module-local; its behavior and assertions are unchanged.
+On the runtime core4dc/GACT5e8 heads, all required workflow runs completed:
+core 23 successful checks plus one conditional Docker restore-job skip; GACT
+13 successful checks plus seven conditional event/release-job skips. Core's six
+Python shards total 11,398 passed / 66 skipped per interpreter, both coverage
+reports show 86%, and all three OS document-smoke jobs passed. Flake hunt is
+153 passed / 1 skipped. Existing executed-test exclusions are **not acceptance
+passes**. GACT's workspace/browser runs and Linux/Windows debug builds passed;
+native WebView's chat-shell endpoint case passed but its permission-card
+subtest was skipped under `TAURI_E2E_CHAT_ONLY=1`. This does not establish full
+native acceptance. Exact snapshots/logs are retained in `ci-*-20261009T034915Z`
+and the matching core/UI/document logs.
 
-`integrated-context-final-subagent-1` passed strict model overlap on core
-`59ce2dbd` before connecting any source. Its later connected-source descendant
-probe accepted a real Download, but the host rejected Shell because its child
-process fence cannot enforce connected-source exclusions. That combined route
-is blocked and unverified; do not retry or bypass it without the human's fence
-state changing. Native storage and task controls remain independently available.
+### Blocking and unverified gates
 
-Cancellation of that already accepted Subagent and Download through the real
-phone UI passed owner settlement and cleanup custody once. Read-only durable
-records, original source pointers, staging absence and upstream bytes/hash are
-retained in `existing-download-phone-early/storage-cancel-proof.json`. Its visual
-gate failed: the long assignment pushed the warning and action buttons below
-the viewport. GACT `d51b77a4` preserves the complete assignment in a focusable
-scroll region while keeping the warning and controls visible. Two focused
-short/long cases, scoped checks, all six guards, TypeScript and both builds pass;
-fresh real-service visual and five lifecycle repetitions remain required.
+- The fifth final graceful interruption readback failed with
+  `clio_core_client_attach_failed`. The native client could not create its
+  per-process shared memory (`shm_open`: `Resource temporarily unavailable`).
+  The existing machine-wide installed Core daemon adopted its own configuration;
+  it was not restarted or reconfigured. The root cause is not established by
+  this error alone. Final Shell crash/recovery repetitions and the remaining
+  model runs are blocked on an available permitted Core runtime. No accepted
+  operation may be replayed when resuming qualification.
+- Strict final MCP stdio overlap, five Stop/UI-cancel cycles, HTTP reconnect
+  repetitions and nonrecoverable backend-loss qualification remain pending.
+  Prepared external probes are not executed evidence. Native Shell permission
+  success does not qualify MCP elicitation/input-answer/reconnect semantics;
+  the tested production Web backend exposes no input-required operation.
+- The connected-source Download-plus-Shell subtree route was rejected by the
+  actual host fence in `integrated-context-final-subagent-1`: it cannot enforce
+  connected-source child-process exclusions. The already accepted storage work
+  was cancelled through its owner. Fresh UAC/fence setup is prohibited; never
+  retry or bypass the rejected combined route. Separately qualified native
+  storage and private-workspace Shell routes do not qualify this route.
+- The retained long-conversation SSE run hit the unchanged 65,536-byte parser
+  limit (observed line 65,700 bytes in the read-only provider dependency).
+  Fresh-conversation success does not repair or qualify that route. Do not
+  increase/bypass the limit or alter the dependency in place.
+- Other distinct provider/native-client, relay, POSIX and platform execution
+  routes have not passed the complete live matrix. Installed native-client
+  launches and retired-service restarts remain prohibited. Final-state Download
+  overlap/recovery repetitions and storage interruption custody remain open.
+  Unit tests and older-state runs cannot silently close these gates.
 
-On core `959e2238` / GACT `d51b77a4`, the native Download-only subtree probe
-passes five actual-model/UI lifecycle cycles with one confirmed cancellation
-request each, honest pending cancellation, cancelled descendant owners and
-stored parent result readback. Desktop and phone captures and hit tests show
-the complete warning and controls above the originating popover. All five
-durable storage audits retain original manifest pointers, unchanged upstream
-payload bytes/hash and absent staging trees. These are native storage routes;
-the connected-source Shell route remains blocked.
-
-The original 24,001-file selection also completed after real UI Stop ended its
-model waiter. Byte progress continued without a cancellation request; all
-18,228,063 selected bytes and file hashes match. Its coordinator delegated
-submission, so that run does not qualify submitting-model overlap. The direct
-single-agent native Download gate in `integrated-959e-download-root-1` does:
-the actual Codex/Luna model receives acceptance in one model step, performs a
-successful checklist action in a later step, observes the original handle
-running, expires a wait without cancellation, then waits and retrieves its
-completed result. All 6,001 selected files / 6,132,063 bytes and hashes match.
-The separate five-cycle overlap audit is retained honestly: only one child
-cycle established its independent action before a query with no cancellation
-request. It is not five complete overlap passes.
-
-GACT's exact `d51b77a4` CI passed 71 browser cases and failed its existing chart
-fullscreen case after a wheel scroll unmounted the virtualized tail. Retained
-CI trace/context show the missing chart and available Scroll-to-bottom control.
-The original focused case passed locally; it was not reproduced as a local
-failure. The test now returns through that real reader control and asserts
-canvas remount before fullscreen. Its focused Chromium case and scoped checks
-pass. All existing canvas/fullscreen/return/no-error assertions and budgets are
-retained; production code and the qualified build are unchanged by this repair.
-
-The single-agent native Indexing gate `integrated-4c7c-indexing-root-1` passes
-actual Codex/Luna acceptance, a subsequent checklist action while running,
-expired wait, observation, unbounded wait and stored result. Its atomically
-published manifest exactly matches 48,098 real entries. Five fresh owned-folder
-UI cycles also pass Stop independence, confirmation hit tests at desktop/phone
-widths, exactly one cancellation request and actual owner settlement. Durable
-audits show progress before cancellation and no partial manifests. Reconnecting
-an already linked source correctly returns its existing link instead of starting
-another index; the first reuse probe is retained as a probe failure.
-
-An explicit public refresh exposed a real acceptance response defect: storage
-custody persisted its handle, but the REST link/transfer routes serialized the
-older operation object. The Indexing regression reproduces the empty handle.
-Both routes now reload the persisted operation before returning 202. Two focused
-real API cases pass identity/query/result joins and actual entry or byte/hash
-checks; scoped Ruff/Pyright and guards pass. The initial refresh finished normally
-before service retirement; it is not an interruption acceptance pass. Fresh live
-refresh cancellation against an existing manifest remains required after this fix.
-
-Every live run must record source fingerprints **before** service start, actual
-runtime/model identities, invocation IDs, handles, timestamps, transcripts,
-backend outcomes and filesystem/process evidence. A source change during a
-run invalidates its claim to qualify a single integrated state. Unavailable
-provider, platform or transport gates remain blocked and unverified and prevent
-claiming complete qualification. Preserve installed Desktop/auth/defaults,
-released pins, private work, rejected launches and manual-only cleanup paths.
+These limits prevent claiming implementation completion under the requested
+full qualification gate. Both PRs remain drafts. Preserve every rejected-launch,
+installed-runtime, private-data and manual-only cleanup boundary. Source task
+services/controllers are retired; unrelated active human work is preserved.
+The primary retains the released tracked main/gitlink state, with unrelated
+untracked `.local/` content left intact. Disk/manual cleanup remains a separate
+incomplete monitor obligation.
