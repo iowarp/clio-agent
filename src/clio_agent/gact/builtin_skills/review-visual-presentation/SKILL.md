@@ -1,6 +1,6 @@
 ---
 name: review-visual-presentation
-description: Inspect and refine data widgets, annotated explanations and substantial dashboards through available view controls and rendered-image evidence. Use during visual investigation or before presenting a complex view.
+description: Inspect, control, capture and refine complex data views before presenting them. Review matching pixels at the user's viewing size; preserve coherent composition, linked evidence and consistent meanings. Use during visual investigation or for substantial dashboards.
 ---
 
 Use visual interaction to investigate a question and to improve what a person
