@@ -114,6 +114,9 @@ def build_declaration(
         "tokenizer": renderer.identity,
         "template_sha": renderer.template_sha,
         "template_kwargs": {k: v for k, v in template_kwargs.items() if k != "tools"},
+        # The read path re-renders the prompt to align the capture; the chat
+        # template renders tool schemas into it, so they must be replayed (F049).
+        "tools": template_kwargs.get("tools") or [],
         "prompt_token_count": declaration.prompt_token_count,
         "ranges": [r.to_record() for r in declaration.ranges],
         "unlocated_messages": declaration.unlocated_messages,

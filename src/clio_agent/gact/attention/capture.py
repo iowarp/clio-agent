@@ -80,7 +80,10 @@ def load_capture(
             "attention_tokenizer_unavailable", "no tokenizer recorded on the call or workflow"
         )
     renderer = renderer_for(identity)
-    encoded = renderer.render_encoded(call.messages, declaration.get("template_kwargs") or {})
+    template_kwargs = dict(declaration.get("template_kwargs") or {})
+    if declaration.get("tools"):
+        template_kwargs["tools"] = declaration["tools"]
+    encoded = renderer.render_encoded(call.messages, template_kwargs)
     _check_prompt(encoded, summary)
 
     if declaration.get("status") == "declared":
