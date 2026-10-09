@@ -49,7 +49,8 @@ def test_none_default_is_valid_on_wire_and_in_native_execution() -> None:
     def epoch(expected_view_revision: int | None = None) -> int | None:
         return expected_view_revision
 
-    declared = {"expected_view_revision": {"type": "integer"}}
+    description = "Exact epoch, or null while loading."
+    declared = {"expected_view_revision": {"type": "integer", "description": description}}
     tool = native_tool(
         epoch,
         name="epoch",
@@ -67,6 +68,8 @@ def test_none_default_is_valid_on_wire_and_in_native_execution() -> None:
         assert validator.is_valid(None)
         assert validator.is_valid(0)
         assert not validator.is_valid("0")
+        if candidate.name == "epoch":
+            assert properties["expected_view_revision"]["description"] == description
     assert tool(expected_view_revision=None) is None
     assert tool(expected_view_revision=0) == 0
-    assert declared == {"expected_view_revision": {"type": "integer"}}
+    assert declared == {"expected_view_revision": {"type": "integer", "description": description}}

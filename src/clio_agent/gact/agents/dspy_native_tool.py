@@ -29,7 +29,12 @@ class ClioNativeTool(dspy.Tool):
             args = copy.deepcopy(args)
             for arg_name, parameter in inspect.signature(func).parameters.items():
                 if parameter.default is None and arg_name in args:
-                    args[arg_name] = {"anyOf": [args[arg_name], {"type": "null"}]}
+                    schema = args[arg_name]
+                    args[arg_name] = {"anyOf": [schema, {"type": "null"}]}
+                    # An annotation describes the argument, including its null
+                    # alternative. Keep it on the argument's public schema.
+                    if "description" in schema:
+                        args[arg_name]["description"] = schema.pop("description")
         super().__init__(func, name, desc, args, arg_types, arg_desc)
 
     def format_as_litellm_function_call(self) -> dict[str, Any]:
