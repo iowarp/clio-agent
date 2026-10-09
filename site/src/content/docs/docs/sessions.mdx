@@ -93,6 +93,10 @@ Use **+ → Attach** to [add files, folders, or connected data](/docs/files/atta
 
 ## Steer or stop a run
 
+For alternative answers, see [Best of N and refinement](/docs/best-of-n/).
+For a report that connects several outputs in the side panel, see
+[Dashboards](/docs/dashboards/). Both guides identify development-build behavior.
+
 While the agent is working, a **Steer** button appears next to the composer. Type a message and choose it, and the message joins the active turn at the next safe boundary instead of waiting for it to finish.
 
 During a run the send button is labeled **Stop**. Choose it to cancel the current work.
@@ -100,6 +104,9 @@ During a run the send button is labeled **Stop**. Choose it to cancel the curren
 The session header also has actions to fork a session, compact its history, share it, and undo.
 
 ## Export a session for someone else
+
+For a scope comparison, the development menu's named checkboxes, and where saved
+files appear, see [Exports and downloads](/docs/exports/).
 
 Open the session's sidebar menu and choose **Export session**, then **Download transcript HTML**. The default is one **Transcript HTML file** with everything needed to read the conversation: tool inputs and outputs, recorded intermediate steps, loaded skill instructions, traces, child-agent work and supported saved views. Styles, scripts and captured images are embedded; there are no companion skill or data files.
 
@@ -135,5 +142,8 @@ Check **Evidence & skills** for recording coverage, excluded files and uncapture
 Effects and Full also include **transcript.json**, readable **traces/** and **skills/** folders, and a file manifest with checksums. Full records a current workspace snapshot for inspecting and reproducing the work; it does not recreate external services or the installed execution environment. Importing a raw transcript into CLIO restores message history and context references; it does not automatically restore the workspace or execute recorded actions.
 
 <Aside type="note">
-These export options are part of the next release after beta-3. Existing sessions may contain records that were shortened before the fuller recording was introduced.
+Existing sessions may contain records that were shortened before the fuller
+recording was introduced. The development menu uses **Include session artifacts**
+and **Include workspace files** for Effects and Full; those named controls are not
+included in beta 5.2.
 </Aside>

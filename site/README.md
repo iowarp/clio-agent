@@ -4,6 +4,9 @@ The public site for CLIO: the overview, the user docs, and the tutorials. It is 
 
 Read [WRITING.md](WRITING.md) before you write or edit a page.
 
+Use [FEATURE_COVERAGE.md](FEATURE_COVERAGE.md) when updating product features. It
+maps their reader entry points, retained examples, and release availability.
+
 ## Run it locally
 
 ```sh
