@@ -135,6 +135,29 @@ def test_build_model_capabilities_wires_context_max() -> None:
     assert model.context_max.value == 40960
 
 
+def test_build_model_capabilities_scans_the_loaded_chat_template() -> None:
+    """A GGUF served by path: the template /props reports is the thinking fact (F035)."""
+    payload = _load("v1_models.json")
+    template = "{%- if enable_thinking is defined and enable_thinking is false %}<think>\n\n</think>{%- endif %}"
+
+    model = llama_cpp.build_model_capabilities(
+        "/models/Qwen3-4B-Q4_K_M.gguf", payload, "qwen3-8b-q4_k_m.gguf", {"chat_template": template}
+    )
+
+    assert model.thinking.value is not None
+    assert model.thinking.value.mechanism == "on_off"
+    assert model.thinking.source == "server_report"
+
+
+@pytest.mark.parametrize("props", [None, {}, {"chat_template": "  "}, {"chat_template": 3}])
+def test_build_model_capabilities_thinking_unknown_without_a_template(props: Any) -> None:
+    payload = _load("v1_models.json")
+
+    model = llama_cpp.build_model_capabilities("m", payload, "qwen3-8b-q4_k_m.gguf", props)
+
+    assert model.thinking.value is None
+
+
 # --------------------------------------------------------------------------- router mode (/models)
 
 

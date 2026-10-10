@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 import requests
 from fastapi.testclient import TestClient
 
@@ -2505,6 +2506,68 @@ def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
     # anthropic's generic budget ladder maps 'high' -> 24576
     # (providers.thinking_levels.LEVEL_BUDGET).
     assert cfg["thinking_effective"] == "high (budget 24576)"
+
+
+@pytest.mark.parametrize(
+    ("level", "expected"),
+    [
+        ("off", "off"),
+        ("low", "on (requested=low; this model's thinking is an on/off switch)"),
+        ("high", "on (requested=high; this model's thinking is an on/off switch)"),
+    ],
+)
+def test_effective_lm_config_reports_an_on_off_template_toggle_honestly(
+    level: str, expected: str
+) -> None:
+    """F017: Qwen3 on vLLM toggles thinking via ``chat_template_kwargs.enable_thinking``;
+    low and high send the same "on", so the display must not echo a distinct strength."""
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        EndpointCapabilities,
+        Fact,
+        ModelCapabilities,
+        ThinkingSpec,
+    )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    api_base = "http://127.0.0.1:8000/v1"
+    invalidation.record_endpoint_capabilities(
+        EndpointCapabilities(
+            provider_id="vllm",
+            api_base=api_base,
+            dialect="vllm",
+            thinking_controls=Fact(frozenset({"chat_template_kwargs"}), "dialect", now),
+        )
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="test:qwen3",
+            thinking=Fact(
+                ThinkingSpec(mechanism="on_off", template_kwarg="enable_thinking"), "hf_repo", now
+            ),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="vllm",
+            api_base=api_base,
+            model_id="qwen3",
+            model_key=Fact("test:qwen3", "server_report", now),
+        )
+    )
+    from clio_agent.gact.providers.config import _thinking_effective_display
+
+    cfg = {
+        "provider_id": "vllm",
+        "provider": "openai",
+        "model": "qwen3",
+        "api_base": api_base,
+        "thinking_level": level,
+    }
+
+    assert _thinking_effective_display(cfg) == expected
 
 
 def test_effective_lm_config_surfaces_unknown_thinking_with_no_evidence_yet() -> None:

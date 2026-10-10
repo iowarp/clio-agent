@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import pytest
 
-from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_VERSION
+from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_IMAGE
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -27,7 +27,7 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 
-IMAGE = f"ollama/ollama:{OLLAMA_VERSION}"
+IMAGE = OLLAMA_IMAGE
 HOME = "/home/alice"
 PROBE = (
     "Linux|x86_64|none|1|1|0\n"
@@ -69,6 +69,9 @@ class FakeLinuxTarget:
             # exec the wrapped command (``sh -c SCRIPT sh docker run ...``).
             variable = args[1].split("export ", 1)[1].split("=", 1)[0]
             inner = args[3:]
+            if inner[0] == "sh":
+                # The keyed readiness probe (F026): the fake server is ours.
+                return CommandResult(exit_code=0, stdout="ready")
             name = inner[inner.index("--name") + 1]
             self.environments[name] = {variable: spec.stdin.splitlines()[0]}
             return self._docker(inner[1:])
@@ -93,6 +96,15 @@ class FakeLinuxTarget:
             return CommandResult(exit_code=0)
         if program == "docker":
             return self._docker(args)
+        if program == "curl" and "/api/show" in args[-5]:
+            # The Ollama context step (no model server here): it records why
+            # Ollama's own default stays.
+            return CommandResult(exit_code=7, stderr="connection refused")
+        if program == "nproc":
+            # The Ollama CPU variant's thread sizing (F044) and its /api/create.
+            return CommandResult(exit_code=0, stdout="4\n")
+        if program == "curl" and any(arg.endswith("/api/create") for arg in args):
+            return CommandResult(exit_code=0, stdout='{"status":"success"}\n')
         raise AssertionError(f"unexpected command {program} {args}")
 
     def _verified_removal(self, script: str, ref: str) -> CommandResult:
@@ -562,3 +574,34 @@ async def test_parents_shared_by_two_deployments_go_with_the_last_uninstall(
         assert removed.state == "succeeded", removed.error
 
     assert target.snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (
+            'CLIO_SERVICE_OBSERVATION {"phase": "untouched", "running": false}',
+            "Nothing this operation started needed cleaning up.",
+        ),
+        (
+            'CLIO_SERVICE_OBSERVATION {"phase": "stopped", "running": false}',
+            "Stopped the owned operation; retained its environment, model cache and evidence.",
+        ),
+    ],
+)
+def test_failure_cleanup_reports_whether_the_operation_started_anything(
+    stdout: str, expected: str
+) -> None:
+    """F020: a refused start's cleanup says nothing needed undoing, not "incomplete"."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
+    from clio_agent.gact.infrastructure.plan import DriverPlan
+
+    async def execute(target_id: str, spec: CommandSpec) -> CommandResult:
+        return CommandResult(exit_code=0, stdout=stdout)
+
+    plan = DriverPlan((), failure_cleanup=(CommandSpec(program="python3"),))
+    runtime = SimpleNamespace(_execute=execute)
+    message = asyncio.run(InfrastructureRuntime._teardown(runtime, "local", plan, None))  # type: ignore[arg-type]
+    assert message == expected

@@ -20,6 +20,9 @@ LLAMA_WINDOWS_CPU_ARCHIVE = (
     "https://github.com/ggml-org/llama.cpp/releases/download/"
     f"{LLAMA_BUILD}/llama-{LLAMA_BUILD}-bin-win-cpu-x64.zip"
 )
+#: The release asset's sha256 (GitHub release digest, resolved 2026-10-08):
+#: an archive that does not match is never unpacked (F027).
+LLAMA_WINDOWS_CPU_SHA256 = "c17f1e3233fc5f5b8915472affa939adee0c95785882503b106d5b14aba01002"
 NATIVE_PORT = 8088
 
 
@@ -96,6 +99,10 @@ def native_windows_llama_plan(
                 "$archive=Join-Path $env:TEMP 'clio-llama.zip'; "
                 f"Invoke-WebRequest -UseBasicParsing -Uri {powershell.literal(LLAMA_WINDOWS_CPU_ARCHIVE)} "
                 "-OutFile $archive; "
+                "$digest=(Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant(); "
+                f"if ($digest -ne {powershell.literal(LLAMA_WINDOWS_CPU_SHA256)}) {{ "
+                "Remove-Item -LiteralPath $archive -Force; "
+                'throw "llama.cpp archive sha256 $digest does not match the pinned release" }; '
                 "Expand-Archive -LiteralPath $archive -DestinationPath $root -Force; "
                 "Remove-Item -LiteralPath $archive -Force; "
                 "$exe=Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse | "

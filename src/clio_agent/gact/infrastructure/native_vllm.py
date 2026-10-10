@@ -4,20 +4,44 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
+from collections.abc import Sequence
 
 from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
     TargetFacts,
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
+from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
 from clio_agent.gact.infrastructure.server_parameters import compile_parameters
 from clio_agent.gact.infrastructure.supervised_service import supervised_plan
 
 CONNECTOR_REVISION = "95ab2acd6fe1be74ad9a3fa2aca1ecbee60a6284"
 FLOWCEPT_REVISION = "e638b4e2072290a2921965a03a150db124e11c2e"
 ATTENTION_PROFILE = "vllm-0.27.0-attention-1"
+#: Overrides the pinned connector source with a PEP 508 direct reference
+#: (git+file://... or a wheel path) to qualify an unreleased connector build.
+CONNECTOR_SOURCE_ENV = "CLIO_VLLM_ATTN_CONNECTOR"
 NATIVE_VARIANTS = frozenset({"native-cuda", "native-cuda-attention"})
+
+
+def connector_source() -> str:
+    """The connector's direct reference: the pinned revision unless overridden."""
+    override = os.environ.get(CONNECTOR_SOURCE_ENV, "").strip()
+    if override:
+        return override
+    return f"git+https://github.com/spotter-ai-genesis/vllm-attn-connector.git@{CONNECTOR_REVISION}"
+
+
+def served_model(model: str, flags: Sequence[str]) -> str:
+    """The model id vLLM lists: ``--served-model-name`` when set, else the model path."""
+    for index, flag in enumerate(flags):
+        if flag == "--served-model-name" and index + 1 < len(flags):
+            return flags[index + 1]
+        if flag.startswith("--served-model-name="):
+            return flag.split("=", 1)[1]
+    return model
 
 
 def native_variants(facts: TargetFacts) -> list[ServiceVariant]:
@@ -43,14 +67,43 @@ def native_variants(facts: TargetFacts) -> list[ServiceVariant]:
     ]
 
 
+# vLLM binds ZMQ IPC sockets at $VLLM_RPC_BASE_PATH/<uuid4> (default: the temp dir). A deep
+# service directory overflows the 107-byte AF_UNIX path limit, so use a private short directory.
+IPC_PRELUDE = """import hashlib
+import os
+import tempfile
+
+_base = os.environ.get("VLLM_RPC_BASE_PATH") or tempfile.gettempdir()
+if len(_base) + 38 > 107:
+    _base = "/tmp/clio-vllm-" + hashlib.sha256(_base.encode()).hexdigest()[:16]
+    os.makedirs(_base, mode=0o700, exist_ok=True)
+    _stat = os.stat(_base)
+    if _stat.st_uid != os.getuid() or _stat.st_mode & 0o077:
+        raise RuntimeError("The short vLLM socket directory is not private to this user")
+    os.environ["VLLM_RPC_BASE_PATH"] = _base
+"""
+
+
+# vLLM may spawn its engine core; a spawned child re-imports this file as __mp_main__ and must
+# not start a second API server.
+RUN_GUARD = 'if __name__ == "__main__":\n'
+
+
 def launcher(attention: bool) -> str:
     """Activate the pinned probe before importing or constructing vLLM's engine."""
     if not attention:
-        return 'import runpy\nrunpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
-    return """import json
-import os
+        return (
+            IPC_PRELUDE
+            + "import runpy\n"
+            + RUN_GUARD
+            + '    runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")\n'
+        )
+    return (
+        IPC_PRELUDE
+        + """import json
 import runpy
 import sys
+from pathlib import Path
 
 # Settings are a private file on this host, never agent/transcript material.
 root = Path(__file__).parent
@@ -71,10 +124,13 @@ sys.argv.extend(["--kv-transfer-config", json.dumps({
     "kv_role": "kv_producer",
     "kv_connector_extra_config": {"workflow_id": workflow, "out_dir": str(root / "evidence")},
 })])
-# The separately managed collector is the sole persistence owner.
-with Flowcept("vllm", workflow_id=workflow, workflow_name="CLIO attention", start_persistence=False):
-    runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
 """
+        + RUN_GUARD
+        + """    # The separately managed collector is the sole persistence owner.
+    with Flowcept("vllm", workflow_id=workflow, workflow_name="CLIO attention", start_persistence=False):
+        runpy.run_module("vllm.entrypoints.openai.api_server", run_name="__main__")
+"""
+    )
 
 
 def native_vllm_plan(
@@ -103,10 +159,12 @@ def native_vllm_plan(
     if attention:
         dependencies.extend(
             [
-                f"vllm-attn-connector @ git+https://github.com/spotter-ai-genesis/vllm-attn-connector.git@{CONNECTOR_REVISION}",
+                f"vllm-attn-connector @ {connector_source()}",
                 f"flowcept[extras] @ git+https://github.com/spotter-ai-genesis/flowcept.git@{FLOWCEPT_REVISION}",
             ]
         )
+    if action in {"install", "reinstall", "start"}:
+        configuration = {**configuration, **parser_defaults(model, configuration)}
     compiled = compile_parameters("vllm", "cuda", configuration)
     ownership = hashlib.sha256(
         f"{facts.target_id}:{facts.hostname}:{directory}".encode()
@@ -121,6 +179,7 @@ def native_vllm_plan(
         "model_revision": configuration.get("model_revision", ""),
         "port": port,
         "health_path": "/health",
+        "identity": {"kind": "openai", "served_model": served_model(model, compiled.flags)},
         "arguments": [
             "--model",
             model,

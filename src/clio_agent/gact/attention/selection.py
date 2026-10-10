@@ -13,6 +13,14 @@ tokens + 1 for a stopped request (the final row is the stop token, which has no
 text), ``G`` = tokens when it hit the length limit. Checked on job 3237185:
 29/29 calls. Any other count, or a capture whose health counters say rows were
 skipped, is a typed reason -- never a shifted guess.
+
+A reasoning model served with a reasoning parser (vLLM ``qwen3``) generates
+``<think>`` + reasoning + ``</think>`` + content, and the parser splits that into
+``reasoning_content`` and ``content``. When the call recorded its reasoning and
+the content alone does not match the step count, the full generated text is
+rebuilt from those delimiters (only when the tokenizer has each as one token, so
+the content's tokens start at a clean boundary) and must match the count
+exactly; the content's steps are then offset by the prefix's tokens.
 """
 
 from __future__ import annotations
@@ -74,12 +82,31 @@ class StepSpan:
     output_tokens: int
 
 
+THINK_OPEN, THINK_CLOSE = "<think>", "</think>"
+
+
+def _reasoning_offset(renderer: ChatRenderer, reasoning: str, content: str) -> int | None:
+    """Token count of ``<think>reasoning</think>`` before the content, or None.
+
+    None when the delimiters are not single tokens of this tokenizer or the
+    rebuilt text does not tokenize as prefix + content (no clean boundary).
+    """
+    if any(len(renderer.encode(tag).ids) != 1 for tag in (THINK_OPEN, THINK_CLOSE)):
+        return None
+    prefix = renderer.encode(THINK_OPEN + reasoning + THINK_CLOSE).ids
+    full = renderer.encode(THINK_OPEN + reasoning + THINK_CLOSE + content)
+    if full.ids != [*prefix, *renderer.encode(content).ids]:
+        return None
+    return len(prefix)
+
+
 def output_steps(
     renderer: ChatRenderer,
     content: str,
     out_lo: int,
     out_hi: int,
     record: AttentionRecord,
+    reasoning: str | None = None,
 ) -> StepSpan:
     """Map an output char span to decode-step rows (see the module docstring)."""
     if not record.clean:
@@ -91,16 +118,25 @@ def output_steps(
         )
     encoded = renderer.encode(content)
     n = len(encoded.ids)
-    if record.decode_steps not in (n, n + 1):
+    offset = 0
+    if record.decode_steps not in (n, n + 1) and reasoning:
+        prefix = _reasoning_offset(renderer, reasoning, content)
+        if prefix is not None and record.decode_steps in (prefix + n, prefix + n + 1):
+            offset = prefix
+    if record.decode_steps not in (offset + n, offset + n + 1):
         raise AttentionUnavailable(
             "output_alignment_mismatch",
-            f"the recorded output re-tokenizes to {n} tokens, the capture has "
-            f"{record.decode_steps} decode steps",
+            f"the recorded output re-tokenizes to {n} tokens"
+            + (" (reasoning not recorded)" if not reasoning else " (with or without reasoning)")
+            + f", the capture has {record.decode_steps} decode steps",
             {"request_id": record.request_id, "output_tokens": n},
         )
     tok_lo, tok_hi = encoded.token_span(out_lo, out_hi)
     if tok_hi <= tok_lo:
         raise AttentionUnavailable("selection_not_located", "the selection covers no tokens")
     return StepSpan(
-        steps=list(range(tok_lo, tok_hi)), token_lo=tok_lo, token_hi=tok_hi, output_tokens=n
+        steps=list(range(offset + tok_lo, offset + tok_hi)),
+        token_lo=tok_lo,
+        token_hi=tok_hi,
+        output_tokens=n,
     )

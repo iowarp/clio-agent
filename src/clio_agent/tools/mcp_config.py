@@ -600,7 +600,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             )
 
         # Preserve the host environment beneath explicit server overrides.
-        env = stdio_environment(spec.env)
+        env = stdio_environment(spec.env, command=spec.command, args=spec.args)
         env.update(launcher_env)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources

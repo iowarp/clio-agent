@@ -342,6 +342,6 @@ def test_picker_offers_off_only_where_it_is_sent() -> None:
     assert router_spec is not None
     assert _offered(router_spec, "openrouter") == ["low", "medium", "high"]
     assert _offered(_EFFORT_WITH_OFF, "openrouter") == ["off", "low", "medium", "high"]
-    assert _offered(_TOGGLE, "vllm") == ["off", "low", "medium", "high"]
+    assert _offered(_TOGGLE, "vllm") == ["off", "high"]  # a switch, not a ladder (F039)
     # claude_code's "off" is the Agent SDK's own disabled option, valid for every model.
     assert _offered(_EFFORT_NO_OFF, "claude_code")[0] == "off"

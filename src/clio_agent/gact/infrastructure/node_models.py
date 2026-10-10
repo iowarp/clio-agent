@@ -22,9 +22,57 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+# The worker's owned uv project installs only this; its imports must stay within it and stdlib.
+WORKER_DEPENDENCIES = ("huggingface-hub==0.35.3",)
+
+
+# A dead worker's last log lines travel to the API/UI; keep them bounded and secret-free.
+LOG_TAIL_LINES = 20
+LOG_TAIL_BYTES = 64 * 1024
+_URL_QUERY = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
+_SECRET = re.compile(
+    r"(?i)(hf_[A-Za-z0-9]{8,}|bearer\s+\S+|(?:token|signature|credential|key)=[^&\s]+)"
+)
+
 
 class AcquisitionError(ValueError):
     """An explicitly sanitized failure safe to display outside the execution host."""
+
+
+def log_tail(path: Path) -> list[str]:
+    """Return the worker log's last lines with signed-URL queries and tokens removed."""
+    try:
+        with path.open("rb") as reader:
+            reader.seek(max(0, path.stat().st_size - LOG_TAIL_BYTES))
+            text = reader.read().decode("utf-8", errors="replace")
+    except OSError:
+        return []
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    return [
+        _SECRET.sub("<redacted>", _URL_QUERY.sub(r"\1?<redacted>", line))[:300]
+        for line in lines[-LOG_TAIL_LINES:]
+    ]
+
+
+def exit_cause(code: int) -> str:
+    """Describe a child exit status, naming the signal when one ended it."""
+    if code < 0:
+        try:
+            return f"was killed by {signal.Signals(-code).name}"
+        except ValueError:
+            return f"was killed by signal {-code}"
+    return f"exited with code {code}"
+
+
+def worker_failure(folder: Path, cause: str) -> dict[str, Any]:
+    """Typed receipt fields for a worker that ended without a terminal result."""
+    tail = log_tail(folder / "download.log")
+    detail = f": {tail[-1]}" if tail else ""
+    return {
+        "error": f"The download worker {cause} before finishing{detail}",
+        "log_tail": tail,
+        "log_path": str(folder / "download.log"),
+    }
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -149,24 +197,104 @@ def complete(job: dict[str, Any]) -> bool:
     return True
 
 
-def inspect_jobs(root: Path) -> list[dict[str, Any]]:
-    """Reconcile dead workers without claiming an incomplete model is reusable."""
+def inspect_jobs(root: Path, peers: Path | None = None) -> list[dict[str, Any]]:
+    """Reconcile dead workers without claiming an incomplete model is reusable.
+
+    ``peers`` holds the other hosts' operation roots on a shared filesystem: a model
+    another host verified stays ready here while its files are unchanged.
+    """
     if not root.is_dir():
         raise ValueError("The recorded model storage location is unavailable on this host")
     rows = []
     for path in sorted(root.glob("*/receipt.json")):
         job = json.loads(path.read_text())
         if job["state"] in {"queued", "running"} and not alive(job):
+            # No supervisor recorded an exit: it was killed with the worker or the host restarted.
             job.update(
                 state="interrupted",
-                error="The download process ended; retry to reuse its cached bytes.",
+                error_code="worker_lost",
+                **worker_failure(path.parent, "stopped (killed or host restart)"),
             )
+            job["error"] += "; retry to reuse its cached bytes."
         if job["state"] == "ready" and not complete(job):
             job.update(
                 state="stale",
                 error="Model files changed or disappeared; retry to verify the revision.",
             )
         rows.append(public(job))
+    seen = {row["id"] for row in rows}
+    for path in sorted(peers.glob("*/*/receipt.json")) if peers else []:
+        if path.parent.parent == root:
+            continue
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue  # Another host's unreadable receipt says nothing about this host.
+        if job["id"] not in seen and job["state"] == "ready" and complete(job):
+            seen.add(job["id"])
+            rows.append(public(job))
+    return rows
+
+
+def is_hub_cache(root: Path) -> bool:
+    """A Hugging Face hub cache holds ``models--<org>--<name>`` repository folders."""
+    return root.is_dir() and any(path.is_dir() for path in root.glob("models--*"))
+
+
+def hub_snapshots(root: Path) -> list[dict[str, Any]]:
+    """List each snapshot of a Hugging Face hub cache as a model revision on this host.
+
+    The cache is shared (other tools and users download into it), so no CLIO receipt
+    exists: a snapshot is ready when its files resolve to complete blobs; a repository
+    with ``.incomplete`` blobs is reported as an unfinished download, never as ready.
+    """
+    rows: list[dict[str, Any]] = []
+    for repo in sorted(root.glob("models--*")):
+        repository = repo.name.removeprefix("models--").replace("--", "/", 1)
+        refs: dict[str, str] = {}
+        for ref in sorted((repo / "refs").glob("*")) if (repo / "refs").is_dir() else []:
+            try:
+                refs.setdefault(ref.read_text().strip(), ref.name)
+            except OSError:
+                continue
+        partial = any((repo / "blobs").glob("*.incomplete"))
+        for snapshot in sorted((repo / "snapshots").glob("*")):
+            files = sorted(p for p in snapshot.rglob("*") if p.is_file() or p.is_symlink())
+            missing = [p for p in files if not p.exists()]
+            try:
+                size = sum(p.stat().st_size for p in files if p.exists())
+                mtime = snapshot.stat().st_mtime
+            except OSError:
+                continue
+            ready = bool(files) and not missing and not partial
+            rows.append(
+                {
+                    "id": hashlib.sha256(f"hf-cache\0{snapshot}".encode()).hexdigest()[:24],
+                    "repository": repository,
+                    "requested_revision": refs.get(snapshot.name, snapshot.name),
+                    "revision": snapshot.name,
+                    "destination": str(snapshot),
+                    "files": [],
+                    "file_path": None,
+                    "state": "ready" if ready else "interrupted",
+                    "phase": "Model available (Hugging Face cache)"
+                    if ready
+                    else "Unfinished download in the Hugging Face cache",
+                    "bytes_done": size,
+                    "bytes_total": size if ready else None,
+                    "created_at": mtime,
+                    "updated_at": mtime,
+                    "error": None
+                    if ready
+                    else "Some files of this revision are missing or still downloading; "
+                    "download it again to complete it.",
+                    "error_code": None if ready else "hf_cache_incomplete",
+                    "exit_code": None,
+                    "log_tail": [],
+                    "log_path": None,
+                    "origin": "hf_cache",
+                }
+            )
     return rows
 
 
@@ -188,7 +316,14 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
     ):
         raise ValueError("Select a dedicated absolute model directory on this host")
     destination = destination.resolve()
-    job_id = hashlib.sha256(f"{repository}\0{revision}\0{destination}".encode()).hexdigest()[:24]
+    files = sorted(set(request.get("files") or []))
+    for name in files:
+        if not re.fullmatch(r"[\w.+-]+(?:/[\w.+-]+)*", name) or ".." in name.split("/"):
+            raise ValueError("Invalid model file name")
+    identity = f"{repository}\0{revision}\0{destination}"
+    if files:
+        identity += "\0" + "\0".join(files)
+    job_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
     folder = root / job_id
     folder.mkdir(parents=True, exist_ok=True)
     with control_lock(root):
@@ -196,8 +331,11 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
         previous = None
         if receipt.exists():
             previous = json.loads(receipt.read_text())
-            if (previous["state"] == "ready" and complete(previous)) or alive(previous):
-                return public(previous)
+            # A verified revision is reused (reported as such) unless the
+            # request is from scratch; a ready job then re-downloads (forced).
+            ready = previous["state"] == "ready" and complete(previous)
+            if alive(previous) or (ready and not request.get("from_scratch")):
+                return {**public(previous), "reused": ready}
         for path in root.glob("*/receipt.json"):
             other = json.loads(path.read_text())
             if other["id"] != job_id and Path(other["destination"]) == destination:
@@ -227,7 +365,7 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
         worker.write_text(script)
         (folder / "pyproject.toml").write_text(
             '[project]\nname="clio-model-download"\nversion="1.0.0"\nrequires-python=">=3.11"\n'
-            'dependencies=["huggingface-hub==0.35.3"]\n'
+            f"dependencies={json.dumps(list(WORKER_DEPENDENCIES))}\n"
         )
         if any(path.is_symlink() for path in destination.rglob("*")):
             raise ValueError("Model directories must not contain symbolic links")
@@ -237,6 +375,8 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             "requested_revision": revision,
             "revision": previous.get("revision") if previous else request.get("resolved_revision"),
             "destination": str(destination),
+            "files": files,
+            "file_path": str(destination / files[0]) if len(files) == 1 else None,
             "state": "queued",
             "phase": "Preparing download tools",
             "bytes_done": 0,
@@ -244,6 +384,10 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             "created_at": previous["created_at"] if previous else time.time(),
             "updated_at": time.time(),
             "error": None,
+            "error_code": None,
+            "exit_code": None,
+            "log_tail": [],
+            "log_path": None,
             "force_redownload": bool(
                 previous and (previous.get("force_redownload") or previous["state"] == "ready")
             ),
@@ -259,8 +403,13 @@ def start(root: Path, request: dict[str, Any], script: str) -> dict[str, Any]:
             HF_HUB_DISABLE_TELEMETRY="1",
         )
         with (folder / "download.log").open("ab") as log:
+            # A stdlib supervisor waits on the worker so its exit cause reaches the receipt.
             process = subprocess.Popen(
                 [
+                    sys.executable,
+                    str(worker),
+                    "--supervise",
+                    str(receipt),
                     uv,
                     "run",
                     "--project",
@@ -311,11 +460,51 @@ def _cancel_locked(root: Path, job_id: str) -> dict[str, Any]:
     return public(job)
 
 
+def supervise(receipt: Path, command: list[str]) -> int:
+    """Run the worker and type its failure when it ends without a terminal receipt."""
+    try:
+        code = subprocess.call(command, stdin=subprocess.DEVNULL)
+        cause = exit_cause(code)
+    except OSError as exc:
+        code, cause = 127, f"could not be launched ({type(exc).__name__})"
+    job = json.loads(receipt.read_text())
+    if job["state"] in {"queued", "running"} and not (receipt.parent / "cancel").exists():
+        job.update(
+            state="failed",
+            error_code="worker_exited",
+            exit_code=code,
+            updated_at=time.time(),
+            **worker_failure(receipt.parent, cause),
+        )
+        write_json(receipt, job)
+    elif job["state"] == "failed" and job.get("exit_code") is None:
+        job["exit_code"] = code
+        write_json(receipt, job)
+    return code
+
+
+def read_log(root: Path, job_id: str, offset: int, cap: int = 12_000) -> dict[str, Any]:
+    """Whole lines of one acquisition's download log from byte ``offset``."""
+    if not re.fullmatch(r"[a-f0-9]{24}", job_id):
+        raise ValueError("Invalid model operation")
+    path = root / job_id / "download.log"
+    if path.is_symlink() or not path.is_file():
+        return {"offset": 0, "next_offset": 0, "size": 0, "text": ""}
+    size = path.stat().st_size
+    offset = 0 if offset > size else max(0, offset)
+    with path.open("rb") as reader:
+        reader.seek(offset)
+        data = reader.read(cap)
+    if offset + len(data) < size and b"\n" in data:
+        data = data[: data.rfind(b"\n") + 1]
+    text = data.decode("utf-8", errors="replace")
+    return {"offset": offset, "next_offset": offset + len(data), "size": size, "text": text}
+
+
 def download(receipt: Path) -> None:
     """Download a resolved revision and verify file sizes/hashes before marking it ready."""
     import threading
 
-    import httpx
     from huggingface_hub import HfApi, snapshot_download
 
     # Parent publishes process identity first; both processes write the receipt.
@@ -344,6 +533,12 @@ def download(receipt: Path) -> None:
             raise AcquisitionError(
                 "Registry did not provide the file sizes needed for a capacity check"
             )
+        if job.get("files"):
+            available = {row.rfilename for row in siblings}
+            missing = [name for name in job["files"] if name not in available]
+            if missing:
+                raise AcquisitionError(f"This model revision has no file named {missing[0]!r}")
+            siblings = [row for row in siblings if row.rfilename in set(job["files"])]
         for row in siblings:
             relative = PurePosixPath(row.rfilename)
             if (
@@ -396,6 +591,7 @@ def download(receipt: Path) -> None:
                 local_dir=destination,
                 max_workers=4,
                 force_download=job.get("force_redownload", False),
+                allow_patterns=job.get("files") or None,
             )
         finally:
             stopped.set()
@@ -440,7 +636,8 @@ def download(receipt: Path) -> None:
             updated_at=time.time(),
         )
         write_json(receipt, job)
-    except (OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+    # The pinned client's HTTP errors derive from requests' RequestException, an OSError.
+    except (OSError, ValueError, RuntimeError) as exc:
         # Upstream exception strings can contain signed URLs or auth headers.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         detail = (
@@ -469,19 +666,31 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--worker":
         download(Path(sys.argv[2]))
         return
+    if len(sys.argv) > 3 and sys.argv[1] == "--supervise":
+        sys.exit(supervise(Path(sys.argv[2]), sys.argv[3:]))
     request = json.loads(sys.stdin.read())
     root = Path(request["root"])
     if not root.is_absolute() or root == Path(root.anchor) or ".." in root.parts:
         raise ValueError("Model operations require an absolute owned storage root")
     hostname = re.sub(r"[^A-Za-z0-9_.-]", "_", platform.node())
-    root = root.resolve() / "model-operations" / hostname
+    storage = root.resolve()
+    root = storage / "model-operations" / hostname
     action = request["action"]
-    if action == "list":
-        result: Any = inspect_jobs(root)
+    if action == "list" and is_hub_cache(storage):
+        # A shared hub cache may hold no CLIO receipt for this host yet.
+        result: Any = inspect_jobs(root, peers=root.parent) if root.is_dir() else []
+        owned = {row["destination"] for row in result}
+        result += [row for row in hub_snapshots(storage) if row["destination"] not in owned]
+    elif action == "list" and request.get("hub_only"):
+        result = []
+    elif action == "list":
+        result = inspect_jobs(root, peers=root.parent)
     elif action == "start":
         result = start(root, request, request["script"])
     elif action == "cancel":
         result = cancel(root, request["id"])
+    elif action == "log":
+        result = read_log(root, request["id"], int(request.get("offset") or 0))
     else:
         raise ValueError("Unsupported model operation")
     print(json.dumps(result))

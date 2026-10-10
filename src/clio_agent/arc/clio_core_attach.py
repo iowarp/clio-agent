@@ -65,6 +65,13 @@ _PROBE_POLL_S = 0.02
 # at ``clio_init`` time). Unset, the native default is 30 s whatever CLIO is configured with.
 _NATIVE_WAIT_ENV = "CLIO_WAIT_SERVER"
 
+# The address the native client library binds its own listener to (read from the
+# environment at ``clio_init``; the library defaults it to 0.0.0.0). CLIO's client
+# talks only to the daemon on this host, so it binds loopback unless the person set
+# the variable themselves (F001: an ephemeral 0.0.0.0 listener in the server process).
+_NATIVE_BIND_ENV = "BIND_ADDR"
+_LOOPBACK_BIND = "127.0.0.1"
+
 
 class ClioCoreAttachPhase(str, Enum):
     """Where this process's clio-core attach is."""
@@ -274,6 +281,9 @@ def attach_native_client(
     making no progress (or at the ceiling) and ``clio_core_client_attach_failed`` when
     the native client gave up sooner.
 
+    LOOPBACK. The native client opens a listener of its own, bound to ``$BIND_ADDR``
+    (library default 0.0.0.0); it is exported as 127.0.0.1 first unless already set.
+
     NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
     startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
     So an inherited ``CLIO_WITH_RUNTIME`` is removed first (recorded), and the native
@@ -289,6 +299,7 @@ def attach_native_client(
     mode = (getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient  # type: ignore[attr-defined]
     window = attach_window_s()
     preflight.remove_embedded_runtime_env(os.environ)
+    os.environ.setdefault(_NATIVE_BIND_ENV, _LOOPBACK_BIND)
     check = preflight.preflight_native_client(
         cte, config_path=config_path, no_progress_s=preflight.preflight_window_s(window)
     )
@@ -478,6 +489,23 @@ def _initialize_cte_while_daemon_progresses(cte: object, *, config_path: str, po
     raise error
 
 
+def _daemon_crash_suffix() -> str:
+    """Name a daemon crash recorded since the spawn, with its log path (F019).
+
+    A daemon that died under the attach leaves the probe unanswered; without this
+    the error names only the port, hiding the crash and where its log is.
+    """
+    from clio_agent.arc.clio_core_config import runtime_state_dir  # noqa: PLC0415 - cycle
+    from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash  # noqa: PLC0415
+
+    try:
+        record = read_crash_record(runtime_state_dir())
+    except OSError as exc:
+        logger.warning("daemon crash record lookup failed: %r", exc)
+        return ""
+    return f"; {summarize_crash(record)}" if record else ""
+
+
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
     """Prove a freshly attached store answers ONE real RPC, within a bound, before handing it out.
 
@@ -531,6 +559,7 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
         }.get(outcome.reason, "the daemon process could not be located")
         detail = f"the first RPC after the attach got no answer and {what} (wait={outcome.reason})"
         reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
+        detail += _daemon_crash_suffix()
     on_failure()
     error = ClioCoreAttachError(
         port=store._gate.port,

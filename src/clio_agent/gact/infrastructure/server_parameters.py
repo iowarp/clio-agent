@@ -22,12 +22,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from clio_agent.context_sizing.controls import ContextSizingSpec
+
 ParameterKind = Literal["integer", "number", "choice", "text"]
 ParameterDelivery = Literal["flag", "env"]
 EngineId = Literal["vllm", "llama_cpp", "ollama"]
 
 #: Configuration keys carrying a server parameter are ``param.<id>``.
 PARAMETER_PREFIX = "param."
+
+#: A choice that turns a model-derived default off: validated and recorded, no flag.
+OFF = "off"
 
 
 class ServerParameter(BaseModel):
@@ -53,6 +58,9 @@ class ServerParameter(BaseModel):
     #: Flags the engine needs alongside this one (vLLM's tool-call parser only
     #: takes effect with ``--enable-auto-tool-choice``).
     companion_flags: list[str] = Field(default_factory=list)
+    #: The context parameter's Max / Fit-to-GPU control (see ``context_sizing``);
+    #: set per host on the catalog, absent on every other parameter.
+    context_sizing: ContextSizingSpec | None = None
 
     def applies_to(self, variant_id: str) -> bool:
         """Whether this parameter is meaningful for ``variant_id``."""
@@ -127,7 +135,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "--max-model-len",
             minimum=16,
             maximum=10_000_000,
-            default_behavior="The model's own maximum",
+            default_behavior="Fit to GPU: the model's maximum, capped to fit the GPU",
         ),
         ServerParameter(
             id="gpu_memory_utilization",
@@ -174,6 +182,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             delivery="flag",
             name="--tool-call-parser",
             options=[
+                OFF,
                 "hermes",
                 "mistral",
                 "llama3_json",
@@ -189,9 +198,40 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
                 "glm45",
                 "openai",
             ],
-            default_behavior="Tool calling off",
+            default_behavior="Chosen from the model family (off when the family is unknown)",
             effective_key="tool_call_parser",
             companion_flags=["--enable-auto-tool-choice"],
+        ),
+        ServerParameter(
+            id="reasoning_parser",
+            label="Reasoning parser",
+            description=(
+                "Separates the model's thinking from its answer and returns it as "
+                "reasoning_content (Qwen3 uses qwen3). Without it a thinking model's "
+                "<think> text arrives inside the answer."
+            ),
+            kind="choice",
+            delivery="flag",
+            name="--reasoning-parser",
+            options=[
+                OFF,
+                "qwen3",
+                "deepseek_r1",
+                "deepseek_v3",
+                "openai_gptoss",
+                "granite",
+                "glm45",
+                "hunyuan_a13b",
+                "kimi_k2",
+                "minimax_m2",
+                "mistral",
+                "seed_oss",
+                "step3",
+            ],
+            default_behavior=(
+                "Chosen from the model family (thinking left inside the answer when unknown)"
+            ),
+            effective_key="reasoning_parser",
         ),
         ServerParameter(
             id="dtype",
@@ -224,7 +264,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "--ctx-size",
             minimum=0,
             maximum=10_000_000,
-            default_behavior="The model's trained context",
+            default_behavior="Fit to GPU: the model's trained context, capped to fit the GPU",
             effective_key="ctx_size",
         ),
         _int(
@@ -235,6 +275,17 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "--threads",
             maximum=1024,
             default_behavior="llama.cpp picks from the available cores",
+        ),
+        _int(
+            "gpu_layers",
+            "GPU layers",
+            "Model layers offloaded to the GPU.",
+            "flag",
+            "--n-gpu-layers",
+            minimum=0,
+            maximum=10_000,
+            default_behavior="Every layer on the GPU",
+            variants=["cuda", "vulkan"],
         ),
     ),
     "ollama": (
@@ -256,7 +307,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             "OLLAMA_CONTEXT_LENGTH",
             minimum=256,
             maximum=10_000_000,
-            default_behavior="Ollama's default",
+            default_behavior="Fit to GPU: the model's trained context, capped to fit the GPU",
             effective_key="context_length",
         ),
     ),
@@ -356,7 +407,7 @@ def compile_parameters(
         values[pid] = value
     for parameter in ENGINE_PARAMETERS[engine]:
         chosen = values.get(parameter.id)
-        if chosen is None:
+        if chosen is None or (chosen == OFF and OFF in parameter.options):
             continue
         if parameter.delivery == "flag":
             flags.extend([*parameter.companion_flags, parameter.name, chosen])

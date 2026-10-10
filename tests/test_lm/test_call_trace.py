@@ -101,3 +101,20 @@ def test_factory_lms_carry_the_trace() -> None:
         LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct"),
     ):
         assert call_trace.LM_CALL_TRACE in create_lm(config).callbacks
+
+
+@pytest.mark.parametrize(
+    ("outputs", "expected"),
+    [
+        (
+            type("R", (), {"id": "chatcmpl-a", "provider_data": {"id": "chatcmpl-b"}})(),
+            "chatcmpl-a",
+        ),
+        # A streamed Chat Completions call: lm15 keeps the id only in the end frame.
+        (type("R", (), {"id": None, "provider_data": {"id": "chatcmpl-b"}})(), "chatcmpl-b"),
+        (type("R", (), {"id": None, "provider_data": None})(), ""),
+        ([{"text": "adapter output"}], ""),
+    ],
+)
+def test_response_id_falls_back_to_the_stream_end_frame(outputs: Any, expected: str) -> None:
+    assert call_trace._response_id(outputs) == expected

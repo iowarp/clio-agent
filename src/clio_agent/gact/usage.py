@@ -14,9 +14,10 @@ is shared across threads (list.append under the GIL), so it survives the
 executor-thread + streaming hops that make ``dspy.settings.usage_tracker``
 unreliable from worker threads.
 
-The module imports only stdlib plus :mod:`clio_agent.gact.runtime.globals` (for the
-single-owner :func:`_entry_reasoning_text` reasoning-channel extractor). It never
-imports :mod:`clio_agent.gact.app`.
+The reasoning/answer split of a history entry is the single-owner rule in
+:mod:`clio_agent.gact.reasoning_extract` (the same one the live stream applies, so a
+reloaded reasoning log equals the live transcript). It never imports
+:mod:`clio_agent.gact.app`.
 """
 
 from __future__ import annotations
@@ -25,9 +26,9 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
-# Single source of truth for the reasoning-channel extractor: it lives in
-# runtime.globals. Reuse it here instead of carrying a second copy.
-from clio_agent.gact.runtime.globals import _entry_reasoning_text
+# Single source of truth for the reasoning-channel rule, shared with the live stream.
+from clio_agent.gact.reasoning_extract import entry_reasoning_text as _entry_reasoning_text
+from clio_agent.gact.reasoning_extract import entry_response_text as _entry_response_text
 from clio_agent.runtime import trace, turn_lm_ledger
 
 if TYPE_CHECKING:
@@ -318,20 +319,6 @@ def _estimated_prompt_usage(prompt: str, model: str) -> dict[str, Any]:
         "cache_write_tokens": 0,
         "cache_tokens_measured": False,
     }
-
-
-def _entry_response_text(entry: dict[str, Any]) -> str:
-    """Pull the answer text out of one dspy ``lm.history`` entry's outputs."""
-
-    outputs = entry.get("outputs")
-    texts: list[str] = []
-    if isinstance(outputs, list):
-        for out in outputs:
-            if isinstance(out, str):
-                texts.append(out)
-            elif isinstance(out, dict) and out.get("text"):
-                texts.append(str(out["text"]))
-    return "\n".join(t for t in texts if t).strip()
 
 
 def _entry_prompt_text(entry: dict[str, Any]) -> str:

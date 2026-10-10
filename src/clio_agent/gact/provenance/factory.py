@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.gact.infrastructure.service_paths import this_host_counterpart
+from clio_agent.gact.provenance.deferred import DeferredProvider
 from clio_agent.gact.provenance.dispatcher import ProvenanceDispatcher
 from clio_agent.gact.provenance.flowcept import FlowceptProviderConfig
 from clio_agent.gact.provenance.jsonl import JsonlProvenanceProvider
@@ -107,9 +110,7 @@ def build_provenance_backend(default_root: Path) -> Any:
                 JsonlProvenanceProvider(Path(raw_path).expanduser() if raw_path else default_root)
             )
         elif name == "flowcept":
-            from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
-
-            providers.append(FlowceptProvenanceProvider(_flowcept_config()))
+            providers.append(_deferred_flowcept(_flowcept_config()))
         else:
             providers.append(_build_legacy_factory(default_root))
 
@@ -124,14 +125,48 @@ def build_provenance_backend(default_root: Path) -> Any:
     return ProvenanceDispatcher(providers, queue_size=queue_size)
 
 
+def _deferred_flowcept(config: FlowceptProviderConfig) -> DeferredProvider:
+    """Flowcept attaches when its services are up; CLIO never waits on it (F047).
+
+    Flowcept's Redis/MongoDB are commonly a CLIO-managed service, started
+    through this very server, so a down backend at boot must degrade to
+    ``unavailable`` (typed reason in provider health) and re-attach later.
+    """
+    from clio_agent.gact.provenance.flowcept import FlowceptProvenanceProvider
+
+    return DeferredProvider(
+        "flowcept",
+        lambda: FlowceptProvenanceProvider(_on_this_host(config)),
+        durable=FlowceptProvenanceProvider.durable,
+        queryable=FlowceptProvenanceProvider.queryable,
+        flush_durable=FlowceptProvenanceProvider.flush_durable,
+        flush_note=FlowceptProvenanceProvider.flush_note,
+    )
+
+
+def _on_this_host(config: FlowceptProviderConfig) -> FlowceptProviderConfig:
+    """Re-resolve the settings path at attach time (28a).
+
+    Flowcept is often installed on this node only after CLIO booted, under this
+    host's deployment directory, while the saved path names an earlier node's.
+    """
+    settings_path = this_host_counterpart(config.settings_path, live_service=True)
+    if settings_path == config.settings_path:
+        return config
+    return dataclasses.replace(config, settings_path=settings_path)
+
+
 def _flowcept_config() -> FlowceptProviderConfig:
     return FlowceptProviderConfig(
-        settings_path=conf.resolve(
-            "provenance.agentic.flowcept.settings_path",
-            env="FLOWCEPT_SETTINGS_PATH",
-            default="",
-            cast=conf.as_str,
-        ).strip(),
+        settings_path=this_host_counterpart(
+            conf.resolve(
+                "provenance.agentic.flowcept.settings_path",
+                env="FLOWCEPT_SETTINGS_PATH",
+                default="",
+                cast=conf.as_str,
+            ).strip(),
+            live_service=True,
+        ),
         workflow_scope=conf.resolve(
             "provenance.agentic.flowcept.workflow_scope",
             env="CLIO_FLOWCEPT_WORKFLOW_SCOPE",

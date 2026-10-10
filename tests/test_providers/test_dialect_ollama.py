@@ -331,3 +331,36 @@ def test_parse_show_capabilities_name_the_task() -> None:
     )
     assert chat.task.value == "text-generation"
     assert not ollama_dialect.parse_show({}, model_key="x").task.known
+
+
+_ALWAYS_THINKING_TEMPLATE = (  # qwen3:4b (2507 thinking build), abridged from c15 /api/show
+    "{{ if (and $.IsThinkSet (and .Thinking $last)) -}}<think>{{ .Thinking }}</think>{{ end -}}"
+    '{{- if and (ne .Role "assistant") $last }}<|im_start|>assistant\n<think>\n{{ end }}'
+)
+_SWITCHED_TEMPLATE = "{{- if and $.IsThinkSet (not $.Think) }}<think>\n\n</think>{{ end }}"
+_LEVEL_TEMPLATE = "{{- if $.ThinkLevel }}Reasoning: {{ $.ThinkLevel }}{{ end }}"
+
+
+@pytest.mark.parametrize(
+    ("caps", "template", "mechanism"),
+    [
+        (["completion", "thinking"], _ALWAYS_THINKING_TEMPLATE, "always_on"),
+        (["completion", "thinking"], _SWITCHED_TEMPLATE, "on_off"),
+        (["completion", "thinking"], _LEVEL_TEMPLATE, "on_off"),
+        (["completion", "thinking"], None, "on_off"),
+        (["completion"], _SWITCHED_TEMPLATE, "none"),
+    ],
+)
+def test_parse_show_reads_the_think_switch_from_the_template(
+    caps: list[str], template: str | None, mechanism: str
+) -> None:
+    """A thinking model whose template never reads ``.Think`` cannot be turned off (F040)."""
+    data: dict[str, object] = {
+        "capabilities": caps,
+        "model_info": {"general.architecture": "qwen3"},
+    }
+    if template is not None:
+        data["template"] = template
+    model = ollama_dialect.parse_show(data, model_key="qwen3:4b")
+    assert model.thinking.value is not None
+    assert model.thinking.value.mechanism == mechanism

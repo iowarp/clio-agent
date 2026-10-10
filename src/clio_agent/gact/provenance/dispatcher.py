@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, cast
 
+from clio_agent.gact.provenance.deferred import ProviderUnavailableError
 from clio_agent.gact.provenance.protocol import (
     ExecutionProvenanceReader,
     ProvenanceProvider,
@@ -81,8 +82,30 @@ class _ProviderWorker:
         return ProviderReceipt.ACCEPTED
 
     def snapshot(self) -> ProviderHealth:
-        """Return a race-safe health copy."""
+        """Return a race-safe health copy.
+
+        A deferred provider (F047) that is still detached reports
+        ``unavailable`` with its attach error even before any event failed.
+        """
+        recheck = getattr(self.provider, "recheck", None)
+        attached = bool(recheck()) if callable(recheck) else False
+        reason = str(getattr(self.provider, "unavailable_reason", "") or "")
         with self._lock:
+            if (
+                attached
+                and self.health.status == "unavailable"
+                and self.health.last_error.startswith("provider_unavailable:")
+            ):
+                # Events failed while detached; the recheck attached it since.
+                self.health.status = "ready"
+                self.health.last_error = ""
+            if reason:
+                return replace(
+                    self.health,
+                    queue_depth=self.queue.qsize(),
+                    status="unavailable",
+                    last_error=f"provider_unavailable: {reason}",
+                )
             return replace(self.health, queue_depth=self.queue.qsize())
 
     def _run(self) -> None:
@@ -101,6 +124,14 @@ class _ProviderWorker:
                             self.health.filtered += 1
                         else:
                             self.health.accepted += 1
+                        if self.health.status == "unavailable":
+                            # A deferred provider attached late (F047).
+                            self.health.status = "ready"
+                except ProviderUnavailableError as exc:
+                    with self._lock:
+                        self.health.failed += 1
+                        self.health.status = "unavailable"
+                        self.health.last_error = str(exc)
                 except Exception as exc:  # noqa: BLE001 - downstream cannot kill the worker
                     with self._lock:
                         self.health.failed += 1

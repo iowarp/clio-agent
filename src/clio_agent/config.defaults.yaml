@@ -16,6 +16,13 @@
 # ==========================================================================
 # Process identity, filesystem locations and the global runtime toggles.
 
+# CLIO_DEFAULT_WORKSPACE  (str)  <- src/clio_agent/gact/workspaces.py
+# Absolute directory a fresh install's default workspace (ws_default) is
+# rooted at, created if missing; unset uses the server's working directory
+# at first start. It only seeds: an existing ws_default keeps its root
+# (repoint it with PATCH /v1/workspaces/ws_default or the Workspaces page).
+# paths.default_workspace:  # default unset; resolved in code
+
 # CLIO_MODEL_CATALOG  (str)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Overrides the file path for the discovered-model catalog cache; set to
 # relocate it off the default user-data directory.
@@ -82,6 +89,13 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 # Selects the Codex transport; "websocket" (default, with delta
 # continuation) or "sse" to force the stateless HTTP transport.
 # lm.codex_transport:  # default unset; resolved in code
+
+# CLIO_LM_CONTEXT_SIZING_STRATEGY  (str)  <- src/clio_agent/context_sizing/strategies.py
+# Default Fit-to-GPU strategy that sizes a CLIO-managed model server's
+# context (vLLM, llama.cpp, Ollama) from the model's KV cost and the GPU's
+# free memory; set to a registered research strategy id to change how
+# contexts are fitted.
+lm.context_sizing_strategy: "fit_to_gpu"
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -1351,6 +1365,66 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # Which interpreter the Windows shell tool runs commands through
 # (powershell/bash/cmd); match it to your commands' shell.
 tools.shell.windows_backend: "powershell"
+
+# ==========================================================================
+# Web search
+# ==========================================================================
+# Which backend serves the web_search tool (CLIO's private SearXNG by
+# default, a CLIO Web Search gateway, or none) and the private SearXNG's
+# engine policy.
+
+# CLIO_SEARCH_BACKEND  (str)  <- src/clio_agent/search/settings.py
+# Which service answers the agent's web_search tool: local_searxng (CLIO's
+# private SearXNG, installed on first use), clio_web_search (a gateway at
+# search.clio_web_search.url) or none (search off; the tool reports how to
+# enable it).
+search.backend: "local_searxng"
+
+# CLIO_SEARCH_CLIO_WEB_SEARCH_URL  (str)  <- src/clio_agent/search/settings.py
+# CLIO Web Search gateway URL used when search.backend is clio_web_search;
+# point it at another machine to send search traffic from that machine's
+# address.
+# search.clio_web_search.url:  # default unset; resolved in code
+
+# CLIO_SEARCH_AUTO_INSTALL  (bool)  <- src/clio_agent/search/settings.py
+# Whether the server installs and starts the private SearXNG at boot when it
+# is the backend and was never installed (or is installed but not running);
+# off leaves it to Infrastructure.
+search.local_searxng.auto_install: true
+
+# CLIO_SEARCH_SEARXNG_ENGINES  (list)  <- src/clio_agent/search/settings.py
+# SearXNG engines CLIO enables (comma-separated names from SearXNG's
+# settings.yml); Chinese-jurisdiction engines listed here stay off unless
+# also opted in.
+search.searxng.engines: ["duckduckgo", "brave", "mojeek", "qwant", "startpage", "wikipedia", "arxiv", "crossref", "semantic scholar", "pubmed"]
+
+# CLIO_SEARCH_SEARXNG_LANGUAGE  (str)  <- src/clio_agent/search/settings.py
+# Default search language of the private SearXNG (a SearXNG locale such as
+# en, or auto).
+search.searxng.language: "en"
+
+# CLIO_SEARCH_SEARXNG_MAX_RESULTS  (int)  <- src/clio_agent/search/settings.py
+# Most results CLIO's direct search path returns per query (1-50).
+search.searxng.max_results: 10
+
+# CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES  (list)  <- src/clio_agent/search/settings.py
+# Explicit opt-in for engines that are off by policy (baidu, sogou,
+# 360search, chinaso, quark, ...); each one named here is enabled.
+# search.searxng.opt_in_engines:  # default unset; resolved in code
+
+# CLIO_SEARCH_SEARXNG_PORT  (int)  <- src/clio_agent/search/settings.py
+# Loopback port of the private SearXNG; change it when another program
+# already uses it.
+search.searxng.port: 18890
+
+# CLIO_SEARCH_SEARXNG_REQUEST_TIMEOUT_S  (float)  <- src/clio_agent/search/settings.py
+# Seconds SearXNG waits for each upstream engine (1-60); raise on slow or
+# proxied egress such as HPC login nodes.
+search.searxng.request_timeout_s: 10.0
+
+# CLIO_SEARCH_SEARXNG_SAFE_SEARCH  (int)  <- src/clio_agent/search/settings.py
+# SearXNG safe-search level: 0 off, 1 moderate (default), 2 strict.
+search.searxng.safe_search: 1
 
 # ==========================================================================
 # Relay

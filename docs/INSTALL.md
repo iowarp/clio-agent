@@ -159,6 +159,16 @@ new custom storage roots, which previously had no effect on the writers.
 Older clients may still send the former `<workspace>/.clio` default; it is
 accepted as a compatibility input and normalized to the managed state directory.
 
+The default workspace (`ws_default`) is created on the server's first start.
+Its root is `paths.default_workspace` in `config.yaml` (or `CLIO_DEFAULT_WORKSPACE`)
+when set, else the directory the server was started from. The setting must be an
+absolute path (`~` is expanded; `C:\Users\me\clio-work` on Windows); the server
+creates the directory if it is missing and refuses to start on a relative or
+uncreatable path. The setting only seeds a fresh install: an existing `ws_default`
+keeps its root, and the server logs a warning when the two differ. Repoint an
+existing one from the Workspaces page or with
+`PATCH /v1/workspaces/ws_default {"root_path": "/absolute/dir"}`.
+
 An existing legacy session store remains active until explicitly migrated.
 Stop Agent, Desktop and their Core daemon first, then preview the bounded migration:
 

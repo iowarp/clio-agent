@@ -31,7 +31,7 @@ def declared_mcp_specs(
 ) -> dict[str, Any]:
     """Return MCP specs declared for the selected session and workspace."""
 
-    from clio_agent.tools.mcp_config import load_mcp_servers  # noqa: PLC0415
+    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
 
     blueprint_id = active_blueprint_id(app, session_id)
     pack_servers: dict[str, dict[str, Any]] = {}
@@ -52,7 +52,7 @@ def declared_mcp_specs(
                 pass
         else:
             pack_servers = load_blueprint_servers(blueprint_id, cwd=cwd)
-    return load_mcp_servers(cwd=cwd, pack_servers=pack_servers)
+    return load_agent_mcp_servers(cwd=cwd, pack_servers=pack_servers)
 
 
 @dataclass(frozen=True)

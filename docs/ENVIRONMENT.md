@@ -111,6 +111,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_MEMPROF_OUT` | `debug.memprof_out` | str | _(unset)_ | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `base-agent` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
+| `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
@@ -159,6 +160,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_LM_CONTEXT_SIZING_STRATEGY` | `lm.context_sizing_strategy` | str | `fit_to_gpu` | `src/clio_agent/context_sizing/strategies.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
 | `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
@@ -286,6 +288,16 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SCHEDULER_MAX_RETRIES` | `scheduler.max_retries` | int | `5` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_MIN_INTERVAL_S` | `scheduler.min_interval_s` | int | `60` | `src/clio_agent/gact/scheduler.py` |
 | `CLIO_SCHEDULER_TZ` | `scheduler.timezone` | str | _(unset)_ | `src/clio_agent/gact/scheduler.py` |
+| `CLIO_SEARCH_AUTO_INSTALL` | `search.local_searxng.auto_install` | bool | `true` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_BACKEND` | `search.backend` | str | `local_searxng` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_CLIO_WEB_SEARCH_URL` | `search.clio_web_search.url` | str | _(unset)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_ENGINES` | `search.searxng.engines` | list | `duckduckgo,brave,mojeek,qwant,startpage,wikipedia,arxiv,crossref,semantic scholar,pubmed` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_LANGUAGE` | `search.searxng.language` | str | `en` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_MAX_RESULTS` | `search.searxng.max_results` | int | `10` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES` | `search.searxng.opt_in_engines` | list | _(unset)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_PORT` | `search.searxng.port` | int | `18890` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_REQUEST_TIMEOUT_S` | `search.searxng.request_timeout_s` | float | `10.0` | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_SAFE_SEARCH` | `search.searxng.safe_search` | int | `1` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEMANTIC_TRACE_CONFIG` | `trace.semantic_config` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_SEMANTIC_TRACE_DETAIL` | `trace.detail_level` | str | `semantic` | `src/clio_agent/gact/_params.py` |
 | `CLIO_SEMANTIC_TRACE_FACTORY` | `trace.semantic_factory` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
@@ -340,6 +352,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_DOCUMENT_SHORT_TEMP` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
+| `CLIO_FROM_SCRATCH` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py`, `src/clio_agent/gact/infrastructure/reuse.py` |
 | `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/runtime/sandbox_cli.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
@@ -347,6 +360,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
 | `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
+| `CLIO_SECRET_VARIABLES` | unmigrated | `src/clio_agent/gact/infrastructure/node_service.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
 | `CLIO_STORAGE_GITHUB_APP_URL` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GITHUB_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |

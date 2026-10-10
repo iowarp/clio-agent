@@ -199,6 +199,11 @@ def _thinking_effective_display(cfg: dict[str, Any]) -> str:
     for value in wire.values():
         if isinstance(value, dict) and isinstance(value.get("budget_tokens"), int):
             return f"{level} (budget {value['budget_tokens']})"
+    spec = effective.thinking.spec
+    if spec is not None and spec.mechanism == "on_off":
+        # A toggle has no strength: every level above off sends the same "on", so
+        # echoing "low" would claim an effect the request does not carry (F017).
+        return f"on (requested={level}; this model's thinking is an on/off switch)"
     return str(level)
 
 
@@ -375,6 +380,138 @@ def removed_transport_message(value: Any) -> str:
     from clio_agent.providers.codex.errors import CODEX_VARIANT_REMOVED_MESSAGE  # noqa: PLC0415
 
     return CODEX_VARIANT_REMOVED_MESSAGE
+
+
+def removed_deployment_error(
+    app: Any, value: Any, *, session_id: str, source: str
+) -> ErrorEnvelope | None:
+    """A typed 409 body for a model on a managed deployment CLIO has uninstalled.
+
+    Uninstall removes the deployment's saved server entry
+    (:func:`clio_agent.gact.infrastructure.server_access.retire_saved_servers`);
+    a session still pinned to it would otherwise fail to connect (or get a 401
+    from whatever now listens there). Only while nothing replaced it: no saved
+    entry for that engine and no deployment of it running.
+    """
+
+    ref = _model_ref_dict(value)
+    provider_id = str(ref.get("provider_id") or "")
+    infrastructure = getattr(getattr(app, "state", None), "infrastructure_store", None)
+    if not provider_id or infrastructure is None:
+        return None
+    removed = infrastructure.removed_deployment(provider_id)
+    if removed is None:
+        return None
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    try:
+        if local_server_store.get_server(provider_id) is not None:
+            return None
+    except local_server_store.LocalServerStoreError:
+        return None
+    if any(
+        record.service_id == provider_id and record.state == "running"
+        for record in infrastructure.services()
+    ):
+        return None
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="model_deployment_removed",
+            message=(
+                f"The {provider_id} deployment this model ran on was removed "
+                f"({removed.get('address') or removed.get('target_id', '')}). "
+                "Pick another model."
+            ),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": ref,
+                "removed": removed,
+                "recovery_actions": ["clear_session_model", "choose_model", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
+_ROUTER_MESSAGES = {
+    "model_instance_stopped": (
+        "The vLLM instance {instance} that serves {model} through the model router is "
+        "{state}. Start it, or pick another model."
+    ),
+    "model_router_stopped": (
+        "The model router on {target_id} is not running. Start it, or pick another model."
+    ),
+    "model_not_routed": (
+        "The model router on {target_id} serves no {model}; it routes {routed}. "
+        "Pick one of those, or deploy the model."
+    ),
+}
+
+
+def router_model_error(
+    app: Any, value: Any, *, session_id: str, source: str
+) -> ErrorEnvelope | None:
+    """A typed 409 body for a model a CLIO-managed model router cannot serve right now.
+
+    The router (LiteLLM Proxy) serves only running instances; a session pinned
+    to a model whose instance stopped (or was removed) would otherwise get the
+    proxy's generic error. Checked against the infrastructure store: the saved
+    server's key ref names the router, its target names the instances.
+    """
+
+    ref = _model_ref_dict(value)
+    provider_id = str(ref.get("provider_id") or "")
+    infrastructure = getattr(getattr(app, "state", None), "infrastructure_store", None)
+    if not provider_id or infrastructure is None:
+        return None
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+    from clio_agent.gact.infrastructure.model_router import router_model_problem  # noqa: PLC0415
+
+    try:
+        entry = local_server_store.get_server(provider_id)
+    except local_server_store.LocalServerStoreError:
+        return None
+    if entry is None or not entry.credential_ref:
+        return None
+    problem = router_model_problem(
+        infrastructure, entry.credential_ref, str(ref.get("model_id") or "")
+    )
+    if problem is None:
+        return None
+    code = str(problem["error"])
+    routed = problem.get("routed")
+    routed_names = ", ".join(map(str, routed)) if isinstance(routed, (list, tuple)) else ""
+    facts = {**problem, "routed": routed_names or "nothing"}
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error=code,
+            message=_ROUTER_MESSAGES[code].format(**facts),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": ref,
+                "router": problem,
+                "recovery_actions": ["choose_model", "start_instance", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
+def raise_if_deployment_removed(app: Any, value: Any, *, session_id: str, source: str) -> None:
+    """Refuse (typed 409) a message whose model ran on an uninstalled managed deployment.
+
+    Also a model a managed model router cannot serve now (:func:`router_model_error`).
+    """
+
+    gone = removed_deployment_error(
+        app, value, session_id=session_id, source=source
+    ) or router_model_error(app, value, session_id=session_id, source=source)
+    if gone is not None:
+        from fastapi import HTTPException  # noqa: PLC0415
+
+        raise HTTPException(status_code=409, detail=gone.model_dump(exclude_none=True))
 
 
 def _removed_transport_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:

@@ -31,6 +31,7 @@ lives under [archive/](archive/README.md).
 - [GACT_BROWSER_ORIGIN_SECURITY.md](GACT_BROWSER_ORIGIN_SECURITY.md) — browser-origin security for the GACT server.
 - [ASK_USER_RETRY_PROTOCOL.md](ASK_USER_RETRY_PROTOCOL.md) — the ask-user / retry protocol.
 - [MCP_TOOL_INTEGRATION.md](MCP_TOOL_INTEGRATION.md) — adding tools via FastMCP.
+- [WEB_SEARCH.md](WEB_SEARCH.md) — the `web_search` backend: CLIO's private SearXNG, a CLIO Web Search gateway, or none.
 
 ## Providers
 

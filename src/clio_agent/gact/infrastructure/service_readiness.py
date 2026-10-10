@@ -15,7 +15,9 @@ import httpx
 
 from clio_agent.gact.infrastructure.container_runtime import parse_runtime_name
 from clio_agent.gact.infrastructure.effective_parameters import observe_effective
-from clio_agent.gact.infrastructure.model_runtimes import ENGINES, RUNTIME_FIELD
+from clio_agent.gact.infrastructure.log_follow import LogFollower
+from clio_agent.gact.infrastructure.model_instances import engine_of
+from clio_agent.gact.infrastructure.model_runtimes import ENGINES, RUNTIME_FIELD, engine_spec
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
@@ -44,20 +46,44 @@ async def wait_until_ready(
     progress: Progress,
     *,
     interval: float = POLL_INTERVAL_SECONDS,
+    sink: Callable[[str], None] | None = None,
 ) -> None:
     """Poll the server's health until it answers; fail at once if it exits.
 
     There is no fixed deadline -- a large model on a CPU node can take many
     minutes to load. The wait ends when the server answers, when its process
     is gone (reported with its last log lines), or when the operation is
-    cancelled by the person.
+    cancelled by the person. With a ``sink`` and a ``readiness.log_path``, the
+    new lines of that target log reach ``sink`` on every poll (and once more
+    at the end), so a supervised install's output is live.
 
     Raises:
         ServerExitedError: The server stopped before answering.
     """
 
+    follower = LogFollower(readiness.log_path) if sink and readiness.log_path else None
+    try:
+        await _wait(readiness, execute, progress, interval, follower, sink)
+    except RuntimeError:
+        if follower is not None and sink is not None:
+            await follower.poll(execute, sink, final=True)
+        raise
+    if follower is not None and sink is not None:
+        await follower.poll(execute, sink, final=True)
+
+
+async def _wait(
+    readiness: Readiness,
+    execute: Execute,
+    progress: Progress,
+    interval: float,
+    follower: LogFollower | None,
+    sink: Callable[[str], None] | None,
+) -> None:
     started = time.monotonic()
     while True:
+        if follower is not None and sink is not None:
+            await follower.poll(execute, sink)
         health = await execute(readiness.health)
         observed = parse_observation([health.stdout])
         if observed is not None:
@@ -106,7 +132,7 @@ async def observe_service(
     connection yet (nothing can be observed).
     """
 
-    spec = ENGINES.get(record.service_id)
+    spec = engine_spec(record.service_id) if engine_of(record.service_id) in ENGINES else None
     if spec is None or not record.connection_url or record.state != "running":
         return []
     base = record.connection_url.rstrip("/")

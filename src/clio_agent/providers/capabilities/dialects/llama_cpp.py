@@ -222,14 +222,41 @@ def parse_v1_models_parameters(v1_models_payload: Any, model_id: str) -> Fact[Pa
     return unknown()
 
 
+def parse_props_thinking(payload: Mapping[str, Any] | None) -> Fact[Any]:
+    """The thinking mechanism of the chat template the server loaded (``/props`` ``chat_template``).
+
+    A GGUF carries its own template; llama.cpp serves it verbatim. Scanning it
+    is the only model-level thinking fact for a deployment served from a local
+    file, whose name is neither a Hub repo id nor a snapshot directory (F035).
+    """
+    from clio_agent.providers.capabilities.hf_repo import scan_chat_template  # noqa: PLC0415
+
+    template = payload.get("chat_template") if isinstance(payload, Mapping) else None
+    if not isinstance(template, str) or not template.strip():
+        return unknown()
+    return Fact(
+        scan_chat_template(template),
+        "server_report",
+        _now_iso(),
+        "llama.cpp /props chat_template: template_scan",
+    )
+
+
 def build_model_capabilities(
-    model_key: str, v1_models_payload: Any, model_id: str
+    model_key: str,
+    v1_models_payload: Any,
+    model_id: str,
+    props: Mapping[str, Any] | None = None,
 ) -> ModelCapabilities:
-    """The model-record side of ``GET /v1/models`` (``meta.n_ctx_train``, ``meta.n_params``)."""
+    """The model-record side of ``GET /v1/models`` (``meta.n_ctx_train``, ``meta.n_params``).
+
+    With the ``/props`` payload, also the loaded template's thinking mechanism.
+    """
     return ModelCapabilities(
         model_key=model_key,
         context_max=parse_v1_models_context_max(v1_models_payload, model_id),
         parameters=parse_v1_models_parameters(v1_models_payload, model_id),
+        thinking=parse_props_thinking(props),
     )
 
 

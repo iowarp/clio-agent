@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from clio_agent.gact.infrastructure.model_instances import ROUTER_SERVICE, engine_of
 from clio_agent.gact.infrastructure.models import (
     InfrastructureTarget,
     ServiceAccess,
@@ -40,8 +41,18 @@ logger = logging.getLogger(__name__)
 SHAREABLE_FIELD = "shareable"
 
 #: The environment variable each keyed engine reads its API key from
-#: (vLLM's ``--api-key`` / llama.cpp's ``--api-key`` as environment).
-KEY_VARIABLES: dict[str, str] = {"vllm": "VLLM_API_KEY", "llama_cpp": "LLAMA_API_KEY"}
+#: (vLLM's ``--api-key`` / llama.cpp's ``--api-key`` as environment; the
+#: router's LiteLLM master key, referenced from its generated configuration).
+KEY_VARIABLES: dict[str, str] = {
+    "vllm": "VLLM_API_KEY",
+    "llama_cpp": "LLAMA_API_KEY",
+    ROUTER_SERVICE: "CLIO_ROUTER_MASTER_KEY",
+}
+#: Services whose key is made fresh for every launch, not only per install.
+PER_LAUNCH_KEY_SERVICES = frozenset({ROUTER_SERVICE})
+#: The catalog preset a managed service is reached through ("Use in Models"):
+#: an engine's own, and -- for the router -- the generic OpenAI-compatible one.
+_SERVICE_PRESETS = {ROUTER_SERVICE: "vllm"}
 
 #: A path every keyed engine guards with its key (``/health`` is left open by both).
 _GUARDED_PATH = "/v1/chat/completions"
@@ -54,7 +65,22 @@ _REFUSED = frozenset({401, 403})
 def supports_api_key(service_id: str) -> bool:
     """Whether the engine can be protected by an API key (Ollama cannot)."""
 
-    return service_id in KEY_VARIABLES
+    return engine_of(service_id) in KEY_VARIABLES
+
+
+def preset_of(service_id: str) -> str:
+    """The catalog preset a managed service (or named instance) is reached through."""
+
+    engine = engine_of(service_id)
+    return _SERVICE_PRESETS.get(engine, engine)
+
+
+def stores_launch_key(service_id: str, action: str) -> bool:
+    """Whether ``action`` makes (and so must store) a new key for ``service_id``."""
+
+    return action in {"install", "reinstall"} or (
+        action == "start" and service_id in PER_LAUNCH_KEY_SERVICES
+    )
 
 
 def is_shareable(configuration: dict[str, str]) -> bool:
@@ -77,13 +103,18 @@ def launch_key(
     Install and reinstall make a new key (a reinstall rotates it); the caller
     stores it (:func:`store_key`) before the server starts, so a CLIO that
     stops mid-deploy still has the key of what it started. A start re-launches
-    with the stored key. A shareable deployment has no key.
+    with the stored key -- except the router's, made fresh for every launch. A
+    shareable deployment has no key; the router is never shareable.
     """
 
-    if not supports_api_key(service_id) or is_shareable(configuration):
+    if not supports_api_key(service_id) or (
+        is_shareable(configuration) and service_id not in PER_LAUNCH_KEY_SERVICES
+    ):
         return None
-    if action in {"install", "reinstall"}:
-        return secrets.token_urlsafe(32)
+    if stores_launch_key(service_id, action):
+        # LiteLLM Proxy takes only an ``sk-`` master key as one.
+        prefix = "sk-clio-" if service_id in PER_LAUNCH_KEY_SERVICES else ""
+        return prefix + secrets.token_urlsafe(32)
     if action == "start":
         return load_key(target_id, service_id) or None
     return None
@@ -170,7 +201,7 @@ async def check_access(
 
     where = _where(port, target)
     if not supports_api_key(record.service_id):
-        label = "Ollama" if record.service_id == "ollama" else record.service_id
+        label = "Ollama" if engine_of(record.service_id) == "ollama" else record.service_id
         return ServiceAccess(
             mode="unprotected",
             detail=(
@@ -178,7 +209,7 @@ async def check_access(
                 f"{where} can use it."
             ),
         )
-    if is_shareable(record.configuration):
+    if is_shareable(record.configuration) and record.service_id not in PER_LAUNCH_KEY_SERVICES:
         return ServiceAccess(
             mode="shared",
             detail=f"Shared with no key: anyone who can reach {where} can use it.",
@@ -254,21 +285,75 @@ def managed_credential_ref(store: InfrastructureStore, preset_id: str, address: 
 
     Used when a deployment is saved as a model server ("Use in Models"): the
     saved server then resolves that deployment's key. Only a keyed deployment
-    of the same engine at the same address matches -- a key is never handed
-    to another server.
+    reached through the same preset at the same address matches -- a key is
+    never handed to another server. Named instances match through their
+    engine's preset; the router through the generic OpenAI-compatible one.
     """
 
+    record = managed_record_at(store, preset_id, address)
+    if record is None or not supports_api_key(record.service_id):
+        return ""
+    if is_shareable(record.configuration) and record.service_id not in PER_LAUNCH_KEY_SERVICES:
+        return ""
+    return deployment_key_ref(record.target_id, record.service_id)
+
+
+def managed_record_at(
+    store: InfrastructureStore, preset_id: str, address: str
+) -> ServiceRecord | None:
+    """The managed model server reached through ``preset_id`` at ``address``, if any."""
+
     wanted = _root(address)
-    for record in store.services():
-        if (
-            record.service_id == preset_id
-            and supports_api_key(record.service_id)
-            and not is_shareable(record.configuration)
+    return next(
+        (
+            record
+            for record in store.services()
+            if preset_of(record.service_id) == preset_id
+            and engine_of(record.service_id) in MODEL_SERVERS
             and record.connection_url
             and _root(record.connection_url) == wanted
-        ):
-            return deployment_key_ref(record.target_id, record.service_id)
-    return ""
+        ),
+        None,
+    )
+
+
+def retire_saved_servers(store: InfrastructureStore, record: ServiceRecord) -> list[str]:
+    """Uninstall of a managed model server: forget the saved servers CLIO linked to it.
+
+    A "Use in Models" entry is linked by the deployment's key ref, or -- for a
+    keyless (shareable, Ollama) deployment -- by being this engine's entry at
+    this deployment's address. Entries the person pointed elsewhere stay. The
+    deployment is remembered as removed, so a session still pinned to it gets a
+    typed "deployment removed" error. Returns the removed entry ids.
+    """
+
+    from clio_agent.gact import local_server_store  # noqa: PLC0415
+
+    if engine_of(record.service_id) not in MODEL_SERVERS:
+        return []
+    ref = deployment_key_ref(record.target_id, record.service_id)
+    root = _root(record.connection_url) if record.connection_url else ""
+    preset = preset_of(record.service_id)
+
+    def linked(entry: local_server_store.LocalServerEntry) -> bool:
+        if entry.credential_ref:
+            return entry.credential_ref == ref
+        return bool(root) and entry.preset_id == preset and _root(entry.address) == root
+
+    try:
+        removed = local_server_store.remove_linked_servers(linked)
+    except local_server_store.LocalServerStoreError as exc:
+        logger.warning(
+            "managed_server_entry_not_removed service=%s error=%s", record.service_id, exc
+        )
+        removed = []
+    store.note_removed_deployment(record.target_id, record.service_id, root)
+    for entry in removed:
+        if entry.custom:
+            # A session pinned to the saved entry (a named instance, the
+            # router) names the entry's id as its provider: refuse it typed too.
+            store.note_removed_deployment(record.target_id, entry.id, root)
+    return [entry.id for entry in removed]
 
 
 class ServerAccessMixin:
@@ -279,7 +364,12 @@ class ServerAccessMixin:
 
     async def _record_access(self, target_id: str, service_id: str, port: int | None) -> None:
         record = self.store.service(target_id, service_id)
-        if record is None or service_id not in MODEL_SERVERS or record.state != "running":
+        if record is not None and record.state == "running":
+            # The engine is deployed again: no longer a removed deployment.
+            self.store.clear_removed_deployment(target_id, service_id)
+        if record is None or engine_of(service_id) not in MODEL_SERVERS:
+            return
+        if record.state != "running":
             return
         access = await check_access(
             record,
@@ -294,8 +384,12 @@ __all__ = [
     "KEY_VARIABLES",
     "MODEL_SERVERS",
     "ServerAccessMixin",
+    "PER_LAUNCH_KEY_SERVICES",
     "launch_key",
     "load_key",
+    "managed_record_at",
+    "preset_of",
+    "stores_launch_key",
     "settle_failed_launch",
     "store_key",
     "SHAREABLE_FIELD",
@@ -305,5 +399,6 @@ __all__ = [
     "is_shareable",
     "managed_credential_ref",
     "request_headers",
+    "retire_saved_servers",
     "supports_api_key",
 ]

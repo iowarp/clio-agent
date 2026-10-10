@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult
-from clio_agent.gact.infrastructure.models import CommandSpec
+from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch
 from clio_agent.gact.infrastructure.resource_ledger import StepRecorder
+from clio_agent.gact.infrastructure.reuse import ReuseCheck
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,9 @@ class Readiness:
     logs: CommandSpec
     label: str = "server"
     capability: Literal["serving", "installed"] = "serving"
+    #: A target file whose new output the runtime streams into the
+    #: operation's live log while it waits (a supervised install or server log).
+    log_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,20 @@ class DriverPlan:
         recorders: Per command index, what that step created on the target
             (see :mod:`clio_agent.gact.infrastructure.resource_ledger`).
         readiness: Wait for the started server to answer before succeeding.
+        before_launch: Runs before ``commands`` with the target executor and a
+            progress callback, and returns the plan to run instead (a model
+            server sized to the host's GPU; see ``context_sizing.deployment``).
         after_ready: Commands run once the server answers (a model pull).
+        after_ready_hook: Runs after ``after_ready`` with the target executor and
+            a progress callback; the entries it returns are merged into the
+            settled configuration (an effective value it chose, and why).
         configuration: The configuration as resolved by the driver (for
             example with the negotiated container runtime filled in); the
             runtime persists this rather than the raw request.
+        reuse_checks: Per command index, a reuse preflight whose verified
+            match skips later commands (see :mod:`~.reuse`).
+        step_labels: Per command index, the progress step it belongs to;
+            unlabelled commands are named from what they run.
     """
 
     commands: tuple[CommandSpec, ...]
@@ -53,8 +67,24 @@ class DriverPlan:
     teardown: Callable[[ClaimResult], CommandSpec] | None = None
     recorders: Mapping[int, StepRecorder] = field(default_factory=dict)
     readiness: Readiness | None = None
+    before_launch: (
+        Callable[
+            [Callable[[CommandSpec], Awaitable[CommandResult]], Callable[[str], object]],
+            Awaitable[DriverPlan],
+        ]
+        | None
+    ) = None
     after_ready: tuple[CommandSpec, ...] = ()
+    after_ready_hook: (
+        Callable[
+            [Callable[[CommandSpec], Awaitable[CommandResult]], Callable[[str], None]],
+            Awaitable[dict[str, str]],
+        ]
+        | None
+    ) = None
     configuration: dict[str, str] | None = None
     remote_launch: RemoteLaunch | None = None
     retain_record: bool = False
     failure_cleanup: tuple[CommandSpec, ...] = ()
+    reuse_checks: Mapping[int, ReuseCheck] = field(default_factory=dict)
+    step_labels: Mapping[int, str] = field(default_factory=dict)

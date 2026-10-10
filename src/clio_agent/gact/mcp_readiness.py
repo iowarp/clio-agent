@@ -287,6 +287,8 @@ def mount_namespaces_for_session(
     import contextvars  # noqa: PLC0415
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
+    from clio_agent.gact import spotter_mount_outcome  # noqa: PLC0415
+
     if not specs:
         return {}, {}
     mounted: dict[str, Mapping[str, Any]] = {}
@@ -306,8 +308,10 @@ def mount_namespaces_for_session(
         for namespace, future in futures.items():
             try:
                 mounted[namespace] = future.result()
+                spotter_mount_outcome.record_success(namespace)
             except Exception as exc:  # noqa: BLE001 - typed + named, never cached
                 failures[namespace] = mount_failure_reason(exc)
+                spotter_mount_outcome.record_failure(namespace, failures[namespace])
                 logger.warning(
                     "mcp_mount_failed namespace=%s reason=%s error=%s",
                     namespace,

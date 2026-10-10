@@ -15,6 +15,7 @@ send the request undeclared (the connector then uses fixed chunks) and record
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -22,7 +23,7 @@ from typing import Any
 
 from jinja2 import TemplateError
 
-from clio_agent.gact.attention.ranges import declare_ranges
+from clio_agent.gact.attention.ranges import declare_ranges, render_without_tools
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 
 DECLARATION_SCHEMA = "clio.attention.declaration.v1"
@@ -91,15 +92,18 @@ def build_declaration(
             resolve_renderer,
         )
 
-        renderer = resolve_renderer(str(merged.get("api_base") or ""), served_model)
+        renderer = resolve_renderer(
+            str(merged.get("api_base") or ""), served_model, str(merged.get("api_key") or "")
+        )
         encoded = renderer.render_encoded(messages, template_kwargs)
+        without_tools = render_without_tools(renderer, messages, template_kwargs)
     except AttentionUnavailable as exc:
         return call_kwargs, _not_declared(exc.reason, exc.detail)
     except (OSError, ValueError, TypeError, RuntimeError, LookupError, TemplateError) as exc:
         return call_kwargs, _not_declared(
             "attention_tokenizer_unavailable", f"render failed: {type(exc).__name__}"
         )
-    declaration = declare_ranges(messages, encoded)
+    declaration = declare_ranges(messages, encoded, template_kwargs.get("tools"), without_tools)
     # DSPy merges the LM's kwargs under the call's, so a call-level extra_body would
     # replace the LM-level one wholesale: carry both forward explicitly.
     body = {**(lm_kwargs.get("extra_body") or {}), **(call_kwargs.get("extra_body") or {})}
@@ -112,6 +116,11 @@ def build_declaration(
         "tokenizer": renderer.identity,
         "template_sha": renderer.template_sha,
         "template_kwargs": {k: v for k, v in template_kwargs.items() if k != "tools"},
+        # The read path re-renders the prompt to align the capture; the chat
+        # template renders tool schemas into it, so they must be replayed (F049).
+        # Kept as JSON text: the semantic trace sorts dict keys on write, and the
+        # same schemas with reordered keys tokenize differently (c38: 14453 vs 14561).
+        "tools_json": json.dumps(template_kwargs.get("tools") or [], ensure_ascii=False),
         "prompt_token_count": declaration.prompt_token_count,
         "ranges": [r.to_record() for r in declaration.ranges],
         "unlocated_messages": declaration.unlocated_messages,

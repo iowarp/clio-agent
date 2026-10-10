@@ -80,7 +80,10 @@ _DIALECT_NATIVE_TOP_LEVEL_FIELDS: dict[str, frozenset[str]] = {
     # native /api/chat ``options`` object -- where Ollama reads these -- while
     # ``extra_body`` lands beside ``options`` and is ignored for sampling
     # (verified by capturing the request body LiteLLM sends).
-    "ollama": frozenset({"top_k", "min_p", "repetition_penalty", "context_length"}),
+    # ``reasoning_effort`` is /v1's own thinking switch (F040).
+    "ollama": frozenset(
+        {"top_k", "min_p", "repetition_penalty", "context_length", "reasoning_effort"}
+    ),
     "openai": frozenset({"reasoning_effort"}),
     "anthropic": frozenset({"reasoning_effort", "thinking"}),
     "codex": frozenset({"codex_reasoning_effort"}),
@@ -219,14 +222,12 @@ def _unknown_levels_wire(dialect: str, level: str) -> dict[str, Any]:
     sends nothing and the caller records the level as unknown, not unsupported.
     """
 
-    if dialect in {"openai", "anthropic", "lm_studio", "llama_cpp"}:
+    if dialect in {"openai", "anthropic", "lm_studio", "llama_cpp", "ollama"}:
         return {"reasoning_effort": level}
     if dialect == "codex":
         return {"codex_reasoning_effort": level}
     if dialect == "openrouter":
         return {"reasoning": {"effort": level}}
-    if dialect == "ollama":
-        return {"think": level}
     if dialect == "claude_code":
         return {
             "claude_code_thinking": {"type": "adaptive", "display": "summarized", "effort": level}
@@ -312,12 +313,15 @@ def thinking_wire(
         return {}
 
     if dialect == "ollama":
+        # Turns reach Ollama's OpenAI-compatible /v1 surface (F037), which
+        # ignores a top-level ``think`` and maps ``reasoning_effort`` onto it:
+        # "none" disables thinking, any level enables it (F040).
         if off:
-            return {"think": False}
+            return {"reasoning_effort": "none"}
         if decision.spec.levels:
             value = _effort_value(decision, wire_level)
-            return {"think": value} if value is not None else {}
-        return {"think": True}
+            return {"reasoning_effort": value} if value is not None else {}
+        return {"reasoning_effort": "high"}
 
     if dialect == "lm_studio":
         if control != "reasoning_effort":

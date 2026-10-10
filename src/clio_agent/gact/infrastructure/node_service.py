@@ -8,6 +8,7 @@ SSH disconnect; a boot/start identity prevents signalling a reused PID.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -16,15 +17,23 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import ProxyHandler, Request, build_opener
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
+#: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
+LOG_GENERATIONS = 3
+#: Files a service definition may never write over.
+PROTECTED_FILES = frozenset(
+    {"owner.json", "receipt.json", "manifest.json", "controller.py", ".lock"}
+)
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -37,17 +46,49 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _has_proc() -> bool:
+    """Whether this host has a Linux-style /proc (macOS and BSD do not)."""
+    return Path("/proc/self/stat").exists()
+
+
 def identity(pid: int) -> str:
-    """Return the exact live Linux process identity, excluding zombies."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-        return (
-            ""
-            if stat[0] == "Z"
-            else Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
-        )
-    except (OSError, IndexError):
+    """Return the exact live process identity, excluding zombies.
+
+    Linux: boot id + start tick from /proc. A POSIX host without /proc (macOS, BSD): ``ps``'s start
+    time, which with the PID names one process (F010 / DIRECTIVES 11). This supervisor is
+    POSIX-only (process groups, fcntl); Windows native services use their own launcher.
+    """
+    if _has_proc():
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            return (
+                ""
+                if stat[0] == "Z"
+                else Path("/proc/sys/kernel/random/boot_id").read_text().strip() + ":" + stat[19]
+            )
+        except (OSError, IndexError):
+            return ""
+    return _ps_identity(pid)
+
+
+def _ps_identity(pid: int) -> str:
+    """``ps``-based identity: ``ps:<start time>``, or "" for a gone or zombie process."""
+    if pid <= 0:
         return ""
+    try:
+        done = subprocess.run(
+            ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    fields = done.stdout.strip().split(None, 1)
+    if done.returncode != 0 or len(fields) != 2 or fields[0].startswith("Z"):
+        return ""
+    return "ps:" + " ".join(fields[1].split())
 
 
 def alive(receipt: dict[str, Any]) -> bool:
@@ -85,6 +126,8 @@ def owner(root: Path, expected: str) -> None:
         "receipt.json",
         "manifest.json",
         "controller.py",
+        "clio_reuse.py",
+        "clio_process_group.py",
         "launch.py",
         ".lock",
         "environment",
@@ -103,7 +146,15 @@ def owner(root: Path, expected: str) -> None:
         if (root / relative).is_symlink():
             raise ValueError("A native service ownership path was replaced by a symlink")
     marker = json.loads((root / "owner.json").read_text())
-    if marker != {"owner": expected, "host": socket.gethostname(), "root": str(root)}:
+    host = socket.gethostname()
+    if marker != {"owner": expected, "host": host, "root": str(root)}:
+        if marker.get("root") == str(root) and marker.get("host") not in {None, host}:
+            # Shared filesystems (HPC jobs) move a "local" target between hosts (F020).
+            raise ValueError(
+                f"This native service directory was installed on host {marker['host']}, "
+                f"not on this host ({host}); install the service here instead of starting "
+                "it (downloaded models are kept)"
+            )
         raise ValueError("This native service directory belongs to another deployment or host")
 
 
@@ -145,6 +196,92 @@ def hook(root: Path, action: str, *, timeout: int = 90) -> None:
         raise RuntimeError(f"Service {action} hook failed; inspect retained logs and resources")
 
 
+def listeners(port: int) -> list[tuple[str, str]]:
+    """Every TCP socket listening on ``port`` on this host, as (address, inode).
+
+    On Linux /proc/net lists sockets of every user, so a listener held by another account on a
+    shared node is visible even though its process is not. Elsewhere a loopback connection attempt
+    is the portable signal.
+    """
+    found = []
+    tables = [Path(table) for table in ("/proc/net/tcp", "/proc/net/tcp6")]
+    if not any(table.is_file() for table in tables):
+        with socket.socket() as probe:
+            probe.settimeout(1)
+            return [("127.0.0.1", "")] if probe.connect_ex(("127.0.0.1", port)) == 0 else []
+    for table in tables:
+        try:
+            rows = table.read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            address, _, hex_port = fields[1].partition(":")
+            if fields[3] == "0A" and int(hex_port, 16) == port:
+                found.append((address, fields[9]))
+    return found
+
+
+def http_get(url: str, key: str = "") -> tuple[int, bytes]:
+    """Status and body of a direct (proxy-free) loopback GET; 0 when nothing answered."""
+    request = Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+            return response.status, response.read()
+    except HTTPError as error:
+        return error.code, b""
+    except (OSError, URLError, ValueError):
+        return 0, b""
+
+
+def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
+    """Whether the answering endpoint is provably the owned server (F010, F025).
+
+    Portable across operating systems and native/container runtimes: no socket or process-table
+    inspection. A model server must refuse a request without the per-launch key and, when the
+    caller holds the key, list the served model. A container stack must report every owned
+    component running.
+    """
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    check = manifest.get("identity") or {}
+    if check.get("kind") == "openai":
+        parts = urlsplit(receipt.get("health_url", ""))
+        models = f"{parts.scheme}://{parts.netloc}/v1/models"
+        if http_get(models)[0] not in {401, 403}:
+            return False
+        if not key:
+            return True
+        status, body = http_get(models, key)
+        try:
+            served = {row.get("id") for row in json.loads(body or b"{}").get("data", [])}
+            # A router lists every model it was launched with (a per-launch file).
+            listed = root / check.get("served_models_file", "")
+            wanted = (
+                set(json.loads(listed.read_text()))
+                if check.get("served_models_file") and listed.parent == root
+                else {check.get("served_model")}
+            )
+        except (OSError, ValueError, AttributeError, TypeError):
+            return False
+        return status == 200 and wanted <= served
+    if check.get("kind") == "components":
+        script = root / check.get("hook", "")
+        if script.parent != root or script.is_symlink() or not script.is_file():
+            return False
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(script), "running"],
+                cwd=root,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return completed.returncode == 0
+    return False
+
+
 def read_receipt(root: Path) -> dict[str, Any]:
     """Read the durable receipt, including an interrupted worker's last result."""
     file = root / "receipt.json"
@@ -167,7 +304,7 @@ def effective_artifacts(root: Path) -> dict[str, str]:
     return artifacts
 
 
-def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
+def observation(root: Path, *, health: bool = True, key: str = "") -> dict[str, Any]:
     """Separate installation, process liveness and actual HTTP serving readiness."""
     receipt = read_receipt(root)
     live = alive(receipt)
@@ -176,11 +313,7 @@ def observation(root: Path, *, health: bool = True) -> dict[str, Any]:
         phase = "interrupted" if phase == "installing" else "stopped"
     serving = False
     if health and live and phase == "running":
-        try:
-            with build_opener(ProxyHandler({})).open(receipt["health_url"], timeout=3) as response:
-                serving = response.status == 200
-        except (OSError, URLError):
-            serving = False
+        serving = http_get(receipt["health_url"])[0] == 200 and serves_identity(root, receipt, key)
     verification = root / "evidence/verification.json"
     verified = json.loads(verification.read_text()) if verification.is_file() else {}
     current_verification = verified.get("configuration_revision") == receipt.get(
@@ -254,6 +387,12 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         model = manifest.get("model_path")
         if model and not (Path(model).is_absolute() and (Path(model) / "config.json").is_file()):
             raise ValueError("The model directory is unavailable on this execution host")
+        # SO_REUSEADDR lets this probe bind beside another user's 0.0.0.0
+        # listener, so any existing listener on the port refuses the start.
+        if listeners(manifest["port"]):
+            raise ValueError(
+                f"Port {manifest['port']} already has a listener on this host; choose a free port"
+            )
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", manifest["port"]))
@@ -267,26 +406,42 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         environment.mkdir(exist_ok=True)
         for name, content in manifest.get("files", {}).items():
             path = root / name
-            if (
-                path.parent != root
-                or path.is_symlink()
-                or name in {"owner.json", "receipt.json", "manifest.json", "controller.py", ".lock"}
-            ):
+            if path.parent != root or path.is_symlink() or name in PROTECTED_FILES:
                 raise ValueError("Invalid service definition support file")
             path.write_text(content, encoding="utf-8")
         write_json(root / "manifest.json", manifest)
         (environment / "pyproject.toml").write_text(manifest["project"], encoding="utf-8")
         (root / "launch.py").write_text(manifest["launcher"], encoding="utf-8")
     (root / "controller.py").write_text(request["script"], encoding="utf-8")
+    if request.get("reuse_helper"):
+        # The shared reuse helper the worker and the stack hooks import.
+        (root / "clio_reuse.py").write_text(request["reuse_helper"], encoding="utf-8")
+    if request.get("process_group_helper"):
+        (root / "clio_process_group.py").write_text(request["process_group_helper"], "utf-8")
     for name in ("logs", "evidence", "cache", "tmp"):
         (root / name).mkdir(exist_ok=True)
+    # Per-launch, non-secret files (a router's model list): not part of the revision.
+    runtime_files = (request.get("runtime_files") or {}) if action == "start" else {}
+    for name, content in runtime_files.items():
+        path = root / name
+        if path.parent != root or path.is_symlink() or name in PROTECTED_FILES:
+            raise ValueError("Invalid per-launch service file")
+        path.write_text(content, encoding="utf-8")
     generation = str(uuid.uuid4())
     env = os.environ.copy()
     # Credentials are ephemeral process environment, never manifest/arguments.
-    if request.get("api_key"):
-        env["VLLM_API_KEY"] = request["api_key"]
+    variable = request.get("api_key_variable") or "VLLM_API_KEY"
+    secrets = {**(request.get("secret_env") or {}), variable: request.get("api_key") or ""}
+    for name, value in secrets.items():
+        if value:
+            env[name] = value
+        else:
+            env.pop(name, None)
+    env["CLIO_SECRET_VARIABLES"] = ",".join(sorted(secrets))
+    if action == "install" and request.get("from_scratch"):
+        env["CLIO_FROM_SCRATCH"] = "1"
     else:
-        env.pop("VLLM_API_KEY", None)
+        env.pop("CLIO_FROM_SCRATCH", None)
     receipt = {
         **current,
         "phase": "installing" if action == "install" else "running",
@@ -314,6 +469,65 @@ def launch(root: Path, request: dict[str, Any]) -> None:
     write_json(root / "receipt.json", receipt)
 
 
+def worker_environment(
+    root: Path, manifest: dict[str, Any], base: dict[str, str]
+) -> dict[str, str]:
+    """Isolate the service from CLIO's interpreter and expose its own environment's tools.
+
+    Runtimes JIT-compile with console scripts installed beside their interpreter (vLLM's flashinfer
+    runs ``ninja``), so the service environment's ``bin`` leads ``PATH``.
+    """
+    env = {**base, **manifest.get("environment", {})}
+    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(name, None)
+    env.update(
+        UV_CACHE_DIR=str(root / "cache/uv"),
+        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
+        TMPDIR=str(root / "tmp"),
+        HF_HOME=str(root / "cache/huggingface"),
+        PATH=os.pathsep.join(
+            item for item in (str(root / "environment/.venv/bin"), env.get("PATH", "")) if item
+        ),
+    )
+    return env
+
+
+def reuse_helper() -> Any:
+    """The reuse helper shipped beside this supervisor, else CLIO's own (None when absent)."""
+    for name in ("clio_reuse", "clio_agent.gact.infrastructure.reuse"):
+        with suppress(ImportError):
+            return importlib.import_module(name)
+    return None
+
+
+def process_group_helper() -> Any:
+    """The process-group reaper shipped beside this supervisor, else CLIO's own."""
+    with suppress(ImportError):
+        return importlib.import_module("clio_process_group")
+    return importlib.import_module("clio_agent.gact.infrastructure.process_group")
+
+
+def copy_output(stream: Any, output: Any, secrets: list[str]) -> None:
+    """Copy the server's merged output into its log with credentials redacted."""
+    for line in stream:
+        for value in secrets:
+            line = line.replace(value, "[redacted]")
+        output.write(line)
+        output.flush()
+
+
+def rotate_log(log: Path, keep: int = LOG_GENERATIONS) -> None:
+    """Shift a non-empty log to ``.1`` (up to ``.keep``): a failed start's log is evidence (F008)."""
+    if not log.is_file() or log.stat().st_size == 0:
+        return
+    log.with_name(f"{log.name}.{keep}").unlink(missing_ok=True)
+    for index in range(keep - 1, 0, -1):
+        older = log.with_name(f"{log.name}.{index}")
+        if older.is_file():
+            older.replace(log.with_name(f"{log.name}.{index + 1}"))
+    log.replace(log.with_name(f"{log.name}.1"))
+
+
 def worker(root: Path, action: str, generation: str) -> None:
     """Run the pinned installer or server while retaining bounded, sanitized logs."""
     # Wait for the parent to commit the receipt under the same lifecycle lock.
@@ -331,16 +545,14 @@ def worker(root: Path, action: str, generation: str) -> None:
     # ignores SIGTERM, the controller can still safely kill the exact group.
     signal.signal(signal.SIGTERM, handle_stop)
     manifest = json.loads((root / "manifest.json").read_text())
-    env = {**os.environ, **manifest.get("environment", {})}
-    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
-        env.pop(name, None)
-    env.update(
-        UV_CACHE_DIR=str(root / "cache/uv"),
-        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
-        TMPDIR=str(root / "tmp"),
-        HF_HOME=str(root / "cache/huggingface"),
-    )
-    if action == "install":
+    env = worker_environment(root, manifest, dict(os.environ))
+    started = time.monotonic()
+    helper = reuse_helper() if action == "install" else None
+    profile = str(manifest.get("definition_version", ""))
+    reused = helper.uv_environment_reuse(root / "environment", profile) if helper else ""
+    if reused:
+        command = [sys.executable, "-c", "print('clio: the service environment is reused')"]
+    elif action == "install":
         uv = shutil.which("uv") or str(Path.home() / ".local/bin/uv")
         command = [
             uv,
@@ -350,6 +562,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             str(root / "environment"),
             "--python",
             "3.12",
+            *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
     else:
         command = [
@@ -357,8 +570,8 @@ def worker(root: Path, action: str, generation: str) -> None:
             str(root / "launch.py"),
             *manifest["arguments"],
         ]
-    secret = env.get("VLLM_API_KEY", "")
-    secrets = [secret] if secret else []
+    names = {"VLLM_API_KEY", *env.get("CLIO_SECRET_VARIABLES", "").split(",")}
+    secrets = [env[name] for name in sorted(names) if name and env.get(name)]
     credentials = root / "credentials.json"
     if credentials.is_file():
         secrets.extend(
@@ -366,6 +579,7 @@ def worker(root: Path, action: str, generation: str) -> None:
         )
     log = root / "logs" / ("install.log" if action == "install" else "server.log")
     try:
+        rotate_log(log)
         with subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -378,12 +592,23 @@ def worker(root: Path, action: str, generation: str) -> None:
         ) as process:
             assert process.stdout is not None
             with log.open("w", encoding="utf-8") as output:
-                for line in process.stdout:
-                    for value in secrets:
-                        line = line.replace(value, "[redacted]")
-                    output.write(line)
+                if reused:
+                    output.write(reused + "\n")
                     output.flush()
+                # Wait on the child itself, not on EOF: an orphaned descendant
+                # holding the pipe must not hide the server's exit (F014).
+                pump = threading.Thread(
+                    target=copy_output, args=(process.stdout, output, secrets), daemon=True
+                )
+                pump.start()
                 code = process.wait()
+                if not stopping and getattr(os, "getpgrp", None) and os.getpgrp() == os.getpid():
+                    process_group_helper().release_group(identity)
+                pump.join(timeout=10)
+                if code == 0 and helper is not None and not reused:
+                    helper.record_uv_environment(
+                        root / "environment", profile, time.monotonic() - started
+                    )
                 if code == 0 and action == "install" and manifest.get("post_install"):
                     post = root / manifest["post_install"]
                     if post.parent != root or post.is_symlink():
@@ -442,7 +667,19 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
                 "serving": False,
             }
         raise ValueError("Install this native service before managing it")
-    owner(root, request["owner"])
+    try:
+        owner(root, request["owner"])
+    except ValueError:
+        if (
+            action == "stop"
+            and request.get("require_operation_id")
+            and read_receipt(root).get("operation_id") != request["require_operation_id"]
+        ):
+            # A failed operation's cleanup where that operation launched nothing
+            # (its start was refused, e.g. another host owns the directory): there
+            # is nothing to undo, so do not raise the same refusal again (F020).
+            return {"phase": "untouched", "installed": False, "running": False, "serving": False}
+        raise
     with locked(root):
         if action in {"install", "start"}:
             launch(root, request)
@@ -511,14 +748,18 @@ def control(request: dict[str, Any]) -> dict[str, Any]:
         elif action == "logs":
             hook(root, "logs")
             tails = []
-            for file in (root / "logs").glob("*.log"):
+            # The current run only; rotated earlier runs are named, not mixed in.
+            for file in sorted((root / "logs").glob("*.log")):
                 with file.open("rb") as stream:
                     stream.seek(max(0, file.stat().st_size - 12000))
                     tails.append(file.name + "\n" + stream.read().decode("utf-8", errors="replace"))
+            earlier = sorted(path.name for path in (root / "logs").glob("*.log.[0-9]*"))
+            if earlier:
+                tails.append(f"Earlier runs kept in {root / 'logs'}: {', '.join(earlier)}")
             return {"logs": "\n".join(tails)[-16000:]}
         elif action not in {"status", "prepare"}:
             raise ValueError("Unsupported native service action")
-        return observation(root)
+        return observation(root, key=request.get("api_key") or "")
 
 
 if __name__ == "__main__":

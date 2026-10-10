@@ -1,0 +1,155 @@
+"""The managed Ollama context applied after the model pull (the shared sizing decision)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+import pytest
+
+from clio_agent.gact.infrastructure.context_sizing.deployment import SizingRequest
+from clio_agent.gact.infrastructure.models import CommandResult, CommandSpec
+from clio_agent.gact.infrastructure.ollama_context_apply import (
+    gpu_available_bytes,
+    model_info_from_show,
+    ollama_context_hook,
+    usable_cpus,
+)
+
+GIB = 1 << 30
+MODEL_INFO = {
+    "general.architecture": "qwen3",
+    "qwen3.context_length": 262144,
+    "qwen3.block_count": 36,
+    "qwen3.attention.head_count_kv": 8,
+    "qwen3.attention.key_length": 128,
+    "qwen3.attention.value_length": 128,
+}
+LOG = (
+    'time=2026-10-08T09:40:01 level=INFO source=types.go:42 msg="inference compute" '
+    'id=GPU-1 library=CUDA name="NVIDIA A100-SXM4-40GB" total="39.4 GiB" available="38.6 GiB"\n'
+)
+
+
+FIT = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu")
+CPU_LOG = (
+    'time=2026-10-08T09:40:01 level=INFO source=types.go:42 msg="inference compute" '
+    'id=cpu library=cpu compute="" name=cpu total="503.0 GiB" available="480.0 GiB"\n'
+)
+
+
+def test_gpu_available_is_read_from_the_startup_log() -> None:
+    assert gpu_available_bytes(LOG) == int(38.6 * GIB)
+    assert gpu_available_bytes("no gpu line") is None
+    newer = LOG.replace('available="38.6 GiB"', 'available="12.0 GiB"')
+    assert gpu_available_bytes(LOG + newer) == 12 * GIB
+    # The CPU's line reports system RAM: it is no GPU budget.
+    assert gpu_available_bytes(CPU_LOG) is None
+
+
+def test_model_info_survives_a_reply_cut_to_its_tail() -> None:
+    reply = json.dumps({"license": "x" * 20_000, "model_info": MODEL_INFO, "capabilities": []})
+    assert model_info_from_show(reply) == MODEL_INFO
+    assert model_info_from_show("…" + reply[-16_000:]) == MODEL_INFO
+    assert model_info_from_show("…tail without it") is None
+
+
+class FakeTarget:
+    """Answers the hook's commands like a running Ollama server would."""
+
+    def __init__(self, show: dict, create_ok: bool = True) -> None:
+        self.show = show
+        self.create_ok = create_ok
+        self.created: list[dict] = []
+
+    async def __call__(self, spec: CommandSpec) -> CommandResult:
+        url = next((arg for arg in spec.args if arg.startswith("http")), "")
+        if url.endswith("/api/show"):
+            out = json.dumps(self.show)
+        elif url.endswith("/api/tags"):
+            out = json.dumps({"models": [{"name": "qwen3:4b", "size": 2_600_000_000}]})
+        elif url.endswith("/api/create"):
+            self.created.append(json.loads(spec.stdin))
+            out = '{"status":"success"}' if self.create_ok else '{"error":"boom"}'
+        else:
+            out = LOG
+        return CommandResult(exit_code=0, stdout=out, stderr="")
+
+
+def _run(target: FakeTarget, request: SizingRequest = FIT) -> dict[str, str]:
+    logs = CommandSpec(program="sh", args=["-c", "true"])
+    hook = ollama_context_hook(11434, "qwen3:4b", logs, False, request)
+    return asyncio.run(hook(target, lambda _message: None))
+
+
+def test_hook_recreates_the_model_under_its_name_with_the_capped_context() -> None:
+    target = FakeTarget({"model_info": MODEL_INFO})
+    chosen = _run(target)
+    tokens = int(chosen["effective.context_length"])
+    assert 4096 <= tokens < 262144 and tokens % 4096 == 0
+    assert chosen["effective.context_reason"].startswith("Fit to GPU: trained context 262144")
+    assert chosen["effective.context_choice"] == "fit_to_gpu"
+    assert target.created == [
+        {"model": "qwen3:4b", "from": "qwen3:4b", "parameters": {"num_ctx": tokens}}
+    ]
+
+
+def test_max_serves_the_trained_context_whatever_the_gpu() -> None:
+    target = FakeTarget({"model_info": MODEL_INFO})
+    chosen = _run(target, SizingRequest(choice="max", strategy="fit_to_gpu"))
+    assert chosen["effective.context_length"] == "262144"
+    assert chosen["effective.context_choice"] == "max"
+    assert target.created[0]["parameters"] == {"num_ctx": 262144}
+
+
+def test_parallel_requests_and_a_gpu_share_shrink_the_fit() -> None:
+    alone = int(_run(FakeTarget({"model_info": MODEL_INFO}))["effective.context_length"])
+    shared = SizingRequest(choice="fit_to_gpu", strategy="fit_to_gpu", share=0.5, sequences=2)
+    tokens = int(_run(FakeTarget({"model_info": MODEL_INFO}), shared)["effective.context_length"])
+    assert tokens < alone // 2
+
+
+def test_hook_leaves_ollama_default_when_the_model_reports_no_context() -> None:
+    target = FakeTarget({"model_info": {"general.architecture": "x"}})
+    chosen = _run(target)
+    assert chosen["effective.context_length"] == ""
+    assert chosen["effective.context_reason"].startswith("Ollama's own default:")
+    assert target.created == []
+
+
+def test_hook_failure_is_reported_not_swallowed() -> None:
+    with pytest.raises(RuntimeError, match="Could not set the context"):
+        _run(FakeTarget({"model_info": MODEL_INFO}, create_ok=False))
+
+
+class CpuTarget(FakeTarget):
+    """A CPU-only Ollama on an allocation that may use 16 of the machine's CPUs."""
+
+    async def __call__(self, spec: CommandSpec) -> CommandResult:
+        if spec.program == "nproc":
+            return CommandResult(exit_code=0, stdout="16\n", stderr="")
+        return await super().__call__(spec)
+
+
+def test_cpu_variant_pins_num_thread_to_the_usable_cpus() -> None:
+    # F044: without num_thread Ollama sized its pool from all 128 cores of a
+    # node whose Slurm allocation allowed 16 (259 threads, ~48 s per token).
+    target = CpuTarget({"model_info": MODEL_INFO})
+    logs = CommandSpec(program="sh", args=["-c", "true"])
+    hook = ollama_context_hook(11434, "qwen3:4b", logs, False, FIT, cpu_threads=True)
+    chosen = asyncio.run(hook(target, lambda _message: None))
+    assert target.created[0]["parameters"]["num_thread"] == 16
+    assert target.created[0]["parameters"]["num_ctx"] == int(chosen["effective.context_length"])
+    assert chosen["effective.threads"] == "16"
+
+
+def test_gpu_variant_leaves_ollama_threads_alone() -> None:
+    target = CpuTarget({"model_info": MODEL_INFO})
+    _run(target)
+    assert "num_thread" not in target.created[0]["parameters"]
+
+
+def test_usable_cpus_ignores_noise() -> None:
+    assert usable_cpus("16\n") == 16
+    assert usable_cpus("") is None
+    assert usable_cpus("nproc: not found") is None
