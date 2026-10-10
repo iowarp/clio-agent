@@ -708,11 +708,11 @@ def build_spawn_runtime_tools(
         )
 
     def spawn_agents_parallel(spawns: list[dict], placement: str | None = None) -> str:
-        """Fan out several declared children at once. ``spawns`` is a list of
-        {agent, task, input_task_ids?}; returns their task_ids (collect with
-        wait_tasks). Each entry's optional input_task_ids works exactly
-        like spawn_agent_task's own parameter — hands that ONE child the full
-        stored output of your own already-finished tasks as labeled evidence.
+        """Fan out declared children as Subagent tasks. ``spawns`` is a list of
+        {agent, task, input_task_ids?}; returns durable handles plus compatibility task_ids.
+        Use query_tasks, observe_tasks, wait_tasks or cancel_tasks with the handles.
+        Results enter the next model iteration or wake you when idle, including after Stop.
+        Each input_task_ids hands that child your own finished tasks' full stored evidence.
 
         When this parent declares ``fanout.max_workers`` (#948 S5), the batch's
         concurrent admission is bounded by it: spawns beyond the bound QUEUE with a
