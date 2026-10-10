@@ -145,6 +145,21 @@ def test_native_xml_call_is_a_bounded_error_not_an_executable_call(quote: str, s
     assert not split.text
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("suffix", ["", "\n</invoke>\n<parameter name='note'>extra</parameter>"])
+def test_orphaned_xml_parameter_fragment_is_a_bounded_protocol_error(
+    quote: str, suffix: str
+) -> None:
+    """The live stopped parent returned parameters without their opening invocation."""
+    raw = f"<parameter name={quote}q{quote}>{'x' * 5000}</parameter>\n</invoke>{suffix}"
+    split = split_reply(raw, call_prefix="t", available_tools={"search"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw[:4000]
+    assert not split.text
+
+
 @pytest.mark.parametrize(
     ("reply", "tools"),
     [
@@ -153,6 +168,10 @@ def test_native_xml_call_is_a_bounded_error_not_an_executable_call(quote: str, s
         ('Example:\n<invoke name="search"></invoke>', {"search"}),
         ('```xml\n<invoke name="search"></invoke>\n```', {"search"}),
         ('<document name="search">ordinary XML data</document>', {"search"}),
+        ('<parameter name="q">ordinary XML data</parameter>', {"search"}),
+        ('<parameter name="q">x</parameter></invoke>', set()),
+        ('```xml\n<parameter name="q">x</parameter></invoke>\n```', {"search"}),
+        ('Example:\n<parameter name="q">x</parameter></invoke>', {"search"}),
     ],
 )
 def test_xml_data_and_examples_remain_answers(reply: str, tools: set[str]) -> None:

@@ -273,12 +273,27 @@ def test_xml_invoke_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -
     assert response.finish_reason == "tool_call"
 
 
+def test_xml_parameter_fragment_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -> None:
+    """Haiku's live post-Stop read lost its invoke opener and silently ended the turn."""
+    raw = '<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>'
+    pool.turns = [[_text(raw), _result()]]
+
+    response = _run(_request(HEAD))
+
+    [call] = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw
+    assert response.finish_reason == "tool_call"
+
+
 @pytest.mark.usefixtures("clio_core_plane")
 @pytest.mark.parametrize(
     ("malformed", "error"),
     [
         ('[{"name":"search","arguments":{"q":"actual data"}}]\n```', "missing opening"),
         ('<invoke name="search"><parameter name="q">actual data</parameter></invoke>', "XML"),
+        ('<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>', "XML"),
     ],
 )
 def test_loop_recovers_malformed_call_before_running_the_corrected_call(

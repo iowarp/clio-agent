@@ -187,7 +187,7 @@ def split_reply(
             return _invalid_reply(
                 "",
                 reply.strip(),
-                "XML invoke calls require a complete ```tool_calls JSON block",
+                "XML tool-call fragments require a complete ```tool_calls JSON block",
                 call_prefix,
             )
         if _orphaned_call_block(reply, available_tools):
@@ -212,9 +212,21 @@ def split_reply(
 
 
 def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
-    """Reject the observed native XML invocation; never translate or execute its arguments."""
+    """Reject observed native call shapes without inferring or executing their arguments."""
+    if not available_tools:
+        return False
     match = re.match(r"""\s*<invoke\s+name=(["'])([^"']+)\1\s*>""", reply)
-    return bool(match and match[2] in available_tools and "</invoke>" in reply[match.end() :])
+    if match:
+        return match[2] in available_tools and "</invoke>" in reply[match.end() :]
+    # A stopped Haiku parent resumed with parameter tags and orphaned invoke
+    # closers. There is no tool identity to resolve: reject this malformed shape
+    # through the existing bounded error, never fabricate a callable operation.
+    parameter = re.match(r"""\s*<parameter\s+name=(["'])[^"']+\1\s*>""", reply)
+    return bool(
+        parameter
+        and "</parameter>" in reply[parameter.end() :]
+        and "</invoke>" in reply[parameter.end() :]
+    )
 
 
 def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:

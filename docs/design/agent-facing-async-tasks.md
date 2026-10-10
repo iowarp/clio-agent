@@ -753,3 +753,35 @@ evidence does not substitute for the fresh model gates. The previous `933b0f66`
 CI retry again cancelled Python 3.12 shard 0 at the unchanged 18-minute job limit;
 its log reached 99% and coverage remained incomplete. Both cancelled attempts
 are retained, with no timeout, worker, assertion or coverage-budget changes.
+
+### Post-Stop Claude fragment regression
+
+On `5e4a8357`, five complete Linux Claude gates passed: Haiku Subagent, Shell,
+mixed controls, Shell Stop, and Sonnet Subagent (25 actual-model cycles). The
+Haiku Subagent Stop series then passed three cycles and failed its fourth. After
+the parent's waiter stopped, its independent file-read follow-up returned leading
+`parameter` tags with orphaned `invoke` closing tags. No file read executed, but
+the bridge incorrectly reported a completed answer. That live series remains
+failed. All four observed workers, durable Shell owners and its private Core
+owner were verified absent; their transcripts and process identities are retained.
+
+The shared text-tool parser now rejects this observed orphaned XML shape through
+the existing bounded protocol-error observation when tools are available. It
+does not infer an operation from missing tool identity or execute XML arguments.
+Ordinary XML data, fenced examples and explanatory prose retain their behavior.
+Six new parser, engine and correction-loop regressions failed before correction.
+All 24 affected cases then passed individually and sequentially with one worker
+and zero executed skips. Exact tested bytes are retained; formatting afterward
+preserved each complete source/test AST. Scoped Ruff, formatting, touched-file
+Pyright and all eight unchanged guards passed. Fresh CI and actual-model gates
+on the committed repair remain required.
+
+The earlier exact `5e4a8357` CI completed all 14 jobs successfully after one
+diagnostic retry of its timed-out Python 3.12 shard. Each interpreter reported
+11,631 passed and 66 excluded skips; combined coverage was 86%. Those results
+retain their original commit identity and do not qualify this additional repair.
+Queued-failure and long unbounded mixed-wait model gates were not submitted after
+the Subagent Stop failure. Windows capacity/native failures, the prohibited
+confinement route, oversized SSE and remaining provider/platform routes still
+prevent a full qualification claim. Runtime dependencies and execution limits
+remain unchanged.
