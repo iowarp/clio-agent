@@ -317,7 +317,7 @@ def _run_icacls(argv: list[str]) -> tuple[int, str]:  # pragma: no cover - live 
             text=True,
             check=False,
             timeout=120,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
