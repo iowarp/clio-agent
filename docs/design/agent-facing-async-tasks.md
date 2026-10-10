@@ -201,9 +201,34 @@ order on both result and event lanes. Shared result collection uses the existing
 model-result bound and session-owned spill references, including the complete
 stored subagent output; it does not refer to an omitted compatibility tool.
 
-## Current qualification checkpoint (2026-10-10)
+## Task guidance checkpoint (2026-10-10)
 
-The latest code checkpoint is core `a1c4a4d31cb39b3282400ce3cfca01e0584caf67`
+Core `d057b5cc` records task guidance in generated tool declarations and marketplace
+`753193d8`. The common editable lifecycle snippet reaches task-capable roots and
+children, while domain prompts retain their instructions. Request-level checks
+cover all 62 enabled shipped ReAct experts, including NDP, both Factorio packs,
+base-agent and document production. This is not 62 live domain missions.
+
+Bash explains `background=true` in its description and parameter schema. Download,
+Indexing, skill delegation and single/fanout subagent declarations explain task
+handles and completion delivery. MCP guidance uses per-tool task support and is
+retained through initial blueprint enablement and reload. Optional MCP task tools
+can return an ordinary result. `_clio_task_description` labels the assignment; it
+does not select background execution. Thirty-four focused cases pass sequentially
+with one worker and no executed skips; scoped checks and unchanged guards pass.
+
+Five actual Codex/Luna Shell cycles on `668ec97e` pass without spelling the
+background parameter in the request. Each model selects it, receives a running
+handle, acts independently, ends, wakes automatically for the hidden result and
+receives no duplicate later. All five host worker identities and the isolated
+Core owner settle. Sixty-two evidence files are source/member/copy hash-matched
+with valid archive CRC. The initial auditor's wrong transcript-field lookup
+remains a failed attempt. These receipts do not relabel earlier live matrices as
+runs on `d057b5cc` or close the remaining full qualification gates.
+
+## Earlier runtime qualification checkpoint (2026-10-10)
+
+This earlier code checkpoint is core `a1c4a4d31cb39b3282400ce3cfca01e0584caf67`
 with GACT `37cc0b5fbd2c6a14ce6dc2253aa867105dca9bad`. Core runtime source,
 scripts and the GACT gitlink are byte-identical to core `801d139d`; the two
 subsequent commits corrected CI test fixtures. Original live source identities
