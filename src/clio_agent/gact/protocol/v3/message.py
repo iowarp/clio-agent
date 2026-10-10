@@ -50,6 +50,15 @@ def _message_presentation_metadata(metadata: Mapping[str, Any]) -> dict[str, Any
     """
 
     projected: dict[str, Any] = {}
+    delivery = metadata.get("steer_delivery")
+    if metadata.get("mid_turn_steer") is True and isinstance(delivery, Mapping):
+        message_id = delivery.get("assistant_message_id")
+        after_part_id = delivery.get("after_part_id")
+        if isinstance(message_id, str) and message_id and isinstance(after_part_id, str):
+            projected["steer_delivery"] = {
+                "assistant_message_id": message_id,
+                "after_part_id": after_part_id,
+            }
     behavior = metadata.get("behavior")
     if isinstance(behavior, Mapping):
         execution_mode = behavior.get("execution_mode")
@@ -435,7 +444,9 @@ def message_to_v3(message: Any) -> dict[str, Any]:
         row["stop_reason"] = str(wire["stop_reason"])
     if isinstance(wire.get("error_info"), Mapping):
         row["error_info"] = dict(wire["error_info"])
-    if metadata.get("status") != "running" and wire.get("updated_at"):
+    # An update (including a completed tool) is not completion of the user turn.
+    # Only the finalizer's terminal signal can close the response.
+    if wire.get("stop_reason") and wire.get("updated_at"):
         row["completed_at"] = str(wire["updated_at"])
     return row
 

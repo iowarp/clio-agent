@@ -148,6 +148,26 @@ def mark_steer_consumed(app: "FastAPI", sid: str, event: "InboxEvent") -> bool:
         metadata["pending_steer"] = False
         metadata["mid_turn_steer"] = True
         metadata["consumed_at"] = _now_iso()
+        transcripts = getattr(app.state, "turn_transcripts", None)
+        transcript = transcripts.get(sid) if transcripts is not None else None
+        if transcript is not None and transcript.message_id:
+            from clio_agent.gact.protocol.v3.message import message_to_v3  # noqa: PLC0415
+
+            # Use the same deduplication as the public transcript: a tool result
+            # updates its call's block rather than introducing a second block.
+            blocks = message_to_v3(
+                {
+                    "id": transcript.message_id,
+                    "session_id": sid,
+                    "role": "assistant",
+                    "parts": [part.model_dump(exclude_none=True) for part in transcript.snapshot()],
+                }
+            )["blocks"]
+            after_part_id = blocks[-1]["id"] if blocks else ""
+            metadata["steer_delivery"] = {
+                "assistant_message_id": transcript.message_id,
+                "after_part_id": after_part_id,
+            }
         settled = msg.model_copy(update={"metadata": metadata, "updated_at": _now_iso()})
         _replace_session_messages(
             app, sid, [settled if row.id == settled.id else row for row in messages]

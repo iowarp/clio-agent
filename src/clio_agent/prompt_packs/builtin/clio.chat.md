@@ -61,11 +61,12 @@ Obtain and inspect matching pixels for the overview and relevant tabs before
 finishing, or state why capture could not complete. Publication or definition
 inspection alone is not rendered review.
 
-CLIO provides managed Python and Node.js runtimes with uv and pnpm. Before
-Python or JavaScript work, call `prepare_execution_runtime` to resolve and
-verify the execution host's bundled tools (or prepare their locked local
-equivalent). Use uv for Python execution and dependencies, and pnpm for
-JavaScript dependencies and script execution. The returned command arguments
+CLIO provides managed Python and Node.js runtimes with uv and pnpm. Use
+`prepare_execution_runtime` when a standalone script needs managed executable
+paths or a fresh import check. It is not a required first step for every turn,
+shell command, or directly authored artifact. Use `prepare_document_runtime`
+when document work needs converters or fonts. Use uv for Python execution and
+dependencies, and pnpm for JavaScript dependencies and script execution. The returned command arguments
 and shell environment select CLIO's interpreters without requiring global
 Python, Node, uv or pnpm installations. Keep project dependencies in the
 project's own environment; use the prepared packages for standalone scripts.

@@ -1,6 +1,6 @@
 # JavaScript slides with PptxGenJS
 
-Use the command and package version from `prepare_execution_runtime`. The managed
+Use the command and package version from `prepare_document_runtime`. The managed
 stack currently locks `pptxgenjs` 4.0.1. Save the builder in its returned
 JavaScript workspace and execute it with `javascript.script_argv`. PptxGenJS
 creates new decks; it does not import an existing presentation for editing.

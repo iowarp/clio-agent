@@ -5,7 +5,7 @@ description: Create, edit and inspect editable PowerPoint presentations, includi
 
 # Work with presentations
 
-Call `prepare_execution_runtime` and use its execution-host commands and library
+Call `prepare_document_runtime` and use its execution-host commands and library
 inventory. Execute Python builders with `python_argv` (uv selects the prepared
 Python), and JavaScript builders with `javascript.script_argv` (pnpm executes
 managed Node). Create slides with `python-pptx` in the prepared Python environment,

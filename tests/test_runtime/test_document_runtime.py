@@ -126,6 +126,45 @@ def test_python_cache_reuse_still_probes_imports(
     assert inventory["verified"]
 
 
+def test_execution_discovery_probes_current_files_each_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No remembered answer can hide a changed or missing module."""
+    import os
+
+    python = tmp_path / "python" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    calls = 0
+
+    def probe(path: Path, *, discovery_only: bool = False) -> dict[str, Any]:
+        nonlocal calls
+        assert path == python
+        assert discovery_only
+        calls += 1
+        return {"current_revision": calls}
+
+    monkeypatch.setattr(runtime, "_probe", probe)
+    _, first = runtime._python_runtime(tmp_path, "unused-uv", discovery_only=True)
+    _, second = runtime._python_runtime(tmp_path, "unused-uv", discovery_only=True)
+    assert first["current_revision"] == 1
+    assert second["current_revision"] == 2
+
+
+def test_execution_probe_requests_light_inventory_and_still_checks_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Execution discovery must not accept a changed installed package version."""
+
+    def run(command: list[str], **kwargs: Any) -> str:
+        assert command[-1] == "--execution-only"
+        return json.dumps({"packages": {"numpy": {"version": "wrong"}}})
+
+    monkeypatch.setattr(runtime, "_run", run)
+    with pytest.raises(runtime.DocumentRuntimeError, match="differs from its locked version"):
+        runtime._probe(Path("managed-python"), discovery_only=True)
+
+
 def test_javascript_preserves_changed_task_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
