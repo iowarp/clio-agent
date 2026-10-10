@@ -219,7 +219,7 @@ def test_explicit_setup_keeps_uac_workspace_alive_until_helper_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     if not hasattr(sandbox_cli, "_launch_elevated_codex_setup"):
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(RuntimeError, match="win32-only"):
             sandbox_cli._elevated_codex_setup("codex.exe")
         return
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
