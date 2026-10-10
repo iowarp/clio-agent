@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -75,6 +76,47 @@ def test_watcher_writes_typed_crash_record_on_abnormal_exit(tmp_path: Path) -> N
     assert record["pid"] == proc.pid
     assert "fatal: segment collision" in record["log_tail"]
     assert record["crashed_at"]
+
+
+@pytest.mark.parametrize("existing_record", [False, True])
+def test_watcher_publishes_complete_crash_record_atomically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing_record: bool
+) -> None:
+    """Readers retain a complete old record until the new crash record is ready."""
+    from clio_agent import platform_paths
+    from clio_agent.arc.runtime_crash import crash_record_path, watch_daemon_process
+
+    record_path = crash_record_path(tmp_path)
+    previous = {"pid": 1, "exit_code": 7}
+    if existing_record:
+        record_path.write_text(json.dumps(previous), encoding="utf-8")
+    staged = threading.Event()
+    release = threading.Event()
+    replace = platform_paths.atomic_replace
+
+    def block_publication(source: str | Path, target: str | Path) -> None:
+        assert json.loads(Path(source).read_text(encoding="utf-8"))["exit_code"] == 3
+        staged.set()
+        assert release.wait(timeout=10), "test did not release the staged crash record"
+        replace(source, target)
+
+    monkeypatch.setattr(platform_paths, "atomic_replace", block_publication)
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
+    thread = watch_daemon_process(proc, log_path=tmp_path / "absent.log", state_dir=tmp_path)
+    try:
+        assert staged.wait(timeout=10), "watcher did not stage a complete crash record"
+        if existing_record:
+            assert json.loads(record_path.read_text(encoding="utf-8")) == previous
+        else:
+            assert not record_path.exists()
+    finally:
+        release.set()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    assert record["exit_code"] == 3
+    assert record["pid"] == proc.pid
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_watcher_writes_no_record_on_clean_exit(tmp_path: Path) -> None:
