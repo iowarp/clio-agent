@@ -248,7 +248,7 @@ def hub_snapshots(root: Path) -> list[dict[str, Any]]:
     exists: a snapshot is ready when its files resolve to complete blobs; a repository
     with ``.incomplete`` blobs is reported as an unfinished download, never as ready.
     """
-    rows = []
+    rows: list[dict[str, Any]] = []
     for repo in sorted(root.glob("models--*")):
         repository = repo.name.removeprefix("models--").replace("--", "/", 1)
         refs: dict[str, str] = {}

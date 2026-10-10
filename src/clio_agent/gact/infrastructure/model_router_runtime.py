@@ -133,7 +133,11 @@ class ModelRouterMixin:
             DIGEST_FIELD
         ):
             return
-        verbs = (["stop"] if router.state == "running" else []) + (["start"] if models else [])
+        verbs: list[Literal["stop", "start"]] = []
+        if router.state == "running":
+            verbs.append("stop")
+        if models:
+            verbs.append("start")
         try:
             for verb in verbs:
                 if not await self._router_operation(router, verb):
