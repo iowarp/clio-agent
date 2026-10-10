@@ -544,6 +544,7 @@ async def bash(
         net_policy=sandbox.NET_ALLOW_RECORD,
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
+        cwd=safe_cwd,
     )
     run_argv = [confined.command, *confined.args]
     run_env = {**os.environ, **prepared, "PYTHONUTF8": "1", **confined.env_overlay}

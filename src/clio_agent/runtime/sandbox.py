@@ -356,6 +356,7 @@ def _compose_fence_prefix(
     write_roots: Sequence[Path] | Sequence[str],
     *,
     proxy_port: Optional[int] = None,
+    cwd: Path | str | None = None,
 ) -> tuple[str, list[str]]:
     """Compose the active fence's argv prefix around ``(command, args)`` (B-codex / Landlock).
 
@@ -371,7 +372,7 @@ def _compose_fence_prefix(
             from clio_agent.runtime import sandbox_codex  # noqa: PLC0415
 
             binary = str(state.details.get("codex_binary") or sandbox_codex.CODEX_BINARY_NAME)
-            return sandbox_codex.compose_codex_spawn(roots, command, args, binary=binary)
+            return sandbox_codex.compose_codex_spawn(roots, command, args, binary=binary, cwd=cwd)
         if mechanism == MECHANISM_LANDLOCK:
             from clio_agent.runtime import sandbox_landlock  # noqa: PLC0415
 
@@ -394,6 +395,7 @@ def wrap_confined(
     profile: Profile,
     pdeathsig: bool = False,
     state: Optional[SandboxResult] = None,
+    cwd: Path | str | None = None,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -403,6 +405,7 @@ def wrap_confined(
     MUST be the FINAL resolved argv (wrap AFTER spawn-diet); ``write_roots`` is the writable
     territory. ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
+    ``cwd`` selects the command directory without adding or reordering permission grants.
     """
     resolved_state = state or current_state()
     if resolved_state is None:
@@ -451,7 +454,7 @@ def wrap_confined(
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
         env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
         cmd, arg_list = _compose_fence_prefix(
-            resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port
+            resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port, cwd=cwd
         )
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).

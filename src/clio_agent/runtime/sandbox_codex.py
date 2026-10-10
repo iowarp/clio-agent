@@ -390,12 +390,13 @@ def compose_codex_spawn(
     binary: str,
     platform: str = sys.platform,
     codex_home: Optional[Path | str] = None,
+    cwd: Path | str | None = None,
 ) -> tuple[str, list[str]]:
     """Compose the Codex ``sandbox`` argv wrapping ``(command, args)`` (the ladder's spawn hook).
 
     Synthesizes the read-anywhere / write-fence profile for ``write_roots``, materializes it as a
     ``-p`` layer file in the DEFAULT codex home (``[windows] sandbox = "elevated"`` gated on win32),
-    pins the primary write root ``write_roots[0]`` as the workspace (``-C``), and returns
+    uses ``cwd`` as the command directory (falling back to the first write root), and returns
     ``(binary, ["sandbox", … , "--", command, *args])``.
 
     Args:
@@ -406,6 +407,7 @@ def compose_codex_spawn(
         platform: Injectable platform string (drives the win32 elevated gate + read-anywhere roots).
         codex_home: Override for the codex home the ``-p`` layer is written into (tests inject a
             tmp dir); ``None`` uses ``$CODEX_HOME`` else the real ``~/.codex``.
+        cwd: Validated command directory, independent of the ordered permission grants.
 
     Returns:
         The ``(command, args)`` pair to launch — the codex binary and its sandbox argv.
@@ -425,7 +427,7 @@ def compose_codex_spawn(
         codex_home=codex_home,
         platform=platform,
     )
-    prefix = codex_prefix(binary, "clio", roots[0], layer_name=layer)
+    prefix = codex_prefix(binary, "clio", cwd if cwd is not None else roots[0], layer_name=layer)
     return prefix[0], [*prefix[1:], command, *args]
 
 
