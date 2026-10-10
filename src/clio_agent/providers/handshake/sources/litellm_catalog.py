@@ -79,8 +79,7 @@ def _library_packaged_cost_map() -> dict[str, Any]:
     resource = distribution("litellm").locate_file(
         "litellm/model_prices_and_context_window_backup.json"
     )
-    text = resource.read_text(encoding="utf-8")
-    return _parse_cost_map(text.encode("utf-8"))
+    return _parse_cost_map(resource.read_bytes())
 
 
 @lru_cache(maxsize=1)
