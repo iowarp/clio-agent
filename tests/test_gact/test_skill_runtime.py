@@ -816,7 +816,7 @@ def test_builtin_main_with_a2ui_catalog_sees_presentation_skill(tmp_path: Path) 
 def test_root_agent_declares_one_catalog_skill_line_per_declared_catalog_in_order(
     tmp_path: Path,
 ) -> None:
-    """Golden: tier 1 gains exactly one line per declared catalog, in declared order."""
+    """Catalog metadata stays ordered alongside the shared presentation procedures."""
 
     from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
 
@@ -828,10 +828,16 @@ def test_root_agent_declares_one_catalog_skill_line_per_declared_catalog_in_orde
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
     basic, workspace = load_builtin_catalogs()
-    assert list(rt.resolved) == ["a2ui-catalog-clio-workspace", "a2ui-catalog-basic"]
+    assert list(rt.resolved) == [
+        "a2ui-catalog-clio-workspace",
+        "a2ui-catalog-basic",
+        "present-interactive-analysis",
+        "review-visual-presentation",
+        "create-dashboard",
+    ]
     lines = rt.prompt_block.splitlines()
     assert lines[0] == "## Skills available to you"
-    assert lines[2:] == [
+    assert [line for line in lines[2:] if line.startswith("- a2ui-catalog-")] == [
         f"- a2ui-catalog-clio-workspace: {workspace.file['description']}",
         f"- a2ui-catalog-basic: {basic.file['description']}",
     ]
@@ -881,8 +887,10 @@ def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
 _FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
 
 
-def test_pack_blueprint_session_declares_only_its_own_catalog_skill(tmp_path: Path) -> None:
-    """v15 S8: the fixture pack lists only its own catalog -- no builtin skills."""
+def test_pack_blueprint_keeps_its_catalog_and_shared_presentation_procedures(
+    tmp_path: Path,
+) -> None:
+    """Pack catalog scope stays private while its producer gains shared design guidance."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
@@ -897,7 +905,12 @@ def test_pack_blueprint_session_declares_only_its_own_catalog_skill(tmp_path: Pa
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
-    assert list(rt.resolved) == ["a2ui-catalog-minimal"]
+    assert list(rt.resolved) == [
+        "a2ui-catalog-minimal",
+        "present-interactive-analysis",
+        "review-visual-presentation",
+        "create-dashboard",
+    ]
 
 
 def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(

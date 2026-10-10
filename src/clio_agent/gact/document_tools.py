@@ -26,10 +26,12 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
     from clio_agent.gact.agents.tool_instrumentation import native_tool
 
     def prepare_runtime(required_imports: list[str] | None = None) -> dict[str, Any]:
-        """Prepare Clio's locked document runtime and report verified executable paths,
-        packages, native converter availability, fonts, skill locations and workspace.
+        """Resolve Clio's managed executable paths, current packages and workspace.
 
-        Use before Python or JavaScript work. It selects bundled Python/uv and
+        Resolve the managed tools when a standalone script needs executable paths
+        or an explicit import check. This is not required before every shell call
+        or turn. Use a project's own environment for project work.
+        It selects bundled Python/uv and
         Node/pnpm, or automatically prepares their locked local equivalents.
         The shell receives these tools after preparation. Use returned commands
         for standalone scripts; preserve project-owned dependency environments.
@@ -39,8 +41,15 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
         uv --with dependencies; do not install them into the locked managed environment.
         """
         imports = required_imports or []
-        runtime = prepare_document_runtime(_workspace())
+        runtime = (
+            prepare_document_runtime(_workspace(), discovery_only=True)
+            if execution
+            else prepare_document_runtime(_workspace())
+        )
         if execution:
+            # Execution discovery probes live packages and tools without
+            # launching Office/converters or opening fonts. Document preparation
+            # owns that separate, explicitly requested inventory.
             # Font files and PATH overlays can consume the bounded result before
             # its commands appear. The overlay is already published to shell tools;
             # full paths remain available from document-specific discovery.
@@ -49,8 +58,13 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
                 for key, value in runtime.items()
                 if key not in {"font_files", "shell_environment"}
             }
+            runtime["document_guidance"] = (
+                "Converters and fonts are not checked by execution discovery. "
+                "Use prepare_document_runtime for current document capabilities and fonts."
+            )
         runtime["dependency_guidance"] = (
-            "Only listed packages and successful required_imports checks are verified. "
+            "Package entries report current versions and their verification method. "
+            "Imported entries and successful required_imports checks verify actual imports. "
             "For missing task dependencies, use uv run --no-project --python with the "
             "returned interpreter and explicit --with distribution options before python. "
             "Do not change the locked managed environment."
@@ -62,12 +76,20 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
                 runtime["status"] = "missing_dependencies"
         return runtime
 
+    inventory_description = (
+        "Read current package versions and discover modules without importing every package. "
+        "required_imports performs real import checks. Converter and font probes are omitted: "
+        "use prepare_document_runtime for the complete document inventory.\n\n"
+        if execution
+        else "Import-check the managed document packages and inspect current converters and fonts. "
+        "required_imports can check additional modules needed by the task.\n\n"
+    )
     return native_tool(
         prepare_runtime,
         name="prepare_execution_runtime" if execution else "prepare_document_runtime",
         domain="workspace",
         title="Get execution environment" if execution else "Prepare document tools",
-        desc=prepare_runtime.__doc__,
+        desc=inventory_description + (prepare_runtime.__doc__ or ""),
         args={
             "required_imports": {
                 "type": "array",

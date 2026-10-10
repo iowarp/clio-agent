@@ -174,7 +174,7 @@ if (Test-Path $VenvPython) {
 }
 
 Say 'Installing managed Python/uv and Node/pnpm packages and Office rendering'
-RunNative $VenvPython @('-m', 'clio_agent.runtime.document_install')
+RunNative $VenvPython @('-m', 'clio_agent.runtime.document_install', '--setup-protected-execution')
 
 # ---------- provision clio-kit MCP runtime ----------------------------
 # Marketplace packs launch their MCP servers via the installed `clio-kit

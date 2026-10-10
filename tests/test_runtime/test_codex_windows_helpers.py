@@ -183,6 +183,11 @@ def test_installer_never_records_incomplete_helpers(
         raise helpers.CodexWindowsHelpersError("matching helper unavailable")
 
     monkeypatch.setattr(document_install, "ensure_bundled_codex_windows_helpers", failed)
+    monkeypatch.setattr(
+        document_install,
+        "prepare_existing_windows_fence",
+        lambda **kwargs: {"status": "available", "implementation": "elevated"},
+    )
     with pytest.raises(helpers.CodexWindowsHelpersError, match="matching helper"):
         document_install.install_document_runtime(
             tmp_path / "workspace", cache_root=tmp_path / "cache"
@@ -212,8 +217,11 @@ def test_installer_recovers_existing_fence_only_after_proof(
 ) -> None:
     monkeypatch.setattr(codex_desktop_setup.sys, "platform", "win32")
 
-    def provision(*, allow_elevation: bool) -> sandbox_cli.CodexProvisionResult:
+    def provision(
+        *, allow_elevation: bool, progress: Any = None, grantor: Any = None
+    ) -> sandbox_cli.CodexProvisionResult:
         assert allow_elevation is False
+        assert callable(grantor)
         return sandbox_cli.CodexProvisionResult(
             ok=enforced,
             status="test",

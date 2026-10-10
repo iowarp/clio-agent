@@ -117,9 +117,10 @@ jobs:
     # so more workers on the same 4 vCPUs only contend.
     name: check (${{ matrix.python-version }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Prior 3.12/3.13 baseline: 6.8-9.5 min on 3.13, 11.6-12.0 min on 3.12
-    # (setup included). Python 3.14 now runs the same release gates.
-    timeout-minutes: 18
+    # Python 3.12 shards now reach 97-99% at the former 18-minute job cap
+    # while still making steady progress. Allow suite and coverage-write headroom;
+    # pytest's individual test deadlines remain the hang guard.
+    timeout-minutes: 25
     strategy:
       # Every supported interpreter completes independently: existing hosts run
       # 3.12/3.13 while new managed runtimes use 3.14.

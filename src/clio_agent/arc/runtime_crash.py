@@ -26,6 +26,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from clio_agent.platform_paths import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 CRASH_RECORD_NAME = "clio-runtime-crash.json"
@@ -160,8 +162,7 @@ def watch_daemon_process(
             "log_path": str(log_path),
         }
         try:
-            with crash_record_path(Path(state_dir)).open("w", encoding="utf-8") as fh:
-                json.dump(record, fh, indent=2)
+            atomic_write_text(crash_record_path(Path(state_dir)), json.dumps(record, indent=2))
         except OSError as exc:
             logger.error("could not write daemon crash record: %r", exc)
         logger.error(
