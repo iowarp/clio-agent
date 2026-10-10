@@ -129,8 +129,12 @@ async def recover_http(app: Any, key: TaskKey) -> None:
                 client.session, key, store=store
             )
             current = store.get(key)
-            if current is not None and current.cancel_requested and not current.cancel_acknowledged:
-                await cancel_task(client.session, key, store=store)
+            if current is not None and current.cancel_requested:
+                from clio_agent.gact.task_input_questions import cancel_task_inputs
+
+                cancel_task_inputs(app, key)
+                if not current.cancel_acknowledged:
+                    await cancel_task(client.session, key, store=store)
             while True:
                 try:
                     await resume_task(

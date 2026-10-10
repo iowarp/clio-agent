@@ -293,6 +293,12 @@ async def _elicit_answer(
     return answer.model_dump(by_alias=True, mode="json", exclude_none=True)
 
 
+def _cancel_requested(store: TaskRecordStore, key: TaskKey) -> bool:
+    """Read persisted cancellation intent without mistaking it for settlement."""
+    row = store.get(key)
+    return row is not None and row.cancel_requested
+
+
 async def _answer_round(
     session: "ClientSession",
     key: TaskKey,
@@ -339,6 +345,8 @@ async def _answer_round(
         return left
 
     for input_key in outstanding:
+        if _cancel_requested(store, key):
+            return newly_elicited
         if ledger.answer(input_key) is not None:
             continue
         payload = await _elicit_answer(
@@ -349,6 +357,8 @@ async def _answer_round(
             elicitation_callback,
             remaining(),
         )
+        if _cancel_requested(store, key):
+            return newly_elicited
         ledger.capture(input_key, payload)
         # DURABLE BEFORE TRANSMITTED: a crash here still leaves an answer that a
         # resume replays verbatim instead of re-asking the human.
@@ -356,7 +366,7 @@ async def _answer_round(
         newly_elicited.append(input_key)
 
     responses = ledger.payloads_for(outstanding)
-    if responses:
+    if responses and not _cancel_requested(store, key):
         await send_task_update(session, key.task_id, responses, remaining())
         ledger.mark_delivered(list(responses))
         persist_ledger(store, key, ledger)
@@ -489,7 +499,7 @@ async def _poll_until_terminal(
             # Removal is an explicit later dismiss, not an automatic drop at
             # settle (a UI still needs to show the finished row afterward).
             return current
-        if current.status == "input_required":
+        if current.status == "input_required" and not _cancel_requested(store, key):
             newly_elicited = await _answer_round(
                 session,
                 key,
@@ -500,11 +510,16 @@ async def _poll_until_terminal(
                 remaining(),
             )
             _record_status(store, ledger, key, current)
-            if newly_elicited:
+            if _cancel_requested(store, key):
+                # The input waiter was released by explicit cancellation. Poll
+                # the backend until cleanup settles; do not answer or re-ask it.
+                no_progress = 0
+            elif newly_elicited:
                 no_progress = 0
                 backoff = MIN_POLL_INTERVAL
                 continue
-            no_progress += 1
+            else:
+                no_progress += 1
             if no_progress > max_no_progress_rounds:
                 raise ToolError(
                     f"task {key.task_id} kept reporting input_required with no new key "

@@ -455,3 +455,48 @@ its CI failure. No timeout, assertion, worker or guard was relaxed. This source
 also needs careful reconciliation with its advanced target branch. Full
 qualification remains incomplete, and no promotion or installed-state change is
 authorized by these receipts.
+
+### Pending-input cancellation and recovered activity
+
+The first actual-model reconnect cycle on core `9c26bd77` / GACT `b61006a7`
+passed in `input-recovery-9c26-after-1`. The original handle and human question
+survived an API-only crash. After the unchanged 300-second driver lease expired,
+the original backend received the persisted answer, and the actual Codex/Luna
+model queried and read the completed result. There was one submission, one input
+answer, and no duplicate question or operation replay. The private Core's retained
+PID/birth identity was verified absent afterward. One cycle does not satisfy the
+five-cycle final-state requirement.
+
+The distinct live cancellation baseline `input-cancel-9c26-before-1` failed.
+The model accepted the MCP handle and performed an independent file read while
+its input was pending. The real browser sent exactly one cancel request, and the
+backend acknowledged `tasks/cancel`. CLIO remained parked on the pending human
+question with `cancel_requested=true`, without another backend poll, through the
+180-second qualification window. The focused regression reproduced that stall.
+
+Explicit shared cancellation now closes and wakes only input questions belonging
+to the cancelled task's full identity. The first-wins transition retains any
+already committed human answer. A publication check closes the race where
+cancellation preceded the question. The driver suppresses input updates after
+cancel intent and continues polling until actual backend settlement, retaining
+the existing no-progress guard for ordinary unanswered/retransmitted input.
+Recovery closes durable pending input for an already acknowledged cancellation.
+Cancellation acknowledgements never publish terminal task status by themselves.
+
+Twelve new cancellation cases and eleven existing input/recovery/Stop cases
+passed individually and sequentially with one worker and zero executed skips.
+Scoped Ruff/format, Pyright zero errors/warnings and eight existing guards passed.
+The actual after-restart UI also exposed a footer saying `No active work` while
+the original accepted MCP task was still `input_required`. The footer projection
+now includes accepted background work using effective owner status, independently
+of the originating run or foreground tool. Actual-model/browser qualification of
+these repairs remains required. The earlier CI failures, target-branch conflicts
+and all unavailable/prohibited routes remain open; full qualification is incomplete.
+
+The footer repair is recorded by GACT `53bf385d3e25977666546889efb19006be07ffee`
+in the core feature branch's gitlink. Three new activity-projection cases and two
+existing rendered footer cases passed individually/sequentially with one worker;
+other filtered test names were not executed. Scoped formatting/lint, TypeScript,
+six existing frontend guards and online/offline production builds passed. The
+live checks now require the actual recovered task to appear as active and its
+cancelled input form to disappear, at both desktop and phone widths.

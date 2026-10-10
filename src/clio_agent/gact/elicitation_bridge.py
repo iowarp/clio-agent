@@ -54,6 +54,7 @@ from clio_agent.gact.elicitation_schema import (
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.task_input_questions import (
     TaskInputIdentityError,
+    cancel_published_task_input,
     preserve_input_on_disconnect,
     recover_input_question,
 )
@@ -689,6 +690,8 @@ async def handle_elicitation(
         question = question.model_copy(update=field_patch)
 
     def _on_published(published: UserQuestion) -> None:
+        if cancel_published_task_input(app, invocation):
+            return
         agent_elicitation.on_question_published(app, published, invocation, translation, decision)
 
     resolution = await _await_answer(

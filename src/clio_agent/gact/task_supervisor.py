@@ -90,7 +90,9 @@ class TaskSupervisor:
             store.put(replace(record, cancel_requested=True))
             future = self.cancellation_requests.get(row["handle"])
             if future is None:
-                future = asyncio.run_coroutine_threadsafe(callback(), self.app.state.mcp_app_loop)
+                future = asyncio.run_coroutine_threadsafe(
+                    self._send_cancel(key, row["task_kind"], callback), self.app.state.mcp_app_loop
+                )
                 self.cancellation_requests[row["handle"]] = future
         try:
             future.result(timeout=30)
@@ -104,6 +106,16 @@ class TaskSupervisor:
             if current is not None:
                 store.put(replace(current, cancel_acknowledged=True))
         return True
+
+    async def _send_cancel(
+        self, key: TaskKey, kind: str, callback: Callable[[], Coroutine[Any, Any, Any]]
+    ) -> Any:
+        """Wake an exact MCP input owner before sending its cooperative cancellation RPC."""
+        if kind == "MCP":
+            from clio_agent.gact.task_input_questions import cancel_task_inputs
+
+            cancel_task_inputs(self.app, key)
+        return await callback()
 
     async def shutdown(self) -> None:
         """Settle owned drivers before closing their retained MCP transports."""

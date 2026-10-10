@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -184,3 +185,65 @@ def input_needs_delivery(app: Any, raw: Mapping[str, Any]) -> bool:
     } and not any(
         answer.key == invocation.input_key and answer.delivered for answer in row.input_answers
     )
+
+
+def cancel_task_inputs(app: Any, key: TaskKey) -> int:
+    """Close and wake only pending questions belonging to an explicitly cancelled task.
+
+    The first-wins question transition preserves a committed human answer. Waking
+    its input waiter resumes backend observation; it never settles the task itself.
+    """
+    from clio_agent.gact.elicitation_bridge import _terminalize_question, resolve_elicitation
+    from clio_agent.gact.user_question_ledger import record_user_question
+
+    store = getattr(getattr(app.state, "sessions", None), "task_store", None)
+    row = store.get(key) if store is not None else None
+    if row is None or not row.cancel_requested:
+        return 0
+    invocation = MCPInvocationContext(
+        row.invocation_id,
+        key.session_id,
+        key.server_id,
+        row.tool,
+        task_id=key.task_id,
+        task_key=key,
+    )
+    cancelled = 0
+    for question in stored_input_questions(app, invocation):
+        metadata = question.metadata.get("elicitation", {})
+        if not isinstance(metadata, Mapping) or question.status != "pending":
+            continue
+        candidate_invocation = replace(invocation, input_key=metadata.get("input_key"))
+        if not _matches(question, candidate_invocation):
+            continue
+        raw_key = metadata.get("task_key")
+        if isinstance(raw_key, Mapping):
+            if TaskKey.from_wire(raw_key) != key:
+                continue
+        else:
+            legacy = MCPInvocationContext(
+                row.invocation_id, key.session_id, key.server_id, row.tool, task_id=key.task_id
+            )
+            try:
+                if _owned_record(app, legacy).key != key:
+                    continue
+            except TaskInputIdentityError as exc:
+                logger.warning("Cancelled task input has ambiguous legacy ownership error=%s", exc)
+                continue
+        if question.id not in app.state.user_questions:
+            record_user_question(app, question)
+        if _terminalize_question(app, question.id, "cancelled", "user_question.cancelled"):
+            resolve_elicitation(app, app.state.user_questions[question.id])
+            cancelled += 1
+    return cancelled
+
+
+def cancel_published_task_input(app: Any, invocation: MCPInvocationContext) -> bool:
+    """Close the publication race when cancellation preceded the question's creation."""
+    if not invocation.task_id or not invocation.input_key:
+        return False
+    row = _owned_record(app, invocation)
+    if not row.cancel_requested:
+        return False
+    cancel_task_inputs(app, row.key)
+    return True
