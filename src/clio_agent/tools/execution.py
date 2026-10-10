@@ -1028,7 +1028,7 @@ def _make_dspy_tool(
     # Keep DSPy off the agent-less desktop startup path until a tool is constructed.
     from clio_agent.tools.dspy_mcp_tool import MCPBoundTool, bind_input_contract
 
-    description = task_descriptions.mcp_task_description(mcp_tool)
+    description = task_descriptions.mcp_task_description(mcp_tool, fallback=name)
 
     def tool_fn(**kwargs: Any) -> str:
         return call_tool(name, kwargs)

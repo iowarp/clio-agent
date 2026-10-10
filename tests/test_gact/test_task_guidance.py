@@ -97,10 +97,6 @@ def test_all_shipped_react_experts_receive_shared_task_lifecycle(
                 continue
             tools = build_auto_react_tools(agent, a2ui_producers=False)
             assert controls <= {tool.name for tool in tools}
-            for tool in tools:
-                if tool.name in {"spawn_agent_task", "spawn_agents_parallel"}:
-                    assert "Subagent task" in tool.desc and "handle" in tool.desc
-                    assert "wait_tasks" in tool.desc and "wake" in tool.desc
             lm, engine = scripted_lm([Reply(text="Ready.")])
             with dspy.context(lm=lm):
                 ClioReAct("system_prompt, question -> answer", tools=tools)(

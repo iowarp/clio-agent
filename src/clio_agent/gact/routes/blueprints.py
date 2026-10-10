@@ -71,6 +71,7 @@ from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_
 from clio_agent.gact.routes.blueprint_selection import selection_errors
 from clio_agent.gact.routes.blueprint_session_activation import activate_session_blueprint
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.tools.task_descriptions import mcp_task_description
 
 logger = logging.getLogger(__name__)
 
@@ -637,9 +638,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             **declared,
                             "id": tool_name,
                             "name": tool_name,
-                            "description": getattr(live_tool, "description", "")
-                            or declared.get("description")
-                            or "",
+                            "description": mcp_task_description(
+                                live_tool, fallback=str(declared.get("description") or "")
+                            ),
                             # #1188: the upstream tool's declared title, when present.
                             "title": mcp_tool_title(live_tool) or declared.get("title") or "",
                             "status": "ready",

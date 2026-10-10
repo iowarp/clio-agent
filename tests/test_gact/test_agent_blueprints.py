@@ -3780,8 +3780,9 @@ EarthScope descriptor.
     assert detail["descriptor_id"] == "earthscope"
 
 
+@pytest.mark.parametrize("task_support", [None, "required"])
 def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_support: str | None
 ) -> None:
     class FakeClient:
         called_tool = ""
@@ -3803,6 +3804,7 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                     inputSchema={"type": "object"},
                     outputSchema={"type": "object"},
                     annotations={"readOnlyHint": True},
+                    execution=SimpleNamespace(task_support=task_support),
                 )
             ]
 
@@ -3869,6 +3871,9 @@ EarthScope descriptor.
     assert body["tools"][0]["enabled"] is True
     assert body["tools"][0]["input_schema"] == {"type": "object"}
     assert body["tools"][0]["annotations"] == {"readOnlyHint": True}
+    assert ("durable task handle" in body["tools"][0]["description"]) == (
+        task_support == "required"
+    )
     assert call.status_code == 200, call.text
     assert FakeClient.called_tool == "earthscope_query"
     assert call.json()["content"] == [{"type": "text", "text": "earthscope_query:ANMO"}]

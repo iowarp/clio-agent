@@ -9,6 +9,7 @@ from mcp.types import Tool, ToolExecution
 
 from clio_agent.gact.agents.builders import _enabled_external_mcp_dspy_tools
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_spawn_skill_task_tool
+from clio_agent.gact.agents.spawn_runtime import build_spawn_runtime_tools
 from clio_agent.gact.storage.connect_tool import build_connected_data_connect_tool
 from clio_agent.gact.storage.download_tool import build_connected_data_download_tool
 from clio_agent.gact.types import AgentDef
@@ -83,6 +84,19 @@ def test_plain_mcp_tool_is_not_labelled_as_a_task(support: str | None) -> None:
     )
 
 
+@pytest.mark.parametrize("support", [None, "required"])
+def test_missing_mcp_description_preserves_namespaced_fallback(support: str | None) -> None:
+    """Adding task guidance retains the bridge's original public-name fallback."""
+    upstream = Tool(
+        name="read",
+        input_schema={"type": "object"},
+        execution=ToolExecution(task_support=support) if support else None,
+    )
+    tool = _make_dspy_tool("domain_read", upstream, lambda _name, _args: "unused")
+    assert tool.desc.startswith("domain_read")
+    assert ("durable task handle" in tool.desc) == (support == "required")
+
+
 def test_blueprint_mcp_task_capability_reaches_model_description() -> None:
     """Cached blueprint tools receive the same capability-derived description."""
     app = SimpleNamespace(
@@ -132,6 +146,23 @@ def test_skill_task_declaration_uses_shared_controls() -> None:
     assert "Subagent task handle" in tool.desc and "wait_tasks" in tool.desc
     assert "observe_tasks" in tool.desc and "wake" in tool.desc
     assert "wait_agent_tasks" not in tool.desc
+
+
+@pytest.mark.parametrize("name", ["spawn_agent_task", "spawn_agents_parallel"])
+def test_spawn_declaration_explains_task_handle_and_wake(
+    name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actual declared-child catalogs describe single and fanout task receipts."""
+    from clio_agent.gact import context
+    from clio_agent.gact.agents import resolution
+
+    monkeypatch.setattr(context, "active_app", lambda: SimpleNamespace())
+    monkeypatch.setattr(context, "active_session_id", lambda: "parent")
+    monkeypatch.setattr(resolution, "_runtime_declared_child_ids", lambda *a, **kw: {"worker"})
+    tools = build_spawn_runtime_tools(SimpleNamespace(), AgentDef(id="main", title="Main"))
+    tool = next(tool for tool in tools if tool.name == name)
+    assert "Subagent task" in tool.desc and "handle" in tool.desc
+    assert "wait_tasks" in tool.desc and "wake" in tool.desc and "Stop" in tool.desc
 
 
 def test_malformed_mcp_capability_does_not_promise_a_task() -> None:

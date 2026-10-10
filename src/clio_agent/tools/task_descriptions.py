@@ -12,9 +12,9 @@ def _field(value: Any, name: str, alias: str = "") -> Any:
     return getattr(value, name, None)
 
 
-def mcp_task_description(tool: Any) -> str:
+def mcp_task_description(tool: Any, *, fallback: str = "") -> str:
     """Explain per-tool task support without promoting ordinary server tools."""
-    description = str(_field(tool, "description") or _field(tool, "name") or "MCP tool")
+    description = str(_field(tool, "description") or fallback or _field(tool, "name") or "MCP tool")
     support = _field(_field(tool, "execution"), "task_support", "taskSupport")
     if not isinstance(support, str) or support not in {"optional", "required"}:
         return description
