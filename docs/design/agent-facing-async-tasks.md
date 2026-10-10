@@ -89,10 +89,10 @@ This automatic-wake contract supersedes the original next-human-turn-only
 delivery design at the user's direction. Historical live idle-delivery evidence
 tested the earlier design and does not qualify automatic idle wake.
 
-The automatic-wake implementation has 51 focused cases passing individually and
+The initial automatic-wake checkpoint had 51 focused cases passing individually and
 sequentially, including the complete turn pipeline and unchanged transcript
 contracts. All eight guards and scoped runtime type checks pass. Actual Codex/Luna
-has passed one automatic Shell wake and one child-Shell-child-parent wake chain,
+passed one automatic Shell wake and one child-Shell-child-parent wake chain,
 without user completion messages, on core `c3680cb0` / GACT `53bf385`. Each
 proved original handles, real output, one delivery and no later duplicate. The
 required repeated live matrix remains incomplete; historical idle proofs do not
@@ -201,7 +201,79 @@ order on both result and event lanes. Shared result collection uses the existing
 model-result bound and session-owned spill references, including the complete
 stored subagent output; it does not refer to an omitted compatibility tool.
 
-## Qualification ledger
+## Current qualification checkpoint (2026-10-10)
+
+The latest code checkpoint is core `a1c4a4d31cb39b3282400ce3cfca01e0584caf67`
+with GACT `37cc0b5fbd2c6a14ce6dc2253aa867105dca9bad`. Core runtime source,
+scripts and the GACT gitlink are byte-identical to core `801d139d`; the two
+subsequent commits corrected CI test fixtures. Original live source identities
+are retained, rather than relabelled as runs on a later commit.
+
+Actual Codex/Luna qualification on that runtime includes:
+
+| Route and behavior | Completed cycles | Evidence directory |
+| --- | --- | --- |
+| Windows ordinary Enter and queued completion at the next iteration of the same busy turn | 5/5 | `automatic-wake-cwd-windows-801d-2/busy-enter` |
+| Windows Stop independence, confirmed Subagent subtree cancellation and automatic parent wake | 5/5 | `automatic-wake-cwd-windows-801d-2/subagent-ui-cancel` |
+| Windows nonrecoverable stdio MCP backend loss, original-handle interruption and automatic wake | 5/5 | `automatic-wake-short-runtime-f6a7-1/stdio-loss` |
+| Windows Indexing graceful service interruption and original-operation recovery | 5/5 | `automatic-wake-indexing-recovery-a1c4-1/indexing-graceful` |
+| Windows Indexing abrupt service interruption and original-operation recovery | 5/5 | `automatic-wake-indexing-recovery-a1c4-1/indexing-crash` |
+| Windows mixed Subagent/Shell query, observe, expired waits, unbounded any/all waits, partial failure, invalid member and explicit collection | 5/5 | `automatic-wake-mixed-collection-a1c4-3/mixed-controls` |
+| Linux WebSocket Shell completion and automatic wake | 5/5 | `posix-qualification-801d-1` |
+| Linux WebSocket child-Shell-child-parent completion and automatic wake | 5/5 | `posix-qualification-801d-1` |
+| Linux provider-SSE Shell completion and automatic wake | 5/5 | `posix-sse-qualification-f6a7-1` |
+
+These use real work, production implementations and actual model observations
+and subsequent actions. Models act while accepted work is still running.
+Terminal records, original handles, hidden output nonces and later no-duplicate
+checks are retained. Mixed-control releases are operator-staged after the model
+commits its waits; this is not an unstaged compound-mission proof. The first
+mixed mission ended after its any-wait and remains a failed attempt. The second
+failed setup before model/task submission. The passing third series adds one
+explicit sequencing sentence with unchanged assertions, deadlines and limits.
+All ten mixed workers and its private Core owner are absent after settlement.
+Linux evidence has source/copy SHA256 and archive CRC verification. Indexing
+interruption used cold/null manifests; it does not replace the separate earlier
+nonempty-manifest preservation proof.
+
+Code-checkpoint CI `38050743703` passed all 14 jobs, including all six Python
+shards and both 86% coverage reports. Per interpreter, 11,591 cases passed and
+66 were skipped; flake hunt passed 153 and skipped one. Executed skips remain
+exclusions, not acceptance passes. GACT CI `38033504191` passed five executed
+jobs with four conditional job skips. Native WebView exclusions remain; these
+results do not establish complete installed Desktop acceptance.
+
+Earlier `69bd3910` actual-model evidence includes five-cycle MCP input/answer,
+cancel/reconnect, Shell and Download interruption, delivery veto/overflow and
+unattended batch trials. It retains its actual source identity. Earlier native
+Core crashes and a capacity-failed fifth Indexing restart remain recorded;
+neither their causes nor a fix for those crashes is established by later
+successful runs. Accepted operations were not replayed.
+
+Feature model evidence uses Python 3.13.14 / Core 2.2.1. A separate Linux
+Python 3.14.6 / Core 2.3.1 candidate installs and passes two actual native
+persistence cases. That candidate has separate dependencies and qualification;
+it has not upgraded the feature dependency or replaced its live matrix.
+
+**Full qualification remains incomplete.** Other distinct provider,
+native-client, relay and platform routes have not passed the full final-state
+matrix. The host-rejected connected-source Download-plus-Shell child route
+remains prohibited, and the oversized provider-SSE parser-limit failure remains
+blocked. Fresh SSE success does not close that failure. Both draft PRs target
+`develop` and conflict with advanced targets. Integration, merge, release and
+installation remain separate actions.
+
+Current receipts, transcripts, runtime/model identities, retained failures and
+ownership/custody records are in `runtime-continuation-current.json`,
+`qualification-ledger-current.md` and `LIVE-TASK-RESULTS.md` under the evidence
+root below. Installed Desktop, authentication, defaults and released pins are
+preserved. Manual disk cleanup remains a separate incomplete obligation.
+
+## Historical qualification ledger
+
+The following entries retain the status of their recorded source checkpoints.
+Their pending-runtime and pending-gate statements are historical; the current
+checkpoint above supersedes them. They are not all claims about the latest code.
 
 Implementation is present on the integrated feature branch. **Release
 qualification is incomplete.** The live matrix below describes executed gates,
