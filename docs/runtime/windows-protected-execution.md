@@ -91,9 +91,9 @@ CLIO's actual `wrap_confined` seam also ran against an isolated connected-source
 ledger: approved data remained readable, source mutation and credential reads
 were denied, and the original source bytes remained unchanged.
 
-The Desktop binary/runtime currently installed on the development host was not
-replaced. A newly packaged installer and unsupported-host UAC creation still
-require their own acceptance; the existing accounts were preserved.
+These initial source checks did not replace the installed Desktop. Existing
+legacy accounts were preserved. Unsupported-host UAC creation still requires
+its own acceptance.
 
 The actual bundled Codex 0.157.1 was tested in an isolated owned directory with
 matching official helpers. The native child wrote inside its allowed folder,
@@ -102,3 +102,36 @@ Python, and was denied a read of an isolated credential file. The installed
 Desktop executable, runtime files, sign-ins, and installation receipt were not
 replaced. This evidence establishes the source/native execution correction;
 it is separate from installing and launching a newly packaged Desktop release.
+
+## Packaged Windows acceptance and startup reuse
+
+Subsequently on October 9, the actual unsigned Windows installer from GitHub
+run `38017469918` was installed and launched. Its built tree matches agent
+develop `099ba0d1`, with GACT `fff8ec8d`; Desktop version is
+`0.9.5-dev.d616d124`. NSIS selected the registered `D:\CLIO-Desktop` location,
+creating a fresh directory on an existing host. The older C: installation and
+its user data remain separate and preserved; this does not establish migration.
+
+Installation took 147.645 seconds, excluding installer download. The runtime
+stage extracted 31,335 files in 43.4 seconds. Package/protected-execution
+preparation took approximately 91 seconds, with Office finishing last. First
+usable startup took 21.316 seconds; a second startup took 17.769 seconds.
+Readiness required authenticated capabilities and healthy backend/infrastructure
+responses. Installed MXC execution separately passed approved-source reads,
+source/credential/outside-write denial, attributed HTTPS and direct external
+socket denial. These checks do not qualify the historical long-review native
+context-store crash, model inference, or other platforms' interactive Desktop.
+
+Routine startup now requests reuse of a completed installation. Its receipt
+binds package locks, interpreter, workspace, configuration and managed package
+file metadata. Missing/changed files, old receipts and different workspaces
+fall back to full preparation. Generated Python bytecode does not invalidate
+the package cache. Workspace shell bindings are recreated and protected
+execution is independently checked on every startup. Explicit installation
+always performs the full checks, including setup where required.
+
+Development code using the real installed package trees measured 3.437 seconds
+for initial receipt reuse and 1.951 seconds on subsequent reuse, versus 10.638
+seconds for the installed preparation path. Receipt creation took 1.768 seconds
+during installation. These are preparation-stage measurements; the new reuse
+change still requires a rebuilt Desktop startup measurement on GitHub.

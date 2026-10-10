@@ -201,7 +201,9 @@ def _resolve_backend(
             ready, creason = (
                 codex_provisioned_probe()
                 if codex_provisioned_probe is not None
-                else scx.codex_windows_gate(binary=cdet.binary_path, version=cdet.version)
+                else scx.codex_windows_gate(
+                    platform=platform, binary=cdet.binary_path, version=cdet.version
+                )
             )
             if ready:
                 from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
