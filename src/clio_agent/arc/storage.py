@@ -105,6 +105,7 @@ ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
     "variants",
+    "response_feedback",  # immutable user ratings; never added to model context
     "segments",  # live context plane: one record per (session_id, scope)
 )
 
