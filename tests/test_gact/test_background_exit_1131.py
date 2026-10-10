@@ -164,7 +164,8 @@ def test_v3_transcript_shows_the_child_return_not_the_exit_part(tmp_path: Path) 
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         task = _complete_pending(app, parent, "task_v3_projection")
-        complete_turn(client, parent, "continue after the remote app")
+        mark_agent_ready(app, _Agent())
+        _automatic_result_turn(client, app, parent)
 
         response = client.get(f"/v1/sessions/{parent}/messages", headers=V3_HEADERS)
         blocks = [block for row in response.json()["messages"] for block in row["blocks"]]
