@@ -8,6 +8,11 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Desktop startup checks and reuses successful sandbox runtime grants when the
+  directory identity and root permissions agree, instead of repeatedly scanning
+  unrelated global uv environments. Changed permissions still require setup.
+- Local deployment shows package progress and startup details, bounds an
+  unresponsive Desktop request, and separates package setup from service readiness.
 - Windows bundled runtime extraction uses bounded parallel file writes and
   avoids repeated per-file directory and metadata work. Integrity checking,
   staging, rollback and reuse of a prepared runtime remain in place.
