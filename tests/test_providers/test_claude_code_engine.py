@@ -259,8 +259,31 @@ def test_missing_opening_fence_is_a_protocol_error_not_a_completed_answer(pool: 
     )
 
 
+def test_xml_invoke_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -> None:
+    """The live Haiku parent emitted native XML instead of the advertised call format."""
+    raw = '<invoke name="search">\n<parameter name="q">actual data</parameter>\n</invoke>'
+    pool.turns = [[_text(raw), _result()]]
+
+    response = _run(_request(HEAD))
+
+    [call] = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw
+    assert response.finish_reason == "tool_call"
+
+
 @pytest.mark.usefixtures("clio_core_plane")
-def test_loop_recovers_missing_fence_before_running_the_corrected_call(pool: FakePool) -> None:
+@pytest.mark.parametrize(
+    ("malformed", "error"),
+    [
+        ('[{"name":"search","arguments":{"q":"actual data"}}]\n```', "missing opening"),
+        ('<invoke name="search"><parameter name="q">actual data</parameter></invoke>', "XML"),
+    ],
+)
+def test_loop_recovers_malformed_call_before_running_the_corrected_call(
+    pool: FakePool, malformed: str, error: str
+) -> None:
     """A malformed call cannot complete the child or execute before correction."""
     executed: list[str] = []
 
@@ -271,7 +294,7 @@ def test_loop_recovers_missing_fence_before_running_the_corrected_call(pool: Fak
 
     raw = '[{"name":"search","arguments":{"q":"actual data"}}]\n```'
     pool.turns = [
-        [_text(raw), _result()],
+        [_text(malformed), _result()],
         [_text(f"{FENCE}\n{raw}"), _result()],
         [_text("ACTUAL_SEARCH_OUTPUT"), _result()],
     ]
@@ -289,7 +312,7 @@ def test_loop_recovers_missing_fence_before_running_the_corrected_call(pool: Fak
     assert result.answer == "ACTUAL_SEARCH_OUTPUT"
     assert executed == ["actual data"]
     assert len(pool.sends) == 3
-    assert "missing opening" in pool.sends[1]["payload"]
+    assert error in pool.sends[1]["payload"]
     assert "(error)" in pool.sends[1]["payload"]
     assert "ACTUAL_SEARCH_OUTPUT" in pool.sends[2]["payload"]
 

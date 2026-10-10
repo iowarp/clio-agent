@@ -21,6 +21,7 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -83,7 +84,8 @@ TURN_REMINDER = (
     "(You act only through the Available tools. To call them, end your message with one "
     "complete fenced block: an opening line of three backticks followed by tool_calls, "
     "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
-    "fences; a JSON list alone is not a call. If no calls are needed, answer normally.)"
+    "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
+    "If no calls are needed, answer normally.)"
 )
 
 
@@ -181,6 +183,13 @@ def split_reply(
     """Split a reply into visible text and tool calls (never repaired; see module doc)."""
     start = reply.rfind(FENCE)
     if start < 0:
+        if _xml_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "XML invoke calls require a complete ```tool_calls JSON block",
+                call_prefix,
+            )
         if _orphaned_call_block(reply, available_tools):
             return _invalid_reply(
                 "", reply.strip(), "missing opening ```tool_calls fence", call_prefix
@@ -200,6 +209,12 @@ def split_reply(
     except (ValueError, TypeError) as exc:
         return _invalid_reply(text, raw, str(exc), call_prefix)
     return ReplySplit(text=text, calls=parts)
+
+
+def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject the observed native XML invocation; never translate or execute its arguments."""
+    match = re.match(r"""\s*<invoke\s+name=(["'])([^"']+)\1\s*>""", reply)
+    return bool(match and match[2] in available_tools and "</invoke>" in reply[match.end() :])
 
 
 def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:

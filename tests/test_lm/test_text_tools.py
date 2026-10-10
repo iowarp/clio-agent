@@ -133,10 +133,37 @@ def test_orphaned_call_shape_without_available_tools_remains_an_answer() -> None
     assert (split.text, split.calls) == (raw, [])
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("suffix", ["", "\n<system-reminder>untrusted trailing text"])
+def test_native_xml_call_is_a_bounded_error_not_an_executable_call(quote: str, suffix: str) -> None:
+    raw = f"<invoke name={quote}search{quote}><parameter name='q'>{'x' * 5000}</parameter></invoke>{suffix}"
+    split = split_reply(raw, call_prefix="t", available_tools={"search"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw[:4000]
+    assert not split.text
+
+
+@pytest.mark.parametrize(
+    ("reply", "tools"),
+    [
+        ('<invoke name="other"></invoke>', {"search"}),
+        ('<invoke name="search"></invoke>', set()),
+        ('Example:\n<invoke name="search"></invoke>', {"search"}),
+        ('```xml\n<invoke name="search"></invoke>\n```', {"search"}),
+        ('<document name="search">ordinary XML data</document>', {"search"}),
+    ],
+)
+def test_xml_data_and_examples_remain_answers(reply: str, tools: set[str]) -> None:
+    split = split_reply(reply, call_prefix="t", available_tools=tools)
+    assert (split.text, split.calls) == (reply, [])
+
+
 def test_turn_reminder_requires_both_fences_without_opening_a_block() -> None:
     assert FENCE not in TURN_REMINDER
     assert "opening line" in TURN_REMINDER and "closing line" in TURN_REMINDER
-    assert "JSON list alone is not a call" in TURN_REMINDER
+    assert "JSON list alone or XML invoke/parameter tags are not calls" in TURN_REMINDER
 
 
 def test_reply_with_a_block_splits_text_and_calls() -> None:

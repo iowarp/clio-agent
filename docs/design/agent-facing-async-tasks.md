@@ -728,3 +728,28 @@ capacity preflight before model submission. This is separate from authentication
 The previous native crashes, oversized-SSE failure and prohibited confinement route
 remain unresolved. No runtime dependency, deadline, assertion, capacity safeguard,
 installed client, authentication or released pin was changed by this repair.
+
+Five actual Linux Sonnet subagent cycles then passed on `933b0f66`: real
+120-second child-owned Shell work, independent parent actions before settlement,
+automatic child and parent idle wakes, and no later duplicate. The selected CLI
+was the user's installed Claude 2.1.296; actual SDK model `claude-sonnet-5-5`.
+The original failed baseline remains retained under its original identity.
+
+The subsequent Linux Haiku run exposed a second malformed-call form. Actual
+`claude-haiku-5-5` started its worker, then the parent's independent file read was
+written as native XML `invoke`/`parameter` tags. CLIO treated it as an answer and
+executed no file read. That gate remains failed. The text-tool bridge now rejects
+a leading complete XML invocation naming an available tool with the same bounded
+protocol-error observation. It never translates or executes XML arguments; fenced
+examples, explanatory prose, unrelated XML and unavailable tool names remain text.
+The iteration reminder explicitly says XML tags are not calls. The engine
+regression reproduced the missing execution before this correction. Fresh model
+qualification of this additional repair is still required.
+
+All 55 affected parser/Claude-engine cases passed individually and sequentially
+with one worker and zero executed skips against the exact repair bytes. Scoped
+Ruff/format, touched-file Pyright and eight unchanged guards passed. This focused
+evidence does not substitute for the fresh model gates. The previous `933b0f66`
+CI retry again cancelled Python 3.12 shard 0 at the unchanged 18-minute job limit;
+its log reached 99% and coverage remained incomplete. Both cancelled attempts
+are retained, with no timeout, worker, assertion or coverage-budget changes.
