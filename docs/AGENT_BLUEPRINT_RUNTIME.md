@@ -188,6 +188,16 @@ sessions, it must declare the memory tools it may use:
 CLIO continues to enforce memory policy. A Blueprint can grant an Expert access
 to the memory tool, but it cannot bypass session/workspace/global policy.
 
+These tools currently expose retained-transcript search, an on-demand projection
+of up to the last five messages (360 characters per excerpt), and a bounded
+context-assembly record, respectively. The session-summary tool does not invoke
+a summarizer model or produce a whole-session narrative. Context frames identify
+sources, inclusion decisions and token estimates; they do not generally return
+the referenced message/file contents. The audited frame ledger is application
+memory, so historical frame availability after service restart is not promised.
+See [Subagent lifecycle and session messaging](design/subagent-lifecycle-and-session-messaging.md)
+for source pointers, current limitations and proposed discovery/messaging work.
+
 ## Prompts And Profiles
 
 Behavior-bearing runtime/system prompts must live in Markdown files, not Python

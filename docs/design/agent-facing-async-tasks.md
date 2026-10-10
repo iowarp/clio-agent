@@ -6,6 +6,12 @@ Feature branch: `codex/agent-facing-async-tasks`, based on core PR1658
 branch identifies the matching UI commit. Merge, release and installation are
 separate decisions.
 
+The proposed Subagent pause/resume/restart and cross-session messaging extension
+is audited separately in
+[Subagent lifecycle and session messaging](subagent-lifecycle-and-session-messaging.md).
+That proposal does not make pause or restart generic task actions and does not
+claim those additional controls are implemented or live-qualified.
+
 ## User-visible contract
 
 An accepted task returns an opaque handle to the model immediately after durable
