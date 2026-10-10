@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -70,15 +71,15 @@ def _active_workspace_root() -> Path | None:
     name it — otherwise the agent is locked out of the very workspace it was
     launched to work in and is forced to route shell through ``/tmp`` with
     absolute paths. Bound by ``tools.execution.tool_workspace_context`` during
-    tool runs; ``None`` off-turn. Lazy import avoids the execution↔file_policy
-    import cycle, and any failure degrades to ``None`` (never breaks the policy).
+    tool runs; ``None`` off-turn. A context can only be bound once execution is
+    loaded. Read that resident module without importing the entire MCP client
+    stack into a standalone installer. Any failure degrades to ``None``.
     """
     try:
-        from clio_agent.tools.execution import (  # noqa: PLC0415
-            get_active_tool_workspace_root,
-        )
-
-        raw = (get_active_tool_workspace_root() or "").strip()
+        execution = sys.modules.get("clio_agent.tools.execution")
+        if execution is None:
+            return None
+        raw = (execution.get_active_tool_workspace_root() or "").strip()
         return _resolve_root(Path(raw)) if raw else None
     except Exception:  # noqa: BLE001 - policy must never fail to build
         return None

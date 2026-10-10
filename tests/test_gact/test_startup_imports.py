@@ -23,10 +23,13 @@ def test_http_startup_leaves_unused_providers_and_servers_unloaded(tmp_path: Pat
 import json, sys
 from clio_agent.gact.app import build_app
 app = build_app()
+from clio_agent.gact.server_boot import reconcile_connected_storage
+reconcile_connected_storage(app)
 for name in (
     'googleapiclient.discovery', 'gdrive_fsspec',
     'clio_agent.tools.servers.fs_server', 'clio_agent.tools.servers.shell_server',
     'clio_agent.tools.relay_transport',
+    'fastmcp.client.client', 'clio_agent.tools.task_receipt',
 ):
     assert name not in sys.modules, name
 print(json.dumps({'routes': len(app.routes)}))
@@ -48,3 +51,21 @@ def test_protocol_metadata_matches_the_installed_sdk() -> None:
     assert registry.UI_EXTENSION_ID == UI_EXTENSION_ID
     assert registry.MCP_APP_MIME_TYPE == UI_MIME_TYPE
     assert registry.TASKS_EXTENSION_ID == TASKS_EXTENSION_ID
+
+
+def test_standalone_file_policy_does_not_import_the_tool_execution_stack(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from clio_agent.tools.file_policy import FileAccessPolicy; "
+            "FileAccessPolicy.from_env(); "
+            "assert 'clio_agent.tools.execution' not in sys.modules; "
+            "assert 'fastmcp' not in sys.modules",
+        ],
+        env={**os.environ, "CLIO_ALLOWED_ROOTS": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr

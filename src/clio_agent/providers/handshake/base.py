@@ -446,7 +446,10 @@ class ProviderHandshake(abc.ABC):
             ctx.provider_kind, litellm_prefix, ctx.provider_id
         )
         server_version, fingerprint = await self._dialect_endpoint_fingerprint(client, ctx, dialect)
-        caps = capability_endpoint.build_endpoint_capabilities(
+        # LiteLLM loads its provider catalogs lazily; importing those and resolving
+        # parameters must not stall startup health or the model-picker requests.
+        caps = await asyncio.to_thread(
+            capability_endpoint.build_endpoint_capabilities,
             ctx.provider_id,
             ctx.api_base,
             dialect,
@@ -548,7 +551,13 @@ class ProviderHandshake(abc.ABC):
             write=self.timeout_connect * scale,
             pool=self.timeout_connect * scale,
         )
-        return httpx.AsyncClient(timeout=timeout, headers=self._client_headers(ctx))
+        # Client construction loads system certificate stores synchronously.
+        # A catalog opens several clients at once; on Windows doing this on
+        # the loop stalls unrelated health and workspace requests for seconds.
+        # Connections are still opened/used/closed on the calling event loop.
+        return await asyncio.to_thread(
+            httpx.AsyncClient, timeout=timeout, headers=self._client_headers(ctx)
+        )
 
     async def _close_client(self, client: Any) -> None:
         try:

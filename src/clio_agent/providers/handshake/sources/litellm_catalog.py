@@ -26,8 +26,10 @@ giving up.
 from __future__ import annotations
 
 import json
+import os
+import sys
 from functools import lru_cache
-from importlib import resources
+from importlib.metadata import distribution
 from typing import Any
 
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
@@ -54,11 +56,10 @@ _MAX_BYTES = 32 * 1024 * 1024
 
 def _cost_map_url() -> str:
     """The URL LiteLLM itself fetches its community cost map from."""
-    try:
-        import litellm  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - litellm is a hard dep but never break on lookup
-        return _DEFAULT_COST_MAP_URL
-    return str(getattr(litellm, "model_cost_map_url", "") or _DEFAULT_COST_MAP_URL)
+    # Importing the SDK initializes transports and can fetch its own cost map.
+    # Passive, offline catalog reads must not trigger that initialization.
+    configured = os.getenv("LITELLM_MODEL_COST_MAP_URL", _DEFAULT_COST_MAP_URL)
+    return str(getattr(sys.modules.get("litellm"), "model_cost_map_url", "") or configured)
 
 
 def _parse_cost_map(payload: bytes) -> dict[str, Any]:
@@ -75,11 +76,10 @@ def _parse_cost_map(payload: bytes) -> dict[str, Any]:
 
 def _library_packaged_cost_map() -> dict[str, Any]:
     """The cost map the installed ``litellm`` wheel ships (the library's own data)."""
-    text = (
-        resources.files("litellm")
-        .joinpath("model_prices_and_context_window_backup.json")
-        .read_text(encoding="utf-8")
+    resource = distribution("litellm").locate_file(
+        "litellm/model_prices_and_context_window_backup.json"
     )
+    text = resource.read_text(encoding="utf-8")
     return _parse_cost_map(text.encode("utf-8"))
 
 
@@ -89,7 +89,7 @@ def _catalog() -> FetchedCatalog[dict[str, Any]]:
 
     Built lazily -- not at module import -- so merely importing this module (or
     anything that imports it, e.g. ``handshake.sources``) never forces
-    ``import litellm`` or touches the network; only an actual lookup does.
+    ``import litellm`` or touches the network. Offline lookups read data only.
     Memoised so every caller shares one instance (and therefore one refresh
     lock and one view of the disk cache).
     """

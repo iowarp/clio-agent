@@ -130,7 +130,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         """
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        rows = _mcp_server_rows(cwd=cwd)
+        rows = await asyncio.to_thread(_mcp_server_rows, cwd=cwd)
         inventory = await asyncio.to_thread(
             session_mcp_inventory, app, cwd=cwd, session_id=session_id
         )

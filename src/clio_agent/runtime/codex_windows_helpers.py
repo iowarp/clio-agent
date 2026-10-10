@@ -134,10 +134,13 @@ def ensure_codex_windows_helpers(
     Verify cached bytes before reuse, verify both downloads before replacing any
     executable, and record a receipt last. A failed download never replaces a
     working pair. No latest-version fallback or unrelated global helper is used.
-    An explicit release token is sent only to the fixed metadata API, never assets.
+    An explicit release token (argument or CLIO_CODEX_RELEASE_TOKEN) is sent
+    only to the fixed metadata API, never assets.
     """
     if platform_name != "win32":
         return {"status": "not_required"}
+    if release_token is None:
+        release_token = os.environ.get("CLIO_CODEX_RELEASE_TOKEN")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", version):
         raise CodexWindowsHelpersError("Codex did not report a usable release version")
     if binary.name.lower() != "codex.exe" or not binary.is_file():

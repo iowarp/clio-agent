@@ -16,6 +16,7 @@ Public API:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from clio_agent.providers.handshake import cache
@@ -121,7 +122,7 @@ async def run_handshake(
         report = await handshake.handshake(ctx)
         from clio_agent.providers.handshake.sources import db  # noqa: PLC0415
 
-        db.record_report(report)
+        await asyncio.to_thread(db.record_report, report)
         return report
 
     return await cache.cached_or_run(key, _run_and_record, ttl_s=ttl_s, force=force)

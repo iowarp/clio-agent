@@ -78,8 +78,8 @@ def _roots(result: dict[str, Any]) -> list[Path]:
 def _tree_metadata(root: Path) -> str:
     digest = hashlib.sha256()
 
-    def record(path: Path, info: os.stat_result) -> None:
-        metadata: list[Any] = [str(path.relative_to(root)), info.st_mode, info.st_dev, info.st_ino]
+    def record(path: Path, relative: str, info: os.stat_result) -> None:
+        metadata: list[Any] = [relative, info.st_mode, info.st_dev, info.st_ino]
         if not stat.S_ISDIR(info.st_mode):
             metadata.extend((info.st_size, info.st_mtime_ns, info.st_ctime_ns))
         if stat.S_ISLNK(info.st_mode):
@@ -88,20 +88,22 @@ def _tree_metadata(root: Path) -> str:
         digest.update(json.dumps(metadata).encode())
 
     info = root.lstat()
-    record(root, info)
-    directories = [root] if stat.S_ISDIR(info.st_mode) else []
+    record(root, ".", info)
+    directories = [(root, "")] if stat.S_ISDIR(info.st_mode) else []
     while directories:
-        with os.scandir(directories.pop()) as scan:
+        directory, parent_relative = directories.pop()
+        with os.scandir(directory) as scan:
             for entry in sorted(scan, key=lambda item: item.name):
                 if entry.name == "__pycache__" or entry.name.endswith((".pyc", ".pyo")):
                     continue
                 path = Path(entry.path)
+                relative = os.path.join(parent_relative, entry.name)
                 # Windows directory enumeration already supplies these attributes;
                 # retain DirEntry's cached stat instead of restatting every file.
                 info = entry.stat(follow_symlinks=False)
-                record(path, info)
+                record(path, relative, info)
                 if stat.S_ISDIR(info.st_mode):
-                    directories.append(path)
+                    directories.append((path, relative))
     return digest.hexdigest()
 
 

@@ -11,6 +11,8 @@ guaranteed-present offline fallback, exactly like before the refactor.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -19,6 +21,29 @@ import pytest
 from clio_agent.providers import fetched_catalog
 from clio_agent.providers.fetched_catalog import FetchedCatalog
 from clio_agent.providers.handshake.sources import litellm_catalog as lc
+
+
+def test_packaged_offline_catalog_does_not_import_the_sdk() -> None:
+    """A cold offline lookup reads the real installed map without SDK side effects."""
+    code = """
+import sys
+from clio_agent.providers.handshake.sources import litellm_catalog as lc
+assert 'litellm' not in sys.modules
+assert lc._cost_map_url()
+payload = lc._library_packaged_cost_map()
+assert payload['gpt-4o']['max_input_tokens'] == 128000
+assert 'litellm' not in sys.modules
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cost_map_url_preserves_configured_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delitem(sys.modules, "litellm", raising=False)
+    monkeypatch.setenv("LITELLM_MODEL_COST_MAP_URL", "https://example.test/custom-map.json")
+    assert lc._cost_map_url() == "https://example.test/custom-map.json"
 
 
 @pytest.fixture(autouse=True)

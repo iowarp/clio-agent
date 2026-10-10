@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -17,6 +18,34 @@ from clio_agent.runtime import document_install as installer
 from clio_agent.runtime import document_install_receipt as receipts
 from clio_agent.runtime.document_stack.process import scratch_root
 from clio_agent.runtime.execution_environment import shell_environment
+
+
+def test_metadata_digest_preserves_existing_receipts(tmp_path: Path) -> None:
+    """Carried relative names produce the same proof as the original path walk."""
+    tmp_path = tmp_path / "proof"
+    tmp_path.mkdir()
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    direct = tmp_path / "a.txt"
+    direct.write_text("direct", encoding="utf-8")
+    child = nested / "child.txt"
+    child.write_text("nested", encoding="utf-8")
+    digest = hashlib.sha256()
+    with os.scandir(tmp_path) as scan:
+        root_entries = {entry.name: entry.stat(follow_symlinks=False) for entry in scan}
+    with os.scandir(nested) as scan:
+        child_info = next(scan).stat(follow_symlinks=False)
+    for path, info in (
+        (tmp_path, tmp_path.lstat()),
+        (direct, root_entries[direct.name]),
+        (nested, root_entries[nested.name]),
+        (child, child_info),
+    ):
+        row = [str(path.relative_to(tmp_path)), info.st_mode, info.st_dev, info.st_ino]
+        if not path.is_dir():
+            row.extend((info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+        digest.update(json.dumps(row).encode())
+    assert receipts._tree_metadata(tmp_path) == digest.hexdigest()
 
 
 @pytest.fixture
