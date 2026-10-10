@@ -25,8 +25,9 @@ def _descriptor(pack: Path, name: str, url: str) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("task_support", [None, "required"])
 async def test_reload_updates_only_previously_enabled_descriptors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_support: str | None
 ) -> None:
     source = tmp_path / "source"
     pack = _pack(source, "demo")
@@ -53,7 +54,10 @@ async def test_reload_updates_only_previously_enabled_descriptors(
         seen.append(spec)
         return [
             SimpleNamespace(
-                name="revision", description="Current revision", inputSchema={"type": "object"}
+                name="revision",
+                description="Current revision",
+                inputSchema={"type": "object"},
+                execution=SimpleNamespace(task_support=task_support),
             )
         ]
 
@@ -66,6 +70,9 @@ async def test_reload_updates_only_previously_enabled_descriptors(
     assert list(app.state.external_mcp_servers) == ["enabled"]
     assert app.state.external_mcp_servers["enabled"]["spec"]["url"] == "http://new.test/mcp"
     assert app.state.external_mcp_servers["enabled"]["tools"][0]["name"] == "revision"
+    description = app.state.external_mcp_servers["enabled"]["tools"][0]["description"]
+    assert description.startswith("Current revision")
+    assert ("durable task handle" in description) == (task_support == "required")
 
 
 @pytest.mark.asyncio

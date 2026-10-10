@@ -428,6 +428,7 @@ def wrap_confined(
     territory. ``cwd`` preserves a caller's validated directory through the fence wrapper.
     ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
+    ``cwd`` selects the command directory without adding or reordering permission grants.
     """
     resolved_state = state or current_state()
     if resolved_state is None:

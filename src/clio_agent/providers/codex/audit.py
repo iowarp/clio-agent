@@ -103,6 +103,24 @@ def emit_raw_event(
     )
 
 
+def emit_tool_call(*, call_index: int, item: dict[str, Any]) -> None:
+    """Retain backend tool arguments on the opt-in audit without transport credentials."""
+    if not stream_audit_enabled():
+        return
+    session_id, turn_id, trace_id = active_gact_ids()
+    stream_audit(
+        "provider.tool_call",
+        provider=_PROVIDER,
+        session_id=session_id,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        call_index=call_index,
+        call_id=item.get("call_id"),
+        tool_name=item.get("name"),
+        arguments=item.get("arguments"),
+    )
+
+
 def emit_tool_snapshot(
     *, call_index: int, output_index: int, item: dict[str, Any], streamed_argument_chars: int
 ) -> None:
@@ -132,4 +150,28 @@ def emit_tool_snapshot(
     )
 
 
-__all__ = ["emit_call_started", "emit_call_usage", "emit_raw_event", "emit_tool_snapshot"]
+def emit_completed_tool_call(
+    *, call_index: int, payload: dict[str, Any], streamed_arguments: dict[int, str]
+) -> None:
+    """Retain the opt-in completed call and its argument-shape diagnostic together."""
+    item = payload.get("item")
+    if not isinstance(item, dict) or item.get("type") != "function_call":
+        return
+    index = int(payload.get("output_index") or 0)
+    emit_tool_call(call_index=call_index, item=item)
+    emit_tool_snapshot(
+        call_index=call_index,
+        output_index=index,
+        item=item,
+        streamed_argument_chars=len(streamed_arguments.get(index, "")),
+    )
+
+
+__all__ = [
+    "emit_call_started",
+    "emit_call_usage",
+    "emit_raw_event",
+    "emit_tool_call",
+    "emit_completed_tool_call",
+    "emit_tool_snapshot",
+]

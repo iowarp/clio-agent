@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -174,6 +175,40 @@ async def test_shell_bash_pins_default_cwd_to_active_workspace_root(
     assert Path(data["stdout"].strip()).resolve() == workspace_root.resolve()
     assert Path(data["cwd"]).resolve() == workspace_root.resolve()
     assert Path(data["cwd"]).resolve() != boot_time_cwd.resolve()
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_passes_requested_cwd_to_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fence and process use the same validated cwd, including a subdirectory."""
+    from clio_agent.runtime import sandbox
+
+    workspace = tmp_path / "workspace"
+    directory = workspace / "nested"
+    directory.mkdir(parents=True)
+    (directory / "input.txt").write_text("requested-directory", encoding="utf8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
+    original = sandbox.wrap_confined
+    observed: list[dict[str, Any]] = []
+
+    def capture(*args: Any, **kwargs: Any) -> sandbox.ConfinedSpawn:
+        observed.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sandbox, "wrap_confined", capture)
+    if os.name == "nt":
+        command = "Get-Content -Raw input.txt"
+    else:
+        command = "cat input.txt"
+    with tool_workspace_context(str(workspace)):
+        async with Client(shell_server) as client:
+            result = await client.call_tool("bash", {"command": command, "cwd": str(directory)})
+    data = _parse_result(result)
+    assert data["exit_code"] == 0 and data["stdout"].strip() == "requested-directory"
+    assert len(observed) == 1
+    assert observed[0]["cwd"] == directory.resolve()
+    assert directory.resolve() in observed[0]["write_roots"]
 
 
 def test_tool_session_context_resolves_the_real_session_workspace_root(

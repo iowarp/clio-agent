@@ -62,13 +62,12 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     from clio_agent.gact.composer_runtime import (  # noqa: PLC0415
         stop_session_composer_autostart,
     )
-    from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
     from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
 
     # L1: capture what each stop primitive actually did (real counts/flags) instead
     # of discarding them behind a fabricated ``hard_abort_supported: False`` /
     # ``upstream_abort: "not_supported"`` pair -- see ``_new_cancellation_attempt``.
-    children_cancelled = cancel_children_of(app, sid)
+    children_cancelled = 0  # Stop interrupts this turn and its waiter; accepted tasks continue.
     provider_streams_killed = abort_session_streams(sid)
     stop_session_loop(app, sid)
     stop_session_goal(app, sid)

@@ -9,7 +9,8 @@ SPAWN_AGENT_ARGUMENT = {
     "description": "Declared child expert id. Omit when blueprint_id targets an installed blueprint.",
 }
 SPAWN_BLUEPRINT_ARGUMENT = {
-    "type": "string",
+    "type": ["string", "null"],
+    "default": None,
     "description": (
         "Optional installed blueprint id to commission. The child activates its root expert and "
         "returns its registered artifact; a supplied agent must match that root."

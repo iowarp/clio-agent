@@ -866,10 +866,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         except (asyncio.CancelledError, Exception):  # noqa: BLE001,S110 - shutdown task drain; cancellation/errors ignored on teardown
             pass
 
-    # Now deterministically settle in-flight turns, while the bus / sessions / ARC
-    # they persist into are still alive (owner module does the cooperative-cancel +
-    # bounded-grace + typed-reason drain).
+    # Settle turns and task owners while their durable stores are still alive.
     await drain_app_turns(app, logger)
+    await server_boot.shutdown_tasks(app)
 
     # Desktop Quit must release the shared runtime before any later executor join can
     # block on a provider/tool worker.  The turn drain above is the safety boundary:

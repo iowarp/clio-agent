@@ -162,7 +162,7 @@ class TransferOperation(StorageModel):
 
     id: str
     source_id: str
-    kind: Literal["materialize", "refresh", "apply", "native_transfer"]
+    kind: Literal["materialize", "refresh", "apply", "native_transfer", "indexing"]
     state: Literal["queued", "running", "completed", "failed", "cancelled", "interrupted"] = (
         "queued"
     )
@@ -176,6 +176,13 @@ class TransferOperation(StorageModel):
     applied_paths: list[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now)
     updated_at: str = Field(default_factory=now)
+    task_handle: str = ""
+    owner_session_id: str = ""
+    description: str = ""
+    invocation_id: str = ""
+    entries_done: int = 0
+    manifest_id: str | None = None
+    index_signature: str = ""
 
 
 class ReviewedChange(StorageModel):

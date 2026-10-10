@@ -64,7 +64,9 @@ def test_unsent_file_and_source_cleanup_http(
         source_id = result.json()["id"]
         source = base + f"/sources/{source_id}"
         lease = client.post(source + "/draft").json()["id"]
-        assert client.post(source + "/link", json={"draft_id": lease}).status_code == 200
+        from tests.test_gact.storage_operation_helpers import complete_indexing
+
+        complete_indexing(client, source, client.post(source + "/link", json={"draft_id": lease}))
         result = client.post(
             source + "/reference", json={"folder": True, "linked": True, "draft_id": lease}
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import posixpath
 import secrets
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -60,7 +61,14 @@ class GlobusSource:
             authorizer=globus_sdk.AccessTokenAuthorizer(token)
         )
 
-    def entries(self, *, folder: str = "", recursive: bool = True) -> list[FileEntry]:
+    def entries(
+        self,
+        *,
+        folder: str = "",
+        recursive: bool = True,
+        progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[FileEntry]:
         """List a selected folder; only an explicit search traverses its descendants."""
         folder = folder.strip("/")
         if ".." in PurePosixPath(folder).parts or "\\" in folder:
@@ -72,6 +80,8 @@ class GlobusSource:
                 parent = pending.pop()
                 offset = 0
                 while True:
+                    if cancelled is not None and cancelled():
+                        raise InterruptedError("Globus folder indexing cancelled")
                     listing = list(
                         self.client.operation_ls(
                             self.record.configuration.collection_id,
@@ -81,6 +91,8 @@ class GlobusSource:
                         )
                     )
                     for metadata in listing:
+                        if cancelled is not None and cancelled():
+                            raise InterruptedError("Globus folder indexing cancelled")
                         name = str(metadata["name"])
                         if "/" in name or "\\" in name:
                             raise ValueError("Collection returned an unsafe filename")
@@ -104,6 +116,8 @@ class GlobusSource:
                             raise ValueError(
                                 "Select a smaller collection folder (limit 100,000 entries)"
                             )
+                        if progress is not None:
+                            progress(len(rows))
                         if kind == "directory" and recursive:
                             pending.append(path)
                     if len(listing) < 1000:

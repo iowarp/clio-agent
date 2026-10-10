@@ -48,8 +48,8 @@ async def test_task_wait_keeps_the_client_responsive(backend: Any) -> None:
             await asyncio.gather(waiting, return_exceptions=True)
 
 
-async def test_cancelling_foreground_wait_cancels_the_real_backend_task(backend: Any) -> None:
-    """Stop a transparent await without leaving phantom working activity on the server."""
+async def test_cancelling_foreground_wait_keeps_the_real_backend_task_running(backend: Any) -> None:
+    """Stop a transparent waiter, then reconnect to the same actual work and collect it."""
     async with conformance._client(backend.url) as client:
         waiting = asyncio.create_task(client.call_tool("slow", {"seconds": 5}))
         try:
@@ -58,13 +58,21 @@ async def test_cancelling_foreground_wait_cancels_the_real_backend_task(backend:
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(waiting, timeout=5)
             settled = task_record_store().get(record.key)
-            assert settled is not None and settled.status == "cancelled"
+            assert settled is not None and settled.status == "working"
+            assert not settled.cancel_requested
             cancels = [
                 (method, name)
                 for method, name in backend.capture.task_rpcs()
                 if method == "tasks/cancel"
             ]
-            assert cancels == [("tasks/cancel", record.task_id)]
+            assert cancels == []
+            from clio_agent.tools.mcp_tasks import resume_task
+
+            terminal = await resume_task(client.session, record.key)
+            assert terminal.status == "completed"
+            finished = task_record_store().get(record.key)
+            assert finished is not None and finished.status == "completed"
+            assert not finished.cancel_requested
         finally:
             if not waiting.done():
                 waiting.cancel()

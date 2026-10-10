@@ -187,6 +187,7 @@ class _Def:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
         self.fanout = None
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 # --------------------------------------------------------------------------- #
@@ -422,9 +423,8 @@ def test_failed_child_preserves_typed_tool_unavailability_for_parent(
         }
 
 
-def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> None:
-    """A cancelled child is NOT observed-later (cancellation is parent-driven, so the
-    parent already knows)."""
+def test_cancelled_child_settlement_is_notify_pending(tmp_path: Path, monkeypatch) -> None:
+    """A cancellation acknowledgement does not tell the parent that cleanup settled."""
 
     _declare(monkeypatch, "data_expert")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
@@ -458,7 +458,7 @@ def test_cancelled_child_is_not_notify_pending(tmp_path: Path, monkeypatch) -> N
         _on_child_done(app, task.task_id, child.id, "async")
         settled = app.state.agent_task_registry.get(task.task_id)
         assert settled.status == "cancelled"
-        assert settled.notify_pending is False
+        assert settled.notify_pending is True
 
 
 # --------------------------------------------------------------------------- #
@@ -700,9 +700,7 @@ class _SpawnOnceAgent:
 
 
 def test_child_survives_parent_turn_end_and_injects_next_turn(tmp_path: Path, monkeypatch) -> None:
-    """The child is NOT tied to the parent turn's lifetime: the parent turn finishes,
-    the (slow) child keeps running, completes, and its result surfaces in the parent's
-    NEXT turn's input (observe-later). Ending a turn must NOT cancel children."""
+    """A child outlives its parent turn, then wakes its parent without another send."""
 
     _declare(monkeypatch, "main")
     agent = _SpawnOnceAgent()
@@ -721,18 +719,28 @@ def test_child_survives_parent_turn_end_and_injects_next_turn(tmp_path: Path, mo
         # The child finishes on its own pool, untied to the parent turn.
         settled = _wait_terminal(app, agent.child_task_id, timeout=12.0)
         assert settled.status == STATUS_COMPLETED
-        assert settled.notify_pending is True
-
-        # Turn 2: the observe-later block is one of the turn's CLIO additions (recorded
-        # by the agent loop as its own message), not glued into the user's question.
-        client.post(f"/v1/sessions/{parent}/messages", json={"text": "what happened?"})
+        deadline = time.monotonic() + 12
+        while len(agent.questions) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert len(agent.questions) == 2, "completion must wake the idle parent automatically"
         _wait_status(app, parent, "idle")
         later = [dict(turn) for turn in agent.injections[1:]]
-        assert any(
-            PENDING_TASK_NOTIFICATION_MARKER in turn.get("task_results", "") for turn in later
-        ), "completed child's result was not injected into the parent's next turn"
+        assert len(later) == 1 and PENDING_TASK_NOTIFICATION_MARKER in later[0]["task_results"]
+        messages = app.state.messages[parent]
+        assert len([m for m in messages if m.role == "user"]) == 1
+        wakes = [
+            m for m in messages if m.role == "system" and m.metadata.get("task_completion_wake")
+        ]
+        assert len(wakes) == 1 and wakes[0].metadata["task_completion_wake"]["handles"] == [
+            agent.child_task_id
+        ]
         assert not any(PENDING_TASK_NOTIFICATION_MARKER in q for q in agent.questions)
         assert app.state.agent_task_registry.get(agent.child_task_id).notify_pending is False
+        response = client.post(f"/v1/sessions/{parent}/messages", json={"text": "acknowledge only"})
+        assert response.status_code == 200 and response.json()["message_id"]
+        _wait_status(app, parent, "idle")
+        assert len(agent.questions) == 3
+        assert not any(PENDING_TASK_NOTIFICATION_MARKER in text for _, text in agent.injections[-1])
 
 
 def _wait_status(app, sid: str, status: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
@@ -779,7 +787,10 @@ class _StressAgent:
                     depth=1,
                 ),
             )
-            app.state.agent_task_registry.event(child.task_id).wait(timeout=40.0)
+            from clio_agent.gact.task_controls import wait_tasks
+
+            result = wait_tasks(child.task_id, timeout_s=40.0)
+            assert not result["pending"] and result["results"][0]["status"] == "completed"
         elif depth == 1:
             grand = spawn_child_turn_threadsafe(
                 app,
@@ -794,7 +805,10 @@ class _StressAgent:
             # Rendezvous: prove pool[1] is saturated with waiting children before any
             # grandchild is allowed to matter — the deadlock-prone instant.
             self.all_children_waiting.wait()
-            app.state.agent_task_registry.event(grand.task_id).wait(timeout=40.0)
+            from clio_agent.gact.task_controls import wait_tasks
+
+            result = wait_tasks(grand.task_id, timeout_s=40.0)
+            assert not result["pending"] and result["results"][0]["status"] == "completed"
         return SimpleNamespace(answer=f"depth {depth} ok", selected_expert="", routing_rationale="")
 
 

@@ -78,6 +78,7 @@ from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
+from clio_agent.gact.agents.task_guidance import task_guidance
 from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
@@ -242,9 +243,14 @@ def _function_tool(tool: dspy.Tool) -> FunctionTool:
 def _system(signature: Any, inputs: dict[str, Any], tools: Iterable[str] = ()) -> str:
     """Compose the expert's prompt with guidance for its actual declared capabilities."""
     expert = str(inputs.get(_SYSTEM_INPUT) or "").strip()
+    tool_names = tuple(tools)
     return "\n\n".join(
         part
-        for part in (expert or signature.instructions.strip(), github_shell_guidance(tools))
+        for part in (
+            expert or signature.instructions.strip(),
+            github_shell_guidance(tool_names),
+            task_guidance(tool_names),
+        )
         if part
     )
 

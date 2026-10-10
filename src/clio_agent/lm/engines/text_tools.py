@@ -21,7 +21,8 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,8 +81,11 @@ the next message. A message that ends without a block is your final answer."""
 #: Appended to every user or tool-result turn the transport sends (never to the
 #: system prompt), so the model is reminded where its tools are at each step.
 TURN_REMINDER = (
-    "(You act only through the Available tools: end your message with one ```tool_calls "
-    "block to call them; a message without a block is your final answer.)"
+    "(You act only through the Available tools. To call them, end your message with one "
+    "complete fenced block: an opening line of three backticks followed by tool_calls, "
+    "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
+    "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
+    "If no calls are needed, answer normally.)"
 )
 
 
@@ -173,10 +177,23 @@ class ReplySplit:
     calls: list[ToolCallPart] = field(default_factory=list)
 
 
-def split_reply(reply: str, *, call_prefix: str) -> ReplySplit:
+def split_reply(
+    reply: str, *, call_prefix: str, available_tools: Collection[str] = ()
+) -> ReplySplit:
     """Split a reply into visible text and tool calls (never repaired; see module doc)."""
     start = reply.rfind(FENCE)
     if start < 0:
+        if _xml_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "XML tool-call fragments require a complete ```tool_calls JSON block",
+                call_prefix,
+            )
+        if _orphaned_call_block(reply, available_tools):
+            return _invalid_reply(
+                "", reply.strip(), "missing opening ```tool_calls fence", call_prefix
+            )
         return ReplySplit(text=reply.strip())
     body = reply[start + len(FENCE) :]
     end = body.find("```")
@@ -190,17 +207,67 @@ def split_reply(reply: str, *, call_prefix: str) -> ReplySplit:
             raise ValueError("the block must be a non-empty JSON list")
         parts = [_call(call, f"{call_prefix}_{i}") for i, call in enumerate(calls)]
     except (ValueError, TypeError) as exc:
-        return ReplySplit(
-            text=text,
-            calls=[
-                ToolCallPart(
-                    id=f"{call_prefix}_0",
-                    name=INVALID_TOOL_CALL,
-                    input={"error": str(exc), "block": raw[:4000]},
-                )
-            ],
-        )
+        return _invalid_reply(text, raw, str(exc), call_prefix)
     return ReplySplit(text=text, calls=parts)
+
+
+def _xml_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject observed native call shapes without inferring or executing their arguments."""
+    if not available_tools:
+        return False
+    match = re.match(r"""\s*<invoke\s+name=(["'])([^"']+)\1\s*>""", reply)
+    if match:
+        return match[2] in available_tools and "</invoke>" in reply[match.end() :]
+    # A stopped Haiku parent resumed with parameter tags and orphaned invoke
+    # closers. There is no tool identity to resolve: reject this malformed shape
+    # through the existing bounded error, never fabricate a callable operation.
+    parameter = re.match(r"""\s*<parameter\s+name=(["'])[^"']+\1\s*>""", reply)
+    return bool(
+        parameter
+        and "</parameter>" in reply[parameter.end() :]
+        and "</invoke>" in reply[parameter.end() :]
+    )
+
+
+def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Recognize the observed missing-opener form without guessing executable calls.
+
+    Ordinary JSON answers and fenced examples stay answers. Only a whole call list
+    for this request's tools followed by an unmatched closing fence is rejected.
+    """
+    raw = reply.strip()
+    if not available_tools or not raw.endswith("\n```") or "```" in raw[:-3]:
+        return False
+    try:
+        calls = json.loads(raw[:-3])
+    except ValueError:
+        return False
+    return (
+        isinstance(calls, list)
+        and bool(calls)
+        and all(
+            isinstance(call, dict)
+            and set(call) == {"name", "arguments"}
+            and isinstance(call["name"], str)
+            and call["name"] in available_tools
+            and isinstance(call["arguments"], dict)
+            for call in calls
+        )
+    )
+
+
+def _invalid_reply(text: str, raw: str, error: str, call_prefix: str) -> ReplySplit:
+    """Return a bounded protocol-error observation; never execute malformed content."""
+    return ReplySplit(
+        text=text,
+        calls=[
+            ToolCallPart(
+                id=f"{call_prefix}_0",
+                name=INVALID_TOOL_CALL,
+                input={"error": error, "block": raw[:4000]},
+            )
+        ],
+    )
 
 
 def _call(call: Any, call_id: str) -> ToolCallPart:

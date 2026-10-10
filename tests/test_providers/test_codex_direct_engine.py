@@ -281,7 +281,7 @@ def test_conflicting_or_invalid_completed_arguments_do_not_execute(
             {"type": "response.completed", "response": {"id": "bad", "output": [item]}},
         ]
     ]
-    with pytest.raises(ServerError, match="completed tool arguments"):
+    with pytest.raises(TransportError, match="completed tool arguments"):
         _run(_engine(), _request(HEAD))
 
 
@@ -679,6 +679,112 @@ def test_a_reply_that_is_not_the_providers_own_is_a_full_send(
 
     assert _stateful(audit) == [("full", "first_call"), ("full", "prefix_mismatch")]
     assert "previous_response_id" not in harness.sockets[-1].frames[-1]
+
+
+@pytest.mark.parametrize("arguments_done", [False, True])
+@pytest.mark.parametrize("http", [False, True])
+def test_parallel_calls_keep_completed_arguments_without_fragment_deltas(
+    harness: Harness, audit: list[dict[str, Any]], http: bool, arguments_done: bool
+) -> None:
+    """Completed backend arguments are authoritative even when coalesced without deltas."""
+    items = [
+        {
+            "type": "function_call",
+            "id": "fc_query",
+            "call_id": "call_query",
+            "name": "search",
+            "arguments": '{"q":"Shell"}',
+        },
+        {
+            "type": "function_call",
+            "id": "fc_read",
+            "call_id": "call_read",
+            "name": "read",
+            "arguments": '{"filepath":"owned/sentinel.txt"}',
+        },
+    ]
+    events: list[dict[str, Any]] = [{"type": "response.created", "response": {"id": "parallel"}}]
+    for index, item in enumerate(items):
+        events.extend(
+            [
+                {
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": {**item, "arguments": ""},
+                },
+                {
+                    "type": "response.function_call_arguments.done",
+                    "output_index": index,
+                    "item_id": item["id"],
+                    "arguments": item["arguments"],
+                },
+                {"type": "response.output_item.done", "output_index": index, "item": item},
+            ]
+        )
+    events.append(
+        {
+            "type": "response.completed",
+            "response": {"id": "parallel", "status": "completed", "output": items, "usage": {}},
+        }
+    )
+    if not arguments_done:
+        events = [
+            event for event in events if event["type"] != "response.function_call_arguments.done"
+        ]
+    harness.script[:] = [events]
+    wire = _CoalescedHttpWire(events) if http else None
+    response = _run(
+        _engine(http=http, wire=wire),
+        _request(
+            HEAD,
+            tools=(
+                SEARCH,
+                FunctionTool(
+                    name="read",
+                    parameters={
+                        "type": "object",
+                        "properties": {"filepath": {"type": "string"}},
+                        "required": ["filepath"],
+                    },
+                ),
+            ),
+        ),
+    )
+    calls = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert [(part.id, part.name, part.input) for part in calls] == [
+        ("call_query", "search", {"q": "Shell"}),
+        ("call_read", "read", {"filepath": "owned/sentinel.txt"}),
+    ]
+    if http:
+        assert not harness.sockets and wire is not None and wire.requests == 1
+    else:
+        assert len(harness.sockets[0].frames) == 1
+
+
+class _CoalescedHttpWire:
+    """Feed actual Responses parsing through the product's HTTP event owner."""
+
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self.events = events
+        self.requests = 0
+
+    def stream(self, request: Request) -> Iterator[Any]:
+        self.requests += 1
+        wire = _wire()
+        for event in self.events:
+            yield from wire.parse_stream_events(
+                request, direct_engine._WireEvent(event=event["type"], data=json.dumps(event))
+            )
+
+
+def test_conflicting_final_tool_arguments_fail_before_dispatch(harness: Harness) -> None:
+    """A completed snapshot cannot silently replace different streamed arguments."""
+    events = _calling("conflict", "call_conflict")
+    events[2]["delta"] = '{"q":"different"}'
+    harness.script[:] = [events]
+    with pytest.raises(TransportError, match="arguments disagree"):
+        _run(_engine(), _request(HEAD))
+    assert len(harness.sockets[0].frames) == 1
 
 
 def test_the_providers_own_calls_answered_continue_as_a_delta(

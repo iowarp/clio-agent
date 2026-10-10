@@ -258,8 +258,7 @@ def test_clearance_events_are_released_when_the_watcher_disarms(tmp_path: Path) 
 
 
 def test_cancelling_a_spotter_session_denies_later_mutations_typed(tmp_path: Path) -> None:
-    """``POST /cancel`` cascades to the standing watcher; the session still
-    advertises spotter-ai, so every later mutating call must DENY, not clear."""
+    """Explicitly cancelling the watcher denies later mutations while spotter-ai stays selected."""
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
@@ -268,7 +267,10 @@ def test_cancelling_a_spotter_session_denies_later_mutations_typed(tmp_path: Pat
         ).json()["id"]
         task = app.state.agent_task_registry.for_parent(sid)[0]
 
-        assert client.post(f"/v1/sessions/{sid}/cancel").status_code == 204
+        cancelled = client.post(
+            f"/v1/sessions/{sid}/async-tasks/cancel", json={"tasks": task.task_id}
+        )
+        assert cancelled.status_code == 200 and not cancelled.json()["errors"]
         assert app.state.agent_task_registry.get(task.task_id).is_terminal
         assert app.state.sessions.get(sid).approval_mode == "spotter-ai"
 

@@ -44,7 +44,9 @@ def test_mapping_choice_to_agent_write_to_reviewed_publication(
         ]
         assert client.post(prefix + "/link", json={"access": "write_through"}).status_code == 409
         linked = client.post(prefix + "/link", json={"access": "publish_later"})
-        assert linked.status_code == 200, linked.text
+        from tests.test_gact.storage_operation_helpers import complete_indexing
+
+        complete_indexing(client, prefix, linked)
         assert linked.json()["mode"] == "read_only"  # connection identity stays unchanged
         assert linked.json()["download_access"] == "read_only"
         listing = setup_tool.connected_data_open(source_id)
@@ -64,10 +66,12 @@ def test_mapping_choice_to_agent_write_to_reviewed_publication(
         assert published.status_code == 200, published.text
         assert (original / "data.txt").read_text() == "after"
         readonly = client.post(prefix + "/link", json={"access": "read_only"})
-        assert readonly.status_code == 200, readonly.text
+        complete_indexing(client, prefix, readonly)
+        readonly_listing = setup_tool.connected_data_open(source_id)
+        assert readonly_listing["access"] == "read_only"
         with pytest.raises(PermissionError):
             setup_tool.connected_data_write(
-                source_id, "data.txt", "forbidden", readonly.json()["link_revision"]
+                source_id, "data.txt", "forbidden", readonly_listing["revision"]
             )
         assert (original / "data.txt").read_text() == "after"
 

@@ -303,17 +303,38 @@ def _runtime_dynamic_agent_children_context(
         if _aid:
             per_app_dict("orchestrator_briefing", app=app)[_aid] = briefing
         return briefing
+    if agent_def.tools:
+        declared_tools = ", ".join(f"`{name}`" for name in sorted(set(agent_def.tools)))
+        heading = "## You are an ORCHESTRATOR — coordinate your declared children and tools"
+        role = (
+            "Delegate specialist work to the declared children below. "
+            f"Your declared tools: {declared_tools}. You may use those tools directly, "
+            "within your declared role and permissions, including independent work while "
+            "children run. The actual available tool catalog determines what can be called; "
+            "this briefing grants no additional capability. Do not use undeclared tools."
+        )
+        evidence_rule = (
+            "Every claim must be backed by evidence returned by your declared tools or a child, "
+            "or supplied by the user. Never invent an observation, file result or outcome."
+        )
+    else:
+        heading = "## You are an ORCHESTRATOR — route work to your children; do not do it yourself"
+        role = (
+            "You have child experts who hold the domain tools and produce GROUNDED evidence. "
+            "You have no domain tools of your own. Use shared task controls to coordinate, "
+            "observe and collect accepted work; delegate domain work to the children below. "
+            "Do not invent coordinates, dataset/resource IDs, file results or measured values."
+        )
+        evidence_rule = (
+            "Every domain claim must be backed by a child's returned evidence; NEVER invent "
+            "domain observations from prior knowledge. Read task status from shared task "
+            "controls. If you have spawned no children yet, you have no evidence yet for "
+            "a domain result unless the user supplied it — do not fabricate an answer."
+        )
     lines = [
-        "## You are an ORCHESTRATOR — route work to your children; do not do it yourself",
+        heading,
         "",
-        "You have child experts who hold the tools and produce the GROUNDED evidence for "
-        "this task. You have NO tools of your own and NO grounded knowledge of your own: "
-        "any specific fact — a place's coordinates, a station/dataset/resource id, a file "
-        "path, a measured value — that you state from prior knowledge instead of from a "
-        "child's returned evidence is a FABRICATION and makes the answer invalid. You "
-        "literally cannot know these things; only your children's tools can find them. "
-        "Your ONLY job is to delegate to the right child, read the typed evidence it "
-        "returns, and decide the next step.",
+        role,
         "",
         "Your child experts (delegate to these — you may route to no one else):",
     ]
@@ -327,29 +348,31 @@ def _runtime_dynamic_agent_children_context(
     lines.append("")
     lines.append(
         "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
-        "spawns ONE declared child as a real child turn and returns its `task_id` "
+        "spawns ONE declared child as a real child turn and returns its durable `handle` "
         "IMMEDIATELY — the child runs untied to this turn; the call does not block. "
         "So spawn EVERY independent child right away (use `spawn_agents_parallel` to fan "
         "out a batch in one call) instead of serializing spawn→wait→spawn→wait; only "
         "chain a hop that genuinely DEPENDS on a prior child's returned evidence. Call "
-        "`wait_agent_tasks([task_id, ...])` as one committed wait when your next step "
+        "`wait_tasks([handle, ...])` as one committed wait when your next step "
         "depends on all of them; Wait returns the requested children's output into your "
         "context once they are terminal, so do not fetch that output again and do "
         "not repeatedly poll or narrate that they are still running. "
-        "`observe_agent_tasks(task_ids, cursor=...)` reads "
+        "`observe_tasks(tasks, cursor=...)` reads "
         "a child's progress INCREMENTALLY without consuming it — use it to act on "
         "intermediate evidence (a typed state landing, a stage completing) while the child "
-        "keeps running; start the cursor at 1 and pass back the returned `next_cursor` to "
+        "keeps running; omit the initial cursor and pass back the returned `cursor` to "
         "read only what is new. Without a pattern it returns the current snapshot immediately; "
         "with a `pattern` (regex), the single call stays open until specific evidence appears "
         "(e.g. a resolved id) or a requested child becomes terminal. "
-        "On a naturally multi-turn task you may end this "
-        "turn without waiting at all — each child's result injects into your NEXT turn "
-        "automatically. Read the returned typed evidence (in the returned workflow_state) "
-        "and let it decide the next hop, then write your final `answer` — every claim in "
-        "it must be backed by a child's returned evidence; NEVER answer from your own "
-        "knowledge. If you have spawned no children yet, you have no evidence yet — do not "
-        "answer."
+        "Continue independent work while children run. CLIO queues each child's result "
+        "before your next safe model iteration, after the current tool call or batch finishes. "
+        "Live user feedback enters at the same iteration boundary. If you are idle, "
+        "completion automatically starts a continuation turn, including after conversation Stop, "
+        "without another human message. Finish requested independent actions before yielding; "
+        "then acknowledge outstanding handles and finish without waiting when no current step "
+        "needs their results. Keeping this turn open is not required to receive completion. "
+        "Read the returned typed evidence (in the returned workflow_state) "
+        "and let it decide the next hop, then write your final `answer`. " + evidence_rule
     )
     briefing = "\n".join(lines)
     if _aid:

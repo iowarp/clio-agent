@@ -691,7 +691,12 @@ def _make_loop_inbox_drain(app: "FastAPI"):
     """
 
     def drain() -> list[tuple[str, str]]:
-        return drain_active_session_inbox(app)
+        from clio_agent.gact import context
+        from clio_agent.gact.task_delivery import drain_task_completions
+
+        return drain_active_session_inbox(app) + drain_task_completions(
+            app, context.active_session_id()
+        )
 
     return drain
 

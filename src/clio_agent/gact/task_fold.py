@@ -61,6 +61,26 @@ def fold_agent_task_transition(
     # write and ledger publication. Keep that complete lifecycle edge ordered so
     # an older nonterminal fold cannot persist or publish after a terminal fold.
     with reg.lifecycle_lock:
+        current = reg.get(task_id)
+        if (
+            current is not None
+            and current.placement.startswith("relay:")
+            and current.cancel_requested
+            and status in {"completed", "failed", "cancelled"}
+        ):
+            from clio_agent.gact.task_projection import TERMINAL, task_views
+            from clio_agent.gact.task_submission_custody import pending_submissions
+
+            if pending_submissions(app, current.child_session_id) or any(
+                row["effective_status"] not in TERMINAL
+                for row in task_views(app, current.child_session_id)
+            ):
+                # The retained relay driver will re-read the same backend terminal
+                # result after descendant owners settle. Never run the local child
+                # callback for a remote owner or lose its authoritative outcome.
+                return AgentTaskFoldOutcome(
+                    task=current, applied=False, reason="descendant_cleanup_pending"
+                )
         try:
             updated = reg.transition(
                 task_id,
@@ -96,7 +116,6 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
         return
     from clio_agent.gact.background_exit import reconcile_stored_handoff_part  # noqa: PLC0415
     from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
-    from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
         finalize_child_task_terminal,
@@ -131,7 +150,6 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # exactly-once hardening for those two is a tracked follow-up, not built
     # here.
     finalize_child_task_terminal(app, outcome.task, outcome.task.child_session_id)
-    enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
 
 
