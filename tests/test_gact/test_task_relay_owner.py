@@ -88,6 +88,14 @@ def test_application_driver_collects_relay_without_parent_wait(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The original task completes without resubmission or an agent wait call."""
+    wakes: list[dict[str, Any]] = []
+
+    def start_wake(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        """Hold acknowledgement while the real driver publishes its terminal result."""
+        wakes.append(kwargs)
+        return SimpleNamespace(turn_id="relay-result-wake")
+
+    monkeypatch.setattr("clio_agent.gact.turn._start_background_user_turn", start_wake)
     _declare(monkeypatch, "main")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     backend = _HeldBackend()
@@ -106,6 +114,9 @@ def test_application_driver_collects_relay_without_parent_wait(
         task = app.state.agent_task_registry.get(handle.task_id)
         assert task.status == "completed" and task.notify_pending
         assert task.result["answer_excerpt"].startswith("child did:")
+        _eventually(lambda: len(wakes) == 1)
+        assert wakes[0]["metadata"]["task_completion_wake"]["handles"] == [handle.handle_id]
+        assert not task.consumed_at
         assert len(backend.submissions) == 1
 
 
