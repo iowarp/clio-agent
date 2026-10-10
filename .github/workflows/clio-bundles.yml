@@ -289,6 +289,8 @@ jobs:
           CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
+        env:
+          CLIO_CODEX_RELEASE_TOKEN: ${{ github.token }}
         shell: pwsh
         run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
       # CU: the build scripts install clio-agent[BUNDLE_EXTRAS] against uv.lock's

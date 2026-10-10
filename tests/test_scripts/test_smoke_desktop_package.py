@@ -137,6 +137,10 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
 
     def response(request: object, **kwargs: object) -> io.BytesIO:
         requests.append(request)
+        if request.full_url.endswith("/v1/health"):
+            return io.BytesIO(
+                b'{"integrations":[{"name":"arc","status":"ready"},{"name":"clio_core_attach","status":"ready"}]}'
+            )
         return io.BytesIO(b'{"contract_version":"1"}')
 
     monkeypatch.setattr(smoke, "urlopen", response)
@@ -156,3 +160,30 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     assert (evidence / "boot.log").read_text() == "backend: [redacted]\n"
     cleanup.assert_called_once_with(process, [candidate])
     assert not (evidence / "receipt.json").exists(), "Only the successful caller writes a receipt"
+
+
+def test_readiness_rejects_api_success_with_failed_arc() -> None:
+    """A composer and HTTP 200 cannot qualify a broken packaged core."""
+    assert not smoke.healthy_arc({"integrations": []})
+    assert not smoke.healthy_arc(
+        {
+            "integrations": [
+                {"name": "arc", "status": "ready"},
+                {"name": "clio_core_attach", "status": "degraded", "required": False},
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="clio_core_daemon_version_unknown"):
+        smoke.healthy_arc(
+            {
+                "integrations": [
+                    {"name": "arc", "status": "ready"},
+                    {
+                        "name": "clio_core_attach",
+                        "status": "degraded",
+                        "required": True,
+                        "reason": "clio_core_daemon_version_unknown",
+                    },
+                ]
+            }
+        )

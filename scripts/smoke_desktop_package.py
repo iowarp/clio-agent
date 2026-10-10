@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -20,6 +21,31 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import psutil
+
+
+def private_core_port() -> int:
+    """Reuse the build smoke's five-port reservation for this private daemon."""
+    path = Path(__file__).resolve().parents[1] / "install/arc_smoke.py"
+    spec = importlib.util.spec_from_file_location("clio_package_arc_smoke", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The package ARC port probe is missing")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return int(module._free_core_port_block())
+
+
+def healthy_arc(health: dict[str, Any]) -> bool:
+    """Require an attached core and live ARC, rather than only an answering API."""
+    rows = {row["name"]: row for row in health.get("integrations", [])}
+    for name in ("clio_core_attach", "arc"):
+        row = rows.get(name)
+        if row is None:
+            return False
+        if row.get("required") and row["status"] != "ready":
+            raise ValueError(f"Packaged {name} failed: {row.get('reason')}: {row.get('detail')}")
+        if row["status"] != "ready":
+            return False
+    return True
 
 
 def backend_connection(process: psutil.Process) -> tuple[str, str] | None:
@@ -115,6 +141,10 @@ def smoke(
         CLIO_AGENT_HOME=str(agent_home.resolve() if agent_home else evidence / "agent"),
         CLIO_DESKTOP_HOME=str(evidence / "desktop-state"),
         CLIO_RUNTIME_STATE_DIR=str(evidence / "core-supervision"),
+        CLIO_ARC_CTE_DIR=str(evidence / "cte"),
+        CLIO_CORE_PORT=str(private_core_port()),
+        CLIO_ARC_CTE_FILE_CAPACITY="64MB",
+        CLIO_ARC_CTE_RAM_CAPACITY="64MB",
         CLIO_ENV_FILE_LOADED="1",
         # Prevent attach-first from finding any unrelated CLIO on the test host.
         CLIO_GACT_URL="http://127.0.0.1:9",
@@ -156,6 +186,16 @@ def smoke(
                             "contract_version"
                         ):
                             raise ValueError("Packaged backend returned invalid capabilities")
+                        health_request = Request(
+                            url + "/v1/health", headers={"Authorization": f"Bearer {token}"}
+                        )
+                        with urlopen(health_request, timeout=5) as response:
+                            health = json.load(response)
+                        if not healthy_arc(health):
+                            continue
+                        (evidence / "health.json").write_text(
+                            json.dumps(health, indent=2), encoding="utf-8"
+                        )
                         # Only paths and readiness metadata: never retain command lines,
                         # process environments or the transient authentication token.
                         (evidence / "backend.json").write_text(
