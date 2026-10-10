@@ -35,6 +35,7 @@ from clio_agent.arc.live import (
 from clio_agent.arc.lsm import LSMTree
 from clio_agent.arc.memory_segments import SearchUnavailableError as SearchUnavailableError
 from clio_agent.arc.memory_segments import SegmentPlane
+from clio_agent.arc.response_feedback import ResponseFeedbackLedger
 from clio_agent.arc.schema import (
     Conversation,
     Invocation,
@@ -67,10 +68,6 @@ from clio_agent.runtime import trace
 _EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "variant.try.delta"})
 
 logger = logging.getLogger(__name__)
-
-# Backend names that mean the durable semantic trace is DISABLED — the same set
-# :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
-# backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
 
 
 class ARCMemory(SegmentPlane):
@@ -127,6 +124,7 @@ class ARCMemory(SegmentPlane):
         # ``search_indexed`` keeps the reserved ``_events`` family out of the plain-text
         # search companion so the log never pollutes scope search. Under the #737 S2 fold
         # the store is a ``FoldingSegmentStore`` (working set = a fold of ``_events``).
+        self.response_feedback = ResponseFeedbackLedger(self._store)
         self._segments = make_segment_store(self._store, working_set_fold=working_set_fold)
 
         # Segments held per on-disk chunk of the ``_events`` family before the writer
