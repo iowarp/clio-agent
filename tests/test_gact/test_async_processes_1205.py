@@ -334,12 +334,16 @@ async def _cancel_then_settle(key: TaskKey) -> None:
 
 
 async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
-    """Cancellation intent stays working until a real poll observes backend settlement."""
+    """Publish owner settlement first, then migrate and collect its result exactly once."""
 
+    from clio_agent.gact.task_delivery import consume_task
     from clio_agent.tools.mcp_tasks import cancel_task  # noqa: PLC0415 - test-local
 
     app = _build(tmp_path)
     with TestClient(app) as client:
+        # Separate owner publication from automatic consumption; otherwise the
+        # event snapshot races legacy-handle migration and delivery at startup.
+        app.state.agent = None
         sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         key = TaskKey(server_id="relay-ares", session_id=sid, task_id="jarvis-cancel-1")
         store = task_record_store()
@@ -358,18 +362,42 @@ async def test_cancel_task_publishes_mcp_task_cancelled(tmp_path: Path) -> None:
 
         events = app.state.bus.session_events_since(sid, cursor=1)
         mcp_events = [e for e in events if e.type.startswith("mcp_task.")]
+        # Initial row, intent, driver lease, settlement, then lease release.
+        assert [e.type for e in mcp_events] == [
+            "mcp_task.updated",
+            "mcp_task.updated",
+            "mcp_task.updated",
+            "mcp_task.cancelled",
+            "mcp_task.cancelled",
+        ]
+        assert mcp_events[-1].payload["status"] == "cancelled"
+        assert mcp_events[-1].payload["key"]["task_id"] == "jarvis-cancel-1"
+        assert mcp_events[-1].payload["notify_pending"]
+        assert not mcp_events[-1].payload["consumed_at"]
 
-    # Every persisted state fires an event: initial row, cancellation intent,
-    # driver lease, observed terminal state, then terminal lease release.
-    assert [e.type for e in mcp_events] == [
-        "mcp_task.updated",
-        "mcp_task.updated",
-        "mcp_task.updated",
-        "mcp_task.cancelled",
-        "mcp_task.cancelled",
-    ]
-    assert mcp_events[-1].payload["status"] == "cancelled"
-    assert mcp_events[-1].payload["key"]["task_id"] == "jarvis-cancel-1"
+        assert consume_task(app, sid, key.task_id)
+        delivered = [
+            e
+            for e in app.state.bus.session_events_since(sid, cursor=1)
+            if e.type.startswith("mcp_task.")
+        ]
+        assert [e.type for e in delivered] == [e.type for e in mcp_events] + [
+            "mcp_task.cancelled",  # Persist the missing legacy public handle.
+            "mcp_task.cancelled",  # Persist the one completion-delivery claim.
+        ]
+        assert delivered[-2].payload["handle"]
+        assert delivered[-2].payload["notify_pending"]
+        assert not delivered[-2].payload["consumed_at"]
+        assert delivered[-1].payload["consumed_at"]
+        assert not delivered[-1].payload["notify_pending"]
+        assert delivered[-1].payload["cancel_requested"]
+        assert delivered[-1].payload["cancel_acknowledged"]
+        assert not consume_task(app, sid, delivered[-1].payload["handle"])
+        assert [
+            e
+            for e in app.state.bus.session_events_since(sid, cursor=1)
+            if e.type.startswith("mcp_task.")
+        ] == delivered
 
 
 # --------------------------------------------------------------------------- #
