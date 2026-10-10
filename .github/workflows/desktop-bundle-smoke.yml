@@ -60,6 +60,8 @@ jobs:
           CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build and pack the real portable runtime (Windows)
         if: runner.os == 'Windows'
+        env:
+          CLIO_CODEX_RELEASE_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
