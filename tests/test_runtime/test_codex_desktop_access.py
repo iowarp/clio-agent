@@ -106,7 +106,41 @@ def test_tool_cache_is_created_before_granting_future_children(
     def apply(**kwargs: Any) -> list[dict[str, object]]:
         assert cache.is_dir()
         assert kwargs["plan"][0].exists
+        assert kwargs["combine_users"] is True
         return [{"status": "granted"}]
 
     monkeypatch.setattr(access, "grant_fleet_runtime_access", apply)
     access.ensure_desktop_runtime_access()
+
+
+@pytest.mark.parametrize("inherit", [True, False])
+@pytest.mark.parametrize("code", [0, 5])
+def test_combined_grant_visits_once_and_never_certifies_partial_success(
+    tmp_path: Path, inherit: bool, code: int
+) -> None:
+    grant = sandbox_cli.FleetGrant("runtime", str(tmp_path), ("offline", "online"), inherit, True)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        calls.append(argv)
+        return code, "a child denied access" if code else "completed"
+
+    records = sandbox_cli.grant_fleet_runtime_access(
+        runner=run, plan=[grant], platform="win32", combine_users=True
+    )
+    permission = "(OI)(CI)(RX)" if inherit else "(RX)"
+    assert calls == [
+        [
+            "icacls",
+            str(tmp_path),
+            "/grant",
+            f"offline:{permission}",
+            f"online:{permission}",
+            *(["/T"] if inherit else []),
+            "/Q",
+        ]
+    ]
+    assert [record["user"] for record in records] == ["offline", "online"]
+    assert all(record["status"] == ("granted" if code == 0 else "failed") for record in records)
+    if code:
+        assert all(record["detail"] == "a child denied access" for record in records)

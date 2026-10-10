@@ -1,4 +1,4 @@
-"""Recover an existing Windows fence during Desktop runtime installation."""
+"""Qualify native MXC or recover the elevated Windows fence during installation."""
 
 from __future__ import annotations
 
@@ -8,11 +8,12 @@ from typing import Any
 
 
 def prepare_existing_windows_fence(
-    *, progress: Callable[[str], None] | None = None
+    *, progress: Callable[[str], None] | None = None, allow_elevation: bool = False
 ) -> dict[str, Any]:
-    """Verify existing sandbox accounts for this installation without prompting for UAC.
+    """Verify the fence; only an explicit installation request may create accounts.
 
-    Fresh machines still use the explicit Protected execution setup action.
+    Normal startup never prompts for UAC. Windows installation can explicitly
+    request the one-time setup, with real administrator approval and verification.
     An unsuccessful verification never creates an affirmative fence receipt.
     """
     if sys.platform != "win32":
@@ -24,7 +25,8 @@ def prepare_existing_windows_fence(
     from clio_agent.runtime.sandbox_codex import REASON_CODEX_WINDOWS_UNPROVISIONED  # noqa: PLC0415
 
     result = provision_codex_windows(
-        allow_elevation=False,
+        allow_elevation=allow_elevation,
+        progress=progress,
         grantor=lambda: ensure_desktop_runtime_access(progress=progress),
     )
     if result.reason == REASON_CODEX_WINDOWS_UNPROVISIONED:
@@ -36,5 +38,11 @@ def prepare_existing_windows_fence(
         from clio_agent.runtime.document_runtime import DocumentRuntimeError  # noqa: PLC0415
 
         detail = failed_grants if failed_grants else result.detail
-        raise DocumentRuntimeError(f"Protected execution verification failed: {detail}")
-    return {"status": "available", "reason": result.reason}
+        raise DocumentRuntimeError(
+            f"Protected execution verification failed: {detail} {result.next_action}"
+        )
+    return {
+        "status": "available",
+        "reason": result.reason,
+        "implementation": result.extra.get("implementation", "elevated"),
+    }

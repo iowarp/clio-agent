@@ -96,7 +96,7 @@ def ensure_desktop_runtime_access(
                     continue
             if progress:
                 progress(f"Preparing access to {label}...")
-            applied = grant_fleet_runtime_access(plan=[grant], platform="win32")
+            applied = grant_fleet_runtime_access(plan=[grant], platform="win32", combine_users=True)
             reasons.extend(applied)
             identity = _identity(grant) if grant.exists else None
             if (
