@@ -8,6 +8,9 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Tool-linked harness notices now fold into the activity chain at their recorded
+  positions, with exact text still available. Turn-wide context stays separate,
+  and evidence links open Full activity without a repeated display-state loop.
 - Desktop release summaries bundle matching CLIO notes separately from the UI's
   own version history, avoiding unrelated old release entries. Product labels,
   clearer formatting and expandable details make both sources easier to read.
