@@ -48,14 +48,17 @@ _FS_WRITE = "fs_apply_edit_write"
 _UNCLASSIFIED = "shell.exec"
 
 
-def _wait_for_row(app, *, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> dict:
+def _wait_for_row(
+    app, *, reason: str | None = None, timeout: float = TURN_SIGNAL_BACKSTOP_S
+) -> dict:
+    """Wait for registration and, when requested, the reviewer's reason update."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         rows = list(app.state.permissions.values())
-        if rows:
-            return rows[0]
+        if rows and (reason is None or rows[0].get("reason") == reason):
+            return dict(rows[0])
         time.sleep(0.02)
-    pytest.fail("permission row never registered")
+    pytest.fail(f"permission row never reached the requested state: reason={reason!r}")
 
 
 def _ai_review_session(app, client, *, mode: str = "code") -> str:
@@ -171,7 +174,7 @@ def test_ai_review_escalate_falls_to_human_wait(tmp_path: Path, monkeypatch, rea
         thread = threading.Thread(target=fire)
         thread.start()
         try:
-            row = _wait_for_row(app)
+            row = _wait_for_row(app, reason=reason)
             # Fail-safe: the row is PENDING (a human must decide) with the typed escalation reason,
             # never a silent auto-allow.
             assert row["status"] == "pending"

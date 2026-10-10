@@ -434,11 +434,6 @@ def _norm_events(app, sid: str) -> list[tuple[str, dict]]:
     ]
 
 
-_TERMINAL_TASK_EVENTS = frozenset(
-    {"agent.task.completed", "agent.task.failed", "agent.task.cancelled"}
-)
-
-
 def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     """Wait for terminal publication and automatic owner delivery before diffing.
 
@@ -448,6 +443,8 @@ def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKST
     it races (one child's ``completed`` already appended, the other's not yet).
     An idle owner then consumes the result in its automatic turn; parity includes
     that delivery event rather than comparing an unstable prefix of the stream.
+    The consumed record is persisted before its bus event is published, so the
+    record alone cannot establish that the event stream is ready to compare.
     """
 
     end = time.monotonic() + timeout
@@ -459,7 +456,7 @@ def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKST
             task is not None
             and not task.notify_pending
             and events
-            and (events[-1][0] in _TERMINAL_TASK_EVENTS or events[-1][0] == "agent.task.consumed")
+            and events[-1][0] == "agent.task.consumed"
         ):
             return
         time.sleep(0.05)
