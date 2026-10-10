@@ -32,7 +32,7 @@ def test_installer_records_only_complete_provisioning(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
     monkeypatch.setattr(
-        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+        installer, "prepare_existing_windows_fence", lambda **kwargs: {"status": "available"}
     )
     stages: list[str] = []
     receipt = cache / "locked" / "installed.json"
@@ -106,7 +106,7 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
     monkeypatch.setattr(
-        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+        installer, "prepare_existing_windows_fence", lambda **kwargs: {"status": "available"}
     )
     installer.install_document_runtime(tmp_path / "workspace", cache_root=cache)
     assert office_done.is_set() and github_done.is_set()

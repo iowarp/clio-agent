@@ -72,7 +72,7 @@ def install_document_runtime(
     if progress is not None:
         progress("Preparing and checking protected execution helpers...")
     result["native_tools"]["codex_windows_helpers"] = ensure_bundled_codex_windows_helpers()
-    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence()
+    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence(progress=report)
     if (
         progress is not None
         and result["native_tools"]["protected_execution"]["status"] == "setup_required"

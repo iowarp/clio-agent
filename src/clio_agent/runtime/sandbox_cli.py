@@ -242,8 +242,9 @@ def _resolve_uv_tool_bin_dir() -> Optional[Path]:
 def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     """Resolve the Windows fleet-runtime ``(label, path, inherit)`` specs the grant plan covers.
 
-    ``(OI)(CI)(RX)`` ``/T`` on: the uv tool bin dir (the clio-kit launcher), the uv tools tree, the
-    uv-managed python tree, clio-kit's cache, and the desktop's bundled runtime when present;
+    Bundled Desktop uses its runtime and managed tool cache. Other installations use
+    the uv tool bin dir (the clio-kit launcher), uv tools/Python trees and clio-kit's cache.
+    These get ``(OI)(CI)(RX)`` ``/T``;
     a bare ``(RX)`` traverse (no ``/T``) on per-user Temp (the confined workspace lives under
     it). Grant only the runtime tree, never the adjacent private Desktop data/config. Paths resolve
     via env vars / ``Path.home``
@@ -253,6 +254,21 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     home = Path.home()
     roaming = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
     local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+    from clio_agent.tools.desktop_mcp_runtime import resolve_bundled_runtime_root  # noqa: PLC0415
+
+    bundled = resolve_bundled_runtime_root()
+    if bundled is not None:
+        from clio_agent import paths  # noqa: PLC0415
+
+        # Desktop launches clio-kit with its bundled interpreter, not the user's
+        # unrelated uv environments. Recursing those global trees at every boot
+        # can take minutes and grants access to runtimes this Desktop never uses.
+        cache = os.environ.get("CLIO_KIT_CACHE_DIR") or paths.user_cache_dir() / "mcp-runtime"
+        return [
+            ("bundled_runtime", str(bundled), True),
+            ("clio_kit_cache", str(cache), True),
+            ("user_temp", str(local / "Temp"), False),
+        ]
     specs: list[tuple[str, str, bool]] = []
     bin_dir = _resolve_uv_tool_bin_dir()
     if bin_dir is not None:
@@ -260,11 +276,6 @@ def _resolve_fleet_runtime_paths() -> list[tuple[str, str, bool]]:
     specs.append(("uv_tools", str(roaming / "uv" / "tools"), True))
     specs.append(("uv_python", str(roaming / "uv" / "python"), True))
     specs.append(("clio_kit_cache", str(home / ".cache" / "clio-kit"), True))
-    from clio_agent.tools.desktop_mcp_runtime import resolve_bundled_runtime_root  # noqa: PLC0415
-
-    bundled = resolve_bundled_runtime_root()
-    if bundled is not None:
-        specs.append(("bundled_runtime", str(bundled), True))
     specs.append(("user_temp", str(local / "Temp"), False))
     return specs
 
@@ -300,8 +311,15 @@ def _run_icacls(argv: list[str]) -> tuple[int, str]:  # pragma: no cover - live 
     import subprocess  # noqa: PLC0415 - only on the live-gate path
 
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, check=False)  # noqa: S603
-    except OSError as exc:
+        proc = subprocess.run(  # noqa: S603
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, f"{type(exc).__name__}: {exc}"
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
