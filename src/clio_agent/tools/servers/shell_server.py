@@ -25,6 +25,12 @@ from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
+from clio_agent.tools.builtin_annotations import (
+    _BASH_ANNOTATIONS,
+)
+from clio_agent.tools.builtin_annotations import (
+    SHELL_TOOL_ANNOTATIONS as SHELL_TOOL_ANNOTATIONS,
+)
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers.shell_output import (
     StreamCapture,
@@ -49,16 +55,7 @@ logger = logging.getLogger(__name__)
 # and openWorldHint=True. This projects to NO catalog read/write tag (effectful/
 # unclassifiable) — preserving the pre-#1061 "no read tag => never read-only, and
 # not an fs-write the auto-edits mode may auto-approve" classification.
-_BASH_ANNOTATIONS: dict[str, Any] = {
-    "readOnlyHint": False,
-    "destructiveHint": True,
-    "openWorldHint": True,
-}
 
-#: Namespaced tool name → declared annotations for the shell built-ins. Exported
-#: so :mod:`clio_agent.tools.catalog` projects read/write tags from the SAME
-#: mapping the decorator declares.
-SHELL_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {"shell_bash": _BASH_ANNOTATIONS}
 
 # POSIX text utilities the model tends to reach for (and improvises `wsl bash -c`
 # to get on Windows, booting a resident VM — iowarp/clio-agent#898). Their real

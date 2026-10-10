@@ -13,8 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from clio_agent.tools.servers.fs_server import FS_TOOL_ANNOTATIONS
-from clio_agent.tools.servers.shell_server import SHELL_TOOL_ANNOTATIONS
+from clio_agent.tools.builtin_annotations import FS_TOOL_ANNOTATIONS, SHELL_TOOL_ANNOTATIONS
 
 #: Standard MCP boolean hint keys. A non-boolean value for any of these makes the annotation
 #: block untrustworthy, so classification fails CLOSED (treated as effectful / not read-only).

@@ -17,6 +17,8 @@ Usage:
     ...     tools = await client.list_tools()
 """
 
+from __future__ import annotations
+
 import asyncio
 import concurrent.futures
 import functools
@@ -25,12 +27,12 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
-from fastmcp import Client, FastMCP
-from fastmcp.server.providers.proxy import FastMCPProxy
-
 if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
     from clio_agent.tools.jarvis_jobs import JarvisJobs
     from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers
     from clio_agent.tools.relay_install_surface import RelayInstallSurface
@@ -50,8 +52,6 @@ from clio_agent.tools.mcp_config import (
     MCPSpawnError,
     transport_for,
 )
-from clio_agent.tools.servers.fs_server import fs_server
-from clio_agent.tools.servers.shell_server import shell_server
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,17 @@ def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> N
 
 def _mount_builtins(gw: FastMCP) -> None:
     """Mount the universal in-process built-in servers onto a gateway."""
+    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+
     _mount_with_namespace(gw, fs_server, "fs")
     _mount_with_namespace(gw, shell_server, "shell")
 
 
 def _new_base_gateway() -> FastMCP:
     """Return a fresh gateway with only the universal built-ins mounted."""
+    from fastmcp import FastMCP  # noqa: PLC0415
+
     gw = FastMCP("clio-gateway")
     _mount_builtins(gw)
     return gw
@@ -76,12 +81,24 @@ def _new_base_gateway() -> FastMCP:
 
 # Gateway singleton: the universal built-ins only. Declared domain servers are
 # mounted per agent via ``build_gateway(load_mcp_servers(...))``.
-gateway = _new_base_gateway()
+_gateway: FastMCP | None = None
+_gateway_lock = Lock()
 
 
 def get_gateway() -> FastMCP:
     """Return the CLIO gateway instance (built-ins only)."""
-    return gateway
+    global _gateway
+    with _gateway_lock:
+        if _gateway is None:
+            _gateway = _new_base_gateway()
+        return _gateway
+
+
+def __getattr__(name: str) -> Any:
+    """Preserve the public singleton alias without initializing it during imports."""
+    if name == "gateway":
+        return get_gateway()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _proxy_for_spec(
@@ -140,7 +157,11 @@ def _proxy_for_spec(
 
     from dataclasses import replace  # noqa: PLC0415
 
-    from fastmcp.server.providers.proxy import ProxyClient, _mirror_front_era_mode  # noqa: PLC0415
+    from fastmcp.server.providers.proxy import (  # noqa: PLC0415
+        FastMCPProxy,
+        ProxyClient,
+        _mirror_front_era_mode,
+    )
 
     from clio_agent.tools.mcp_connection_era import instrument_client_era  # noqa: PLC0415
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
@@ -458,6 +479,9 @@ def list_builtin_tool_definitions() -> dict[str, Any]:
     ready" never waits on any declared MCP server.
     """
 
+    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+
     tools: dict[str, Any] = {}
     for namespace, server in (("fs", fs_server), ("shell", shell_server)):
         for tool in _list_tools_sync(server):
@@ -564,6 +588,9 @@ def list_tool_definitions(gw: FastMCP) -> dict[str, Any]:
 
     specs = namespace_specs(gw)
     tools: dict[str, Any] = {}
+    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
+    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
+
     builtins: list[tuple[str, Any]] = [("fs", fs_server), ("shell", shell_server)]
     declared = list(namespace_proxies(gw).items())
     for namespace, server in (*builtins, *declared):
@@ -719,6 +746,8 @@ def _list_tools_sync(gw: FastMCP) -> list[Any]:
     :func:`_list_declared_tools`, which owns its transport exclusively.
     """
 
+    from fastmcp import Client  # noqa: PLC0415
+
     async def _list() -> list[Any]:
         async with Client(gw) as client:
             return await client.list_tools()
@@ -759,6 +788,8 @@ def _list_declared_tools(
     from clio_agent.tools.mcp_task_routing import record_definitive_capability  # noqa: PLC0415
 
     async def _list() -> list[Any]:
+        from fastmcp import Client  # noqa: PLC0415
+
         client = Client(transport_for(spec, cwd=cwd))
         listing_attempts.register(attempt_key, asyncio.get_running_loop(), client)
         try:
@@ -888,7 +919,7 @@ def list_capabilities(gw: FastMCP | None = None) -> list[dict[str, str]]:
     Returns:
         List of dicts with name, description (first sentence), and server keys.
     """
-    target = gw if gw is not None else gateway
+    target = gw if gw is not None else get_gateway()
     # Exclusive ownership (finding 1): enumerate through the per-namespace,
     # LISTING-OWNED primitive rather than a composite ``Client(gateway)`` pass
     # that would connect the shared proxy transports.
@@ -919,7 +950,7 @@ async def list_gateway_tools(gw: FastMCP | None = None) -> list[dict[str, Any]]:
     Returns:
         List of dicts with name, description, input_schema, and server for each tool.
     """
-    target = gw if gw is not None else gateway
+    target = gw if gw is not None else get_gateway()
     # Exclusive ownership (finding 4): route through the per-namespace,
     # LISTING-OWNED primitive so introspecting a declared gateway on this
     # (possibly short-lived) loop never connects — and cannot strand a

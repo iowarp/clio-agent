@@ -98,7 +98,12 @@ def require_bundled_python(process: psutil.Process) -> str:
 
 
 def smoke(
-    desktop: Path, evidence: Path, *, timeout: int = 180, boot_log: Path | None = None
+    desktop: Path,
+    evidence: Path,
+    *,
+    timeout: int = 180,
+    boot_log: Path | None = None,
+    agent_home: Path | None = None,
 ) -> dict[str, Any]:
     """Require a real child backend, authenticated capabilities and surviving Desktop."""
     desktop = desktop.resolve(strict=True)
@@ -107,7 +112,7 @@ def smoke(
         key: value for key, value in os.environ.items() if not key.startswith(("CLIO_", "GACT_"))
     }
     env.update(
-        CLIO_AGENT_HOME=str(evidence / "agent"),
+        CLIO_AGENT_HOME=str(agent_home.resolve() if agent_home else evidence / "agent"),
         CLIO_DESKTOP_HOME=str(evidence / "desktop-state"),
         CLIO_RUNTIME_STATE_DIR=str(evidence / "core-supervision"),
         CLIO_ENV_FILE_LOADED="1",
@@ -118,6 +123,7 @@ def smoke(
     observed: dict[int, psutil.Process] = {}
     log_path = evidence / "desktop.log"
     started = time.time()
+    launched_at = time.perf_counter()
     with log_path.open("wb") as log:
         child = subprocess.Popen(
             [str(desktop)],
@@ -167,12 +173,15 @@ def smoke(
                         executable = require_bundled_python(candidate)
                     except (psutil.NoSuchProcess, URLError, TimeoutError):
                         continue
+                    ready_seconds = time.perf_counter() - launched_at
                     # Readiness alone can precede an immediate native WebView crash.
                     try:
                         status = child.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         result = {
                             "status": "passed",
+                            "backend_ready_seconds": round(ready_seconds, 3),
+                            "survival_observation_seconds": 10,
                             "system": platform.platform(),
                             "desktop": str(desktop),
                             "backend_python": executable,
@@ -184,7 +193,7 @@ def smoke(
                         }
                         return result
                     raise RuntimeError(f"Desktop exited after backend readiness ({status})")
-                time.sleep(1)
+                time.sleep(0.1)
             raise TimeoutError(f"Desktop did not launch its packaged backend within {timeout}s")
         finally:
             try:
@@ -210,9 +219,17 @@ def main() -> None:
     parser.add_argument("desktop", type=Path)
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--boot-log", type=Path, help="Native boot log for this installed app")
+    parser.add_argument(
+        "--agent-home", type=Path, help="Reuse this installation's managed packages"
+    )
     args = parser.parse_args()
     try:
-        result = smoke(args.desktop, args.evidence_dir.resolve(), boot_log=args.boot_log)
+        result = smoke(
+            args.desktop,
+            args.evidence_dir.resolve(),
+            boot_log=args.boot_log,
+            agent_home=args.agent_home,
+        )
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         if args.evidence_dir.is_dir():
             (args.evidence_dir / "failure.json").write_text(

@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import HttpMockSequence
 
 from clio_agent.gact.routes.connected_storage import register_connected_storage_routes
-from clio_agent.gact.storage import linked
+from clio_agent.gact.storage import drive_filesystem
 from clio_agent.gact.storage.models import SourceRecord
 
 
@@ -81,7 +81,7 @@ def test_public_drive_browse_or_private_login_after_refusal(
             "drive", "v3", http=http, developerKey=kwargs["developerKey"], static_discovery=True
         )
 
-    monkeypatch.setattr(linked, "build", google_client)
+    monkeypatch.setattr(drive_filesystem, "build", google_client)
     with TestClient(app) as client:
         created = client.post(
             "/v1/workspaces/w/sources",
@@ -141,7 +141,7 @@ def test_application_or_quota_failure_does_not_make_folder_private(
         monkeypatch.setattr(http, "close", lambda: None, raising=False)
         return build("drive", "v3", http=http, static_discovery=True)
 
-    monkeypatch.setattr(linked, "build", google_client)
+    monkeypatch.setattr(drive_filesystem, "build", google_client)
     with TestClient(app) as client:
         source = client.post(
             "/v1/workspaces/w/sources",

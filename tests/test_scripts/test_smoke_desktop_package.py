@@ -111,6 +111,8 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     candidate = backend(tmp_path)
     desktop = tmp_path / "desktop.exe"
     desktop.write_bytes(b"desktop fixture")
+    ticks = iter([100.0, 102.5])
+    monkeypatch.setattr(smoke.time, "perf_counter", lambda: next(ticks))
     native = Mock()
     native.pid = 321
     native.poll.return_value = None
@@ -144,7 +146,10 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
         with pytest.raises(RuntimeError, match="after backend readiness"):
             smoke.smoke(desktop, evidence, boot_log=native_log)
     else:
-        assert smoke.smoke(desktop, evidence, boot_log=native_log)["status"] == "passed"
+        result = smoke.smoke(desktop, evidence, boot_log=native_log)
+        assert result["status"] == "passed"
+        assert result["backend_ready_seconds"] == 2.5
+        assert result["survival_observation_seconds"] == 10
     assert requests[0].get_header("Authorization") == "Bearer private-test-token"  # type: ignore[attr-defined]
     assert (evidence / "desktop.log").read_text() == "[redacted]\n"
     assert "private-test-token" not in (evidence / "backend.json").read_text()
