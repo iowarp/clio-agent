@@ -785,3 +785,31 @@ the Subagent Stop failure. Windows capacity/native failures, the prohibited
 confinement route, oversized SSE and remaining provider/platform routes still
 prevent a full qualification claim. Runtime dependencies and execution limits
 remain unchanged.
+
+### Orchestrator capabilities must match the declared tool surface
+
+Fresh Haiku Subagent qualification on `e0af4e84` passed two cycles, then failed
+the third cycle's independent-action gate. The parent explicitly refused a file
+read: its CLIO-owned orchestrator briefing said it had no tools, although its
+definition declared `fs_read_file` and that tool was available. The child really
+started its Shell task. This failure is separate from malformed tool output and
+authentication. All three observed workers, durable Shell owners and the private
+Core owner were verified absent, and the failed series remains failed.
+
+The shared briefing now describes a parent's declared tools accurately and allows
+their direct use within its role and permissions. Its actual tool results can
+ground an answer alongside child evidence and user-supplied facts. A parent
+without domain tools retains domain delegation and child-evidence restrictions;
+shared task controls remain available. Adaptive delegation policy is unchanged.
+The briefing grants no additional tool or permission.
+
+Two regressions reproduced the contradiction before correction. All eleven
+affected prompt, prefix-stability and blueprint-context cases passed individually
+and sequentially with zero executed skips. The two new cases also passed with
+their final real-FastAPI fixtures; unchanged test-function ASTs and both loaded
+input versions are retained. Scoped Ruff/format and eight unchanged guards pass.
+Production Pyright reports zero errors; five existing test-fixture diagnostics
+are identical by rule, message and enclosing test before/after, with zero new
+diagnostics and no suppression. Fresh committed-head CI and five-cycle live
+qualification remain required. The remaining provider/platform/native/SSE gates
+and integration limits still prevent a complete qualification claim.

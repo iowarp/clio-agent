@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pytest
+from fastapi import FastAPI
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.builders import (
@@ -214,6 +215,44 @@ def test_orchestrator_briefing_byte_stable(monkeypatch: pytest.MonkeyPatch) -> N
     assert "without consuming it" in first
     assert "pattern" in first and "returned `cursor`" in first
     assert "omit the initial cursor" in first
+
+
+def test_orchestrator_briefing_respects_declared_parent_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A live Haiku parent refused its declared reader after being told it had no tools."""
+    _patch_runtime(monkeypatch)
+    app = FastAPI()
+    app.state.arc = None
+    parent = PARENT.model_copy(update={"tools": ["fs_read_file"]})
+
+    briefing = _runtime_dynamic_agent_children_context(app, parent, session_id="sess-multiturn")
+
+    assert "Your declared tools: `fs_read_file`" in briefing
+    assert "You have NO tools of your own" not in briefing
+    assert "Your ONLY job is to delegate" not in briefing
+    assert "evidence returned by your declared tools or a child" in briefing
+    assert "Do not use undeclared tools" in briefing
+    assert "wait_tasks(" in briefing and "observe_tasks(" in briefing
+    assert "Continue independent work while children run" in briefing
+    assert _runtime_dynamic_agent_children_context(app, parent) == briefing
+
+
+def test_orchestrator_without_domain_tools_retains_child_evidence_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Truthful capability guidance must not grant a tool-less parent domain access."""
+    _patch_runtime(monkeypatch)
+    app = FastAPI()
+    app.state.arc = None
+
+    briefing = _runtime_dynamic_agent_children_context(app, PARENT, session_id="sess-multiturn")
+
+    assert "You have no domain tools of your own" in briefing
+    assert "shared task controls" in briefing
+    assert "must be backed by a child's returned" in briefing
+    assert "no evidence yet" in briefing
+    assert "Your declared tools:" not in briefing
 
 
 def test_orchestrator_briefing_child_order_is_deterministic(
