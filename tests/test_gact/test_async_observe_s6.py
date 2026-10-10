@@ -787,7 +787,10 @@ class _StressAgent:
                     depth=1,
                 ),
             )
-            app.state.agent_task_registry.event(child.task_id).wait(timeout=40.0)
+            from clio_agent.gact.task_controls import wait_tasks
+
+            result = wait_tasks(child.task_id, timeout_s=40.0)
+            assert not result["pending"] and result["results"][0]["status"] == "completed"
         elif depth == 1:
             grand = spawn_child_turn_threadsafe(
                 app,
@@ -802,7 +805,10 @@ class _StressAgent:
             # Rendezvous: prove pool[1] is saturated with waiting children before any
             # grandchild is allowed to matter — the deadlock-prone instant.
             self.all_children_waiting.wait()
-            app.state.agent_task_registry.event(grand.task_id).wait(timeout=40.0)
+            from clio_agent.gact.task_controls import wait_tasks
+
+            result = wait_tasks(grand.task_id, timeout_s=40.0)
+            assert not result["pending"] and result["results"][0]["status"] == "completed"
         return SimpleNamespace(answer=f"depth {depth} ok", selected_expert="", routing_rationale="")
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, replace
@@ -15,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
+from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_RUNNING, seed_agent_task
 from clio_agent.gact.agents.invoker import TaskEvent
 from clio_agent.gact.app import build_app
@@ -65,7 +67,9 @@ def _active_turn(app: Any, session_id: str) -> Iterator[None]:
 
 
 def _complete_pending(app: Any, parent: str, task_id: str = "task_pending") -> Any:
-    """Seed and fold one relay task to completed/notify-pending."""
+    """Seed a retained result while inference is unavailable for explicit staging tests."""
+
+    app.state.agent = None
 
     running = seed_agent_task(
         app,
@@ -85,6 +89,29 @@ def _complete_pending(app: Any, parent: str, task_id: str = "task_pending") -> A
         updated_at="2026-08-01T12:00:00+00:00",
     )
     return fold_agent_task_event(app, _event(completed)).task
+
+
+def _automatic_result_turn(client: TestClient, app: Any, sid: str) -> dict[str, Any]:
+    """Await real automatic dispatch under the existing complete-turn 30-second budget."""
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        if not app.state.turn_runner.busy(sid):
+            for message in messages:
+                if message["role"] == "assistant" and any(
+                    part["type"] == "background_exit" for part in message["parts"]
+                ):
+                    wakes = [
+                        m
+                        for m in messages
+                        if m["role"] == "system"
+                        and m.get("metadata", {}).get("task_completion_wake")
+                    ]
+                    assert len(wakes) == 1
+                    assert not any(m["role"] == "user" for m in messages)
+                    return message
+        time.sleep(0.05)
+    raise TimeoutError("The automatic result turn did not deliver its typed exit")
 
 
 def test_idle_parent_next_turn_carries_background_exit_exactly_once(tmp_path: Path) -> None:
@@ -115,7 +142,7 @@ def test_idle_parent_next_turn_carries_background_exit_exactly_once(tmp_path: Pa
         outcome = fold_agent_task_event(app, _event(completed))
         assert outcome.applied is True
 
-        first = complete_turn(client, parent, "continue after the remote app")
+        first = _automatic_result_turn(client, app, parent)
         exits = [part for part in first["parts"] if part["type"] == "background_exit"]
         assert len(exits) == 1
         assert exits[0]["task_id"] == running.task_id
@@ -140,7 +167,8 @@ def test_aborted_staging_leaves_exit_for_next_successful_turn(tmp_path: Path) ->
         assert staged == [task.task_id]
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is True
 
-        successful = complete_turn(client, parent, "retry after abort")
+        mark_agent_ready(app, _Agent())
+        successful = _automatic_result_turn(client, app, parent)
         exits = [part for part in successful["parts"] if part["type"] == "background_exit"]
         assert [part["task_id"] for part in exits] == [task.task_id]
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is False

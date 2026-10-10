@@ -100,6 +100,34 @@ class _Agent:
         )()
 
 
+class _HeldAgent(_Agent):
+    """Hold selected real turns at inference until the test releases their owners."""
+
+    def __init__(self, *, hold_all: bool = False) -> None:
+        super().__init__()
+        self.hold_all = hold_all
+        self.held_session = ""
+        self.started = threading.Condition()
+        self.entered: set[str] = set()
+        self.release = threading.Event()
+
+    def forward(self, question: str, session_id: str, **kwargs: Any) -> Any:
+        """Run the scripted answer after the selected owner gate opens."""
+        if self.hold_all or session_id == self.held_session:
+            with self.started:
+                self.entered.add(session_id)
+                self.started.notify_all()
+            assert self.release.wait(TURN_SIGNAL_BACKSTOP_S), "Held inference was never released"
+        return super().forward(question, session_id, **kwargs)
+
+    def wait_started(self, sessions: set[str], timeout: float) -> None:
+        """Require actual inference entry before cancellation or mailbox inspection."""
+        with self.started:
+            assert self.started.wait_for(lambda: sessions <= self.entered, timeout=timeout), (
+                f"Expected inference entry {sessions!r}, observed {self.entered!r}"
+            )
+
+
 class _FakeRelayBackend:
     """Deterministic relay state shared by every reconstructed fake client."""
 
@@ -412,19 +440,30 @@ _TERMINAL_TASK_EVENTS = frozenset(
 
 
 def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
-    """Wait until a session's ``agent.task.*`` stream ENDS on a terminal event.
+    """Wait for terminal publication and automatic owner delivery before diffing.
 
     ``_wait_terminal`` only waits for the registry RECORD to reach a terminal status;
     the terminal ``agent.task.*`` BUS event is published on a separate step and can lag
     that transition. An event-stream parity diff must wait for the terminal EVENT too, or
-    it races (one child's ``completed`` already appended, the other's not yet)."""
+    it races (one child's ``completed`` already appended, the other's not yet).
+    An idle owner then consumes the result in its automatic turn; parity includes
+    that delivery event rather than comparing an unstable prefix of the stream.
+    """
 
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         events = _norm_events(app, sid)
-        if events and events[-1][0] in _TERMINAL_TASK_EVENTS:
+        session = app.state.sessions.get(sid)
+        task = AgentTask.from_session(session) if session is not None else None
+        if (
+            task is not None
+            and not task.notify_pending
+            and events
+            and (events[-1][0] in _TERMINAL_TASK_EVENTS or events[-1][0] == "agent.task.consumed")
+        ):
             return
         time.sleep(0.05)
+    raise AssertionError(f"Task events did not settle: {_norm_events(app, sid)!r}")
 
 
 def _spec(parent: str, task_text: str = "analyze the dataset") -> TaskSpec:
@@ -535,6 +574,7 @@ def test_s7_event_parity_across_both_invokers(
             "agent.task.queued",
             "agent.task.started",
             "agent.task.completed",
+            "agent.task.consumed",
         ]
 
 
@@ -743,7 +783,8 @@ def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
     assert result.status == STATUS_COMPLETED
     assert result.task_id == handle.task_id
     assert backend.client_count >= 3
-    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.completed"
+    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.consumed"
+    assert not app.state.agent_task_registry.get(handle.task_id).notify_pending
 
 
 def test_relay_live_task_events_use_committed_fold(
@@ -880,6 +921,7 @@ def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:
             "agent.task.queued",
             "agent.task.started",
             "agent.task.completed",
+            "agent.task.consumed",
         ]
 
 
@@ -976,16 +1018,29 @@ def test_cancel_parity_effect_and_event(tmp_path: Path, monkeypatch) -> None:
     same terminal status + same parent-visible ``agent.task.cancelled`` event."""
 
     _declare(monkeypatch, "main")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(sleep_s=5.0))
+    agent = _HeldAgent(hold_all=True)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         invoker = InProcessExpertInvoker(app)
         p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
         p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
         h_inv = invoker.invoke(_spec(p_inv))
         t_dir = spawn_child_turn_threadsafe(app, _spec(p_dir))
-
-        assert invoker.cancel(h_inv) is True
-        assert cancel_agent_task(app, t_dir.task_id) is True
+        try:
+            # Cold turn preparation is separate from cancellation settlement.
+            # The unchanged six-second settlement bound starts after both owners
+            # are actually executing, rather than while startup is still pending.
+            agent.wait_started(
+                {h_inv.child_session_id, t_dir.child_session_id}, timeout=TURN_SIGNAL_BACKSTOP_S
+            )
+            assert invoker.cancel(h_inv) is True
+            assert cancel_agent_task(app, t_dir.task_id) is True
+            # Cancellation acknowledgement cannot publish settlement while an
+            # inference owner is still executing, through either invoker route.
+            assert not app.state.agent_task_registry.get(h_inv.task_id).is_terminal
+            assert not app.state.agent_task_registry.get(t_dir.task_id).is_terminal
+        finally:
+            agent.release.set()
 
         inv_settled = _wait_terminal(app, h_inv.task_id, timeout=6.0)
         dir_settled = _wait_terminal(app, t_dir.task_id, timeout=6.0)
@@ -1115,10 +1170,15 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
     parent-side concern above the seam)."""
 
     _declare(monkeypatch, "main")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    agent = _HeldAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         invoker = InProcessExpertInvoker(app)
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        agent.held_session = parent
+        started = client.post(f"/v1/sessions/{parent}/messages", json={"text": "hold parent"})
+        assert started.status_code == 200, started.text
+        agent.wait_started({parent}, timeout=TURN_SIGNAL_BACKSTOP_S)
 
         def _turn_spec():
             return TaskSpec(
@@ -1130,17 +1190,24 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
                 mode="async",
             )
 
-        h0 = invoker.invoke(_turn_spec())
-        h1 = invoker.invoke(_turn_spec())
-        assert (h0.run_index, h1.run_index) == (0, 1)
-
-        _wait_terminal(app, h0.task_id)
-        settled = _wait_terminal(app, h1.task_id)
-        assert settled.status == STATUS_COMPLETED
-        # Async completion set notify_pending; the invoker.wait did NOT consume it.
-        result = invoker.wait(h1, timeout_s=5.0)
-        assert result.is_terminal
-        assert app.state.agent_task_registry.get(h1.task_id).notify_pending is True
+        try:
+            h0 = invoker.invoke(_turn_spec())
+            h1 = invoker.invoke(_turn_spec())
+            assert (h0.run_index, h1.run_index) == (0, 1)
+            _wait_terminal(app, h0.task_id)
+            settled = _wait_terminal(app, h1.task_id)
+            assert settled.status == STATUS_COMPLETED
+            # The parent is busy outside a model boundary, so automatic delivery
+            # cannot race this assertion about the transport-only invoker seam.
+            result = invoker.wait(h1, timeout_s=5.0)
+            assert result.is_terminal
+            assert app.state.agent_task_registry.get(h1.task_id).notify_pending is True
+        finally:
+            agent.release.set()
+        _wait_task_events_settled(app, h0.child_session_id)
+        _wait_task_events_settled(app, h1.child_session_id)
+        assert not app.state.agent_task_registry.get(h0.task_id).notify_pending
+        assert not app.state.agent_task_registry.get(h1.task_id).notify_pending
 
 
 # ---------------------------------------------------------------------------

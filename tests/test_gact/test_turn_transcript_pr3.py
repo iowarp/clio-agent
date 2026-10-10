@@ -592,7 +592,10 @@ class _RollupAgent:
                 parent_turn_id=ctx.active_turn_id(),
             ),
         )
-        app.state.agent_task_registry.event(task.task_id).wait(timeout=30.0)
+        from clio_agent.gact.task_controls import wait_tasks
+
+        result = wait_tasks(task.task_id, timeout_s=30.0)
+        assert not result["pending"] and result["results"][0]["status"] == "completed"
         return _Pred(answer="parent turn done", selected_expert="")
 
 

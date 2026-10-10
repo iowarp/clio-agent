@@ -512,7 +512,10 @@ class _NestingAgent:
             # level cannot self-heal by timing out inside the poll window — the poll
             # sees a still-RUNNING parent and the assertion fails. Only genuine
             # per-depth scheduling lets the child fire the Event promptly.
-            app.state.agent_task_registry.event(child.task_id).wait(timeout=90.0)
+            from clio_agent.gact.task_controls import wait_tasks
+
+            result = wait_tasks(child.task_id, timeout_s=90.0)
+            assert not result["pending"] and result["results"][0]["status"] == "completed"
         return type(
             "P", (), {"answer": f"depth {depth} ok", "selected_expert": "", "routing_rationale": ""}
         )()

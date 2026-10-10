@@ -83,8 +83,17 @@ tested the earlier design and does not qualify automatic idle wake.
 
 The automatic-wake implementation has 51 focused cases passing individually and
 sequentially, including the complete turn pipeline and unchanged transcript
-contracts. All eight guards and scoped type checks pass. Real-model automatic
-wake qualification is still pending; historical idle proofs do not satisfy it.
+contracts. All eight guards and scoped runtime type checks pass. Actual Codex/Luna
+has passed one automatic Shell wake and one child-Shell-child-parent wake chain,
+without user completion messages, on core `c3680cb0` / GACT `53bf385`. Each
+proved original handles, real output, one delivery and no later duplicate. The
+required repeated live matrix remains incomplete; historical idle proofs do not
+satisfy it. CI on `c3680cb0` exposed earlier tests assuming manual idle delivery
+or waiting on registry events without collecting task results. Thirteen affected
+cases now pass individually and sequentially with shared waits, automatic
+delivery assertions and controlled cancellation owners. No production code,
+assertions, per-test timeout declarations or cancellation-settlement limits were
+weakened for those test-contract repairs.
 
 ## Ownership and lifetime
 
