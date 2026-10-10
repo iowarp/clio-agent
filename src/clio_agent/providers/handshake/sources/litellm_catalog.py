@@ -30,6 +30,7 @@ import os
 import sys
 from functools import lru_cache
 from importlib.metadata import distribution
+from pathlib import Path
 from typing import Any
 
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
@@ -79,7 +80,7 @@ def _library_packaged_cost_map() -> dict[str, Any]:
     resource = distribution("litellm").locate_file(
         "litellm/model_prices_and_context_window_backup.json"
     )
-    return _parse_cost_map(resource.read_bytes())
+    return _parse_cost_map(Path(str(resource)).read_bytes())
 
 
 @lru_cache(maxsize=1)
