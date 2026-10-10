@@ -100,10 +100,39 @@ class _Agent:
         )()
 
 
+class _HeldAgent(_Agent):
+    """Hold selected real turns at inference until the test releases their owners."""
+
+    def __init__(self, *, hold_all: bool = False) -> None:
+        super().__init__()
+        self.hold_all = hold_all
+        self.held_session = ""
+        self.started = threading.Condition()
+        self.entered: set[str] = set()
+        self.release = threading.Event()
+
+    def forward(self, question: str, session_id: str, **kwargs: Any) -> Any:
+        """Run the scripted answer after the selected owner gate opens."""
+        if self.hold_all or session_id == self.held_session:
+            with self.started:
+                self.entered.add(session_id)
+                self.started.notify_all()
+            assert self.release.wait(TURN_SIGNAL_BACKSTOP_S), "Held inference was never released"
+        return super().forward(question, session_id, **kwargs)
+
+    def wait_started(self, sessions: set[str], timeout: float) -> None:
+        """Require actual inference entry before cancellation or mailbox inspection."""
+        with self.started:
+            assert self.started.wait_for(lambda: sessions <= self.entered, timeout=timeout), (
+                f"Expected inference entry {sessions!r}, observed {self.entered!r}"
+            )
+
+
 class _FakeRelayBackend:
     """Deterministic relay state shared by every reconstructed fake client."""
 
-    def __init__(self) -> None:
+    def __init__(self, server_id: str = "fake-relay-server") -> None:
+        self.server_id = server_id
         self.tasks: dict[str, dict[str, Any]] = {}
         self.submissions: list[dict[str, Any]] = []
         self.messages: list[tuple[str, str]] = []
@@ -131,6 +160,7 @@ class _FakeRelayBackend:
             task_id = f"task_relay_{self._next_id:04d}"
             task = {
                 "task_id": task_id,
+                "server_id": self.server_id,
                 "owner_session_id": owner_session_id,
                 "arguments": dict(arguments),
                 "context": {},
@@ -144,7 +174,7 @@ class _FakeRelayBackend:
             self.tasks[task_id] = task
             self.submissions.append(dict(arguments))
         key = TaskKey(
-            server_id="fake-relay-server",
+            server_id=self.server_id,
             session_id=owner_session_id,
             task_id=task_id,
         )
@@ -207,7 +237,7 @@ class _FakeRelayBackend:
     @staticmethod
     def _key(task: dict[str, Any]) -> TaskKey:
         return TaskKey(
-            server_id="fake-relay-server",
+            server_id=str(task.get("server_id", "fake-relay-server")),
             session_id=str(task["owner_session_id"]),
             task_id=str(task["task_id"]),
         )
@@ -404,25 +434,33 @@ def _norm_events(app, sid: str) -> list[tuple[str, dict]]:
     ]
 
 
-_TERMINAL_TASK_EVENTS = frozenset(
-    {"agent.task.completed", "agent.task.failed", "agent.task.cancelled"}
-)
-
-
 def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
-    """Wait until a session's ``agent.task.*`` stream ENDS on a terminal event.
+    """Wait for terminal publication and automatic owner delivery before diffing.
 
     ``_wait_terminal`` only waits for the registry RECORD to reach a terminal status;
     the terminal ``agent.task.*`` BUS event is published on a separate step and can lag
     that transition. An event-stream parity diff must wait for the terminal EVENT too, or
-    it races (one child's ``completed`` already appended, the other's not yet)."""
+    it races (one child's ``completed`` already appended, the other's not yet).
+    An idle owner then consumes the result in its automatic turn; parity includes
+    that delivery event rather than comparing an unstable prefix of the stream.
+    The consumed record is persisted before its bus event is published, so the
+    record alone cannot establish that the event stream is ready to compare.
+    """
 
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         events = _norm_events(app, sid)
-        if events and events[-1][0] in _TERMINAL_TASK_EVENTS:
+        session = app.state.sessions.get(sid)
+        task = AgentTask.from_session(session) if session is not None else None
+        if (
+            task is not None
+            and not task.notify_pending
+            and events
+            and events[-1][0] == "agent.task.consumed"
+        ):
             return
         time.sleep(0.05)
+    raise AssertionError(f"Task events did not settle: {_norm_events(app, sid)!r}")
 
 
 def _spec(parent: str, task_text: str = "analyze the dataset") -> TaskSpec:
@@ -533,6 +571,7 @@ def test_s7_event_parity_across_both_invokers(
             "agent.task.queued",
             "agent.task.started",
             "agent.task.completed",
+            "agent.task.consumed",
         ]
 
 
@@ -646,7 +685,11 @@ def test_relay_invoke_does_not_serialize_network_round_trips(
             handles = [future.result(timeout=5) for future in futures]
 
     assert overlapped is True
-    assert {handle.task_id for handle in handles} == {"parallel-relay-1", "parallel-relay-2"}
+    assert len({handle.task_id for handle in handles}) == 2
+    assert {invoker._task_key(handle).task_id for handle in handles} == {
+        "parallel-relay-1",
+        "parallel-relay-2",
+    }
     assert sorted(handle.run_index for handle in handles) == [0, 1]
 
 
@@ -679,11 +722,12 @@ def test_relay_message_answers_post_admission_input_on_retained_task(
         invoker.message(handle, "Use the new boundary condition.")
         result = invoker.wait(handle, timeout_s=1.0)
         assert result.status == "completed"
-        assert backend.tasks[handle.task_id]["stream_closed"].wait(1.0)
+        backend_id = invoker._task_key(handle).task_id
+        assert backend.tasks[backend_id]["stream_closed"].wait(1.0)
 
     assert backend.messages == [
-        (handle.task_id, "initial"),
-        (handle.task_id, "Use the new boundary condition."),
+        (backend_id, "initial"),
+        (backend_id, "Use the new boundary condition."),
     ]
 
 
@@ -721,7 +765,8 @@ def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         originating = _relay_invoker(app, backend)
         handle = originating.invoke(_spec(parent))
-        assert handle.task_id == next(iter(backend.tasks))
+        assert handle.task_id != next(iter(backend.tasks))
+        assert originating._task_key(handle).task_id == next(iter(backend.tasks))
         assert resolve_store(None).get(originating._task_key(handle)) is not None
         deadline = time.monotonic() + 5.0
         while backend.client_count < 2 and time.monotonic() < deadline:
@@ -735,7 +780,8 @@ def test_relay_detach_new_invoker_reconnects_by_task_id_and_streams_terminal(
     assert result.status == STATUS_COMPLETED
     assert result.task_id == handle.task_id
     assert backend.client_count >= 3
-    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.completed"
+    assert _norm_events(app, handle.child_session_id)[-1][0] == "agent.task.consumed"
+    assert not app.state.agent_task_registry.get(handle.task_id).notify_pending
 
 
 def test_relay_live_task_events_use_committed_fold(
@@ -872,6 +918,7 @@ def test_invoke_parity_records_and_events(tmp_path: Path, monkeypatch) -> None:
             "agent.task.queued",
             "agent.task.started",
             "agent.task.completed",
+            "agent.task.consumed",
         ]
 
 
@@ -968,16 +1015,29 @@ def test_cancel_parity_effect_and_event(tmp_path: Path, monkeypatch) -> None:
     same terminal status + same parent-visible ``agent.task.cancelled`` event."""
 
     _declare(monkeypatch, "main")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent(sleep_s=5.0))
+    agent = _HeldAgent(hold_all=True)
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         invoker = InProcessExpertInvoker(app)
         p_inv = client.post("/v1/sessions", json={"title": "inv"}).json()["id"]
         p_dir = client.post("/v1/sessions", json={"title": "dir"}).json()["id"]
         h_inv = invoker.invoke(_spec(p_inv))
         t_dir = spawn_child_turn_threadsafe(app, _spec(p_dir))
-
-        assert invoker.cancel(h_inv) is True
-        assert cancel_agent_task(app, t_dir.task_id) is True
+        try:
+            # Cold turn preparation is separate from cancellation settlement.
+            # The unchanged six-second settlement bound starts after both owners
+            # are actually executing, rather than while startup is still pending.
+            agent.wait_started(
+                {h_inv.child_session_id, t_dir.child_session_id}, timeout=TURN_SIGNAL_BACKSTOP_S
+            )
+            assert invoker.cancel(h_inv) is True
+            assert cancel_agent_task(app, t_dir.task_id) is True
+            # Cancellation acknowledgement cannot publish settlement while an
+            # inference owner is still executing, through either invoker route.
+            assert not app.state.agent_task_registry.get(h_inv.task_id).is_terminal
+            assert not app.state.agent_task_registry.get(t_dir.task_id).is_terminal
+        finally:
+            agent.release.set()
 
         inv_settled = _wait_terminal(app, h_inv.task_id, timeout=6.0)
         dir_settled = _wait_terminal(app, t_dir.task_id, timeout=6.0)
@@ -1107,10 +1167,15 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
     parent-side concern above the seam)."""
 
     _declare(monkeypatch, "main")
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    agent = _HeldAgent()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         invoker = InProcessExpertInvoker(app)
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        agent.held_session = parent
+        started = client.post(f"/v1/sessions/{parent}/messages", json={"text": "hold parent"})
+        assert started.status_code == 200, started.text
+        agent.wait_started({parent}, timeout=TURN_SIGNAL_BACKSTOP_S)
 
         def _turn_spec():
             return TaskSpec(
@@ -1122,17 +1187,24 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
                 mode="async",
             )
 
-        h0 = invoker.invoke(_turn_spec())
-        h1 = invoker.invoke(_turn_spec())
-        assert (h0.run_index, h1.run_index) == (0, 1)
-
-        _wait_terminal(app, h0.task_id)
-        settled = _wait_terminal(app, h1.task_id)
-        assert settled.status == STATUS_COMPLETED
-        # Async completion set notify_pending; the invoker.wait did NOT consume it.
-        result = invoker.wait(h1, timeout_s=5.0)
-        assert result.is_terminal
-        assert app.state.agent_task_registry.get(h1.task_id).notify_pending is True
+        try:
+            h0 = invoker.invoke(_turn_spec())
+            h1 = invoker.invoke(_turn_spec())
+            assert (h0.run_index, h1.run_index) == (0, 1)
+            _wait_terminal(app, h0.task_id)
+            settled = _wait_terminal(app, h1.task_id)
+            assert settled.status == STATUS_COMPLETED
+            # The parent is busy outside a model boundary, so automatic delivery
+            # cannot race this assertion about the transport-only invoker seam.
+            result = invoker.wait(h1, timeout_s=5.0)
+            assert result.is_terminal
+            assert app.state.agent_task_registry.get(h1.task_id).notify_pending is True
+        finally:
+            agent.release.set()
+        _wait_task_events_settled(app, h0.child_session_id)
+        _wait_task_events_settled(app, h1.child_session_id)
+        assert not app.state.agent_task_registry.get(h0.task_id).notify_pending
+        assert not app.state.agent_task_registry.get(h1.task_id).notify_pending
 
 
 # ---------------------------------------------------------------------------
@@ -1142,15 +1214,15 @@ def test_run_index_and_notify_parity(tmp_path: Path, monkeypatch) -> None:
 
 def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> None:
     """The boundary :class:`TaskResult` omits EVERY :class:`AgentTask` field that is not
-    part of the executor boundary — all nine, in four classes: parent-side observe-later /
+    part of the executor boundary — all eleven: parent-side observe-later /
     wire-dedup bookkeeping (``notify_pending`` / ``consumed_at`` / ``delegation_reported``)
     and spawn-request / topology fields the parent already holds on its ``TaskSpec``
     (``parent_turn_id`` / ``child_turn_id`` / ``fanout_bound``), plus parent-side run-list
     display state (``detached`` / ``dismissed``), and local parent-projection policy
-    (``project_to_parent``).
+    (``project_to_parent``), plus local cancellation intent and assignment description.
 
     Adversarial-review finding [5]: the drop-list must be EXHAUSTIVE against the code —
-    ``AgentTask`` minus ``TaskResult`` is exactly these nine, no more, no less."""
+    ``AgentTask`` minus ``TaskResult`` is exactly these eleven, no more, no less."""
 
     task_fields = set(AgentTask.__dataclass_fields__)
     result_fields = set(TaskResult.__dataclass_fields__)
@@ -1164,9 +1236,11 @@ def test_taskresult_drops_internal_bookkeeping(tmp_path: Path, monkeypatch) -> N
         "detached",
         "dismissed",
         "project_to_parent",
+        "cancel_requested",
+        "description",
     }
-    assert dropped.isdisjoint(result_fields)  # none of the nine survive the projection
-    # EXHAUSTIVE: the nine named above are exactly the fields AgentTask has and
+    assert dropped.isdisjoint(result_fields)  # none of the eleven survive the projection
+    # EXHAUSTIVE: the eleven named above are exactly the fields AgentTask has and
     # TaskResult drops — a newly-added dropped/carried field must update this + the docs.
     assert task_fields - result_fields == dropped
     # But it DOES carry the durable, relay-compatible record vocabulary.

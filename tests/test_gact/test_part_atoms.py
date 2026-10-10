@@ -35,6 +35,7 @@ SABOTAGE (recorded, run manually, NOT committed as a second test):
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -50,6 +51,7 @@ from clio_agent.gact.part_atoms import (
     mint_message_part_atoms,
     reproduce_message_wire,
 )
+from clio_agent.gact.transcript_projection import assemble_session_messages, replace_atom_lane
 from clio_agent.gact.types import ErrorInfo, Message, Part, Tokens
 from tests.equivalence.normalizers import first_divergence
 from tests.turn_signals import post_turn_and_wait
@@ -292,6 +294,27 @@ def test_identity_pin_survives_eviction(arc: ARCMemory) -> None:
     assert [p["id"] for p in reloaded["parts"]] == [p.id for p in message.parts]
     # The identity timestamp is stored, not regenerated.
     assert reloaded["created_at"] == message.created_at
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_replacement_stores_large_metadata_once_and_rehydrates_exactly(
+    arc: ARCMemory, empty: bool
+) -> None:
+    """Replacement avoids per-part envelope copies without losing wire identity."""
+    message = _rich_assistant_message()
+    message.metadata = {"inspection": "x" * 65536}
+    if empty:
+        message.parts = []
+    expected = message.model_dump(exclude_none=True)
+    replace_atom_lane(arc, message.session_id, [message])
+    atoms = load_message_part_atoms(arc, message.session_id)[message.id]
+    assert len(atoms) == len(message.parts) + 1
+    assert sum(atom["atom_role"] == "envelope" for atom in atoms) == 1
+    assert len(json.dumps(atoms)) < 2 * len(json.dumps(expected))
+    arc._segments.release(message.session_id)
+    restored = assemble_session_messages(arc, message.session_id)
+    assert len(restored) == 1
+    assert first_divergence(expected, restored[0].model_dump(exclude_none=True)) is None
 
 
 def test_mint_lands_on_the_reserved_message_part_lane(arc: ARCMemory) -> None:

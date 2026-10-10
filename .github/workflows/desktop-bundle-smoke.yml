@@ -71,14 +71,28 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
+          const {execFileSync} = require('node:child_process');
           const root = process.env.GITHUB_WORKSPACE;
           const ui = path.join(root, 'external/gact-tui');
+          const revision = (cwd) => execFileSync('git', ['rev-parse', 'HEAD'], {cwd, encoding: 'utf8'}).trim();
+          const agentRevision = revision(root);
+          const uiRevision = revision(ui);
+          const projectVersion = fs.readFileSync(path.join(root, 'pyproject.toml'), 'utf8').match(/^version\s*=\s*"(\d+\.\d+\.\d+)/m)?.[1];
+          if (!projectVersion) throw new Error('Missing agent version for development Desktop');
+          const version = `${projectVersion}-dev.${agentRevision.slice(0, 8)}`;
           fs.writeFileSync(path.join(ui, 'brand.config.local.json'), JSON.stringify({profile: 'clio', brandingRoot: path.join(root, 'branding')}));
           fs.cpSync(path.join(root, 'branding/clio/icons'), path.join(ui, 'desktop/src-tauri/icons'), {recursive: true});
           fs.cpSync(path.join(root, 'branding/clio/installer'), path.join(ui, 'desktop/src-tauri/installer'), {recursive: true});
           const bundle = {createUpdaterArtifacts: false};
-          if (process.platform === 'win32') bundle.resources = ['gact-runtime.tar.zst', 'gact-runtime.pack.json'];
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'smoke-config.json'), JSON.stringify({bundle}));
+          if (process.platform === 'win32') {
+            const windowsPack = JSON.parse(fs.readFileSync(path.join(ui, 'desktop/src-tauri/tauri.bundled.windows-pack.conf.json'), 'utf8'));
+            Object.assign(bundle, windowsPack.bundle);
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'smoke-config.json'), JSON.stringify({version, bundle}));
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'desktop-source.json'), JSON.stringify({
+            schema: 1, version, agent_revision: agentRevision, ui_revision: uiRevision,
+            unsigned_development_build: true,
+          }, null, 2));
           NODE
           bash external/gact-tui/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
       - name: Build an installable Desktop package from the pinned UI
@@ -97,7 +111,7 @@ jobs:
           packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           sudo dpkg -i "${packages[0]}"
-          xvfb-run -a uv run --no-project --python 3.13 --with psutil \
+          xvfb-run -a uv run --no-project --python 3.14 --with psutil \
             scripts/smoke_desktop_package.py /usr/bin/clio-desktop --evidence-dir "$RUNNER_TEMP/startup-evidence" \
             --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log"
       - name: Install NSIS and launch native Desktop with its compressed runtime
@@ -107,9 +121,41 @@ jobs:
           $packages = @(Get-ChildItem external/gact-tui/desktop/src-tauri/target/release/bundle/nsis/*.exe)
           if ($packages.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
-          $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -Wait -PassThru
+          # Wait for NSIS itself, not every background descendant it started.
+          # Keep the wait bounded so a silent failure still reaches log upload.
+          $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -PassThru
+          if (-not $installer.WaitForExit(600000)) {
+            $installer.Kill($true)
+            if (-not $installer.WaitForExit(10000)) { Write-Warning 'Installer cleanup did not finish within 10 seconds' }
+            throw 'NSIS installer did not exit within 10 minutes; see the retained installer logs'
+          }
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
-          uv run --no-project --python 3.13 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+      - name: Collect Windows installer diagnostics even before first launch
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'startup-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          $installerLogs = @{
+            'installer-error.log' = Join-Path $env:RUNNER_TEMP 'clio-installed/data/runtime-install-error.log'
+            'installer-boot.log' = Join-Path $env:LOCALAPPDATA 'ai.iowarp.clio.desktop/logs/backend-boot.log'
+          }
+          foreach ($entry in $installerLogs.GetEnumerator()) {
+            if (Test-Path -LiteralPath $entry.Value -PathType Leaf) {
+              Copy-Item -LiteralPath $entry.Value -Destination (Join-Path $evidenceDir $entry.Key)
+            }
+          }
+      - name: Retain the qualified installable development Desktop
+        uses: actions/upload-artifact@v4
+        with:
+          name: development-desktop-${{ matrix.os }}
+          path: |
+            external/gact-tui/desktop/src-tauri/target/release/bundle/${{ matrix.bundles }}/*
+            ${{ runner.temp }}/desktop-source.json
+            ${{ runner.temp }}/startup-evidence/receipt.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain sanitized startup evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -121,5 +167,7 @@ jobs:
             ${{ runner.temp }}/startup-evidence/backend.json
             ${{ runner.temp }}/startup-evidence/failure.json
             ${{ runner.temp }}/startup-evidence/boot.log
+            ${{ runner.temp }}/startup-evidence/installer-error.log
+            ${{ runner.temp }}/startup-evidence/installer-boot.log
           if-no-files-found: warn
           retention-days: 7

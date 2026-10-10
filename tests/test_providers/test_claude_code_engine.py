@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+import dspy
 import pytest
 from dspy.lm15 import (
     DocumentPart,
@@ -34,9 +35,10 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.gact import context as gact_context
-from clio_agent.lm.engines.text_tools import FENCE, TURN_REMINDER
+from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.lm.engines.text_tools import FENCE, INVALID_TOOL_CALL, TURN_REMINDER
 from clio_agent.providers import claude_code_engine, stateful_common
-from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine
+from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
 from clio_agent.providers.claude_code_plan_limit import ClaudeCodePlanLimitError
 
@@ -76,7 +78,7 @@ class ResultMessage:
         self.api_error_status = kw.get("api_error_status")
         self.subtype = kw.get("subtype")
         self.model_usage = None
-        self.total_cost_usd = None
+        self.total_cost_usd: float | None = None
 
 
 class SystemMessage:
@@ -237,6 +239,97 @@ def test_images_and_documents_ride_as_native_blocks(pool: FakePool) -> None:
             "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBE"},
         },
     ]
+
+
+def test_missing_opening_fence_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -> None:
+    """The live Sonnet child emitted call JSON plus only its closing fence."""
+    raw = '[{"name":"search","arguments":{"q":"actual data"}}]\n```'
+    pool.turns = [[_text(raw), _result()]]
+
+    response = _run(_request(HEAD))
+
+    [call] = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str)
+    assert "opening" in call.input["error"]
+    assert call.input["block"] == raw
+    assert response.finish_reason == "tool_call"
+    assert not any(
+        isinstance(part, ToolCallPart) and part.name == "search" for part in response.message.parts
+    )
+
+
+def test_xml_invoke_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -> None:
+    """The live Haiku parent emitted native XML instead of the advertised call format."""
+    raw = '<invoke name="search">\n<parameter name="q">actual data</parameter>\n</invoke>'
+    pool.turns = [[_text(raw), _result()]]
+
+    response = _run(_request(HEAD))
+
+    [call] = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw
+    assert response.finish_reason == "tool_call"
+
+
+def test_xml_parameter_fragment_is_a_protocol_error_not_a_completed_answer(pool: FakePool) -> None:
+    """Haiku's live post-Stop read lost its invoke opener and silently ended the turn."""
+    raw = '<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>'
+    pool.turns = [[_text(raw), _result()]]
+
+    response = _run(_request(HEAD))
+
+    [call] = [part for part in response.message.parts if isinstance(part, ToolCallPart)]
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str) and "XML" in call.input["error"]
+    assert call.input["block"] == raw
+    assert response.finish_reason == "tool_call"
+
+
+@pytest.mark.usefixtures("clio_core_plane")
+@pytest.mark.parametrize(
+    ("malformed", "error"),
+    [
+        ('[{"name":"search","arguments":{"q":"actual data"}}]\n```', "missing opening"),
+        ('<invoke name="search"><parameter name="q">actual data</parameter></invoke>', "XML"),
+        ('<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>', "XML"),
+    ],
+)
+def test_loop_recovers_malformed_call_before_running_the_corrected_call(
+    pool: FakePool, malformed: str, error: str
+) -> None:
+    """A malformed call cannot complete the child or execute before correction."""
+    executed: list[str] = []
+
+    def search(q: str) -> str:
+        """Record actual execution and return its observed output."""
+        executed.append(q)
+        return "ACTUAL_SEARCH_OUTPUT"
+
+    raw = '[{"name":"search","arguments":{"q":"actual data"}}]\n```'
+    pool.turns = [
+        [_text(malformed), _result()],
+        [_text(f"{FENCE}\n{raw}"), _result()],
+        [_text("ACTUAL_SEARCH_OUTPUT"), _result()],
+    ]
+    lm = dspy.LM(
+        f"claude_code/{MODEL}",
+        engine=ClaudeCodeEngine(MODEL),
+        async_engine=AsyncClaudeCodeEngine(MODEL),
+        cache=False,
+        num_retries=0,
+    )
+    agent = ClioReAct("question -> answer", tools=[dspy.Tool(search)], max_iters=4)
+    with dspy.context(lm=lm):
+        result = agent(question="Search for the actual data and report its output")
+
+    assert result.answer == "ACTUAL_SEARCH_OUTPUT"
+    assert executed == ["actual data"]
+    assert len(pool.sends) == 3
+    assert error in pool.sends[1]["payload"]
+    assert "(error)" in pool.sends[1]["payload"]
+    assert "ACTUAL_SEARCH_OUTPUT" in pool.sends[2]["payload"]
 
 
 def test_append_only_calls_continue_the_session_with_new_messages_only(

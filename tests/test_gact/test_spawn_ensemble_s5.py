@@ -184,10 +184,24 @@ class _RecordingAgent:
         self.windows: list[tuple[str, float, float]] = []
         # (session_id kwarg, tool_session the observer would attribute to) per forward.
         self.attributions: list[tuple[str, str]] = []
+        self.parent_attributions: list[tuple[str, str]] = []
         self._lock = threading.Lock()
         self.app: Any = None
 
     def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        session = self.app.state.sessions.get(session_id) if self.app is not None else None
+        if session is not None and not session.parent_session_id:
+            # Completion wakes run the parent through this same test agent. They do
+            # not participate in the CHILD rendezvous or emit a child's probe row.
+            tool_sid = ctx.active_tool_session_id()
+            with self._lock:
+                self.parent_attributions.append((session_id, tool_sid))
+            self.app.state.tool_call_ledger.setdefault(tool_sid, []).append(
+                {"name": "parent_probe_tool", "attributed_session": tool_sid}
+            )
+            return SimpleNamespace(
+                answer=f"parent {session_id}", selected_expert="", routing_rationale=""
+            )
         if self.barrier is not None:
             # Rendezvous: all N forwards must be executing at once to pass. The barrier
             # carries its own timeout: generous in the overlap proof so a genuinely
@@ -488,6 +502,11 @@ def test_ledger_rows_attribute_to_each_child_session_under_interleaving(
             assert _wait_terminal(app, t.task_id).status == "completed"
 
         child_sids = {t.child_session_id for t in spawned}
+        # Exercise parent attribution too, with the automatic wake persisted before
+        # inspecting its ledger. This must not depend on worker scheduling.
+        assert _wait_bus(app, parent, "turn.completed", 1), "parent completion wake did not settle"
+        assert agent.parent_attributions
+        assert all(sid == tool_sid == parent for sid, tool_sid in agent.parent_attributions)
         # (a) Every forward saw its OWN child sid as the tool session (no cross-attribution
         # under concurrency); the set of attributed sessions is exactly the three children.
         assert len(agent.attributions) == 3
@@ -504,6 +523,11 @@ def test_ledger_rows_attribute_to_each_child_session_under_interleaving(
             names = {row.get("name") for row in tools_called}
             assert "probe_tool" in names, f"child {t.child_session_id} tools_called={tools_called}"
         parent_msgs = app.state.messages.get(parent, []) or []
+        assert any(
+            row.get("name") == "parent_probe_tool"
+            for m in parent_msgs
+            for row in (getattr(m, "metadata", {}) or {}).get("tools_called", [])
+        ), "the parent's own tool row was not persisted on its completion wake"
         for m in parent_msgs:
             names = {
                 r.get("name") for r in (getattr(m, "metadata", {}) or {}).get("tools_called", [])
@@ -536,8 +560,7 @@ def test_ensemble_queue_admission_fifo_per_depth(tmp_path: Path, monkeypatch) ->
 
 
 def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> None:
-    """Cancelling the parent cancels EVERY run of a concurrent ensemble (the cascade
-    iterates for_parent, which lists all task records regardless of shared child id)."""
+    """Explicitly cancelling each accepted ensemble task settles every selected owner."""
 
     _declare(monkeypatch, "main")
     app = build_app(sessions_path=tmp_path / "s.json", agent=_RecordingAgent(sleep_s=3.0))
@@ -547,7 +570,13 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
 
         spawned = _spawn_ensemble(app, parent, "main", 3)
         assert all(t.status == STATUS_RUNNING for t in spawned)
-        assert client.post(f"/v1/sessions/{parent}/cancel").status_code == 204
+        response = client.post(
+            f"/v1/sessions/{parent}/async-tasks/cancel",
+            json={"tasks": [t.task_id for t in spawned]},
+        )
+        assert response.status_code == 200
+        assert not response.json()["errors"]
+        assert all(r["cancellation_requested"] for r in response.json()["results"])
 
         for t in spawned:
             assert _wait_terminal(app, t.task_id, timeout=8.0).status == "cancelled"
@@ -557,13 +586,9 @@ def test_cancel_cascade_kills_all_ensemble_runs(tmp_path: Path, monkeypatch) -> 
 
 
 def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
-    """main -> A -> B (nested spawns are first-class in S5). Cancelling main cancels A AND
-    its grandchild B — no child turn outlives the parent that spawned it (#953 [3]). Sabotage:
-    the pre-fix single-level cascade only touched main's DIRECT children, leaving B running →
-    B stays non-terminal → red."""
+    """Explicit cancellation of subagent A settles A and its grandchild B."""
 
     from clio_agent.gact.agent_tasks import seed_agent_task
-    from clio_agent.gact.turn_spawn import cancel_children_of
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     with TestClient(app) as client:
@@ -583,12 +608,12 @@ def test_cancel_cascade_is_transitive_to_grandchildren(tmp_path: Path) -> None:
             depth=2,
             status=STATUS_RUNNING,
         )
-        n = cancel_children_of(app, main)
-
-    reg = app.state.agent_task_registry
-    assert reg.get(a.task_id).status == "cancelled"
-    assert reg.get(b.task_id).status == "cancelled"  # grandchild cancelled too (transitive)
-    assert n == 2
+        response = client.post(f"/v1/sessions/{main}/async-tasks/cancel", json={"tasks": a.task_id})
+        assert response.status_code == 200 and not response.json()["errors"]
+        assert _wait_terminal(app, a.task_id).status == "cancelled"
+        assert _wait_terminal(app, b.task_id).status == "cancelled"
+        assert app.state.sessions.get(a.child_session_id).metadata["task_admission_closed"]
+        assert app.state.sessions.get(b.child_session_id).metadata["task_admission_closed"]
 
 
 # ===========================================================================
@@ -616,6 +641,7 @@ class _Def:
     def __init__(self, agent_id: str) -> None:
         self.id = agent_id
         self.metadata = {"agent_blueprint_id": "bp"}
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 class _StubSessions:
@@ -625,8 +651,12 @@ class _StubSessions:
     def get(self, sid: str) -> Any:
         return self._sessions.get(sid)
 
+    def list(self, *, workspace_id: str | None = None) -> list[SimpleNamespace]:
+        del workspace_id
+        return list(self._sessions.values())
+
     def update(self, sid: str, *, metadata_patch: dict | None = None, **_kw: Any) -> Any:
-        sess = self._sessions.get(sid) or SimpleNamespace(id=sid, metadata={})
+        sess = self._sessions.get(sid) or SimpleNamespace(id=sid, metadata={}, parent_session_id="")
         sess.metadata.update(metadata_patch or {})
         self._sessions[sid] = sess
         return sess
@@ -639,6 +669,18 @@ def _fake_app(registry: AgentTaskRegistry, messages: dict[str, list[Message]]) -
         )
     )
     app.state.expert_invoker = InProcessExpertInvoker(app)
+    from clio_agent.gact.events import EventBus
+    from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore
+
+    app.state.bus = EventBus()
+    app.state.cancel_flags = set()
+    app.state.sessions.task_store = InMemoryTaskRecordStore()
+    app.state.sessions.update("sess_x", metadata_patch={"agent_blueprint_id": "bp"})
+    for task in registry.snapshot():
+        app.state.sessions.update(
+            task.parent_session_id, metadata_patch={"agent_blueprint_id": "bp"}
+        )
+        app.state.sessions.update(task.child_session_id, metadata_patch=task.to_metadata())
     return app
 
 

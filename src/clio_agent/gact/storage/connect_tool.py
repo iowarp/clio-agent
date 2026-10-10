@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.permission_gate import _invoke_permission_gate
-from clio_agent.gact.storage.linked import link_folder
 from clio_agent.gact.storage.models import CreateSource
 from clio_agent.gact.storage.setup_tool import connected_data_status, setup_presentation
+from clio_agent.tools.task_call_context import require_admission
 
 
 def connected_data_connect(
@@ -28,12 +29,22 @@ def connected_data_connect(
     changes originals. Sign-in remains private and user-operated; if missing,
     return the login action for an A2UI Button in the answer. No credentials
     may be passed in configuration. Linking exposes references, not a shell mount.
+    A GitHub URL or a request to inspect, clone or work on a repository does not
+    request source attachment: use gh through the normal shell for that work.
+
+    When indexing is needed, return a durable Indexing task handle immediately;
+    acceptance is not a complete source manifest. Continue independent work and
+    use query_tasks, observe_tasks, wait_tasks, get_task_result or cancel_tasks
+    with the handle. Completion arrives at the next model iteration or wakes you
+    when idle; Conversation Stop leaves accepted indexing running. An already
+    linked source or a sign-in requirement returns its connection status directly.
     """
     app = context.active_app()
     sid = context.active_session_id()
     session = app.state.sessions.get(sid) if app is not None and sid else None
     if app is None or session is None:
         raise ValueError("Source connection requires an active CLIO workspace session")
+    require_admission(app, sid)
     workspace = app.state.workspaces.get(session.workspace_id)
     if workspace is None:
         raise ValueError("The session workspace is unavailable on this CLIO")
@@ -80,7 +91,7 @@ def connected_data_connect(
         return result
     if not existing.linked_manifest_id:
         if provider == "github":
-            from clio_agent.gact.storage.github_tool import source_cli
+            from clio_agent.gact.storage.github_preflight import source_cli
             from clio_agent.gact.storage.linked import github_location
 
             org, repo, _, folder = github_location(
@@ -91,7 +102,21 @@ def connected_data_connect(
                 existing,
                 ["api", f"repos/{org}/{repo}/contents" + (f"/{folder}" if folder else "")],
             )
-        link_folder(service, existing)
+        from clio_agent.gact.artifacts.observer_bridge import observer_call_id
+
+        invocation = observer_call_id()
+
+        async def submit() -> dict[str, Any]:
+            from clio_agent.gact.storage.indexing import start_index
+            from clio_agent.gact.storage.task_adapter import storage_handle
+
+            require_admission(app, sid)
+            operation = start_index(service, existing)
+            accepted = storage_handle(app, sid, operation, f"Index {label}: {root}", invocation)
+            accepted["connection"] = {"source_id": existing.source.id, "state": "indexing"}
+            return accepted
+
+        return asyncio.run_coroutine_threadsafe(submit(), app.state.mcp_app_loop).result()
     result = connected_data_status()
     result["connection"] = {"source_id": existing.source.id, "state": "linked"}
     return result

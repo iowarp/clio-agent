@@ -433,8 +433,11 @@ class InProcessExpertInvoker:
         child / depth cap) — the typed reason is the parity contract.
         """
 
-        task = spawn_child_turn_threadsafe(self._app, spec)
-        return TaskHandle.from_task(task)
+        from clio_agent.gact.task_submission_custody import submission_scope
+
+        with submission_scope(self._app, spec.parent_session_id):
+            task = spawn_child_turn_threadsafe(self._app, spec)
+            return TaskHandle.from_task(task)
 
     def wait(self, handle: TaskHandle, timeout_s: float | None) -> TaskResult:
         """Block on the task's completion Event (the S6 wait primitive) up to

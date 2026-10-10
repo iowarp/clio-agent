@@ -7,9 +7,11 @@ import io
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
+from dspy.lm15 import ImagePart, TextPart
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -140,6 +142,30 @@ def test_unavailable_stale_timeout_failure_and_malformed_pixels() -> None:
                 future.result(timeout=2)
     with pytest.raises(VisualFeedbackError):
         decode_png("not base64")
+
+
+def test_malformed_capture_does_not_load_unrelated_image_decoders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invalid PNGs must not wait for unrelated decoder-plugin initialization."""
+    release = Event()
+    initialized = Event()
+    initialize = Image.init
+
+    def blocked_initialization() -> bool:
+        initialized.set()
+        assert release.wait(10), "Decoder initialization gate was not released"
+        return initialize()
+
+    monkeypatch.setattr(Image, "init", blocked_initialization)
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(decode_png, "AA==")
+        try:
+            with pytest.raises(VisualFeedbackError, match="cannot identify"):
+                future.result(timeout=2)
+        finally:
+            release.set()
+    assert not initialized.is_set()
 
 
 def test_changed_state_requires_new_epoch_and_updated_renderer_can_catch_up() -> None:
@@ -305,6 +331,9 @@ def test_real_routes_tool_artifact_and_native_media_roundtrip(
         assert "base64" not in str(result)
         with tool_workspace_context(tmp_path):
             native = result_part("call", "capture_a2ui_surface", result, False)
+        assert isinstance(native.content[0], ImagePart)
+        assert native.content[0].data is not None
+        assert isinstance(native.content[1], TextPart)
         assert native.content[0].media_type == "image/png"
         assert base64.b64decode(native.content[0].data) == base64.b64decode(png())
         assert result["sha256"] in native.content[1].text
@@ -313,6 +342,7 @@ def test_real_routes_tool_artifact_and_native_media_roundtrip(
         # workspace ContextVar. Hydrate from the session, not the server cwd.
         with tool_workspace_context(None):
             folded = result_part("call", "capture_a2ui_surface", result, False)
+        assert isinstance(folded.content[0], ImagePart)
         assert folded.content[0].media_type == "image/png"
         assert folded.content[0].data == native.content[0].data
 

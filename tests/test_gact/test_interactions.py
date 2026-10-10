@@ -612,9 +612,10 @@ def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> Non
     del root
     resolve_store(None).put(
         TaskRecord(
-            key=TaskKey(server_id="srv", session_id=child, task_id="abc-def"),
+            key=TaskKey(server_id="earthscope", session_id=child, task_id="abc-def"),
             tool="earthscope_query",
             status="input_required",
+            invocation_id="call_7",
         )
     )
     invocation = MCPInvocationContext(
@@ -627,10 +628,12 @@ def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> Non
     correlated = invocation_with_request_correlation(
         invocation,
         SimpleNamespace(request_id="task-abc-def-output_format"),
+        app=app,
     )
 
     assert correlated.task_id == "abc-def"
     assert correlated.input_key == "output_format"
+    assert correlated.task_key == TaskKey("earthscope", child, "abc-def")
 
 
 def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path, monkeypatch) -> None:

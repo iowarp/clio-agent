@@ -5,7 +5,7 @@ description: Create, edit and inspect Word documents and templates, preserving e
 
 # Work with Word documents
 
-Call `prepare_execution_runtime` before standalone document work. Its paths,
+Call `prepare_document_runtime` before standalone document work. Its paths,
 packages, fonts and execution-host facts describe this session; use its prepared
 `python_argv` command. A Python project may select a different environment when using
 `uv run`. Keep artifact scripts and additional dependencies in task-owned paths.

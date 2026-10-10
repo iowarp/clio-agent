@@ -275,6 +275,7 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
     relay_store = InMemoryTaskRecordStore()
+    app.state.sessions.task_store = relay_store
     set_task_record_store(relay_store, durable=False)
     try:
         with TestClient(app) as client:
@@ -302,7 +303,7 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
 
             response = client.get("/v1/runs")
             assert response.status_code == 200
-            rows = {row["handle_id"]: row for row in response.json()["runs"]}
+            rows = {row["task_id"]: row for row in response.json()["runs"]}
             assert set(rows) == {local.task_id, "task_relay_only"}
             assert rows[local.task_id]["placement"] == "local"
             assert rows[local.task_id]["live_state"] == "running"
@@ -320,7 +321,7 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
             still_working = client.post("/v1/runs/task_relay_only/dismiss")
             assert still_working.status_code == 404
             remaining_while_working = {
-                row["handle_id"] for row in client.get("/v1/runs").json()["runs"]
+                row["task_id"] for row in client.get("/v1/runs").json()["runs"]
             }
             assert remaining_while_working == {local.task_id, "task_relay_only"}
 
@@ -336,7 +337,7 @@ def test_runs_api_projects_local_and_relay_handles_with_live_state(tmp_path: Pat
             dismissed = client.post("/v1/runs/task_relay_only/dismiss")
             assert dismissed.status_code == 200
             assert dismissed.json() == {"dismissed": True, "handle_id": "task_relay_only"}
-            remaining = {row["handle_id"] for row in client.get("/v1/runs").json()["runs"]}
+            remaining = {row["task_id"] for row in client.get("/v1/runs").json()["runs"]}
             assert remaining == {local.task_id}
     finally:
         set_task_record_store(None)

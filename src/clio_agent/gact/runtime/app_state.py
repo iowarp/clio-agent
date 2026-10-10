@@ -18,10 +18,35 @@ acyclic (``tools.execution`` imports no ``gact``).
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.tools.execution import ToolRuntimeHooks
+from clio_agent.tools.tool_hooks import InterceptDecision
+
+Interceptor = Callable[[str, Mapping[str, Any]], "InterceptDecision | None"]
+
+
+def with_search_guard(interceptor: Interceptor | None) -> Interceptor:
+    """The live interceptor, then CLIO's web-search guard when it made no decision.
+
+    The guard (:func:`clio_agent.search.backend.web_search_guard`) answers a
+    ``web_search`` call with a typed ``search_not_configured`` /
+    ``search_backend_starting`` / ``_stopped`` / ``_unavailable`` result naming the fix when ``search.backend``
+    cannot serve; every other call is untouched.
+    """
+
+    from clio_agent.search.backend import web_search_guard  # noqa: PLC0415
+
+    def intercept(name: str, args: Mapping[str, Any]) -> InterceptDecision | None:
+        decision = interceptor(name, args) if interceptor is not None else None
+        if decision is not None:
+            return decision
+        result = web_search_guard(name, args)
+        return InterceptDecision(kind="synthesize", result=result) if result else None
+
+    return intercept
 
 
 def resolve_tool_runtime() -> ToolRuntimeHooks | None:
@@ -41,7 +66,7 @@ def resolve_tool_runtime() -> ToolRuntimeHooks | None:
     return ToolRuntimeHooks(
         permission_gate=getattr(state, "pending_permission_gate", None),
         tool_observer=getattr(state, "pending_tool_observer", None),
-        tool_interceptor=getattr(state, "pending_tool_interceptor", None),
+        tool_interceptor=with_search_guard(getattr(state, "pending_tool_interceptor", None)),
         cancellation_checker=getattr(state, "pending_cancellation_checker", None),
         mcp_app_observer=getattr(state, "pending_mcp_app_observer", None),
         post_tool=getattr(state, "pending_post_tool", None),

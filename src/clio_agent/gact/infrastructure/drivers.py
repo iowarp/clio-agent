@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import importlib.metadata
-import ntpath
-import posixpath
+from collections.abc import Iterable
+from typing import cast
 from uuid import uuid4
 
-from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
     LAUNCHER_PRELUDE,
     claim_command,
     install_command,
     status_command,
     teardown_command,
+)
+from clio_agent.gact.infrastructure.context_sizing.deployment import sized_model_runtime_plan
+from clio_agent.gact.infrastructure.gpu_share import share_launch
+from clio_agent.gact.infrastructure.model_instances import (
+    ROUTER_SERVICE,
+    engine_of,
+    instance_label,
+    is_named_instance,
+    validate_service_id,
+)
+from clio_agent.gact.infrastructure.model_router import (
+    RouterInputs,
+    router_definition,
+    router_plan,
+    router_port,
 )
 from clio_agent.gact.infrastructure.model_runtimes import (
     MODEL_RUNTIME_SERVICES,
@@ -22,6 +36,7 @@ from clio_agent.gact.infrastructure.model_runtimes import (
     service_port,
 )
 from clio_agent.gact.infrastructure.models import (
+    CommandResult,
     CommandSpec,
     InfrastructureTarget,
     ManagedServiceDefinition,
@@ -38,6 +53,22 @@ from clio_agent.gact.infrastructure.monitoring_services import (
 )
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.remote_lifecycle import RemoteLaunch, start_owned_command
+from clio_agent.gact.infrastructure.reuse import Reuse, ReuseCheck, from_scratch
+from clio_agent.gact.infrastructure.searxng_service import (
+    SERVICE_ID as SEARXNG_SERVICE,
+)
+from clio_agent.gact.infrastructure.searxng_service import (
+    searxng_definition,
+    searxng_plan,
+    searxng_port,
+)
+from clio_agent.gact.infrastructure.server_parameters import EngineId
+from clio_agent.gact.infrastructure.web_search_service import (
+    WEB_SEARCH_IMAGE,
+    build_web_search_plan,
+    web_search_definition,
+    web_search_port,
+)
 
 __all__ = [
     "CLIO_AGENT_PORT",
@@ -50,14 +81,28 @@ __all__ = [
     "service_definitions",
 ]
 
-WEB_SEARCH_IMAGE = "ghcr.io/iowarp/clio-web-search:0.3.1"
 RELAY_VERSION = "1.6.8"
 CLIO_AGENT_PORT = 17_800
 # Services whose server listens on the target's loopback only: nothing can
 # reach them at the host's address, so they are always reached through an SSH
 # forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
-# loopback because they have no authentication (see model_runtimes).
-LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES, *MONITORING_SERVICES})
+# loopback because they have no authentication (see model_runtimes). Named
+# instances (``vllm@small``) are matched by their engine (:func:`loopback_only`).
+LOOPBACK_ONLY_SERVICES = frozenset(
+    {
+        "clio_agent",
+        ROUTER_SERVICE,
+        SEARXNG_SERVICE,
+        *MODEL_RUNTIME_SERVICES,
+        *MONITORING_SERVICES,
+    }
+)
+
+
+def loopback_only(service_id: str) -> bool:
+    """Whether ``service_id`` (or the engine of a named instance) listens on loopback only."""
+
+    return engine_of(service_id) in LOOPBACK_ONLY_SERVICES
 
 
 def clio_agent_version() -> str:
@@ -75,8 +120,10 @@ def service_connection_port(
     (``configuration["port"]``); the native Windows llama.cpp on its fixed one.
     """
 
-    if service_id in MODEL_RUNTIME_SERVICES:
+    if engine_of(service_id) in MODEL_RUNTIME_SERVICES:
         return service_port(service_id, configuration or {}, variant_id)
+    if service_id == ROUTER_SERVICE:
+        return router_port(configuration or {})
     if service_id in MONITORING_SERVICES:
         return monitoring_port(service_id, configuration or {})
     if service_id == "clio_agent":
@@ -84,7 +131,11 @@ def service_connection_port(
         if not value.isdigit() or not 1024 <= int(value) <= 65535:
             raise ValueError("Remote CLIO port must be between 1024 and 65535")
         return int(value)
-    return {"web_search": 8089, "clio_agent": CLIO_AGENT_PORT}.get(service_id)
+    if service_id == "web_search":
+        return web_search_port(configuration)
+    if service_id == SEARXNG_SERVICE:
+        return searxng_port(configuration or {})
+    return None
 
 
 def _field(
@@ -104,38 +155,15 @@ def _field(
     )
 
 
-def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
-    """Build service compatibility from inspected host facts."""
+def service_definitions(
+    facts: TargetFacts, instances: Iterable[str] = ()
+) -> list[ManagedServiceDefinition]:
+    """Build service compatibility from inspected host facts.
 
-    docker = facts.docker_available
-    web_search = ManagedServiceDefinition(
-        id="web_search",
-        category="scientific_service",
-        label="CLIO Web Search",
-        description="Private search and document conversion.",
-        recommended_variant="container",
-        variants=[
-            ServiceVariant(
-                id="container",
-                label="Docker",
-                version="0.3.1",
-                install_type="container",
-                artifact=WEB_SEARCH_IMAGE,
-                compatible=docker,
-                reason=(
-                    "Docker is ready."
-                    if docker
-                    else "Docker is installed but unavailable."
-                    if facts.docker_installed
-                    else "Docker is not installed."
-                ),
-            )
-        ],
-        configuration_fields=[
-            _field("contact_email", "Publication metadata email", "scientist@example.org"),
-            _field("task_backend_port", "Document task port", "8090"),
-        ],
-    )
+    ``instances`` are the named model-runtime instances (``vllm@small``) to
+    list beside their engine's default deployment.
+    """
+
     relay = ManagedServiceDefinition(
         id="relay",
         category="remote_access",
@@ -181,12 +209,21 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
             )
         ],
     )
+    named: list[ManagedServiceDefinition] = []
+    for service_id in dict.fromkeys(instances):
+        if is_named_instance(service_id) and engine_of(service_id) in MODEL_RUNTIME_SERVICES:
+            engine = model_runtime_definition(engine_of(service_id), facts)
+            label = instance_label(engine.label, service_id)
+            named.append(engine.model_copy(update={"id": service_id, "label": label}))
     return [
         model_runtime_definition("vllm", facts),
+        *named,
+        router_definition(facts),
         model_runtime_definition("llama_cpp", facts),
         model_runtime_definition("ollama", facts),
         *monitoring_definitions(facts),
-        web_search,
+        web_search_definition(facts),
+        searxng_definition(facts),
         relay,
         clio_agent,
     ]
@@ -201,35 +238,6 @@ def _required(configuration: dict[str, str], key: str) -> str:
     return value
 
 
-def _docker_lifecycle(action: str, container: str) -> DriverPlan:
-    if action == "status":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="docker", args=["inspect", "--format", "{{.State.Status}}", container]
-                ),
-            )
-        )
-    if action == "logs":
-        return DriverPlan(
-            (CommandSpec(program="docker", args=["logs", "--tail", "80", container]),)
-        )
-    if action == "stop":
-        return DriverPlan((CommandSpec(program="docker", args=["stop", container]),))
-    if action == "uninstall":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="docker",
-                    args=["rm", "--force", container],
-                    allowed_exit_codes=[0, 1],
-                    settle_seconds=1.0,
-                ),
-            )
-        )
-    raise ValueError(f"Unsupported lifecycle action {action!r}")
-
-
 def build_driver_plan(
     *,
     service_id: str,
@@ -242,6 +250,7 @@ def build_driver_plan(
     api_key: str | None = None,
     on_conflict: str | None = None,
     resolved_root: str | None = None,
+    router: RouterInputs | None = None,
 ) -> DriverPlan:
     """Compile one allowlisted lifecycle action into commands.
 
@@ -254,22 +263,33 @@ def build_driver_plan(
     it again; a fresh claim asks again every time. ``resolved_root``
     overrides ``target.install_root`` when a prior ``connect`` adopted the
     service under a different root than the target's configured one.
+    ``router`` is what a model-router start routes to (its instances and keys).
     """
 
-    definitions = {row.id: row for row in service_definitions(facts)}
+    validate_service_id(service_id)
+    definitions = {row.id: row for row in service_definitions(facts, [service_id])}
     definition = definitions.get(service_id)
     if definition is None:
         raise ValueError(f"Unknown managed service {service_id!r}")
+    engine = engine_of(service_id)
     if action == "delete_data" and not (
-        (service_id == "vllm" and variant_id.startswith("native-cuda"))
+        (engine == "vllm" and variant_id.startswith("native-cuda"))
         or service_id in MONITORING_SERVICES
+        or service_id in {"web_search", SEARXNG_SERVICE}
+        or service_id == ROUTER_SERVICE
     ):
         raise ValueError("This service does not support separate deletion of retained data")
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
-    if action == "verify" and service_id not in MONITORING_SERVICES:
+    if action == "verify" and service_id not in {
+        *MONITORING_SERVICES,
+        "web_search",
+        SEARXNG_SERVICE,
+    }:
         raise ValueError("This service definition has no setup verification procedure")
+    if service_id == SEARXNG_SERVICE:
+        return searxng_plan(action, configuration, facts, target)
     if service_id in MONITORING_SERVICES:
         return monitoring_plan(
             service_id,
@@ -278,18 +298,32 @@ def build_driver_plan(
             facts,
             target or InfrastructureTarget(id=facts.target_id, label=facts.label, kind="local"),
         )
-    if service_id in MODEL_RUNTIME_SERVICES:
+    if service_id == ROUTER_SERVICE:
+        return router_plan(action, configuration, facts, target, api_key, router)
+    if engine in MODEL_RUNTIME_SERVICES:
         # The model-runtime driver checks its own compatibility, so a missing
-        # container runtime surfaces as the typed RuntimeUnavailableError.
-        return build_model_runtime_plan(
-            service_id=service_id,
+        # container runtime surfaces as the typed RuntimeUnavailableError. The
+        # context is sized around it (context_sizing.deployment), and a vLLM
+        # GPU share is its memory utilization (gpu_share).
+        def model_plan(sized: dict[str, str]) -> DriverPlan:
+            return build_model_runtime_plan(
+                service_id=service_id,
+                action=action,
+                variant_id=variant_id,
+                configuration=sized,
+                facts=facts,
+                target=target,
+                owned=owned,
+                api_key=api_key,
+            )
+
+        return sized_model_runtime_plan(
+            engine=cast(EngineId, engine),
             action=action,
             variant_id=variant_id,
             configuration=configuration,
             facts=facts,
-            target=target,
-            owned=owned,
-            api_key=api_key,
+            build=share_launch(model_plan, engine, variant_id),
         )
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")
@@ -305,107 +339,7 @@ def build_driver_plan(
             configuration=configuration,
         )
 
-    container = "clio-web-search"
-    if action in {"status", "logs", "stop", "uninstall"}:
-        return _docker_lifecycle(action, container)
-    if action == "start":
-        return DriverPlan(
-            (CommandSpec(program="docker", args=["start", container]),),
-            connection_port=8089,
-        )
-
-    commands: list[CommandSpec] = []
-    if action == "reinstall":
-        commands.append(
-            CommandSpec(
-                program="docker",
-                args=["rm", "--force", container],
-                allowed_exit_codes=[0, 1],
-                settle_seconds=1.0,
-            )
-        )
-    commands.append(
-        CommandSpec(program="docker", args=["pull", variant.artifact], timeout_seconds=900)
-    )
-    storage = _container_storage_path(service_id, target, facts)
-    if storage:
-        commands.append(_create_directory(storage, facts))
-    commands.append(
-        _container_run(
-            service_id,
-            variant.artifact,
-            variant_id,
-            configuration,
-            facts,
-            storage,
-        )
-    )
-    return DriverPlan(tuple(commands), connection_port=8089)
-
-
-def _container_run(
-    service_id: str,
-    artifact: str,
-    variant_id: str,
-    configuration: dict[str, str],
-    facts: TargetFacts,
-    storage: str | None,
-) -> CommandSpec:
-    bind = "127.0.0.1" if facts.target_id == "local" else "0.0.0.0"
-    if service_id == "web_search":
-        email = configuration.get("contact_email", "").strip()
-        task_port = configuration.get("task_backend_port", "8090").strip() or "8090"
-        if not task_port.isdigit() or not 1 <= int(task_port) <= 65535:
-            raise ValueError("task_backend_port must be a valid port")
-        args = [
-            "run",
-            "--detach",
-            "--name",
-            "clio-web-search",
-            "--restart",
-            "unless-stopped",
-            "--publish",
-            f"{bind}:8089:8080",
-            "--publish",
-            f"{bind}:{task_port}:6379",
-            "--volume",
-            f"{storage or 'clio-web-search-data'}:/var/lib/clio-web-search",
-            "--env",
-            f"CLIO_WEB_SEARCH_TASK_BACKEND_PUBLIC_PORT={task_port}",
-        ]
-        if email:
-            if "@" not in email or any(character.isspace() for character in email):
-                raise ValueError("contact_email must be a valid email address")
-            args.extend(["--env", f"CLIO_WEB_SEARCH_CONTACT_EMAIL={email}"])
-        args.append(artifact)
-        return CommandSpec(program="docker", args=args)
-    raise ValueError(f"Unsupported container service {service_id!r}")
-
-
-def _container_storage_path(
-    service_id: str,
-    target: InfrastructureTarget | None,
-    facts: TargetFacts,
-) -> str | None:
-    """Return an optional service-owned bind directory under the configured root."""
-
-    if target is None or not target.install_root.strip() or service_id != "web_search":
-        return None
-    root = target.install_root.strip().rstrip("/\\")
-    name = "web-search"
-    path_module = ntpath if facts.os == "windows" else posixpath
-    return path_module.join(root, "services", name)
-
-
-def _create_directory(path: str, facts: TargetFacts) -> CommandSpec:
-    """Create one validated driver-owned directory without invoking a shell on Linux."""
-
-    if facts.os == "windows":
-        # -Command never binds trailing arguments to $args: embed a literal.
-        return powershell.command(
-            f"New-Item -ItemType Directory -Force -Path {powershell.literal(path)} | Out-Null"
-        )
-    return CommandSpec(program="mkdir", args=["-p", "--", path])
+    return build_web_search_plan(action, configuration, facts, target, owned)
 
 
 def _relay_plan(
@@ -450,6 +384,7 @@ def _relay_plan(
                 "--python",
                 "3.13",
                 "--no-config",
+                *(["--reinstall"] if from_scratch(configuration) else []),
                 f"clio-relay=={RELAY_VERSION}",
             ],
             scope="controller",
@@ -493,7 +428,15 @@ def _relay_plan(
             timeout_seconds=900,
         ),
     ]
-    return DriverPlan(tuple(commands))
+    return DriverPlan(tuple(commands), reuse_checks={0: ReuseCheck((), _relay_reused)})
+
+
+def _relay_reused(result: CommandResult) -> Reuse | None:
+    """uv's own verdict that this exact Relay version is already installed."""
+
+    if "is already installed" not in result.stdout + result.stderr:
+        return None
+    return Reuse(kind="package", thing="Relay", identity=f"clio-relay=={RELAY_VERSION}")
 
 
 def _ssh_destination(target: InfrastructureTarget | None) -> str:
@@ -588,7 +531,7 @@ def _clio_agent_plan(
             ).commands
         )
     if action in {"install", "reinstall"}:
-        commands.append(install_command(root, version))
+        commands.append(install_command(root, version, fresh=from_scratch(configuration)))
     launch = RemoteLaunch(
         root,
         port,

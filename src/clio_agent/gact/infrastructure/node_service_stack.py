@@ -22,6 +22,30 @@ OWNER_LABEL = "ai.iowarp.clio.deployment"
 RUNTIME_PARENT = Path("/run/user")
 
 
+def host_network(manifest: dict[str, Any]) -> bool:
+    """Apptainer instances share the host network (no publish, no daemon)."""
+    return manifest.get("container_runtime") == "apptainer"
+
+
+def reuse_helper() -> Any:
+    """The shared reuse helper shipped beside the supervisor (None when absent)."""
+    try:
+        import clio_reuse  # type: ignore[import-not-found]
+    except ImportError:
+        try:
+            from clio_agent.gact.infrastructure import reuse as clio_reuse
+        except ImportError:
+            return None
+    return clio_reuse
+
+
+def apptainer_backend() -> Any:
+    """The shipped Apptainer backend beside this file."""
+    import stack_apptainer  # type: ignore[import-not-found]
+
+    return stack_apptainer
+
+
 def flowcept_environment(root: Path) -> None:
     """Bind the managed collector and probes to their private deployment settings."""
     for name in tuple(os.environ):
@@ -174,8 +198,15 @@ def private_configuration(root: Path, manifest: dict[str, Any]) -> dict[str, str
         # JSON is a valid YAML subset and can be read by Flowcept/OmegaConf.
         (root / "settings.yaml").write_text(json.dumps(settings))
         (root / "settings.yaml").chmod(0o600)
+        # Behind a published port Redis listens on the container's interface;
+        # on the host network it binds loopback at its private port.
+        listen = (
+            f"bind 127.0.0.1\nport {manifest['redis_port']}\n"
+            if host_network(manifest)
+            else "bind 0.0.0.0\n"
+        )
         (root / "redis.conf").write_text(
-            f"bind 0.0.0.0\nprotected-mode yes\nrequirepass {password}\nappendonly yes\ndir /data\n"
+            f"{listen}protected-mode yes\nrequirepass {password}\nappendonly yes\ndir /data\n"
         )
         (root / "redis.conf").chmod(0o600)
     return {
@@ -190,54 +221,65 @@ def private_configuration(root: Path, manifest: dict[str, Any]) -> dict[str, str
 
 def install(root: Path, manifest: dict[str, Any]) -> None:
     """Resolve pinned definition images; leave the service and databases stopped."""
-    private_configuration(root, manifest)
+    private = private_configuration(root, manifest)
+    if host_network(manifest):
+        apptainer_backend().cleanup(root, manifest, private)
+        apptainer_backend().install(root, manifest)
+        environment = manifest.get("source_environment")
+        if environment:
+            checkout_source(root, environment)
+            apptainer_backend().install_environment(root, manifest)
+        return
     # Replacement keeps database/evidence files but cannot retain old container
     # specifications after ports, images or environment have changed.
     cleanup(root, manifest, remove=True)
     build = manifest.get("build")
+    helper = reuse_helper()
+    fresh = bool(helper and helper.fresh_requested())
     if build:
-        engine_capacity(root, 8 * 1024**3)
-        source = root / "source"
-        if source.is_symlink():
-            raise ValueError("Monitoring source directory cannot be a symlink")
-        if not source.exists():
-            subprocess.run(
-                ["git", "clone", "--no-checkout", build["repository"], str(source)],
-                check=True,
-                capture_output=True,
-                timeout=180,
-            )
-        subprocess.run(
-            ["git", "-C", str(source), "checkout", "--detach", build["revision"]],
-            check=True,
-            capture_output=True,
-            timeout=60,
-        )
+        source = checkout_source(root, build)
         dockerfile = source / build["dockerfile"]
         if build.get("base_image"):
             dockerfile = build_definition(root, dockerfile, build)
-        command(
-            root,
-            [
-                "build",
-                *(["--layers=true"] if manifest["container_runtime"] == "podman" else []),
-                "--label",
-                "org.opencontainers.image.revision=" + build["revision"],
-                "--file",
-                str(dockerfile),
-                "--tag",
-                build["image"],
-                str(source),
-            ],
-        )
+        if not built_identity_reused(root, manifest, build, dockerfile, helper, fresh):
+            engine_capacity(root, 8 * 1024**3)
+            command(
+                root,
+                [
+                    "build",
+                    *(["--layers=true"] if manifest["container_runtime"] == "podman" else []),
+                    *(["--no-cache"] if fresh else []),
+                    "--label",
+                    "org.opencontainers.image.revision=" + build["revision"],
+                    "--label",
+                    f"{BUILD_IDENTITY_LABEL}={build_identity(manifest, build, dockerfile)}",
+                    "--file",
+                    str(dockerfile),
+                    "--tag",
+                    build["image"],
+                    str(source),
+                ],
+            )
     images: dict[str, str] = {}
     components = list(manifest["components"])
     if manifest.get("pod_infra_image"):
         components.append({"name": "pod_infra", "image": manifest["pod_infra_image"]})
     for component in components:
         image = component["image"]
+        if fresh and not image.startswith("sha256:"):
+            command(root, ["pull", image])
         try:
             details = json.loads(command(root, ["image", "inspect", image]))[0]
+            if helper and not fresh and "@sha256:" in image:
+                # A digest reference resolves only to an image holding that digest.
+                helper.publish(
+                    helper.Reuse(
+                        kind="container_image",
+                        thing=f"{component['name']} image",
+                        identity=image.rsplit("@", 1)[1],
+                        size_bytes=details.get("Size"),
+                    )
+                )
         except RuntimeError:
             if image.startswith("sha256:"):
                 raise ValueError(
@@ -252,6 +294,71 @@ def install(root: Path, manifest: dict[str, Any]) -> None:
         raise ValueError("Image receipt path cannot be a symlink")
     temporary.write_text(json.dumps(images))
     temporary.replace(root / "images.json")
+
+
+BUILD_IDENTITY_LABEL = "ai.iowarp.clio.build-identity"
+
+
+def build_identity(manifest: dict[str, Any], build: dict[str, Any], dockerfile: Path) -> str:
+    """What a built image is keyed by: revision, recipe, base image and engine."""
+    parts = [
+        build["revision"],
+        hashlib.sha256(dockerfile.read_bytes()).hexdigest(),
+        build.get("base_image", ""),
+        manifest["container_runtime"],
+    ]
+    return "sha256:" + hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
+def built_identity_reused(
+    root: Path,
+    manifest: dict[str, Any],
+    build: dict[str, Any],
+    dockerfile: Path,
+    helper: Any,
+    fresh: bool,
+) -> bool:
+    """Whether the tagged image was built from exactly this identity (then reported)."""
+    if helper is None or fresh:
+        return False
+    try:
+        details = json.loads(command(root, ["image", "inspect", build["image"]]))[0]
+    except (RuntimeError, ValueError, IndexError):
+        return False
+    labels = (details.get("Config") or {}).get("Labels") or {}
+    identity = build_identity(manifest, build, dockerfile)
+    if labels.get(BUILD_IDENTITY_LABEL) != identity:
+        return False
+    helper.publish(
+        helper.Reuse(
+            kind="build",
+            thing=f"built image {build['image']}",
+            identity=identity,
+            size_bytes=details.get("Size"),
+        )
+    )
+    return True
+
+
+def checkout_source(root: Path, build: dict[str, Any]) -> Path:
+    """Check out the pinned service source into the owned ``source`` folder."""
+    source = root / "source"
+    if source.is_symlink():
+        raise ValueError("Monitoring source directory cannot be a symlink")
+    if not source.exists():
+        subprocess.run(
+            ["git", "clone", "--no-checkout", build["repository"], str(source)],
+            check=True,
+            capture_output=True,
+            timeout=180,
+        )
+    subprocess.run(
+        ["git", "-C", str(source), "checkout", "--detach", build["revision"]],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return source
 
 
 def build_definition(root: Path, upstream: Path, build: dict[str, Any]) -> Path:
@@ -273,6 +380,12 @@ def build_definition(root: Path, upstream: Path, build: dict[str, Any]) -> Path:
 
 def start(root: Path, manifest: dict[str, Any]) -> None:
     """Start only owned dependency containers, with data in the chosen host root."""
+    if host_network(manifest):
+        if manifest["service"] == "cmf":
+            for directory in ("static", "env", "labels", "tensorboard-logs"):
+                (root / "data/cmf" / directory).mkdir(parents=True, exist_ok=True)
+        apptainer_backend().start(root, manifest, private_configuration(root, manifest))
+        return
     owner = json.loads((root / "owner.json").read_text())["owner"]
     network = manifest["network"]
     images = json.loads((root / "images.json").read_text())
@@ -368,6 +481,9 @@ def start(root: Path, manifest: dict[str, Any]) -> None:
 def collect_logs(root: Path, manifest: dict[str, Any]) -> None:
     """Refresh bounded logs from existing owned containers without changing their state."""
     private = json.loads((root / "credentials.json").read_text())
+    if host_network(manifest):
+        apptainer_backend().collect_logs(root, manifest, private)
+        return
     for component in manifest["components"]:
         name = component["name"]
         if inspect(root, "container", name) is None:
@@ -381,6 +497,10 @@ def collect_logs(root: Path, manifest: dict[str, Any]) -> None:
 
 def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
     """Stop/remove only matching owned containers, retaining every data directory."""
+    if host_network(manifest):
+        private = json.loads((root / "credentials.json").read_text())
+        apptainer_backend().cleanup(root, manifest, private)
+        return
     collect_logs(root, manifest)
     for component in reversed(manifest["components"]):
         name = component["name"]
@@ -415,6 +535,9 @@ def cleanup(root: Path, manifest: dict[str, Any], *, remove: bool) -> None:
 
 def delete_images(root: Path, manifest: dict[str, Any]) -> None:
     """Delete only this deployment's retained image store, after all runtimes are removed."""
+    if host_network(manifest):
+        apptainer_backend().delete_images(root, manifest)
+        return
     if manifest.get("image_storage") != "service":
         return
     if command(root, ["ps", "-a", "--quiet"]).strip():
@@ -455,6 +578,14 @@ def delete_podman_data(root: Path, manifest: dict[str, Any]) -> None:
             raise RuntimeError("Owned service data remains after rootless deletion")
 
 
+def running(root: Path, manifest: dict[str, Any], component: dict[str, Any]) -> bool:
+    """Runtime-neutral liveness of one owned component."""
+    if host_network(manifest):
+        return bool(apptainer_backend().running(root, component))
+    row = inspect(root, "container", component["name"])
+    return bool(row and row["State"]["Running"])
+
+
 def main() -> None:
     """Run a definition-owned installation or cleanup hook."""
     os.umask(0o077)
@@ -467,9 +598,18 @@ def main() -> None:
         cleanup(root, manifest, remove=action == "uninstall")
     elif action == "logs":
         collect_logs(root, manifest)
+    elif action == "running":
+        # Readiness identity: every owned component is up (exit status only).
+        if not all(running(root, manifest, row) for row in manifest["components"]):
+            sys.exit(1)
     elif action == "delete_data":
         if any(
-            inspect(root, "container", row["name"]) is not None for row in manifest["components"]
+            (
+                apptainer_backend().running(root, row)
+                if host_network(manifest)
+                else inspect(root, "container", row["name"]) is not None
+            )
+            for row in manifest["components"]
         ):
             raise ValueError("Remove the monitoring runtime before deleting retained data")
         delete_podman_data(root, manifest)

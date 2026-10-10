@@ -39,7 +39,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui_actions.record import mark_a2ui_action_consumed
@@ -48,9 +48,6 @@ from clio_agent.gact.context_reference_delivery import record_context_reference_
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
     _prediction_workflow_state,
-)
-from clio_agent.gact.enrichment import (
-    consume_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
@@ -325,12 +322,9 @@ async def _run_turn_in_background(
         # wait/check) into this turn's already-open transcript.
         # Consuming records into clio-core (store writes): on the turn executor, never
         # the event loop (a write there is refused and the turn failed).
-        await _run_turn_setup_off_loop(
-            state,
-            lambda: consume_pending_agent_task_notifications(
-                state.app, state.sid, state.pending_notification_task_ids
-            ),
-        )
+        from clio_agent.gact.task_delivery import commit_staged_completions
+
+        await _run_turn_setup_off_loop(state, lambda: commit_staged_completions(state))
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
         # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
@@ -664,8 +658,9 @@ def _start_background_user_turn(
     user_msg_id: str = "",
     user_created_at: str = "",
     replace_existing_user_message: bool = False,
+    message_role: Literal["user", "system"] = "user",
 ) -> Message:
-    """Stage a user turn and drive it off-thread.
+    """Stage a user or system-event turn and drive it off-thread.
 
     Persists the user message + parts, flips the session to ``running``, publishes
     ``session.status_changed`` + ``message.created``, then schedules
@@ -707,7 +702,7 @@ def _start_background_user_turn(
         # its own turn.
         turn_id=user_msg_id,
         session_id=sid,
-        role="user",
+        role=message_role,
         created_at=user_created_at or _iso_from_epoch(now),
         updated_at=_iso_from_epoch(now),
         parts=user_parts,

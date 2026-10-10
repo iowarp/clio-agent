@@ -206,13 +206,10 @@ class AgentTask:
     # ``notify_pending``; the parent's next turn consumes them (``consumed_at``).
     notify_pending: bool = False
     consumed_at: str = ""
-    # Once-per-task terminal-event guard (#948 S4 adversarial-review fix): set the
-    # first time a waiter emits this task's ``blueprint.delegation.completed``/
-    # ``.failed`` wire event, so a re-wait (partial-timeout re-collect, id repeated
-    # in a batch) never re-emits it (the server owns the de-duplicated stream). The
-    # RESULT ROW is still returned on every wait; only the EVENT is once. Persisted
-    # to the child-session metadata so a boot-rebuilt registry does not re-emit.
+    # Persisted once guard for terminal wire events; explicit result reads remain repeatable.
     delegation_reported: bool = False
+    description: str = ""
+    cancel_requested: bool = False
 
     def __post_init__(self) -> None:
         """Keep lifecycle-backed live state canonical at record construction."""
@@ -558,7 +555,8 @@ def settle_interrupted_agent_tasks(app: "FastAPI") -> int:
     now = datetime.now(timezone.utc).isoformat()
     settled = 0
     for task in reg.snapshot():
-        if task.is_terminal:
+        # Remote owners survive this process; recovery resumes retained identity.
+        if task.is_terminal or task.placement.startswith("relay:"):
             continue
         try:
             updated = reg.transition(
@@ -614,6 +612,7 @@ def seed_agent_task(
     project_to_parent: bool = True,
     spawn_group_id: str = "",
     group_size: int = 0,
+    description: str = "",
 ) -> AgentTask:
     """Mint a child session + its AgentTask projection, persist, register, and
     publish the initial lifecycle event.
@@ -653,6 +652,7 @@ def seed_agent_task(
         fanout_bound=fanout_bound,
         spawn_group_id=spawn_group_id,
         group_size=group_size,
+        description=description,
         handle_id=tid,
         run_label=run_label or f"{agent_ref.get('expert_id', 'agent')} #{run_index + 1}",
         project_to_parent=project_to_parent,
@@ -704,13 +704,10 @@ AGENT_TASK_CONSUMED_EVENT = "agent.task.consumed"
 
 
 def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentTask]:
-    """Terminal, still-``notify_pending`` tasks a parent spawned async and has NOT
-    yet consumed (via wait/injection), oldest-completed first (#948 S6).
+    """Return uncollected asynchronous child results, earliest-completed first.
 
-    This is the observe-later feed the parent's NEXT turn drains: an async child
-    that finished after (or during) the spawning turn sets ``notify_pending`` at
-    completion; it stays pending until one of the three consumers flips it. Ordered
-    by ``updated_at`` ascending so the earliest-finished result is presented first.
+    The existing delivery guard is shared by explicit collection, busy model
+    boundaries and automatic result turns; queries never consume notifications.
     """
 
     reg = app.state.agent_task_registry
@@ -771,9 +768,8 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
 def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -> None:
     """Publish task lifecycle to its visible owners and attended root.
 
-    Internal helpers stay on their child channel. Delegated work also reaches its
-    parent and attended root with ownership metadata. These operational events go
-    directly to the bus because child-session metadata is the durable store.
+    Helpers stay on their child channel; delegated work also reaches its parent
+    and attended root. Child-session metadata remains the durable store.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415 - avoid import cycle
@@ -798,3 +794,7 @@ def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -
                 },
             )
         )
+    if task.is_terminal and task.notify_pending and task.project_to_parent:
+        from clio_agent.gact.task_completion_wake import request_completion_wake
+
+        request_completion_wake(app, task.parent_session_id, task.task_id)

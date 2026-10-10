@@ -26,6 +26,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from clio_agent.platform_paths import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 CRASH_RECORD_NAME = "clio-runtime-crash.json"
@@ -91,9 +93,12 @@ def read_crash_record(state_dir: Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
-def _log_tail(log_path: Path) -> str:
+def _log_tail(log_path: Path, offset: int = 0) -> str:
+    """Last lines this daemon wrote; the log is shared and appended across spawns."""
     try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with log_path.open("rb") as fh:
+            fh.seek(offset)
+            lines = fh.read().decode("utf-8", errors="replace").splitlines()
     except OSError:
         return ""
     return "\n".join(lines[-_LOG_TAIL_LINES:])
@@ -140,11 +145,14 @@ def watch_daemon_process(
     *,
     log_path: Path,
     state_dir: Path,
+    log_offset: int = 0,
 ) -> threading.Thread:
     """Watch the spawned daemon; write a typed crash record on abnormal exit.
 
     Returns the (daemon) watcher thread so tests can join it. A clean exit
     (rc == 0) writes nothing — stopping the daemon is not a crash.
+    ``log_offset`` is the log size at spawn, so the tail never shows an earlier
+    daemon's output as this one's last words (F019).
     """
 
     def _watch() -> None:
@@ -156,12 +164,11 @@ def watch_daemon_process(
             "exit_code": exit_code,
             "exit_code_hex": _exit_code_hex(exit_code),
             "crashed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-            "log_tail": _log_tail(Path(log_path)),
+            "log_tail": _log_tail(Path(log_path), log_offset),
             "log_path": str(log_path),
         }
         try:
-            with crash_record_path(Path(state_dir)).open("w", encoding="utf-8") as fh:
-                json.dump(record, fh, indent=2)
+            atomic_write_text(crash_record_path(Path(state_dir)), json.dumps(record, indent=2))
         except OSError as exc:
             logger.error("could not write daemon crash record: %r", exc)
         logger.error(

@@ -43,6 +43,7 @@ from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
 from clio_agent.gact.question_answer_message import prepare_question_answer
+from clio_agent.gact.routes.response_feedback import register_response_feedback_routes
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -66,6 +67,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
     agent-not-available error) travel through ``deps`` rather than importing back
     into ``gact.app``. The message-delete helpers below are concern-private.
     """
+    register_response_feedback_routes(app)
 
     def _session_not_found(sid: str) -> HTTPException:
         return HTTPException(

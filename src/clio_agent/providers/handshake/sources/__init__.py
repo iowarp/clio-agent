@@ -53,6 +53,7 @@ __all__ = [
     "lookup_models_dev",
     "lookup_models_dev_output",
     "lookup_native_context",
+    "lookup_native_context_with_source",
     "resolve_context",
     "resolve_input_modalities",
     "resolve_task",
@@ -83,12 +84,23 @@ def lookup_native_context(model_id: str) -> int | None:
     want the authoritative published max from a fully offline catalog so the
     ``context_window_below_native`` warning can fire without any I/O at handshake time.
     """
+    return lookup_native_context_with_source(model_id)[0]
+
+
+def lookup_native_context_with_source(model_id: str) -> tuple[int | None, str]:
+    """:func:`lookup_native_context` plus which source answered (``litellm``/``db``/``""``).
+
+    The caller needs the source to tell a published catalog ceiling from a value
+    this install recorded itself (the model-limits DB), which live evidence may
+    later prove stale.
+    """
     if not (model_id or "").strip():
-        return None
+        return None, ""
     ctx = lookup_litellm_context(model_id, allow_fetch=False)
     if ctx is not None:
-        return ctx
-    return db.lookup_context(model_id)
+        return ctx, SOURCE_LITELLM
+    ctx = db.lookup_context(model_id)
+    return (ctx, SOURCE_DB) if ctx is not None else (None, "")
 
 
 def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]:

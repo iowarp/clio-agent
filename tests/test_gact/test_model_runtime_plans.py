@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from clio_schemas.connected_resources import HostStorageLocations
 
@@ -12,7 +17,7 @@ from clio_agent.gact.infrastructure.drivers import (
     service_connection_port,
     service_definitions,
 )
-from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_VERSION, VLLM_VERSION
+from clio_agent.gact.infrastructure.model_runtimes import OLLAMA_IMAGE, VLLM_IMAGES
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     ContainerRuntimeFact,
@@ -129,7 +134,7 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
         facts=_facts("docker"),
     )
 
-    image = f"ollama/ollama:{OLLAMA_VERSION}"
+    image = OLLAMA_IMAGE
     assert (
         CommandSpec(program="docker", args=["pull", image], timeout_seconds=1800) in plan.commands
     )
@@ -160,6 +165,20 @@ def test_ollama_install_pulls_the_pinned_image_and_then_the_model() -> None:
     ]
     assert plan.connection_port == 11434
     assert plan.configuration is not None and plan.configuration["container_runtime"] == "docker"
+
+
+def test_ollama_context_hook_only_without_a_person_value() -> None:
+    def plan_for(configuration: dict[str, str]):
+        return build_driver_plan(
+            service_id="ollama",
+            action="install",
+            variant_id="cpu",
+            configuration={"model": "qwen3:4b", **configuration},
+            facts=_facts("docker"),
+        )
+
+    assert plan_for({}).after_ready_hook is not None
+    assert plan_for({"param.context_length": "8192"}).after_ready_hook is None
 
 
 def test_model_cache_uses_the_target_agent_data_override() -> None:
@@ -271,8 +290,8 @@ def test_vllm_cpu_launch_carries_parallelism_flags_and_cpu_environment() -> None
     )
 
     run = _run(plan.commands, "docker")
-    assert f"vllm/vllm-openai-cpu:v{VLLM_VERSION}" in run.args
-    tail = run.args[run.args.index(f"vllm/vllm-openai-cpu:v{VLLM_VERSION}") + 1 :]
+    assert VLLM_IMAGES["cpu"] in run.args
+    tail = run.args[run.args.index(VLLM_IMAGES["cpu"]) + 1 :]
     assert tail[:6] == [
         "--model",
         "Qwen/Qwen2.5-0.5B-Instruct",
@@ -298,16 +317,21 @@ def test_apptainer_runs_an_instance_on_the_loopback_with_a_clio_owned_image_cach
     )
 
     service_dir = "/home/alice/.local/share/clio-agent/services/ares/clio-ollama"
-    pull = next(spec for spec in plan.commands if spec.program == "env")
-    assert pull.args == [
-        f"APPTAINER_CACHEDIR={service_dir}/tmp/apptainer-cache",
-        f"APPTAINER_TMPDIR={service_dir}/tmp/apptainer-cache",
-        "apptainer",
-        "pull",
-        "--force",
+    pulls = [spec for spec in plan.commands if spec.args[2:3] == ["clio-apptainer-pull"]]
+    assert [spec.allowed_exit_codes for spec in pulls] == [[0, 124], [0]]
+    store = "/home/alice/.local/share/clio-agent/services/ares/apptainer-images"
+    assert pulls[0].args[3:11] == [
+        store,
+        OLLAMA_IMAGE,
+        "sha256-" + OLLAMA_IMAGE.rsplit("@sha256:", 1)[1],
         f"{service_dir}/images/clio-ollama.sif",
-        f"docker://ollama/ollama:{OLLAMA_VERSION}",
+        f"{service_dir}/tmp/apptainer-tmp",
+        "1740",
+        "1",
+        "0",
     ]
+    assert pulls[1].args[9:11] == ["2", "0"]
+    assert all(spec.timeout_seconds <= 1800 for spec in plan.commands)
     run = _run(plan.commands, "apptainer")
     assert run.args[:4] == ["instance", "run", "--cleanenv", "--writable-tmpfs"]
     assert "OLLAMA_HOST=127.0.0.1:21434" in run.args
@@ -365,6 +389,7 @@ def test_catalog_declares_parameters_runtime_choices_and_port() -> None:
         "parallel",
         "ctx_size",
         "threads",
+        "gpu_layers",
     }
     assert {row.id for row in definitions["ollama"].parameters} == {
         "num_parallel",
@@ -398,7 +423,7 @@ def test_uninstall_removes_exactly_the_ledger_running_things_first() -> None:
         OwnedResource(
             kind="directory", ref="/home/alice/.local/share/clio/services/clio-ollama/cache"
         ),
-        OwnedResource(kind="image", ref=f"ollama/ollama:{OLLAMA_VERSION}", runtime="docker"),
+        OwnedResource(kind="image", ref=OLLAMA_IMAGE, runtime="docker"),
         OwnedResource(kind="container", ref="clio-ollama", runtime="docker"),
     ]
     plan = build_driver_plan(
@@ -413,7 +438,7 @@ def test_uninstall_removes_exactly_the_ledger_running_things_first() -> None:
     steps = [(spec.args[1].split(" ")[:3], spec.args[2:]) for spec in plan.commands]
     assert steps == [
         (["docker", "rm", "--force"], ["clio-ollama"]),
-        (["docker", "rmi", '"$0"'], [f"ollama/ollama:{OLLAMA_VERSION}"]),
+        (["docker", "rmi", '"$0"'], [OLLAMA_IMAGE]),
         (["rm", "-rf", "--"], ["/home/alice/.local/share/clio/services/clio-ollama/cache"]),
         (["rmdir", "--", '"$0"'], ["/home/alice/.local/share/clio"]),
     ]
@@ -439,7 +464,7 @@ def test_reinstall_replaces_the_server_but_keeps_the_image_and_models() -> None:
         OwnedResource(
             kind="directory", ref="/home/alice/.local/share/clio/services/ares/clio-ollama/cache"
         ),
-        OwnedResource(kind="image", ref=f"ollama/ollama:{OLLAMA_VERSION}", runtime="docker"),
+        OwnedResource(kind="image", ref=OLLAMA_IMAGE, runtime="docker"),
         OwnedResource(kind="container", ref="clio-ollama", runtime="docker"),
     ]
     plan = build_driver_plan(
@@ -512,3 +537,254 @@ def test_native_windows_llama_passes_server_parameters_to_the_process() -> None:
         "@('-m','C:/models/q.gguf','--host','127.0.0.1','--port','8088','--parallel','3')" in script
     )
     assert "$args" not in script
+
+
+def test_every_container_image_is_digest_pinned() -> None:
+    """A tag can be re-pushed; every managed engine image names a registry digest (F028)."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import ENGINES
+
+    for spec in ENGINES.values():
+        for variant in spec.variants:
+            if not variant.image:
+                continue
+            name, _, digest = variant.image.partition("@sha256:")
+            assert len(digest) == 64, variant.image
+            assert ":" not in name.rsplit("/", 1)[-1], variant.image
+
+
+def _fake_model_server(keyless_status: int, served: str):
+    import http.server
+    import json
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/health":
+                status, body = 200, b""
+            elif self.headers.get("Authorization") == "Bearer launch-key":
+                status, body = 200, json.dumps({"data": [{"id": served}]}).encode()
+            else:
+                status, body = keyless_status, b"{}"
+            self.send_response(status)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: object) -> None:
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not shutil.which("curl"), reason="POSIX + curl")
+@pytest.mark.parametrize(
+    ("keyless_status", "served", "expected"),
+    [
+        (401, "/models/downloaded", "ready"),
+        (403, "/models/downloaded", "ready"),
+        (401, "someone-else", "waiting"),
+        (200, "/models/downloaded", "foreign_endpoint"),
+    ],
+)
+def test_container_readiness_proves_identity(
+    keyless_status: int, served: str, expected: str
+) -> None:
+    """Ready only when the keyless request is refused and the key lists our model (F026)."""
+
+    from clio_agent.gact.infrastructure.model_runtime_readiness import identity_health_command
+
+    server = _fake_model_server(keyless_status, served)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        command = identity_health_command(
+            f"{base}/health",
+            f"{base}/v1/models",
+            "/models/downloaded",
+            "VLLM_API_KEY",
+            "launch-key",
+            False,
+        )
+        assert "launch-key" not in " ".join(command.args)
+        completed = subprocess.run(
+            [command.program, *command.args],
+            input=command.stdin,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    finally:
+        server.shutdown()
+    assert completed.stdout.strip() == expected
+
+
+def test_container_readiness_uses_identity_only_when_keyed() -> None:
+    """A keyed vLLM container proves identity, key on stdin; a keyless one keeps the health probe."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import build_model_runtime_plan
+
+    def readiness(api_key: str | None):
+        plan = build_model_runtime_plan(
+            service_id="vllm",
+            action="start",
+            variant_id="cuda",
+            configuration={"model": "Qwen/Qwen3-0.6B", "container_runtime": "apptainer"},
+            facts=_facts("apptainer"),
+            target=None,
+            api_key=api_key,
+        )
+        assert plan.readiness is not None
+        return plan.readiness.health
+
+    keyed = readiness("launch-key")
+    assert keyed.stdin == "launch-key\n"
+    assert "launch-key" not in " ".join(keyed.args)
+    assert "Qwen/Qwen3-0.6B" in keyed.args
+    assert readiness(None).stdin in (None, "")
+
+
+def _gpu_facts(accelerator: str, *usable: str) -> TargetFacts:
+    return _facts(*usable).model_copy(update={"accelerator": accelerator})
+
+
+@pytest.mark.parametrize(
+    ("accelerator", "offered"),
+    [("nvidia", {"cuda", "vulkan", "cpu"}), ("amd", {"vulkan", "cpu"}), ("none", {"cpu"})],
+)
+def test_llama_cpp_gpu_variants_follow_the_host_gpu(accelerator: str, offered: set[str]) -> None:
+    """CUDA needs NVIDIA; Vulkan runs on NVIDIA or AMD (it is not AMD-only)."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import model_runtime_definition
+
+    definition = model_runtime_definition("llama_cpp", _gpu_facts(accelerator, "apptainer"))
+    compatible = {v.id for v in definition.variants if v.compatible}
+    assert compatible & {"cuda", "vulkan", "cpu"} == offered
+    for variant in definition.variants:
+        if variant.id == "vulkan" and not variant.compatible:
+            assert variant.reason == "Vulkan requires an NVIDIA or AMD GPU."
+
+
+@pytest.mark.parametrize("runtime", ["apptainer", "docker"])
+def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtime: str) -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="cuda",
+        configuration={"model_path": "/models/q.gguf", "container_runtime": runtime},
+        facts=_gpu_facts("nvidia", runtime),
+    )
+    run = _run(plan.commands, runtime)
+    assert ("--nv" if runtime == "apptainer" else "--gpus") in run.args
+    assert run.args[run.args.index("--n-gpu-layers") + 1] == "999"
+    assert any(LLAMA_DIGEST in arg for arg in run.args) or runtime == "apptainer"
+    # Served under the host path, not the mount point (F035).
+    assert run.args[run.args.index("--alias") + 1] == "/models/q.gguf"
+    # The image's libraries resolve from its WORKDIR, which Apptainer does not
+    # apply (F033); Docker/Podman take it from the image.
+    library_path = "LD_LIBRARY_PATH=/app:/usr/local/cuda/lib64"
+    assert (library_path in run.args) == (runtime == "apptainer")
+
+
+@pytest.mark.parametrize(
+    ("configuration", "served"),
+    [
+        ({"model_path": "/models/q.gguf"}, "/models/q.gguf"),
+        ({"hf_model": "Qwen/Qwen3-4B-GGUF:Q4_K_M"}, "Qwen/Qwen3-4B-GGUF:Q4_K_M"),
+    ],
+)
+def test_llama_cpp_identity_expects_the_served_model(
+    configuration: dict[str, str], served: str
+) -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="cuda",
+        configuration={**configuration, "container_runtime": "apptainer"},
+        facts=_gpu_facts("nvidia", "apptainer"),
+        target=None,
+        api_key="launch-key",
+    )
+    assert plan.readiness is not None
+    assert served in plan.readiness.health.args
+
+
+def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> None:
+    plan = build_driver_plan(
+        service_id="llama_cpp",
+        action="install",
+        variant_id="vulkan",
+        configuration={
+            "model_path": "/models/q.gguf",
+            "container_runtime": "docker",
+            "param.gpu_layers": "20",
+        },
+        facts=_gpu_facts("nvidia", "docker"),
+    )
+    run = _run(plan.commands, "docker")
+    assert "--gpus" in run.args and "/dev/dri" not in run.args
+    assert "NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics" in run.args
+    assert run.args.count("--n-gpu-layers") == 1
+    assert run.args[run.args.index("--n-gpu-layers") + 1] == "20"
+
+
+LLAMA_DIGEST = "sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe"
+
+
+def test_windows_llama_archive_is_sha256_verified_before_unpacking() -> None:
+    """The native Windows llama.cpp zip is checked against the pinned digest (F027)."""
+
+    from clio_agent.gact.infrastructure.llama_native_windows import (
+        LLAMA_WINDOWS_CPU_SHA256,
+        native_windows_llama_plan,
+    )
+    from clio_agent.gact.infrastructure.store import InfrastructureStore  # noqa: PLC0415
+
+    plan = native_windows_llama_plan(
+        "install", "C:/models/q.gguf", InfrastructureStore(None).target("local")
+    )
+    script = " ".join(plan.commands[0].args)
+    assert LLAMA_WINDOWS_CPU_SHA256 in script
+    assert script.index("Get-FileHash") < script.index("Expand-Archive")
+    assert len(LLAMA_WINDOWS_CPU_SHA256) == 64
+
+
+def test_container_vllm_serves_a_downloaded_model_under_its_path_with_family_parsers(
+    tmp_path: Path,
+) -> None:
+    """F031: the bound model id is the selected path, and tool/reasoning parsers are on."""
+
+    from clio_agent.gact.infrastructure.model_runtimes import build_model_runtime_plan
+
+    model = tmp_path / "Qwen--Qwen3-4B"
+    model.mkdir()
+    (model / "config.json").write_text('{"model_type": "qwen3"}')
+
+    def plan(api_key: str | None = None, **extra: str):
+        return build_model_runtime_plan(
+            service_id="vllm",
+            action="install",
+            variant_id="cuda",
+            configuration={"model": str(model), "container_runtime": "apptainer", **extra},
+            facts=_gpu_facts("nvidia", "apptainer"),
+            target=None,
+            api_key=api_key,
+        )
+
+    def args(**extra: str) -> list[str]:
+        return _run(plan(**extra).commands, "apptainer").args
+
+    keyed = plan("launch-key").readiness
+    assert keyed is not None
+    assert str(model) in keyed.health.args  # identity expects the served path
+
+    launched = args()
+    assert launched[launched.index("--model") + 1] == "/models/downloaded"
+    assert launched[launched.index("--served-model-name") + 1] == str(model)
+    assert launched[launched.index("--tool-call-parser") + 1] == "hermes"
+    assert "--enable-auto-tool-choice" in launched
+    assert launched[launched.index("--reasoning-parser") + 1] == "qwen3"
+    # A user override is kept.
+    overridden = args(**{"param.tool_call_parser": "off"})
+    assert "--tool-call-parser" not in overridden
+    assert "--enable-auto-tool-choice" not in overridden

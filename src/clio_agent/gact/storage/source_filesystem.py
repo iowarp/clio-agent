@@ -22,6 +22,7 @@ from clio_agent.gact.storage.linked import link_folder, linked_adapter, linked_f
 from clio_agent.gact.storage.models import FileEntry, Manifest, SourceRecord
 from clio_agent.gact.storage.references import source_resource
 from clio_agent.gact.storage.service import StorageService
+from clio_agent.platform_paths import win_extended_path
 
 MAX_WRITE = 512 * 1024 * 1024
 
@@ -215,16 +216,16 @@ class SourceFileSystem(AbstractFileSystem):
                 try:
                     if content is not None:
                         owner = store.root / self.source_id
-                        owner.mkdir(exist_ok=True)
+                        os.makedirs(win_extended_path(owner), exist_ok=True)
                         stage = owner / ("write-" + operation.id)
-                        with stage.open("xb") as writer:
+                        with open(win_extended_path(stage), "xb") as writer:
                             total = 0
                             while chunk := content.read(1024 * 1024):
                                 total += len(chunk)
                                 if total > MAX_WRITE:
                                     raise ValueError("This file exceeds the linked-write limit")
                                 writer.write(chunk)
-                        os.chmod(stage, 0o400)
+                        os.chmod(win_extended_path(stage), 0o400)
                     self._record(write=True)
                     adapter.apply(path, stage, current.revision if current else None)
                     store.update_operation(operation.id, state="completed", applied_paths=[path])
@@ -232,9 +233,9 @@ class SourceFileSystem(AbstractFileSystem):
                     store.update_operation(operation.id, state="failed", error=str(exc))
                     raise
                 finally:
-                    if stage is not None and stage.exists():
-                        os.chmod(stage, 0o600)
-                        stage.unlink()
+                    if stage is not None and os.path.exists(win_extended_path(stage)):
+                        os.chmod(win_extended_path(stage), 0o600)
+                        os.unlink(win_extended_path(stage))
             # A new index never overwrites the previous immutable index or preimage.
             updated = link_folder(self.service, record)
             self.revision = updated.linked_manifest_id or ""

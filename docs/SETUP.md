@@ -18,7 +18,8 @@ client. This guide covers the common case: both together.
 ## Prerequisites
 
 - Release install: [`uv`](https://github.com/astral-sh/uv) or Python
-  3.13 with `pip`.
+  3.13 with `pip` for current published releases. This checkout's source installer
+  provisions Python 3.14 through `uv`.
 - Source-build install: `git`, `uv`, and Go 1.26+ when you set
   `CLIO_REF` or `GACT_REF`.
 - An LM endpoint. Any of these:

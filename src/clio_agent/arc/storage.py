@@ -37,7 +37,7 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import frame, unframe
+from clio_agent.arc.blob_frame import BlobNameDecodeError, frame, unframe
 from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
@@ -105,6 +105,7 @@ ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
     "variants",
+    "response_feedback",  # immutable user ratings; never added to model context
     "segments",  # live context plane: one record per (session_id, scope)
 )
 
@@ -226,6 +227,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     state_dir = runtime_state_dir()
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
+    log_offset = log_path.stat().st_size if log_path.exists() else 0
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
 
     def _spawn(*, breakaway: bool) -> "subprocess.Popen[bytes]":
@@ -260,7 +262,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the
     # watcher writes a typed crash record that the liveness gate folds into its
     # ClioCoreRuntimeLostError, so a crash is never misread as an env flake.
-    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir)
+    watch_daemon_process(proc, log_path=log_path, state_dir=state_dir, log_offset=log_offset)
     proc_pid = proc.pid
     ctime = _proc_create_time(proc_pid)
     _daemon_pidfile().write_text(
@@ -534,8 +536,8 @@ class ClioCoreStore:
             config_path = _ensure_runtime_daemon(iowarp_core, config_path, log_level)
             clio_core_attach.export_client_config(config_path)
 
-            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
-            # wired in (unsafe, see clio_core_config's docstring) -- warn loudly.
+            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search;
+            # diagnose configs that do not compose it, including our default.
             warn_if_search_indexer_absent(config_path)
             # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
             # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,
@@ -674,8 +676,15 @@ class ClioCoreStore:
         # scan() is a generator: the decorator would guard only building it, not
         # iterating. Guard the ONE listing RPC inline; per-blob reads use guarded get().
         self._live()
+
+        def _list() -> list[str]:
+            try:  # the binding decodes every name; one corrupt name fails the listing
+                return list(self._cte.Tag(self.tag(kind)).GetContainedBlobs())
+            except UnicodeDecodeError as exc:
+                raise BlobNameDecodeError(self.tag(kind), exc) from exc
+
         blobs = call_with_liveness(
-            lambda: list(self._cte.Tag(self.tag(kind)).GetContainedBlobs()),
+            _list,
             op_name="scan",
             port=self._gate.port,
             reconnect=self._reconnect,

@@ -26,20 +26,21 @@ handed over through the environment (:mod:`~clio_agent.gact.infrastructure.secre
 
 from __future__ import annotations
 
+import dataclasses
 import ntpath
 import posixpath
 from dataclasses import dataclass, field
 
-from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.container_runtime import (
     ContainerLaunch,
     RuntimeUnavailableError,
     exec_command,
     image_present_command,
+    image_reuse_check,
     logs_command,
     negotiate_runtime,
     parse_runtime_name,
-    pull_command,
+    pull_commands,
     remove_container_command,
     run_command,
     start_command,
@@ -47,11 +48,20 @@ from clio_agent.gact.infrastructure.container_runtime import (
     stop_command,
     usable_runtimes,
 )
+from clio_agent.gact.infrastructure.context_sizing.deployment import (
+    context_parameters,
+    sizing_request,
+)
 from clio_agent.gact.infrastructure.llama_native_windows import (
     LLAMA_BUILD,
     LLAMA_WINDOWS_CPU_ARCHIVE,
     NATIVE_PORT,
     native_windows_llama_plan,
+)
+from clio_agent.gact.infrastructure.model_instances import engine_of, instance_container_name
+from clio_agent.gact.infrastructure.model_runtime_readiness import (
+    health_command,
+    identity_health_command,
 )
 from clio_agent.gact.infrastructure.models import (
     RUNTIME_LABELS,
@@ -69,7 +79,9 @@ from clio_agent.gact.infrastructure.native_vllm import (
     NATIVE_VARIANTS,
     native_variants,
     native_vllm_plan,
+    served_model,
 )
+from clio_agent.gact.infrastructure.ollama_context_apply import ollama_context_hook
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.resource_ledger import (
     StepRecorder,
@@ -79,19 +91,40 @@ from clio_agent.gact.infrastructure.resource_ledger import (
     image_recorder,
     removal_commands,
     remove_container,
+    shared_image_recorder,
 )
+from clio_agent.gact.infrastructure.reuse import from_scratch
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
-from clio_agent.gact.infrastructure.server_parameters import (
-    EngineId,
-    compile_parameters,
-    engine_parameters,
-)
+from clio_agent.gact.infrastructure.server_parameter_defaults import parser_defaults
+from clio_agent.gact.infrastructure.server_parameters import EngineId, compile_parameters
+from clio_agent.gact.infrastructure.service_paths import service_directory
 
 VLLM_VERSION = "0.28.0"
 OLLAMA_VERSION = "0.34.4"
-LLAMA_CPU_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-{LLAMA_BUILD}"
-LLAMA_VULKAN_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-vulkan-{LLAMA_BUILD}"
+# Images are pinned by registry digest, not by tag: a tag can be re-pushed. The
+# tag each digest was resolved from is kept beside it for readers; container
+# runtimes reject a reference that carries both a tag and a digest.
+VLLM_IMAGES = {
+    # vllm/vllm-openai*:v0.28.0, resolved 2026-10-08.
+    "cuda": "vllm/vllm-openai@sha256:61fc8a896b0a4fbbbdc063bc4b0dbc25ce98e02b5050c24aeb7830ac02039b14",
+    "rocm": "vllm/vllm-openai-rocm@sha256:e0a3b2bd3fe7ec563916c3a5d949898d133458c18d6b2f460c906885cfb32032",
+    "cpu": "vllm/vllm-openai-cpu@sha256:197354e6475e638eb5ccca09beb078488046a82de0e204e7429bf1a804df9647",
+}
+# ghcr.io/ggml-org/llama.cpp:server[-vulkan]-b11206, resolved 2026-10-08.
+LLAMA_CPU_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00bd6c289c590e576948cb3639b8195e4d3e6dd6ba1d761f0e2b871fcd4df24f"
+LLAMA_VULKAN_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:00810eb17c7b816f4e4b16ac9467ed177f125ff3d72abc61e4a8b717f4430bdc"
+# ghcr.io/ggml-org/llama.cpp:server-cuda-b11206, resolved 2026-10-08.
+LLAMA_CUDA_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:3e7673cce183a55f97a1bc3c80817f3c61452483c13bc088a6766388af4775fe"
+#: Offload every layer on a GPU variant unless the person sets gpu_layers.
+LLAMA_ALL_LAYERS = "999"
+# ollama/ollama:0.34.4 and :0.34.4-rocm, resolved 2026-10-08.
+OLLAMA_IMAGE = (
+    "ollama/ollama@sha256:8262851b2846b87c649eddf3e76beb270c52f4d1bc94559f47efde16b0841551"
+)
+OLLAMA_ROCM_IMAGE = (
+    "ollama/ollama@sha256:f1f51e73691bd77e38a30b61f745f8d074fc664967ba8e209989091bd73b5adc"
+)
 MODEL_RUNTIME_SERVICES = frozenset({"vllm", "llama_cpp", "ollama"})
 RUNTIME_FIELD = "container_runtime"
 PORT_FIELD = "port"
@@ -141,15 +174,9 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-vllm",
         health_path="/health",
         variants=(
-            VariantSpec(
-                "cuda", "NVIDIA CUDA", VLLM_VERSION, f"vllm/vllm-openai:v{VLLM_VERSION}", "nvidia"
-            ),
-            VariantSpec(
-                "rocm", "AMD ROCm", VLLM_VERSION, f"vllm/vllm-openai-rocm:v{VLLM_VERSION}", "amd"
-            ),
-            VariantSpec(
-                "cpu", "CPU", VLLM_VERSION, f"vllm/vllm-openai-cpu:v{VLLM_VERSION}", x86_only=True
-            ),
+            VariantSpec("cuda", "NVIDIA CUDA", VLLM_VERSION, VLLM_IMAGES["cuda"], "nvidia"),
+            VariantSpec("rocm", "AMD ROCm", VLLM_VERSION, VLLM_IMAGES["rocm"], "amd"),
+            VariantSpec("cpu", "CPU", VLLM_VERSION, VLLM_IMAGES["cpu"], x86_only=True),
         ),
         fields=(_field("model", "Model", "Qwen/Qwen3-8B", required=True),),
     ),
@@ -161,6 +188,7 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-llama-cpp",
         health_path="/health",
         variants=(
+            VariantSpec("cuda", "NVIDIA CUDA", LLAMA_BUILD, LLAMA_CUDA_IMAGE, "nvidia"),
             VariantSpec("vulkan", "Vulkan", LLAMA_BUILD, LLAMA_VULKAN_IMAGE, "dri"),
             VariantSpec("cpu", "CPU", LLAMA_BUILD, LLAMA_CPU_IMAGE, linux_only=False),
         ),
@@ -177,17 +205,21 @@ ENGINES: dict[str, EngineSpec] = {
         container_name="clio-ollama",
         health_path="/api/version",
         variants=(
-            VariantSpec("cpu", "CPU", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}"),
-            VariantSpec(
-                "cuda", "NVIDIA CUDA", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}", "nvidia"
-            ),
-            VariantSpec(
-                "rocm", "AMD ROCm", OLLAMA_VERSION, f"ollama/ollama:{OLLAMA_VERSION}-rocm", "amd"
-            ),
+            VariantSpec("cpu", "CPU", OLLAMA_VERSION, OLLAMA_IMAGE),
+            VariantSpec("cuda", "NVIDIA CUDA", OLLAMA_VERSION, OLLAMA_IMAGE, "nvidia"),
+            VariantSpec("rocm", "AMD ROCm", OLLAMA_VERSION, OLLAMA_ROCM_IMAGE, "amd"),
         ),
         fields=(_field("model", "Model", "qwen2.5:0.5b", required=True),),
     ),
 }
+
+
+def engine_spec(service_id: str) -> EngineSpec:
+    """The engine spec of a deployment, named for its instance (``vllm@a`` -> ``clio-vllm-a``)."""
+
+    spec = ENGINES[engine_of(service_id)]
+    name = instance_container_name(spec.container_name, service_id)
+    return spec if name == spec.container_name else dataclasses.replace(spec, container_name=name)
 
 
 def service_port(service_id: str, configuration: dict[str, str], variant_id: str = "") -> int:
@@ -197,10 +229,16 @@ def service_port(service_id: str, configuration: dict[str, str], variant_id: str
         return NATIVE_PORT
     raw = configuration.get(PORT_FIELD, "").strip()
     if not raw:
-        return ENGINES[service_id].port
+        return engine_spec(service_id).port
     if not raw.isdigit() or not 1024 <= int(raw) <= 65535:
         raise ValueError("port must be a number from 1024 to 65535")
     return int(raw)
+
+
+#: GPUs with a Vulkan driver CLIO can hand to a container: NVIDIA ships one in
+#: its driver (exposed with --nv / NVIDIA_DRIVER_CAPABILITIES=graphics), AMD
+#: through /dev/dri (Mesa RADV).
+VULKAN_ACCELERATORS = frozenset({"nvidia", "amd"})
 
 
 def _variant_compatible(variant: VariantSpec, facts: TargetFacts) -> tuple[bool, str]:
@@ -208,7 +246,9 @@ def _variant_compatible(variant: VariantSpec, facts: TargetFacts) -> tuple[bool,
         return False, f"{variant.label} requires a Linux target."
     if variant.x86_only and facts.arch != "x86_64":
         return False, f"{variant.label} requires an x86-64 target."
-    wanted = {"nvidia": "nvidia", "amd": "amd", "dri": "amd"}.get(variant.accelerator)
+    if variant.accelerator == "dri" and facts.accelerator not in VULKAN_ACCELERATORS:
+        return False, f"{variant.label} requires an NVIDIA or AMD GPU."
+    wanted = {"nvidia": "nvidia", "amd": "amd"}.get(variant.accelerator)
     if wanted and facts.accelerator != wanted:
         return (
             False,
@@ -314,66 +354,8 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
         recommended_variant=recommended,
         variants=variants,
         configuration_fields=fields,
-        parameters=engine_parameters(spec.engine),
+        parameters=context_parameters(spec.engine, facts),
         supports_api_key=supports_api_key(service_id),
-    )
-
-
-def _service_dir(spec: EngineSpec, facts: TargetFacts, target: InfrastructureTarget | None) -> str:
-    windows = facts.os == "windows"
-    module = ntpath if windows else posixpath
-    if target and any(target.storage.model_dump().values()):
-        from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
-
-        locations = resolved_locations(target, facts)
-        return module.join(
-            locations.service_data, facts.hostname or facts.target_id, spec.container_name
-        )
-    root = (target.install_root.strip() if target else "").rstrip("/\\")
-    if not root:
-        root = facts.agent_data_root
-    if not root:
-        if not facts.home:
-            raise ValueError(
-                "Could not determine the target's home directory; set an install location for this host."
-            )
-        root = (
-            module.join(facts.home, "AppData", "Local", "clio-agent", "data")
-            if windows
-            else module.join(facts.home, "Library", "Application Support", "clio-agent", "data")
-            if facts.os == "macos"
-            else module.join(facts.home, ".local", "share", "clio-agent")
-        )
-    if not module.isabs(root):
-        raise ValueError("The target's Agent data directory must be absolute")
-    # Cluster nodes share one home: without the host in the path, a login node
-    # and a compute node deploying the same engine would share one cache and
-    # one SIF, and uninstalling on one would delete the other's.
-    host = facts.hostname or facts.target_id
-    return module.join(root, "services", host, spec.container_name)
-
-
-def _health_command(url: str, windows: bool) -> CommandSpec:
-    if windows:
-        return powershell.command(
-            f"try {{ Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 {powershell.literal(url)} "
-            "| Out-Null; 'ready' } catch { 'waiting' }",
-            timeout_seconds=30,
-        )
-    # A host with neither curl nor wget can never answer "ready": say so with a
-    # typed line instead of waiting forever.
-    return CommandSpec(
-        program="sh",
-        args=[
-            "-c",
-            "if command -v curl >/dev/null 2>&1; then "
-            'curl -fsS -m 5 -o /dev/null --noproxy "*" "$0" 2>/dev/null && echo ready || echo waiting; '
-            "elif command -v wget >/dev/null 2>&1; then "
-            'wget -q -T 5 -O /dev/null "$0" 2>/dev/null && echo ready || echo waiting; '
-            "else echo no_http_client; fi",
-            url,
-        ],
-        timeout_seconds=30,
     )
 
 
@@ -386,11 +368,11 @@ def deployment_storage_configuration(
 ) -> dict[str, str]:
     """Freeze an existing model deployment's paths before changing host defaults.
 
-    Legacy receipts recorded created directories but no resolved configuration.
-    Prefer their actual cache directory, then resolve with the old host settings.
+    Legacy receipts recorded created directories but no resolved configuration. Prefer their actual
+    cache directory, then resolve with the old host settings.
     """
     module = ntpath if facts.os == "windows" else posixpath
-    spec = ENGINES[service_id]
+    spec = engine_spec(service_id)
     caches = [
         row.ref
         for row in owned
@@ -403,7 +385,9 @@ def deployment_storage_configuration(
             f"Multiple model caches recorded for {service_id}; inspect its storage first"
         )
     service_dir = configuration.get("storage.service_directory") or (
-        module.dirname(caches[0]) if caches else _service_dir(spec, facts, target)
+        module.dirname(caches[0])
+        if caches
+        else service_directory(spec.container_name, facts, target)
     )
     return {
         **configuration,
@@ -438,7 +422,16 @@ def _launch(
     cache_dir: str,
     windows: bool,
     keyed: bool = False,
+    host_accelerator: str = "none",
 ) -> ContainerLaunch:
+    module = ntpath if windows else posixpath
+    if spec.engine == "vllm" and module.isabs(configuration.get("model", "")):
+        # Same family-based tool/reasoning parser defaults as native vLLM
+        # (user overrides kept), read from the downloaded model's config.
+        configuration = {
+            **configuration,
+            **parser_defaults(configuration["model"], configuration),
+        }
     compiled = compile_parameters(spec.engine, variant.id, configuration)
     if keyed and spec.engine not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
@@ -449,12 +442,17 @@ def _launch(
     mounts: list[tuple[str, str]] = []
     if spec.engine == "vllm":
         model = _required(configuration, "model")
-        if (ntpath if windows else posixpath).isabs(model):
+        served: list[str] = []
+        if module.isabs(model):
             _check_value("model_path", model)
             mounts.append((model, "/models/downloaded"))
+            if "--served-model-name" not in compiled.flags:
+                # Serve under the host path, as native vLLM does, so the id
+                # CLIO discovers and binds is the model the user selected.
+                served = ["--served-model-name", model]
             model = "/models/downloaded"
         env.append(("HF_HOME", "/cache/huggingface"))
-        args = ["--model", model, "--host", host, "--port", str(port), *compiled.flags]
+        args = ["--model", model, *served, "--host", host, "--port", str(port), *compiled.flags]
     elif spec.engine == "llama_cpp":
         model_path = configuration.get("model_path", "").strip()
         hf_model = configuration.get("hf_model", "").strip()
@@ -463,18 +461,35 @@ def _launch(
                 "Provide either a GGUF model path on the target or a Hugging Face GGUF model"
             )
         env.append(("LLAMA_CACHE", "/cache/llama.cpp"))
+        if runtime == "apptainer":
+            # The images find /app/*.so through their WORKDIR, which Apptainer
+            # does not apply (`instance run` has no --pwd); keep the image's
+            # own CUDA path, which an explicit value would replace (F033).
+            env.append(("LD_LIBRARY_PATH", "/app:/usr/local/cuda/lib64"))
         if model_path:
             _check_value("model_path", model_path)
             mounts.append((model_path, "/models/model.gguf"))
             source = ["-m", "/models/model.gguf"]
+            if "--alias" not in compiled.flags:
+                # Serve under the host path, not the mount point, so the id
+                # CLIO binds names the selected model and its family (F035).
+                source.extend(["--alias", model_path])
         else:
             _check_value("hf_model", hf_model)
             source = ["-hf", hf_model]
         args = [*source, "--host", host, "--port", str(port), *compiled.flags]
+        if variant.accelerator != "none" and "--n-gpu-layers" not in compiled.flags:
+            args.extend(["--n-gpu-layers", LLAMA_ALL_LAYERS])
     else:
         env.extend([("OLLAMA_HOST", f"{host}:{port}"), ("OLLAMA_MODELS", "/cache/models")])
         args = ["serve"]
     env.extend(compiled.env)
+    accelerator = variant.accelerator
+    if accelerator == "dri" and host_accelerator == "nvidia":
+        # Vulkan on NVIDIA: the driver's ICD comes with the GPU passthrough
+        # (--gpus all / --nv), plus the graphics capability on Docker/Podman.
+        accelerator = "nvidia"
+        env.append(("NVIDIA_DRIVER_CAPABILITIES", "compute,utility,graphics"))
     return ContainerLaunch(
         name=spec.container_name,
         image=variant.image,
@@ -483,11 +498,20 @@ def _launch(
         args=tuple(args),
         env=tuple(env),
         cache_dir=cache_dir,
-        accelerator=variant.accelerator,
+        accelerator=accelerator,
         mounts=tuple(mounts),
         # Docker/Podman take the key by name; Apptainer reads APPTAINERENV_*.
         secret_env=(KEY_VARIABLES[spec.engine],) if keyed and runtime != "apptainer" else (),
     )
+
+
+def _llama_served_id(args: tuple[str, ...]) -> str:
+    """The model id llama-server lists: its ``--alias``, else the ``-hf`` repo spec."""
+
+    for flag in ("--alias", "-hf"):
+        if flag in args and args.index(flag) + 1 < len(args):
+            return args[args.index(flag) + 1]
+    return ""
 
 
 def _check_value(key: str, value: str) -> None:
@@ -537,10 +561,10 @@ def build_model_runtime_plan(
             :class:`RuntimeUnavailableError`) when no usable runtime fits.
     """
 
-    spec = ENGINES[service_id]
-    if service_id == "vllm" and variant_id in NATIVE_VARIANTS:
-        directory = configuration.get("storage.service_directory") or _service_dir(
-            spec, facts, target
+    spec = engine_spec(service_id)
+    if spec.engine == "vllm" and variant_id in NATIVE_VARIANTS:
+        directory = configuration.get("storage.service_directory") or service_directory(
+            spec.container_name, facts, target
         )
         return native_vllm_plan(
             action,
@@ -551,9 +575,9 @@ def build_model_runtime_plan(
             service_port(service_id, configuration),
             api_key,
         )
-    if api_key and service_id not in KEY_VARIABLES:
+    if api_key and spec.engine not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
-    if service_id == "llama_cpp" and variant_id == "native-windows-cpu":
+    if spec.engine == "llama_cpp" and variant_id == "native-windows-cpu":
         compiled = compile_parameters("llama_cpp", "cpu", configuration)
         return native_windows_llama_plan(
             action, configuration.get("model_path", "").strip(), target, compiled.flags, api_key
@@ -589,12 +613,15 @@ def build_model_runtime_plan(
         return DriverPlan(
             (stop_command(runtime, name),), connection_port=port, configuration=resolved
         )
-    service_dir = configuration.get("storage.service_directory") or _service_dir(
-        spec, facts, target
+    service_dir = configuration.get("storage.service_directory") or service_directory(
+        spec.container_name, facts, target
     )
     module = ntpath if windows else posixpath
     cache_dir = configuration.get("storage.model_cache") or module.join(service_dir, "cache")
     temporary_dir = configuration.get("storage.temporary") or module.join(service_dir, "tmp")
+    # Pulled images outlive one deployment's failure (they are a cache of a
+    # pinned digest, not a half-built deployment) and are shared across hosts.
+    image_store = module.join(module.dirname(service_dir.rstrip("/\\")), "apptainer-images")
     if target and any(target.storage.model_dump().values()):
         from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
 
@@ -605,6 +632,8 @@ def build_model_runtime_plan(
         temporary_dir = configuration.get("storage.temporary") or module.join(
             locations.temporary, facts.hostname or facts.target_id, spec.container_name
         )
+        image_store = module.join(locations.service_data, "apptainer-images")
+    image_store = configuration.get("storage.image_store") or image_store
     resolved.update(
         {
             "storage.service_directory": service_dir,
@@ -614,7 +643,15 @@ def build_model_runtime_plan(
     )
     images_dir = module.join(service_dir, "images")
     launch = _launch(
-        spec, variant, runtime, resolved, port, cache_dir, windows, keyed=bool(api_key)
+        spec,
+        variant,
+        runtime,
+        resolved,
+        port,
+        cache_dir,
+        windows,
+        keyed=bool(api_key),
+        host_accelerator=facts.accelerator,
     )
 
     def keyed(command: CommandSpec) -> CommandSpec:
@@ -625,13 +662,30 @@ def build_model_runtime_plan(
             variable = f"APPTAINERENV_{variable}"
         return with_secret_env(command, variable, api_key, windows=windows)
 
+    health_url = f"http://127.0.0.1:{port}{spec.health_path}"
     readiness = Readiness(
-        health=_health_command(f"http://127.0.0.1:{port}{spec.health_path}", windows),
+        # Ollama has no API key upstream: its identity is the owned container
+        # alive plus /api/version answering.
+        health=(
+            identity_health_command(
+                health_url,
+                f"http://127.0.0.1:{port}/v1/models",
+                served_model(launch.args[1], launch.args)
+                if spec.engine == "vllm"
+                else _llama_served_id(launch.args),
+                KEY_VARIABLES[spec.engine],
+                api_key,
+                windows,
+            )
+            if api_key
+            else health_command(health_url, windows)
+        ),
         alive=status_command(runtime, name),
         logs=logs_command(runtime, name, lines=40),
         label=spec.label,
     )
     after_ready: tuple[CommandSpec, ...] = ()
+    context_hook = None
     if spec.engine == "ollama":
         model = _required(resolved, "model")
         after_ready = (
@@ -639,6 +693,16 @@ def build_model_runtime_plan(
                 runtime, name, ["env", f"OLLAMA_HOST=127.0.0.1:{port}", "ollama", "pull", model]
             ),
         )
+        if not resolved.get("param.context_length"):
+            # A person's value keeps the OLLAMA_CONTEXT_LENGTH launch setting.
+            context_hook = ollama_context_hook(
+                port,
+                model,
+                readiness.logs,
+                windows,
+                sizing_request("ollama", resolved),
+                cpu_threads=variant_id == "cpu",
+            )
     if action == "start":
         command = (
             start_command(runtime, name)
@@ -672,21 +736,28 @@ def build_model_runtime_plan(
     commands.append(remove_container_command(runtime, name))
     if not windows:
         commands.append(_port_free_command(port))
-    directories = [cache_dir, temporary_dir] + (
-        [images_dir, module.join(temporary_dir, "apptainer-cache")]
-        if runtime == "apptainer"
-        else []
-    )
+    directories = [cache_dir, temporary_dir] + ([images_dir] if runtime == "apptainer" else [])
     for directory in directories:
         recorders[len(commands)] = directory_recorder(directory, facts.os)
         commands.append(create_directory_command(directory, facts.os))
-    recorders[len(commands)] = image_recorder(runtime, variant.image)
+    present = len(commands)
+    recorders[present] = image_recorder(runtime, variant.image)
     commands.append(image_present_command(runtime, variant.image, images_dir, name))
-    commands.append(
-        pull_command(
-            runtime, variant.image, images_dir, module.join(temporary_dir, "apptainer-cache"), name
+    commands.extend(
+        pull_commands(
+            runtime,
+            variant.image,
+            images_dir,
+            image_store,
+            name,
+            module.join(temporary_dir, "apptainer-tmp"),
+            fresh=from_scratch(configuration),
         )
     )
+    # Docker/Podman skip the pull of an image present under its digest (reuse).
+    check = image_reuse_check(runtime, variant.image, tuple(range(present + 1, len(commands))))
+    if runtime == "apptainer":
+        recorders[len(commands) - 1] = shared_image_recorder()
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)
     commands.append(
         keyed(
@@ -699,5 +770,7 @@ def build_model_runtime_plan(
         recorders=recorders,
         readiness=readiness,
         after_ready=after_ready,
+        after_ready_hook=context_hook,
         configuration=resolved,
+        reuse_checks={present: check} if check else {},
     )

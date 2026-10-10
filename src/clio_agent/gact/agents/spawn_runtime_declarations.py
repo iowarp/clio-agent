@@ -23,7 +23,7 @@ from clio_agent.gact.tool_observer import _handoff_part_metadata
 from clio_agent.gact.types import Part
 
 if TYPE_CHECKING:
-    from clio_agent.gact.agents.types import AgentDef
+    from clio_agent.gact.types import AgentDef
 
 
 def _failed_spawn_handoff_part(
@@ -112,14 +112,17 @@ def assemble_spawn_runtime_tools(
                 "agent": SPAWN_AGENT_ARGUMENT,
                 "task": {"type": "string", "description": "The specific task for that child."},
                 "placement": {
-                    "type": "string",
+                    "type": ["string", "null"],
+                    "default": None,
                     "description": (
                         "Optional execution placement: local or relay:<cluster>. "
                         "Omit to use the session policy, then the local default."
                     ),
                 },
                 "input_task_ids": {
-                    "type": "array",
+                    "type": ["array", "null"],
+                    "default": None,
+                    "items": {"type": "string"},
                     "description": (
                         "Optional ids of YOUR OWN already-finished spawned tasks whose "
                         "full stored output to hand this child as labeled evidence in "
@@ -158,7 +161,8 @@ def assemble_spawn_runtime_tools(
                     ),
                 },
                 "placement": {
-                    "type": "string",
+                    "type": ["string", "null"],
+                    "default": None,
                     "description": ("Optional placement applied to every spawn in this batch."),
                 },
             },
@@ -197,4 +201,7 @@ def assemble_spawn_runtime_tools(
                 },
             )
         )
-    return tools
+    # Explicit old blueprint declarations remain callable for one compatibility cycle.
+    # Newly generated inventories expose the shared task controls instead.
+    aliases = {"wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"}
+    return [tool for tool in tools if tool.name not in aliases or tool.name in agent_def.tools]

@@ -229,6 +229,68 @@ def record(
             _log_mismatches(path, mismatches)
 
 
+def forget_context(model_id: str, *, superseded_by: int, provider: str = "") -> bool:
+    """Drop a stored context limit that live evidence has proven is not a ceiling.
+
+    A server serving ``superseded_by`` tokens of ``model_id`` proves the model's
+    ceiling is at least that, so a smaller stored ``context`` is stale -- typically
+    a deployment's served window recorded before F016's fix. Only the user DB is
+    edited (never the seed); the purge is logged to the mismatches file with
+    ``action="purged"`` so it stays auditable. Never raises.
+
+    Returns:
+        True when an entry was purged.
+    """
+    if not (model_id or "").strip():
+        return False
+    path = db_path()
+    with _LOCK:
+        db = _load(path)
+        key = normalize_id(model_id)
+        entry = db.get(key)
+        stored = entry.get("context") if isinstance(entry, dict) else None
+        if not isinstance(stored, int) or isinstance(stored, bool) or stored >= superseded_by:
+            return False
+        assert isinstance(entry, dict)
+        entry = {k: v for k, v in entry.items() if k != "context"}
+        if "output" in entry:
+            db[key] = entry
+        else:
+            db.pop(key, None)
+        try:
+            path.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
+        except OSError as exc:
+            _LOGGER.warning(
+                "model_db_purge_skipped reason=db_unwritable path=%s model=%s error=%s",
+                path,
+                model_id,
+                exc,
+            )
+            return False
+    _LOGGER.info(
+        "model_db_context_purged reason=live_served_context_exceeds_stored model=%s "
+        "stored=%s served=%s",
+        model_id,
+        stored,
+        superseded_by,
+    )
+    _log_mismatches(
+        path,
+        [
+            {
+                "model": model_id,
+                "field": "context",
+                "stored": stored,
+                "discovered": superseded_by,
+                "source": "live_served",
+                "provider": provider,
+                "action": "purged",
+            }
+        ],
+    )
+    return True
+
+
 def _log_mismatches(path: Path, mismatches: list[dict[str, Any]]) -> None:
     try:
         out = path.with_suffix(".mismatches.jsonl")
@@ -245,12 +307,11 @@ def record_report(report: Any) -> None:
 
     A handshake no longer carries a flat ``context_window``/``context_source``
     per model (that was ``ModelProfile``, split into the capability records) --
-    a discovered row's real limit is read back from whichever of
+    a discovered row's real context limit is read back from
     :class:`~clio_agent.providers.capabilities.records.ModelCapabilities.
-    context_max` (the model's own ceiling) or
-    :class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities.
-    context_served` (what this server is currently serving) the adapter itself
-    evidenced this run (``source="server_report"``) -- never a value this same
+    context_max` (the model's own ceiling; a deployment's ``context_served`` is
+    not a model limit and is never stored here) when the adapter itself
+    evidenced it this run (``source="server_report"``) -- never a value this same
     cascade already supplied (``models.dev``/``litellm``/``db``), which would
     just be writing a lookup back into itself.
     """
@@ -272,18 +333,15 @@ def record_report(report: Any) -> None:
         model = invalidation.get_model_capabilities(model_key) if model_key else None
 
         ctx = out = None
+        # Only a model's own ceiling is a model limit. A deployment's served context
+        # (vLLM ``max_model_len``) is a launch choice: stored under the model id it
+        # came back as that model's ceiling and capped the next deployment (F016).
         if (
             model is not None
             and model.context_max.source == "server_report"
             and model.context_max.known
         ):
             ctx = model.context_max.value
-        elif (
-            deployment is not None
-            and deployment.context_served.source == "server_report"
-            and deployment.context_served.known
-        ):
-            ctx = deployment.context_served.value
         if (
             model is not None
             and model.output_max.source == "server_report"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Iterator, cast
@@ -72,9 +73,14 @@ class GlobusDownload:
         except PermissionError:
             raise GlobusConsentRequired(self.scopes) from None
 
-    def entries(self) -> list[FileEntry]:
+    def entries(
+        self,
+        *,
+        progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[FileEntry]:
         """Retain bounded native metadata traversal and special-file validation."""
-        return self.source.entries()
+        return self.source.entries(progress=progress, cancelled=cancelled)
 
     def open_read(self, entry: FileEntry) -> BinaryIO:
         """Delegate ranged reads, buffering and backend retries to globusfs."""

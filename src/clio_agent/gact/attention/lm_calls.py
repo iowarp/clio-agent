@@ -35,6 +35,7 @@ class LmCall:
     declaration: dict[str, Any] | None
     source: str
     extra: dict[str, Any] = field(default_factory=dict)
+    reasoning: str | None = None
 
     @property
     def has_payload(self) -> bool:
@@ -55,6 +56,7 @@ def _from_payload(
     payload = payload if isinstance(payload, dict) else None
     messages = payload.get("attention_messages", payload.get("messages")) if payload else None
     content = payload.get("content") if payload else None
+    reasoning = payload.get("reasoning_content") if payload else None
     declaration = (payload or {}).get("attention") or metadata.get("attention")
     return LmCall(
         event_id=event_id,
@@ -67,6 +69,7 @@ def _from_payload(
         content=str(content) if isinstance(content, str) else None,
         declaration=declaration if isinstance(declaration, dict) else None,
         source=source,
+        reasoning=reasoning if isinstance(reasoning, str) and reasoning else None,
     )
 
 

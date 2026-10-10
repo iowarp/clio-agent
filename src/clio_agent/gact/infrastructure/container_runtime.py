@@ -26,15 +26,20 @@ The runtimes differ in ways the launch must respect:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
+from clio_agent.gact.infrastructure import image_manifest_probe
 from clio_agent.gact.infrastructure.models import (
     RUNTIME_LABELS,
+    CommandResult,
     CommandSpec,
     ContainerRuntimeFact,
     RuntimeName,
     TargetIdentity,
 )
+from clio_agent.gact.infrastructure.reuse import SHELL_FUNCTIONS, Reuse, ReuseCheck
 
 #: Separates the launched args from the environment in ``inspect`` output. Not
 #: a tab: the Desktop's SSH PTY expands tabs to spaces.
@@ -183,30 +188,206 @@ def image_present_command(
     )
 
 
-def pull_command(
-    runtime: RuntimeName, image: str, images_dir: str, cache_dir: str, name: str
-) -> CommandSpec:
-    """Fetch the pinned image (Apptainer: convert to a SIF in a CLIO-owned directory).
+# One Apptainer pull attempt, bounded inside the script so a timeout stops
+# apptainer itself (not only the shell). The SIF of a pinned image is kept in
+# a shared store keyed by its digest, with a ``.ref`` sidecar written only
+# after a complete pull; a store hit is reused instead of re-pulled (reported
+# through the shared reuse helper), and the service's own SIF path is a
+# symlink to it. A cold pull reports progress: the registry manifest's bytes
+# still to download (``image_manifest_probe``), then the layer cache's growth
+# every few seconds. ``fresh`` (install from scratch) skips the store hit and
+# Apptainer's layer cache; the second attempt only finishes what the first
+# left (a ``done`` flag in the scratch directory), so it never re-pulls.
+# Converting an image to a SIF unpacks every layer: on a network filesystem
+# (Lustre, NFS, GPFS, ...) that took 18 of the 20 minutes of a cold web search
+# install on Delta. ``clio_local_scratch <dir>`` prints where to convert: the
+# configured directory when it is local, else a fresh directory on node-local
+# scratch ($TMPDIR when local, else /tmp) with room for ~3x the largest pinned
+# image; with none, the configured directory and a warning. The persistent
+# image store and layer cache stay where they are.
+LOCAL_SCRATCH_NEED_KB = 30 * 1024 * 1024
+LOCAL_SCRATCH_FUNCTION = (
+    """clio_fs_type() { stat -f -c %T "$1" 2>/dev/null || echo unknown; }
+clio_networked_fs() {
+  case "$1" in
+    lustre|nfs|nfs4|gpfs|beegfs|cifs|smb2|smbfs|ceph|panfs|wekafs|glusterfs|fuse.glusterfs) return 0 ;;
+  esac
+  return 1
+}
+clio_local_scratch() {
+  want=$1; probe=$want
+  while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe=$(dirname "$probe"); done
+  fs=$(clio_fs_type "$probe")
+  if ! clio_networked_fs "$fs"; then printf '%s\\n' "$want"; return 0; fi
+  for base in "${TMPDIR:-}" /tmp; do
+    if [ -z "$base" ] || [ ! -d "$base" ] || [ ! -w "$base" ]; then continue; fi
+    if clio_networked_fs "$(clio_fs_type "$base")"; then continue; fi
+    free=$(df -Pk "$base" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ "${free:-0}" -ge """
+    + str(LOCAL_SCRATCH_NEED_KB)
+    + """ ]; then
+      if dir=$(mktemp -d "$base/clio-apptainer-XXXXXX"); then
+        echo "clio: Using node-local scratch $dir (target temporary is on $fs)" >&2
+        printf '%s\\n' "$dir"; return 0
+      fi
+    fi
+  done
+  echo "clio: warning: $want is on $fs and no node-local scratch has room; converting there (slow)" >&2
+  printf '%s\\n' "$want"
+}
+"""
+)
 
-    Apptainer's layer cache and its conversion scratch both live in the
-    CLIO-owned ``cache_dir`` (a login node's small ``/tmp`` is not used).
+_APPTAINER_PULL_SCRIPT = (
+    """set -eu
+store=$1; image=$2; key=$3; link=$4; scratch=$5; budget=$6
+attempt=${7:-1}; fresh=${8:-0}; probe=${9:-}
+sif="$store/$key.sif"; done_flag="$scratch/.clio-pulled-$key"; pull=""; sampler=""
+mkdir -p "$store/cache" "$scratch"
+"""
+    + SHELL_FUNCTIONS
+    + LOCAL_SCRATCH_FUNCTION
+    + """if [ "$attempt" = 1 ]; then rm -f "$done_flag"; fi
+if [ -f "$done_flag" ] && [ -f "$sif" ]; then
+  echo "clio: the first attempt completed the pull"
+elif [ "$fresh" != 1 ] && [ -f "$sif" ] && [ "$(cat "$sif.ref" 2>/dev/null)" = "$image" ]; then
+  echo "clio: reusing $sif"
+  clio_reuse sif "container image" "$image" "$sif" "$(wc -c < "$sif" | tr -d ' ')" \\
+    "$(cat "$sif.took" 2>/dev/null || true)"
+else
+  started=$(date +%s)
+  if [ -n "$probe" ] && command -v python3 >/dev/null 2>&1; then
+    timeout 60 python3 -c "$probe" "$image" "$store/cache" 2>/dev/null || true
+  fi
+  measure() { du -sk "$store/cache" 2>/dev/null | cut -f1; }
+  base=$(measure); base=${base:-0}
+  (
+    last=-1
+    while sleep 5 </dev/null >/dev/null 2>&1; do
+      now=$(measure); grown=$(( (${now:-0} - base) * 1024 ))
+      if [ "$grown" != "$last" ]; then
+        printf 'CLIO_PROGRESS {"unit": "bytes", "current": %s, "source": "layer_cache"}\\n' "$grown"
+        last=$grown
+      fi
+    done
+  ) &
+  sampler=$!
+  # timeout(1) leads its own process group: stopping this script (a cancel)
+  # must reach it explicitly, or the pull would go on without an owner.
+  trap 'kill $sampler $pull 2>/dev/null || true' EXIT
+  trap 'exit 143' TERM INT HUP
+  convert=$(clio_local_scratch "$scratch")
+  if [ "$convert" != "$scratch" ]; then
+    trap 'kill $sampler $pull 2>/dev/null || true; rm -rf "$convert"' EXIT
+  fi
+  flags=""
+  if [ "$fresh" = 1 ]; then flags="--disable-cache"; fi
+  APPTAINER_CACHEDIR="$store/cache" APPTAINER_TMPDIR="$convert" \\
+    timeout -k 15 "$budget" apptainer pull --force $flags "$sif.partial" "docker://$image" &
+  pull=$!
+  status=0
+  wait "$pull" || status=$?
+  pull=""
+  kill "$sampler" 2>/dev/null || true
+  sampler=""
+  if [ "$status" != 0 ]; then exit "$status"; fi
+  mv -f "$sif.partial" "$sif"
+  echo "$(( $(date +%s) - started ))" > "$sif.took"
+  printf '%s\\n' "$image" > "$sif.ref"
+fi
+touch "$done_flag"
+ln -sfn "$sif" "$link"
+echo "CLIO_SHARED_IMAGE $sif"
+"""
+)
+
+# Two attempts of at most this many seconds each: the first may run out of
+# time (exit 124) with the downloaded layers kept in the persistent layer
+# cache; the second resumes from them, or is a no-op when the first finished.
+APPTAINER_PULL_ATTEMPT_SECONDS = 1740
+
+
+def image_store_key(image: str) -> str:
+    """A file-name-safe key for a pinned image (its digest when it has one)."""
+
+    if "@sha256:" in image:
+        return "sha256-" + image.rsplit("@sha256:", 1)[1]
+    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in image)
+
+
+def pull_commands(
+    runtime: RuntimeName,
+    image: str,
+    images_dir: str,
+    store_dir: str,
+    name: str,
+    scratch_dir: str | None = None,
+    *,
+    fresh: bool = False,
+) -> list[CommandSpec]:
+    """Fetch the pinned image.
+
+    Apptainer converts it to a SIF in ``store_dir`` (a persistent image store
+    with its own layer cache, so a failed or timed-out pull resumes and a new
+    node does not re-download) using ``scratch_dir`` (the target's temporary
+    location, which an operator may point at node-local scratch) for the
+    conversion. The pull runs as two bounded attempts so a large image is not
+    cut off by one command's timeout. ``fresh`` bypasses the store and the
+    layer cache (install from scratch). Docker and Podman skip their pull
+    through :func:`image_reuse_check` instead.
     """
 
-    if runtime == "apptainer":
-        return CommandSpec(
-            program="env",
-            args=[
-                f"APPTAINER_CACHEDIR={cache_dir}",
-                f"APPTAINER_TMPDIR={cache_dir}",
-                "apptainer",
-                "pull",
-                "--force",
-                sif_path(images_dir, name),
-                f"docker://{image}",
-            ],
-            timeout_seconds=1800,
+    if runtime != "apptainer":
+        return [CommandSpec(program=runtime, args=["pull", image], timeout_seconds=1800)]
+    args = [
+        "-c",
+        _APPTAINER_PULL_SCRIPT,
+        "clio-apptainer-pull",
+        store_dir.rstrip("/"),
+        image,
+        image_store_key(image),
+        sif_path(images_dir, name),
+        scratch_dir or f"{store_dir.rstrip('/')}/tmp",
+        str(APPTAINER_PULL_ATTEMPT_SECONDS),
+        "1",
+        "1" if fresh else "0",
+        Path(image_manifest_probe.__file__).read_text(encoding="utf-8"),
+    ]
+    first = CommandSpec(program="sh", args=args, timeout_seconds=1800, allowed_exit_codes=[0, 124])
+    second = [*args]
+    second[9] = "2"
+    return [first, first.model_copy(update={"args": second, "allowed_exit_codes": [0]})]
+
+
+def image_reuse_check(runtime: RuntimeName, image: str, skip: tuple[int, ...]) -> ReuseCheck | None:
+    """Skip a Docker/Podman pull when the image is present under its pinned digest.
+
+    Only a digest reference is verifiable (``image inspect name@sha256:...``
+    succeeds only for an image holding that repository digest); a tag may
+    have moved upstream, so it is always pulled. Apptainer reuses through its
+    image store instead (the pull script).
+    """
+
+    if runtime == "apptainer" or "@sha256:" not in image:
+        return None
+    name, digest = image.rsplit("@", 1)
+
+    def report(result: CommandResult) -> Reuse | None:
+        if result.exit_code != 0:
+            return None
+        try:
+            size = int(json.loads(result.stdout)[0]["Size"])
+        except (ValueError, KeyError, IndexError, TypeError):
+            size = None
+        label = RUNTIME_LABELS.get(runtime, runtime)
+        return Reuse(
+            kind="container_image",
+            thing=f"{label} image {name}",
+            identity=digest,
+            size_bytes=size,
         )
-    return CommandSpec(program=runtime, args=["pull", image], timeout_seconds=1800)
+
+    return ReuseCheck(skip=skip, report=report)
 
 
 def remove_container_command(runtime: RuntimeName, name: str) -> CommandSpec:
@@ -299,8 +480,13 @@ def status_command(runtime: RuntimeName, name: str) -> CommandSpec:
             program="sh",
             args=[
                 "-c",
-                'if apptainer instance list "$0" 2>/dev/null | tail -n +2 | grep -q .; '
-                "then echo running; else echo stopped; fi",
+                # An instance outlives the server it ran (F034): it is only
+                # running while the instance process still has a child.
+                "pid=$(apptainer instance list \"$0\" 2>/dev/null | awk 'NR==2{print $2}'); "
+                'if [ -z "$pid" ]; then echo stopped; '
+                "elif ! command -v pgrep >/dev/null 2>&1; then echo running; "
+                'elif pgrep -P "$pid" >/dev/null 2>&1; then echo running; '
+                "else echo exited; fi",
                 name,
             ],
         )

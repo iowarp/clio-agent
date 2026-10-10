@@ -16,11 +16,11 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from clio_agent.tools import spawn_diet
+from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.launcher_cache_lock import (
     aacquire_launcher_cache_lock,
     uses_shared_launcher_cache,
 )
-from clio_agent.tools.mcp_call_progress import call_tool_with_progress
 from clio_agent.tools.mcp_connection_era import (
     MCPConnectionEra,
     classify_connection_era,
@@ -104,9 +104,7 @@ class _MCPCallOutcome:
     source_namespace: str | None
 
 
-# Per-tool wall-clock timeouts are domain-specific and now come from MCP
-# server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
-# not from a hardcoded core table. Core ships no default overrides.
+# Call health limits come from server declarations; core supplies no hardcoded overrides.
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
@@ -278,19 +276,13 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._server = server
         # #1201: identity label for the primary connection's era record below.
         self._server_id = server_id
-        # #932: namespace -> mounted proxy. A namespaced call routes straight
-        # at ONE proxy (lazy client per namespace), so only the called
-        # namespace backend ever spawns. The composite client remains the
-        # fallback for names outside the map.
+        # Route namespaced calls lazily to one backend; keep the composite fallback.
         self._namespace_servers = dict(namespace_servers) if namespace_servers else {}
         self._namespace_clients: dict[str, Any] = {}
+        self._accepted_task_handles: set[str] = set()
+        self._close_requested = False
         self._namespace_ctxs: dict[str, Any] = {}
-        # #1281 F5: derive the direct-client factory registry off `server` (the gateway)
-        # at construction -- the ONE choke point every executor build funnels through, so
-        # no construction site can forget to stamp it (gact/relay_wiring.py's rebuild once
-        # did). getattr-guarded: a non-gateway `server` (a test double) carries none. A
-        # merge caller (fleet_blueprint_merge.merge_blueprint_namespaces) joining a SECOND
-        # gateway's namespaces still mutates this dict in place; construction only seeds it.
+        # Seed direct factories from the gateway; namespace merging extends this registry.
         self._clio_namespace_direct_factories: dict[str, Any] = dict(
             getattr(server, "_clio_namespace_direct_factories", None) or {}
         )
@@ -309,6 +301,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         self._timeout = timeout
         self._tool_timeouts = cleaned_tool_timeouts
         self._uncertain_mutating_timeouts: dict[str, float] = {}
+        self._pending_task_submissions: set[asyncio.Future[Any]] = set()
         self._uncertain_mutating_timeouts_lock = threading.Lock()
         self._client_factory = cast(ClientFactory, client_factory or make_mcp_client)
         self._client_ctx: MCPClientProtocol | None = None
@@ -417,6 +410,7 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             raise RuntimeError("AsyncMCPToolExecutor is closed")
         if self._client is None:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
+        task_calls.require_admission()
 
         prior_uncertain = self._prior_uncertain_mutating_timeout(name, args)
         if prior_uncertain is not None:
@@ -428,25 +422,26 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         # (proxy ctx-enter spawns nothing), so first-call success/failure
         # is the spawn-diet learn/drop-plan signal.
         first_call = namespace is not None and namespace not in self._connected_namespaces
-        # #1282 F3a: an EXPLICIT budget (timeout is not None) is bounded by an
-        # ACTIVITY-DRIVEN deadline (last_activity + timeout), never a flat
-        # wall clock over the whole call -- a transparently-driven task's
-        # full multi-poll drive, or a plain call's progress notifications,
-        # both reset it (run_with_activity_backstop's own docstring). An
-        # unbounded commitment (timeout is None, #1225 wait_for_terminal)
-        # needs no backstop at all, activity-driven or otherwise.
+        # Activity budgets cover submission/RPC health. Accepted task execution
+        # belongs to the application supervisor without an inherited deadline.
         from clio_agent.tools.mcp_wait_ladder import (  # noqa: PLC0415
             MCPCallTimeoutBackstopError,
             typed_call_timeout_error,
         )
 
+        backend_args, token = task_calls.begin_backend_call(self, name, dict(args))
         try:
-            result = await call_tool_with_progress(
+            from clio_agent.tools.task_submission import submit_tool_call
+
+            result = await submit_tool_call(
+                self,
                 client,
+                name,
                 on_server_name,
-                args,
+                backend_args,
                 timeout=timeout,
                 progress_handler=progress_handler,
+                namespace=namespace,
             )
         except TimeoutError as exc:
             # Conservative: a first-call timeout may be tool latency, not
@@ -475,6 +470,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
             if typed_error is not None:
                 raise typed_error from exc
             raise
+        finally:
+            task_calls.TASK_CALL.reset(token)
         if first_call and namespace is not None:
             self._connected_namespaces.add(namespace)
             spawn_diet.namespace_connected(namespace)
@@ -681,9 +678,12 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
 
         return dict(self._mcp_tools)
 
-    async def aclose(self) -> None:
+    async def aclose(self, *, force: bool = False) -> None:
         """Close the client connection."""
         if self._closed:
+            return
+        self._close_requested = True
+        if (self._accepted_task_handles or self._pending_task_submissions) and not force:
             return
         self._closed = True
 

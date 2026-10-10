@@ -161,8 +161,10 @@ def effective_declared_skills(
     ROOT expert, every workspace and built-in skill (auto-declaration, §3.6), so
     user-authored skills work in plain chat -- plus, for any expert that
     declares a producer tool or is itself a root agent (S4), this session's
-    producible A2UI catalog skill ids (``app``/``session_id`` unavailable —
-    e.g. an app-less rebuild — silently contributes none, never an error)."""
+    producible A2UI catalog skill ids and matching presentation procedures
+    (``app``/``session_id`` unavailable — e.g. an app-less rebuild — contributes
+    no automatic catalog capabilities). Declared producer children get shared
+    presentation/review skills; dashboard publishers also get authoring guidance."""
 
     declared = [str(s).strip() for s in agent_def.skills if str(s).strip()]
     meta = agent_def.metadata if isinstance(agent_def.metadata, dict) else {}
@@ -197,14 +199,24 @@ def effective_declared_skills(
                     and ref.id not in declared
                 ):
                     declared.append(ref.id)
+    catalog_skill_ids: list[str] = []
     if app is not None and session_id and wants_a2ui_catalogs:
-        for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
+        catalog_skill_ids = _producible_a2ui_catalog_skill_ids(catalog)
+        for skill_id in catalog_skill_ids:
             if skill_id not in declared:
                 declared.append(skill_id)
-    if _declares_a2ui_producer_tool(agent_def) and "review-visual-presentation" not in declared:
-        # Producer experts need the review procedure as well as shape catalogs.
-        # Normal skill resolution still preserves pack/workspace overrides.
-        declared.append("review-visual-presentation")
+    automatic_producer = _is_root_agent(agent_def) and bool(catalog_skill_ids)
+    if _declares_a2ui_producer_tool(agent_def) or automatic_producer:
+        # Automatic producer roots and explicitly curated producer children need
+        # the same presentation/review procedures. Catalog shapes alone do not
+        # teach composition or pixel review. Resolve the shared built-ins normally
+        # so pack/workspace overrides retain precedence; never copy their bodies.
+        presentation_skills = ["present-interactive-analysis", "review-visual-presentation"]
+        if automatic_producer or "publish_dashboard_report" in agent_def.tools:
+            presentation_skills.append("create-dashboard")
+        for skill_id in presentation_skills:
+            if skill_id not in declared:
+                declared.append(skill_id)
     return declared
 
 
@@ -708,7 +720,10 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
         representation="handoff",
         desc=(
             "Run one declared child-task skill in a fresh background agent. "
-            "Provide a concrete assignment; collect the returned task with wait_agent_tasks."
+            "Provide a concrete assignment; acceptance immediately returns a Subagent task handle. "
+            "Continue independent work, inspect with query_tasks/observe_tasks, collect with "
+            "wait_tasks or get_task_result, or cancel with cancel_tasks. Results arrive at the "
+            "next model iteration or wake you when idle; Conversation Stop leaves the task running."
         ),
         args={
             "skill_id": {"type": "string", "description": "Declared child-task skill id."},

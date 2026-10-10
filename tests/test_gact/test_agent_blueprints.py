@@ -2649,7 +2649,7 @@ Coordinate genomics work.
     assert "- `variant`: Variant Expert" in context
     assert "memory_search_sessions" in context
     assert "`spawn_agent_task(agent, task)`" in context
-    assert "`wait_agent_tasks(" in context
+    assert "`wait_tasks(" in context
     # Async-first posture lock (async-first-semantics slice): the routing briefing
     # MUST teach the fire-and-forget async spawn posture, not the old serial
     # "spawn one child, wait, decide the next hop" loop. These load-bearing phrases
@@ -2662,8 +2662,16 @@ Coordinate genomics work.
     # than just their state.
     assert "returns the requested children's output into your" in context
     assert "do not repeatedly poll" in context
-    assert "NEXT turn" in context  # observe-later: results inject into the next turn
-    assert "observe_agent_tasks" in context  # non-blocking observation while working
+    assert "before your next safe model iteration" in context
+    assert "after the current tool call or batch finishes" in context
+    assert "Live user feedback enters at the same iteration boundary" in context
+    assert "If you are idle, completion automatically starts a continuation turn" in context
+    assert "including after conversation Stop" in context
+    assert "without another human message" in context
+    assert "Completion alone does not start a turn" not in context
+    assert "observe_tasks" in context  # shared non-consuming task observation
+    assert "wait_tasks" in context
+    assert "observe_agent_tasks" not in context  # compatibility names aren't taught by default
     assert "check_agent_tasks" not in context  # observe owns snapshots and monitoring
     # The old serial teaching must be gone (it made sync spawn→wait the default).
     assert "Spawn one child, wait for its evidence" not in context
@@ -3772,8 +3780,9 @@ EarthScope descriptor.
     assert detail["descriptor_id"] == "earthscope"
 
 
+@pytest.mark.parametrize("task_support", [None, "required"])
 def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, task_support: str | None
 ) -> None:
     class FakeClient:
         called_tool = ""
@@ -3795,6 +3804,7 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                     inputSchema={"type": "object"},
                     outputSchema={"type": "object"},
                     annotations={"readOnlyHint": True},
+                    execution=SimpleNamespace(task_support=task_support),
                 )
             ]
 
@@ -3807,10 +3817,10 @@ def test_enabled_agent_blueprint_mcp_descriptor_probes_and_calls_tool(
                 isError=False,
             )
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("fastmcp.Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )
@@ -3861,6 +3871,9 @@ EarthScope descriptor.
     assert body["tools"][0]["enabled"] is True
     assert body["tools"][0]["input_schema"] == {"type": "object"}
     assert body["tools"][0]["annotations"] == {"readOnlyHint": True}
+    assert ("durable task handle" in body["tools"][0]["description"]) == (
+        task_support == "required"
+    )
     assert call.status_code == 200, call.text
     assert FakeClient.called_tool == "earthscope_query"
     assert call.json()["content"] == [{"type": "text", "text": "earthscope_query:ANMO"}]
@@ -3893,10 +3906,10 @@ def test_enabled_agent_blueprint_mcp_tool_reenables_session_expert(
                 )
             ]
 
-    import fastmcp
     import fastmcp.client.transports as transports
 
-    monkeypatch.setattr(fastmcp, "Client", FakeClient)
+    monkeypatch.setattr("fastmcp.Client", FakeClient)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", FakeClient)
     monkeypatch.setattr(
         transports, "StdioTransport", lambda command, args, env=None: (command, args)
     )

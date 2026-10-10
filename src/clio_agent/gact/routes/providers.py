@@ -255,7 +255,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "auth_methods": auth_methods,
             "is_authenticated": is_authed,
             "default_model": _default_model_for(preset),
-            "api_base": preset.api_base,
+            "api_base": with_saved_address(preset).api_base,
             "env_keys": (["CLIO_LM_API_KEY"] if preset.requires_api_key else []),
             "description": preset.description,
             "metadata": {

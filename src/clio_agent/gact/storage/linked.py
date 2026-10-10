@@ -8,11 +8,12 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import stat
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Iterator, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Iterator, cast
 from urllib.parse import unquote, urlsplit
 
 import requests
@@ -179,7 +180,14 @@ class FsspecFolder:
         self.fs, self.root = fs, root.rstrip("/")
         self.writable = writable
 
-    def entries(self, folder: str = "", *, recursive: bool = True) -> list[FileEntry]:
+    def entries(
+        self,
+        folder: str = "",
+        *,
+        recursive: bool = True,
+        progress: Callable[[int], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[FileEntry]:
         """Index names and revisions without reading any file bodies."""
         rows: list[FileEntry] = []
         if folder:
@@ -188,6 +196,8 @@ class FsspecFolder:
         while pending:
             folder, relative = pending.pop()
             for item in self.fs.ls(folder, detail=True):
+                if cancelled is not None and cancelled():
+                    raise InterruptedError("Folder indexing cancelled")
                 name = str(item["name"]).replace("\\", "/")
                 leaf = name.rstrip("/").rsplit("/", 1)[-1]
                 path = posixpath.join(relative, leaf)
@@ -226,6 +236,8 @@ class FsspecFolder:
                 )
                 if kind == "directory" and recursive:
                     pending.append((name, path))
+                if progress is not None:
+                    progress(len(rows))
         return sorted(rows, key=lambda row: row.path)
 
     def open_read(self, entry: FileEntry) -> BinaryIO:
@@ -248,7 +260,10 @@ class FsspecFolder:
         if isinstance(self.fs, LocalFileSystem):
             target = safe_child(Path(self.root), path).as_posix()
         if content is None:
-            self.fs.rm_file(target)
+            if isinstance(self.fs, LocalFileSystem):
+                os.unlink(win_extended_path(target))
+            else:
+                self.fs.rm_file(target)
             return None
         self.fs.makedirs(posixpath.dirname(target), exist_ok=True)
         if isinstance(self.fs, _ApprovedDrive):
@@ -258,13 +273,17 @@ class FsspecFolder:
             # Local and SFTP implementations publish one staged file with rename.
             stage = posixpath.join(posixpath.dirname(target), ".clio-write-" + uuid.uuid4().hex)
             try:
-                self.fs.put_file(str(content), stage)
                 if isinstance(self.fs, LocalFileSystem):
+                    shutil.copyfile(win_extended_path(content), win_extended_path(stage))
                     atomic_replace(Path(stage), Path(target))
                 else:
+                    self.fs.put_file(win_extended_path(content), stage)
                     self.fs.mv(stage, target)
             finally:
-                if self.fs.exists(stage):
+                if isinstance(self.fs, LocalFileSystem):
+                    if os.path.exists(win_extended_path(stage)):
+                        os.unlink(win_extended_path(stage))
+                elif self.fs.exists(stage):
                     self.fs.rm_file(stage)
         self.fs.invalidate_cache()
         return next(row.revision for row in self.entries() if row.path == path)
@@ -397,9 +416,17 @@ def linked_adapter(
                 )
 
 
-def link_folder(service: StorageService, record: SourceRecord) -> SourceRecord:
+def link_folder(
+    service: StorageService,
+    record: SourceRecord,
+    *,
+    progress: Callable[[int], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    operation_id: str | None = None,
+) -> SourceRecord:
     """Publish an approved metadata index, without downloading the folder."""
-    service.require_idle(record)
+    if operation_id is None:
+        service.require_idle(record)
     from clio_agent.gact.storage.linked_changes import pending_edits
 
     if pending_edits(service, record).changes:
@@ -407,7 +434,7 @@ def link_folder(service: StorageService, record: SourceRecord) -> SourceRecord:
     if not record.connected:
         raise ValueError("Reconnect this source before linking its folder")
     with linked_adapter(service, record, refresh=bool(record.linked_manifest_id)) as adapter:
-        entries = adapter.entries()
+        entries = adapter.entries(progress=progress, cancelled=cancelled)
     paths = [entry.path.casefold() for entry in entries]
     if len(paths) != len(set(paths)):
         raise ValueError("This folder contains names that collide on the CLIO host")
@@ -418,6 +445,12 @@ def link_folder(service: StorageService, record: SourceRecord) -> SourceRecord:
         entries=entries,
         hashes={},
     )
+    if cancelled is not None and cancelled():
+        raise InterruptedError("Folder indexing cancelled before publication")
+    if operation_id is not None:
+        from clio_agent.gact.storage.indexing import publish_index
+
+        return publish_index(service, record, manifest, operation_id)
     service.store.put("manifest", manifest.id, manifest)
     record.linked_manifest_id = manifest.id
     service.store.put("source", record.source.id, record)

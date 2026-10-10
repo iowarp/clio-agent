@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.interaction_types import UserQuestion
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.task_input_questions import input_needs_delivery
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -105,7 +106,7 @@ def _persist_question(app: "FastAPI", question: UserQuestion) -> None:
         raw_rows = metadata.get(USER_QUESTIONS_METADATA_KEY)
         rows = dict(raw_rows) if isinstance(raw_rows, Mapping) else {}
         rows[question.id] = question.model_dump(exclude_none=True)
-        rows = _bounded_rows(rows)
+        rows = _bounded_rows(rows, app)
         updated = sessions.update(
             session_id,
             metadata_patch={USER_QUESTIONS_METADATA_KEY: rows},
@@ -118,8 +119,8 @@ def _persist_question(app: "FastAPI", question: UserQuestion) -> None:
             )
 
 
-def _bounded_rows(rows: dict[str, Any]) -> dict[str, Any]:
-    """Retain every pending row and the newest bounded resolved history."""
+def _bounded_rows(rows: dict[str, Any], app: "FastAPI") -> dict[str, Any]:
+    """Retain pending/undelivered task inputs and bounded resolved history."""
 
     pending: list[tuple[str, Mapping[str, Any]]] = []
     resolved: list[tuple[str, Mapping[str, Any]]] = []
@@ -127,7 +128,7 @@ def _bounded_rows(rows: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(raw, Mapping):
             continue
         item = (question_id, raw)
-        if str(raw.get("status") or "pending") == "pending":
+        if str(raw.get("status") or "pending") == "pending" or input_needs_delivery(app, raw):
             pending.append(item)
         else:
             resolved.append(item)

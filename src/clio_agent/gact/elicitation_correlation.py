@@ -25,7 +25,9 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,19 @@ class _InvocationRecord:
 
 _LOCK = threading.Lock()
 _OPEN: list[_InvocationRecord] = []
+_TASK_INPUT: ContextVar[_InvocationRecord | None] = ContextVar(
+    "clio_task_input_owner", default=None
+)
+
+
+@contextmanager
+def task_input_owner(app: Any, invocation: "MCPInvocationContext", session: Any) -> Iterator[None]:
+    """Bind the existing input bridge to the exact task owner after its foreground call ends."""
+    token = _TASK_INPUT.set(_InvocationRecord(app, invocation, id(session)))
+    try:
+        yield
+    finally:
+        _TASK_INPUT.reset(token)
 
 
 # --------------------------------------------------------------------------- #
@@ -176,6 +191,9 @@ def _resolve_for_session(session_key: int) -> _InvocationRecord | None:
     session. Ambiguous (>1 open, none matching) -> ``None`` (typed decline).
     """
 
+    task_owner = _TASK_INPUT.get()
+    if task_owner is not None and task_owner.session_key == session_key:
+        return task_owner
     with _LOCK:
         for record in _OPEN:
             if record.session_key == session_key:
@@ -218,7 +236,9 @@ async def correlated_elicitation_handler(
             len(_OPEN),
         )
         return ElicitResult(action="decline")
-    invocation = invocation_with_request_correlation(record.invocation, request_context)
+    invocation = invocation_with_request_correlation(
+        record.invocation, request_context, app=record.app
+    )
     return await handle_elicitation(
         record.app,
         invocation,
@@ -229,20 +249,38 @@ async def correlated_elicitation_handler(
 
 
 def invocation_with_request_correlation(
-    invocation: "MCPInvocationContext", request_context: Any
+    invocation: "MCPInvocationContext",
+    request_context: Any,
+    *,
+    app: Any = None,
 ) -> "MCPInvocationContext":
     """Add authoritative SEP-2663 task/input identity from a callback request."""
 
     request_id = str(getattr(request_context, "request_id", "") or "")
     if not request_id.startswith("task-") or not invocation.session_id:
         return invocation
+    if invocation.task_key is not None:
+        prefix = f"task-{invocation.task_key.task_id}-"
+        if request_id.startswith(prefix):
+            return replace(
+                invocation,
+                task_id=invocation.task_key.task_id,
+                input_key=request_id.removeprefix(prefix) or None,
+            )
+        return invocation
     try:
         from clio_agent.tools.mcp_task_records import iter_task_records  # noqa: PLC0415
 
+        store = getattr(getattr(app.state, "sessions", None), "task_store", None) if app else None
+        if app is not None and store is None:
+            logger.warning("Task input correlation unavailable reason=app_store_absent")
+            return invocation
         candidates = [
             record
-            for record in iter_task_records()
+            for record in iter_task_records(store)
             if record.session_id == invocation.session_id
+            and record.invocation_id == invocation.invocation_id
+            and record.key.server_id == invocation.namespace
             and request_id.startswith(f"task-{record.task_id}-")
         ]
     except Exception as exc:  # noqa: BLE001 - enrichment must not reject an elicitation
@@ -261,6 +299,7 @@ def invocation_with_request_correlation(
         invocation,
         task_id=task_id,
         input_key=request_id.removeprefix(f"task-{task_id}-") or None,
+        task_key=candidates[0].key,
     )
 
 

@@ -51,6 +51,40 @@ async def test_probe_tools_fails_when_no_tool_call_comes_back() -> None:
     assert fact.value is False
 
 
+def _truncated(message: dict) -> probes.ProbeResponse:
+    return probes.ProbeResponse(200, {"choices": [{"message": message, "finish_reason": "length"}]})
+
+
+@pytest.mark.asyncio
+async def test_probe_tools_retries_a_reply_truncated_while_thinking() -> None:
+    """F016: Qwen3 on vLLM spends a 32-token budget reasoning; that is not 'no tools'."""
+    budgets: list[int] = []
+
+    async def send(body: dict) -> probes.ProbeResponse:
+        budgets.append(body["max_tokens"])
+        if body["max_tokens"] < probes.TOOLS_PROBE_RETRY_MAX_TOKENS:
+            return _truncated({"content": None, "reasoning_content": "Okay, the user"})
+        return _chat_response(
+            {"tool_calls": [{"function": {"name": "record_sum", "arguments": '{"a":21,"b":21}'}}]}
+        )
+
+    fact = await probes.probe_tools(send, model_id="m", max_tokens=32)
+
+    assert budgets == [32, probes.TOOLS_PROBE_RETRY_MAX_TOKENS]
+    assert fact.value is True
+
+
+@pytest.mark.asyncio
+async def test_probe_tools_stays_unknown_when_every_reply_is_truncated() -> None:
+    async def send(body: dict) -> probes.ProbeResponse:
+        return _truncated({"content": "21 + 21"})
+
+    fact = await probes.probe_tools(send, model_id="m", max_tokens=32)
+
+    assert fact.value is None
+    assert "truncated" in fact.detail
+
+
 @pytest.mark.asyncio
 async def test_probe_tools_fails_when_arguments_do_not_match_schema() -> None:
     async def send(body: dict) -> probes.ProbeResponse:

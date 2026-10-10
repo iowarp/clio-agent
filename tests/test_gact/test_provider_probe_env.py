@@ -59,3 +59,31 @@ def test_a_boot_config_error_is_left_for_the_probe_to_report(
     env = runtime_provider_probe_env({})
 
     assert env["CLIO_LM_PROVIDER"] == "nope"
+
+
+def test_a_bound_provider_with_a_stored_key_is_not_reported_keyless(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F024: a managed vLLM bind (kind openai, key in CLIO's store) is not "requires a key"."""
+    from clio_agent.runtime.status import RuntimeProbe
+
+    monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(provider_probe_env, "_has_saved_key", lambda provider_id: True)
+    bound = {
+        "provider_id": "vllm",
+        "provider": "openai",
+        "api_base": "http://127.0.0.1:37153/v1",
+        "model": "/models/qwen3-4b",
+    }
+    env = runtime_provider_probe_env(bound)
+    assert env["CLIO_LM_KEY_SOURCE"] == "store:vllm"
+    assert "CLIO_LM_API_KEY" not in env  # the secret never enters the probe env
+    config, _source = RuntimeProbe(env=env)._load_lm_config()
+    assert config.provider == "openai"
+
+    monkeypatch.setattr(provider_probe_env, "_has_saved_key", lambda provider_id: False)
+    env = runtime_provider_probe_env(bound)
+    assert "CLIO_LM_KEY_SOURCE" not in env
+    with pytest.raises(ValueError, match="requires CLIO_LM_API_KEY"):
+        RuntimeProbe(env=env)._load_lm_config()

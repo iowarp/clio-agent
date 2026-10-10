@@ -66,11 +66,13 @@ from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.resource_tools import build_resource_tools
 from clio_agent.gact.storage.connect_tool import build_connected_data_connect_tool
+from clio_agent.gact.storage.download_tool import build_connected_data_download_tool
 from clio_agent.gact.storage.setup_tool import (
     build_connected_data_open_tool,
     build_connected_data_status_tool,
     build_connected_data_write_tool,
 )
+from clio_agent.gact.task_tools import build_task_tools
 from clio_agent.gact.todos import build_write_todos_tool
 from clio_agent.gact.weather_tools import build_weather_forecast_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
@@ -110,6 +112,8 @@ def build_auto_react_tools(
     """
 
     tools = [
+        *build_task_tools(),
+        build_connected_data_download_tool(),
         build_create_artifact_tool(agent_def),
         build_plan_exit_tool(agent_def),
         build_write_todos_tool(agent_def),
@@ -170,9 +174,6 @@ def build_auto_react_tools(
         tools.append(build_refresh_provider_models_tool())
         tools.append(build_connected_data_status_tool())
         tools.append(build_connected_data_connect_tool())
-        from clio_agent.gact.storage.github_tool import build_github_cli_tool
-
-        tools.append(build_github_cli_tool())
         tools.append(build_connected_data_open_tool())
         tools.append(build_connected_data_write_tool())
         tools.extend(build_memory_tools(agent_def))

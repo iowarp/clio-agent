@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -12,7 +13,11 @@ from clio_agent.gact.attention import aggregate as agg
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.contract import AttentionSummary
 from clio_agent.gact.attention.lm_calls import LmCall
-from clio_agent.gact.attention.ranges import DeclaredRange, declare_ranges
+from clio_agent.gact.attention.ranges import (
+    DeclaredRange,
+    declare_ranges,
+    render_without_tools,
+)
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.store import AttentionStore
 
@@ -36,7 +41,7 @@ def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]
             hi=int(r["hi"]),
             domain=str(r["domain"]),
             label=str(r["label"]),
-            message_index=int(r["message_index"]),
+            message_index=None if r.get("message_index") is None else int(r["message_index"]),
             char_lo=int(r["char_lo"]),
             char_hi=int(r["char_hi"]),
         )
@@ -55,6 +60,18 @@ def _check_prompt(encoded: Encoded, summary: Any) -> None:
         raise AttentionUnavailable(
             "range_alignment_mismatch", "re-rendered prompt token ids differ from the capture"
         )
+
+
+def _declared_tools(declaration: dict[str, Any]) -> list[Any]:
+    """The tool schemas the declaration rendered with, in their original key order.
+
+    ``tools_json`` keeps the order the template saw; a legacy ``tools`` list may
+    have been key-sorted by the trace writer, which then fails the token check
+    below with a typed mismatch instead of a wrong alignment.
+    """
+    if text := declaration.get("tools_json"):
+        return list(json.loads(text))
+    return list(declaration.get("tools") or [])
 
 
 def load_capture(
@@ -80,7 +97,11 @@ def load_capture(
             "attention_tokenizer_unavailable", "no tokenizer recorded on the call or workflow"
         )
     renderer = renderer_for(identity)
-    encoded = renderer.render_encoded(call.messages, declaration.get("template_kwargs") or {})
+    template_kwargs = dict(declaration.get("template_kwargs") or {})
+    tools = _declared_tools(declaration)
+    if tools:
+        template_kwargs["tools"] = tools
+    encoded = renderer.render_encoded(call.messages, template_kwargs)
     _check_prompt(encoded, summary)
 
     if declaration.get("status") == "declared":
@@ -91,7 +112,8 @@ def load_capture(
             )
         sections_source = "declared"
     else:
-        ranges = declare_ranges(call.messages, encoded).ranges
+        without_tools = render_without_tools(renderer, call.messages, template_kwargs)
+        ranges = declare_ranges(call.messages, encoded, tools, without_tools).ranges
         sections_source = "derived"
     sections = agg.sections_with_gaps(ranges, summary.prompt_tokens)
 

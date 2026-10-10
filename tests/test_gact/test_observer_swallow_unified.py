@@ -66,6 +66,12 @@ class _FakeClient:
     async def __aexit__(self, *exc: Any) -> bool:
         return False
 
+    async def list_tools(self) -> list[Any]:
+        """Advertise the real discovery contract used before external dispatch."""
+        from mcp.types import Tool
+
+        return [Tool(name="do_thing", inputSchema={"type": "object"})]
+
     async def call_tool(
         self, tool_name: str, tool_args: Any, *, progress_handler: Any = None
     ) -> _FakeResult:
@@ -111,11 +117,9 @@ def _patch_transport(monkeypatch: pytest.MonkeyPatch, module: str) -> None:
 def test_builders_exploding_observer_fails_the_tool_call(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    import fastmcp
-
     from clio_agent.gact.agents import builders
 
-    monkeypatch.setattr(fastmcp, "Client", _FakeClient, raising=True)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", _FakeClient)
     monkeypatch.setattr(
         "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: object(), raising=True
     )
@@ -141,11 +145,9 @@ def test_builders_observer_receives_structured_mcp_result(
 ) -> None:
     """External MCP telemetry retains structuredContent while the model gets text."""
 
-    import fastmcp
-
     from clio_agent.gact.agents import builders
 
-    monkeypatch.setattr(fastmcp, "Client", _StructuredFakeClient, raising=True)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", _StructuredFakeClient)
     monkeypatch.setattr(
         "clio_agent.tools.mcp_config.transport_from_spec", lambda spec: object(), raising=True
     )
@@ -184,11 +186,9 @@ def test_builders_observer_receives_structured_mcp_result(
 def test_mcp_route_exploding_observer_fails_the_call_typed(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tmp_path: Path
 ) -> None:
-    import fastmcp
-
     from clio_agent.gact.app import build_app
 
-    monkeypatch.setattr(fastmcp, "Client", _FakeClient, raising=True)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", _FakeClient)
     _patch_transport(monkeypatch, "clio_agent.gact.routes.mcp")
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -212,11 +212,9 @@ def test_mcp_route_observer_receives_structured_mcp_result(
 ) -> None:
     """Direct MCP calls persist public structured results without private metadata."""
 
-    import fastmcp
-
     from clio_agent.gact.app import build_app
 
-    monkeypatch.setattr(fastmcp, "Client", _StructuredFakeClient, raising=True)
+    monkeypatch.setattr("clio_agent.tools.task_receipt.TaskAwareClient", _StructuredFakeClient)
     _patch_transport(monkeypatch, "clio_agent.gact.routes.mcp")
 
     app = build_app(sessions_path=tmp_path / "s.json")

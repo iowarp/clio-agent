@@ -439,7 +439,7 @@ def make_mcp_client(
             push-forwarding. ``None`` (the default) leaves the whole advertisement
             SDK-derived.
         client_cls: Injection seam for the client class. Defaults to
-            ``fastmcp.Client``; tests substitute a fake to inspect the
+            ``TaskAwareClient``; tests substitute a fake to inspect the
             construction without spawning a real backend.
         server_id: #1201 -- when non-empty, the constructed client is
             instrumented (:func:`clio_agent.tools.mcp_connection_era.
@@ -478,9 +478,9 @@ def make_mcp_client(
         target = _normalize_mapping_target(target)
 
     if client_cls is None:
-        from fastmcp import Client  # noqa: PLC0415
+        from clio_agent.tools.task_receipt import TaskAwareClient  # noqa: PLC0415
 
-        client_cls = Client
+        client_cls = TaskAwareClient
 
     kwargs: dict[str, Any] = {
         "client_info": clio_client_info(),

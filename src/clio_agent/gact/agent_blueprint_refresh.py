@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import conf
-from clio_agent.gact.agent_blueprint_sources import record_default_agent_blueprint_source
 from clio_agent.gact.agent_blueprints import (
     _BLUEPRINT_ID_RE,
     _BLUEPRINT_ROOT_NAME,
@@ -50,6 +49,10 @@ from clio_agent.gact.blueprint_identity import (
     install_destination,
     installed_root,
     source_tombstones,
+)
+from clio_agent.gact.default_registry_relocation import (
+    reconcile_moved_default_registry_copies,
+    record_default_registry_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,6 +142,8 @@ def ensure_default_registry_bootstrap(
     from clio_agent.gact import default_registry_migration as _migration  # noqa: PLC0415
 
     with _migration.registry_install_lock(root.parent) as held:
+        if held:
+            reconcile_moved_default_registry_copies(source=source, install_root=root.parent)
         sync_diagnostic = (
             sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
             if held
@@ -153,7 +158,7 @@ def ensure_default_registry_bootstrap(
             or sync_diagnostic
         )
         if not diagnostic:
-            _record_default_registry_source(
+            record_default_registry_source(
                 source=source,
                 home=home,
                 cwd=cwd,
@@ -185,23 +190,9 @@ def ensure_default_registry_bootstrap(
             f"default registry install from {default_registry_url()} did not produce "
             f"{DEFAULT_AGENT_BLUEPRINT_ID}: {detail}"
         )
-    _record_default_registry_source(source=source, home=home, cwd=cwd, pinned=pinned)
+    record_default_registry_source(source=source, home=home, cwd=cwd, pinned=pinned)
     _migration.record_first_run_version(root.parent)
     return sync_diagnostic
-
-
-def _record_default_registry_source(*, source: str, home: Path, cwd: Path, pinned: str) -> None:
-    """Expose the automatically installed marketplace through source discovery."""
-
-    try:
-        record_default_agent_blueprint_source(
-            source=source,
-            ref=DEFAULT_REGISTRY_REF,
-            pinned_commit=pinned,
-            install_root=_install_root(home=home, cwd=cwd, scope="global"),
-        )
-    except Exception as exc:  # noqa: BLE001 - installed packs remain usable
-        logger.warning("default_registry_source_record_failed source=%s error=%r", source, exc)
 
 
 def update_installed_agent_blueprint(

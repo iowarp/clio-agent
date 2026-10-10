@@ -103,6 +103,7 @@ def test_provision_fresh_success_elevates_verifies_and_marks() -> None:
     spy = _SpyElevator(ok=True)
     written: list[tuple[str, object]] = []
     grants = [{"grant": "uv_tool_bin", "status": "granted"}]
+    progress: list[str] = []
     result = scli.provision_codex_windows(
         platform="win32",
         detection=_codex_ok(),
@@ -111,6 +112,7 @@ def test_provision_fresh_success_elevates_verifies_and_marks() -> None:
         verifier=lambda _b, _r, platform="win32": (True, sc.REASON_CODEX_ENFORCEMENT_VERIFIED),
         marker_writer=lambda v, **k: written.append((v, k.get("enforcement_verified"))),
         grantor=lambda: grants,  # fake fleet-runtime RX grants (never touch icacls)
+        progress=progress.append,
     )
     assert result.ok is True
     assert result.status == scli.OUTCOME_PROVISIONED
@@ -119,6 +121,11 @@ def test_provision_fresh_success_elevates_verifies_and_marks() -> None:
     assert written == [("0.145.0", True)]  # marker persisted: version + verified enforcement
     # The fleet-runtime grant reasons are recorded on the result (never a silent step).
     assert result.extra["fleet_runtime_grants"] == grants
+    assert progress == [
+        "Creating protected execution sandbox - Windows approval required...",
+        "Sandbox accounts created. Preparing runtime access...",
+        "Verifying protected execution...",
+    ]
 
 
 def test_provision_setup_failure_is_typed() -> None:

@@ -65,9 +65,14 @@ another one):
 - `asyncio_task_cancel_scheduled`
 - `asyncio_task_cancel_sent`
 - `children_cancelled` — count of descendant agent-task turns cancelled
-- `provider_streams_killed` — count of in-flight SDK streams aborted
-- `composer_autostart_suspended` — whether pending steers/queued messages were
-  suspended from auto-promoting
+- `provider_streams_killed` — count of in-flight provider streams aborted: Claude Code
+  SDK streams and the HTTP streams of every other provider (vLLM, llama.cpp,
+  Ollama, remote), whose call scope the cancel closes at once
+- `composer_autostart_suspended` — whether the future-message queue was paused.
+  Already submitted pending steers are not suspended: each starts with its
+  accepted identity after the cancelled turn releases its slot. The queue pause
+  persists across those feedback turns and restarts; an explicit idle send
+  resumes the queue. Stop never deletes either kind of message.
 
 This makes post-hoc inspection possible after transient SSE events are gone.
 

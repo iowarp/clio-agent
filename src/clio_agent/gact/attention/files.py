@@ -25,19 +25,22 @@ from clio_agent import conf
 from clio_agent.gact.attention.byte_source import LocalFile
 from clio_agent.gact.attention.contract import AttentionRecord
 from clio_agent.gact.attention.reasons import AttentionUnavailable
+from clio_agent.gact.infrastructure.service_paths import this_host_counterpart
 
 _lock = threading.Lock()
 _verified: set[tuple[str, int, str]] = set()
 
 
 def configured_files_dir() -> str:
-    """The local mirror of the connector's ``out_dir``, or ``""``."""
-    return conf.resolve(
-        "provenance.attention.files_dir",
-        env="CLIO_PROVENANCE_ATTENTION_FILES_DIR",
-        default="",
-        cast=conf.as_str,
-    ).strip()
+    """The local mirror of the connector's ``out_dir`` (on this host), or ``""``."""
+    return this_host_counterpart(
+        conf.resolve(
+            "provenance.attention.files_dir",
+            env="CLIO_PROVENANCE_ATTENTION_FILES_DIR",
+            default="",
+            cast=conf.as_str,
+        ).strip()
+    )
 
 
 def uri_path(uri: str) -> str:

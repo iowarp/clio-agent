@@ -285,7 +285,9 @@ def _estimate_text_tokens(text: str) -> int:
 def _resolve_expert_context_window(cfg: Any) -> int:
     """Resolve the expert model's context window (the auto-compaction denominator).
 
-    Ladder: (1) handshake-discovered ``chosen_context``/``context_window`` on the
+    Ladder: (0) the working context a person chose for this provider/model
+    (:mod:`clio_agent.gact.providers.working_context`, bounded by the model's
+    reported maximum); (1) handshake-discovered ``chosen_context``/``context_window`` on the
     config; (2) the offline catalog ladder
     (:func:`clio_agent.providers.handshake.sources.lookup_native_context`: the
     fetched LiteLLM cost map's disk cache, then the model-limits DB). Never a
@@ -293,6 +295,11 @@ def _resolve_expert_context_window(cfg: Any) -> int:
     when unknown (auto-compaction stays off; dspy's reactive truncation remains
     the backstop).
     """
+    from clio_agent.gact.providers.working_context import working_context_for  # noqa: PLC0415
+
+    chosen = working_context_for(cfg)
+    if chosen:
+        return chosen
     for attr in ("chosen_context", "context_window"):
         v = getattr(cfg, attr, None)
         if v:

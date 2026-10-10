@@ -13,6 +13,7 @@ state.
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import uuid
@@ -24,6 +25,49 @@ from typing import Any, Optional
 from clio_agent.gact.workspace_scope import resolve_workspace_storage_root
 
 _WORKSPACE_ID_PREFIX = "ws_"
+DEFAULT_WORKSPACE_ID = "ws_default"
+
+logger = logging.getLogger(__name__)
+
+
+def configured_default_workspace_root() -> str:
+    """The ``paths.default_workspace`` / ``CLIO_DEFAULT_WORKSPACE`` setting, or ``""``."""
+
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return conf.resolve(
+        "paths.default_workspace", env="CLIO_DEFAULT_WORKSPACE", default="", cast=conf.as_str
+    ).strip()
+
+
+def default_workspace_root() -> str:
+    """The root a fresh ``ws_default`` is seeded with, created like a PATCHed root.
+
+    The configured setting wins (``~`` is expanded; the directory is created if
+    missing); without it the server's working directory at first start is used.
+    The setting only seeds: an existing ``ws_default`` keeps its root and is
+    repointed with ``PATCH /v1/workspaces/ws_default {"root_path": ...}``.
+
+    Raises:
+        ValueError: If the setting is not an absolute path or cannot be created.
+    """
+
+    configured = configured_default_workspace_root()
+    if not configured:
+        return os.getcwd()
+    root = Path(configured).expanduser()
+    if not root.is_absolute():
+        raise ValueError(
+            "paths.default_workspace (CLIO_DEFAULT_WORKSPACE) must be an absolute path, "
+            f"got {configured!r}"
+        )
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(
+            f"paths.default_workspace (CLIO_DEFAULT_WORKSPACE) could not be created: {root}: {exc}"
+        ) from exc
+    return str(root)
 
 
 def workspace_path_basename(value: str) -> str:
@@ -186,6 +230,8 @@ class WorkspaceStore:
         self._load()
         if not self._workspaces:
             self._seed_default()
+        else:
+            self._report_unapplied_default_root()
 
     # ---- persistence -------------------------------------------------
 
@@ -226,12 +272,27 @@ class WorkspaceStore:
 
     def _seed_default(self) -> None:
         ws = Workspace(
-            id="ws_default",
+            id=DEFAULT_WORKSPACE_ID,
             name="default",
-            root_path=os.getcwd(),
+            root_path=default_workspace_root(),
         )
         self._workspaces[ws.id] = ws
         self._flush()
+
+    def _report_unapplied_default_root(self) -> None:
+        """Say so when the setting differs from an existing ``ws_default`` (it only seeds)."""
+
+        configured = configured_default_workspace_root()
+        existing = self._workspaces.get(DEFAULT_WORKSPACE_ID)
+        if not configured or existing is None:
+            return
+        if Path(configured).expanduser() != Path(existing.root_path):
+            logger.warning(
+                "default workspace setting not applied: reason=already_seeded "
+                "configured=%s ws_default=%s; repoint it with PATCH /v1/workspaces/ws_default",
+                configured,
+                existing.root_path,
+            )
 
     # ---- public API --------------------------------------------------
 

@@ -15,6 +15,7 @@ deleted); the Linux fallback is Landlock, elsewhere the honest floor. Pinned:
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -164,10 +165,55 @@ def test_compose_codex_spawn_elevated_layer_only_on_win32(tmp_path: Path) -> Non
     assert "[windows]" not in nix_layer  # off-win32 the elevated gate is omitted
 
 
+def test_explicit_cwd_is_independent_of_writable_state_and_cache(tmp_path: Path) -> None:
+    state, cache, workspace = tmp_path / "state", tmp_path / "cache", tmp_path / "workspace"
+    nested = workspace / "nested"
+    _, args = sc.compose_codex_spawn(
+        [state, cache, workspace],
+        "python",
+        ["-c", "print('cwd')"],
+        binary="codex",
+        platform="linux",
+        codex_home=tmp_path,
+        cwd=nested,
+    )
+    assert args[args.index("-C") + 1] == str(nested)
+    layer = args[args.index("-p") + 1]
+    profile = tomllib.loads((tmp_path / f"{layer}.config.toml").read_text())
+    grants = profile["permissions"]["clio"]["filesystem"]
+    assert grants[str(state)] == grants[str(cache)] == grants[str(workspace)] == "write"
+    assert str(nested) not in grants  # Choosing cwd never widens writable territory.
+
+
 def test_compose_codex_spawn_empty_roots_raises_typed(tmp_path: Path) -> None:
     """No write territory → a typed CodexSpawnError (an empty fence would confine nothing)."""
     with pytest.raises(sc.CodexSpawnError):
         sc.compose_codex_spawn([], "python", [], binary="codex", codex_home=tmp_path)
+
+
+def test_compose_codex_spawn_uses_cwd_without_creating_or_changing_grants(tmp_path: Path) -> None:
+    """A not-yet-created state grant must not replace the real command directory."""
+    state_root = tmp_path / "missing-state"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "codex"
+    roots = [str(state_root), str(workspace)]
+    _, args = sc.compose_codex_spawn(
+        roots, "sh", ["-c", "pwd"], binary="codex", codex_home=home, cwd=workspace
+    )
+    assert args[args.index("-C") + 1] == str(workspace)
+    assert args[-4:] == ["--", "sh", "-c", "pwd"]
+    layer = tomllib.loads(next(home.glob(sc.CODEX_LAYER_GLOB)).read_text(encoding="utf8"))
+    filesystem = layer["permissions"]["clio"]["filesystem"]
+    assert filesystem[str(state_root)] == filesystem[str(workspace)] == "write"
+    assert not state_root.exists()
+    # Selecting the command directory changes no permission grants.
+    other_home = tmp_path / "legacy-codex"
+    sc.compose_codex_spawn(roots, "sh", ["-c", "pwd"], binary="codex", codex_home=other_home)
+    assert (
+        next(home.glob(sc.CODEX_LAYER_GLOB)).read_bytes()
+        == next(other_home.glob(sc.CODEX_LAYER_GLOB)).read_bytes()
+    )
 
 
 def test_compose_codex_spawn_wraps_typed_in_composition_error(

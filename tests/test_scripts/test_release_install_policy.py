@@ -40,11 +40,11 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
 
     expected_commands = {
         "install/install.sh": (
-            "uv sync --python 3.13 --extra argonne",
+            "uv sync --python 3.14 --extra argonne",
             '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync', '--python', '3.13')",
+            "RunNative uv @('sync', '--python', '3.14')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
@@ -115,7 +115,7 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
     smoke_step = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
-    smoke = workflow.index("uv tool install --python 3.13 --no-cache", smoke_step)
+    smoke = workflow.index("uv tool install --python 3.14 --no-cache", smoke_step)
     version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
     publish = workflow.index("run: uv publish", version_check)
 
@@ -234,7 +234,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
-    registry_install = workflow.index("uv tool install --python 3.13 --no-cache", registry_job)
+    registry_install = workflow.index("uv tool install --python 3.14 --no-cache", registry_job)
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
@@ -651,6 +651,70 @@ def test_actual_desktop_config_preserves_beta_hotfix_and_msi_order(tmp_path: Pat
         config = json.loads(output.read_text())
         assert config["version"] == app
         assert config["bundle"]["windows"]["wix"]["version"] == msi
+
+
+@pytest.mark.parametrize(
+    ("variant", "platform"), [("bundled", "Windows"), ("lite", "Windows"), ("bundled", "Linux")]
+)
+def test_actual_desktop_config_inherits_only_windows_pack_optimizations(
+    tmp_path: Path, variant: str, platform: str
+) -> None:
+    """Run the shipping merge against a pinned UI overlay, retaining brand/signing policy."""
+    import json
+    import re
+
+    steps = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))["jobs"]["desktop"]["steps"]
+    build = next(step["run"] for step in steps if step.get("name") == "Tauri release build")
+    match = re.search(r"<<'NODE'\n(.*?)\nNODE", build, flags=re.DOTALL)
+    assert match is not None
+    ui = tmp_path / "desktop/src-tauri"
+    ui.mkdir(parents=True)
+    (ui / "tauri.bundled.conf.json").write_text(
+        json.dumps({"bundle": {"resources": ["gact-runtime/**/*"]}})
+    )
+    (ui / "tauri.bundled.windows-pack.conf.json").write_text(
+        json.dumps(
+            {
+                "bundle": {
+                    "resources": ["gact-runtime.tar.zst", "gact-runtime.pack.json"],
+                    "windows": {"nsis": {"compression": "zlib"}},
+                }
+            }
+        )
+    )
+    output = tmp_path / "config.json"
+    result = subprocess.run(
+        [
+            "node",
+            "-",
+            variant,
+            str(ROOT / "branding/clio/tauri.clio.conf.json"),
+            str(output),
+            "0.9.5-beta.5.2",
+        ],
+        input=match.group(1),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+        cwd=tmp_path,
+        env={**os.environ, "RUNNER_OS": platform},
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads(output.read_text())
+    brand = json.loads(_text("branding/clio/tauri.clio.conf.json"))
+    assert config["plugins"]["updater"]["pubkey"] == brand["plugins"]["updater"]["pubkey"]
+    assert config["bundle"]["createUpdaterArtifacts"] == brand["bundle"]["createUpdaterArtifacts"]
+    assert config["bundle"]["externalBin"] == brand["bundle"]["externalBin"]
+    assert config["bundle"]["windows"]["wix"]["version"] == "0.9.5.5002"
+    nsis = config["bundle"]["windows"]["nsis"]
+    assert nsis["headerImage"] == brand["bundle"]["windows"]["nsis"]["headerImage"]
+    assert nsis["sidebarImage"] == brand["bundle"]["windows"]["nsis"]["sidebarImage"]
+    if variant == "bundled" and platform == "Windows":
+        assert nsis["compression"] == "zlib"
+        assert config["bundle"]["resources"] == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]
+    else:
+        assert nsis.get("compression") == brand["bundle"]["windows"]["nsis"].get("compression")
 
 
 def test_release_steps_after_the_check_use_the_package_version() -> None:

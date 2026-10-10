@@ -14,6 +14,7 @@ AttentionReason = Literal[
     # transcript / CLIO provenance
     "message_not_found",
     "message_not_generated",
+    "field_not_supported",
     "lm_call_store_unavailable",
     "lm_call_not_found",
     "lm_call_ambiguous",
@@ -49,6 +50,7 @@ REASON_TEXT: dict[str, str] = {
     "attention_tokenizer_unavailable": "The model's tokenizer could not be loaded.",
     "message_not_found": "The message is not in this session.",
     "message_not_generated": "Only generated answers have attention rows.",
+    "field_not_supported": 'Attention covers the fields "text" (answer), "thought" and "input".',
     "lm_call_store_unavailable": "No provenance store holds this session's model calls.",
     "lm_call_not_found": "The model call that produced this answer was not recorded.",
     "lm_call_ambiguous": "More than one model call matches this answer.",

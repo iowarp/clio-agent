@@ -32,19 +32,15 @@ that died mid-drive expires by TTL rather than wedging the task forever.
 from __future__ import annotations
 
 import logging
-import os
 import threading
-import time
-import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from clio_agent.errors import (
-    MCP_TASK_LEASE_HELD,
     MCP_TASK_RECORD_STORE_ABSENT,
-    ToolError,
 )
+from clio_agent.tools.mcp_task_lease import DEFAULT_LEASE_SECONDS, TaskLease
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +76,6 @@ __all__ = [
 #: Terminal SEP-2663 task states.
 TERMINAL_TASK_STATES = frozenset({"completed", "failed", "cancelled"})
 
-#: How long one driver's lease on a task stays valid without renewal. A lease is
-#: released on every exit path; the TTL exists only so a lease taken by a process
-#: that died mid-drive cannot wedge the task forever.
-DEFAULT_LEASE_SECONDS = 300.0
-
 
 @dataclass(frozen=True)
 class TaskKey:
@@ -99,11 +90,18 @@ class TaskKey:
     server_id: str
     session_id: str | None
     task_id: str
+    backend_session_id: str | None = None
 
     @property
     def row_key(self) -> str:
         """The stable string the durable row is stored under, within its session."""
 
+        if self.backend_session_id:
+            import hashlib
+            import json
+
+            identity = json.dumps([self.server_id, self.backend_session_id, self.task_id])
+            return "session-task:" + hashlib.sha256(identity.encode()).hexdigest()
         return f"{self.server_id}|{self.task_id}"
 
     def to_wire(self) -> dict[str, Any]:
@@ -113,6 +111,7 @@ class TaskKey:
             "server_id": self.server_id,
             "session_id": self.session_id,
             "task_id": self.task_id,
+            **({"backend_session_id": self.backend_session_id} if self.backend_session_id else {}),
         }
 
     @classmethod
@@ -123,6 +122,7 @@ class TaskKey:
             server_id=str(payload.get("server_id") or ""),
             session_id=payload.get("session_id") or None,
             task_id=str(payload.get("task_id") or ""),
+            backend_session_id=payload.get("backend_session_id") or None,
         )
 
 
@@ -190,7 +190,19 @@ class TaskRecord:
     lease_owner: str | None = None
     lease_expires_at: float | None = None
     cancel_requested: bool = False
+    cancel_acknowledged: bool = False
     holding_reason: str | None = None
+    # Public identity and delivery are persisted on the existing session task row.
+    handle: str = ""
+    kind: str = "MCP"
+    description: str = ""
+    invocation_id: str = ""
+    owner_agent: str = ""
+    result: dict[str, Any] | None = None
+    notify_pending: bool = False
+    consumed_at: str = ""
+    connection_freshness: str = "connected"
+    dismissed: bool = False
 
     @property
     def task_id(self) -> str:
@@ -233,7 +245,18 @@ class TaskRecord:
             "lease_owner": self.lease_owner,
             "lease_expires_at": self.lease_expires_at,
             "cancel_requested": self.cancel_requested,
+            "cancel_acknowledged": self.cancel_acknowledged,
             "holding_reason": self.holding_reason,
+            "handle": self.handle,
+            "kind": self.kind,
+            "description": self.description,
+            "invocation_id": self.invocation_id,
+            "owner_agent": self.owner_agent,
+            "result": self.result,
+            "notify_pending": self.notify_pending,
+            "consumed_at": self.consumed_at,
+            "connection_freshness": self.connection_freshness,
+            "dismissed": self.dismissed,
         }
 
     @classmethod
@@ -258,7 +281,18 @@ class TaskRecord:
             lease_owner=payload.get("lease_owner") or None,
             lease_expires_at=float(expires) if isinstance(expires, (int, float)) else None,
             cancel_requested=bool(payload.get("cancel_requested")),
+            cancel_acknowledged=bool(payload.get("cancel_acknowledged")),
             holding_reason=payload.get("holding_reason") or None,
+            handle=str(payload.get("handle") or ""),
+            kind=str(payload.get("kind") or "MCP"),
+            description=str(payload.get("description") or ""),
+            invocation_id=str(payload.get("invocation_id") or ""),
+            owner_agent=str(payload.get("owner_agent") or ""),
+            result=dict(payload["result"]) if isinstance(payload.get("result"), Mapping) else None,
+            notify_pending=bool(payload.get("notify_pending")),
+            consumed_at=str(payload.get("consumed_at") or ""),
+            connection_freshness=str(payload.get("connection_freshness") or "unknown"),
+            dismissed=bool(payload.get("dismissed")),
         )
 
 
@@ -487,125 +521,6 @@ def persist_ledger(store: TaskRecordStore, key: TaskKey, ledger: TaskInputLedger
 # --------------------------------------------------------------------------- #
 # One driver per task                                                         #
 # --------------------------------------------------------------------------- #
-
-_LEASE_LOCKS_GUARD = threading.Lock()
-_LEASE_LOCKS: dict[tuple[str, str | None, str], threading.Lock] = {}
-
-
-def _lease_lock(key: TaskKey) -> threading.Lock:
-    """The process-local lock serializing compare-and-set on one task's lease."""
-
-    index = (key.server_id, key.session_id, key.task_id)
-    with _LEASE_LOCKS_GUARD:
-        lock = _LEASE_LOCKS.get(index)
-        if lock is None:
-            lock = threading.Lock()
-            _LEASE_LOCKS[index] = lock
-        return lock
-
-
-def _new_owner_id() -> str:
-    """A per-driver owner token."""
-
-    return f"{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex[:8]}"
-
-
-class TaskLease:
-    """An exclusive, expiring claim on driving one task.
-
-    Acquiring is a compare-and-set on the persisted record, serialized by a
-    process-local lock so two drivers in this process cannot both read "free" before
-    either writes. A second driver of the SAME task is refused with the typed reason
-    ``mcp_task_lease_held`` instead of silently double-polling and double-answering.
-
-    A lease whose ``lease_expires_at`` has passed is reclaimable: the owning process
-    died mid-drive, and a task must not be wedged forever by a crash. Cross-process
-    exclusivity beyond that TTL is the relay's job (P2), not this client's.
-
-    Use as a context manager; the lease is always released, including on error.
-    """
-
-    def __init__(
-        self,
-        store: TaskRecordStore,
-        key: TaskKey,
-        *,
-        ttl_seconds: float = DEFAULT_LEASE_SECONDS,
-        owner: str | None = None,
-    ) -> None:
-        self._store = store
-        self._key = key
-        self._ttl = ttl_seconds
-        self._owner = owner or _new_owner_id()
-        self._held = False
-
-    @property
-    def owner(self) -> str:
-        """This driver's owner token."""
-
-        return self._owner
-
-    def acquire(self) -> None:
-        """Take the lease, or raise the typed refusal if another driver holds it.
-
-        Raises:
-            ToolError: Another live driver holds an unexpired lease on this task.
-        """
-
-        with _lease_lock(self._key):
-            record = self._store.get(self._key)
-            if record is None:
-                # Nothing persisted yet (the create-and-record window, or a drive
-                # against a store with no row). The process-local lock still
-                # serializes this task's drivers; there is simply no row to CAS on.
-                self._held = True
-                return
-            now = time.time()
-            held_by_other = (
-                record.lease_owner is not None
-                and record.lease_owner != self._owner
-                and (record.lease_expires_at or 0.0) > now
-            )
-            if held_by_other:
-                raise ToolError(
-                    f"task {self._key.task_id} is already being driven by another driver",
-                    details={
-                        "reason": MCP_TASK_LEASE_HELD,
-                        "task_id": self._key.task_id,
-                        "server_id": self._key.server_id,
-                        "session_id": self._key.session_id,
-                        "lease_owner": record.lease_owner,
-                        "lease_expires_at": record.lease_expires_at,
-                    },
-                )
-            self._store.put(
-                replace(record, lease_owner=self._owner, lease_expires_at=now + self._ttl)
-            )
-            self._held = True
-
-    def release(self) -> None:
-        """Clear the lease if this driver still owns it (idempotent)."""
-
-        if not self._held:
-            return
-        self._held = False
-        with _lease_lock(self._key):
-            record = self._store.get(self._key)
-            if record is None or record.lease_owner != self._owner:
-                return
-            self._store.put(replace(record, lease_owner=None, lease_expires_at=None))
-
-    def __enter__(self) -> "TaskLease":
-        """Acquire on entry."""
-
-        self.acquire()
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        """Always release."""
-
-        self.release()
-
 
 # --------------------------------------------------------------------------- #
 # Wiring hooks the gact layer installs                                        #

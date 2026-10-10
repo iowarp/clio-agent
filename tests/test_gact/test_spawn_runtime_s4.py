@@ -70,6 +70,8 @@ class _Def:
         self.id = agent_id
         self.parent_id = "" if agent_id == "main" else "main"
         self.metadata = {"agent_blueprint_id": blueprint_id}
+        # Exercise explicitly declared aliases during the released compatibility cycle.
+        self.tools = ["wait_agent_tasks", "observe_agent_tasks", "get_agent_task_output"]
 
 
 class _InvokeSpy:
@@ -223,12 +225,16 @@ class _StubSessions:
         self.updates: list[tuple[str, dict]] = []
 
     def seed(self, sid: str, metadata: dict | None = None) -> SimpleNamespace:
-        sess = SimpleNamespace(id=sid, metadata=dict(metadata or {}))
+        sess = SimpleNamespace(id=sid, metadata=dict(metadata or {}), parent_session_id="")
         self._sessions[sid] = sess
         return sess
 
     def get(self, sid: str) -> Any:
         return self._sessions.get(sid)
+
+    def list(self, *, workspace_id: str | None = None) -> list[SimpleNamespace]:
+        del workspace_id
+        return list(self._sessions.values())
 
     def update(self, sid: str, *, metadata_patch: dict | None = None, **_kw: Any) -> Any:
         self.updates.append((sid, dict(metadata_patch or {})))
@@ -253,6 +259,16 @@ def _fake_app(
         )
     )
     app.state.expert_invoker = InProcessExpertInvoker(app)
+    from clio_agent.gact.events import EventBus
+    from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore
+
+    app.state.bus = EventBus()
+    app.state.cancel_flags = set()
+    app.state.sessions.task_store = InMemoryTaskRecordStore()
+    app.state.sessions.seed("sess_x", {"active_agent_blueprint_id": "bp"})
+    for task in app.state.agent_task_registry.snapshot():
+        app.state.sessions.seed(task.parent_session_id, {"active_agent_blueprint_id": "bp"})
+        app.state.sessions.seed(task.child_session_id, task.to_metadata())
     return app
 
 
@@ -353,6 +369,10 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     # Returns the task handle for a later wait (run_index is the ensemble run id, #948 S5);
     # queued_reason is the typed at-cap reason (#948 S6 fire-and-forget handle).
     assert result == {
+        "accepted": True,
+        "handle": "task_abc",
+        "kind": "Subagent",
+        "description": "analyze",
         "task_id": "task_abc",
         "status": "running",
         "run_index": 0,
@@ -524,8 +544,8 @@ def test_spawn_runtime_has_no_direct_spawn_substrate_reference() -> None:
     assert "spawn_child_turn_threadsafe" not in source
 
 
-def test_spawn_and_committed_wait_route_through_expert_invoker(monkeypatch) -> None:
-    """P2.6: spawn and committed wait cross one invoker stub."""
+def test_spawn_uses_invoker_and_compatibility_wait_uses_shared_controls(monkeypatch) -> None:
+    """Spawn retains its owner; the released wait alias delegates to shared collection."""
 
     registry = AgentTaskRegistry()
     registry.register(_completed_task())
@@ -533,6 +553,16 @@ def test_spawn_and_committed_wait_route_through_expert_invoker(monkeypatch) -> N
     spy = _ProtocolSpy(registry)
     app.state.expert_invoker = spy
     _capture_emits(monkeypatch)
+    from clio_agent.gact import task_controls
+
+    calls: list[str | list[str]] = []
+    original = task_controls.wait_tasks
+
+    def shared(tasks: str | list[str]) -> dict[str, Any]:
+        calls.append(tasks)
+        return original(tasks)
+
+    monkeypatch.setattr(task_controls, "wait_tasks", shared)
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
@@ -540,12 +570,13 @@ def test_spawn_and_committed_wait_route_through_expert_invoker(monkeypatch) -> N
         tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
     assert len(spy.specs) == 1
-    assert [handle.task_id for handle, _timeout in spy.wait_calls] == ["task_done"]
+    assert calls == [["task_done"]]
+    assert spy.wait_calls == []
     assert spy.check_calls == []
 
 
 def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None:
-    """The optional timeout crosses the invoker boundary as ``None``."""
+    """The released alias keeps an unbounded shared wait, without a hidden checkpoint."""
 
     registry = AgentTaskRegistry()
     registry.register(_completed_task())
@@ -553,12 +584,25 @@ def test_wait_agent_tasks_omitted_timeout_is_committed_wait(monkeypatch) -> None
     spy = _ProtocolSpy(registry)
     app.state.expert_invoker = spy
     _capture_emits(monkeypatch)
+    from clio_agent.gact import task_controls
+
+    calls: list[float | None] = []
+    original = task_controls.wait_tasks
+
+    def shared(
+        tasks: str, return_when: str = "all", timeout_s: float | None = None
+    ) -> dict[str, Any]:
+        calls.append(timeout_s)
+        return original(tasks, return_when, timeout_s)
+
+    monkeypatch.setattr(task_controls, "wait_tasks", shared)
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
         tools["wait_agent_tasks"].func(task_ids=["task_done"])
 
-    assert [timeout for _handle, timeout in spy.wait_calls] == [None]
+    assert calls == [None]
+    assert spy.wait_calls == []
 
 
 @pytest.mark.parametrize("terminal_status", ["completed", "failed", "cancelled"])
@@ -973,6 +1017,10 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
     assert result == {
         "spawned": [
             {
+                "accepted": True,
+                "handle": "task_data_expert",
+                "kind": "Subagent",
+                "description": "profile the CSV",
                 "task_id": "task_data_expert",
                 "status": "running",
                 "run_index": 0,
@@ -984,6 +1032,10 @@ def test_spawn_agents_parallel_emits_fanout_started_and_spawns_each(monkeypatch)
                 "placement": "local",
             },
             {
+                "accepted": True,
+                "handle": "task_hpc_expert",
+                "kind": "Subagent",
+                "description": "run the job",
                 "task_id": "task_hpc_expert",
                 "status": "running",
                 "run_index": 0,
@@ -2215,6 +2267,10 @@ def test_one_placement_parameter_drives_local_and_relay_with_part_shape_parity(
         set(local_wire)
         == set(relay_wire)
         == {
+            "accepted",
+            "handle",
+            "kind",
+            "description",
             "handle_id",
             "host",
             "live_state",
@@ -2226,6 +2282,11 @@ def test_one_placement_parameter_drives_local_and_relay_with_part_shape_parity(
             "task_id",
         }
     )
+    for wire, assignment in ((local_wire, "profile locally"), (relay_wire, "profile remotely")):
+        assert wire["accepted"] is True
+        assert wire["kind"] == "Subagent"
+        assert wire["handle"] == wire["task_id"]
+        assert wire["description"] == assignment
     assert len(parts) == 2
     assert set(parts[0][1].to_wire()) == set(parts[1][1].to_wire())
     for (_sid, part), wire in zip(parts, (local_wire, relay_wire), strict=True):
@@ -2882,3 +2943,28 @@ def test_child_rollup_appends_nothing_when_no_child_spawned_this_turn(tmp_path: 
     append_turn_child_resource_links(app, "sess_p", "T1", transcript, agent_id="main")
 
     assert transcript.snapshot() == []
+
+
+def test_compatibility_collectors_cannot_read_an_unrelated_subagent(monkeypatch) -> None:
+    foreign = replace(
+        _completed_task("foreign-task"),
+        parent_session_id="foreign-parent",
+        child_session_id="foreign-child",
+        notify_pending=True,
+    )
+    registry = AgentTaskRegistry()
+    registry.register(foreign)
+    app = _fake_app(registry)
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        waited = json.loads(tools["wait_agent_tasks"].func(task_ids=[foreign.task_id]))
+        fetched = json.loads(tools["get_agent_task_output"].func(task_id=foreign.task_id))
+        observed = json.loads(tools["observe_agent_tasks"].func(task_ids=[foreign.task_id]))
+    assert waited["results"] == [{"task_id": foreign.task_id, "error": "unknown_task"}]
+    assert fetched == {"task_id": foreign.task_id, "error": "unknown_task"}
+    assert observed["tasks"] == [{"task_id": foreign.task_id, "error": "unknown_task"}]
+    retained = registry.get(foreign.task_id)
+    assert retained is not None and retained.notify_pending and not retained.consumed_at
+    assert parts == []

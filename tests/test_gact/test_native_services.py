@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import nullcontext
+import os
+import socket
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -100,6 +105,16 @@ def test_native_install_and_start_are_distinct_and_pinned() -> None:
         json.loads(start.failure_cleanup[0].stdin)["require_operation_id"]
         == json.loads(start.commands[0].stdin)["operation_id"]
     )
+
+
+def test_connector_source_override_replaces_only_the_connector_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "git+file:///data/src/vllm-attn-connector@4c1a9fa"
+    monkeypatch.setenv("CLIO_VLLM_ATTN_CONNECTOR", source)
+    project = json.loads(plan().commands[-1].stdin)["manifest"]["project"]
+    assert f"vllm-attn-connector @ {source}" in project
+    assert CONNECTOR_REVISION not in project and FLOWCEPT_REVISION in project
 
 
 def test_native_remove_retains_receipt_and_delete_is_separate() -> None:
@@ -207,6 +222,22 @@ def test_target_refuses_foreign_directory_and_changed_owner(
         node_service.prepare(owned, "deployment-two")
 
 
+def test_a_directory_installed_on_another_host_names_that_host_and_the_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F020: a shared-filesystem directory from another HPC node explains how to recover."""
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    owned = tmp_path / "owned"
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua018")
+    node_service.prepare(owned, "local:gpua018")
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua078")
+    with pytest.raises(
+        ValueError, match="installed on host gpua018, not on this host .gpua078.; install"
+    ):
+        node_service.owner(owned, "local:gpua078")
+    assert json.loads((owned / "owner.json").read_text())["host"] == "gpua018"
+
+
 def test_cleanup_cannot_stop_a_previous_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -231,6 +262,24 @@ def test_cleanup_cannot_stop_a_previous_operation(
     assert result["phase"] == "stopped"
 
 
+def test_failure_cleanup_of_a_refused_foreign_host_start_has_nothing_to_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F020: the cleanup stop after a refused start must not repeat the refusal."""
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    root = tmp_path / "owned"
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua078")
+    node_service.prepare(root, "local:gpua078")
+    node_service.write_json(root / "receipt.json", {"phase": "stopped", "operation_id": "install"})
+    monkeypatch.setattr(node_service.socket, "gethostname", lambda: "gpua012")
+    monkeypatch.setattr(node_service, "stop", lambda root: pytest.fail("Must not stop"))
+    request = {"root": str(root), "owner": "local:gpua012", "action": "stop"}
+    with pytest.raises(ValueError, match="installed on host gpua078"):
+        node_service.control(dict(request))  # a person's own stop still explains the host
+    result = node_service.control({**request, "require_operation_id": "refused-start"})
+    assert result["phase"] == "untouched" and not result["running"]
+
+
 def test_reused_pid_is_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(node_service, "identity", lambda pid: "new-boot:new-start")
     assert not node_service.alive({"pid": 12, "process_identity": "old-boot:old-start"})
@@ -252,13 +301,8 @@ def test_provenance_verification_expires_with_configuration_or_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(node_service, "alive", lambda receipt: True)
-    monkeypatch.setattr(
-        node_service,
-        "build_opener",
-        lambda *args: SimpleNamespace(
-            open=lambda *args, **kwargs: nullcontext(SimpleNamespace(status=200))
-        ),
-    )
+    monkeypatch.setattr(node_service, "serves_identity", lambda root, receipt, key="": True)
+    monkeypatch.setattr(node_service, "http_get", lambda url, key="": (200, b""))
     (tmp_path / "evidence").mkdir()
     node_service.write_json(
         tmp_path / "receipt.json",
@@ -279,3 +323,344 @@ def test_provenance_verification_expires_with_configuration_or_process(
     for changed in ({"generation": "process-b"}, {"configuration_revision": "config-b"}):
         node_service.write_json(tmp_path / "evidence/verification.json", {**proof, **changed})
         assert not node_service.observation(tmp_path)["provenance_ingesting"]
+
+
+def test_attention_launcher_runs_until_vllm_entrypoint(tmp_path: Path) -> None:
+    """Execute the generated launcher against stub packages: it must reach vLLM's entrypoint."""
+    import subprocess
+    import sys
+
+    stubs = tmp_path / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import json, os, sys\n"
+        "print(json.dumps({'argv': sys.argv, 'settings': os.environ['FLOWCEPT_SETTINGS_PATH']}))\n"
+    )
+    (stubs / "vllm_attn_connector.py").write_text("def install_probe():\n    return True\n")
+    (stubs / "flowcept.py").write_text(
+        "from contextlib import contextmanager\n"
+        "@contextmanager\n"
+        "def Flowcept(*args, **kwargs):\n"
+        "    yield\n"
+    )
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("")
+    root = tmp_path / "service"
+    root.mkdir()
+    (root / "manifest.json").write_text(
+        json.dumps({"flowcept_settings": str(settings), "workflow_id": "wf-test"})
+    )
+    script = root / "launcher.py"
+    script.write_text(json.loads(plan().commands[-1].stdin)["manifest"]["launcher"])
+    result = subprocess.run(
+        [sys.executable, str(script), "--model", "/data/models/qualified"],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert observed["settings"] == str(settings)
+    transfer = json.loads(observed["argv"][observed["argv"].index("--kv-transfer-config") + 1])
+    assert transfer["kv_connector_extra_config"] == {
+        "workflow_id": "wf-test",
+        "out_dir": str(root / "evidence"),
+    }
+
+
+@pytest.mark.parametrize("attention", [False, True])
+def test_launcher_keeps_vllm_ipc_sockets_within_unix_path_limit(
+    tmp_path: Path, attention: bool
+) -> None:
+    """A deep service temp dir must not overflow AF_UNIX paths (live: ZMQError on Delta /work)."""
+    import subprocess
+    import sys
+
+    from clio_agent.gact.infrastructure.native_vllm import launcher
+
+    deep = tmp_path / ("d" * 60) / ("e" * 60)
+    deep.mkdir(parents=True)
+    root = tmp_path / "service"
+    stubs = root / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import os\nprint(os.environ['VLLM_RPC_BASE_PATH'])\n"
+    )
+    (stubs / "vllm_attn_connector.py").write_text("def install_probe():\n    return True\n")
+    (stubs / "flowcept.py").write_text(
+        "from contextlib import contextmanager\n"
+        "@contextmanager\n"
+        "def Flowcept(*args, **kwargs):\n"
+        "    yield\n"
+    )
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("")
+    (root / "manifest.json").write_text(
+        json.dumps({"flowcept_settings": str(settings), "workflow_id": "wf-test"})
+    )
+    (root / "launch.py").write_text(launcher(attention))
+    result = subprocess.run(
+        [sys.executable, str(root / "launch.py")],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin", "TMPDIR": str(deep)},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    base = result.stdout.strip().splitlines()[-1]
+    assert len(f"{base}/{'0' * 36}") < 107
+    assert Path(base).stat().st_mode & 0o077 == 0
+
+
+def test_plain_launcher_survives_vllm_spawning_its_engine_core(tmp_path: Path) -> None:
+    """A spawned child re-imports the launcher; it must not start a second server (live on Delta)."""
+    import subprocess
+    import sys
+
+    from clio_agent.gact.infrastructure.native_vllm import launcher
+
+    stubs = tmp_path / "stubs"
+    (stubs / "vllm" / "entrypoints" / "openai").mkdir(parents=True)
+    for package in ("vllm", "vllm/entrypoints", "vllm/entrypoints/openai"):
+        (stubs / package / "__init__.py").write_text("")
+    (stubs / "engine_core.py").write_text("def run():\n    pass\n")
+    (stubs / "vllm" / "entrypoints" / "openai" / "api_server.py").write_text(
+        "import multiprocessing\n"
+        "import engine_core\n"
+        "child = multiprocessing.get_context('spawn').Process(target=engine_core.run)\n"
+        "child.start()\n"
+        "child.join()\n"
+        "print('served', child.exitcode)\n"
+    )
+    script = tmp_path / "launch.py"
+    script.write_text(launcher(False))
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        env={"PYTHONPATH": str(stubs), "PATH": "/usr/bin:/bin"},
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["served", "0"], result.stderr
+
+
+def test_service_worker_exposes_its_environment_tools_first(tmp_path: Path) -> None:
+    """vLLM's flashinfer JIT runs ``ninja`` from the service venv (live: FileNotFoundError)."""
+    env = node_service.worker_environment(
+        tmp_path,
+        {"environment": {"VLLM_CPU_KVCACHE_SPACE": "4"}},
+        {"PATH": "/usr/bin:/bin", "VIRTUAL_ENV": "/clio/.venv", "PYTHONPATH": "/clio/src"},
+    )
+    assert env["PATH"].split(os.pathsep) == [
+        str(tmp_path / "environment/.venv/bin"),
+        "/usr/bin",
+        "/bin",
+    ]
+    assert "VIRTUAL_ENV" not in env and "PYTHONPATH" not in env
+    assert env["TMPDIR"] == str(tmp_path / "tmp")
+    assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
+
+
+@contextmanager
+def _model_server(key: str | None, models: list[str]) -> Iterator[int]:
+    """A loopback OpenAI-style server; ``key=None`` means it enforces no key."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            if self.path == "/v1/models" and key is not None:
+                if self.headers.get("Authorization") != f"Bearer {key}":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+            body = json.dumps({"data": [{"id": name} for name in models]}).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_address[1]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _running_receipt(root: Path, port: int, identity: dict[str, str]) -> None:
+    node_service.write_json(root / "manifest.json", {"identity": identity})
+    node_service.write_json(
+        root / "receipt.json",
+        {"phase": "running", "pid": 1, "health_url": f"http://127.0.0.1:{port}/health"},
+    )
+
+
+def test_readiness_refuses_a_server_that_accepts_keyless_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F010/F025: a 200 from someone else's open server on the port is not "serving"."""
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server(None, ["/models/ours"]) as port:
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/ours"})
+        assert not node_service.observation(tmp_path)["serving"]
+        assert not node_service.observation(tmp_path, key="k")["serving"]
+
+
+def test_readiness_requires_our_key_and_served_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server("per-launch", ["/models/ours"]) as port:
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/ours"})
+        assert node_service.observation(tmp_path, key="per-launch")["serving"]
+        # Without the key (a later status call) a keyless refusal is the identity.
+        assert node_service.observation(tmp_path)["serving"]
+        assert not node_service.observation(tmp_path, key="another-launch")["serving"]
+        _running_receipt(tmp_path, port, {"kind": "openai", "served_model": "/models/other"})
+        assert not node_service.observation(tmp_path, key="per-launch")["serving"]
+
+
+def test_readiness_without_a_declared_identity_is_not_serving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server("per-launch", []) as port:
+        _running_receipt(tmp_path, port, {})
+        assert not node_service.observation(tmp_path, key="per-launch")["serving"]
+
+
+@pytest.mark.parametrize("up", [True, False])
+def test_stack_readiness_requires_every_owned_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, up: bool
+) -> None:
+    """Container stacks (Apptainer instances run in their own session) prove identity by hook."""
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    (tmp_path / "stack.py").write_text(
+        "import sys\nsys.exit(0 if sys.argv[1] == 'running' and " + repr(up) + " else 1)\n"
+    )
+    with _model_server(None, []) as port:
+        _running_receipt(tmp_path, port, {"kind": "components", "hook": "stack.py"})
+        assert node_service.observation(tmp_path)["serving"] is up
+
+
+def test_stack_identity_refuses_a_hook_outside_the_service_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    with _model_server(None, []) as port:
+        _running_receipt(tmp_path, port, {"kind": "components", "hook": "../stack.py"})
+        assert not node_service.observation(tmp_path)["serving"]
+
+
+def test_listeners_fall_back_to_a_loopback_probe_without_proc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """macOS/Windows have no /proc/net: an answering loopback port still refuses a start."""
+    monkeypatch.setattr(node_service.Path, "is_file", lambda self: False)
+    with socket.socket() as busy:
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        port = busy.getsockname()[1]
+        assert node_service.listeners(port)
+    assert not node_service.listeners(port)
+
+
+def test_status_during_start_carries_the_per_launch_key_only_then() -> None:
+    from clio_agent.gact.infrastructure.supervised_service import supervised_plan
+
+    def plan(action: str) -> Any:
+        return supervised_plan(
+            action,
+            directory="/srv/clio/services/vllm",
+            ownership="o",
+            manifest={},
+            port=1,
+            label="vLLM",
+            configuration={},
+            api_key="per-launch",
+        )
+
+    start = plan("start")
+    assert start.readiness is not None
+    assert json.loads(start.readiness.health.stdin)["api_key"] == "per-launch"
+    assert "api_key" not in json.loads(plan("status").commands[0].stdin)
+
+
+def test_vllm_identity_names_the_served_model() -> None:
+    from clio_agent.gact.infrastructure.native_vllm import served_model
+
+    assert served_model("/m", []) == "/m"
+    assert served_model("/m", ["--served-model-name", "qwen"]) == "qwen"
+    assert served_model("/m", ["--served-model-name=qwen"]) == "qwen"
+
+
+def test_start_refuses_a_port_with_any_existing_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F010: the old SO_REUSEADDR probe bound beside a foreign 0.0.0.0 listener."""
+    manifest = {"port": 0, "model_path": ""}
+    monkeypatch.setattr(
+        node_service, "observation", lambda root, health=True, key="": {"installed": True}
+    )
+    with socket.socket() as foreign:
+        foreign.bind(("0.0.0.0", 0))
+        foreign.listen()
+        manifest["port"] = foreign.getsockname()[1]
+        revision = node_service.hashlib.sha256(
+            json.dumps(manifest, sort_keys=True).encode()
+        ).hexdigest()
+        node_service.write_json(
+            tmp_path / "receipt.json", {"phase": "stopped", "configuration_revision": revision}
+        )
+        with pytest.raises(ValueError, match="already has a listener"):
+            node_service.launch(tmp_path, {"action": "start", "manifest": manifest})
+
+
+def test_a_new_run_keeps_the_previous_runs_server_logs(tmp_path: Path) -> None:
+    """F008: the next start truncated server.log, losing the failed start's evidence."""
+    logs = tmp_path / "logs"  # tmp_path also holds the isolated XDG home
+    logs.mkdir()
+    log = logs / "server.log"
+    node_service.rotate_log(log)  # nothing to keep yet
+    assert not list(logs.iterdir())
+    for run in range(1, 6):
+        node_service.rotate_log(log)
+        log.write_text(f"run {run}\n")
+    assert log.read_text() == "run 5\n"
+    kept = {path.name: path.read_text() for path in logs.glob("server.log.*")}
+    assert kept == {
+        "server.log.1": "run 4\n",
+        "server.log.2": "run 3\n",
+        "server.log.3": "run 2\n",
+    }
+    log.write_text("")
+    node_service.rotate_log(log)  # an empty run does not push real evidence out
+    assert (logs / "server.log.1").read_text() == "run 4\n"
+
+
+def test_logs_action_shows_the_current_run_and_names_earlier_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_service, "locked", lambda root: nullcontext())
+    monkeypatch.setattr(node_service, "checked_root", lambda raw: Path(raw))
+    root = tmp_path / "owned"
+    node_service.prepare(root, "owner")
+    (root / "logs").mkdir()
+    (root / "logs/server.log").write_text("current start\n")
+    (root / "logs/server.log.1").write_text("earlier failure\n")
+    result = node_service.control({"root": str(root), "owner": "owner", "action": "logs"})
+    assert "current start" in result["logs"]
+    assert "earlier failure" not in result["logs"]
+    assert "server.log.1" in result["logs"]

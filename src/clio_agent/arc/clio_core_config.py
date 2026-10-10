@@ -156,11 +156,11 @@ def runtime_state_dir() -> Path:
 # clio-core's own ``test_indexer_restart_compose.yaml`` exactly). Filed upstream:
 # https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
 #
-# Tracked upstream rather than shipped; :func:`warn_if_search_indexer_absent` only
-# reports the gap loudly (#775 no-silent-fallback) until a wheel that actually ships
-# the chimod is available. ``564.0`` is upstream's own reserved constant for the
-# indexer pool (``clio::cte::indexer::kIndexerPoolId``), kept here for the warning
-# message and the real fix once it is safe, not a clio-agent invention.
+# iowarp-core 2.3.1 now ships the chimod. This dependency upgrade retains the
+# existing bare-core topology; indexer composition and client routing still need
+# separate qualification before enabling search. :func:`warn_if_search_indexer_absent`
+# continues to report an unconfigured indexer loudly (#775 no-silent-fallback).
+# ``564.0`` is upstream's reserved indexer pool (``clio::cte::indexer::kIndexerPoolId``).
 _DEFAULT_CTE_INDEXER_POOL_ID = "564.0"
 
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
@@ -575,13 +575,8 @@ def effective_ram_cap(
 # resolved ``cte.yaml`` has no ``clio_cte_indexer`` chimod, so ``SemanticSearch``
 # (BM25 scope search, Thread D) silently returns zero hits against clio-core
 # >=2.2.0 no matter what the caller queries. DIAGNOSIS ONLY (#775 no-silent-
-# fallback) -- see the module docstring's INDEXER CHIMOD note for why the actual
-# fix (declaring the chimod) is NOT applied here: root-caused live (2026-09-24)
-# to the chimod's binary being absent from the published iowarp-core 2.2.1
-# wheels themselves (checked win_amd64 and manylinux_2_28/x86_64 -- neither
-# ships a clio_cte_indexer .dll/.so, unlike every sibling chimod), which is why
-# declaring it hangs the first PutBlob after client attach instead of just not
-# working. Filed upstream:
+# fallback): 2.3.1 fixes the missing wheel binary, but the default topology
+# still omits the indexer. Historical packaging diagnosis:
 # https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
 CLIO_CORE_SEARCH_INDEXER_ABSENT = "clio_core_search_indexer_absent"
 UPSTREAM_INDEXER_ISSUE = "https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299"
@@ -616,8 +611,8 @@ def warn_if_search_indexer_absent(config_path: str | Path) -> None:
     """Log a loud, typed warning when the resolved config can't serve BM25 search.
 
     Read-only: never seeds a file, never touches ``CLIO_CTE_POOL`` or the compose
-    config (see :data:`CLIO_CORE_SEARCH_INDEXER_ABSENT` for why a real fix is not
-    attempted -- filed upstream at :data:`UPSTREAM_INDEXER_ISSUE`). Called once from
+    config. The 2.3.1 wheel ships the module, but a bare-core config still cannot
+    serve search. Called once from
     ``storage.ClioCoreStore._ensure_runtime`` so the gap is diagnosed at boot instead
     of surfacing as a confused "search always empty" bug report.
 
@@ -634,9 +629,8 @@ def warn_if_search_indexer_absent(config_path: str | Path) -> None:
         "reason=%s config=%s problem=%s upstream=%s",
         CLIO_CORE_SEARCH_INDEXER_ABSENT,
         config_path or "~/.clio/clio.yaml",
-        "no clio_cte_indexer chimod declared; ARCMemory.search_segment_scopes will "
-        "return zero hits against clio-core >=2.2.0 (the chimod's binary is absent "
-        "from the published 2.2.1 wheels -- not fixable in clio-agent config)",
+        "no clio_cte_indexer chimod declared; ARCMemory.search_segment_scopes is "
+        "unavailable until an indexer is configured (iowarp-core 2.3.1 ships the module)",
         UPSTREAM_INDEXER_ISSUE,
     )
 

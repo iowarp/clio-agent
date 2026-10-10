@@ -293,3 +293,201 @@ def test_typed_attention_request_preserves_wire_and_trace(
     ]
     assert current_declaration() is None
     assert declare_mod.current_wire_messages() is None
+
+
+def test_served_model_root_sends_the_calls_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # F049b (c37 live): a CLIO-managed vLLM answers /v1/models with 401 without its key.
+    import requests
+
+    seen: dict[str, Any] = {}
+
+    class _Resp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {"data": [{"id": "served", "root": "Qwen/Qwen3-4B"}]}
+
+    def _get(url: str, headers: dict[str, str] | None = None, timeout: float = 0) -> _Resp:
+        seen["url"], seen["headers"] = url, headers or {}
+        return _Resp()
+
+    monkeypatch.setattr(requests, "get", _get)
+    monkeypatch.setattr(tokenizer_source, "_served_roots", {})
+    root = tokenizer_source.served_model_root("http://127.0.0.1:1/v1", "served", "k-test")
+    assert root == "Qwen/Qwen3-4B"
+    assert seen["headers"] == {"Authorization": "Bearer k-test"}
+
+
+def test_declared_tools_survive_the_trace_writers_key_sorting(
+    tiny_tokenizer_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F049 (c38): the semantic trace writes events with sort_keys=True; schemas
+    # replayed with sorted keys render the same chars in another order, which
+    # tokenizes differently (live: 14453 vs 14561 tokens) -> range_alignment_mismatch.
+    import json
+
+    from clio_agent.gact.attention.capture import _declared_tools
+
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_TOKENIZER", str(tiny_tokenizer_dir))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    _, record = build_declaration(
+        model="hosted_vllm/granite-4.2-30b",
+        messages=MESSAGES,
+        lm_kwargs={"api_base": "http://127.0.0.1:1/v1"},
+        call_kwargs={"tools": tools},
+    )
+    assert record["status"] == "declared"
+    stored = json.loads(json.dumps(record, sort_keys=True))  # semantic_trace_file's write
+    renderer = ChatRenderer.from_dir(tiny_tokenizer_dir)
+    written = renderer.render(MESSAGES, template_kwargs={"tools": tools})
+    replayed = renderer.render(MESSAGES, template_kwargs={"tools": _declared_tools(stored)})
+    assert replayed == written
+    assert record["prompt_token_count"] == len(renderer.encode(replayed).ids)
+    # The key-sorted form (what a plain "tools" list came back as) is not the prompt.
+    sorted_tools = json.loads(json.dumps(tools, sort_keys=True))
+    assert renderer.render(MESSAGES, template_kwargs={"tools": sorted_tools}) != written
+
+
+def test_rendered_tool_schemas_get_their_own_ranges() -> None:
+    # c39 live: the template renders tool schemas into the system turn, where no
+    # message holds them, so 12.5K tokens showed up as one unlabelled "prose gap".
+    # Qwen3-style templates render each schema with tojson: one range per tool.
+    import json
+
+    tools = [{"type": "function", "function": {"name": n, "parameters": {}}} for n in ("a", "b")]
+    body = "\n".join(json.dumps(t, ensure_ascii=False) for t in tools)
+    text = f"<|im_start|>system\nsys\n# Tools\n<tools>\n{body}\n</tools><|im_end|> user hi"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    declaration = declare_ranges(messages, encoded, tools)
+    got = [(r.domain, r.label, r.message_index) for r in declaration.ranges]
+    assert got == [
+        ("system", "adapter_instructions", 0),
+        ("tool_definitions", "a", None),
+        ("tool_definitions", "b", None),
+        ("user", "user", 1),
+    ]
+    for r, tool in zip(declaration.ranges[1:3], tools, strict=True):
+        assert text[r.char_lo : r.char_hi] == json.dumps(tool)
+
+
+def test_template_formatted_tools_are_declared_as_one_block(
+    tiny_tokenizer_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Granite formats schemas with its own macro (no tojson): the block the tools
+    # add over a tool-less render is declared as one "tools" range.
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_TOKENIZER", str(tiny_tokenizer_dir))
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": f"The {name} tool.",
+                "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
+        }
+        for name in ("web_search", "read_file")
+    ]
+    _, record = build_declaration(
+        model="hosted_vllm/granite-4.2-30b",
+        messages=MESSAGES,
+        lm_kwargs={"api_base": "http://127.0.0.1:1/v1"},
+        call_kwargs={"tools": tools},
+    )
+    renderer = ChatRenderer.from_dir(tiny_tokenizer_dir)
+    text = renderer.render(MESSAGES, template_kwargs={"tools": tools})
+    ranges = record["ranges"]
+    block = [r for r in ranges if r["domain"] == "tool_definitions"]
+    assert [(r["label"], r["message_index"]) for r in block] == [("tools", None)]
+    covered = text[block[0]["char_lo"] : block[0]["char_hi"]]
+    assert covered.startswith("# Tools") and "web_search" in covered and "read_file" in covered
+    spans = [(r["lo"], r["hi"]) for r in ranges]
+    assert spans == sorted(spans)
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:], strict=False))
+
+
+def test_tool_schema_rendered_twice_is_left_undeclared() -> None:
+    import json
+
+    tool = {"type": "function", "function": {"name": "t"}}
+    rendered = json.dumps(tool)
+    text = f"<tools>{rendered}\n{rendered}</tools> user hi"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    declaration = declare_ranges([{"role": "user", "content": "hi"}], encoded, [tool])
+    assert [r.domain for r in declaration.ranges] == ["user"]
+
+
+def test_tool_result_ranges_are_labelled_with_the_calling_tool() -> None:
+    # c41 live: OpenAI tool messages carry only tool_call_id, so every result
+    # range was labelled "tool"; the name comes from the assistant's tool call.
+    text = "u: list it\na: call\ntool: a.txt b.txt\nu2"
+    encoded = Encoded(
+        text=text, ids=list(range(len(text))), offsets=[(i, i + 1) for i in range(len(text))]
+    )
+    messages = [
+        {"role": "user", "content": "list it"},
+        {
+            "role": "assistant",
+            "content": "call",
+            "tool_calls": [{"id": "c1", "function": {"name": "fs_list_dir", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "a.txt b.txt"},
+        {"role": "tool", "tool_call_id": "unknown", "content": "u2"},
+    ]
+    declaration = declare_ranges(messages, encoded)
+    got = [(r.domain, r.label) for r in declaration.ranges if r.domain == "tool_result"]
+    assert got == [("tool_result", "fs_list_dir"), ("tool_result", "tool")]
+    assert "name" not in messages[2]  # the caller's messages are not mutated
+
+
+def test_tool_call_arguments_render_as_vllm_parses_them(tiny_tokenizer_dir: Path) -> None:
+    # F051 (c41 live): vLLM json.loads an assistant tool call's string arguments
+    # before templating, so `arguments | tojson` prints {"path": "/w"}; rendering
+    # the client's compact string gave 16430 vs 16434 captured tokens.
+    tok = (tiny_tokenizer_dir / "tokenizer.json").read_text(encoding="utf-8")
+    template = (
+        "{% for m in messages %}{{ m.role }}:{{ m.content or '' }}"
+        "{% for tc in m.tool_calls or [] %}"
+        "{% set a = tc.function.arguments %}"
+        "<call>{{ a | tojson if a is mapping else a }}</call>{% endfor %}\n{% endfor %}"
+    )
+    renderer = ChatRenderer(
+        tokenizer_json=tok, chat_template=template, special_tokens={}, identity="t"
+    )
+    call = {
+        "id": "c1",
+        "type": "function",
+        "function": {"name": "ls", "arguments": '{"path":"/w"}'},
+    }
+    messages = [
+        {"role": "user", "content": "list"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "assistant", "content": "x", "tool_calls": []},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"type": "function", "function": {"name": "f", "arguments": ""}}],
+        },
+    ]
+    text = renderer.render(messages)
+    assert '<call>{"path": "/w"}</call>' in text
+    assert "<call>{}</call>" in text
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"path":"/w"}'  # not mutated

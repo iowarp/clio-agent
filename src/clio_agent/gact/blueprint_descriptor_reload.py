@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from anyio import BrokenResourceError, EndOfStream
-from fastmcp.exceptions import ClientError, FastMCPError, MCPError
+from fastmcp.exceptions import ClientError, FastMCPError
 from httpx import HTTPError
+from mcp import MCPError
 
 from clio_agent.gact.agent_blueprints import load_mcp_descriptors, parse_agent_blueprint_root
 from clio_agent.gact.blueprint_identity import identity_fields, select_blueprint
+from clio_agent.tools.task_descriptions import mcp_task_description
 
 
 def store_enabled_descriptor(
@@ -142,7 +144,7 @@ def prepare_enabled_descriptors(
                 {
                     "id": tool.name,
                     "name": tool.name,
-                    "description": tool.description or "",
+                    "description": mcp_task_description(tool),
                     "title": mcp_tool_title(tool) or "",
                     "annotations": _normalize_mcp_tool_annotations(tool),
                     "enabled": True,

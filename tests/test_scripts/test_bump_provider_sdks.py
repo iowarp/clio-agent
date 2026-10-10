@@ -92,12 +92,26 @@ def test_describe_links_release_notes() -> None:
     assert "https://github.com/anthropics/claude-agent-sdk-python/releases" in body
 
 
+@pytest.mark.parametrize(
+    ("codex_floor", "claude_floor", "expected_changed"),
+    [("0.147.0", "0.2.156", True), ("0.157.1", "0.2.159", False)],
+    ids=["outdated", "current"],
+)
 def test_check_mode_writes_github_outputs_and_changes_nothing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    codex_floor: str,
+    claude_floor: str,
+    expected_changed: bool,
 ) -> None:
     project = tmp_path / "proj"
     project.mkdir()
-    original = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    # The recorded release feed must be paired with recorded floors, rather
+    # than the moving dependency pins in the repository under test.
+    original = bump.rewrite_floors(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"),
+        {"openai-codex-cli-bin": codex_floor, "claude-agent-sdk": claude_floor},
+    )
     (project / "pyproject.toml").write_text(original, encoding="utf-8")
     output = tmp_path / "out.txt"
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
@@ -105,8 +119,15 @@ def test_check_mode_writes_github_outputs_and_changes_nothing(
     monkeypatch.setattr(sys, "argv", ["bump", "--check", "--project", str(project)])
     assert bump.main() == 0
     written = output.read_text(encoding="utf-8")
-    assert "changed=true" in written
+    assert f"changed={str(expected_changed).lower()}\n" in written
     assert "body<<__CLIO_BODY__" in written
+    if expected_changed:
+        assert "claude-agent-sdk 0.2.159" in written
+        assert "openai-codex-cli-bin 0.157.1" in written
+        assert "| 0.2.156 | 0.2.159 |" in written
+        assert "| 0.147.0 | 0.157.1 |" in written
+    else:
+        assert written == "changed=false\ntitle=\nbody<<__CLIO_BODY__\n\n__CLIO_BODY__\n"
     assert (project / "pyproject.toml").read_text(encoding="utf-8") == original
 
 

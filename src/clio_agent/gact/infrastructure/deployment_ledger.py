@@ -92,6 +92,18 @@ def forget_created(
         store.put_service(installed)
 
 
+def held_elsewhere(store: InfrastructureStore, target_id: str, service_id: str) -> set[str]:
+    """The shared images another service on ``target_id`` still holds."""
+
+    return {
+        row.ref
+        for record in store.services()
+        if record.target_id == target_id and record.service_id != service_id
+        for row in record.owned_resources
+        if row.kind == "shared_image"
+    }
+
+
 async def remove_created(
     execute: Execute, target_id: str, created: list[OwnedResource], target_os: str
 ) -> tuple[bool, str]:

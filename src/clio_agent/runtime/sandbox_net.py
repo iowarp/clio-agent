@@ -132,12 +132,17 @@ def net_mechanism_label(state: "SandboxResult") -> str:
     from clio_agent.runtime.net_chokepoint import (  # noqa: PLC0415
         MECHANISM_ENV_COOPERATIVE,
         MECHANISM_PROXY_ENFORCED,
+        MECHANISM_PROXY_ENFORCED_EXTERNAL,
     )
     from clio_agent.runtime.sandbox import NET_ENFORCEMENT_PROXY  # noqa: PLC0415
 
     enforcement = (
         state.details.get("net_enforcement", "") if isinstance(state.details, dict) else ""
     )
+    if enforcement == "proxy-external":
+        # MXC forces non-loopback egress through the managed proxy, but permits
+        # direct host loopback. Do not claim complete loopback observation.
+        return MECHANISM_PROXY_ENFORCED_EXTERNAL
     return (
         MECHANISM_PROXY_ENFORCED
         if enforcement == NET_ENFORCEMENT_PROXY

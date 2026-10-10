@@ -52,6 +52,13 @@ from tests.test_gact._hook_fixtures import command_run, write_hook_script
 
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
+# These compatibility tests deliberately call DSPy 3.4's legacy LM interface.
+# Assert its documented warnings; the typed-engine tests remain warning-free.
+_LEGACY_LM_DEPRECATION = (
+    r"Implementing custom LMs through BaseLM"
+    r"|Passing OpenAI-style message dictionaries"
+)
+
 
 # --------------------------------------------------------------------------- #
 # Spy LMs — real dspy.BaseLM subclasses. No mocking of the call boundary.       #
@@ -165,7 +172,8 @@ def test_synthesize_without_response_falls_through_to_real_lm(tmp_path: Path) ->
     spy = SpyLM(answer="REAL")
     wrapped = wrap_lm_with_hooks(spy)
 
-    outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
 
     assert outputs == ["REAL"]
     assert spy.calls == 1  # the real LM ran
@@ -190,7 +198,8 @@ def test_model_routing_invokes_routed_lm(tmp_path: Path) -> None:
     # Per-instance route resolver maps the override name to the alternate LM.
     wrapped = build_hooked_lm(default, route_resolver={"cheap": cheap}.get)
 
-    outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
 
     assert outputs == ["CHEAP"]
     assert cheap.calls == 1  # the routed LM ran
@@ -213,7 +222,8 @@ def test_effective_target_is_per_wrapper_and_cleared_for_synthetic_or_failed_hoo
         lambda *args, **kwargs: HookOutcome(decision="modify", model_override="routed"),
     )
     monkeypatch.setattr(hooked_mod, "dispatch_after_model", lambda *a, **k: HookOutcome())
-    wrapped(messages=[{"role": "user", "content": "route"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        wrapped(messages=[{"role": "user", "content": "route"}])
     assert effective_lm_for_call(wrapped) is routed
 
     monkeypatch.setattr(
@@ -257,7 +267,10 @@ def test_effective_routed_targets_are_concurrent_wrapper_local(
         wrapper(messages=[{"role": "user", "content": "go"}])
         return effective_lm_for_call(wrapper)
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
+    with (
+        pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION),
+        ThreadPoolExecutor(max_workers=8) as pool,
+    ):
         actual = list(pool.map(invoke, wrappers))
     assert actual == list(targets.values())
 
@@ -276,7 +289,8 @@ def test_route_unresolved_falls_back_to_default(tmp_path: Path) -> None:
     default = SpyLM(answer="DEFAULT")
     wrapped = build_hooked_lm(default, route_resolver=lambda _name: None)
 
-    outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
 
     assert outputs == ["DEFAULT"]
     assert default.calls == 1
@@ -300,7 +314,8 @@ def test_modify_request_patch_reaches_real_lm(tmp_path: Path) -> None:
     spy = SpyLM(answer="OK")
     wrapped = wrap_lm_with_hooks(spy)
 
-    outputs = wrapped(messages=[{"role": "user", "content": "SECRET-TOKEN=abc123"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        outputs = wrapped(messages=[{"role": "user", "content": "SECRET-TOKEN=abc123"}])
 
     assert outputs == ["OK"]
     assert spy.calls == 1
@@ -323,7 +338,8 @@ def test_after_model_rewrites_response(tmp_path: Path) -> None:
     spy = SpyLM(answer="RAW-MODEL-OUTPUT")
     wrapped = wrap_lm_with_hooks(spy)
 
-    outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        outputs = wrapped(messages=[{"role": "user", "content": "hi"}])
 
     assert spy.calls == 1  # the real call still ran (AfterModel cannot un-run it)
     assert outputs == ["SANITISED"]  # but what enters context is the rewrite
@@ -412,7 +428,10 @@ def test_per_request_fires_before_model_once_per_lm_call(tmp_path: Path) -> None
     wrapped = wrap_lm_with_hooks(spy)
 
     # A "turn" binds the wrapper once; the program then makes several model calls.
-    with dspy.context(lm=wrapped):
+    with (
+        pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION),
+        dspy.context(lm=wrapped),
+    ):
         wrapped(messages=[{"role": "user", "content": "step-1"}])
         wrapped(messages=[{"role": "user", "content": "step-2"}])
         wrapped(messages=[{"role": "user", "content": "step-3"}])
@@ -433,7 +452,10 @@ def test_per_request_through_real_dspy_program(tmp_path: Path) -> None:
     install_global_dispatcher(disp)
     spy = SpyLM(answer="[[ ## answer ## ]]\nA\n\n[[ ## completed ## ]]")
     wrapped = wrap_lm_with_hooks(spy)
-    with dspy.context(lm=wrapped, adapter=dspy.ChatAdapter()):
+    with (
+        pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION),
+        dspy.context(lm=wrapped, adapter=dspy.ChatAdapter()),
+    ):
         program = dspy.Predict("question -> answer")
         program(question="one")
         program(question="two")
@@ -567,12 +589,13 @@ def test_credentials_are_never_in_the_model_request(tmp_path: Path) -> None:
     _install([_command_row("capture", "BeforeModel", script)])
     spy = SpyLM()
     wrapped = wrap_lm_with_hooks(spy)
-    wrapped(
-        messages=[{"role": "user", "content": "hi"}],
-        temperature=0.2,
-        api_key="SECRET",
-        api_base="https://secret.example",
-    )
+    with pytest.warns(DeprecationWarning, match=_LEGACY_LM_DEPRECATION):
+        wrapped(
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.2,
+            api_key="SECRET",
+            api_base="https://secret.example",
+        )
     seen = json.loads(dump.read_text(encoding="utf-8"))
     assert seen["params"].get("temperature") == 0.2
     assert "api_key" not in seen["params"]
