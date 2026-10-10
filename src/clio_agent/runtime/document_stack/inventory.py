@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.metadata
+import importlib.util
 import json
 import platform
 import sys
@@ -59,14 +60,19 @@ def native_inventory(cwd: Path) -> dict[str, dict[str, Any]]:
         return {name: future.result() for name, future in futures.items()}
 
 
-def inventory() -> dict[str, Any]:
-    """Return import-verified packages, executable paths and native-tool readiness."""
+def inventory(*, execution_only: bool = False) -> dict[str, Any]:
+    """Inspect current packages and tools, with optional lightweight module discovery."""
     packages: dict[str, Any] = {}
     for distribution, module in PACKAGES.items():
-        importlib.import_module(module)
+        if execution_only:
+            if importlib.util.find_spec(module) is None:
+                raise ImportError(f"Managed package module is missing: {module}")
+        else:
+            importlib.import_module(module)
         packages[distribution] = {
             "version": importlib.metadata.version(distribution),
             "import": module,
+            "verification": "module_discovered" if execution_only else "imported",
         }
     import nodejs_wheel
 
@@ -83,29 +89,35 @@ def inventory() -> dict[str, Any]:
     if node is None:
         raise DocumentError("Managed Node.js package has no supported executable layout")
     node_version = run([str(node), "--version"], cwd=node_root).strip()
-    native = native_inventory(node_root)
+    native = (
+        {name: {"status": "not_checked"} for name in NATIVE_TOOLS}
+        if execution_only
+        else native_inventory(node_root)
+    )
     fonts: list[str] = []
     roots = [Path("/usr/share/fonts"), Path("/Library/Fonts"), Path("C:/Windows/Fonts")]
-    for root in roots:
+    for root in [] if execution_only else roots:
         if root.is_dir():
             fonts.extend(
                 str(path)
                 for path in root.rglob("*")
                 if path.suffix.lower() in {".ttf", ".otf", ".ttc"}
             )
-    from PIL import ImageFont
-
     selected_fonts = sorted(fonts, key=str.casefold)[:150]
     families: set[str] = set()
-    for font in selected_fonts:
-        try:
-            family = ImageFont.truetype(font).getname()[0]
-            if family:
-                families.add(family)
-        except OSError:
-            continue
+    if selected_fonts:
+        from PIL import ImageFont
+
+        for font in selected_fonts:
+            try:
+                family = ImageFont.truetype(font).getname()[0]
+                if family:
+                    families.add(family)
+            except OSError:
+                continue
     return {
         "python": sys.executable,
+        "inventory_scope": "execution" if execution_only else "documents",
         "python_version": platform.python_version(),
         "os": platform.system(),
         "architecture": platform.machine(),
@@ -120,4 +132,9 @@ def inventory() -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    print(json.dumps(inventory(), ensure_ascii=False))
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--execution-only", action="store_true")
+    arguments = parser.parse_args()
+    print(json.dumps(inventory(execution_only=arguments.execution_only), ensure_ascii=False))
