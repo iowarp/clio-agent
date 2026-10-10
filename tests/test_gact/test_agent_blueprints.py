@@ -2663,8 +2663,12 @@ Coordinate genomics work.
     assert "returns the requested children's output into your" in context
     assert "do not repeatedly poll" in context
     assert "before your next safe model iteration" in context
-    assert "next conversation turn if this turn has ended" in context
-    assert "Completion alone does not start a turn" in context
+    assert "after the current tool call or batch finishes" in context
+    assert "Live user feedback enters at the same iteration boundary" in context
+    assert "If you are idle, completion automatically starts a continuation turn" in context
+    assert "including after conversation Stop" in context
+    assert "without another human message" in context
+    assert "Completion alone does not start a turn" not in context
     assert "observe_tasks" in context  # shared non-consuming task observation
     assert "wait_tasks" in context
     assert "observe_agent_tasks" not in context  # compatibility names aren't taught by default

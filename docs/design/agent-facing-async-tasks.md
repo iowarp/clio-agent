@@ -62,7 +62,12 @@ request needs the result. Keeping a turn open is not required to keep work alive
 Orchestrator and spawn descriptions use the same lifecycle vocabulary.
 
 Task completion is an active mailbox event. A busy agent receives bounded
-results before its next safe model iteration. An idle agent is automatically
+results before its next safe model iteration, after the current tool call or
+parallel tool batch finishes. Accepted live user feedback enters at this same
+boundary, so the model can change its next action within the ongoing turn.
+An iteration is one model request and its resulting action or tool batch; it is
+not the complete answer to a user message. Delivery must not wait for that
+complete answer to finish. An idle agent is automatically
 started through the existing turn runner with a system-event message and the
 queued results; no additional human message is required. Completion does not
 resume the future human-message queue paused by Stop. Already submitted feedback
