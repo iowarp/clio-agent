@@ -500,3 +500,52 @@ other filtered test names were not executed. Scoped formatting/lint, TypeScript,
 six existing frontend guards and online/offline production builds passed. The
 live checks now require the actual recovered task to appear as active and its
 cancelled input form to disappear, at both desktop and phone widths.
+
+### Subsequent queued MCP delivery and filesystem qualification
+
+On core `e9e476879b1c006fe3cbf98f10f0f2be4af1ef8f` / UI `53bf385`, five
+pending-input cancellation cycles passed through actual Codex/Luna and the real
+desktop/phone UI. One additional API-crash/input-cancellation cycle preserved
+the original question and full backend identity across the unchanged 300-second
+lease. The recovered UI showed the accepted task as active. Five production Web
+MCP stdio-loss cycles also passed: the original backend exited naturally before
+API restart, the original handle became interrupted, and the model collected
+that result without operation replay. Each private Core owner was verified absent.
+
+Five MCP idle-delivery cycles passed in
+`final-e9e-remaining-lifecycle-2/mcp-idle`. The actual model received a handle,
+read an independent file in a later iteration and finished while work was still
+running. Completion remained queued without starting a turn. The next user turn
+received one injection, the model reported its fetched-content nonce, and a later
+turn received no duplicate. The earlier probe asked ambiguously for the first
+completion line; the model correctly reported the wrapper heading, so that
+original verdict remains failed. Clarifying the external probe did not change
+production or weaken its payload and delivery assertions.
+
+Five fresh Stop/UI-cancellation cycles passed in
+`final-e9e-remaining-lifecycle-3/mcp-stop-cancel-ui`, including three distinct
+actual model steps before Stop, independent work and a running query. Stop left
+the original task running. Confirmed desktop/phone cancellation sent one request
+and actual backend/HTTP transfer settlement followed. An earlier browser-only
+pass batched independent work and its status query in one model iteration; its
+stricter model gate failed and that series remains failed.
+
+The next Download model-overlap gate passed, but its filesystem auditor failed.
+An independent read-only extended-path audit found all 6,001 published files,
+matched every source/manifest hash and verified 6,132,063 bytes. Ordinary Windows
+`Path.is_file()` returned false for 270-character nested paths. The qualification
+auditor now uses the existing Windows OS-path helper for traversal, stat and
+hashing, rejects reparse points, and closes its read-only SQLite connection.
+A real long-path regression reproduces the old failure; a corrupted nested-file
+case must still fail custody. The original live verdict is not rewritten, and
+fresh affected live repetitions remain required.
+
+Exact core `e9e476` CI run `38008999803` passed all six Python shards and both
+86% coverage jobs after one exact-job retry of a shard cancelled at the unchanged
+18-minute budget. Its retry reported 3,845 passed and 18 skipped; skips remain
+exclusions. UI `53bf385` workflow `38008902134` passed workspace/browser checks
+and Linux/Windows/macOS debug builds. Conditional native WebView and release
+jobs were skipped. Prior CI failures retain their original source identities and
+unproven causes. These CI results and the new live gates do not close the remaining
+recovery, storage-interruption, target-integration, provider or platform matrix.
+Full qualification remains incomplete.

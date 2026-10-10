@@ -4,9 +4,46 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import stat
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
+
+from clio_agent.platform_paths import win_extended_path
+
+
+def _walk_error(error: OSError) -> NoReturn:
+    """Fail qualification explicitly when any retained directory cannot be read."""
+    raise error
+
+
+def _tree_entries(root: Path) -> Iterator[tuple[str, str, os.stat_result]]:
+    """Inspect the same tree through OS paths without following reparse points."""
+    extended = win_extended_path(root)
+    for directory, directories, files in os.walk(extended, onerror=_walk_error, followlinks=False):
+        for name in [*directories, *files]:
+            full = os.path.join(directory, name)
+            info = os.stat(full, follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError(f"Qualification custody tree contains a link: {full}")
+            yield os.path.relpath(full, extended).replace("\\", "/"), full, info
+
+
+def _tree_custody(root: Path) -> tuple[set[str], dict[str, str], int]:
+    """Read and hash every regular file, including Windows paths beyond MAX_PATH."""
+    entries: set[str] = set()
+    hashes: dict[str, str] = {}
+    size = 0
+    for relative, full, info in _tree_entries(root):
+        entries.add(relative)
+        if stat.S_ISREG(info.st_mode):
+            with open(full, "rb") as stream:
+                hashes[relative] = hashlib.file_digest(stream, "sha256").hexdigest()
+            size += info.st_size
+    return entries, hashes, size
 
 
 def outcomes(
@@ -32,7 +69,7 @@ def outcomes(
         if len(stores) != 1 or len(rows) != 1:
             return {**result, "pass": False, "error": "Expected one owned store and task"}
         manifest_id = rows[0]["result"]["manifest_id"]
-        with sqlite3.connect(stores[0].as_uri() + "?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(stores[0].as_uri() + "?mode=ro", uri=True)) as db:
             manifest = json.loads(
                 db.execute(
                     "SELECT body FROM records WHERE kind='manifest' AND id=?", (manifest_id,)
@@ -40,16 +77,19 @@ def outcomes(
             )
         result.update(manifest_id=manifest_id, entries=len(manifest["entries"]))
         if kind == "Indexing":
-            expected = {
-                p.relative_to(source["root"]).as_posix() for p in Path(source["root"]).rglob("*")
-            }
+            expected = {relative for relative, _, _ in _tree_entries(Path(source["root"]))}
             actual = {p["path"] for p in manifest["entries"]}
             result["exact_manifest_matches"] = actual == expected
             result["pass"] &= actual == expected and len(actual) == source["entries"]
         else:
             path = Path(rows[0]["result"]["source"]["local_path"]) / source["selected_path"]
-            digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-            size = path.stat().st_size if path.is_file() else None
+            native_path = win_extended_path(path)
+            digest = None
+            size = None
+            if os.path.isfile(native_path):
+                with open(native_path, "rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                size = os.stat(native_path).st_size
             result.update(
                 actual_bytes=size, actual_sha256=digest, manifest_hashes=manifest["hashes"]
             )
@@ -59,33 +99,24 @@ def outcomes(
                 and manifest["hashes"].get(source["selected_path"]) == digest
             )
             upstream = Path(source["root"])
+            upstream_entries, upstream_hashes, _ = _tree_custody(upstream)
             expected = {
-                p.relative_to(upstream).as_posix()
-                for p in upstream.rglob("*")
+                name
+                for name in upstream_entries
                 if any(
-                    p.relative_to(upstream).as_posix() == selected
-                    or p.relative_to(upstream).as_posix().startswith(selected + "/")
+                    name == selected or name.startswith(selected + "/")
                     for selected in source["selected_paths"]
                 )
             }
-            actual = {p.relative_to(path.parent).as_posix() for p in path.parent.rglob("*")}
+            actual, actual_hashes, actual_size = _tree_custody(path.parent)
             expected_hashes = {
-                name: hashlib.sha256((upstream / name).read_bytes()).hexdigest()
-                for name in expected
-                if (upstream / name).is_file()
-            }
-            actual_hashes = {
-                name: hashlib.sha256((path.parent / name).read_bytes()).hexdigest()
-                for name in actual
-                if (path.parent / name).is_file()
+                name: digest for name, digest in upstream_hashes.items() if name in expected
             }
             result.update(
                 exact_selections_match=actual == expected,
                 all_file_hashes_match=actual_hashes == expected_hashes == manifest["hashes"],
                 actual_file_count=len(actual_hashes),
-                actual_total_bytes=sum(
-                    (path.parent / name).stat().st_size for name in actual_hashes
-                ),
+                actual_total_bytes=actual_size,
             )
             result["pass"] &= (
                 actual == expected and actual_hashes == expected_hashes == manifest["hashes"]
