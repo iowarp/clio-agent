@@ -19,10 +19,16 @@ from typing import Any
 from filelock import FileLock
 
 from clio_agent import paths
+from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime.document_runtime import STACK_ROOT, _fingerprint, office_runtime_root
 from clio_agent.runtime.document_stack.process import scratch_root
 
 logger = logging.getLogger(__name__)
+
+
+def _path_identity(path: Path) -> str:
+    """Identify one location consistently for ordinary and extended Windows paths."""
+    return os.path.normcase(win_extended_path(path.resolve()))
 
 
 def _receipt_path(cache_root: Path | None, runtime_id: str | None = None) -> Path:
@@ -66,14 +72,14 @@ def _roots(result: dict[str, Any]) -> list[Path]:
         for root in (Path("/usr/share/fonts"), Path("/Library/Fonts"), Path("C:/Windows/Fonts"))
         if root.is_dir()
     )
-    return sorted(set(roots), key=str)
+    return sorted({Path(_path_identity(root)) for root in roots}, key=str)
 
 
 def _tree_metadata(root: Path) -> str:
     digest = hashlib.sha256()
 
-    def record(path: Path, info: os.stat_result) -> None:
-        metadata: list[Any] = [str(path.relative_to(root)), info.st_mode, info.st_dev, info.st_ino]
+    def record(path: Path, relative: str, info: os.stat_result) -> None:
+        metadata: list[Any] = [relative, info.st_mode, info.st_dev, info.st_ino]
         if not stat.S_ISDIR(info.st_mode):
             metadata.extend((info.st_size, info.st_mtime_ns, info.st_ctime_ns))
         if stat.S_ISLNK(info.st_mode):
@@ -82,38 +88,44 @@ def _tree_metadata(root: Path) -> str:
         digest.update(json.dumps(metadata).encode())
 
     info = root.lstat()
-    record(root, info)
-    directories = [root] if stat.S_ISDIR(info.st_mode) else []
+    record(root, ".", info)
+    directories = [(root, "")] if stat.S_ISDIR(info.st_mode) else []
     while directories:
-        with os.scandir(directories.pop()) as scan:
+        directory, parent_relative = directories.pop()
+        with os.scandir(directory) as scan:
             for entry in sorted(scan, key=lambda item: item.name):
                 if entry.name == "__pycache__" or entry.name.endswith((".pyc", ".pyo")):
                     continue
                 path = Path(entry.path)
+                relative = os.path.join(parent_relative, entry.name)
                 # Windows directory enumeration already supplies these attributes;
                 # retain DirEntry's cached stat instead of restatting every file.
                 info = entry.stat(follow_symlinks=False)
-                record(path, info)
+                record(path, relative, info)
                 if stat.S_ISDIR(info.st_mode):
-                    directories.append(path)
+                    directories.append((path, relative))
     return digest.hexdigest()
 
 
 def _identity(workspace: Path, result: dict[str, Any]) -> str:
     expected_output = scratch_root(workspace, create=False) / "output"
-    if Path(result["output_directory"]).resolve() != expected_output.resolve():
+    if _path_identity(Path(result["output_directory"])) != _path_identity(expected_output):
         raise ValueError("Installation belongs to a different workspace")
     if result["status"] != "ready" or result["javascript"]["status"] != "ready":
         raise ValueError("Installation is incomplete")
     if result["runtime_id"] != _fingerprint():
         raise ValueError("Installation package locks changed")
     context = {
-        "workspace": str(workspace.resolve()),
+        "workspace": _path_identity(workspace),
         "interpreter": sys.version,
         "runtime_id": _fingerprint(),
-        "office_root": str(office_runtime_root()),
+        "office_root": _path_identity(office_runtime_root()),
         "environment": {
-            name: value
+            name: (
+                _path_identity(Path(value))
+                if name in {"GACT_BUNDLED_RUNTIME_DIR", "CLIO_DOCUMENT_OFFICE_ROOT"}
+                else value
+            )
             for name, value in os.environ.items()
             if name in {"PATH", "GACT_BUNDLED_RUNTIME_DIR"} or name.startswith("CLIO_DOCUMENT_")
         },

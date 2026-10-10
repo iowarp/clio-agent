@@ -63,12 +63,16 @@ def test_model_can_inherit_batch_placement(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.parametrize(
-    "invalid",
-    [{"task": None}, {"blueprint_id": 1}, {"input_task_ids": "task_x"}],
+    ("invalid", "message"),
+    [
+        ({"task": None}, "is invalid"),
+        ({"blueprint_id": 1}, "valid string"),
+        ({"input_task_ids": "task_x"}, "valid list"),
+    ],
     ids=["task", "blueprint", "inputs"],
 )
 def test_invalid_spawn_arguments_are_rejected_before_submission(
-    invalid: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    invalid: dict[str, Any], message: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Nullable options do not permit invalid types or null required assignments."""
     app = _fake_app()
@@ -77,7 +81,7 @@ def test_invalid_spawn_arguments_are_rejected_before_submission(
     with _active_turn(app):
         tool = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)["spawn_agent_task"]
         arguments = {"agent": "data_expert", "task": "Inspect owned data", **invalid}
-        with pytest.raises(ValueError, match="is invalid"):
+        with pytest.raises(ValueError, match=message):
             tool(**arguments)
     assert app.state.expert_invoker.specs == []
 

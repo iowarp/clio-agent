@@ -220,7 +220,7 @@ async def test_refresh_without_a_catalog_noops_when_relay_is_unconfigured(
     app = _FakeApp()
     monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
     monkeypatch.setattr(
-        "clio_agent.tools.relay_transport.resolve_relay_transport_config",
+        "clio_agent.tools.relay_factory.resolve_relay_transport_config",
         lambda: RelayTransportUnavailable(reason="relay_not_configured", details={}),
     )
 
@@ -249,7 +249,7 @@ async def test_refresh_without_a_catalog_first_discovers_when_relay_is_configure
     app = _FakeApp()
     monkeypatch.setattr(relay_wiring.time, "monotonic", lambda: 500.0)
     monkeypatch.setattr(
-        "clio_agent.tools.relay_transport.resolve_relay_transport_config",
+        "clio_agent.tools.relay_factory.resolve_relay_transport_config",
         lambda: object(),
     )
     fresh = _surfaces("lazy-first")

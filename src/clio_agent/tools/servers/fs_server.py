@@ -27,6 +27,14 @@ from typing import Any
 from fastmcp import FastMCP
 
 from clio_agent import conf
+from clio_agent.tools.builtin_annotations import (
+    _APPLY_EDIT_WRITE_ANNOTATIONS,
+    _PROPOSE_EDIT_ANNOTATIONS,
+    _READ_FILE_ANNOTATIONS,
+)
+from clio_agent.tools.builtin_annotations import (
+    FS_TOOL_ANNOTATIONS as FS_TOOL_ANNOTATIONS,
+)
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
@@ -54,22 +62,6 @@ _MAX_READ_BYTES = conf.resolve(
 #   - apply_edit_write: NOT read-only; a bounded, closed-world destructive write
 #     (a single known path), so it projects to the catalog ``write`` tag the
 #     auto-edits approval mode keys on.
-_READ_FILE_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
-_PROPOSE_EDIT_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
-_APPLY_EDIT_WRITE_ANNOTATIONS: dict[str, Any] = {
-    "readOnlyHint": False,
-    "destructiveHint": True,
-    "openWorldHint": False,
-}
-
-#: Namespaced tool name → declared annotations for the fs built-ins. Exported so
-#: :mod:`clio_agent.tools.catalog` projects the read/write tags from the SAME
-#: mapping the decorators declare — one declaration, two consumers.
-FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
-    "fs_read_file": _READ_FILE_ANNOTATIONS,
-    "fs_propose_edit": _PROPOSE_EDIT_ANNOTATIONS,
-    "fs_apply_edit_write": _APPLY_EDIT_WRITE_ANNOTATIONS,
-}
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)

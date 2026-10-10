@@ -53,6 +53,7 @@ staleness-window) trade-off, not an oversight.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 from dataclasses import replace
@@ -249,7 +250,9 @@ class CliCatalogHandshake(NoOpHandshake):
                 f"{ctx.provider_kind}: billed through the signed-in subscription plan",
             ),
         )
-        catalog = descriptive_catalog_facts(facts.discovered.id, allow_fetch=False)
+        catalog = await asyncio.to_thread(
+            descriptive_catalog_facts, facts.discovered.id, allow_fetch=False
+        )
         model = merge_model_layers(facts.model.model_key, facts.model, catalog)
         return replace(facts, model=model, deployment=deployment)
 

@@ -40,8 +40,8 @@ this slice).
 era / task-capability record/latest idiom already there) — every real client
 connect now ALSO records the full set of server-declared extension
 identifiers, not only the tasks id. This module re-exports
-:data:`UI_EXTENSION_ID` (from :mod:`fastmcp.apps.config`) and
-:data:`MCP_APP_MIME_TYPE` (from :mod:`fastmcp.utilities.mime`) as the ONE
+:data:`UI_EXTENSION_ID` and :data:`MCP_APP_MIME_TYPE` (wire constants
+checked against the installed FastMCP SDK in startup regression tests) as the ONE
 source every clio site imports (``gact/mcp_apps.py``, ``gact/artifacts/
 wire.py``) instead of each hand-typing the MIME literal, plus
 :data:`MCP_APPS_PROTOCOL_REVISION` so ``gact/mcp_apps.py`` reads its two
@@ -60,12 +60,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastmcp.apps.config import UI_EXTENSION_ID as UI_EXTENSION_ID
-from fastmcp.utilities.mime import UI_MIME_TYPE as MCP_APP_MIME_TYPE
-from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
-from mcp.client.extension import ClientExtension, advertise
+if TYPE_CHECKING:
+    from mcp.client.extension import ClientExtension
+
+# Wire identifiers are metadata, not a reason to import the entire MCP client.
+# SDK parity is enforced by test_startup_imports.
+UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
+MCP_APP_MIME_TYPE = "text/html;profile=mcp-app"
+TASKS_EXTENSION_ID = "io.modelcontextprotocol/tasks"
 
 __all__ = [
     "AGENT_ELICITATION_EXTENSION_ID",
@@ -173,6 +177,8 @@ def _build_ui(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa:
     before/after proof.
     """
 
+    from mcp.client.extension import advertise  # noqa: PLC0415
+
     return MCPExtensionDeclaration(
         identifier=UI_EXTENSION_ID,
         extension=advertise(UI_EXTENSION_ID, {"mimeTypes": [MCP_APP_MIME_TYPE]}),
@@ -197,6 +203,8 @@ def _build_agent_elicitation(client_cls: Any, target: Any) -> MCPExtensionDeclar
     (:data:`AGENT_ELICITATION_EXTENSION_ID`) to prefer the agent over dumping a fat
     result; absence means "generic client, return everything."
     """
+
+    from mcp.client.extension import advertise  # noqa: PLC0415
 
     return MCPExtensionDeclaration(
         identifier=AGENT_ELICITATION_EXTENSION_ID,

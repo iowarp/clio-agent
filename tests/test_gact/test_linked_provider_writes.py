@@ -8,8 +8,8 @@ from typing import Any
 import pytest
 from fsspec import AbstractFileSystem
 
+from clio_agent.gact.storage.drive_filesystem import _ApprovedDrive, _DriveFile
 from clio_agent.gact.storage.globus_download import GlobusDownload
-from clio_agent.gact.storage.linked import _ApprovedDrive, _DriveFile
 from clio_agent.gact.storage.models import FileEntry
 from tests.test_gact.test_fsspec_backend_contracts import globus_backend  # noqa: F401
 

@@ -257,15 +257,21 @@ def test_non_windows_install_never_downloads_helpers() -> None:
     ) == {"status": "not_required"}
 
 
+@pytest.mark.parametrize("through_environment", [False, True])
 def test_release_token_is_limited_to_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_environment: bool
 ) -> None:
     """Authenticate metadata without leaking the scoped token to assets or receipts."""
     binary = pe_binary(tmp_path / "codex.exe")
     requests: list[httpx.Request] = []
     mock_release(monkeypatch, requests=requests)
+    if through_environment:
+        monkeypatch.setenv("CLIO_CODEX_RELEASE_TOKEN", "test-only-token")
     helpers.ensure_codex_windows_helpers(
-        binary, "0.161.0", platform_name="win32", release_token="test-only-token"
+        binary,
+        "0.161.0",
+        platform_name="win32",
+        release_token=None if through_environment else "test-only-token",
     )
     assert len(requests) == 3
     assert requests[0].url.host == "api.github.com"

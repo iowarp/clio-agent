@@ -119,7 +119,8 @@ def test_drive_reuses_library_reads_and_existing_export_formats(
 ) -> None:
     import gdrive_fsspec.core
 
-    from clio_agent.gact.storage.linked import FsspecFolder, _ApprovedDrive
+    from clio_agent.gact.storage.drive_filesystem import _ApprovedDrive
+    from clio_agent.gact.storage.linked import FsspecFolder
 
     calls: list[str] = []
 

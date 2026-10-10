@@ -53,7 +53,7 @@ class _HangingClient:
     """Fake fastmcp ``Client``: ``list_tools()`` hangs until the transport closes.
 
     Mirrors the REAL constructor's ``timeout``/``init_timeout`` kwargs (accepted
-    and ignored) so this is a drop-in for ``gateway.Client`` in
+    and ignored) so this is a drop-in for ``fastmcp.Client`` in
     ``_list_declared_tools`` without changing that function's call shape.
     """
 
@@ -86,7 +86,7 @@ def test_force_close_listing_attempt_unblocks_a_hung_list_tools(
     production uses."""
 
     monkeypatch.setattr(gateway_module, "transport_for", lambda spec, cwd=None: _HangingTransport())
-    monkeypatch.setattr(gateway_module, "Client", _HangingClient)
+    monkeypatch.setattr("fastmcp.Client", _HangingClient)
 
     spec = MCPServerSpec(name="hangs", transport="stdio", command="fake-launcher")
     attempt_key = object()
@@ -139,15 +139,24 @@ def test_force_close_all_closes_every_registered_attempt(
     to close whatever the healer/discovery pass left mid-connect."""
 
     monkeypatch.setattr(gateway_module, "transport_for", lambda spec, cwd=None: _HangingTransport())
-    monkeypatch.setattr(gateway_module, "Client", _HangingClient)
+    monkeypatch.setattr("fastmcp.Client", _HangingClient)
 
     specs = {
         name: MCPServerSpec(name=name, transport="stdio", command="fake") for name in ("a", "b")
     }
     keys = [object(), object()]
+    failures: list[RuntimeError] = []
+
+    def run_listing(spec: MCPServerSpec, key: object) -> None:
+        try:
+            _list_declared_tools(spec, attempt_key=key)
+        except RuntimeError as error:
+            failures.append(error)
+
     workers = [
         threading.Thread(
-            target=lambda s=spec, k=key: _list_declared_tools(s, attempt_key=k),
+            target=run_listing,
+            args=(spec, key),
             daemon=True,
         )
         for spec, key in zip(specs.values(), keys, strict=True)
@@ -165,4 +174,6 @@ def test_force_close_all_closes_every_registered_attempt(
     for w in workers:
         w.join(timeout=5.0)
         assert not w.is_alive()
+    assert len(failures) == 2
+    assert all("force-closed" in str(error) for error in failures)
     assert not any(k in listing_attempts._attempts for k in keys)

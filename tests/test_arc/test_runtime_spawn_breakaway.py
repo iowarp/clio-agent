@@ -60,7 +60,7 @@ def _spawn_with_popen(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, popen: An
     monkeypatch.setattr("clio_agent.arc.storage.clear_crash_record", lambda _dir: None)
     monkeypatch.setattr(
         "clio_agent.arc.storage.watch_daemon_process",
-        lambda _proc, log_path, state_dir: None,
+        lambda _proc, log_path, state_dir, *, log_offset: None,
     )
     monkeypatch.setattr("clio_agent.arc.storage._proc_create_time", lambda _pid: 1.0)
     monkeypatch.setattr(

@@ -229,8 +229,6 @@ def resolve_accepted_params(
     """
 
     try:
-        import litellm  # noqa: PLC0415
-
         if custom_llm_provider in CLIO_CUSTOM_LITELLM_PROVIDERS:
             # clio's OWN transport (codex_direct, claude_code): once LiteLLM
             # has set its custom handler up it answers the generic OpenAI list for the
@@ -239,6 +237,8 @@ def resolve_accepted_params(
             # not depend on what ran (or was reset) earlier in the process.
             params = None
         else:
+            import litellm  # noqa: PLC0415
+
             params = litellm.get_supported_openai_params(
                 model=model_id, custom_llm_provider=custom_llm_provider
             )

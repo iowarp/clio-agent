@@ -42,7 +42,7 @@ def resolve_relay_endpoint() -> RelayEndpoint:
         but malformed URL remains configured with no host so status can report a
         typed configuration failure instead of silently treating it as absent.
     """
-    from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+    from clio_agent.tools.relay_factory import (  # noqa: PLC0415
         RelayTransportUnavailable,
         resolve_relay_transport_config,
     )
@@ -74,7 +74,7 @@ def relay_capabilities(runtime_status: dict[str, Any] | None = None) -> dict[str
     """
     endpoint = resolve_relay_endpoint()
     if runtime_status is None:
-        from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+        from clio_agent.tools.relay_factory import (  # noqa: PLC0415
             RelayTransportUnavailable,
             resolve_relay_transport_config,
         )
@@ -122,9 +122,9 @@ async def probe_relay_status() -> dict[str, Any]:
         Relay configuration, reachability, probe time, and mechanism/error detail.
     """
     endpoint = resolve_relay_endpoint()
-    from clio_agent.tools.relay_factory import relay_connection_metadata  # noqa: PLC0415
-    from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+    from clio_agent.tools.relay_factory import (  # noqa: PLC0415
         RelayTransportUnavailable,
+        relay_connection_metadata,  # noqa: PLC0415
         resolve_relay_transport_config,
     )
 

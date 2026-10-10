@@ -60,6 +60,8 @@ jobs:
           CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build and pack the real portable runtime (Windows)
         if: runner.os == 'Windows'
+        env:
+          CLIO_CODEX_RELEASE_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
@@ -123,14 +125,27 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
           # Wait for NSIS itself, not every background descendant it started.
           # Keep the wait bounded so a silent failure still reaches log upload.
+          $timer = [System.Diagnostics.Stopwatch]::StartNew()
           $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -PassThru
           if (-not $installer.WaitForExit(600000)) {
             $installer.Kill($true)
             if (-not $installer.WaitForExit(10000)) { Write-Warning 'Installer cleanup did not finish within 10 seconds' }
             throw 'NSIS installer did not exit within 10 minutes; see the retained installer logs'
           }
+          $timer.Stop()
+          @{
+            installer_seconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            exit_code = $installer.ExitCode
+            install_kind = 'fresh_ci_install'
+          } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-timing.json" -Encoding utf8
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
-          uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+          uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
+      - name: Measure subsequent Windows startup with the same managed packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
+          uv run --no-project --python 3.14 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence-repeat" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log" --agent-home "$installDir/data/clio-agent"
       - name: Collect Windows installer diagnostics even before first launch
         if: always() && runner.os == 'Windows'
         shell: pwsh
@@ -153,6 +168,8 @@ jobs:
           path: |
             external/gact-tui/desktop/src-tauri/target/release/bundle/${{ matrix.bundles }}/*
             ${{ runner.temp }}/desktop-source.json
+            ${{ runner.temp }}/installer-timing.json
+            ${{ runner.temp }}/startup-evidence-repeat/receipt.json
             ${{ runner.temp }}/startup-evidence/receipt.json
           if-no-files-found: error
           retention-days: 7
@@ -169,5 +186,7 @@ jobs:
             ${{ runner.temp }}/startup-evidence/boot.log
             ${{ runner.temp }}/startup-evidence/installer-error.log
             ${{ runner.temp }}/startup-evidence/installer-boot.log
+            ${{ runner.temp }}/installer-timing.json
+            ${{ runner.temp }}/startup-evidence-repeat/
           if-no-files-found: warn
           retention-days: 7

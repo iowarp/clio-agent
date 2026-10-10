@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -20,6 +21,31 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import psutil
+
+
+def private_core_port() -> int:
+    """Reuse the build smoke's five-port reservation for this private daemon."""
+    path = Path(__file__).resolve().parents[1] / "install/arc_smoke.py"
+    spec = importlib.util.spec_from_file_location("clio_package_arc_smoke", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("The package ARC port probe is missing")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return int(module._free_core_port_block())
+
+
+def healthy_arc(health: dict[str, Any]) -> bool:
+    """Require an attached core and live ARC, rather than only an answering API."""
+    rows = {row["name"]: row for row in health.get("integrations", [])}
+    for name in ("clio_core_attach", "arc"):
+        row = rows.get(name)
+        if row is None:
+            return False
+        if row.get("required") and row["status"] != "ready":
+            raise ValueError(f"Packaged {name} failed: {row.get('reason')}: {row.get('detail')}")
+        if row["status"] != "ready":
+            return False
+    return True
 
 
 def backend_connection(process: psutil.Process) -> tuple[str, str] | None:
@@ -98,7 +124,12 @@ def require_bundled_python(process: psutil.Process) -> str:
 
 
 def smoke(
-    desktop: Path, evidence: Path, *, timeout: int = 180, boot_log: Path | None = None
+    desktop: Path,
+    evidence: Path,
+    *,
+    timeout: int = 180,
+    boot_log: Path | None = None,
+    agent_home: Path | None = None,
 ) -> dict[str, Any]:
     """Require a real child backend, authenticated capabilities and surviving Desktop."""
     desktop = desktop.resolve(strict=True)
@@ -107,9 +138,13 @@ def smoke(
         key: value for key, value in os.environ.items() if not key.startswith(("CLIO_", "GACT_"))
     }
     env.update(
-        CLIO_AGENT_HOME=str(evidence / "agent"),
+        CLIO_AGENT_HOME=str(agent_home.resolve() if agent_home else evidence / "agent"),
         CLIO_DESKTOP_HOME=str(evidence / "desktop-state"),
         CLIO_RUNTIME_STATE_DIR=str(evidence / "core-supervision"),
+        CLIO_ARC_CTE_DIR=str(evidence / "cte"),
+        CLIO_CORE_PORT=str(private_core_port()),
+        CLIO_ARC_CTE_FILE_CAPACITY="64MB",
+        CLIO_ARC_CTE_RAM_CAPACITY="64MB",
         CLIO_ENV_FILE_LOADED="1",
         # Prevent attach-first from finding any unrelated CLIO on the test host.
         CLIO_GACT_URL="http://127.0.0.1:9",
@@ -118,6 +153,7 @@ def smoke(
     observed: dict[int, psutil.Process] = {}
     log_path = evidence / "desktop.log"
     started = time.time()
+    launched_at = time.perf_counter()
     with log_path.open("wb") as log:
         child = subprocess.Popen(
             [str(desktop)],
@@ -150,6 +186,16 @@ def smoke(
                             "contract_version"
                         ):
                             raise ValueError("Packaged backend returned invalid capabilities")
+                        health_request = Request(
+                            url + "/v1/health", headers={"Authorization": f"Bearer {token}"}
+                        )
+                        with urlopen(health_request, timeout=5) as response:
+                            health = json.load(response)
+                        if not healthy_arc(health):
+                            continue
+                        (evidence / "health.json").write_text(
+                            json.dumps(health, indent=2), encoding="utf-8"
+                        )
                         # Only paths and readiness metadata: never retain command lines,
                         # process environments or the transient authentication token.
                         (evidence / "backend.json").write_text(
@@ -167,12 +213,15 @@ def smoke(
                         executable = require_bundled_python(candidate)
                     except (psutil.NoSuchProcess, URLError, TimeoutError):
                         continue
+                    ready_seconds = time.perf_counter() - launched_at
                     # Readiness alone can precede an immediate native WebView crash.
                     try:
                         status = child.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         result = {
                             "status": "passed",
+                            "backend_ready_seconds": round(ready_seconds, 3),
+                            "survival_observation_seconds": 10,
                             "system": platform.platform(),
                             "desktop": str(desktop),
                             "backend_python": executable,
@@ -184,7 +233,7 @@ def smoke(
                         }
                         return result
                     raise RuntimeError(f"Desktop exited after backend readiness ({status})")
-                time.sleep(1)
+                time.sleep(0.1)
             raise TimeoutError(f"Desktop did not launch its packaged backend within {timeout}s")
         finally:
             try:
@@ -210,9 +259,17 @@ def main() -> None:
     parser.add_argument("desktop", type=Path)
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--boot-log", type=Path, help="Native boot log for this installed app")
+    parser.add_argument(
+        "--agent-home", type=Path, help="Reuse this installation's managed packages"
+    )
     args = parser.parse_args()
     try:
-        result = smoke(args.desktop, args.evidence_dir.resolve(), boot_log=args.boot_log)
+        result = smoke(
+            args.desktop,
+            args.evidence_dir.resolve(),
+            boot_log=args.boot_log,
+            agent_home=args.agent_home,
+        )
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         if args.evidence_dir.is_dir():
             (args.evidence_dir / "failure.json").write_text(

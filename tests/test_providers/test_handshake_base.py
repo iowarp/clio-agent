@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any
+
+import httpx
+import pytest
 
 from clio_agent.providers.capabilities.records import DeploymentCapabilities, ModelCapabilities
 from clio_agent.providers.handshake.base import (
@@ -92,3 +96,91 @@ def test_all_rows_valid_emits_no_drop_warning(caplog) -> None:
 
     assert [m.id for m in report.models] == ["a", "b"]
     assert not [r for r in caplog.records if "model_row_discovery_failed" in r.getMessage()]
+
+
+def test_certificate_initialization_runs_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catalog client setup preserves TLS/timeouts without blocking other API work."""
+    loop_thread = threading.get_ident()
+    actual_client = httpx.AsyncClient
+    construction_threads: list[int] = []
+
+    def construct(**kwargs: Any) -> httpx.AsyncClient:
+        construction_threads.append(threading.get_ident())
+        assert threading.get_ident() != loop_thread
+        return actual_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", construct)
+
+    async def run() -> None:
+        engine = _StubHandshake(provider=None)
+        client = await ProviderHandshake._open_client(engine, _ctx())
+        try:
+            assert client.timeout.connect == engine.timeout_connect
+            assert client.timeout.read == max(engine.timeout_models, engine.timeout_model_config)
+            assert client._transport._pool._ssl_context.verify_mode != 0
+        finally:
+            await ProviderHandshake._close_client(engine, client)
+
+    asyncio.run(run())
+    assert len(construction_threads) == 1
+
+
+def test_capability_catalog_keeps_the_event_loop_responsive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Health requests can run while a cold catalog resolves endpoint facts."""
+    from clio_agent.providers.capabilities import endpoint, invalidation
+    from clio_agent.providers.identity import endpoint_key
+
+    actual_build = endpoint.build_endpoint_capabilities
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_catalog(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(timeout=3), "capability catalog blocked the event loop"
+        return actual_build(*args, **kwargs)
+
+    monkeypatch.setattr(endpoint, "build_endpoint_capabilities", slow_catalog)
+
+    async def run() -> None:
+        engine = _StubHandshake(provider=None)
+        pending = asyncio.create_task(engine.handshake(_ctx()))
+        try:
+            async with asyncio.timeout(2):
+                while not entered.is_set():
+                    await asyncio.sleep(0.01)
+            release.set()
+            report = await pending
+            assert report.connectivity == ConnectivityState.OK
+            caps = invalidation.get_endpoint_capabilities(endpoint_key("stub", _ctx().api_base))
+            assert caps is not None
+        finally:
+            release.set()
+
+    asyncio.run(run())
+
+
+def test_handshake_persists_live_report_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live limits still reach the DB without synchronous disk work on the loop."""
+    from clio_agent.providers import handshake
+    from clio_agent.providers.handshake.sources import db
+
+    actual_record = db.record_report
+    loop_thread = threading.get_ident()
+    recorded: list[Any] = []
+
+    def record(report: Any) -> None:
+        assert threading.get_ident() != loop_thread
+        actual_record(report)
+        recorded.append(report)
+
+    monkeypatch.setattr(db, "record_report", record)
+    monkeypatch.setattr(handshake, "get_handshake_for", lambda *args: _StubHandshake(None))
+    report = asyncio.run(handshake.run_handshake(_ctx(), force=True))
+    assert report.connectivity == ConnectivityState.OK
+    assert recorded == [report]
