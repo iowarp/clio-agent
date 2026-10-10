@@ -116,7 +116,7 @@ def degraded_web_mcp_placeholder(namespace: str, spec: MCPServerSpec | None) -> 
             "Search the web. The search backend is not ready yet; a call returns "
             "what to do, and the full tool appears once the backend serves."
         ),
-        inputSchema={
+        input_schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "The search query."},

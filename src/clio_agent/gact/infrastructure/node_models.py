@@ -251,7 +251,7 @@ def hub_snapshots(root: Path) -> list[dict[str, Any]]:
     rows = []
     for repo in sorted(root.glob("models--*")):
         repository = repo.name.removeprefix("models--").replace("--", "/", 1)
-        refs = {}
+        refs: dict[str, str] = {}
         for ref in sorted((repo / "refs").glob("*")) if (repo / "refs").is_dir() else []:
             try:
                 refs.setdefault(ref.read_text().strip(), ref.name)

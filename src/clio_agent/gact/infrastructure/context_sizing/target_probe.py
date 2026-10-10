@@ -180,8 +180,9 @@ def parse_rocm_smi(text: str) -> list[dict[str, int]]:
             continue
         total = next((v for k, v in card.items() if "Total Memory" in k and "Used" not in k), None)
         used = next((v for k, v in card.items() if "Total Used Memory" in k), None)
-        if str(total).isdigit() and str(used).isdigit():
-            gpus.append({"total": int(total), "free": int(total) - int(used)})
+        total_text, used_text = str(total), str(used)
+        if total_text.isdigit() and used_text.isdigit():
+            gpus.append({"total": int(total_text), "free": int(total_text) - int(used_text)})
     return gpus
 
 

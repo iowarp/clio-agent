@@ -169,7 +169,7 @@ def instance_served_model(record: ServiceRecord) -> str:
     try:
         flags = compile_parameters("vllm", variant, configuration).flags
     except ValueError:
-        flags = []
+        flags = ()
     return served_model(configuration.get("model", "").strip(), flags)
 
 

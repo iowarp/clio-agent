@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from clio_agent.gact.infrastructure.models import ServiceActionRequest
 from clio_agent.gact.infrastructure.searxng_service import SERVICE_ID, VARIANT_ID
@@ -107,7 +107,7 @@ def _last_action(runtime: Any) -> str:
     return str(rows[-1].action) if rows else ""
 
 
-async def _run(runtime: Any, action: str, poll_seconds: float) -> str:
+async def _run(runtime: Any, action: Literal["install", "start"], poll_seconds: float) -> str:
     row = runtime.start_action(
         SERVICE_ID,
         ServiceActionRequest(target_id=LOCAL_TARGET, action=action, variant_id=VARIANT_ID),

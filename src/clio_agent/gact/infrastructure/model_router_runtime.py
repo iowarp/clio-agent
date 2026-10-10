@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from clio_agent.gact.infrastructure.gpu_share import check_gpu_share
 from clio_agent.gact.infrastructure.model_instances import (
@@ -153,7 +153,9 @@ class ModelRouterMixin:
                 exc,
             )
 
-    async def _router_operation(self, router: ServiceRecord, verb: str) -> bool:
+    async def _router_operation(
+        self, router: ServiceRecord, verb: Literal["start", "stop"]
+    ) -> bool:
         """Run one router stop or start as its own operation; whether it succeeded."""
 
         row = self.store.put_operation(

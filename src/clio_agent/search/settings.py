@@ -209,7 +209,7 @@ def load_search_settings() -> SearchSettings:
         opt_in_engines=conf.resolve(
             "search.searxng.opt_in_engines",
             env="CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES",
-            default=[],
+            default=list[str](),
             cast=conf.as_csv,
         ),
         safe_search=conf.resolve(

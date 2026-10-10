@@ -182,7 +182,9 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         except (OSError, ValueError, RuntimeError):
             unavailable = "Connect this execution host to inspect and download models."
         errors = []
-        roots = [(root, {}) for root in store.model_roots(target_id)]
+        roots: list[tuple[str, dict[str, Any]]] = [
+            (root, {}) for root in store.model_roots(target_id)
+        ]
         chosen = target.storage.models
         if unavailable is None and chosen and chosen not in store.model_roots(target_id):
             # A chosen models location that is a shared Hugging Face hub cache lists its

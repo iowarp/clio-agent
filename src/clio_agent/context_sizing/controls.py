@@ -69,6 +69,11 @@ class ContextControls(BaseModel):
     fit_to_gpu: FitToGpu
 
 
+def _default_context_choices() -> list[ContextChoice]:
+    """Return an independent list of the supported context choices."""
+    return ["number", "max", "fit_to_gpu"]
+
+
 class ContextSizingSpec(BaseModel):
     """What a deployment form needs to render the context control of one engine.
 
@@ -81,7 +86,7 @@ class ContextSizingSpec(BaseModel):
     choice_key: str = CHOICE_KEY
     strategy_key: str = STRATEGY_KEY
     share_key: str = SHARE_KEY
-    choices: list[ContextChoice] = Field(default_factory=lambda: ["number", "max", "fit_to_gpu"])
+    choices: list[ContextChoice] = Field(default_factory=_default_context_choices)
     default_choice: ContextChoice = "fit_to_gpu"
     default_strategy: str = ""
     strategies: list[ContextStrategyInfo] = Field(default_factory=list)

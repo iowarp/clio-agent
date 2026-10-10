@@ -98,7 +98,12 @@ def register_stream(lm: Any, session_id: str, scope: anyio.CancelScope) -> Any:
     from clio_agent.providers.claude_code_cancel import register_sdk_stream  # noqa: PLC0415
 
     loop = asyncio.get_running_loop()
-    return register_sdk_stream(session_id, lambda: loop.call_soon_threadsafe(scope.cancel))
+
+    def cancel_stream() -> None:
+        """Schedule cancellation on the stream owner loop."""
+        loop.call_soon_threadsafe(scope.cancel)
+
+    return register_sdk_stream(session_id, cancel_stream)
 
 
 def unregister_stream(handle: Any) -> None:

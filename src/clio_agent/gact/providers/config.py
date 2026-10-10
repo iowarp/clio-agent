@@ -480,7 +480,9 @@ def router_model_error(
     if problem is None:
         return None
     code = str(problem["error"])
-    facts = {**problem, "routed": ", ".join(map(str, problem.get("routed") or [])) or "nothing"}
+    routed = problem.get("routed")
+    routed_names = ", ".join(map(str, routed)) if isinstance(routed, (list, tuple)) else ""
+    facts = {**problem, "routed": routed_names or "nothing"}
     return ErrorEnvelope(
         error=ErrorInfo(
             error=code,

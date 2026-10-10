@@ -98,7 +98,7 @@ def install_source(root: Path, manifest: dict[str, Any]) -> dict[str, str]:
     shutil.rmtree(staging, ignore_errors=True)
     with tarfile.open(download, "r:gz") as archive:
         # git archive records the commit it was made from in the global pax header.
-        if archive.pax_headers.get("comment") != commit:
+        if (archive.pax_headers or {}).get("comment") != commit:
             raise RuntimeError("The downloaded SearXNG archive is not the pinned commit")
         archive.extractall(staging, members=_members(archive), filter="data")
     if not (staging / "searx" / "webapp.py").is_file():

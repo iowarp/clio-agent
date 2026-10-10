@@ -292,13 +292,13 @@ def declare_ranges(
     for char_lo, char_hi, domain, label in tool_sections:
         sections.append((char_lo, char_hi, domain, label, None))
     ranges: list[DeclaredRange] = []
-    for char_lo, char_hi, domain, label, index in sorted(sections, key=lambda s: s[0]):
+    for char_lo, char_hi, domain, label, message_index in sorted(sections, key=lambda s: s[0]):
         lo, hi = encoded.token_span(char_lo, char_hi)
         if ranges and lo < ranges[-1].hi:  # truncate overlaps, as the connector does
             lo = ranges[-1].hi
         if hi <= lo:
             continue
-        ranges.append(DeclaredRange(lo, hi, domain, label, index, char_lo, char_hi))
+        ranges.append(DeclaredRange(lo, hi, domain, label, message_index, char_lo, char_hi))
     return Declaration(
         ranges=ranges, prompt_token_count=len(encoded.ids), unlocated_messages=unlocated
     )
