@@ -698,3 +698,33 @@ jobs were skipped. Prior CI failures retain their original source identities and
 unproven causes. These CI results and the new live gates do not close the remaining
 recovery, storage-interruption, target-integration, provider or platform matrix.
 Full qualification remains incomplete.
+
+### Fresh Claude verification and malformed tool output
+
+The earlier Claude authentication blocker relied on stale expiry metadata. Fresh
+Windows Claude/Haiku SDK execution on core `152fe372` passed five Shell cycles:
+immediate running handles, an independent file read in another model iteration,
+automatic idle wakes carrying actual worker output, and no later duplicate result.
+Host authentication was preserved. These passes do not qualify every Claude route.
+
+The Windows Haiku Subagent gate failed when the parent's independent-work follow-up
+streamed repeated `<br>` text through the unchanged 120-second limit. The worker
+actually ran; the parent gate did not pass. A separate Linux Sonnet run accepted
+the child, but the child emitted tool-call JSON with a closing fence and no opening
+`tool_calls` fence. CLIO treated that malformed response as a final answer. The
+worker never started, yet the child was marked completed. The raw SDK transcript
+identifies the actual model as `claude-sonnet-5-5` behind the `sonnet` alias.
+
+The Claude text-tool bridge now turns that specific malformed call-list shape into
+the existing bounded protocol-error observation. It does not execute repaired or
+guessed calls. Detection requires names from the request's available tools;
+ordinary JSON answers and fenced examples retain their existing behavior. The
+per-iteration reminder explicitly requires both fences without opening an
+unterminated fence in the reminder itself. The regression reproduced the previous
+false completion; fresh actual-model qualification of the repair remains required.
+
+Local Windows mixed-control setup also failed the existing private-Core file-tier
+capacity preflight before model submission. This is separate from authentication.
+The previous native crashes, oversized-SSE failure and prohibited confinement route
+remain unresolved. No runtime dependency, deadline, assertion, capacity safeguard,
+installed client, authentication or released pin was changed by this repair.

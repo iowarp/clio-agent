@@ -34,6 +34,7 @@ from typing import Any
 
 from dspy.lm15 import (
     DocumentPart,
+    FunctionTool,
     ImagePart,
     Message,
     Request,
@@ -176,7 +177,14 @@ class AsyncClaudeCodeEngine:
         )
         gact_session = _active_gact_session_id()
         entry = _STREAM_CLIENT_POOL.entry_for(session_id=gact_session, gact_session_id=gact_session)
-        turn = _Turn(self.model, call_index, session_id)
+        turn = _Turn(
+            self.model,
+            call_index,
+            session_id,
+            available_tools=frozenset(
+                tool.name for tool in request.tools if isinstance(tool, FunctionTool)
+            ),
+        )
         yield StreamStartEvent(model=request.model)
         try:
             async for message in entry.stream(
@@ -258,10 +266,18 @@ class ClaudeCodeEngine(AsyncClaudeCodeEngine):
 class _Turn:
     """Folds the SDK's messages into lm15 deltas, usage and the final reply."""
 
-    def __init__(self, model: str, call_index: int = 0, session_id: str = "") -> None:
+    def __init__(
+        self,
+        model: str,
+        call_index: int = 0,
+        session_id: str = "",
+        *,
+        available_tools: frozenset[str] = frozenset(),
+    ) -> None:
         self.model = model
         self.call_index = call_index
         self.session_id = session_id
+        self.available_tools = available_tools
         self.events = 0
         self.redacted_tokens = 0
         self.reply = ""
@@ -342,7 +358,9 @@ class _Turn:
             shown = self._splitter.push(self.fallback)
             if shown:
                 out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
-        split = split_reply(reply, call_prefix=f"call_{call_id[:8]}")
+        split = split_reply(
+            reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
+        )
         for index, call in enumerate(split.calls):
             out.append(
                 StreamDeltaEvent(

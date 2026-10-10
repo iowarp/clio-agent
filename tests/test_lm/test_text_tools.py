@@ -19,6 +19,7 @@ from dspy.lm15 import (
 from clio_agent.lm.engines.text_tools import (
     FENCE,
     INVALID_TOOL_CALL,
+    TURN_REMINDER,
     StreamSplitter,
     render_messages,
     render_system,
@@ -99,6 +100,45 @@ def test_reply_without_a_block_is_the_answer() -> None:
     assert (split.text, split.calls) == ("The answer is 42.", [])
 
 
+def test_orphaned_call_list_is_rejected_without_executing_it() -> None:
+    raw = '[{"name":"search","arguments":{"query":"x"}}]\n```'
+    split = split_reply(raw, call_prefix="t", available_tools={"search"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert isinstance(call.input["error"], str)
+    assert "opening" in call.input["error"]
+    assert call.input["block"] == raw
+    assert not split.text
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        '[{"name":"search","arguments":{"query":"x"}}]',
+        '[{"name":"other","arguments":{}}]\n```',
+        '[{"name":"search","arguments":{},"result":"data"}]\n```',
+        'Example:\n```json\n[{"name":"search","arguments":{}}]\n```',
+        'Here is the requested data: [{"name":"search","arguments":{}}]\n```',
+    ],
+)
+def test_json_answers_and_tool_examples_are_not_reinterpreted(reply: str) -> None:
+    split = split_reply(reply, call_prefix="t", available_tools={"search"})
+    assert split.text == reply
+    assert not split.calls
+
+
+def test_orphaned_call_shape_without_available_tools_remains_an_answer() -> None:
+    raw = '[{"name":"search","arguments":{}}]\n```'
+    split = split_reply(raw, call_prefix="t")
+    assert (split.text, split.calls) == (raw, [])
+
+
+def test_turn_reminder_requires_both_fences_without_opening_a_block() -> None:
+    assert FENCE not in TURN_REMINDER
+    assert "opening line" in TURN_REMINDER and "closing line" in TURN_REMINDER
+    assert "JSON list alone is not a call" in TURN_REMINDER
+
+
 def test_reply_with_a_block_splits_text_and_calls() -> None:
     reply = "Searching both.\n" + _block(
         [
@@ -139,6 +179,7 @@ def test_an_unreadable_block_is_one_invalid_call_never_repaired(raw: str, error:
     split = split_reply(f"Trying.\n{FENCE}\n{raw}\n```", call_prefix="t")
     [call] = split.calls
     assert (call.id, call.name) == ("t_0", INVALID_TOOL_CALL)
+    assert isinstance(call.input["error"], str)
     assert error in call.input["error"]
     assert call.input["block"] == raw
     assert split.text == "Trying."
