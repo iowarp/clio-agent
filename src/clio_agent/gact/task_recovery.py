@@ -59,23 +59,17 @@ async def recover_http(app: Any, key: TaskKey) -> None:
     from mcp import types as mcp_types
 
     from clio_agent.gact.elicitation_bridge import make_elicitation_client
+    from clio_agent.gact.task_recovery_client import ReconnectingClient
     from clio_agent.tools.mcp_config import transport_from_spec
     from clio_agent.tools.mcp_handlers import MCPInvocationContext
     from clio_agent.tools.mcp_task_extension import backend_identity
     from clio_agent.tools.mcp_tasks import cancel_task, resume_task, session_elicitation_callback
     from clio_agent.tools.task_observers import resolve_task_observer
     from clio_agent.tools.task_receipt import (
-        TaskAwareClient,
         TaskResultValidationError,
         record_invalid_result,
         validate_terminal,
     )
-
-    class ReconnectingClient(TaskAwareClient):
-        """Adopt original negotiation without submitting initialize again."""
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            super().__init__(*args, **{**kwargs, "auto_initialize": False})
 
     store, supervisor = app_task_store(app), task_supervisor(app)
     row = store.get(key)
