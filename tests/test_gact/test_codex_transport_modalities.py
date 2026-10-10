@@ -167,3 +167,18 @@ def test_a_model_whose_template_has_no_thinking_is_not_offered_reasoning() -> No
 
     assert _supported("none") is False
     assert _supported("always_on") is True
+
+
+def test_an_on_off_model_is_offered_a_switch_not_an_effort_ladder() -> None:
+    """Live c14: Ollama qwen3:4b (think on/off) was offered off/low/medium/high (F039)."""
+
+    from clio_agent.gact.provider_catalog import ON_OFF_LEVEL, _reasoning_wire_block
+    from clio_agent.providers.capabilities.records import ThinkingSpec
+
+    thinking = SimpleNamespace(
+        spec=ThinkingSpec(mechanism="on_off"), control="think", known=True, decided_by="model"
+    )
+    block = _reasoning_wire_block(thinking, DiscoveredModel(id=_MODEL), dialect="ollama")
+    assert [x for x in block["levels"] if x != "off"] == [ON_OFF_LEVEL]
+    assert block["control"] == "toggle"
+    assert block["supported"] is True

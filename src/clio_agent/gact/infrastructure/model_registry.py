@@ -9,6 +9,8 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from clio_agent.gact.infrastructure.operation_models import ReuseReport
+
 
 class ModelAcquisition(BaseModel):
     """Last observed target receipt, with the immutable location used to reconcile it."""
@@ -28,6 +30,19 @@ class ModelAcquisition(BaseModel):
     updated_at: float
     observed_at: float = Field(default_factory=time.time)
     error: str | None = None
+    # Typed cause: worker_exited (exit status known), worker_lost (killed/host restart),
+    # receipt_missing (this host holds no receipt for the record).
+    error_code: str | None = None
+    exit_code: int | None = None
+    log_tail: list[str] = Field(default_factory=list)
+    log_path: str | None = None
+    files: list[str] = Field(default_factory=list)
+    file_path: str | None = None
+    #: Set on the reply to a download whose verified revision was already there.
+    reuse: ReuseReport | None = None
+    #: ``hf_cache``: a snapshot found in a shared Hugging Face hub cache. CLIO holds no
+    #: receipt for it and never hashed its files, so it cannot retry or cancel it.
+    origin: Literal["receipt", "hf_cache"] = "receipt"
 
 
 class ModelDownloadRequest(BaseModel):
@@ -37,6 +52,20 @@ class ModelDownloadRequest(BaseModel):
     repository: str = Field(min_length=1, max_length=180)
     revision: str = Field(default="main", min_length=1, max_length=120)
     destination: str = Field(default="", max_length=4096)
+    # Exact repository file names to fetch (e.g. one GGUF quantization);
+    # empty fetches the whole revision.
+    files: list[str] = Field(default_factory=list, max_length=64)
+    #: Download again even when this verified revision is already present.
+    from_scratch: bool = False
+
+    @field_validator("files")
+    @classmethod
+    def file_names(cls, value: list[str]) -> list[str]:
+        """Accept relative repository file names only, never patterns or escapes."""
+        for name in value:
+            if not re.fullmatch(r"[\w.+-]+(?:/[\w.+-]+)*", name) or ".." in name.split("/"):
+                raise ValueError(f"Invalid model file name: {name!r}")
+        return sorted(set(value))
 
     @field_validator("repository")
     @classmethod

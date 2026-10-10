@@ -1007,7 +1007,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
 
     if not await registry_boot.boot_fold_artifact_registry_offloop(app, loop):
         return  # wedged store — agent stays unready with a typed agent_init_error
-    agent_initialization.mark_agent_ready(app, agent)
+    agent_initialization.mark_agent_ready(app, agent, boot=True)
 
     # #972: enforce the CAS store byte budget across every workspace at boot (off-loop,
     # #1001 cadence — the registry is now folded, so the reachability scan is ready).

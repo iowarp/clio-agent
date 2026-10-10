@@ -323,8 +323,244 @@ def test_cancel_during_a_step_stops_before_the_next_call() -> None:
     assert len(engine.requests) == 1
 
 
+def _one_message(model: str) -> Request:
+    from dspy.lm15 import Message, TextPart
+
+    return Request(model=model, messages=(Message(role="user", parts=(TextPart(text="q"),)),))
+
+
+class _HangingLM:
+    """An LM whose call streams nothing for a long time (a long prefill), recording its fate."""
+
+    model = "hanging"
+
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    async def acall(self, request: Request) -> Any:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            self.closed.set()
+            raise
+        raise AssertionError("the call was not cancelled")
+
+
+def test_cancel_mid_call_closes_the_in_flight_call() -> None:
+    # F038: the server-side request ends at the cancel, not when the answer is done.
+    from clio_agent.gact.agents.clio_react import _call_lm
+
+    lm = _HangingLM()
+    deadline = time.monotonic() + 0.5
+    started = time.monotonic()
+    with (
+        cancellation_checker(lambda: time.monotonic() > deadline),
+        pytest.raises(_TurnCancelled),
+    ):
+        _call_lm(lm, _one_message(lm.model))
+    assert lm.closed.is_set()
+    assert time.monotonic() - started < 5
+
+
+def test_an_uncancelled_call_returns_without_waiting_on_the_watch() -> None:
+    from clio_agent.gact.agents.clio_react import _call_lm
+
+    class _Quick:
+        model = "quick"
+
+        async def acall(self, request: Request) -> str:
+            return "done"
+
+    started = time.monotonic()
+    with cancellation_checker(lambda: False):
+        assert _call_lm(_Quick(), _one_message("quick")) == "done"
+    assert time.monotonic() - started < 0.2
+
+
+def _in_session(sid: str) -> Any:
+    import contextlib
+
+    from clio_agent.gact import context as gact_context
+
+    @contextlib.contextmanager
+    def bound() -> Any:
+        token = gact_context.set_session_id(sid)
+        try:
+            yield
+        finally:
+            gact_context.reset(token)
+
+    return bound()
+
+
+def test_a_session_cancel_kills_the_in_flight_http_stream_and_counts_it() -> None:
+    # provider_streams_killed counted only Claude Code SDK streams: an HTTP call
+    # (vLLM, llama.cpp, Ollama) closed by the cancel was reported as 0 killed.
+    from clio_agent.gact.agents.clio_react import _call_lm
+    from clio_agent.providers.claude_code_cancel import (
+        abort_session_streams,
+        active_stream_sessions,
+    )
+
+    lm = _HangingLM()
+    killed: list[int] = []
+
+    def cancel_when_in_flight() -> None:
+        deadline = time.monotonic() + 10
+        while "sess-kill" not in active_stream_sessions() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        killed.append(abort_session_streams("sess-kill"))
+
+    canceller = threading.Thread(target=cancel_when_in_flight)
+    canceller.start()
+    started = time.monotonic()
+    # The cooperative flag never fires: only the abort handle can end this call.
+    with (
+        _in_session("sess-kill"),
+        cancellation_checker(lambda: False),
+        pytest.raises(_TurnCancelled),
+    ):
+        _call_lm(lm, _one_message(lm.model))
+    canceller.join()
+    assert killed == [1]
+    assert lm.closed.is_set()
+    assert time.monotonic() - started < 5
+    assert "sess-kill" not in active_stream_sessions()
+
+
+def test_the_stream_handle_lives_only_while_the_call_runs() -> None:
+    from clio_agent.gact.agents.clio_react import _call_lm
+    from clio_agent.providers.claude_code_cancel import active_stream_sessions
+
+    seen: list[bool] = []
+
+    class _Probe:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        async def acall(self, request: Request) -> str:
+            seen.append("sess-probe" in active_stream_sessions())
+            return "done"
+
+    with _in_session("sess-probe"), cancellation_checker(lambda: False):
+        assert _call_lm(_Probe("hosted_vllm/qwen"), _one_message("q")) == "done"
+        # Claude Code registers its own SDK kill handle: not counted twice.
+        assert _call_lm(_Probe("claude_code/sonnet"), _one_message("q")) == "done"
+    assert seen == [True, False]
+    assert "sess-probe" not in active_stream_sessions()
+
+
 # --------------------------------------------------------------------------- #
-# tool-result media placement                                                 #
+# reasoning: provider field vs inline <think> (live == recorded == reloaded)  #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def live_lanes(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[Any]]:
+    """What the streamed call put on the live thinking and answer lanes."""
+    from clio_agent.runtime import lm_activity
+
+    lanes: dict[str, list[Any]] = {"thinking": [], "answer": []}
+
+    def thinking(text: str, *, provider: str = "") -> None:
+        lanes["thinking"].append((provider, text))
+
+    def answer(text: str, *, field: str = "answer") -> None:
+        lanes["answer"].append(text)
+
+    monkeypatch.setattr(lm_activity, "note_lm_provider_thinking_delta", thinking)
+    monkeypatch.setattr(lm_activity, "note_lm_answer_delta", answer)
+    return lanes
+
+
+@pytest.fixture
+def thoughts(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Every ``thought`` segment the loop wrote to the plane (what a reload folds)."""
+    from clio_agent.gact.agents.clio_react_record import StepRecorder
+
+    seen: list[dict[str, Any]] = []
+    write = StepRecorder._write
+
+    def spy(self: Any, kind: str, content: dict[str, Any], step: int, span: str) -> str:
+        if kind == "thought":
+            seen.append(content)
+        return write(self, kind, content, step, span)
+
+    monkeypatch.setattr(StepRecorder, "_write", spy)
+    return seen
+
+
+def test_an_inline_think_block_is_thinking_live_recorded_and_logged(
+    live_lanes: dict[str, list[Any]], thoughts: list[dict[str, Any]]
+) -> None:
+    from clio_agent.gact.reasoning_extract import entry_reasoning_text, entry_response_text
+
+    lm, engine = scripted_lm(
+        [
+            calls(("search", {"query": "x"}), text="<think>plan: search</think>\n\nlooking"),
+            Reply(text="\n<think>sure</think>42"),
+        ]
+    )
+    with dspy.context(lm=lm):
+        pred = ClioReAct("question -> answer", tools=[search])(question="q")
+    assert pred.answer == "42"
+    # The plane holds the block as thinking and the text clean: the next request
+    # (folded from the plane, as a reload is) shows exactly that.
+    assert wire(engine.requests[1])[2] == (
+        "assistant",
+        [
+            ("thinking", "plan: search"),
+            ("text", "looking"),
+            ("call", "call_0_0", "search", {"query": "x"}),
+        ],
+    )
+    assert [t["text"] for t in thoughts] == ["looking", "42"]
+    assert [[r["source"] for r in t["thinking"]] for t in thoughts] == [["inline_tag"]] * 2
+    # Live: the same split, labelled inline_tag.
+    assert {provider for provider, _ in live_lanes["thinking"]} == {"model:inline_tag"}
+    assert "".join(text for _, text in live_lanes["thinking"]) == "plan: searchsure"
+    assert "".join(live_lanes["answer"]) == "looking42"
+    # The persisted reasoning log reads the history entry by the same rule.
+    assert entry_reasoning_text(lm.history[-1]) == "sure"
+    assert entry_response_text(lm.history[-1]) == "42"
+
+
+def test_a_provider_thinking_field_wins_and_inline_tags_stay_text(
+    live_lanes: dict[str, list[Any]], thoughts: list[dict[str, Any]]
+) -> None:
+    pred, _ = _run([Reply(text="<think>literal</think>ans", thinking="real")], [search])
+    assert pred.answer == "<think>literal</think>ans"
+    assert {provider for provider, _ in live_lanes["thinking"]} == {"model:provider_field"}
+    assert "".join(text for _, text in live_lanes["thinking"]) == "real"
+    assert "".join(live_lanes["answer"]) == "<think>literal</think>ans"
+    recorded = thoughts[0]["thinking"][0]
+    assert (recorded["text"], recorded["source"]) == ("real", "provider_field")
+
+
+def test_an_empty_think_block_records_no_thinking(thoughts: list[dict[str, Any]]) -> None:
+    pred, _ = _run([Reply(text="<think>\n\n</think>\n\nHi")], [search])
+    assert pred.answer == "Hi"
+    assert thoughts[0]["thinking"] == []
+    assert thoughts[0]["text"] == "Hi"
+
+
+def test_an_unclosed_think_block_is_incomplete_thinking_and_no_answer() -> None:
+    from dspy.lm15 import Message, Response, TextPart, Usage
+
+    from clio_agent.gact.agents.clio_react_stream import reply_thinking_and_text
+
+    reply = Response(
+        id="r",
+        model="m",
+        message=Message.assistant([TextPart(text="<think>ran out of")]),
+        finish_reason="stop",
+        usage=Usage(input_tokens=1, output_tokens=1),
+    )
+    thinking, text, origin = reply_thinking_and_text(reply)
+    assert [t.text for t in thinking] == ["ran out of"]
+    assert (text, origin) == ("", ("inline_tag", False))
+
+
+# --------------------------------------------------------------------------- #
+# tool-result media placement                                                #
 # --------------------------------------------------------------------------- #
 def _media_step() -> tuple[list[Any], Any]:
     from dspy.lm15 import ImagePart, Message, TextPart

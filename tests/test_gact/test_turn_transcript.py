@@ -178,6 +178,21 @@ def test_provider_thinking_opens_thinking_part_verbatim() -> None:
     # published anymore — the thinking part rides message.part.* only.
     assert publisher.of_type("turn.trace.delta") == []
     assert publisher.of_type("turn.text.delta") == []
+    assert "reasoning_source" not in parts[0].metadata  # no origin named: shape unchanged
+
+
+def test_inline_tag_thinking_part_records_its_origin() -> None:
+    transcript, _ = make_transcript()
+    transcript.append_text_delta("main", "provider_thinking:model:inline_tag", "plan")
+    transcript.append_text_delta("main", "next_thought", "answer")
+    transcript.close_open_text()
+
+    thinking, text = transcript.snapshot()
+    assert thinking.type == "thinking"
+    assert thinking.metadata["thinking_source"] == "provider"
+    assert thinking.metadata["provider_source"] == "model"
+    assert thinking.metadata["reasoning_source"] == "inline_tag"
+    assert (thinking.text, text.type, text.text) == ("plan", "text", "answer")
 
 
 def test_streamed_text_is_stored_verbatim_at_close() -> None:

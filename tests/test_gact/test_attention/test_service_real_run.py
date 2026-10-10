@@ -177,6 +177,18 @@ def test_user_message_is_not_selectable() -> None:
     assert exc.value.reason == "message_not_generated"
 
 
+def test_unknown_field_names_the_valid_fields() -> None:
+    # c35 live: field="content" got a misleading message_not_generated.
+    with pytest.raises(AttentionUnavailable) as exc:
+        _explain(
+            request=SelectionRequest(
+                message_id="msg_asst_1", part_id="call_sel", field="content", start=0, end=4
+            )
+        )
+    assert exc.value.reason == "field_not_supported"
+    assert 'field="text"' in str(exc.value.detail if hasattr(exc.value, "detail") else exc.value)
+
+
 def test_text_not_in_any_output_is_selection_not_located() -> None:
     messages = fixture_transcript()
     messages[-1].parts[-1].thought = "A thought the model never produced."
@@ -271,3 +283,35 @@ def test_rendered_selection_not_in_the_message_is_typed() -> None:
     with pytest.raises(AttentionUnavailable) as exc:
         _explain(request=SelectionRequest(message_id="msg_asst_1", text="never generated"))
     assert exc.value.reason == "selection_not_located"
+
+
+def test_read_path_rerender_replays_declared_tool_schemas() -> None:
+    # F049 (c37 live): tools were rendered at declaration time but not replayed
+    # on read -> 2088 vs 14561 prompt tokens -> range_alignment_mismatch.
+    from clio_agent.gact.attention.capture import load_capture
+
+    tools = [{"type": "function", "function": {"name": "web_search", "parameters": {}}}]
+    seen: dict[str, Any] = {}
+
+    class _Stop(Exception):
+        pass
+
+    class _Spy:
+        def render_encoded(self, messages: Any, template_kwargs: Any = None) -> Any:
+            seen["kwargs"] = template_kwargs
+            raise _Stop
+
+    class _Store:
+        def summary_for(self, response_id: str) -> Any:
+            return None
+
+    declaration = {
+        "status": "declared",
+        "tokenizer": "t",
+        "template_kwargs": {},
+        "tools_json": json.dumps(tools),
+    }
+    call = _call(model="hosted_vllm/x", declaration=declaration)
+    with pytest.raises(_Stop):
+        load_capture(call, _Store(), lambda identity: _Spy())  # type: ignore[arg-type]
+    assert seen["kwargs"]["tools"] == tools

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import ntpath
 import posixpath
@@ -12,16 +13,59 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException, Query
 
-from clio_agent.gact.infrastructure import node_models
+from clio_agent.gact.infrastructure import node_models, reuse
 from clio_agent.gact.infrastructure.model_registry import (
     ModelAcquisition,
     ModelDownloadRequest,
     search_models,
 )
 from clio_agent.gact.infrastructure.models import CommandSpec
+from clio_agent.gact.infrastructure.operation_models import ReuseReport
+from clio_agent.gact.infrastructure.operation_progress import redact
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.storage import resolved_locations
 from clio_agent.gact.infrastructure.terminal_output import structured_stdout
+
+_SHARED_CACHE_ROW = (
+    "This model was found in a shared Hugging Face cache; CLIO holds no download for it. "
+    "Download the revision through CLIO to retry, cancel or follow it here."
+)
+
+
+def missing_receipt(prior: ModelAcquisition) -> ModelAcquisition:
+    """Relabel a record whose host receipt is gone, never calling a finished download interrupted.
+
+    A verified model is not a stopped download: without a receipt this host cannot vouch
+    for its files, so it is stale (retry re-verifies) rather than interrupted.
+    A shared-cache row never had a receipt: its snapshot left the cache.
+    """
+    if prior.origin == "hf_cache":
+        return prior.model_copy(
+            update={
+                "state": "stale",
+                "error_code": "hf_cache_missing",
+                "error": "This revision is no longer in the shared Hugging Face cache; "
+                "download it through CLIO to use it here.",
+            }
+        )
+    finished = prior.state in {"ready", "stale"} or (
+        prior.bytes_total is not None
+        and prior.bytes_done == prior.bytes_total
+        and prior.phase.startswith("Model available")
+    )
+    return prior.model_copy(
+        update={
+            "state": "stale" if finished else "interrupted",
+            "error_code": "receipt_missing",
+            "error": (
+                "This host has no download receipt for this model (downloaded on another "
+                "host, or the receipt was removed); retry to verify its files here."
+                if finished
+                else "The host download receipt is missing; retry will reverify the "
+                "recorded revision."
+            ),
+        }
+    )
 
 
 def register_infrastructure_model_routes(app: FastAPI) -> None:
@@ -56,6 +100,10 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                         + "--"
                         + body["revision"].replace("/", "--")
                     )
+                    if body.get("files"):
+                        # A file selection is its own acquisition (and directory).
+                        selection = "\0".join(body["files"]).encode()
+                        suffix += "--" + hashlib.sha256(selection).hexdigest()[:8]
                     module = ntpath if facts.os == "windows" else posixpath
                     body["destination"] = module.join(locations.models, suffix)
             if action == "start":
@@ -83,13 +131,15 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                     else "Host model operation failed"
                 )
             rows = json.loads(structured_stdout(result.stdout))
+            if action == "log":
+                return rows
+            if action == "start" and rows.pop("reused", False):
+                rows["reuse"] = _reuse_report(rows)
             if action == "list":
                 found = {row["id"] for row in rows}
                 for prior in app.state.infrastructure_store.model_acquisitions(target_id):
                     if prior.storage_root == selected_root and prior.id not in found:
-                        prior.state = "interrupted"
-                        prior.error = "The host download receipt is missing; retry will reverify the recorded revision."
-                        app.state.infrastructure_store.put_model_acquisition(prior)
+                        app.state.infrastructure_store.put_model_acquisition(missing_receipt(prior))
             for row in rows if action == "list" else [rows]:
                 observed = ModelAcquisition.model_validate(
                     {**row, "target_id": target_id, "storage_root": selected_root}
@@ -132,9 +182,17 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         except (OSError, ValueError, RuntimeError):
             unavailable = "Connect this execution host to inspect and download models."
         errors = []
-        for root in store.model_roots(target_id):
+        roots: list[tuple[str, dict[str, Any]]] = [
+            (root, {}) for root in store.model_roots(target_id)
+        ]
+        chosen = target.storage.models
+        if unavailable is None and chosen and chosen not in store.model_roots(target_id):
+            # A chosen models location that is a shared Hugging Face hub cache lists its
+            # snapshots before CLIO downloads anything there; any other folder lists nothing.
+            roots.append((chosen, {"hub_only": True}))
+        for root, body in roots:
             try:
-                await execute(target_id, "list", {}, root=root)
+                await execute(target_id, "list", body, root=root)
             except HTTPException as exc:
                 errors.append({"storage_root": root, "error": exc.detail})
         return {
@@ -162,7 +220,34 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         )
         if row is None:
             raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
         return await execute(target_id, "cancel", {"id": job_id}, root=row.storage_root)
+
+    @app.get("/v1/infrastructure/targets/{target_id}/models/{job_id}/log")
+    async def download_log(target_id: str, job_id: str, offset: int = 0) -> dict[str, Any]:
+        """Whole lines of the download's log from byte ``offset`` (redacted).
+
+        Poll with ``offset`` set to the previous reply's ``next_offset``; a log
+        that restarted is read again from 0.
+        """
+        row = next(
+            (
+                row
+                for row in app.state.infrastructure_store.model_acquisitions(target_id)
+                if row.id == job_id
+            ),
+            None,
+        )
+        if row is None:
+            raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
+        chunk = await execute(
+            target_id, "log", {"id": job_id, "offset": max(0, offset)}, root=row.storage_root
+        )
+        chunk["text"] = "\n".join(redact(line) for line in chunk["text"].split("\n"))
+        return chunk
 
     @app.post("/v1/infrastructure/targets/{target_id}/models/{job_id}/retry", status_code=202)
     async def retry(target_id: str, job_id: str) -> dict[str, Any]:
@@ -177,6 +262,8 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
         )
         if row is None:
             raise HTTPException(404, "Model operation not found on this execution host")
+        if row.origin == "hf_cache":
+            raise HTTPException(409, _SHARED_CACHE_ROW)
         return await execute(
             target_id,
             "start",
@@ -185,6 +272,27 @@ def register_infrastructure_model_routes(app: FastAPI) -> None:
                 "revision": row.requested_revision,
                 "destination": row.destination,
                 "resolved_revision": row.revision,
+                "files": row.files,
             },
             root=row.storage_root,
         )
+
+
+def _reuse_report(row: dict[str, Any]) -> dict[str, Any]:
+    """The reuse of a verified model revision a download found already present."""
+
+    found = reuse.Reuse(
+        kind="model",
+        thing=f"model {row.get('repository', '')}".strip(),
+        identity=str(row.get("revision") or row.get("requested_revision") or ""),
+        path=str(row.get("destination") or ""),
+        size_bytes=row.get("bytes_total"),
+    )
+    return ReuseReport(
+        kind=found.kind,
+        thing=found.thing,
+        identity=found.identity,
+        path=found.path,
+        size_bytes=found.size_bytes,
+        message=found.message(),
+    ).model_dump(mode="json")

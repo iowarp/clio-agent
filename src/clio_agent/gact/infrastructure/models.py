@@ -10,6 +10,7 @@ from uuid import uuid4
 from clio_schemas.connected_resources import HostStorageLocations
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+from clio_agent.gact.infrastructure.operation_models import OperationProgressFields
 from clio_agent.gact.infrastructure.server_parameters import ServerParameter
 
 _NULLABLE_SSH_STRING_FIELDS = ("profile", "host", "user", "identity_file")
@@ -31,7 +32,9 @@ RuntimeReason = Literal["not_installed", "unusable", "not_probed"]
 #: separate field, not new ``RuntimeReason`` values, so a client that predates
 #: it still decodes the facts.
 RuntimeFailure = Literal["not_running", "permission_denied", "timed_out", "unknown"]
-ResourceKind = Literal["container", "image", "directory", "parent_directory", "instance_logs"]
+ResourceKind = Literal[
+    "container", "image", "shared_image", "directory", "parent_directory", "instance_logs"
+]
 EffectiveSource = Literal["server_report", "container_config", "launch_request", "engine_default"]
 
 RUNTIME_LABELS: dict[RuntimeName, str] = {
@@ -446,8 +449,12 @@ class VersionConflictDetail(BaseModel):
     port: int = 17800
 
 
-class InfrastructureOperation(BaseModel):
-    """Durable operation state returned immediately to callers."""
+class InfrastructureOperation(OperationProgressFields):
+    """Durable operation state returned immediately to callers.
+
+    The structured-progress fields (steps, reuse, live log cursor) come from
+    :class:`~clio_agent.gact.infrastructure.operation_models.OperationProgressFields`.
+    """
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     service_id: str

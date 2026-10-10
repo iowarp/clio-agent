@@ -125,16 +125,45 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
 
         "Use in Models" saves a managed server's address; its requests must
         then carry that deployment's key. Matched server-side on engine and
-        address, so no client ever handles the key or its id.
+        address, so no client ever handles the key or its id. A custom server
+        is reached through the generic OpenAI-compatible preset.
         """
         from clio_agent.gact.infrastructure.server_access import (  # noqa: PLC0415
             managed_credential_ref,
         )
 
         infrastructure = getattr(app.state, "infrastructure_store", None)
-        if infrastructure is None or not preset_id:
+        if infrastructure is None:
             return ""
-        return managed_credential_ref(infrastructure, preset_id, address)
+        preset = preset_id or store.CUSTOM_SERVER_PRESET_ID
+        return managed_credential_ref(infrastructure, preset, address)
+
+    def own_entry(preset_id: str | None, address: str, label: str) -> tuple[str | None, str]:
+        """Save a named instance or the router as its own server, not the engine's.
+
+        The engine's entry (id == preset) is its default deployment's address;
+        binding a named instance or the model router must not replace it.
+        """
+        from clio_agent.gact.infrastructure.model_instances import (  # noqa: PLC0415
+            ROUTER_SERVICE,
+            instance_label,
+            is_named_instance,
+        )
+        from clio_agent.gact.infrastructure.server_access import (  # noqa: PLC0415
+            managed_record_at,
+        )
+
+        infrastructure = getattr(app.state, "infrastructure_store", None)
+        if infrastructure is None or not preset_id:
+            return preset_id, label
+        record = managed_record_at(infrastructure, preset_id, address)
+        if record is None:
+            return preset_id, label
+        if record.service_id == ROUTER_SERVICE:
+            return None, label or "Model router"
+        if is_named_instance(record.service_id):
+            return None, label or instance_label(preset_for(preset_id).label, record.service_id)
+        return preset_id, label
 
     def entries() -> list[store.LocalServerEntry]:
         try:
@@ -155,12 +184,13 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
         """Save a server (a catalog runtime's address, or a custom one), then check it."""
         if req.preset_id:
             preset_for(req.preset_id)
+        preset_id, label = own_entry(req.preset_id, req.address, req.label)
         try:
             entry = store.add_server(
                 address=req.address,
-                label=req.label or (preset_for(req.preset_id).label if req.preset_id else ""),
-                preset_id=req.preset_id,
-                credential_ref=managed_key(req.preset_id, req.address),
+                label=label or (preset_for(preset_id).label if preset_id else ""),
+                preset_id=preset_id,
+                credential_ref=managed_key(preset_id, req.address),
             )
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc

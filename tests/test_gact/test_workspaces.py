@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
@@ -621,3 +622,57 @@ def test_persisted_workspace_keeps_configured_display_name(tmp_path: Path) -> No
     assert renamed is not None
     assert renamed.display_name == "Chosen Label"
     assert renamed.to_wire()["display_name"] == "Chosen Label"
+
+
+def test_default_workspace_root_setting_seeds_and_creates_ws_default(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """DIRECTIVES 12 / F013: ws_default was always the server's cwd (a source checkout)."""
+    root = tmp_path / "work" / "clio"
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(root))
+    c = _client(tmp_path)
+    body = c.get("/v1/workspaces").json()
+    assert body["workspaces"][0]["id"] == "ws_default"
+    assert body["workspaces"][0]["root_path"] == str(root)
+    assert root.is_dir()
+
+
+def test_default_workspace_root_falls_back_to_cwd_and_expands_home(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from clio_agent.gact.workspaces import WorkspaceStore
+
+    monkeypatch.delenv("CLIO_DEFAULT_WORKSPACE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert WorkspaceStore().get("ws_default").root_path == str(Path.cwd())
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", "~/clio-work")
+    assert WorkspaceStore().get("ws_default").root_path == str(tmp_path / "clio-work")
+    assert (tmp_path / "clio-work").is_dir()
+
+
+def test_default_workspace_root_must_be_absolute(monkeypatch: MonkeyPatch) -> None:
+    from clio_agent.gact.workspaces import WorkspaceStore
+
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", "relative/work")
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        WorkspaceStore()
+
+
+def test_default_workspace_setting_never_repoints_an_existing_ws_default(
+    tmp_path: Path, monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from clio_agent.gact.workspaces import WorkspaceStore
+
+    store_path = tmp_path / "workspaces.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLIO_DEFAULT_WORKSPACE", raising=False)
+    WorkspaceStore(path=store_path)
+    elsewhere = tmp_path / "elsewhere"
+    monkeypatch.setenv("CLIO_DEFAULT_WORKSPACE", str(elsewhere))
+    with caplog.at_level("WARNING", logger="clio_agent.gact.workspaces"):
+        restarted = WorkspaceStore(path=store_path)
+    assert restarted.get("ws_default").root_path == str(Path.cwd())
+    assert not elsewhere.exists()
+    assert "reason=already_seeded" in caplog.text

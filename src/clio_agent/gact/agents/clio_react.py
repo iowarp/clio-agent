@@ -75,6 +75,7 @@ from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError,
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
+from clio_agent.gact.agents import clio_react_stream as stream
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
 from clio_agent.gact.agents.task_guidance import task_guidance
@@ -442,11 +443,10 @@ class _Loop:
             from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
 
             raise LMOutputTruncatedError(self.lm.model)
-        thinking = [p for p in response.message.parts if isinstance(p, ThinkingPart)]
-        text = "".join(p.text for p in response.message.parts if isinstance(p, TextPart))
+        thinking, text, origin = stream.reply_thinking_and_text(response)
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
-            self._record(text, thinking, calls, {})
+            self._record(text, thinking, calls, {}, origin)
             if (self.max_iters <= 0 or self.step + 1 < self.max_iters) and self._arrivals():
                 # Feedback accepted during this model call must be considered
                 # before closing the turn, even if that call chose no tools.
@@ -460,7 +460,7 @@ class _Loop:
         finally:
             _ctx.reset(thought_token)
         results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
-        self._record(text, thinking, calls, results)
+        self._record(text, thinking, calls, results, origin)
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
@@ -529,6 +529,7 @@ class _Loop:
 
     def _run_tool(self, call: ToolCallPart, tool: dspy.Tool) -> _CallOutcome:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
+        from clio_agent.tools.file_policy import FilePolicyError  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
 
         try:
@@ -543,7 +544,12 @@ class _Loop:
                 if refusal is not None
                 else (err if isinstance(err, _TurnCancelled) else None)
             )
-            return _CallOutcome(f"Execution error in {call.name}: {_fmt_exc(err)}", True, escalate)
+            if isinstance(err, FilePolicyError):
+                # An expected, typed refusal: the model needs the reason, not our stack.
+                detail = f"{type(err).__name__}: {err}"
+            else:
+                detail = _fmt_exc(err)
+            return _CallOutcome(f"Execution error in {call.name}: {detail}", True, escalate)
 
     def _submitted(
         self, calls: list[ToolCallPart], outcomes: list[_CallOutcome]
@@ -580,9 +586,17 @@ class _Loop:
         thinking: list[ThinkingPart],
         calls: list[ToolCallPart],
         results: dict[str, tuple[Any, bool]],
+        origin: tuple[str, bool] = ("", True),
     ) -> None:
         self.recorder.step_done(
-            self.step, self.span, text=text, thinking=thinking, calls=calls, results=results
+            self.step,
+            self.span,
+            text=text,
+            thinking=thinking,
+            calls=calls,
+            results=results,
+            thinking_source=origin[0],
+            thinking_complete=origin[1],
         )
 
     def _stop(self, reason: str) -> dspy.Prediction:
@@ -624,32 +638,59 @@ class _Loop:
 # --------------------------------------------------------------------------- #
 # The streamed LM call                                                        #
 # --------------------------------------------------------------------------- #
+#: How often an in-flight LM call checks the turn's cooperative cancellation.
+_CANCEL_POLL_SECONDS = 0.25
+
+
 def _call_lm(lm: Any, request: Request) -> Response:
     """One streamed call: text and thinking reach the live lanes as they arrive."""
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    session_id = _ctx.active_session_id() or ""
 
     async def run() -> Response:
         send, receive = anyio.create_memory_object_stream(math.inf)
         response: Response | None = None
+        router = stream.StreamRouter()
 
         async def consume() -> None:
             async with receive:
                 async for chunk in receive:
-                    _route_chunk(chunk)
+                    stream.route_pieces(router.feed(chunk))
+            stream.route_pieces(router.finish(), unclosed=router.incomplete)
 
+        async def watch_cancel() -> None:
+            # A cancel lands mid-call too (F038): raising here cancels the call's
+            # scope, which closes the HTTP stream so the server stops generating
+            # instead of finishing a prefill and a full answer nobody reads.
+            while not finished.is_set():
+                with anyio.move_on_after(_CANCEL_POLL_SECONDS):
+                    await finished.wait()
+                if not finished.is_set():
+                    _raise_if_cancelled()
+
+        finished = anyio.Event()
+        handle = None
         try:
             async with anyio.create_task_group() as group:
+                handle = stream.register_stream(lm, session_id, group.cancel_scope)
                 group.start_soon(consume)
+                group.start_soon(watch_cancel)
                 try:
                     with dspy.context(send_stream=send):
                         response = await lm.acall(request)
                 finally:
+                    finished.set()
                     await send.aclose()
+                    stream.unregister_stream(handle)
         except BaseExceptionGroup as group_error:
             # The task group wraps the call's own error; the caller handles it typed.
             # (Not ``from None``: that would erase the leaf's own ``__cause__``.)
             leaf = _sole(group_error)
             leaf.__suppress_context__ = True
             raise leaf  # noqa: B904 - the leaf keeps its own cause chain
+        if response is None and handle is not None and handle.aborted:
+            raise _turn_cancelled()  # the session cancel closed the stream (abort handle)
         assert response is not None
         return response
 
@@ -678,45 +719,28 @@ def _sole(group: BaseExceptionGroup) -> BaseException:
     return leaves[0] if len(leaves) == 1 else group
 
 
-def _route_chunk(chunk: Any) -> None:
-    from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-        note_lm_activity,
-        note_lm_answer_delta,
-        note_lm_provider_thinking_delta,
-        note_lm_token_event,
-    )
-
-    note_lm_activity()
-    delta = (
-        chunk.choices[0]["delta"] if isinstance(chunk.choices[0], dict) else chunk.choices[0].delta
-    )
-    get = delta.get if isinstance(delta, dict) else lambda k, d=None: getattr(delta, k, d)
-    text = get("content") or ""
-    thinking = get("reasoning_content") or ""
-    if thinking:
-        note_lm_provider_thinking_delta(thinking, provider="model")
-    if text:
-        note_lm_answer_delta(text, field="next_thought")
-    if text or thinking:
-        note_lm_token_event(text, thinking, field="next_thought")
-
-
 # --------------------------------------------------------------------------- #
 # helpers                                                                     #
 # --------------------------------------------------------------------------- #
 def _raise_if_cancelled() -> None:
     """Typed cooperative cancellation at a loop boundary."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
+
+    if cancellation_requested():
+        raise _turn_cancelled()
+
+
+def _turn_cancelled() -> BaseException:
+    """The typed cooperative cancellation of the active session's turn."""
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
     from clio_agent.gact.runtime.globals import (  # noqa: PLC0415
         _cancelled_error_info,
         _TurnCancelled,
     )
 
-    if cancellation_requested():
-        raise _TurnCancelled(
-            _cancelled_error_info(_ctx.active_session_id(), execution_cancellation="cooperative")
-        )
+    return _TurnCancelled(
+        _cancelled_error_info(_ctx.active_session_id(), execution_cancellation="cooperative")
+    )
 
 
 def _declared_default(field: Any) -> tuple[bool, Any]:

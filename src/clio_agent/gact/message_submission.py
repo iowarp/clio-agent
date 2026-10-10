@@ -27,13 +27,21 @@ from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
+from clio_agent.gact.message_submission_errors import (
+    a2ui_client_metadata_error as _a2ui_client_metadata_error,
+)
+from clio_agent.gact.message_submission_errors import (
+    identity_conflict as _identity_conflict,
+)
+from clio_agent.gact.message_submission_errors import (
+    session_not_found as _session_not_found,
+)
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
 from clio_agent.gact.modality_evidence import (
     EVIDENCED_MODALITY_SOURCES,
     image_input_capability,
     live_model_modalities,
 )
-from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
@@ -44,6 +52,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_is_empty,
     _model_ref_matches_active,
     _removed_transport_error,
+    raise_if_deployment_removed,
 )
 from clio_agent.gact.question_answer_message import (
     QuestionAnswerMessage,
@@ -58,8 +67,10 @@ from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
 )
+from clio_agent.gact.selected_model_refresh import refresh_for_selected_model
 from clio_agent.gact.session_host_agent import ensure_host_agent
 from clio_agent.gact.session_model_ref import remember_session_model
+from clio_agent.gact.thinking_level_guard import raise_if_selection_unusable
 from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -97,20 +108,6 @@ class PreparedReferences:
     model_text: str
 
 
-def _session_not_found(sid: str) -> HTTPException:
-    return HTTPException(
-        status_code=404,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(
-                error="not_found",
-                message=f"session not found: {sid}",
-                details={"session_id": sid},
-                recoverable=False,
-            )
-        ).model_dump(exclude_none=True),
-    )
-
-
 def _effective_model(app: FastAPI, deps: "GactDeps") -> ModelRef:
     raw = deps.active_lm_model_ref(app)
     return ModelRef(
@@ -140,20 +137,6 @@ def _idempotency_key(req: PostMessageRequest) -> str:
 
 def _acceptance_replay(response: PostMessageResponse) -> PostMessageResponse:
     return response.model_copy(update={"idempotent_replay": True})
-
-
-def _identity_conflict(sid: str, message_id: str) -> HTTPException:
-    return HTTPException(
-        status_code=409,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(
-                error="message_identity_conflict",
-                message="client message id already names another message",
-                details={"session_id": sid, "message_id": message_id},
-                recoverable=True,
-            )
-        ).model_dump(exclude_none=True),
-    )
 
 
 def _plan_resource_parts(
@@ -236,15 +219,6 @@ def _commit_resource_deliveries(
         )
 
 
-def _a2ui_client_metadata_error(exc: A2UICapabilitiesError) -> HTTPException:
-    return HTTPException(
-        status_code=422,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
-        ).model_dump(exclude_none=True),
-    )
-
-
 def _apply_a2ui_client_metadata_guards(
     app: FastAPI, sid: str, metadata: Mapping[str, Any] | None
 ) -> None:
@@ -313,9 +287,9 @@ def _validate_provider_and_payload(
     removed = _removed_transport_error(selected_model, session_id=sid, source=_source)
     if removed is not None:
         raise HTTPException(status_code=400, detail=removed.model_dump(exclude_none=True))
-    surrogate = surrogate_selection_error(app, selected_model.provider_id, selected_model.model_id)
-    if surrogate is not None:
-        raise HTTPException(status_code=422, detail=surrogate.model_dump(exclude_none=True))
+    raise_if_deployment_removed(app, selected_model, session_id=sid, source=_source)
+    # A surrogate chat model or a thinking level the model does not offer: typed 422s.
+    raise_if_selection_unusable(app, selected_model, req.behavior.reasoning_effort, sid)
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
         # the provider catalog holds real discovery EVIDENCE for that exact
@@ -528,6 +502,7 @@ async def accept_message_async(
     # A session's selected model is enough to run its first turn (no global provider).
     await ensure_host_agent(app, sid, req)
     await reprobe_for_message(app, sid, req)  # #1455: see a terminal sign-in at turn start
+    await refresh_for_selected_model(app, sid, req)  # a pinned model's stale discovery
     prepared = await prepare_references(app, sid, req)
     ack = accept_message(
         app,

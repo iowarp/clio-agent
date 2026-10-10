@@ -31,6 +31,7 @@ from typing import Any
 import yaml
 
 from clio_agent import conf, paths
+from clio_agent.gact.infrastructure.service_paths import this_host_counterpart
 from clio_agent.provenance_config import attention_capture_enabled, configured_provider_names
 
 #: No agentic provenance provider is configured, so there is no store to query.
@@ -164,7 +165,10 @@ def build_provenance_handoff(app: Any, *, workspace_root: Path | None) -> Proven
             problems.append(HandoffProblem(PROBLEM_JSONL_JOURNAL_UNAVAILABLE))
 
     if "flowcept" in providers or query_default == "flowcept":
-        settings_path = _text("provenance.agentic.flowcept.settings_path", "FLOWCEPT_SETTINGS_PATH")
+        settings_path = this_host_counterpart(
+            _text("provenance.agentic.flowcept.settings_path", "FLOWCEPT_SETTINGS_PATH"),
+            live_service=True,
+        )
         if settings_path:
             agentic["flowcept"] = {"settings_path": str(Path(settings_path).expanduser())}
         elif query_default == "flowcept":
@@ -190,7 +194,9 @@ def build_provenance_handoff(app: Any, *, workspace_root: Path | None) -> Proven
             problems.append(HandoffProblem(PROBLEM_WORKSPACE_UNRESOLVED))
 
     document: dict[str, Any] = {"provenance": {"agentic": agentic, "artifacts": artifacts}}
-    capture_root = _text("provenance.attention.files_dir", "CLIO_PROVENANCE_ATTENTION_FILES_DIR")
+    capture_root = this_host_counterpart(
+        _text("provenance.attention.files_dir", "CLIO_PROVENANCE_ATTENTION_FILES_DIR")
+    )
     if attention_capture_enabled() and capture_root:
         # Dotted keys preserve the existing boolean provenance.attention setting.
         document["provenance.attention.files_dir"] = str(Path(capture_root).expanduser().resolve())

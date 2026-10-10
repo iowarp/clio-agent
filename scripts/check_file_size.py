@@ -276,7 +276,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1267,  # MCP task bridge moved to external_mcp_calls.py
+    "src/clio_agent/gact/agents/builders.py": 1265,  # MCP task bridge moved to external_mcp_calls.py
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -732,7 +732,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 904,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
+    "src/clio_agent/gact/runtime/globals.py": 874,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info; -30, _entry_reasoning_text moved to gact/reasoning_extract.py
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -778,7 +778,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # the docstring and collapsing the log call before accepting this ratchet.
     # Ratchet back with #714/#767.
     # 1089 -> 989 (#1337): FieldStream extracted to field_stream.py; the seal sink added.
-    "src/clio_agent/gact/transcript.py": 946,
+    # -7 (946 -> 939): thinking-part metadata built by gact/reasoning_extract.py.
+    "src/clio_agent/gact/transcript.py": 939,
     # #918: +17 for the typed SkillNotDelegatableError ladder arm (a skill-bound
     # turn fails typed, never as generic agent_error).
     # #952 S4 Pass C: -1 (the suppressed_parent_resume_offsets init was removed

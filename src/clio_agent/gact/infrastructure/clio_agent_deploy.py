@@ -60,6 +60,7 @@ from typing import Literal
 from clio_agent.gact.infrastructure.models import CommandSpec
 from clio_agent.gact.infrastructure.release_tag import release_tag
 from clio_agent.gact.infrastructure.remote_install_guard import INSTALL_GUARD
+from clio_agent.gact.infrastructure.reuse import SHELL_FUNCTIONS
 
 # Shared by both scripts: resolve the install root the same way the install
 # and start commands do, find a TCP listener's pid, and recognize a CLIO
@@ -364,6 +365,16 @@ export UV_TOOL_DIR="$root/uv-tools" UV_TOOL_BIN_DIR="$bin" UV_NO_MODIFY_PATH=1
 export PATH="$bin:$PATH"
 mkdir -p "$bin" || exit 75
 touch "$root/.clio-managed-install"
+"""
+    + SHELL_FUNCTIONS
+    + r"""
+# Reuse: this exact version is already installed here (unless from scratch).
+installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+if [ "${6:-0}" != 1 ] && [ -n "$installed" ] && [ "$installed" = "$version" ] && [ -x "$bin/clio" ]; then
+  size="$(du -sk "$root/clio-agent" 2>/dev/null | cut -f1)"
+  clio_reuse clio_agent "CLIO $version" "clio-agent==$version" "$root/clio-agent" "$(( ${size:-0} * 1024 ))" ""
+  exit 0
+fi
 # The remote runs exactly this CLIO's version; nothing else is installed.
 code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "$3" 2>/dev/null || true)"
 case "$code" in
@@ -391,8 +402,11 @@ install_ok=1
 )
 
 
-def install_command(root: str, version: str) -> CommandSpec:
+def install_command(root: str, version: str, *, fresh: bool = False) -> CommandSpec:
     """Install exactly ``version`` of clio-agent from PyPI under ``root``.
+
+    An install of this exact version already under ``root`` is reused
+    (reported through the shared reuse helper) unless ``fresh``.
 
     Checks PyPI first: a version it does not have fails the step with one
     plain line (``CLIO 0.9.4.99 isn't published; deploy from a released
@@ -411,6 +425,7 @@ def install_command(root: str, version: str) -> CommandSpec:
             PYPI_RELEASE_URL.format(version=version),
             INSTALLER_URL.format(tag=release_tag(version)),
             release_tag(version),
+            "1" if fresh else "0",
         ],
         timeout_seconds=900,
     )

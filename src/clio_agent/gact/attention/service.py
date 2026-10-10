@@ -85,7 +85,11 @@ def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any,
             "message_not_generated", f"{message.role} messages have no attention rows"
         )
     if request.field not in {"text", "thought", "input"}:
-        raise AttentionUnavailable("message_not_generated", "this field is not generated content")
+        raise AttentionUnavailable(
+            "field_not_supported",
+            f'field {request.field!r} is not an attention field; use field="text" for the '
+            'answer (or "thought" / "input")',
+        )
     for part in message.parts:
         if request.part_id and part.id != request.part_id:
             continue
@@ -208,6 +212,7 @@ def explain_selection(
         span.out_lo,
         span.out_hi,
         summary.record,
+        reasoning=call.reasoning,
     )
     selected_steps = set(step_span.steps)
     for item in selected[1:]:
@@ -215,7 +220,12 @@ def explain_selection(
             raise AttentionUnavailable("selection_ambiguous", "one profile is required for a union")
         selected_steps.update(
             output_steps(
-                renderer, call.content or "", item.span.out_lo, item.span.out_hi, summary.record
+                renderer,
+                call.content or "",
+                item.span.out_lo,
+                item.span.out_hi,
+                summary.record,
+                reasoning=call.reasoning,
             ).steps
         )
     if len(selected_steps) > 4096:
@@ -351,7 +361,14 @@ def explain_selection(
             }
             for a, score, intensity in zip(anchors, block_scores, intensities, strict=True)
         ],
-        "tokens": _drilldown(renderer, call.content or "", steps, sections, encoded),
+        "tokens": _drilldown(
+            renderer,
+            call.content or "",
+            steps,
+            sections,
+            encoded,
+            content_offset=step_span.steps[0] - step_span.token_lo,
+        ),
     }
 
 
@@ -368,7 +385,9 @@ def _drilldown(
     steps: list[Any],
     sections: list[agg.Section],
     prompt: Encoded,
+    content_offset: int = 0,
 ) -> list[dict[str, Any]]:
+    """Per-step top prompt positions; ``content_offset`` = produced tokens before the content."""
     out_enc = renderer.encode(content)
     starts = [s.lo for s in sections]
     rows: list[dict[str, Any]] = []
@@ -391,7 +410,8 @@ def _drilldown(
                 }
             )
         tidx = step.token_index
-        a, b = out_enc.offsets[tidx] if 0 <= tidx < len(out_enc.offsets) else (0, 0)
+        cidx = tidx - content_offset
+        a, b = out_enc.offsets[cidx] if 0 <= cidx < len(out_enc.offsets) else (0, 0)
         rows.append(
             {
                 "step": step.step,

@@ -142,3 +142,12 @@ def test_vllm_tool_calling_is_a_parser_choice_that_brings_its_enabling_flag() ->
     assert compiled.flags == ("--enable-auto-tool-choice", "--tool-call-parser", "hermes")
     with pytest.raises(ValueError, match="must be one of"):
         compile_parameters("vllm", "cpu", {"param.tool_call_parser": "--evil"})
+
+
+def test_vllm_reasoning_parser_is_a_choice_passed_as_its_flag() -> None:
+    compiled = compile_parameters("vllm", "cuda", {"param.reasoning_parser": "qwen3"})
+
+    assert compiled.flags == ("--reasoning-parser", "qwen3")
+    assert compile_parameters("vllm", "cuda", {}).flags == ()
+    with pytest.raises(ValueError, match="must be one of"):
+        compile_parameters("vllm", "cuda", {"param.reasoning_parser": "--evil"})

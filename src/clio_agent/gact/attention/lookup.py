@@ -148,7 +148,12 @@ def _source_view(
     if not positions:
         return None
     span = output_steps(
-        capture.renderer, call.content or "", 0, len(call.content or ""), capture.summary.record
+        capture.renderer,
+        call.content or "",
+        0,
+        len(call.content or ""),
+        capture.summary.record,
+        reasoning=call.reasoning,
     )
     if len(span.steps) > 4096:
         raise AttentionUnavailable("selection_too_large", "model output exceeds 4096 tokens")
@@ -158,7 +163,7 @@ def _source_view(
     rows: list[dict[str, Any]] = []
     for step, weight in zip(steps, reduction.weights, strict=True):
         values = reduce_steps([step], capture.summary.prompt_tokens, profile)
-        lo, hi = output.offsets[step.token_index]
+        lo, hi = output.offsets[step.token_index - (span.steps[0] - span.token_lo)]
         rows.append(
             {
                 "step": step.step,

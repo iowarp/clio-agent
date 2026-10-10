@@ -292,7 +292,8 @@ _OLLAMA_BASE = "http://127.0.0.1:11434"
 _OLLAMA_ACCEPTED = frozenset({"think", "stop", "temperature"})
 
 
-def test_ollama_think_boolean_when_model_reports_no_levels() -> None:
+def test_ollama_v1_switch_when_model_reports_no_levels() -> None:
+    """Ollama's /v1 surface ignores ``think``; its switch is ``reasoning_effort`` (F040)."""
     _seed(
         provider_id="ollama",
         api_base=_OLLAMA_BASE,
@@ -303,12 +304,13 @@ def test_ollama_think_boolean_when_model_reports_no_levels() -> None:
         thinking_spec=ThinkingSpec(mechanism="on_off"),
     )
     on = build_request_kwargs(_cfg("ollama", "qwen3:8b", thinking_level="low"))
-    assert on["extra_body"]["think"] is True
+    assert on["reasoning_effort"] == "high"
     off = build_request_kwargs(_cfg("ollama", "qwen3:8b", thinking_level="off"))
-    assert off["extra_body"]["think"] is False
+    assert off["reasoning_effort"] == "none"
+    assert "think" not in (on.get("extra_body") or {}) | (off.get("extra_body") or {})
 
 
-def test_ollama_think_level_string_for_gpt_oss() -> None:
+def test_ollama_effort_level_for_gpt_oss() -> None:
     _seed(
         provider_id="ollama",
         api_base=_OLLAMA_BASE,
@@ -319,11 +321,11 @@ def test_ollama_think_level_string_for_gpt_oss() -> None:
         thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
     )
     extras = build_request_kwargs(_cfg("ollama", "gpt-oss:20b", thinking_level="high"))
-    assert extras["extra_body"]["think"] == "high"
+    assert extras["reasoning_effort"] == "high"
 
 
-def test_ollama_never_sends_reasoning_effort() -> None:
-    """The historical bug this brief fixes: ollama has no reasoning_effort field."""
+def test_ollama_never_sends_the_native_think_field() -> None:
+    """Turns go to /v1 (F037), where a top-level ``think`` is silently ignored (F040)."""
     _seed(
         provider_id="ollama",
         api_base=_OLLAMA_BASE,
@@ -334,17 +336,17 @@ def test_ollama_never_sends_reasoning_effort() -> None:
         thinking_spec=ThinkingSpec(mechanism="on_off"),
     )
     extras = build_request_kwargs(_cfg("ollama", "qwen3:8b", thinking_level="medium"))
-    assert "reasoning_effort" not in extras
-    assert "reasoning_effort" not in (extras.get("extra_body") or {})
+    assert "think" not in extras
+    assert "think" not in (extras.get("extra_body") or {})
 
 
 def test_ollama_with_no_evidence_passes_the_requested_level_through() -> None:
     """Unknown is not unsupported: no model record yet -> the requested level
-    rides through in Ollama's own ``think`` field and the server decides."""
+    rides through in /v1's ``reasoning_effort`` field and the server decides."""
     extras = build_request_kwargs(_cfg("ollama", "unknown-model", thinking_level="high"))
-    assert (extras.get("extra_body") or {}).get("think") == "high"
+    assert extras.get("reasoning_effort") == "high"
     off = build_request_kwargs(_cfg("ollama", "unknown-model", thinking_level="off"))
-    assert "think" not in (off.get("extra_body") or {})
+    assert "reasoning_effort" not in off
 
 
 # --------------------------------------------------------------------------- #

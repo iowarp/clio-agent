@@ -7,6 +7,16 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, WebSocket, status
 
 from clio_agent.gact.auth import has_valid_bearer
+from clio_agent.gact.infrastructure.configuration_keys import (
+    UnknownConfigurationKeyError,
+    validate_configuration_keys,
+)
+from clio_agent.gact.infrastructure.context_sizing.preview import (
+    ContextSizingPreviewRequest,
+    preview_context,
+)
+from clio_agent.gact.infrastructure.gpu_share import GpuShareExceededError
+from clio_agent.gact.infrastructure.model_instances import InstanceNameError
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     DesktopExitRequest,
@@ -24,10 +34,15 @@ from clio_agent.gact.infrastructure.transport_admission import (
     transport_refusal,
 )
 from clio_agent.gact.routes.infrastructure_models import register_infrastructure_model_routes
+from clio_agent.gact.routes.infrastructure_operations import (
+    register_infrastructure_operation_routes,
+)
 from clio_agent.gact.routes.infrastructure_provenance import (
     register_infrastructure_provenance_routes,
 )
 from clio_agent.gact.routes.infrastructure_storage import register_infrastructure_storage_routes
+from clio_agent.gact.routes.search import register_search_routes
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.providers.capabilities.server_defaults import (
     register_context_default_lookup,
 )
@@ -52,6 +67,8 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
     register_infrastructure_storage_routes(app)
     register_infrastructure_model_routes(app)
     register_infrastructure_provenance_routes(app)
+    register_infrastructure_operation_routes(app)
+    register_search_routes(app)
     # Discovery learns the default context a CLIO-deployed Ollama applies before
     # a model loads (no Ollama endpoint reports it).
     register_context_default_lookup("infrastructure", ollama_context_default_lookup(durable_store))
@@ -153,14 +170,62 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
         status_code=status.HTTP_202_ACCEPTED,
     )
     async def service_action(service_id: str, request: ServiceActionRequest) -> dict[str, object]:
+        installed = store().service(request.target_id, service_id)
+        try:
+            validate_configuration_keys(
+                service_id, request.configuration, installed.configuration if installed else None
+            )
+        except UnknownConfigurationKeyError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": exc.code,
+                    "message": str(exc),
+                    "key": exc.key,
+                    "accepted": exc.accepted,
+                },
+            ) from exc
         try:
             row = runtime().start_action(service_id, request)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Infrastructure target not found") from exc
+        except InstanceNameError as exc:
+            raise typed(422, exc.reason, str(exc), {"service_id": service_id}) from exc
+        except GpuShareExceededError as exc:
+            raise typed(409, exc.reason, str(exc), exc.details()) from exc
         return row.model_dump(mode="json")
+
+    def typed(
+        status_code: int, code: str, message: str, details: dict[str, object]
+    ) -> HTTPException:
+        return HTTPException(
+            status_code=status_code,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(error=code, message=message, details=details, recoverable=True)
+            ).model_dump(exclude_none=True),
+        )
+
+    @app.post("/v1/infrastructure/services/{service_id}/context-sizing")
+    async def context_sizing(
+        service_id: str, request: ContextSizingPreviewRequest
+    ) -> dict[str, object]:
+        """The context control (number, Max, Fit to GPU) for a deployment form's model."""
+        try:
+            controls = await preview_context(runtime(), service_id, request)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown {exc.args[0]!r}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except (OSError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return controls.model_dump(mode="json")
 
     @app.get("/v1/infrastructure/operations/{operation_id}")
     async def operation(operation_id: str) -> dict[str, object]:
+        """The operation record: state, steps, per-step progress, reuse, log cursor.
+
+        Its live progress and log stream at ``.../operations/{id}/events``.
+        """
         row = store().operation(operation_id)
         if row is None:
             raise HTTPException(status_code=404, detail="Infrastructure operation not found")

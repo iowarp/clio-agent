@@ -15,7 +15,7 @@ def main() -> None:
     from stack import (  # type: ignore[import-not-found]
         cleanup,
         flowcept_environment,
-        inspect,
+        running,
         start,
     )
 
@@ -46,8 +46,7 @@ def main() -> None:
         else:
             while not stopped:
                 for component in manifest["components"]:
-                    row = inspect(root, "container", component["name"])
-                    if not row or not row["State"]["Running"]:
+                    if not running(root, manifest, component):
                         raise RuntimeError(f"Owned {component['role']} container stopped")
                 time.sleep(1)
     finally:

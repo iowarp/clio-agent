@@ -58,6 +58,7 @@ from clio_agent.runtime.cancellation import (  # noqa: F401
     cancellation_checker,
     cancellation_requested,
 )
+from clio_agent.search.web_mcp_default import load_agent_mcp_servers, with_web_placeholders
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
     set_active_catalog,
@@ -78,7 +79,6 @@ from clio_agent.tools.gateway import (
     namespace_specs,
 )
 from clio_agent.tools.jarvis_jobs import JarvisJobs
-from clio_agent.tools.mcp_config import load_mcp_servers
 from clio_agent.tools.mcp_discovery import NamespaceDiscoveryHealer, discover_declared_tools_bounded
 from clio_agent.tools.reaper import WorkspaceExecutorReaper
 from clio_agent.tools.remote_mcp import RemoteMcpFederation
@@ -326,7 +326,7 @@ class ClioAgent(dspy.Module):
         # server process cwd silently found no blueprint, minted a toolless fleet,
         # and rejected every declared child before inference.
         pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
-        specs = load_mcp_servers(pack_servers=pack_servers)
+        specs = load_agent_mcp_servers(pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
         # app-agnostic (it resolves its invocation from the correlation record the tool
@@ -424,8 +424,8 @@ class ClioAgent(dspy.Module):
 
         def _initial_pass() -> None:
             outcome = discover_declared_tools_bounded(specs)
-            if outcome.tools:
-                self._merge_discovered_tools(tool_gateway, experts, None, outcome.tools)
+            if tools := with_web_placeholders(outcome.tools, outcome.degraded, specs):
+                self._merge_discovered_tools(tool_gateway, experts, None, tools)
             for namespace, reason in outcome.degraded.items():
                 healer.mark_degraded(namespace, reason)
 
@@ -710,18 +710,18 @@ class ClioAgent(dspy.Module):
         *,
         images: list[Any] | None = None,
         files: list[Any] | None = None,
+        lm: Any = None,
     ) -> str:
-        """Generate a tool-free reply, also used by session compaction."""
+        """Generate a tool-free reply (on ``lm`` when given), also used by session compaction."""
         self._raise_if_cancelled("chat_before")
         chat_context = self._chat_session_context(session_context)
         image_inputs = list(images or [])
         file_inputs = list(files or [])
-        # P2.4: per-request BeforeModel/AfterModel wrapper (pure pass-through when no
-        # model hook is configured, so this legacy chat/compaction path is unchanged).
-        from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415
+        from clio_agent.lm.hooked_lm import wrap_lm_with_hooks  # noqa: PLC0415 - P2.4 hooks
 
+        chat_lm = wrap_lm_with_hooks(lm or self._main_lm)  # pass-through with no model hook
         try:
-            with dspy.context(lm=wrap_lm_with_hooks(self._main_lm), adapter=self._dspy_adapter):
+            with dspy.context(lm=chat_lm, adapter=self._dspy_adapter):
                 result = self.chat_agent(
                     question=question,
                     images=image_inputs,

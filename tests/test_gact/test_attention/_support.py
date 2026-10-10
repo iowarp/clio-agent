@@ -101,9 +101,27 @@ class FixtureRenderer:
         )
 
 
+# The recorded uri is the GPU node's real path, which exists on the cluster the
+# bundle came from (holding the untrimmed ~8 MB file). ``files.locate`` reads a
+# node path in place first, so tests there would read that file and fail with
+# ``attention_file_mismatch``. Re-root it under a node directory that never
+# exists, keeping the ``<workflow_id>/<file>`` suffix the files_dir mirror uses.
+_NODE_ROOT = "/work/nvme/clio-attention-fixture-node-absent"
+
+
+def _hermetic_uri(uri: str) -> str:
+    workflow, name = uri.rsplit("/", 2)[-2:]
+    return f"file://{_NODE_ROOT}/{workflow}/{name}"
+
+
 def descriptor_doc(**over: Any) -> dict[str, Any]:
-    """The fixture's real ``decode_attention`` descriptor task (``over`` merges shallowly)."""
+    """The fixture's real ``decode_attention`` descriptor task (``over`` merges shallowly).
+
+    The file uri is re-rooted (see ``_NODE_ROOT``) so reads always resolve
+    through ``CLIO_PROVENANCE_ATTENTION_FILES_DIR`` to the fixture's file.
+    """
     doc = copy.deepcopy(fixture()["descriptor"])
+    doc["attention_stats"]["uri"] = _hermetic_uri(doc["attention_stats"]["uri"])
     stats = over.pop("attention_stats", None)
     if stats is not None:
         doc["attention_stats"] = {**doc["attention_stats"], **stats}
