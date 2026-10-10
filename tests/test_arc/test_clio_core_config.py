@@ -252,6 +252,8 @@ def test_warn_if_search_indexer_absent_warns_when_no_indexer(tmp_path, caplog):
     with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
         clio_core_config.warn_if_search_indexer_absent(str(cfg))
     assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT in caplog.text
+    assert "unavailable until an indexer is configured" in caplog.text
+    assert "iowarp-core 2.3.1 ships the module" in caplog.text
 
 
 def test_warn_if_search_indexer_absent_silent_when_indexer_declared(tmp_path, caplog):

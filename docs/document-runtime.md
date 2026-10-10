@@ -15,7 +15,7 @@ reading host profiles. Returned script argument lists select uv and pnpm
 explicitly. Repository dependency environments stay separate.
 
 Preparation provisions an isolated Python environment from Clio's installed
-interpreter, including desktop's bundled Python 3.13, using
+interpreter, including desktop's bundled Python 3.14, using
 the shipped `runtime/document_stack/pyproject.toml` and `uv.lock`. Node.js is provided
 by the locked `nodejs-wheel-binaries` package. Clio installs a pinned pnpm privately
 and prepares JavaScript dependencies from `package.json` and `pnpm-lock.yaml` in a

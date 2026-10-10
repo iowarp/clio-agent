@@ -117,8 +117,8 @@ esac
 have curl || die "curl is required"
 
 # Need a Python installer for clio-agent. uv is preferred (handles
-# venv + Python toolchain itself). Native core wheels support Python 3.13;
-# use the bundle's tested 3.13 interpreter instead of selecting the newest Python.
+# venv + Python toolchain itself). Source builds use standard Python 3.14.
+# Published releases still pin clio-core 2.2.x, whose wheels require Python 3.13.
 PYINSTALL=""
 if   have uv;   then PYINSTALL=uv
 elif have pip3; then PYINSTALL=pip3
@@ -129,7 +129,7 @@ fi
 
 if [ "$PYINSTALL" != "uv" ]; then
   python3 -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else 1)' \
-    || die "pip installation requires Python 3.13. Install uv to provision Python 3.13 automatically."
+    || die "pip release installation requires Python 3.13. Install uv for source builds with Python 3.14."
 fi
 
 if [ -n "$CLIO_REF" ]; then
@@ -154,8 +154,8 @@ if [ -n "$CLIO_REF" ]; then
     die "Source reinstall refused: '$PREFIX/clio-agent' already exists. Choose a new CLIO_PREFIX or explicitly move the existing installation after migrating its user data."
   fi
   git clone --quiet --recurse-submodules --shallow-submodules --branch "$CLIO_REF" --depth 1 "$CLIO_REPO" "$PREFIX/clio-agent"
-  say "Installing clio-agent deps (uv sync --python 3.13 --extra argonne --extra flowcept)"
-  ( cd "$PREFIX/clio-agent" && uv sync --python 3.13 --extra argonne --extra flowcept )
+  say "Installing clio-agent deps (uv sync --python 3.14 --extra argonne --extra flowcept)"
+  ( cd "$PREFIX/clio-agent" && uv sync --python 3.14 --extra argonne --extra flowcept )
 else
   package_version="$CLIO_VERSION"
   if [[ "$package_version" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-beta\.([0-9]+)\.([0-9]+)$ ]]; then

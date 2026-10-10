@@ -107,7 +107,7 @@ else {
 if ($PyInstall -ne 'uv') {
     & python -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 13) else 1)'
     if ($LASTEXITCODE -ne 0) {
-        Die 'pip installation requires Python 3.13. Install uv to provision Python 3.13 automatically.'
+        Die 'pip release installation requires Python 3.13. Install uv for source builds with Python 3.14.'
     }
 }
 
@@ -136,7 +136,7 @@ if ($ClioRef) {
     RunNative git @('clone', '--quiet', '--recurse-submodules', '--shallow-submodules', '--branch', $ClioRef, '--depth', '1', $ClioRepo, (Join-Path $Prefix 'clio-agent'))
     Say "Installing clio-agent deps (uv sync)"
     Push-Location (Join-Path $Prefix 'clio-agent')
-    RunNative uv @('sync', '--python', '3.13')
+    RunNative uv @('sync', '--python', '3.14')
     Pop-Location
 } else {
     $PackageVersion = $ClioVersion
@@ -148,6 +148,7 @@ if ($ClioRef) {
     RemoveTree $Venv
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     if ($PyInstall -eq 'uv') {
+        # Published releases still pin clio-core 2.2.x, which has no Python 3.14 wheels.
         RunNative uv @('venv', '--python', '3.13', $Venv)
         RunNative uv @(
             'pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'),

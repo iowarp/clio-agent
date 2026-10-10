@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import dspy
+import pytest
 
 from clio_agent.gact import goal as goal_mod
 from clio_agent.gact import turn_finalize_goal
@@ -109,7 +110,12 @@ def test_codex_shaped_lm_judges_through_the_async_path(tmp_path: Path) -> None:
         assert not verdict.reason.startswith("judge unavailable"), verdict
         assert lm.async_calls == 1 and lm.sync_calls == 0
 
-    _in_ctx(body)
+    # This regression intentionally supplies a legacy BaseLM to the async judge.
+    with pytest.warns(
+        DeprecationWarning,
+        match=r"Implementing custom LMs through BaseLM|Passing OpenAI-style message dictionaries",
+    ):
+        _in_ctx(body)
 
 
 def _turn_state() -> SimpleNamespace:

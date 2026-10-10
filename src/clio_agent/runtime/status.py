@@ -644,8 +644,8 @@ class RuntimeProbe:
                 port=runtime.port,
                 log_path=str(runtime.log_path),
             )
-        # 905: "semantic-search" is real only once the indexer chimod is composed
-        # (currently never -- absent from every published 2.2.1 wheel binary).
+        # 905: "semantic-search" requires the indexer chimod to be composed;
+        # upgrading to a wheel that ships it does not change an existing config.
         from clio_agent.arc import clio_core_config  # noqa: PLC0415 - keep import light
 
         capabilities = ["conversations", "invocations", "metrics", "variants"]

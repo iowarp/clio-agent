@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.14"
       # This consumer is public and the contract checker is private. Cross-repo
       # action sharing does not grant access here; use a read-only repository token.
       - name: Require access to the private contract checker
@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -122,12 +122,11 @@ jobs:
     # pytest's individual test deadlines remain the hang guard.
     timeout-minutes: 25
     strategy:
-      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
-      # release gate reads (utah-cluster class: hosts we deploy to already
-      # run 3.13, so both interpreters are release-relevant).
+      # Every supported interpreter completes independently: existing hosts run
+      # 3.12/3.13 while new managed runtimes use 3.14.
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
         shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@v4
@@ -146,6 +145,7 @@ jobs:
       # tail; --durations keeps the slowest tests visible in every log.
       - run: >-
           uv run pytest tests/ -m "not integration"
+          ${{ matrix.python-version == '3.14' && '-W error::DeprecationWarning' || '' }}
           --num-shards 3 --shard-id ${{ matrix.shard }}
           -n logical --dist worksteal --durations=30
           --cov=clio_agent --cov-branch --cov-report=
@@ -177,7 +177,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -209,8 +209,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv python install 3.13
-      - run: uv run --no-project --python 3.13 python scripts/check_bundle_matches_lock.py --resolve
+      - run: uv python install 3.14
+      - run: uv run --no-project --python 3.14 python scripts/check_bundle_matches_lock.py --resolve
 
   flowcept-integration:
     # The Flowcept live-runtime test is excluded from the main leg (integration
@@ -225,7 +225,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
-      - run: uv sync --python 3.13 --extra dev --extra flowcept
+      - run: uv sync --python 3.14 --extra dev --extra flowcept
       # Fail FAST if the extra did not yield an importable flowcept — otherwise
       # importorskip would skip the module and this job would go green having
       # tested nothing (the exact skip-rot it exists to prevent).
