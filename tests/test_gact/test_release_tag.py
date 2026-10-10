@@ -25,11 +25,16 @@ def test_release_refs_keep_registry_and_github_versions_separate(version: str, t
 
     assert release_tag(version) == tag
     command = install_command("/tmp/clio", version)
-    assert command.args[-4:] == [
+    assert command.args[-5:] == [
         version,
         f"https://pypi.org/pypi/clio-agent/{version}/json",
         f"https://raw.githubusercontent.com/iowarp/clio-agent/{tag}/install/install.sh",
         tag,
+        "0",
+    ]
+    assert install_command("/tmp/clio", version, fresh=True).args[-5:] == [
+        *command.args[-5:-1],
+        "1",
     ]
 
 

@@ -197,6 +197,12 @@ find "$OUT/python" -type f -name '*.exe' -delete
 # no-opped on macOS — the exact silent-fallback class this repo bans).
 find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 
+echo "[build-gact-runtime] preparing locked document wheels"
+DOCUMENT_STACK="$(find "$OUT/python" -path '*/site-packages/clio_agent/runtime/document_stack' -type d -print -quit)"
+test -n "$DOCUMENT_STACK"
+"$OUT/$PYBIN_REL" -I -B "$CHECKOUT/install/build_document_wheels.py" \
+  --stack "$DOCUMENT_STACK" --out "$OUT/document-wheels" --uv "$(command -v uv)"
+
 # Prepare the real startup import graph in the release image, not on the
 # user's first launch. Compiling the entire distribution is both wasteful and
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while

@@ -28,12 +28,16 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.blueprint_identity import AmbiguousBlueprintError, installed_root
 from clio_agent.gact.default_registry_relocation import reconcile_moved_default_registry_copies
+from tests._marketplace import MARKETPLACE_ROOT, REPO_ROOT
+
+# Only the path shape is used; every pack is a local fixture, never a network clone.
+pytestmark = pytest.mark.marketplace
 
 FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "builtins"
 
 
 def _checkout(tmp_path: Path, name: str, packs: tuple[str, ...]) -> Path:
-    registry = tmp_path / name / "external" / "clio-agent-marketplace"
+    registry = tmp_path / name / MARKETPLACE_ROOT.relative_to(REPO_ROOT)
     for pack_id in packs:
         root = registry / pack_id
         shutil.copytree(FIXTURE_PACK, root)

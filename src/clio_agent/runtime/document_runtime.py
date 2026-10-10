@@ -21,6 +21,7 @@ from clio_agent import paths
 from clio_agent.providers.dependencies import _uv_executable
 from clio_agent.runtime.document_stack.node_paths import node_path
 from clio_agent.runtime.document_stack.process import scratch_root
+from clio_agent.runtime.document_wheels import bundled_wheel_requirements
 from clio_agent.runtime.execution_environment import (
     bundled_root,
     publish_environment,
@@ -172,7 +173,45 @@ def _python_runtime(
         except (DocumentRuntimeError, ValueError):
             # A damaged cache is repaired by the same locked sync as first use.
             pass
-    env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment)}
+    env = {
+        **os.environ,
+        "UV_PROJECT_ENVIRONMENT": str(environment),
+        # Keep wheel unpacking and the environment on the selected installation
+        # drive. uv can hardlink shared files instead of copying them across drives.
+        "UV_CACHE_DIR": str(cache.parent / "uv-document-cache"),
+    }
+    runtime = bundled_root()
+    try:
+        requirements = bundled_wheel_requirements(runtime, STACK_ROOT, project)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise DocumentRuntimeError(f"Bundled document packages are invalid: {error}") from error
+    if requirements is not None:
+        assert runtime is not None  # A verified wheel bundle can only come from a runtime.
+        if not repair:
+            _run(
+                [uv, "venv", "--no-managed-python", "--python", sys.executable, str(environment)],
+                cwd=project,
+                env=env,
+            )
+        _run(
+            [
+                uv,
+                "pip",
+                "sync",
+                "--python",
+                str(python),
+                str(requirements),
+                "--no-index",
+                "--find-links",
+                str(runtime / "document-wheels"),
+                "--require-hashes",
+                "--only-binary=:all:",
+                *(["--reinstall"] if repair else []),
+            ],
+            cwd=project,
+            env=env,
+        )
+        return python, probe()
     _run(
         [
             uv,

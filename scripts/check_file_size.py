@@ -1148,7 +1148,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # trace_dropped_x_mcp_header_tools) at the listing choke point -- the
     # diagnostic's own logic lives in that owner module; only the lazy
     # import + one await land here.
-    "src/clio_agent/tools/gateway.py": 939,
+    "src/clio_agent/tools/gateway.py": 938,
     # #1001: doctor rendering + disk-GC surface moved to the ui/doctor.py owner module
     # (ratcheted 1156 -> 1135 in the same change).
     # merge(main->develop): +6 (1135 -> 1141) integrating main's release-stream cli deltas.

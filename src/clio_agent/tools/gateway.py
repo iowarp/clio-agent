@@ -27,7 +27,6 @@ import logging
 import time
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import suppress
-from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -39,6 +38,13 @@ if TYPE_CHECKING:
     from clio_agent.tools.remote_mcp import RemoteMcpFederation
 
 from clio_agent.tools import listing_attempts
+from clio_agent.tools.builtin_gateway import (
+    _mount_with_namespace,
+    _new_base_gateway,
+)
+from clio_agent.tools.builtin_gateway import (
+    get_gateway as get_gateway,
+)
 from clio_agent.tools.catalog import (
     TOOL_CATALOG,
     ToolCatalogEntry,
@@ -54,44 +60,6 @@ from clio_agent.tools.mcp_config import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _mount_with_namespace(parent: FastMCP, server: FastMCP, namespace: str) -> None:
-    """Mount a server with a stable namespaced tool name prefix."""
-    parent.mount(server, namespace=namespace)
-
-
-def _mount_builtins(gw: FastMCP) -> None:
-    """Mount the universal in-process built-in servers onto a gateway."""
-    from clio_agent.tools.servers.fs_server import fs_server  # noqa: PLC0415
-    from clio_agent.tools.servers.shell_server import shell_server  # noqa: PLC0415
-
-    _mount_with_namespace(gw, fs_server, "fs")
-    _mount_with_namespace(gw, shell_server, "shell")
-
-
-def _new_base_gateway() -> FastMCP:
-    """Return a fresh gateway with only the universal built-ins mounted."""
-    from fastmcp import FastMCP  # noqa: PLC0415
-
-    gw = FastMCP("clio-gateway")
-    _mount_builtins(gw)
-    return gw
-
-
-# Gateway singleton: the universal built-ins only. Declared domain servers are
-# mounted per agent via ``build_gateway(load_mcp_servers(...))``.
-_gateway: FastMCP | None = None
-_gateway_lock = Lock()
-
-
-def get_gateway() -> FastMCP:
-    """Return the CLIO gateway instance (built-ins only)."""
-    global _gateway
-    with _gateway_lock:
-        if _gateway is None:
-            _gateway = _new_base_gateway()
-        return _gateway
 
 
 def __getattr__(name: str) -> Any:

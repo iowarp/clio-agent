@@ -253,6 +253,13 @@ if (Test-Path $sitePkgs) {
   }
 }
 
+# Download and build the isolated document stack once on the builder. Installers
+# can create its environment offline without resolving, downloading or compiling.
+Write-Host "[build-gact-runtime] preparing locked document wheels"
+$wheelBuilder = Join-Path $checkout 'install/build_document_wheels.py'
+$documentStack = Join-Path $pyRoot 'Lib/site-packages/clio_agent/runtime/document_stack'
+Invoke-Native -Exe $pyBin -Args @('-I', '-B', $wheelBuilder, '--stack', $documentStack, '--out', (Join-Path $Out 'document-wheels'), '--uv', $uv.Source)
+
 # Prepare the real startup import graph in the release image, not on the
 # user's first launch. Compiling the entire distribution is both wasteful and
 # invalid: CPython ships non-imported Tcl demo files with syntax errors, while

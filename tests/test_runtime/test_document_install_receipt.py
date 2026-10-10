@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import document_install as installer
 from clio_agent.runtime import document_install_receipt as receipts
 from clio_agent.runtime.document_stack.process import scratch_root
@@ -87,6 +89,25 @@ def test_unchanged_installation_reuses_inventory_and_ignores_generated_bytecode(
     bytecode.parent.mkdir()
     bytecode.write_bytes(b"generated")
     assert receipts.reuse_install_receipt(workspace, cache_root=cache) == result
+
+
+def test_install_and_startup_accept_equivalent_runtime_and_workspace_paths(
+    installed: tuple[Path, Path, dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, cache, result = installed
+    runtime = Path(result["python"]).parent.parent
+    interpreter = receipts.sys.executable
+    monkeypatch.setenv("GACT_BUNDLED_RUNTIME_DIR", str(runtime))
+    receipts.save_install_receipt(workspace, result, cache_root=cache)
+    aliases = [workspace / ".." / workspace.name]
+    if os.name == "nt":
+        aliases.append(Path(win_extended_path(workspace)))
+    for alias in aliases:
+        monkeypatch.setenv(
+            "GACT_BUNDLED_RUNTIME_DIR", win_extended_path(runtime / ".." / runtime.name)
+        )
+        monkeypatch.setattr(receipts.sys, "executable", win_extended_path(interpreter))
+        assert receipts.reuse_install_receipt(alias, cache_root=cache) == result
 
 
 @pytest.mark.parametrize("change", ["edit", "remove", "add", "office", "manifest", "helper"])

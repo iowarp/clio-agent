@@ -1410,7 +1410,7 @@ search.searxng.max_results: 10
 # CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES  (list)  <- src/clio_agent/search/settings.py
 # Explicit opt-in for engines that are off by policy (baidu, sogou,
 # 360search, chinaso, quark, ...); each one named here is enabled.
-# search.searxng.opt_in_engines:  # default unset; resolved in code
+# search.searxng.opt_in_engines:  # computed at runtime: list[str]()
 
 # CLIO_SEARCH_SEARXNG_PORT  (int)  <- src/clio_agent/search/settings.py
 # Loopback port of the private SearXNG; change it when another program

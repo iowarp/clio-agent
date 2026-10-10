@@ -294,7 +294,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SEARCH_SEARXNG_ENGINES` | `search.searxng.engines` | list | `duckduckgo,brave,mojeek,qwant,startpage,wikipedia,arxiv,crossref,semantic scholar,pubmed` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SEARXNG_LANGUAGE` | `search.searxng.language` | str | `en` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SEARXNG_MAX_RESULTS` | `search.searxng.max_results` | int | `10` | `src/clio_agent/search/settings.py` |
-| `CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES` | `search.searxng.opt_in_engines` | list | _(unset)_ | `src/clio_agent/search/settings.py` |
+| `CLIO_SEARCH_SEARXNG_OPT_IN_ENGINES` | `search.searxng.opt_in_engines` | list | `list[str]()` _(computed)_ | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SEARXNG_PORT` | `search.searxng.port` | int | `18890` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SEARXNG_REQUEST_TIMEOUT_S` | `search.searxng.request_timeout_s` | float | `10.0` | `src/clio_agent/search/settings.py` |
 | `CLIO_SEARCH_SEARXNG_SAFE_SEARCH` | `search.searxng.safe_search` | int | `1` | `src/clio_agent/search/settings.py` |
@@ -364,7 +364,8 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
 | `CLIO_STORAGE_GITHUB_APP_URL` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GITHUB_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
-| `CLIO_STORAGE_GOOGLE_API_KEY` | unmigrated | `src/clio_agent/gact/storage/linked.py` |
+| `CLIO_STORAGE_GOOGLE_API_KEY` | unmigrated | `src/clio_agent/gact/storage/drive_filesystem.py` |
+| `CLIO_VLLM_ATTN_CONNECTOR` | unmigrated | `src/clio_agent/gact/infrastructure/native_vllm.py` |
 
 ## Owned elsewhere
 
