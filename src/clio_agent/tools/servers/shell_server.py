@@ -18,9 +18,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
+from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.runtime import trace
@@ -365,6 +366,15 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
     :data:`_SHELL_LIMITS`), never hand-written numbers (#1487).
     """
     limits_text = _limits_text(limits or _SHELL_LIMITS)
+    task_text = (
+        "By default background=false waits for command completion. Set background=true to "
+        "return a durable Shell task handle as soon as the command starts, before completion. "
+        "Continue independent work; use query_tasks, observe_tasks, wait_tasks, get_task_result "
+        "or cancel_tasks with the handle. Results arrive at the next model iteration or wake "
+        "you when idle. Conversation Stop leaves accepted background work running. A positive "
+        "timeout_s remains an execution limit; omitting it or passing zero allows the command "
+        "to run until exit, subject to any operator ceiling. "
+    )
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (
         f"POSIX text tools ({tools}) ARE available on this host's PATH."
@@ -396,7 +406,7 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
             "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS. "
             "A command can retrieve public HTTPS data when network policy permits; "
             "inspect its returned status and output before concluding access failed. "
-            f"The command runs until it exits unless you pass timeout_s. {limits_text}"
+            f"{task_text}{limits_text}"
         )
     return (
         f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
@@ -408,7 +418,7 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         "CLIO_ALLOWED_ROOTS. "
         "A command can retrieve public HTTPS data when network policy permits; "
         "inspect its returned status and output before concluding access failed. "
-        f"The command runs until it exits unless you pass timeout_s. {limits_text}"
+        f"{task_text}{limits_text}"
     )
 
 
@@ -443,7 +453,12 @@ async def bash(
     cwd: str | None = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
     max_output_bytes: int = _SHELL_LIMITS.default_output_bytes,
-    background: bool = False,
+    background: Annotated[
+        bool,
+        Field(
+            description="True returns a durable task handle before completion; false waits for exit."
+        ),
+    ] = False,
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 

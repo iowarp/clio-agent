@@ -17,7 +17,13 @@ from clio_agent.tools.task_call_context import require_admission
 def connected_data_download(
     source_id: str, selected_paths: list[str] | None = None, description: str | None = None
 ) -> dict[str, Any]:
-    """Start an approved source download and immediately return its durable task handle."""
+    """Start an approved Download task and immediately return its durable task handle.
+
+    Acceptance is not completion. Continue independent work and use query_tasks,
+    observe_tasks, wait_tasks, get_task_result or cancel_tasks with the handle.
+    Completion or failure arrives at the next model iteration or wakes you when
+    idle; Conversation Stop leaves accepted downloads running.
+    """
     app, sid = context.active_app(), context.active_session_id()
     if app is None or not sid:
         raise ValueError("Download requires an active workspace conversation")

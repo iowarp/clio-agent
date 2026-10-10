@@ -1,7 +1,6 @@
 """Dynamic-agent / Agent-Blueprint DSPy module builders for the GACT server (#714).
 
-This module owns the expert builders carved out of ``clio_agent.gact.app``. They
-compile registered dynamic agents into concrete DSPy modules:
+These builders compile registered dynamic agents into concrete DSPy modules:
 
 * prompt-only user agents (:func:`_build_prompt_user_agent_module`);
 * tool-declaring user agents (:func:`_build_tool_user_agent_module`);
@@ -308,6 +307,7 @@ def _enabled_external_mcp_dspy_tools(
         boundary_observed_tool,
         mcp_tool_title,
     )
+    from clio_agent.tools.task_descriptions import mcp_task_description
 
     requested = set(requested_tools)
     available: dict[str, Any] = {}
@@ -325,7 +325,7 @@ def _enabled_external_mcp_dspy_tools(
                 continue
             if str(tool_row.get("status") or "") != "ready":
                 continue
-            description = str(tool_row.get("description") or tool_name)
+            description = mcp_task_description(tool_row)
             title = mcp_tool_title(tool_row)  # #1188: Tool.title, else ToolAnnotations.title
             schema = tool_row.get("input_schema") or {}
             properties = schema.get("properties", {}) if isinstance(schema, Mapping) else {}

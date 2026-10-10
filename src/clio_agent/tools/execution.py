@@ -22,7 +22,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import injections, tool_presentation
+from clio_agent.tools import injections, task_descriptions, tool_presentation
 from clio_agent.tools import task_call_context as task_calls
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
@@ -1028,7 +1028,7 @@ def _make_dspy_tool(
     # Keep DSPy off the agent-less desktop startup path until a tool is constructed.
     from clio_agent.tools.dspy_mcp_tool import MCPBoundTool, bind_input_contract
 
-    description = getattr(mcp_tool, "description", None) or name
+    description = task_descriptions.mcp_task_description(mcp_tool)
 
     def tool_fn(**kwargs: Any) -> str:
         return call_tool(name, kwargs)

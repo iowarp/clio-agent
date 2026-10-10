@@ -513,8 +513,8 @@ def build_spawn_runtime_tools(
         blueprint_id: str | None = None,
         strategy: dict | None = None,
     ) -> str:
-        """Spawn a declared child expert as a background child turn; returns its
-        task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
+        """Spawn a declared child expert as a Subagent task; returns its durable
+        handle IMMEDIATELY (status queued|running), plus a compatibility task_id. The child runs
         untied to this turn — collect it now with wait_tasks or inspect progress
         with observe_tasks. Results arrive at a safe model boundary or wake the idle
         agent into a new turn, including after Stop. Spawn independent children first.

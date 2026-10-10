@@ -85,7 +85,10 @@ def task_arguments(properties: Any) -> dict[str, Any]:
         "_clio_task_description": {
             "type": "string",
             "maxLength": 2000,
-            "description": "Optional task assignment; stripped before backend dispatch.",
+            "description": (
+                "Optional assignment label for accepted work; stripped before backend dispatch. "
+                "This metadata does not enable background execution or turn a plain call into a task."
+            ),
         },
     }
 

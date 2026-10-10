@@ -708,7 +708,10 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
         representation="handoff",
         desc=(
             "Run one declared child-task skill in a fresh background agent. "
-            "Provide a concrete assignment; collect the returned task with wait_agent_tasks."
+            "Provide a concrete assignment; acceptance immediately returns a Subagent task handle. "
+            "Continue independent work, inspect with query_tasks/observe_tasks, collect with "
+            "wait_tasks or get_task_result, or cancel with cancel_tasks. Results arrive at the "
+            "next model iteration or wake you when idle; Conversation Stop leaves the task running."
         ),
         args={
             "skill_id": {"type": "string", "description": "Declared child-task skill id."},
