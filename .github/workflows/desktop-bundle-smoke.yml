@@ -121,9 +121,31 @@ jobs:
           $packages = @(Get-ChildItem external/gact-tui/desktop/src-tauri/target/release/bundle/nsis/*.exe)
           if ($packages.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
           $installDir = Join-Path $env:RUNNER_TEMP 'clio-installed'
-          $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -Wait -PassThru
+          # Wait for NSIS itself, not every background descendant it started.
+          # Keep the wait bounded so a silent failure still reaches log upload.
+          $installer = Start-Process -FilePath $packages[0].FullName -ArgumentList @('/S', "/D=$installDir") -WindowStyle Hidden -PassThru
+          if (-not $installer.WaitForExit(600000)) {
+            $installer.Kill($true)
+            if (-not $installer.WaitForExit(10000)) { Write-Warning 'Installer cleanup did not finish within 10 seconds' }
+            throw 'NSIS installer did not exit within 10 minutes; see the retained installer logs'
+          }
           if ($installer.ExitCode -ne 0) { throw "Installer failed: $($installer.ExitCode)" }
           uv run --no-project --python 3.13 --with psutil scripts/smoke_desktop_package.py "$installDir/clio-desktop.exe" --evidence-dir "$env:RUNNER_TEMP/startup-evidence" --boot-log "$env:LOCALAPPDATA/ai.iowarp.clio.desktop/logs/backend-boot.log"
+      - name: Collect Windows installer diagnostics even before first launch
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $evidenceDir = Join-Path $env:RUNNER_TEMP 'startup-evidence'
+          New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
+          $installerLogs = @{
+            'installer-error.log' = Join-Path $env:RUNNER_TEMP 'clio-installed/data/runtime-install-error.log'
+            'installer-boot.log' = Join-Path $env:LOCALAPPDATA 'ai.iowarp.clio.desktop/logs/backend-boot.log'
+          }
+          foreach ($entry in $installerLogs.GetEnumerator()) {
+            if (Test-Path -LiteralPath $entry.Value -PathType Leaf) {
+              Copy-Item -LiteralPath $entry.Value -Destination (Join-Path $evidenceDir $entry.Key)
+            }
+          }
       - name: Retain the qualified installable development Desktop
         uses: actions/upload-artifact@v4
         with:
@@ -145,5 +167,7 @@ jobs:
             ${{ runner.temp }}/startup-evidence/backend.json
             ${{ runner.temp }}/startup-evidence/failure.json
             ${{ runner.temp }}/startup-evidence/boot.log
+            ${{ runner.temp }}/startup-evidence/installer-error.log
+            ${{ runner.temp }}/startup-evidence/installer-boot.log
           if-no-files-found: warn
           retention-days: 7
