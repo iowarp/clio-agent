@@ -45,6 +45,14 @@ def start_boot_collection(app: "FastAPI", collect: Callable[["FastAPI"], Runtime
 
     async def _collect() -> None:
         try:
+            # Native ARC attachment is required before a turn can run. The full
+            # doctor imports optional tool stacks; schedule that work after ARC
+            # so both cold import graphs do not contend for the interpreter.
+            # pending_report continues to publish the exact attach state while
+            # this task waits, including a typed failure if attachment fails.
+            arc_boot = getattr(app.state, "arc_boot_runner", None)
+            if arc_boot is not None:
+                await asyncio.shield(arc_boot)
             await asyncio.to_thread(collect, app)
         except Exception as exc:  # noqa: BLE001 - typed log; the next health call collects anew
             logger.warning("health boot collection failed reason=doctor_boot_failed error=%r", exc)

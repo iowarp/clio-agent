@@ -127,7 +127,7 @@ async def refresh_relay_tool_surfaces_if_stale(app: FastAPI) -> Any:
 
     existing = getattr(app.state, "relay_tool_surfaces", None)
     if existing is None:
-        from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+        from clio_agent.tools.relay_factory import (  # noqa: PLC0415
             RelayTransportUnavailable,
             resolve_relay_transport_config,
         )
@@ -305,9 +305,9 @@ def configure_relay_expert_invokers(app: FastAPI) -> None:
     """Publish configured ``relay:<cluster>`` placement owners at app assembly."""
 
     from clio_agent import conf  # noqa: PLC0415
-    from clio_agent.tools.relay_factory import resolve_relay_cluster  # noqa: PLC0415
-    from clio_agent.tools.relay_transport import (  # noqa: PLC0415
+    from clio_agent.tools.relay_factory import (  # noqa: PLC0415
         RelayTransportUnavailable,
+        resolve_relay_cluster,
         resolve_relay_transport_config,
     )
 

@@ -68,6 +68,12 @@ def bundled_wheel_requirements(runtime: Path | None, stack: Path, project: Path)
             actual = hashlib.file_digest(stream, "sha256").hexdigest()
         if actual != digest:
             raise ValueError(f"Bundled document wheel checksum mismatch: {name}")
+        locked_wheel_hashes = {source.get("hash") for source in package.get("wheels", [])}
+        if (
+            entry["source_hash"] in locked_wheel_hashes
+            and f"sha256:{actual}" != entry["source_hash"]
+        ):
+            raise ValueError(f"Bundled document wheel differs from the locked download: {name}")
         requirements.append(f"{name}=={version} --hash=sha256:{digest}\n")
     target = project / "bundled-requirements.txt"
     target.write_text("".join(sorted(requirements)), encoding="utf-8")

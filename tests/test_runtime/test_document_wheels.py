@@ -81,6 +81,7 @@ def write_manifest(runtime: Path, manifest: dict[str, Any]) -> None:
         "null-source",
         "path",
         "checksum",
+        "rewritten-checksum",
     ],
 )
 def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: str) -> None:
@@ -101,7 +102,10 @@ def test_rejects_changed_incomplete_or_foreign_bundles(tmp_path: Path, damage: s
     elif damage == "path":
         entry["filename"] = "../escape.whl"
     else:
-        (runtime / "document-wheels" / entry["filename"]).write_bytes(b"damaged")
+        wheel = runtime / "document-wheels" / entry["filename"]
+        wheel.write_bytes(b"damaged")
+        if damage == "rewritten-checksum":
+            entry["sha256"] = hashlib.sha256(wheel.read_bytes()).hexdigest()
     write_manifest(runtime, manifest)
     with pytest.raises(ValueError, match="Bundled document wheel"):
         bundled_wheel_requirements(runtime, stack, project)

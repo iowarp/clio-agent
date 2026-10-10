@@ -26,6 +26,7 @@ app = build_app()
 for name in (
     'googleapiclient.discovery', 'gdrive_fsspec',
     'clio_agent.tools.servers.fs_server', 'clio_agent.tools.servers.shell_server',
+    'clio_agent.tools.relay_transport',
 ):
     assert name not in sys.modules, name
 print(json.dumps({'routes': len(app.routes)}))
