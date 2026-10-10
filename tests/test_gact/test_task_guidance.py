@@ -30,9 +30,10 @@ def test_task_lifecycle_reaches_the_model_request(provider: str, role: str) -> N
     assert isinstance(request.system, str)
     assert request.system.startswith(f"You are a {role} data expert.")
     assert "next model iteration" in request.system
-    assert "next conversation turn" in request.system
-    assert "Completion alone does not start another turn" in request.system
-    assert "acknowledge\nthe handle and finish your turn without waiting" in request.system
+    assert "a queued result starts a new\nturn" in request.system
+    assert "without waiting\nfor another user message" in request.system
+    assert "the result will wake you to continue" in request.system
+    assert "Their later results can wake you again, including after Stop" in request.system
     assert "Conversation Stop ends the turn and its waiter, leaving accepted tasks running" in (
         request.system
     )

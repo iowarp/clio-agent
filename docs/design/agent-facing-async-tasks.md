@@ -38,6 +38,9 @@ positive timeout ends that waiter. Failed and invalid members have their own
 outcomes and do not cancel peers. Query and observe do not consume completion.
 Wait, terminal collection and automatic delivery share the durable delivery
 guard. Later explicit result reads remain available.
+An ancestor may read a descendant's result, but only the owning conversation
+collects its notification. Reading a nested result cannot strand the agent that
+needs that result to continue its assignment.
 
 Observation pages contain at most 40 authorized task events. A pattern match
 always refers to evidence in the returned page. When `has_more` is true, advance
@@ -52,11 +55,36 @@ settles. Messaging and restart remain subagent-specific.
 The editable `clio.runtime.tasks` snippet is composed at the common model-request
 boundary for roots and children with shared task controls, independent of their
 provider or blueprint body. It teaches immediate handles, all five task kinds,
-queued success/failure/interruption, busy-boundary versus next-turn delivery and
+queued success/failure/interruption, busy-boundary versus automatic idle wake and
 Stop versus task cancellation. Agents continue independent work, finish an
 acknowledgement-only turn without waiting, or commit one wait when the current
 request needs the result. Keeping a turn open is not required to keep work alive.
 Orchestrator and spawn descriptions use the same lifecycle vocabulary.
+
+Task completion is an active mailbox event. A busy agent receives bounded
+results before its next safe model iteration. An idle agent is automatically
+started through the existing turn runner with a system-event message and the
+queued results; no additional human message is required. Completion does not
+resume the future human-message queue paused by Stop. Already submitted feedback
+keeps its existing priority and ordering. Explicit terminal collection wins the
+same delivery guard, so a collected result cannot produce another automatic
+delivery. Simultaneous results coalesce, and overflow remains queued for another
+boundary. A vetoed batch stays pending without repeatedly starting inference.
+
+A subagent that yields while its own accepted work remains active or uncollected
+keeps its original logical task running. Its eventual result turn reuses the same
+child session and completion mode; the parent receives the child's final result
+after it processes that work. Explicit subtree cancellation closes admission
+and prevents descendant results from reviving cancelled children.
+
+This automatic-wake contract supersedes the original next-human-turn-only
+delivery design at the user's direction. Historical live idle-delivery evidence
+tested the earlier design and does not qualify automatic idle wake.
+
+The automatic-wake implementation has 51 focused cases passing individually and
+sequentially, including the complete turn pipeline and unchanged transcript
+contracts. All eight guards and scoped type checks pass. Real-model automatic
+wake qualification is still pending; historical idle proofs do not satisfy it.
 
 ## Ownership and lifetime
 
@@ -111,8 +139,9 @@ alone to reattach or automatically repeats a command.
 Terminal results are persisted before completion intent and an in-memory wake.
 Existing subagent inbox/enrichment machinery carries every task kind. A busy
 conversation receives bounded batches at a safe model boundary. An idle
-conversation retains results for its next user-initiated turn; completion alone
-does not start a turn.
+conversation starts a system-event turn through the existing turn runner,
+including after Stop, without another human message. A paused future human
+message queue remains paused independently of these task-result turns.
 
 Staging does not consume results. Consumption happens at the existing
 commit-to-run boundary after veto checks. Aborted/vetoed turns retain results,

@@ -166,6 +166,9 @@ def _install_composer_idle_hook(app: Any, deps: Any) -> None:
         else:  # pragma: no cover - build_app always installs the drain first
             drain_inbox_and_notify_spotter(app, session_id)
         promote_queue_head(app, deps, session_id)
+        from clio_agent.gact.task_completion_wake import request_completion_wake
+
+        request_completion_wake(app, session_id)
 
     app.state.turn_runner.set_idle_hook(on_session_idle)
 

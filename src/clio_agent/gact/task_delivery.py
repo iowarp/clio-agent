@@ -13,14 +13,10 @@ from clio_agent.tools.mcp_task_records import TaskKey
 
 
 def enqueue_task_wake(app: Any, record: Any) -> None:
-    """Wake an already-busy inbox after durable completion intent, without creating a turn."""
-    from clio_agent.gact.loop_inbox import InboxEvent, inbox_for
+    """Drive the busy or idle mailbox after durable completion intent."""
+    from clio_agent.gact.task_completion_wake import request_completion_wake
 
-    runner = getattr(app.state, "turn_runner", None)
-    if runner is not None and record.session_id and runner.busy(record.session_id):
-        inbox_for(app, record.session_id).put(
-            InboxEvent(kind="child_completed", task_id=record.handle)
-        )
+    request_completion_wake(app, record.session_id or "", record.handle)
 
 
 def consume_task(app: Any, sid: str, handle: str) -> bool:
@@ -30,6 +26,10 @@ def consume_task(app: Any, sid: str, handle: str) -> bool:
     with task_supervisor(app).delivery_lock:
         row = resolve_task(app, sid, handle)
         if row["effective_status"] not in TERMINAL:
+            return False
+        # Ancestors may read descendant results, but only the owning conversation
+        # can collect its mailbox. Otherwise a parent read strands a yielding child.
+        if row["owner"]["session_id"] != sid:
             return False
         if row["task_kind"] == "Subagent":
             from clio_agent.gact.enrichment import consume_pending_agent_task_notifications

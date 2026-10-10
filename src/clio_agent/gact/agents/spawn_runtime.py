@@ -515,9 +515,9 @@ def build_spawn_runtime_tools(
     ) -> str:
         """Spawn a declared child expert as a background child turn; returns its
         task_id IMMEDIATELY (status queued|running). Fire-and-forget: the child runs
-        untied to this turn — collect it now with wait_tasks, inspect progress
-        with observe_tasks, or receive queued results at the next safe model boundary or
-        next conversation turn (completion alone starts no turn). Spawn independent children first.
+        untied to this turn — collect it now with wait_tasks or inspect progress
+        with observe_tasks. Results arrive at a safe model boundary or wake the idle
+        agent into a new turn, including after Stop. Spawn independent children first.
         Placement: omit/pass null to inherit; otherwise "local" or "relay:<cluster>", never "".
 
         Pass input_task_ids to hand THIS child the FULL stored output of tasks
@@ -642,7 +642,7 @@ def build_spawn_runtime_tools(
         for _request_index, task_result, _payload, _structured_row in collected_rows:
             if task_result is None:
                 continue
-            if task_result.is_terminal:
+            if task_result.is_terminal and task_result.parent_session_id == session_id:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
                 # turn must not re-inject it. Exactly-once via the notify_pending gate.

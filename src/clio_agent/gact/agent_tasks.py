@@ -704,13 +704,10 @@ AGENT_TASK_CONSUMED_EVENT = "agent.task.consumed"
 
 
 def pending_notifications(app: "FastAPI", parent_session_id: str) -> list[AgentTask]:
-    """Terminal, still-``notify_pending`` tasks a parent spawned async and has NOT
-    yet consumed (via wait/injection), oldest-completed first (#948 S6).
+    """Return uncollected asynchronous child results, earliest-completed first.
 
-    This is the observe-later feed the parent's NEXT turn drains: an async child
-    that finished after (or during) the spawning turn sets ``notify_pending`` at
-    completion; it stays pending until one of the three consumers flips it. Ordered
-    by ``updated_at`` ascending so the earliest-finished result is presented first.
+    The existing delivery guard is shared by explicit collection, busy model
+    boundaries and automatic result turns; queries never consume notifications.
     """
 
     reg = app.state.agent_task_registry
@@ -771,9 +768,8 @@ def consume_notification(app: "FastAPI", task_id: str) -> Optional[AgentTask]:
 def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -> None:
     """Publish task lifecycle to its visible owners and attended root.
 
-    Internal helpers stay on their child channel. Delegated work also reaches its
-    parent and attended root with ownership metadata. These operational events go
-    directly to the bus because child-session metadata is the durable store.
+    Helpers stay on their child channel; delegated work also reaches its parent
+    and attended root. Child-session metadata remains the durable store.
     """
 
     from clio_agent.gact.events import Event  # noqa: PLC0415 - avoid import cycle
@@ -798,3 +794,7 @@ def publish_agent_task_event(app: "FastAPI", task: AgentTask, event_type: str) -
                 },
             )
         )
+    if task.is_terminal and task.notify_pending and task.project_to_parent:
+        from clio_agent.gact.task_completion_wake import request_completion_wake
+
+        request_completion_wake(app, task.parent_session_id, task.task_id)

@@ -11,17 +11,19 @@ accepted task. Keep each returned handle associated with its assignment.
 
 CLIO queues completed, failed, cancelled and interrupted task results for you.
 While you are working, pending results arrive before your next model iteration
-at a safe boundary. If you have finished your turn, they remain queued for the
-next conversation turn. Completion alone does not start another turn. You do not
+at a safe boundary. If you have finished your turn, a queued result starts a new
+turn so you can process it and continue the assignment or goal without waiting
+for another user message. Several ready results can arrive together. The message
+includes bounded results or errors and references for larger output. You do not
 need to keep a turn open, poll repeatedly, or run a waiter to keep accepted work
 alive or receive its eventual result.
 
 Continue useful independent work while tasks run. If the user only needs the
-work started, or the result belongs to a later conversation turn, acknowledge
-the handle and finish your turn without waiting. Clearly distinguish accepted
-or running work from completed work. If fulfilling the current request requires
-the result and no independent work remains, make one committed `wait_tasks`
-call instead of polling or announcing an unverified completion.
+work started, or no independent work remains, acknowledge the handle and finish
+your turn without waiting: the result will wake you to continue. Clearly
+distinguish accepted or running work from completed work. Use a committed
+`wait_tasks` call when you explicitly need to collect selected results in the
+current turn. Do not poll repeatedly or announce an unverified completion.
 
 Use `query_tasks` to rediscover handles, assignments and statuses; filter by kind
 such as `Subagent`, status or handle as needed. `observe_tasks` reads incremental
@@ -35,6 +37,7 @@ delivery guard; explicit later reads remain possible without another automatic
 completion notification. Read actual outcomes and surface failures honestly.
 
 Conversation Stop ends the turn and its waiter, leaving accepted tasks running.
+Their later results can wake you again, including after Stop.
 To stop work itself, use `cancel_tasks` on its handle. Cancellation requested is
 not settled cancellation: the owner and required cleanup must finish. Cancelling
 a Subagent also cancels its descendant tasks. Messaging and restart remain

@@ -39,7 +39,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui_actions.record import mark_a2ui_action_consumed
@@ -658,8 +658,9 @@ def _start_background_user_turn(
     user_msg_id: str = "",
     user_created_at: str = "",
     replace_existing_user_message: bool = False,
+    message_role: Literal["user", "system"] = "user",
 ) -> Message:
-    """Stage a user turn and drive it off-thread.
+    """Stage a user or system-event turn and drive it off-thread.
 
     Persists the user message + parts, flips the session to ``running``, publishes
     ``session.status_changed`` + ``message.created``, then schedules
@@ -701,7 +702,7 @@ def _start_background_user_turn(
         # its own turn.
         turn_id=user_msg_id,
         session_id=sid,
-        role="user",
+        role=message_role,
         created_at=user_created_at or _iso_from_epoch(now),
         updated_at=_iso_from_epoch(now),
         parts=user_parts,

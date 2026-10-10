@@ -666,6 +666,11 @@ def _on_child_done(
     msgs = app.state.messages.get(child_sid, []) or []
     final = final_assistant_message(msgs)
     code = _err_code(getattr(final, "error_info", None) if final is not None else None)
+    from clio_agent.gact.task_subagent_owner import defer_background_settlement
+
+    if not task.cancel_requested and final is not None and code in ("", "cancelled"):
+        if defer_background_settlement(app, task, mode):
+            return
 
     try:
         if code == "cancelled" or task.cancel_requested:

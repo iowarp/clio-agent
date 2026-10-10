@@ -112,6 +112,8 @@ def consume_pending_agent_task_notifications(
         except ValueError as exc:
             logger.warning("Staged task result unavailable handle=%s reason=%s", task_id, exc)
             continue
+        if row["owner"]["session_id"] != sid:
+            continue
         if row["task_kind"] != "Subagent":
             from clio_agent.gact.task_delivery import completion_block, consume_task
 

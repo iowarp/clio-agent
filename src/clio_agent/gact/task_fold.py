@@ -116,7 +116,6 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
         return
     from clio_agent.gact.background_exit import reconcile_stored_handoff_part  # noqa: PLC0415
     from clio_agent.gact.delegation_return import stamp_delegation_return  # noqa: PLC0415
-    from clio_agent.gact.loop_inbox import enqueue_completion_wake  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
         _admit_next_queued,
         finalize_child_task_terminal,
@@ -151,7 +150,6 @@ def finish_agent_task_transition(app: "FastAPI", outcome: AgentTaskFoldOutcome) 
     # exactly-once hardening for those two is a tracked follow-up, not built
     # here.
     finalize_child_task_terminal(app, outcome.task, outcome.task.child_session_id)
-    enqueue_completion_wake(app, outcome.task)
     _admit_next_queued(app)
 
 

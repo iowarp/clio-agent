@@ -75,6 +75,9 @@ def mark_agent_ready(app: Any, agent: Any) -> None:
 
         for session_id in list(app.state.loop_inboxes):
             drain_inbox_to_new_turn(app, session_id)
+        from clio_agent.gact.task_completion_wake import redrive_pending_completion_wakes
+
+        redrive_pending_completion_wakes(app)
 
     loop = getattr(app.state, "mcp_app_loop", None)
     if loop is not None and loop.is_running():

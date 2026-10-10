@@ -105,3 +105,41 @@ def defer_subagent_settlement(app: Any, task: Any) -> bool:
         _schedule(app, _settle_when_children_finish(app, task.task_id, task.child_session_id))
         return True
     return False
+
+
+def defer_background_settlement(app: Any, task: Any, mode: str) -> bool:
+    """Keep one logical subagent active while accepted work still needs its agent."""
+    sid = task.child_session_id
+    if not pending_submissions(app, sid) and not any(
+        row["effective_status"] not in TERMINAL
+        or (row.get("notify_pending") and not row.get("consumed_at"))
+        for row in task_views(app, sid, include_children=False)
+    ):
+        return False
+    app.state.sessions.update(
+        sid,
+        metadata_patch={"background_task_continuation": {"task_id": task.task_id, "mode": mode}},
+    )
+    from clio_agent.gact.task_completion_wake import request_completion_wake
+
+    request_completion_wake(app, sid)
+    return True
+
+
+def resume_background_subagent(app: Any, sid: str) -> None:
+    """Rebind deferred completion to the result turn, preserving its original mode."""
+    session = app.state.sessions.get(sid)
+    pending = (getattr(session, "metadata", None) or {}).get("background_task_continuation")
+    turn = app.state.in_flight_turns.get(sid)
+    if not pending or turn is None:
+        return
+    task = app.state.agent_task_registry.get(pending["task_id"])
+    if task is None or task.is_terminal or task.cancel_requested:
+        return
+    from clio_agent.gact.agent_task_wake import build_child_done_callback
+    from clio_agent.gact.turn_spawn import _on_child_done
+
+    turn.add_done_callback(
+        build_child_done_callback(_on_child_done, app, task.task_id, sid, pending["mode"])
+    )
+    app.state.sessions.update(sid, metadata_patch={"background_task_continuation": None})
