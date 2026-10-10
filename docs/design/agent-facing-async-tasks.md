@@ -65,6 +65,9 @@ Task completion is an active mailbox event. A busy agent receives bounded
 results before its next safe model iteration, after the current tool call or
 parallel tool batch finishes. Accepted live user feedback enters at this same
 boundary, so the model can change its next action within the ongoing turn.
+The busy composer sends ordinary Enter, Ctrl+Enter and Cmd+Enter as live
+feedback. The explicit future-message queue retains its own pause and Send now
+controls; ordinary feedback reaches the active turn without queue promotion.
 An iteration is one model request and its resulting action or tool batch; it is
 not the complete answer to a user message. Delivery must not wait for that
 complete answer to finish. An idle agent is automatically
