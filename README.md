@@ -54,6 +54,10 @@ Prerequisites for the default release install: [`uv`](https://astral.sh/uv)
 or Python 3.13 with `pip`. `git` and Go are only needed when you opt into
 source-build mode with `CLIO_REF` or `GACT_REF`.
 
+This checkout selects standard Python 3.14 for source builds and the next managed
+runtime release. Commands pinned to older published releases below retain Python
+3.13, which those releases support.
+
 CLIO pins its intentional DSPy 3.3 prerelease and the tested stable LiteLLM release.
 Registry-backed `uv tool install` needs that exact DSPy dependency declared as an
 explicit root and prerelease resolution enabled: use

@@ -4,6 +4,11 @@ CLIO is **one engine + three frontends**: `clio-agent` (the Python core + the ga
 server) is the brain; the **TUI**, **web**, and **desktop** are frontends that talk to a
 gact backend. Every pathway below is "get clio-agent running + a frontend on it."
 
+This checkout selects standard Python 3.14 with the GIL enabled for source builds,
+source installers, containers, and the next bundled Desktop release. Examples pinned to
+older published releases retain Python 3.13; their native dependencies predate the
+3.14 upgrade.
+
 There are **4 install mechanisms** exposing **6 usage experiences** (a–f).
 
 | # | Experience | Mechanism | Status |

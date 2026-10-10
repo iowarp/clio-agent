@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 import requests
 
+from clio_agent.arc import clio_core_attach, clio_core_liveness
 from clio_agent.runtime.status import IntegrationState, RuntimeProbe
 
 
@@ -59,8 +63,19 @@ GACT_CAPABILITIES = {
 }
 
 
-def test_runtime_report_ready_path(tmp_path, monkeypatch):
+def test_runtime_report_ready_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """All required integrations report ready when probes succeed."""
+
+    # This doctor case holds no ARC store. Earlier runtime-loss tests can leave
+    # process-local attach and gate records that otherwise change its aggregate.
+    monkeypatch.setattr(
+        clio_core_attach,
+        "attach_state_snapshot",
+        lambda: clio_core_attach.ClioCoreAttachState(
+            phase=clio_core_attach.ClioCoreAttachPhase.IDLE, reason="clio_core_idle"
+        ),
+    )
+    monkeypatch.setattr(clio_core_liveness, "liveness_snapshot", lambda: [])
 
     # The clio-core health rows locate the shared daemon by port; a daemon left running
     # on this machine (default port) made this report "degraded" (found 2026-10-01).
@@ -70,7 +85,7 @@ def test_runtime_report_ready_path(tmp_path, monkeypatch):
         free.bind(("127.0.0.1", 0))
         monkeypatch.setenv("CLIO_CORE_PORT", str(free.getsockname()[1]))
 
-    def fake_get(url: str, timeout: float):
+    def fake_get(url: str, timeout: float) -> FakeResponse:
         assert url.endswith("/models")
         assert timeout == 1.0
         return FakeResponse({"data": [{"id": "granite"}]})
@@ -86,7 +101,7 @@ def test_runtime_report_ready_path(tmp_path, monkeypatch):
 
     report = probe.collect(api_state=IntegrationState.READY)
 
-    assert report.overall_status == "ready"
+    assert report.overall_status == "ready", report.to_dict()
     assert report.by_name("lm_provider").state == IntegrationState.READY
     assert report.by_name("arc").state == IntegrationState.READY
     assert report.by_name("arc").details["storage_mode"] == "cte"

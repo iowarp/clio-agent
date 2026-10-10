@@ -7,8 +7,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
+from dspy.lm15 import Message, Request
 
 from clio_agent.config import LMProviderConfig, create_lm
+from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
@@ -134,7 +136,13 @@ def test_real_openai_compatible_wire_omits_default_cap(
                     max_tokens=cap,
                 )
             )
-            lm(messages=[{"role": "user", "content": "report"}])
+            lm(
+                Request(
+                    model=lm.model,
+                    messages=(Message.user("report"),),
+                    config=config_from_lm_kwargs(lm.kwargs),
+                )
+            )
         finally:
             server.shutdown()
             worker.join(timeout=5)

@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 from clio_agent import conf
+from clio_agent.arc import clio_core_attach
 from clio_agent.arc import clio_core_effective_runtime as effective
+from clio_agent.runtime import clio_core_health
 from clio_agent.runtime.status import IntegrationState, RuntimeProbe
 
 
@@ -94,17 +96,32 @@ def test_the_running_daemons_record_wins_over_the_requested_config(tmp_path: Pat
     assert status.details["daemon_pid"] == 4242
 
 
-def test_a_record_whose_config_is_gone_falls_back_to_the_requested_config(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("phase", "expected_reason"),
+    [("idle", "clio_core_starting"), ("attached", "clio_core_daemon_not_listening")],
+)
+def test_a_record_whose_config_is_gone_falls_back_to_the_requested_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, expected_reason: str
+) -> None:
     requested = _cte_yaml(tmp_path / "mine" / "cte.yaml", 23456)
     state = tmp_path / "state"
     _record(state, tmp_path / "deleted" / "cte.yaml")
     store = _store(tmp_path, env={"CLIO_ARC_STORE_CONFIG": str(requested)})
+    attach = clio_core_attach.ClioCoreAttachState(
+        phase=clio_core_attach.ClioCoreAttachPhase(phase),
+        reason=f"clio_core_{phase}",
+        config_path=str(requested),
+        port=23456,
+    )
+    # Previous tests may reset the process-wide attach state to idle. Both phases
+    # must resolve the same config, while distinguishing startup from daemon loss.
+    monkeypatch.setattr(clio_core_health, "attach_state_snapshot", lambda: attach)
 
     status = _probe(tmp_path, store, set(), clio_runtime_dir=state).probe_clio_core()
 
     assert status.details["port"] == 23456
     assert status.details["config_source"] == "arc.store_config"
-    assert status.details["reason"] == "clio_core_daemon_not_listening"
+    assert status.details["reason"] == expected_reason
 
 
 def test_the_workspace_config_is_used_when_none_is_chosen(

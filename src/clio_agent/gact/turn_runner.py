@@ -223,7 +223,7 @@ class TurnRunner:
         done-callback that removes it from both on completion.
         """
 
-        loop = self._loop or asyncio.get_event_loop()
+        loop = self._loop or asyncio.get_running_loop()
         task = loop.create_task(self.revision_gate.run(coro))
         self._all.add(task)
         self._in_flight[sid] = task

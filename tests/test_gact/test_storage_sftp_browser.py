@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import posixpath
 import socket
 import threading
 from pathlib import Path
@@ -80,6 +81,10 @@ def sftp_host(
             )
 
     class Files(paramiko.SFTPServerInterface):
+        def canonicalize(self, path: str) -> str:
+            """Serve POSIX paths even when this disposable server runs on Windows."""
+            return posixpath.normpath("/" + path.lstrip("/"))
+
         def local(self, path: str) -> Path:
             local = (files / path.lstrip("/")).resolve()
             if not local.is_relative_to(files.resolve()):

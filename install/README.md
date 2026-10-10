@@ -49,9 +49,13 @@ runtime-info ndp geo pandas plot`; the released pin does not provide that contra
 ### Prerequisites (release mode)
 
 - `curl` (Linux/macOS) / `Invoke-WebRequest` (PowerShell — built in)
-- `uv` (recommended) **or** Python 3.13 with `pip`
+- `uv` (recommended) **or** Python 3.13 with `pip` for published releases
 
 That's it — no `git`, no `go`.
+
+This checkout's source installers and bundled runtime select Python 3.14 with the
+GIL enabled. Release-mode installs and the backend-only examples below keep Python
+3.13 because current published releases pin clio-core 2.2.x, which has no 3.14 wheels.
 
 ### Persistent backend-only install with uv
 

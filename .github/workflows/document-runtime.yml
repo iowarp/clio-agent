@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libcairo2 libx11-6 libx11-xcb1 libxext6 libxinerama1 libsm6 libice6 libfontconfig1 libcups2 libdbus-1-3 libnss3 libglib2.0-0t64 fonts-liberation
       - name: Prepare the agent environment
-        run: uv sync --frozen --python 3.13
+        run: uv sync --frozen --python 3.14
       - name: Extract the Windows renderer into managed storage with spaces
         if: runner.os == 'Windows'
         run: uv run --frozen python -c "from clio_agent import paths; from clio_agent.runtime.document_stack.office import VERSION, ensure_office; print(ensure_office(paths.user_cache_dir() / 'document-office' / VERSION))"
