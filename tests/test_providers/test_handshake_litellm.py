@@ -40,10 +40,13 @@ assert 'litellm' not in sys.modules
     assert result.returncode == 0, result.stderr
 
 
-def test_cost_map_url_preserves_configured_override(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("configured", ["https://example.test/custom-map.json", ""])
+def test_cost_map_url_preserves_configured_override(
+    monkeypatch: pytest.MonkeyPatch, configured: str
+) -> None:
     monkeypatch.delitem(sys.modules, "litellm", raising=False)
-    monkeypatch.setenv("LITELLM_MODEL_COST_MAP_URL", "https://example.test/custom-map.json")
-    assert lc._cost_map_url() == "https://example.test/custom-map.json"
+    monkeypatch.setenv("LITELLM_MODEL_COST_MAP_URL", configured)
+    assert lc._cost_map_url() == (configured or lc._DEFAULT_COST_MAP_URL)
 
 
 @pytest.fixture(autouse=True)

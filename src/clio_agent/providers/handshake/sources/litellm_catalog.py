@@ -59,7 +59,7 @@ def _cost_map_url() -> str:
     """The URL LiteLLM itself fetches its community cost map from."""
     # Importing the SDK initializes transports and can fetch its own cost map.
     # Passive, offline catalog reads must not trigger that initialization.
-    configured = os.getenv("LITELLM_MODEL_COST_MAP_URL", _DEFAULT_COST_MAP_URL)
+    configured = os.getenv("LITELLM_MODEL_COST_MAP_URL", "") or _DEFAULT_COST_MAP_URL
     return str(getattr(sys.modules.get("litellm"), "model_cost_map_url", "") or configured)
 
 
