@@ -238,7 +238,7 @@
             ]
           },
           "prompt_resolution": {
-            "checksum": "aa8a8ef7d26757409d319ac0bd34cb54689d2872025627c2e3d2e0cc7a7344c5",
+            "checksum": "e727170c44cddf78ba412c9d5ff978ddf7ebf6f8f41f597313cc1e105d034893",
             "id": "clio.chat",
             "profile": "default",
             "scope": "builtin",
