@@ -187,7 +187,8 @@ from clio_agent.gact.app import build_app
 # (routes/search.py); operation events/log GET (routes/infrastructure_operations.py);
 # model job log GET + service context-sizing POST (routes/infrastructure.py);
 # provider working-context GET/PUT (routes/working_context.py).
-EXPECTED_ROUTE_METHOD_PAIRS = 366
+# 366 -> 369: response feedback GET, PUT and DELETE for an assistant message.
+EXPECTED_ROUTE_METHOD_PAIRS = 369
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
