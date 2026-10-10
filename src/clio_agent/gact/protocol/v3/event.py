@@ -8,7 +8,12 @@ from typing import Any, Callable, Mapping
 from clio_agent.gact.events import Event
 from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
-from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
+from clio_agent.gact.protocol.v3.message import (
+    UNPROJECTED_PART_TYPES,
+    message_to_v3,
+    part_to_v3_block,
+    subagent_from_part,
+)
 from clio_agent.gact.protocol.v3.session import session_to_v3
 from clio_agent.gact.protocol.v3.variant import project_variant_event
 
@@ -111,6 +116,10 @@ def _message_block_upsert(
     part = _mapping(payload.get("part"))
     if not part.get("id"):
         return None  # a patch-only update: there is no block to project
+    if part.get("type") in UNPROJECTED_PART_TYPES:
+        # No 0.3 block exists for it; the frame passes through untranslated and a
+        # 0.3 client ignores the 0.2 event type (see message.UNPROJECTED_PART_TYPES).
+        return None
     block = part_to_v3_block(part)
     projected = {"message_id": str(payload.get("message_id") or ""), "block": block}
     if part.get("type") == "expert_handoff":
