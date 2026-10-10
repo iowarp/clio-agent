@@ -18,7 +18,11 @@ def build_publish_dashboard_report_tool() -> Any:
 
         Load create-dashboard for the document format and authoring workflow. Publish
         the workspace definition as an artifact in the side panel; pass report_id
-        when revising an existing dashboard. Use the active A2UI catalog and shared data model.
+        when revising an existing dashboard. Its UUID is returned as report_id;
+        an owned dashboard artifact ID or artifact:// URI also resolves that report.
+        The active conversation opens the published version for rendered review.
+        Inspect and capture it; publishing alone is not visual verification.
+        Use the active A2UI catalog and shared data model.
         """
         active = _common.active_app_and_session()
         if isinstance(active, dict):
@@ -46,7 +50,7 @@ def build_publish_dashboard_report_tool() -> Any:
             },
             "report_id": {
                 "type": "string",
-                "description": "Existing report to revise; empty for a new report.",
+                "description": "Existing report UUID or owned dashboard artifact reference to revise; empty for a new report.",
             },
         },
     )

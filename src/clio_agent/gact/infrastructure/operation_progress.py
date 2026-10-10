@@ -431,9 +431,7 @@ class OperationTracker:
             return
         if len(line) > MAX_LINE_CHARS:
             line = line[:MAX_LINE_CHARS] + " …"
-        self.events.publish(
-            self._row.id, LOG_EVENT, {"line": line, "stream": stream, "step": step}
-        )
+        self.events.publish(self._row.id, LOG_EVENT, {"line": line, "stream": stream, "step": step})
 
     def reused(self, found: reuse_helper.Reuse, *, step: int | None = None) -> None:
         """Record one verified reuse (deduplicated) and say so in the log."""

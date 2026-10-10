@@ -52,7 +52,7 @@ equations, scans, handwriting, or other visual evidence.
 ## Local conversion and page rendering
 
 Prefer the prepared document stack for local work. Call
-`prepare_execution_runtime` for the execution host's verified commands, packages,
+`prepare_document_runtime` for the execution host's verified commands, packages,
 fonts and output directory. It uses locked dependencies outside Clio's own Python
 environment. Keep source files and requested outputs inside the active workspace;
 use its returned `.tmp/` scratch directory for intermediate scripts and data.

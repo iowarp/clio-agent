@@ -174,8 +174,10 @@ def test_measures_are_determinate_only_where_measured() -> None:
     phase = StepMeter()
     phase.feed("INFO:    Creating SIF file...")
     progress = phase.measure()
-    assert progress is not None and not progress.determinate and progress.detail.startswith(
-        "Creating SIF"
+    assert (
+        progress is not None
+        and not progress.determinate
+        and progress.detail.startswith("Creating SIF")
     )
 
 
@@ -196,7 +198,7 @@ def test_secrets_are_redacted_but_ordinary_words_are_not() -> None:
 def test_commands_are_named_for_people() -> None:
     secret_run = CommandSpec(
         program="sh",
-        args=["-c", "IFS= read -r clio_secret; exec \"$@\"", "sh", "docker", "run", "x"],
+        args=["-c", 'IFS= read -r clio_secret; exec "$@"', "sh", "docker", "run", "x"],
         stdin="key\n",
     )
     assert describe_command(secret_run) == "Start the container"

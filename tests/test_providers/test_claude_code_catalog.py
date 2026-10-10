@@ -58,6 +58,10 @@ def test_committed_catalog_file_parses_via_real_validator() -> None:
     catalog = claude_code_catalog._parse_catalog(REPO_CATALOG.read_bytes())
     ids = {row["id"] for row in catalog.models}
     assert "claude-sonnet-5" in ids
+    assert {"claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"} <= ids
+    haiku = next(row for row in catalog.models if row["id"] == "claude-haiku-5-5")
+    assert haiku["minimum_client_version"] == "2.1.293"
+    assert catalog.default_model == "claude-sonnet-5"
     assert catalog.default_model in ids
     for row in catalog.models:
         assert "text" in row["capabilities"]

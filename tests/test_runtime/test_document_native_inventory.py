@@ -99,3 +99,39 @@ def test_inventory_launches_real_version_processes(
     result = inventory_module.native_inventory(tmp_path)
     assert all(row["status"] == "available" for row in result.values())
     assert all(row["version"].startswith("Python ") for row in result.values())
+
+
+def test_execution_inventory_reads_fresh_metadata_without_converter_or_font_work(
+    inventory_module: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An updated distribution is visible on the next call, without importing it."""
+    node_module = ModuleType("nodejs_wheel")
+    node_module.__file__ = str(tmp_path / "__init__.py")
+    monkeypatch.setitem(sys.modules, "nodejs_wheel", node_module)
+    (tmp_path / "node.exe").touch()
+    monkeypatch.setattr(inventory_module, "PACKAGES", {"example": "example"})
+    monkeypatch.setattr(inventory_module.importlib.util, "find_spec", lambda name: object())
+    revision = "1.0"
+    monkeypatch.setattr(inventory_module.importlib.metadata, "version", lambda name: revision)
+    monkeypatch.setattr(inventory_module, "run", lambda *args, **kwargs: "v26.0.0")
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError(
+            "Execution discovery must not import packages, scan fonts or probe converters"
+        )
+
+    monkeypatch.setattr(inventory_module.importlib, "import_module", forbidden)
+    monkeypatch.setattr(inventory_module, "native_inventory", forbidden)
+    monkeypatch.setattr(Path, "rglob", forbidden)
+    first = inventory_module.inventory(execution_only=True)
+    revision = "2.0"
+    second = inventory_module.inventory(execution_only=True)
+    assert first["packages"]["example"]["version"] == "1.0"
+    assert second["packages"]["example"] == {
+        "version": "2.0",
+        "import": "example",
+        "verification": "module_discovered",
+    }
+    assert second["inventory_scope"] == "execution"
+    assert second["font_files"] == []
+    assert all(tool["status"] == "not_checked" for tool in second["native_tools"].values())

@@ -26,6 +26,17 @@ def test_default_document_tools_are_available_without_vision() -> None:
     assert not {"prepare_document", "prepare_document_runtime"} & set(gateway)
 
 
+def test_execution_and_document_discovery_describe_their_actual_checks() -> None:
+    """Every agent receives the same accurate discovery contract from the tool builder."""
+    execution = document_tools.build_prepare_execution_runtime_tool()
+    documents = document_tools.build_prepare_document_runtime_tool()
+    assert "without importing every package" in execution.desc
+    assert "Converter and font probes are omitted" in execution.desc
+    assert "not required before every shell call" in execution.desc
+    assert "inspect current converters and fonts" in documents.desc
+    assert "probes are omitted" not in documents.desc
+
+
 def test_execution_discovery_reports_missing_imports_and_keeps_commands_visible(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -41,7 +52,13 @@ def test_execution_discovery_reports_missing_imports_and_keeps_commands_visible(
         "shell_environment": {"PATH": "prepared tool paths;" * 500},
     }
     monkeypatch.setattr(document_tools, "_workspace", lambda: tmp_path)
-    monkeypatch.setattr(document_tools, "prepare_document_runtime", lambda root: inventory)
+
+    def prepare(root: Path, *, discovery_only: bool = False) -> dict[str, Any]:
+        assert root == tmp_path
+        assert discovery_only
+        return inventory
+
+    monkeypatch.setattr(document_tools, "prepare_document_runtime", prepare)
 
     def probe(python: Path, modules: list[str]) -> dict[str, dict[str, str]]:
         assert python == Path("managed-python")

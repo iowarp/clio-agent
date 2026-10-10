@@ -106,7 +106,10 @@ def test_factory_lms_carry_the_trace() -> None:
 @pytest.mark.parametrize(
     ("outputs", "expected"),
     [
-        (type("R", (), {"id": "chatcmpl-a", "provider_data": {"id": "chatcmpl-b"}})(), "chatcmpl-a"),
+        (
+            type("R", (), {"id": "chatcmpl-a", "provider_data": {"id": "chatcmpl-b"}})(),
+            "chatcmpl-a",
+        ),
         # A streamed Chat Completions call: lm15 keeps the id only in the end frame.
         (type("R", (), {"id": None, "provider_data": {"id": "chatcmpl-b"}})(), "chatcmpl-b"),
         (type("R", (), {"id": None, "provider_data": None})(), ""),

@@ -20,7 +20,7 @@ _HEADER = "CLIO_LOG_SPAN "
 _SCRIPT = (
     'f=$0; o=$1; cap=$2; if [ ! -f "$f" ]; then echo "CLIO_LOG_SPAN 0 0 0"; exit 0; fi; '
     's=$(wc -c < "$f" | tr -d " "); if [ "$s" -lt "$o" ]; then o=0; fi; '
-    "e=$((o + cap)); if [ \"$e\" -gt \"$s\" ]; then e=$s; fi; "
+    'e=$((o + cap)); if [ "$e" -gt "$s" ]; then e=$s; fi; '
     'echo "CLIO_LOG_SPAN $o $e $s"; tail -c +$((o + 1)) "$f" | head -c $((e - o))'
 )
 

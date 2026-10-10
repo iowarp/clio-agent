@@ -27,6 +27,15 @@ from clio_agent.gact.context_references import authorize_context_reference_parts
 from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
+from clio_agent.gact.message_submission_errors import (
+    a2ui_client_metadata_error as _a2ui_client_metadata_error,
+)
+from clio_agent.gact.message_submission_errors import (
+    identity_conflict as _identity_conflict,
+)
+from clio_agent.gact.message_submission_errors import (
+    session_not_found as _session_not_found,
+)
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
 from clio_agent.gact.modality_evidence import (
     EVIDENCED_MODALITY_SOURCES,
@@ -99,20 +108,6 @@ class PreparedReferences:
     model_text: str
 
 
-def _session_not_found(sid: str) -> HTTPException:
-    return HTTPException(
-        status_code=404,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(
-                error="not_found",
-                message=f"session not found: {sid}",
-                details={"session_id": sid},
-                recoverable=False,
-            )
-        ).model_dump(exclude_none=True),
-    )
-
-
 def _effective_model(app: FastAPI, deps: "GactDeps") -> ModelRef:
     raw = deps.active_lm_model_ref(app)
     return ModelRef(
@@ -142,20 +137,6 @@ def _idempotency_key(req: PostMessageRequest) -> str:
 
 def _acceptance_replay(response: PostMessageResponse) -> PostMessageResponse:
     return response.model_copy(update={"idempotent_replay": True})
-
-
-def _identity_conflict(sid: str, message_id: str) -> HTTPException:
-    return HTTPException(
-        status_code=409,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(
-                error="message_identity_conflict",
-                message="client message id already names another message",
-                details={"session_id": sid, "message_id": message_id},
-                recoverable=True,
-            )
-        ).model_dump(exclude_none=True),
-    )
 
 
 def _plan_resource_parts(
@@ -236,15 +217,6 @@ def _commit_resource_deliveries(
                 payload=saved.model_dump(),
             )
         )
-
-
-def _a2ui_client_metadata_error(exc: A2UICapabilitiesError) -> HTTPException:
-    return HTTPException(
-        status_code=422,
-        detail=ErrorEnvelope(
-            error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
-        ).model_dump(exclude_none=True),
-    )
 
 
 def _apply_a2ui_client_metadata_guards(
@@ -759,6 +731,9 @@ def accept_message(
         turn_agent_id=req.extract_agent_id().strip(),
         user_msg_id=message_id,
     )
+    # Only an explicit idle send resumes the future-message queue. Pending
+    # feedback uses the inbox re-drive and must leave this pause intact.
+    app.state.sessions.update(sid, metadata_patch={"composer_queue_paused": False})
     _commit_resource_deliveries(app, sid, resource_deliveries)
     ack = PostMessageResponse(
         message_id=user_msg.id,

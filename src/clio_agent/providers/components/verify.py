@@ -32,6 +32,21 @@ def verify_codex() -> dict[str, Any]:
     """Import the Codex runtime and ask the backend for the models its version unlocks."""
     import codex_cli_bin  # noqa: F401, PLC0415
 
+    from clio_agent.runtime.codex_windows_helpers import (  # noqa: PLC0415
+        CodexWindowsHelpersError,
+        ensure_bundled_codex_windows_helpers,
+    )
+
+    try:
+        ensure_bundled_codex_windows_helpers()
+    except CodexWindowsHelpersError as exc:
+        return {
+            "ok": False,
+            "code": "codex_windows_helpers_unavailable",
+            "detail": str(exc),
+            "client": None,
+        }
+
     from clio_agent.providers.codex.model_list import (  # noqa: PLC0415
         CodexModelListError,
         fetch_direct_models,

@@ -305,7 +305,10 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
     monkeypatch.setattr(
         sandbox_codex,
         "compose_codex_spawn",
-        lambda roots, cmd, args, *, binary: (cmd, list(args)),
+        lambda roots, cmd, args, *, binary, version="", cwd=None, windows_sandbox="": (
+            cmd,
+            list(args),
+        ),
     )
     ws = tmp_path / "ws"
     ws.mkdir()

@@ -5,7 +5,7 @@ description: Create, edit and analyze Excel workbooks and CSV/TSV tables, preser
 
 # Work with spreadsheets
 
-Call `prepare_execution_runtime` and use the prepared Python environment, which
+Call `prepare_document_runtime` and use the prepared Python environment, which
 contains `openpyxl`. Execute scripts with `python_argv` (uv selects the prepared
 Python). Use its reported host paths; a repository's `uv run` may
 select another environment. Use the returned output directory for intermediate

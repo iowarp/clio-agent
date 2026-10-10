@@ -18,12 +18,12 @@ from clio_agent.gact.artifacts.minting import (
     _contained,
     _session_workspace_id,
     _workspace_root,
-    artifact_name_for_path,
     mint_artifact_outcome,
 )
 from clio_agent.gact.artifacts.records import ArtifactKind, Mechanism
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.storage import ingest_artifact_identity, resolve_owned_artifact_path
+from clio_agent.gact.dashboard_identity import dashboard_artifact_name
 from clio_agent.gact.session_export_document import escape
 from clio_agent.gact.session_export_viewer import _page
 from clio_agent.platform_paths import win_extended_path
@@ -49,7 +49,7 @@ def _store(
     outcome = mint_artifact_outcome(
         app,
         sid,
-        name=artifact_name_for_path(target),
+        name=dashboard_artifact_name(app, wid, report, extension),
         workspace_id=wid,
         evidence=ingested.evidence,
         kind=ArtifactKind.REPORT,
@@ -95,6 +95,9 @@ def publish_dashboard_report(
             raise ValueError(f"Source view is unavailable: {source_id}")
         sources.append({"surface_id": source.id, "revision": source.revision})
     if report_id:
+        reference = report_id.removeprefix("artifact://")
+        if reference.startswith("artifact_"):
+            report_id = read_dashboard_report(app, sid, reference)["id"]
         report_id = str(uuid.UUID(report_id))
         if not any(item["id"] == report_id for item in list_dashboard_reports(app, sid)):
             raise ValueError("The report to revise does not belong to this session.")
@@ -116,6 +119,7 @@ def publish_dashboard_report(
     artifact_id = _store(app, sid, report, payload=payload, extension="json")
     return {
         "id": report_id,
+        "report_id": report_id,
         "title": document.title,
         "created_at": report["created_at"],
         "artifact_id": artifact_id,

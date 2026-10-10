@@ -6,6 +6,30 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- Windows protected execution prefers verified native MXC with bundled Codex
+  0.162.1, avoiding sandbox account creation, elevation and runtime ACL scans on
+  compatible devices. Filesystem exclusions and direct external-network denial
+  are checked before activation; unavailable MXC retains the elevated fallback.
+- The Windows installer explicitly requests protected execution setup. Legacy
+  account creation shows the approval stage and uses UAC once; normal startup
+  never creates accounts. Both accounts receive runtime access in one traversal.
+- Desktop startup checks and reuses successful sandbox runtime grants when the
+  directory identity and root permissions agree, instead of repeatedly scanning
+  unrelated global uv environments. Changed permissions still require setup.
+- Local deployment shows package progress and startup details, bounds an
+  unresponsive Desktop request, and separates package setup from service readiness.
+- Windows bundled runtime extraction uses bounded parallel file writes and
+  avoids repeated per-file directory and metadata work. Integrity checking,
+  staging, rollback and reuse of a prepared runtime remain in place.
+- Tool-linked harness notices now fold into the activity chain at their recorded
+  positions, with exact text still available. Turn-wide context stays separate,
+  and evidence links open Full activity without a repeated display-state loop.
+- Desktop release summaries bundle matching CLIO notes separately from the UI's
+  own version history, avoiding unrelated old release entries. Product labels,
+  clearer formatting and expandable details make both sources easier to read.
+
 ## [0.9.5-beta.5.2] - 2026-10-08
 
 ### Fixed

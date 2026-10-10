@@ -1,6 +1,6 @@
 # JavaScript Word creation with `docx`
 
-Use the version and command returned by `prepare_execution_runtime`. The managed
+Use the version and command returned by `prepare_document_runtime`. The managed
 stack currently locks `docx` 9.8.1. Store the `.mjs` builder in its returned
 JavaScript workspace; a script outside that directory may not resolve packages.
 This library creates DOCX packages. Use a preservation-aware edit path for an

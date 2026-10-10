@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 #: Typed reason surfaced when a synthesized profile fails clio's pinned key set (no silent fallback).
@@ -48,23 +48,14 @@ class CodexProfileError(ValueError):
         self.reason = reason
 
 
-def _default_read_roots(write_roots: Sequence[str], *, platform: str) -> list[str]:
-    """The read-anywhere roots for a spawn: drive anchors on win32, ``/`` off-win32.
+def _default_read_roots(*, platform: str) -> list[str]:
+    """Use Codex's Windows root token for read-anywhere, ``/`` off Windows.
 
-    On win32 codex grants ``"read"`` at the DRIVE level (``C:\\``, ``D:\\``) so reads are open
-    everywhere the write roots' drives live; off-win32 the single filesystem root ``/`` is the
-    read-anywhere grant. Deduplicated, order-preserving.
+    Elevated Windows execution requires effective ``:root`` read access. Native
+    drive anchors fail the client's permission-path round trip before any child
+    can start. Explicit protected read/deny entries still override this root.
     """
-    if platform.startswith("win"):
-        anchors: list[str] = []
-        seen: set[str] = set()
-        for root in write_roots:
-            anchor = PureWindowsPath(root).anchor
-            if anchor and anchor not in seen:
-                seen.add(anchor)
-                anchors.append(anchor)
-        return anchors or ["C:\\"]
-    return ["/"]
+    return [":root"] if platform.startswith("win") else ["/"]
 
 
 def synthesize_codex_profile(
@@ -73,12 +64,13 @@ def synthesize_codex_profile(
     read_roots: Optional[Sequence[Path] | Sequence[str]] = None,
     profile_name: str = "clio",
     platform: str = sys.platform,
+    mxc: bool = False,
 ) -> dict[str, Any]:
     """Synthesize the ``[permissions.<name>]`` table for a spawn (read-anywhere, write-fence).
 
     ``filesystem`` maps every read root to ``"read"`` and every write root to ``"write"`` (a
     write grant WINS over an overlapping read grant — the write territory is the ONE shared
-    boundary). ``read_roots`` defaults to the filesystem/drive roots (:func:`_default_read_roots`)
+    boundary). ``read_roots`` defaults to the filesystem root (:func:`_default_read_roots`)
     so reads are open. Paths are normalized with ``str(Path(r))``. The returned table is
     validated by :func:`validate_codex_profile` before it is returned (typed on drift).
     """
@@ -86,7 +78,7 @@ def synthesize_codex_profile(
     reads = (
         [str(Path(r)) for r in read_roots]
         if read_roots is not None
-        else _default_read_roots(writes, platform=platform)
+        else _default_read_roots(platform=platform)
     )
     filesystem: dict[str, str] = {}
     for root in reads:
@@ -121,6 +113,10 @@ def synthesize_codex_profile(
         # ``mode="full"`` = observe-all (reads allowed); ``mitm`` OMITTED (table-not-bool in v0.145).
         "network": {"enabled": True, "mode": "full", "allow_upstream_proxy": True},
     }
+    if mxc:
+        # Full permits HTTP methods, not domains. CLIO's upstream chokepoint
+        # owns domain decisions; the managed proxy must actually be enabled.
+        profile["network"].update(allow_local_binding=True, domains={"*": "allow"})
     validate_codex_profile(profile)
     return profile
 
@@ -135,6 +131,7 @@ _ALLOWED_FS_MODES = frozenset({"read", "write", "deny"})
 _ALLOWED_NET_MODES = frozenset({"full", "limited"})
 #: The exact closed key set clio's ``network`` table carries (like the filesystem grants).
 _ALLOWED_NET_KEYS = frozenset({"enabled", "mode", "allow_upstream_proxy"})
+_MXC_NET_KEYS = _ALLOWED_NET_KEYS | {"allow_local_binding", "domains"}
 
 
 def validate_codex_profile(profile: Any) -> None:
@@ -189,7 +186,7 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
     if not isinstance(network, dict):
         raise CodexProfileError("codex profile 'network' must be a table")
     keys = set(network)
-    if keys != _ALLOWED_NET_KEYS:
+    if keys not in (_ALLOWED_NET_KEYS, _MXC_NET_KEYS):
         raise CodexProfileError(
             f"codex profile network keys must be exactly {sorted(_ALLOWED_NET_KEYS)}, "
             f"got {sorted(keys)}"
@@ -197,6 +194,10 @@ def _validate_codex_network(profile: dict[str, Any]) -> None:
     for flag in ("enabled", "allow_upstream_proxy"):  # int is not bool → no silent coercion
         if not isinstance(network[flag], bool):
             raise CodexProfileError(f"codex profile network[{flag!r}] must be a bool")
+    if keys == _MXC_NET_KEYS and (
+        network["allow_local_binding"] is not True or network["domains"] != {"*": "allow"}
+    ):
+        raise CodexProfileError("MXC requires local binding and CLIO's upstream domain policy")
     mode = network["mode"]
     # ``isinstance`` guard FIRST so a drifted unhashable mode (list/dict) raises the typed
     # CodexProfileError, never a bare TypeError from the ``in`` membership test.
@@ -222,7 +223,9 @@ def _toml_bool(value: bool) -> str:
     return "true" if value else "false"
 
 
-def codex_layer_name(profile_name: str, profile: dict[str, Any]) -> str:
+def codex_layer_name(
+    profile_name: str, profile: dict[str, Any], *, windows_sandbox: str = ""
+) -> str:
     """The content-addressed ``clio-sb-<sha8>`` name — BOTH the ``-p`` name and the file stem.
 
     Content-addressed by an 8-char sha256 of the (profile_name, profile) so two spawns with the
@@ -230,12 +233,17 @@ def codex_layer_name(profile_name: str, profile: dict[str, Any]) -> str:
     (no clobber). The distinctive :data:`CODEX_LAYER_PREFIX` makes pruning safe — only clio's own
     layers ever match :data:`CODEX_LAYER_GLOB`, never the user's ``config.toml``.
     """
-    canonical = json.dumps({"p": profile_name, "t": profile}, sort_keys=True)
+    content: dict[str, Any] = {"p": profile_name, "t": profile}
+    if windows_sandbox:
+        content["windows_sandbox"] = windows_sandbox
+    canonical = json.dumps(content, sort_keys=True)
     sha8 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:8]
     return f"{CODEX_LAYER_PREFIX}-{sha8}"
 
 
-def _render_layer_toml(profile_name: str, profile: dict[str, Any], *, elevated: bool) -> str:
+def _render_layer_toml(
+    profile_name: str, profile: dict[str, Any], *, elevated: bool, windows_sandbox: str = ""
+) -> str:
     """Render the layer's real-TOML body (a FILE, no shell involved — plain escaping).
 
     Emits ``[windows]\\nsandbox = "elevated"`` when ``elevated`` (win32-gated), then the
@@ -244,9 +252,13 @@ def _render_layer_toml(profile_name: str, profile: dict[str, Any], *, elevated: 
     change flows through. Backslashes are doubled by :func:`_toml_str` (genuine TOML).
     """
     lines: list[str] = []
-    if elevated:
+    if windows_sandbox not in ("", "mxc", "elevated"):
+        raise CodexProfileError(f"Unsupported Windows sandbox: {windows_sandbox}")
+    if windows_sandbox == "mxc":
+        lines.extend(["[features]", "network_proxy = true", ""])
+    if elevated or windows_sandbox:
         lines.append("[windows]")
-        lines.append('sandbox = "elevated"')
+        lines.append(f'sandbox = "{windows_sandbox or "elevated"}"')
         lines.append("")
     lines.append(f"[permissions.{profile_name}.filesystem]")
     for path, mode in profile["filesystem"].items():
@@ -258,6 +270,9 @@ def _render_layer_toml(profile_name: str, profile: dict[str, Any], *, elevated: 
     lines.append(f"enabled = {_toml_bool(network['enabled'])}")
     lines.append(f"mode = {_toml_str(network['mode'])}")
     lines.append(f"allow_upstream_proxy = {_toml_bool(network['allow_upstream_proxy'])}")
+    if "allow_local_binding" in network:
+        lines.append("allow_local_binding = true")
+        lines.append('domains = { "*" = "allow" }')
     lines.append("")
     return "\n".join(lines)
 

@@ -114,9 +114,7 @@ def test_the_from_scratch_flag_is_operation_scoped() -> None:
     assert reuse.from_scratch({reuse.FROM_SCRATCH_KEY: "true"})
     assert not reuse.from_scratch({reuse.FROM_SCRATCH_KEY: "false"})
     assert not reuse.from_scratch({})
-    assert reuse.without_transient({reuse.FROM_SCRATCH_KEY: "true", "model": "m"}) == {
-        "model": "m"
-    }
+    assert reuse.without_transient({reuse.FROM_SCRATCH_KEY: "true", "model": "m"}) == {"model": "m"}
 
 
 def _fake_apptainer(tmp_path: Path) -> dict[str, str]:
