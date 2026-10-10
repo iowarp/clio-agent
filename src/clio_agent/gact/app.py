@@ -472,9 +472,6 @@ from clio_agent.gact.routes.provider_models_refresh import (
 )
 from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
-from clio_agent.gact.routes.response_feedback import (  # noqa: E402
-    register_response_feedback_routes,
-)
 from clio_agent.gact.routes.sandbox_setup import register_sandbox_setup_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
@@ -2085,7 +2082,6 @@ def build_app(
     # replace, active-model ref + override error and the agent-not-available
     # error travel on ``deps``.
     register_messages_routes(app, deps)
-    register_response_feedback_routes(app)
     composer_runtime.register_composer_routes(app, deps)
     register_a2ui_routes(app, deps)
 

@@ -69,10 +69,6 @@ _EVENT_LOG_SKIP: frozenset[str] = frozenset({"lm.token.delta", "variant.try.delt
 
 logger = logging.getLogger(__name__)
 
-# Backend names that mean the durable semantic trace is DISABLED — the same set
-# :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
-# backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
-
 
 class ARCMemory(SegmentPlane):
     """Adaptive Retrieval Cache - Main interface for memory operations.
