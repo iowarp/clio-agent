@@ -399,22 +399,26 @@ def compose_codex_spawn(
     platform: str = sys.platform,
     codex_home: Optional[Path | str] = None,
     version: str = "",
+    cwd: Path | str | None = None,
+    windows_sandbox: str = "",
 ) -> tuple[str, list[str]]:
     """Compose the Codex ``sandbox`` argv wrapping ``(command, args)`` (the ladder's spawn hook).
 
     Synthesizes the read-anywhere / write-fence profile for ``write_roots``, materializes it as a
     ``-p`` layer file in the DEFAULT codex home (``[windows] sandbox = "elevated"`` gated on win32),
-    pins the primary write root ``write_roots[0]`` as the workspace (``-C``), and returns
+    uses ``cwd`` (or the first write root) as the workspace (``-C``), and returns
     ``(binary, ["sandbox", … , "--", command, *args])``.
 
     Args:
-        write_roots: The child's writable territory; the first root is the workspace cwd.
+        write_roots: The child's writable territory; order does not override an explicit cwd.
         command: The final resolved child executable (wrapped AFTER any spawn-diet).
         args: The child's arguments, threaded through verbatim past the ``--`` separator.
         binary: The resolved codex binary (``codex`` / ``codex.cmd`` / ``codex.exe``).
         platform: Injectable platform string (drives the win32 elevated gate + read-anywhere roots).
         codex_home: Override for the codex home the ``-p`` layer is written into (tests inject a
             tmp dir); ``None`` uses ``$CODEX_HOME`` else the real ``~/.codex``.
+        cwd: The caller's validated working directory, independently of writable cache roots.
+        windows_sandbox: The implementation qualified at boot; never silently downgrade MXC.
 
     Returns:
         The ``(command, args)`` pair to launch — the codex binary and its sandbox argv.
@@ -429,6 +433,11 @@ def compose_codex_spawn(
     from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
 
     mxc = bool(version) and platform.startswith("win") and mxc_ready(binary, version=version)
+    if platform.startswith("win"):
+        if windows_sandbox == "mxc" and not mxc:
+            raise CodexSpawnError("MXC qualification changed; run protected execution setup again")
+        if windows_sandbox == "elevated":
+            mxc = False
     profile = synthesize_codex_profile(roots, platform=platform, mxc=mxc)
     layer = write_codex_layer(
         "clio",
@@ -438,7 +447,13 @@ def compose_codex_spawn(
         platform=platform,
         windows_sandbox="mxc" if mxc else "",
     )
-    prefix = codex_prefix(binary, "clio", roots[0], layer_name=layer, include_managed_config=mxc)
+    prefix = codex_prefix(
+        binary,
+        "clio",
+        str(cwd) if cwd is not None else roots[0],
+        layer_name=layer,
+        include_managed_config=mxc,
+    )
     return prefix[0], [*prefix[1:], command, *args]
 
 
