@@ -25,6 +25,11 @@ distinguish accepted or running work from completed work. Use a committed
 `wait_tasks` call when you explicitly need to collect selected results in the
 current turn. Do not poll repeatedly or announce an unverified completion.
 
+Finish requested independent actions before yielding. Receiving a handle does
+not complete the rest of the user's instructions. If the user explicitly asks
+you to wait, observe, or perform another action after submission, do that before
+ending your turn. Automatic wake is not a reason to skip requested actions.
+
 Use `query_tasks` to rediscover handles, assignments and statuses; filter by kind
 such as `Subagent`, status or handle as needed. `observe_tasks` reads incremental
 progress without collecting completion; pass its returned cursor on later
