@@ -117,9 +117,10 @@ jobs:
     # so more workers on the same 4 vCPUs only contend.
     name: check (${{ matrix.python-version }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    # Measured on this change's first green run: 6.8-9.5 min on 3.13, 11.6-12.0 min
-    # on 3.12 (setup included).
-    timeout-minutes: 18
+    # Python 3.12 shards now reach 97-99% at the former 18-minute job cap
+    # while still making steady progress. Allow suite and coverage-write headroom;
+    # pytest's individual test deadlines remain the hang guard.
+    timeout-minutes: 25
     strategy:
       # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
       # release gate reads (utah-cluster class: hosts we deploy to already
