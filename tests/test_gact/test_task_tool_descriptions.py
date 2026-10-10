@@ -9,6 +9,7 @@ from mcp.types import Tool, ToolExecution
 
 from clio_agent.gact.agents.builders import _enabled_external_mcp_dspy_tools
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_spawn_skill_task_tool
+from clio_agent.gact.storage.connect_tool import build_connected_data_connect_tool
 from clio_agent.gact.storage.download_tool import build_connected_data_download_tool
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.execution import _make_dspy_tool
@@ -114,6 +115,15 @@ def test_download_declaration_explains_collection_and_wake() -> None:
     assert "task handle" in text and "Download" in text
     assert "observe_tasks" in text and "wait_tasks" in text and "cancel_tasks" in text
     assert "wake" in text
+
+
+def test_connect_declaration_distinguishes_indexing_from_linked_status() -> None:
+    """Connect explains both accepted indexing and existing/sign-in connection status."""
+    text = build_connected_data_connect_tool().desc
+    assert "Indexing task handle" in text and "immediately" in text
+    assert "observe_tasks" in text and "wait_tasks" in text and "cancel_tasks" in text
+    assert "wake" in text and "Stop leaves accepted indexing running" in text
+    assert "sign-in requirement returns its connection status directly" in text
 
 
 def test_skill_task_declaration_uses_shared_controls() -> None:

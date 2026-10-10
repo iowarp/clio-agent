@@ -372,8 +372,8 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
         "Continue independent work; use query_tasks, observe_tasks, wait_tasks, get_task_result "
         "or cancel_tasks with the handle. Results arrive at the next model iteration or wake "
         "you when idle. Conversation Stop leaves accepted background work running. A positive "
-        "timeout_s remains an execution limit; omitting it or passing zero allows the command "
-        "to run until exit, subject to any operator ceiling. "
+        "timeout_s remains an execution limit. Set timeout_s=0 for no per-command deadline; "
+        "omitting it uses the configured default. An operator ceiling may still apply. "
     )
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (

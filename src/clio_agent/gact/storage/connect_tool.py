@@ -31,6 +31,13 @@ def connected_data_connect(
     may be passed in configuration. Linking exposes references, not a shell mount.
     A GitHub URL or a request to inspect, clone or work on a repository does not
     request source attachment: use gh through the normal shell for that work.
+
+    When indexing is needed, return a durable Indexing task handle immediately;
+    acceptance is not a complete source manifest. Continue independent work and
+    use query_tasks, observe_tasks, wait_tasks, get_task_result or cancel_tasks
+    with the handle. Completion arrives at the next model iteration or wakes you
+    when idle; Conversation Stop leaves accepted indexing running. An already
+    linked source or a sign-in requirement returns its connection status directly.
     """
     app = context.active_app()
     sid = context.active_session_id()
