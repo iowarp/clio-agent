@@ -104,10 +104,14 @@ def _fingerprint() -> str:
     return digest.hexdigest()[:20]
 
 
-def _probe(python: Path) -> dict[str, Any]:
+def _probe(python: Path, *, discovery_only: bool = False) -> dict[str, Any]:
     result = json.loads(
         _run(
-            [str(python), str(STACK_ROOT / "inventory.py")],
+            [
+                str(python),
+                str(STACK_ROOT / "inventory.py"),
+                *(["--execution-only"] if discovery_only else []),
+            ],
             cwd=STACK_ROOT,
             env={**os.environ, "CLIO_DOCUMENT_OFFICE_ROOT": str(office_runtime_root())},
         )
@@ -148,7 +152,9 @@ print(json.dumps(checks))
     return checks
 
 
-def _python_runtime(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:
+def _python_runtime(
+    cache: Path, uv: str, *, discovery_only: bool = False
+) -> tuple[Path, dict[str, Any]]:
     project = cache / "project"
     project.mkdir(parents=True, exist_ok=True)
     for name in ("pyproject.toml", "uv.lock"):
@@ -156,9 +162,13 @@ def _python_runtime(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:
     environment = cache / "python"
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     repair = python.is_file()
+
+    def probe() -> dict[str, Any]:
+        return _probe(python, discovery_only=True) if discovery_only else _probe(python)
+
     if repair:
         try:
-            return python, _probe(python)
+            return python, probe()
         except (DocumentRuntimeError, ValueError):
             # A damaged cache is repaired by the same locked sync as first use.
             pass
@@ -180,7 +190,7 @@ def _python_runtime(cache: Path, uv: str) -> tuple[Path, dict[str, Any]]:
         cwd=project,
         env=env,
     )
-    return python, _probe(python)
+    return python, probe()
 
 
 def _pnpm_command(package: Path, node: str, env: dict[str, str]) -> Path:
@@ -309,12 +319,16 @@ def prepare_document_runtime(
     *,
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    discovery_only: bool = False,
 ) -> dict[str, Any]:
     """Prepare and probe an isolated document runtime without changing Clio's interpreter.
 
     First use downloads Node.js and the locked package sets using Clio's Python. A failed
     JavaScript setup leaves the independently verified Python stack available.
     Native converters are discovered and reported, never advertised as installed.
+    ``discovery_only`` freshly inspects executables and package metadata, without
+    importing every package or probing document converters/fonts. Requested imports
+    are independently checked by the execution tool; no prior answer is reused.
     """
     workspace = workspace.resolve(strict=True)
     from clio_agent.tools.file_policy import FileAccessPolicy
@@ -333,7 +347,11 @@ def prepare_document_runtime(
     with FileLock(str(cache / "prepare.lock"), timeout=240):
         if progress is not None:
             progress("Preparing and checking Python document packages...")
-        python, inventory = _python_runtime(cache, uv)
+        python, inventory = (
+            _python_runtime(cache, uv, discovery_only=True)
+            if discovery_only
+            else _python_runtime(cache, uv)
+        )
         if progress is not None:
             progress("Python document packages are ready. Preparing Node.js packages...")
         output = scratch / "output"

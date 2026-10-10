@@ -40,11 +40,11 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
 
     expected_commands = {
         "install/install.sh": (
-            "uv sync --python 3.13 --extra argonne",
+            "uv sync --python 3.14 --extra argonne",
             '"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
-            "RunNative uv @('sync', '--python', '3.13')",
+            "RunNative uv @('sync', '--python', '3.14')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.4.0" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
@@ -115,7 +115,7 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     workflow = _text(".github/workflows/release.yml")
     build = workflow.index("uv build")
     smoke_step = workflow.index("- name: Smoke built wheel with registry-resolved dependencies")
-    smoke = workflow.index("uv tool install --python 3.13 --no-cache", smoke_step)
+    smoke = workflow.index("uv tool install --python 3.14 --no-cache", smoke_step)
     version_check = workflow.index('"$UV_TOOL_BIN_DIR/clio-agent" --version')
     publish = workflow.index("run: uv publish", version_check)
 
@@ -234,7 +234,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
-    registry_install = workflow.index("uv tool install --python 3.13 --no-cache", registry_job)
+    registry_install = workflow.index("uv tool install --python 3.14 --no-cache", registry_job)
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]

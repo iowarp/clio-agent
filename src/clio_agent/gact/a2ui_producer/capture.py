@@ -40,6 +40,7 @@ def build_capture_a2ui_surface_tool() -> Any:
 
         First inspect its definition and viewers with inspect_a2ui_surface.
         Pass the expected revision; optionally select a viewer and view epoch.
+        Use expected_view_revision=null while loading; zero is a real epoch.
         component_id captures a displayed component, otherwise the whole view.
         Hidden tabs and absent viewers fail explicitly. A stale view must be re-inspected.
         The result attaches the matching PNG to your next model step and retains an artifact.
@@ -167,7 +168,7 @@ def build_capture_a2ui_surface_tool() -> Any:
             },
             "expected_view_revision": {
                 "type": "integer",
-                "description": "Exact optional viewer-state epoch.",
+                "description": "Exact inspected viewer-state epoch, or null to wait for a loading viewer. Never guess zero.",
             },
             "artifact_id": {
                 "type": "string",

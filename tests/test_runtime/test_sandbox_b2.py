@@ -16,14 +16,25 @@ Linux fallback rung when Codex is not installed. Pinned here:
 
 from __future__ import annotations
 
+import ctypes
 import errno
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from clio_agent.runtime import sandbox, sandbox_landlock
 from clio_agent.runtime import sandbox_codex as sc
 from clio_agent.runtime.sandbox_landlock import LandlockProbe
+
+
+def test_landlock_path_beneath_has_kernel_packed_layout() -> None:
+    """The packed Linux ABI stays 12 bytes without implicit ctypes layout warnings."""
+    from clio_agent.runtime.landlock_exec import _PathBeneathAttr
+
+    assert ctypes.sizeof(_PathBeneathAttr) == 12
+    assert _PathBeneathAttr.allowed_access.offset == 0
+    assert _PathBeneathAttr.parent_fd.offset == 8
 
 
 @pytest.fixture(autouse=True)
@@ -156,7 +167,8 @@ def test_wrap_confined_pdeathsig_stays_outermost_over_landlock(
     """Composition order is ``pdeathsig( landlock( argv ) )`` — pdeathsig OUTERMOST (owner #974.5)."""
     from clio_agent.tools import mcp_config
 
-    monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+    # A global sys.platform patch also makes Windows test paths look relative.
+    monkeypatch.setattr(mcp_config, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(mcp_config.shutil, "which", lambda _n: "/usr/bin/setpriv")
     confined = sandbox.wrap_confined(
         "python",

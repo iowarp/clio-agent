@@ -3,8 +3,8 @@
 Sibling of the :mod:`clio_agent.runtime.sandbox` ladder — it holds the Codex-specific logic so the
 ladder module stays under its file-size ratchet. The
 OpenAI **Codex** sandbox (``codex``, open-source ``codex-rs``, Apache-2.0) is the rung that
-enforces on native Windows using the SOUND primitive — a dedicated sandbox user + ACLs (not
-srt's failing ``CreateProcessWithLogonW`` secondary logon) — and Seatbelt/bubblewrap on
+enforces on native Windows using verified native MXC or dedicated sandbox users + ACLs,
+and Seatbelt/bubblewrap on
 mac/Linux. This module never spawns codex; it produces the inline config overrides + the argv
 prefix the ladder composes, and validates the synthesized profile against clio's OWN pinned key
 set.
@@ -331,13 +331,15 @@ def write_codex_layer(
     elevated: bool,
     codex_home: Optional[Path | str] = None,
     platform: str = sys.platform,
+    windows_sandbox: str = "",
 ) -> str:
     """Write the ``-p`` layer file into codex's DEFAULT home and return its layer name.
 
     The layer lives at ``<codex_home>/<clio-sb-sha8>.config.toml`` inside the REAL ``~/.codex``
     (resolved from ``codex_home`` arg, else ``$CODEX_HOME``, else ``~/.codex``) — a fresh/custom
     home was proven to silently drop the write grant. The ``[windows] sandbox = "elevated"``
-    block is emitted ONLY when ``elevated`` on win32 (the enforcement gate; a no-op elsewhere).
+    block is emitted ONLY when ``elevated`` on win32. Verified MXC uses its own
+    explicit backend, managed proxy and content-addressed layer (a no-op elsewhere).
     Validation runs FIRST (:func:`validate_codex_profile`, typed) so a drift never reaches disk;
     the file is UTF-8 **WITHOUT a BOM** (a BOM breaks codex's TOML parser — verified live). The
     user's own ``config.toml`` is NEVER touched; only clio's ``clio-sb-*`` layers are pruned.
@@ -345,9 +347,13 @@ def write_codex_layer(
     validate_codex_profile(profile)
     home = Path(codex_home or os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     home.mkdir(parents=True, exist_ok=True)
-    layer = codex_layer_name(profile_name, profile)
+    mode = windows_sandbox if platform.startswith("win") else ""
+    layer = codex_layer_name(profile_name, profile, windows_sandbox=mode)
     body = _render_layer_toml(
-        profile_name, profile, elevated=elevated and platform.startswith("win")
+        profile_name,
+        profile,
+        elevated=elevated and platform.startswith("win"),
+        windows_sandbox=mode,
     )
     # ``encoding="utf-8"`` writes NO BOM (unlike ``utf-8-sig``); a BOM breaks codex's TOML parse.
     (home / f"{layer}.config.toml").write_text(body, encoding="utf-8")
@@ -361,6 +367,7 @@ def codex_prefix(
     workspace: Path | str,
     *,
     layer_name: str,
+    include_managed_config: bool = False,
 ) -> list[str]:
     """The codex argv PREFIX selecting the ``-p`` layer (validated live, write-fence enforced).
 
@@ -372,6 +379,7 @@ def codex_prefix(
     return [
         str(binary),
         "sandbox",
+        *(["--include-managed-config"] if include_managed_config else []),
         "-p",
         layer_name,
         "--permission-profile",
@@ -390,24 +398,27 @@ def compose_codex_spawn(
     binary: str,
     platform: str = sys.platform,
     codex_home: Optional[Path | str] = None,
+    version: str = "",
     cwd: Path | str | None = None,
+    windows_sandbox: str = "",
 ) -> tuple[str, list[str]]:
     """Compose the Codex ``sandbox`` argv wrapping ``(command, args)`` (the ladder's spawn hook).
 
     Synthesizes the read-anywhere / write-fence profile for ``write_roots``, materializes it as a
     ``-p`` layer file in the DEFAULT codex home (``[windows] sandbox = "elevated"`` gated on win32),
-    uses ``cwd`` as the command directory (falling back to the first write root), and returns
+    uses ``cwd`` (or the first write root) as the workspace (``-C``), and returns
     ``(binary, ["sandbox", … , "--", command, *args])``.
 
     Args:
-        write_roots: The child's writable territory; the first root is the workspace cwd.
+        write_roots: The child's writable territory; order does not override an explicit cwd.
         command: The final resolved child executable (wrapped AFTER any spawn-diet).
         args: The child's arguments, threaded through verbatim past the ``--`` separator.
         binary: The resolved codex binary (``codex`` / ``codex.cmd`` / ``codex.exe``).
         platform: Injectable platform string (drives the win32 elevated gate + read-anywhere roots).
         codex_home: Override for the codex home the ``-p`` layer is written into (tests inject a
             tmp dir); ``None`` uses ``$CODEX_HOME`` else the real ``~/.codex``.
-        cwd: Validated command directory, independent of the ordered permission grants.
+        cwd: The caller's validated working directory, independently of writable cache roots.
+        windows_sandbox: The implementation qualified at boot; never silently downgrade MXC.
 
     Returns:
         The ``(command, args)`` pair to launch — the codex binary and its sandbox argv.
@@ -419,15 +430,30 @@ def compose_codex_spawn(
     roots = [str(Path(r)) for r in write_roots]
     if not roots:
         raise CodexSpawnError("codex spawn requires at least one write root (no empty fence)")
-    profile = synthesize_codex_profile(roots, platform=platform)
+    from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
+
+    mxc = bool(version) and platform.startswith("win") and mxc_ready(binary, version=version)
+    if platform.startswith("win"):
+        if windows_sandbox == "mxc" and not mxc:
+            raise CodexSpawnError("MXC qualification changed; run protected execution setup again")
+        if windows_sandbox == "elevated":
+            mxc = False
+    profile = synthesize_codex_profile(roots, platform=platform, mxc=mxc)
     layer = write_codex_layer(
         "clio",
         profile,
         elevated=platform.startswith("win"),
         codex_home=codex_home,
         platform=platform,
+        windows_sandbox="mxc" if mxc else "",
     )
-    prefix = codex_prefix(binary, "clio", cwd if cwd is not None else roots[0], layer_name=layer)
+    prefix = codex_prefix(
+        binary,
+        "clio",
+        str(cwd) if cwd is not None else roots[0],
+        layer_name=layer,
+        include_managed_config=mxc,
+    )
     return prefix[0], [*prefix[1:], command, *args]
 
 
@@ -655,8 +681,10 @@ def codex_windows_gate(
     platform: str = sys.platform,
     provisioned: Any = None,
     marker_reader: Any = None,
+    binary: str = "",
+    version: str = "",
 ) -> tuple[bool, str]:
-    """The ladder's cached Windows codex gate: provisioned account AND enforcement-verified marker.
+    """Accept a current MXC proof or provisioned accounts with a legacy enforcement marker.
 
     The TODO-free typed default the ladder (:func:`clio_agent.runtime.sandbox._resolve_backend`)
     reads at boot — it consults the CACHED marker, never a live probe every boot. Returns
@@ -665,13 +693,22 @@ def codex_windows_gate(
     predating the check) → :data:`REASON_CODEX_ENFORCEMENT_UNVERIFIED` (#1026, no false-green);
     else ``(True, codex_windows_provisioned)``. Sub-probes are injectable for unit tests.
     """
+    if binary and platform.startswith("win"):
+        from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
+
+        if mxc_ready(binary, version=version):
+            return True, REASON_CODEX_WINDOWS_PROVISIONED
     check = provisioned if provisioned is not None else codex_windows_provisioned
     ok, _reason = check(platform=platform)
     if not ok:
         return False, REASON_CODEX_WINDOWS_UNPROVISIONED
     read = marker_reader if marker_reader is not None else _read_codex_marker
     marker = read()
-    if marker is None or marker.get("enforcement_verified") is not True:
+    if (
+        marker is None
+        or marker.get("enforcement_verified") is not True
+        or (version and marker.get("codex_version") != version)
+    ):
         return False, REASON_CODEX_ENFORCEMENT_UNVERIFIED
     return True, REASON_CODEX_WINDOWS_PROVISIONED
 

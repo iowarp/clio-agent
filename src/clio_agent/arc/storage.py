@@ -105,6 +105,7 @@ ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
     "variants",
+    "response_feedback",  # immutable user ratings; never added to model context
     "segments",  # live context plane: one record per (session_id, scope)
 )
 
@@ -534,8 +535,8 @@ class ClioCoreStore:
             config_path = _ensure_runtime_daemon(iowarp_core, config_path, log_level)
             clio_core_attach.export_client_config(config_path)
 
-            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
-            # wired in (unsafe, see clio_core_config's docstring) -- warn loudly.
+            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search;
+            # diagnose configs that do not compose it, including our default.
             warn_if_search_indexer_absent(config_path)
             # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
             # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,

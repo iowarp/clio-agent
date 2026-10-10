@@ -447,6 +447,10 @@ class _Loop:
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
             self._record(text, thinking, calls, {})
+            if (self.max_iters <= 0 or self.step + 1 < self.max_iters) and self._arrivals():
+                # Feedback accepted during this model call must be considered
+                # before closing the turn, even if that call chose no tools.
+                return None
             return self._end({"answer": text}, "direct_response", self.step + 1)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
@@ -475,22 +479,25 @@ class _Loop:
         if yield_name := record.pending_turn_yield(calls):
             return self._prediction({}, f"{yield_name}_yield")
         if final is not None:
+            if (self.max_iters <= 0 or self.step + 1 < self.max_iters) and self._arrivals():
+                return None
             self.recorder.completed(final, self.step + 1)
             return self._prediction(final, "submit")
         _raise_if_cancelled()
         return None
 
-    def _arrivals(self) -> None:
+    def _arrivals(self) -> bool:
         """Take in what arrived since the last step (user steers, finished children)."""
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
         state = getattr(_ctx.active_app(), "state", None)
         drain = getattr(state, "pending_loop_inbox_drain", None)
         if drain is None:
-            return
+            return False
         arrived = drain()
         if arrived:
             self.recorder.arrivals(arrived, max(self.step, 0))
+        return bool(arrived)
 
     def _context(self) -> list[Message]:
         return self.recorder.read_steps()

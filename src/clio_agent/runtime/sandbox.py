@@ -198,8 +198,19 @@ def _resolve_backend(
     codex_viable = cdet.installed and cdet.reason == scx.REASON_CODEX_DETECTED
     if codex_viable:
         if platform.startswith("win"):  # gate on cached provision + verify (#1026 no-false-green)
-            ready, creason = (codex_provisioned_probe or scx.codex_windows_gate)()
+            ready, creason = (
+                codex_provisioned_probe()
+                if codex_provisioned_probe is not None
+                else scx.codex_windows_gate(
+                    platform=platform, binary=cdet.binary_path, version=cdet.version
+                )
+            )
             if ready:
+                from clio_agent.runtime.sandbox_codex_mxc import mxc_ready  # noqa: PLC0415
+
+                base_details["codex"]["implementation"] = (
+                    "mxc" if mxc_ready(cdet.binary_path, version=cdet.version) else "elevated"
+                )
                 return _activate_codex(cdet, base_details)
             return floor(creason)  # codex_windows_unprovisioned / codex_enforcement_unverified
         return _activate_codex(cdet, base_details)
@@ -239,9 +250,11 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
 
     Egress is recorded through clio's upstream chokepoint: codex's managed proxy forces the
     confined child's traffic through it, then chains to clio's per-child loopback listener
-    (``allow_upstream_proxy``). The child cannot bypass it (codex's OS egress rules force it),
-    so ``net_enforcement`` is :data:`NET_ENFORCEMENT_PROXY` — proxy-enforced, never a silent gap.
+    (``allow_upstream_proxy``). MXC permits direct host loopback, so its narrower
+    external-egress guarantee is recorded separately rather than claiming all
+    local connections are observed.
     """
+    mxc = base_details.get("codex", {}).get("implementation") == "mxc"
     return SandboxResult(
         mechanism=MECHANISM_CODEX,
         active=True,
@@ -250,7 +263,8 @@ def _activate_codex(det: Any, base_details: dict[str, Any]) -> SandboxResult:
             **base_details,
             "codex_binary": det.binary_path,
             "codex_version": det.version,
-            "net_enforcement": NET_ENFORCEMENT_PROXY,
+            "net_enforcement": "proxy-external" if mxc else NET_ENFORCEMENT_PROXY,
+            **({"host_loopback": "direct", "detached_children": "terminated"} if mxc else {}),
         },
     )
 
@@ -372,7 +386,15 @@ def _compose_fence_prefix(
             from clio_agent.runtime import sandbox_codex  # noqa: PLC0415
 
             binary = str(state.details.get("codex_binary") or sandbox_codex.CODEX_BINARY_NAME)
-            return sandbox_codex.compose_codex_spawn(roots, command, args, binary=binary, cwd=cwd)
+            return sandbox_codex.compose_codex_spawn(
+                roots,
+                command,
+                args,
+                binary=binary,
+                version=str(state.details.get("codex_version", "")),
+                cwd=cwd,
+                windows_sandbox=str(state.details.get("codex", {}).get("implementation", "")),
+            )
         if mechanism == MECHANISM_LANDLOCK:
             from clio_agent.runtime import sandbox_landlock  # noqa: PLC0415
 
@@ -403,7 +425,8 @@ def wrap_confined(
     input (only ``pdeathsig`` where requested); on an ACTIVE backend the fence prefix composes
     INNER and ``pdeathsig`` stays OUTERMOST — ``pdeathsig( fence( argv ) )``. ``command``/``args``
     MUST be the FINAL resolved argv (wrap AFTER spawn-diet); ``write_roots`` is the writable
-    territory. ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
+    territory. ``cwd`` preserves a caller's validated directory through the fence wrapper.
+    ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
     ``cwd`` selects the command directory without adding or reordering permission grants.
     """

@@ -1,7 +1,7 @@
 ---
 name: create-dashboard
 title: Create Dashboard
-description: Author and revise a substantial interactive dashboard in the side panel using the existing A2UI components, tabs, layouts, shared data bindings, and linked views.
+description: Author and revise a substantial interactive dashboard in the side panel using existing A2UI components, composed layouts, shared data bindings and linked views.
 ---
 
 Use this skill when the person wants a dashboard or consolidated interactive
@@ -23,12 +23,21 @@ initial level of detail. Load `references/report-design.md` for worked layouts
 using this catalog. Prefer a few complementary views over repeated views of
 the same data. Choose a custom guarded chart when it explains the finding
 better than a preset; a technically fitting preset is not a design requirement.
+For a complete small example, load `references/bike-station-report.json` and
+`references/bike-stations.csv`. They connect one clearly synthetic dataset to
+an annotated time chart, station balance, map and exact source table. Adapt the
+composition to the person's evidence; never reuse the fictional measurements
+as real findings. Preserve the same category labels across related maps and
+nominal chart encodings so the shared automatic colours keep their meaning.
 
 Load the active catalog index and exact component schemas with `load_skill`.
-The catalog remains the authority for shapes and actions. Reuse its tabs, rows,
-columns, lists, text, metrics, charts, tables, meshes, images, and inputs. Use
-tabs or other catalog-supported navigation to make substantial content readable.
-Keep an overview, comparisons, and supporting details easy to find. Do not ask
+The catalog remains the authority for shapes and actions. Reuse its rows,
+columns, frames, grids, text, metrics, charts, tables, meshes, images and inputs.
+Default to one composed report: keep related evidence visible together so a
+person can compare it without switching tabs, and a PNG tells the same story.
+Use tabs for genuinely separate workflows or optional depth, not to separate
+a chart from the map, image or comparison needed to interpret it. Keep the
+main finding and its supporting views in the initial space. Do not ask
 the person to supply component payloads.
 
 Use the declared `review-visual-presentation` skill to close the loop on
@@ -47,11 +56,14 @@ properties or make hidden content the only place the answer can be found.
 Annotations and linked selections can connect an explanation or question to
 specific evidence; they do not replace the question's explicit answer action.
 
-Choose layout deliberately. `Grid` suits a group of KPI cards or side-by-side
-analyses; `Frame` gives a section its own title and explanatory context. Use
-`Row` for a short horizontal group rather than squeezing many cards onto one
-line. Compose these inside tabs and columns as useful, and check the docked
-view as well as an expanded view. Dividers, lists, images, icons, and modals
+Choose layout deliberately. `Grid` suits KPI cards or equal comparisons. For
+unequal widths, use a `Row` whose child `Frame` or `Column` components declare
+`weight`: 2 and 1 for a wide central plot beside a smaller comparison; 1.5 and
+1.5 in the next row for equal map/image and evidence panels. Weights are relative
+shares, not grid spans; no new span property is needed. Nest Rows in a Column
+to vary proportions by row. Put an image beside its explanation or measurement,
+and controls near the views they affect. Narrow docks stack analytical panels;
+expanded views retain their proportions. Check both actual layouts. Dividers, lists, images, icons, and modals
 remain available when they serve the presentation; do not add them solely to
 exercise the catalog.
 
@@ -66,7 +78,7 @@ Write an editable JSON document inside the workspace:
   "components": [
     {"id": "root", "component": "Column", "children": ["summary", "analysis"]},
     {"id": "summary", "component": "Text", "text": "An evidence-based summary."},
-    {"id": "analysis", "component": "Text", "text": "Replace this with your authored tabs and linked data views."}
+    {"id": "analysis", "component": "Text", "text": "Replace this with your composed linked data views."}
   ],
   "data_model": {}
 }
@@ -93,6 +105,11 @@ returned report id and source path. For follow-ups, inspect the referenced
 artifact version, edit the source through additional tool calls, and publish
 again with `report_id`. Earlier artifact versions remain available. Add, remove,
 rearrange, annotate, or interconnect content as the person's goals require.
+Use the returned `report_id` for revisions; an owned dashboard artifact reference
+also resolves the report family. Saved inspection returns these identities under
+`artifact`. A newly published report opens in the currently viewed conversation
+for review. Inspect its fresh viewer before capturing; a disconnected client or
+different conversation still cannot supply pixels.
 
 Review the published artifact's own viewer, including each tab. Inspect with
 `artifact_id`, then navigate declared local bindings using
@@ -111,8 +128,12 @@ dependencies are reported rather than silently omitted from an export.
 
 Present the completed dashboard once in the final response. Keep corrected
 versions in the same report family; earlier versions remain in Versions and
-Observability. Review captures are retained verification evidence. Register
-other review files with `create_artifact(..., purpose="verification")` and
+Observability. Review captures are retained verification evidence.
+
+Register the editable source as an intermediate only if a separate artifact is useful;
+the published report already retains its source path. Do not add a second
+deliverable card for that document unless the person requests the source file.
+Register other review files with `create_artifact(..., purpose="verification")` and
 working files with `purpose="intermediate"`; omit them from the final answer
 unless requested. A requested image/PDF/HTML export is a deliverable and uses
 `purpose="deliverable"`.

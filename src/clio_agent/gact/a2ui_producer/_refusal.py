@@ -48,6 +48,21 @@ _NOT_IN_CATALOG_RE = re.compile(r"A2UI component is not in catalog [^:]+: (\S+)$
 #: correct next step for a model reading this result, not a retry of the
 #: identical call.
 _DEFAULT_HINTS: dict[str, str] = {
+    "a2ui_capture_failed": (
+        "read the failure detail. For an oversized whole report, capture its visible "
+        "Frame/Row components separately using their inspected component_id values. "
+        "Keep their shared context and verify every relevant panel before finalizing."
+    ),
+    "a2ui_view_stale": (
+        "inspect_a2ui_surface again for the same artifact/surface, then use its current "
+        "capture_targets. For a loading viewer, pass expected_view_revision=null; zero "
+        "is a real epoch. Retry at most twice for this view before reporting a limitation."
+    ),
+    "a2ui_render_not_ready": (
+        "the viewer is mounting or rendering; inspect the same view again and capture "
+        "with expected_view_revision=null to wait for readiness. Retry at most twice "
+        "for this view before reporting a limitation."
+    ),
     "a2ui_session_unavailable": (
         "this tool call ran outside an active GACT session turn; it cannot "
         "succeed standalone, do not retry it here"

@@ -7,7 +7,7 @@ plus the resource-upload staging name landed at ~270 characters and every
 write under it raised ``FileNotFoundError`` even though every parent
 directory existed -- see :mod:`clio_agent.platform_paths`).
 
-These tests build a REAL path over that limit under ``tmp_path`` and assert
+These tests pad both workspace and managed-state roots under ``tmp_path`` and assert
 the write actually succeeds end to end: resource materialization
 (:mod:`clio_agent.gact.resource_materialization`), the documents store
 (:mod:`clio_agent.gact.documents.store`), and the CAS backbone both depend on
@@ -61,6 +61,13 @@ def _padded_root(tmp_path: Path, *, target_len: int = 240) -> Path:
         root = root / segment
     os.makedirs(win_extended_path(root), exist_ok=True)
     return root
+
+
+@pytest.fixture(autouse=True)
+def _long_managed_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise long generated paths after their move into managed workspace state."""
+    root = _padded_root(tmp_path / "managed-state")
+    monkeypatch.setenv("CLIO_AGENT_STATE_DIR", str(root))
 
 
 # --------------------------------------------------------------------------- #
@@ -266,7 +273,10 @@ def test_create_working_copy_materializes_under_a_long_workspace_root(tmp_path: 
         assert handle.read() == content
     assert row.base_sha256 == sha
 
-    manifest_path = working_copy_path.parent / "manifest.json"
+    manifest_path = (
+        store._documents_root(workspace_root) / "working-copies" / row.id / "manifest.json"
+    )
+    assert len(str(manifest_path)) > 260, "fixture didn't actually exceed MAX_PATH"
     assert os.path.isfile(win_extended_path(manifest_path))
     with open(win_extended_path(manifest_path), "r", encoding="utf-8") as handle:
         manifest = json.load(handle)

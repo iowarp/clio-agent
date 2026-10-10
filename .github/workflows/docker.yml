@@ -134,7 +134,7 @@ jobs:
           BETA_TAGS: ${{ steps.beta_policy.outputs.tags }}
           STABLE_TAGS: ${{ steps.stable_policy.outputs.tags }}
         run: |
-          uv run --no-project --python 3.13 python - <<'PY'
+          uv run --no-project --python 3.14 python - <<'PY'
           import os
           beta = set(os.environ["BETA_TAGS"].splitlines())
           stable = set(os.environ["STABLE_TAGS"].splitlines())
@@ -148,5 +148,5 @@ jobs:
           STABLE_VERSION: ${{ inputs.restore_stable_latest }}
           EXPECTED_LATEST: ${{ inputs.expected_latest }}
         run: |
-          uv run --no-project --python 3.13 python scripts/restore_stable_container_channel.py \
+          uv run --no-project --python 3.14 python scripts/restore_stable_container_channel.py \
             --version "$STABLE_VERSION" --expected-latest "$EXPECTED_LATEST"

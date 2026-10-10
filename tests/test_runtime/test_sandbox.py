@@ -311,6 +311,8 @@ def test_wrap_confined_active_fence_redirects_child_cache_env(
         *,
         binary: str,
         cwd: Path | str | None = None,
+        version: str = "",
+        windows_sandbox: str = "",
     ) -> tuple[str, list[str]]:
         composed.append((roots, binary, cwd))
         return cmd, list(args)
@@ -420,7 +422,8 @@ def test_transport_for_wraps_the_spawn_diet_final_argv(
         spawn_diet, "diet_transport_args", lambda *_a, **_k: diet_plan, raising=True
     )
     # setpriv present would prove pdeathsig is OFF for this seam if it leaked in.
-    monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+    # Keep host path parsing native while exercising the Linux transport branch.
+    monkeypatch.setattr(mcp_config, "sys", SimpleNamespace(platform="linux"))
 
     transport = transport_for(spec, cwd=str(tmp_path))
     assert transport.command == "/venv/bin/python"  # diet command, not the launcher

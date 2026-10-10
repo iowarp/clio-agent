@@ -75,8 +75,8 @@ from clio_agent.providers.codex import constants as c
 from clio_agent.providers.codex.audit import (
     emit_call_started,
     emit_call_usage,
+    emit_completed_tool_call,
     emit_raw_event,
-    emit_tool_call,
 )
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
 from clio_agent.providers.codex.stream_errors import (
@@ -667,9 +667,9 @@ async def _stream(
             parsed = [failure]  # lm15's typed error (lm15 parses no response.failed)
         if kind == "response.output_item.done":
             calls.extend(c for c in _call_ids([payload.get("item")]) if c not in calls)
-            item = payload.get("item")
-            if isinstance(item, dict) and item.get("type") == "function_call":
-                emit_tool_call(call_index=call_index, item=item)
+            emit_completed_tool_call(
+                call_index=call_index, payload=payload, streamed_arguments=tool_calls.arguments
+            )
         if parsed is None:
             parsed = tool_calls.parse(wire, request, _WireEvent(event=kind, data=raw))
         for event in parsed:

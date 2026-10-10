@@ -59,6 +59,7 @@ REASON_CHOKEPOINT_START_FAILED = "chokepoint_start_failed"
 #: Net-mechanism labels stamped on each ``net.egress`` (honest per tier, owner #974.3/.7):
 #: srt = OS fence forces the child through the proxy; Landlock/floor = env proxy only.
 MECHANISM_PROXY_ENFORCED = "proxy-enforced"
+MECHANISM_PROXY_ENFORCED_EXTERNAL = "proxy-enforced-external"
 MECHANISM_ENV_COOPERATIVE = "env-cooperative"
 
 #: Loopback host the proxy binds (never a routable interface — clio-private).

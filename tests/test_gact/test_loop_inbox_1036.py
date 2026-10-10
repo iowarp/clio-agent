@@ -173,6 +173,17 @@ def test_steer_persisted_exactly_once_on_midturn_drain(tmp_path: Path) -> None:
         response = _post(client, sid, "drain me")
         assert response.status_code == 202
         steer_id = response.json()["message_id"]
+        # The live ledger's public block ids are the feedback's causal anchor.
+        from clio_agent.gact.types import Part
+
+        transcript = app.state.turn_transcripts.get(sid)
+        assert transcript is not None
+        transcript.append_part(
+            Part(id="call_part", type="tool_call", call_id="read", tool_name="read")
+        )
+        transcript.append_part(
+            Part(id="result_part", type="tool_result", call_id="read", text="done")
+        )
         with _active_turn(app, sid):
             arrivals = drain_active_session_inbox(app)
 
@@ -183,6 +194,10 @@ def test_steer_persisted_exactly_once_on_midturn_drain(tmp_path: Path) -> None:
         assert steer_id in by_id, "the accepted steer identity was lost"
         assert by_id[steer_id]["metadata"].get("pending_steer") is False
         assert by_id[steer_id]["metadata"].get("mid_turn_steer") is True
+        assert by_id[steer_id]["metadata"]["steer_delivery"] == {
+            "assistant_message_id": transcript.message_id,
+            "after_part_id": "call_part",
+        }
         assert by_id[steer_id].get("turn_id", "") == ""
         assert _text_of(by_id[steer_id]) == "drain me"
         assert sum(1 for m in _user_msgs(client, sid) if _text_of(m) == "drain me") == 1

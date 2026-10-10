@@ -32,7 +32,7 @@ def test_installer_records_only_complete_provisioning(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
     monkeypatch.setattr(
-        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+        installer, "prepare_existing_windows_fence", lambda **kwargs: {"status": "available"}
     )
     stages: list[str] = []
     receipt = cache / "locked" / "installed.json"
@@ -57,7 +57,7 @@ def test_installer_records_only_complete_provisioning(
             "Office rendering is ready.",
             "Preparing and checking the GitHub command-line tool...",
             "GitHub command-line tool is ready.",
-            "Preparing and checking protected execution helpers...",
+            "Preparing and checking protected execution...",
         }
         assert stages[-1] == "All managed runtime packages are installed and verified."
 
@@ -106,7 +106,7 @@ def test_installer_overlaps_independent_work_and_joins_before_receipt(
         installer, "ensure_bundled_codex_windows_helpers", lambda: {"status": "available"}
     )
     monkeypatch.setattr(
-        installer, "prepare_existing_windows_fence", lambda: {"status": "available"}
+        installer, "prepare_existing_windows_fence", lambda **kwargs: {"status": "available"}
     )
     installer.install_document_runtime(tmp_path / "workspace", cache_root=cache)
     assert office_done.is_set() and github_done.is_set()
@@ -157,3 +157,47 @@ def test_installer_failure_waits_for_other_work_without_publishing_success(
     assert set(finished) == {"python", "office", "github"}
     assert not (cache / "locked" / "installed.json").exists()
     assert "All managed runtime packages are installed and verified." not in stages
+
+
+@pytest.mark.parametrize("setup", [True, False])
+@pytest.mark.parametrize("failed", [True, False])
+def test_installer_explicit_setup_is_forwarded_and_failed_setup_has_no_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: bool, failed: bool
+) -> None:
+    (tmp_path / "locked").mkdir()
+    monkeypatch.setattr(
+        installer,
+        "prepare_document_runtime",
+        lambda *args, **kwargs: {
+            "status": "ready",
+            "runtime_id": "locked",
+            "javascript": {"status": "ready"},
+            "native_tools": {},
+            "capabilities": {},
+        },
+    )
+    monkeypatch.setattr(installer, "prepare_office_runtime", lambda: "soffice")
+    monkeypatch.setattr(installer, "ensure_github_cli", lambda: tmp_path / "gh")
+
+    def fence(**kwargs: Any) -> dict[str, str]:
+        assert kwargs["allow_elevation"] is setup
+        if failed:
+            raise installer.DocumentRuntimeError("Windows approval declined")
+        return {"status": "available", "implementation": "mxc"}
+
+    def helpers() -> None:
+        pytest.fail("Verified MXC must not download unused legacy helpers")
+
+    monkeypatch.setattr(installer, "prepare_existing_windows_fence", fence)
+    monkeypatch.setattr(installer, "ensure_bundled_codex_windows_helpers", helpers)
+    if failed:
+        with pytest.raises(installer.DocumentRuntimeError, match="approval declined"):
+            installer.install_document_runtime(
+                tmp_path / "workspace", cache_root=tmp_path, setup_protected_execution=setup
+            )
+    else:
+        result = installer.install_document_runtime(
+            tmp_path / "workspace", cache_root=tmp_path, setup_protected_execution=setup
+        )
+        assert result["native_tools"]["codex_windows_helpers"]["status"] == "not_required"
+    assert (tmp_path / "locked/installed.json").exists() is not failed
