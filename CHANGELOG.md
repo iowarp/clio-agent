@@ -8,6 +8,13 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Windows protected execution prefers verified native MXC with bundled Codex
+  0.162.1, avoiding sandbox account creation, elevation and runtime ACL scans on
+  compatible devices. Filesystem exclusions and direct external-network denial
+  are checked before activation; unavailable MXC retains the elevated fallback.
+- The Windows installer explicitly requests protected execution setup. Legacy
+  account creation shows the approval stage and uses UAC once; normal startup
+  never creates accounts. Both accounts receive runtime access in one traversal.
 - Desktop startup checks and reuses successful sandbox runtime grants when the
   directory identity and root permissions agree, instead of repeatedly scanning
   unrelated global uv environments. Changed permissions still require setup.

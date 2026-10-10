@@ -13,8 +13,9 @@ from clio_agent.runtime.document_runtime import DocumentRuntimeError
 
 
 @pytest.mark.parametrize("state", ["available", "setup_required", "failed_grant", "unverified"])
+@pytest.mark.parametrize("allow_elevation", [False, True])
 def test_desktop_setup_keeps_the_existing_enforcement_gate(
-    monkeypatch: pytest.MonkeyPatch, state: str
+    monkeypatch: pytest.MonkeyPatch, state: str, allow_elevation: bool
 ) -> None:
     monkeypatch.setattr(codex_desktop_setup, "sys", SimpleNamespace(platform="win32"))
     grants = [{"status": "failed" if state == "failed_grant" else "granted"}]
@@ -25,7 +26,7 @@ def test_desktop_setup_keeps_the_existing_enforcement_gate(
         return grants
 
     def provision(**kwargs: Any) -> sandbox_cli.CodexProvisionResult:
-        assert kwargs["allow_elevation"] is False
+        assert kwargs["allow_elevation"] is allow_elevation
         return sandbox_cli.CodexProvisionResult(
             ok=state not in {"setup_required", "unverified"},
             status="checked",
@@ -39,9 +40,9 @@ def test_desktop_setup_keeps_the_existing_enforcement_gate(
     monkeypatch.setattr(sandbox_cli, "provision_codex_windows", provision)
     if state in {"failed_grant", "unverified"}:
         with pytest.raises(DocumentRuntimeError, match="Protected execution verification failed"):
-            codex_desktop_setup.prepare_existing_windows_fence()
+            codex_desktop_setup.prepare_existing_windows_fence(allow_elevation=allow_elevation)
     else:
-        result = codex_desktop_setup.prepare_existing_windows_fence()
+        result = codex_desktop_setup.prepare_existing_windows_fence(allow_elevation=allow_elevation)
         assert result["status"] == state
     assert len(calls) == 1
 

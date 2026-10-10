@@ -27,6 +27,7 @@ def install_document_runtime(
     *,
     cache_root: Path | None = None,
     progress: Callable[[str], None] | None = None,
+    setup_protected_execution: bool = False,
 ) -> dict[str, Any]:
     """Provision and verify all required packages without enlarging the installer payload."""
     workspace.mkdir(parents=True, exist_ok=True)
@@ -70,9 +71,15 @@ def install_document_runtime(
         "authentication": "clio_account",
     }
     if progress is not None:
-        progress("Preparing and checking protected execution helpers...")
-    result["native_tools"]["codex_windows_helpers"] = ensure_bundled_codex_windows_helpers()
-    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence(progress=report)
+        progress("Preparing and checking protected execution...")
+    result["native_tools"]["protected_execution"] = prepare_existing_windows_fence(
+        progress=report, allow_elevation=setup_protected_execution
+    )
+    result["native_tools"]["codex_windows_helpers"] = (
+        {"status": "not_required", "implementation": "mxc"}
+        if result["native_tools"]["protected_execution"].get("implementation") == "mxc"
+        else ensure_bundled_codex_windows_helpers()
+    )
     if (
         progress is not None
         and result["native_tools"]["protected_execution"]["status"] == "setup_required"
@@ -92,11 +99,18 @@ def main() -> None:
     """Run the shared installer step; an incomplete setup exits unsuccessfully."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=paths.user_data_dir() / "workspace")
+    parser.add_argument(
+        "--setup-protected-execution",
+        action="store_true",
+        help="Request one-time Windows sandbox setup with administrator approval if needed.",
+    )
     args = parser.parse_args()
     # This standalone installer owns its workspace. Never widen a running agent's policy.
     os.environ["CLIO_ALLOWED_ROOTS"] = str(args.workspace.resolve())
     result = install_document_runtime(
-        args.workspace, progress=lambda message: print(message, flush=True)
+        args.workspace,
+        progress=lambda message: print(message, flush=True),
+        setup_protected_execution=args.setup_protected_execution,
     )
     print(
         json.dumps(
