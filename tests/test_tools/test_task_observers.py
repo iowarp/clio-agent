@@ -22,7 +22,7 @@ Three test groups:
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import logging
 from typing import Any
 
@@ -74,7 +74,7 @@ def test_unknown_server_id_resolves_to_the_generic_wait_default() -> None:
 
     hook = resolve_task_observer(_key("task-1", server="never-registered"))
     assert hook is not None
-    assert asyncio.iscoroutinefunction(hook)
+    assert inspect.iscoroutinefunction(hook)
 
 
 def test_registered_factory_is_called_with_the_full_key_and_its_hook_returned() -> None:

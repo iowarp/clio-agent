@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import errno
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -156,7 +157,8 @@ def test_wrap_confined_pdeathsig_stays_outermost_over_landlock(
     """Composition order is ``pdeathsig( landlock( argv ) )`` — pdeathsig OUTERMOST (owner #974.5)."""
     from clio_agent.tools import mcp_config
 
-    monkeypatch.setattr(mcp_config.sys, "platform", "linux")
+    # A global sys.platform patch also makes Windows test paths look relative.
+    monkeypatch.setattr(mcp_config, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(mcp_config.shutil, "which", lambda _n: "/usr/bin/setpriv")
     confined = sandbox.wrap_confined(
         "python",

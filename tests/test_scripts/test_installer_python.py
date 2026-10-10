@@ -17,7 +17,7 @@ def _shell_path(path: Path) -> str:
 
 
 def test_posix_installer_selects_core_compatible_python(tmp_path: Path) -> None:
-    """The real release branch requests 3.13 even when newer Python is available."""
+    """Older published releases retain the interpreter their native core supports."""
     bash = "C:/Program Files/Git/bin/bash.exe" if os.name == "nt" else shutil.which("bash")
     assert bash is not None
     commands = tmp_path / "commands"
@@ -62,12 +62,15 @@ def test_posix_installer_selects_core_compatible_python(tmp_path: Path) -> None:
 
 
 def test_windows_installer_uses_same_supported_interpreter() -> None:
-    """Both installers choose the bundle's minor and reject unsupported pip hosts."""
+    """Both installers preserve published-release compatibility and upgrade source builds."""
     shell = (ROOT / "install/install.sh").read_text()
     powershell = (ROOT / "install/install.ps1").read_text()
     assert "RunNative uv @('venv', '--python', '3.13', $Venv)" in powershell
+    assert "uv sync --python 3.14" in shell
+    assert "RunNative uv @('sync', '--python', '3.14')" in powershell
     for script in (shell, powershell):
         assert "sys.version_info[:2] == (3, 13)" in script
-        assert "pip installation requires Python 3.13" in script
+        assert "pip release installation requires Python 3.13" in script
         assert ">=3.12" not in script
         assert ">=3.13" not in script
+        assert ">=3.14" not in script

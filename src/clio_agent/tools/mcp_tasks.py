@@ -327,7 +327,7 @@ async def _answer_round(
             details={"task_id": key.task_id, "input_keys": ledger.unelicited(outstanding)},
         )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = None if read_timeout_seconds is None else loop.time() + read_timeout_seconds
 
     def remaining() -> float | None:
@@ -449,7 +449,7 @@ async def _poll_until_terminal(
 ) -> ClientGetTaskResult:
     """The lease-protected poll loop body (see :func:`drive_task_to_terminal`)."""
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = None if timeout_seconds is None else loop.time() + timeout_seconds
     backoff = MIN_POLL_INTERVAL
     no_progress = 0

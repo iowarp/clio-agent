@@ -12,6 +12,16 @@ TUI/HTTP surface aren't tracked here.
   own version history, avoiding unrelated old release entries. Product labels,
   clearer formatting and expandable details make both sources easier to read.
 
+### Changed
+
+- Use standard Python 3.14 with the GIL enabled for development, source installers,
+  bundled Desktop runtimes, and containers. Keep Python 3.12 and 3.13 compatibility
+  coverage, update msgspec for Python 3.14 annotation support, and update Uvicorn
+  to avoid the deprecated legacy WebSocket implementation. Fail Python 3.14 CI
+  tests on deprecation warnings.
+- Update clio-core to 2.3.1, including Windows sparse backing files and storage
+  correctness fixes.
+
 ## [0.9.5-beta.5.2] - 2026-10-08
 
 ### Fixed
