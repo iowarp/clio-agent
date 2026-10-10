@@ -370,6 +370,7 @@ def _compose_fence_prefix(
     write_roots: Sequence[Path] | Sequence[str],
     *,
     proxy_port: Optional[int] = None,
+    cwd: Path | str | None = None,
 ) -> tuple[str, list[str]]:
     """Compose the active fence's argv prefix around ``(command, args)`` (B-codex / Landlock).
 
@@ -391,6 +392,8 @@ def _compose_fence_prefix(
                 args,
                 binary=binary,
                 version=str(state.details.get("codex_version", "")),
+                cwd=cwd,
+                windows_sandbox=str(state.details.get("codex", {}).get("implementation", "")),
             )
         if mechanism == MECHANISM_LANDLOCK:
             from clio_agent.runtime import sandbox_landlock  # noqa: PLC0415
@@ -414,6 +417,7 @@ def wrap_confined(
     profile: Profile,
     pdeathsig: bool = False,
     state: Optional[SandboxResult] = None,
+    cwd: Path | str | None = None,
 ) -> ConfinedSpawn:
     """Compose the confined spawn plan for a resolved ``(command, args)`` (#975/#976).
 
@@ -421,7 +425,8 @@ def wrap_confined(
     input (only ``pdeathsig`` where requested); on an ACTIVE backend the fence prefix composes
     INNER and ``pdeathsig`` stays OUTERMOST — ``pdeathsig( fence( argv ) )``. ``command``/``args``
     MUST be the FINAL resolved argv (wrap AFTER spawn-diet); ``write_roots`` is the writable
-    territory. ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
+    territory. ``cwd`` preserves a caller's validated directory through the fence wrapper.
+    ``state`` defaults to :func:`current_state`, else a :data:`REASON_NOT_INSTALLED`
     floor; a fence that cannot compose RAISES (typed), never spawning unconfined.
     """
     resolved_state = state or current_state()
@@ -471,7 +476,7 @@ def wrap_confined(
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
         env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
         cmd, arg_list = _compose_fence_prefix(
-            resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port
+            resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port, cwd=cwd
         )
 
     # pdeathsig OUTERMOST (#974.5): the argv-prefix helper folds in last (passthrough sans setpriv).

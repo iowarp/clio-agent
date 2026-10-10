@@ -15,6 +15,7 @@ deleted); the Linux fallback is Landlock, elsewhere the honest floor. Pinned:
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -162,6 +163,26 @@ def test_compose_codex_spawn_elevated_layer_only_on_win32(tmp_path: Path) -> Non
     nix_layer = next(nix_home.glob(sc.CODEX_LAYER_GLOB)).read_text(encoding="utf-8")
     assert "[windows]" in win_layer and 'sandbox = "elevated"' in win_layer
     assert "[windows]" not in nix_layer  # off-win32 the elevated gate is omitted
+
+
+def test_explicit_cwd_is_independent_of_writable_state_and_cache(tmp_path: Path) -> None:
+    state, cache, workspace = tmp_path / "state", tmp_path / "cache", tmp_path / "workspace"
+    nested = workspace / "nested"
+    _, args = sc.compose_codex_spawn(
+        [state, cache, workspace],
+        "python",
+        ["-c", "print('cwd')"],
+        binary="codex",
+        platform="linux",
+        codex_home=tmp_path,
+        cwd=nested,
+    )
+    assert args[args.index("-C") + 1] == str(nested)
+    layer = args[args.index("-p") + 1]
+    profile = tomllib.loads((tmp_path / f"{layer}.config.toml").read_text())
+    grants = profile["permissions"]["clio"]["filesystem"]
+    assert grants[str(state)] == grants[str(cache)] == grants[str(workspace)] == "write"
+    assert str(nested) not in grants  # Choosing cwd never widens writable territory.
 
 
 def test_compose_codex_spawn_empty_roots_raises_typed(tmp_path: Path) -> None:

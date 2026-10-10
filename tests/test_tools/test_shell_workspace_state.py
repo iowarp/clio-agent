@@ -11,8 +11,45 @@ import pytest
 from fastmcp import Client
 
 from clio_agent import conf, paths
+from clio_agent.runtime import sandbox
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import shell_server
+
+
+async def test_shell_passes_actual_cwd_to_fence_without_reordering_grants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    nested = workspace / "nested"
+    nested.mkdir(parents=True)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(workspace))
+    monkeypatch.setenv("CLIO_AGENT_STATE_DIR", str(tmp_path / "state"))
+    seen: list[dict] = []
+    wrap = sandbox.wrap_confined
+
+    def record(*args: object, **kwargs: object) -> sandbox.ConfinedSpawn:
+        seen.append(dict(kwargs))
+        return wrap(*args, **kwargs)
+
+    monkeypatch.setattr(sandbox, "wrap_confined", record)
+    command = "Get-Location | Select-Object -ExpandProperty Path" if os.name == "nt" else "pwd"
+    conf.reload()
+    try:
+        with tool_workspace_context(str(workspace)):
+            expected_roots = sandbox.effective_write_roots(
+                sandbox.PROFILE_SHELL, workspace_root=str(nested)
+            )
+            async with Client(shell_server) as client:
+                result = await client.call_tool("bash", {"command": command, "cwd": str(nested)})
+        value = json.loads(result.data) if isinstance(result.data, str) else result.data
+        assert value["exit_code"] == 0
+        assert Path(value["stdout"].strip()) == nested
+        assert seen[0]["cwd"] == nested
+        assert seen[0]["write_roots"] == expected_roots
+        assert Path(expected_roots[0]) != nested
+    finally:
+        conf.reload()
 
 
 async def test_shell_state_tracks_bound_workspace_not_cwd_or_inherited_value(

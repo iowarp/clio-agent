@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import ntpath
 import platform
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,7 +18,7 @@ from clio_agent import paths
 
 logger = logging.getLogger(__name__)
 MXC_MIN_VERSION = (0, 162, 1)
-_RECEIPT_VERSION = 1
+_RECEIPT_VERSION = 2
 _CHECKS = {
     "workspace_write",
     "outside_write_denied",
@@ -66,25 +68,43 @@ def _receipt_path() -> Path:
     return paths.user_config_dir() / "sandbox" / "codex-mxc-verified.json"
 
 
-def _identity(binary: str, version: str = "") -> dict[str, Any]:
-    executable = Path(binary).resolve(strict=True)
-    stat = executable.stat()
-    build = platform.version()
+def _binary_identity_path(executable: Path) -> str:
+    """Compare Windows spelling aliases without changing the path used for I/O."""
+    name = str(executable)
+    if sys.platform != "win32":
+        return name
+    if name[:8].lower() == "\\\\?\\unc\\":
+        name = "\\\\" + name[8:]
+    elif name.startswith("\\\\?\\") and ntpath.splitdrive(name[4:])[0].endswith(":"):
+        name = name[4:]
+    return ntpath.normcase(name)
+
+
+def _host_build() -> str:
+    """Read the native Windows revision independently of CLIO's platform cache."""
     if sys.platform == "win32":
         import winreg  # noqa: PLC0415
 
+        native = sys.getwindowsversion().platform_version
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
         ) as key:
-            build += f".{winreg.QueryValueEx(key, 'UBR')[0]}"
+            revision = winreg.QueryValueEx(key, "UBR")[0]
+        return ".".join(str(part) for part in (*native, revision))
+    return platform.version()
+
+
+def _identity(binary: str, version: str = "") -> dict[str, Any]:
+    executable = Path(binary).resolve(strict=True)
+    stat = executable.stat()
     return {
         "receipt_version": _RECEIPT_VERSION,
-        "binary": str(executable),
+        "binary": _binary_identity_path(executable),
         "size": stat.st_size,
         "modified_ns": stat.st_mtime_ns,
         "file_id": stat.st_ino,
-        "host": platform.node(),
-        "build": build,
+        "host": socket.gethostname().casefold(),
+        "build": _host_build(),
         "version": version,
     }
 

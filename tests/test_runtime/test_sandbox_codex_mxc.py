@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tomllib
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +15,82 @@ import pytest
 
 from clio_agent.runtime import sandbox, sandbox_cli, sandbox_codex, sandbox_net
 from clio_agent.runtime import sandbox_codex_mxc as mxc
+
+
+@pytest.mark.parametrize(
+    "ordinary, extended",
+    [
+        (r"D:\Runtime\codex.exe", r"\\?\D:\Runtime\codex.exe"),
+        (r"\\server\share\Runtime\codex.exe", r"\\?\UNC\server\share\Runtime\codex.exe"),
+    ],
+)
+def test_windows_receipt_identifies_path_aliases_as_the_same_binary(
+    monkeypatch: pytest.MonkeyPatch, ordinary: str, extended: str
+) -> None:
+    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    assert mxc._binary_identity_path(Path(ordinary)) == mxc._binary_identity_path(Path(extended))
+    assert mxc._binary_identity_path(Path(ordinary.upper())) == mxc._binary_identity_path(
+        Path(ordinary)
+    )
+
+
+def test_native_build_does_not_depend_on_platform_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden() -> str:
+        pytest.fail("The synthetic platform cache cannot qualify a Windows build")
+
+    native = SimpleNamespace(platform_version=(10, 0, 26100))
+    monkeypatch.setattr(
+        mxc, "sys", SimpleNamespace(platform="win32", getwindowsversion=lambda: native)
+    )
+    monkeypatch.setattr(mxc.platform, "version", forbidden)
+    monkeypatch.setitem(
+        sys.modules,
+        "winreg",
+        SimpleNamespace(
+            HKEY_LOCAL_MACHINE=1,
+            OpenKey=lambda *args: nullcontext(2),
+            QueryValueEx=lambda *args: (9550, 4),
+        ),
+    )
+    assert mxc._host_build() == "10.0.26100.9550"
+
+
+def test_receipt_invalidates_when_windows_revision_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "codex.exe"
+    binary.write_bytes(b"test-only executable identity")
+    monkeypatch.setattr(mxc, "_receipt_path", lambda: tmp_path / "receipt.json")
+    monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9550")
+    monkeypatch.setattr(mxc, "sys", SimpleNamespace(platform="win32"))
+    mxc.prepare_mxc(str(binary), "0.162.1", probe=lambda binary: True)
+    assert mxc.mxc_ready(str(binary), version="0.162.1")
+    monkeypatch.setattr(mxc, "_host_build", lambda: "10.0.26100.9551")
+    assert not mxc.mxc_ready(str(binary), version="0.162.1")
+
+
+def test_active_mxc_cannot_silently_downgrade_to_elevated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mxc, "mxc_ready", lambda *args, **kwargs: False)
+    compose = sandbox_codex.compose_codex_spawn
+
+    def windows_spawn(*args: Any, **kwargs: Any) -> tuple[str, list[str]]:
+        return compose(*args, platform="win32", **kwargs)
+
+    monkeypatch.setattr(sandbox_codex, "compose_codex_spawn", windows_spawn)
+    state = sandbox.SandboxResult(
+        mechanism="codex",
+        active=True,
+        reason="fence_active",
+        details={
+            "codex_binary": "codex.exe",
+            "codex_version": "0.162.1",
+            "codex": {"implementation": "mxc"},
+        },
+    )
+    with pytest.raises(sandbox.SandboxCompositionError, match="qualification changed"):
+        sandbox._compose_fence_prefix(state, sandbox.PROFILE_SHELL, "python", [], [tmp_path])
 
 
 @pytest.fixture
