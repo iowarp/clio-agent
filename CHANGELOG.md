@@ -8,6 +8,9 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Windows bundled runtime extraction uses bounded parallel file writes and
+  avoids repeated per-file directory and metadata work. Integrity checking,
+  staging, rollback and reuse of a prepared runtime remain in place.
 - Tool-linked harness notices now fold into the activity chain at their recorded
   positions, with exact text still available. Turn-wide context stays separate,
   and evidence links open Full activity without a repeated display-state loop.
