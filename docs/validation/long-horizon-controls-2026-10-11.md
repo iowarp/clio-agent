@@ -246,10 +246,22 @@ question test file also has pre-existing TestClient application typing errors.
 These are not hidden or counted as passed checks. Source-only CI-style checking
 and direct checking of the new typed files are recorded separately.
 
-A fresh 48-hour attempt will run the committed patched source and new mandatory
+A fresh 48-hour attempt uses the committed patched source and new mandatory
 audit observer on a new elapsed clock. Its token ceiling is four million: the first
 real Base Agent batch used about 39,000 input tokens, so the earlier one-million
 cap could prevent 49 valid batches. Iteration, time, process, memory and disk bounds
 remain explicit. The wakeup preserves the complete original procedure rather than
 replacing it with an under-specified “continue” instruction. This setup change
 does not turn partial evidence into a multi-day reliability claim.
+
+The first patched soak startup (`long-horizon-20261011-02`, source `1e5376bf`)
+failed before its initial request was accepted: deferred preflight reported a
+missing `openai.Omit`, although an independent import in the same pinned runtime
+successfully exported it. DSPy's lazy loader publishes a real but partially loaded
+SDK module outside Python's standard import lock, so a concurrent LiteLLM importer
+can observe an incomplete namespace. The GACT module now materializes OpenAI before
+starting background workers, alongside its existing numpy/pyarrow preloads. A cold
+subprocess regression requires a complete SDK before eight concurrent real
+DSPy/LiteLLM imports. The pre-fix probe failed that condition. No SDK files or
+installed dependencies were changed. The failed startup and stopped-service receipt
+are retained; its clock is discarded.

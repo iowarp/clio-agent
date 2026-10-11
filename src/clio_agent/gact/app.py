@@ -40,38 +40,20 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
-# numpy/pyarrow, on THIS thread (module import, i.e. whichever thread first
-# does `import clio_agent.gact.app` -- the main thread in every real entry
-# point and the overwhelming majority of tests), before ANYTHING else in the
-# process can race them. Root-caused (numpy-race follow-up to #1551): dspy's
-# own `dspy.utils.lazy_import._LazyModule._load()` calls
-# `spec.loader.exec_module(module)` directly on a brand-new module object,
-# bypassing Python's per-module import lock entirely. If numpy/pyarrow are
-# not ALREADY the real, fully-materialized module in `sys.modules` by the
-# time something calls `require("numpy")` (inside `import dspy`, which
-# `_construct_agent_async`'s executor thread runs off the main thread/event
-# loop), dspy inserts its own lazy PROXY into `sys.modules["numpy"]`; a
-# later *standard* `import numpy`, or pyarrow's C extension touching numpy,
-# both just find that proxy already "imported" and defer to its unlocked
-# `_load()`, which can then run concurrently with another thread doing the
-# same thing -- two independent executions of `numpy/__init__.py` mutating
-# numpy's C-level type registry at once (confirmed live via a
-# `sys.addaudithook` probe and a targeted repro: `ImportError:
-# numpy._core.multiarray failed to import` / `TypeError: data type 'bool'
-# not understood`, 15/15 runs with a naive ordering). Doing this inside
-# `build_app()` is NOT early enough -- a thread that started importing dspy
-# before `build_app()` was even called (observed: a prior test's still-
-# running agent-construction thread, since that executor is not joined
-# before its TestClient context exits) can still beat it there. Module
-# import time is the earliest point every caller (production entry point,
-# every test file importing `build_app`) shares, so it is the only point
-# that is not itself part of the race.
+# Materialize shared dependencies before any startup/provider worker imports DSPy.
+# Its lazy module loader publishes a replacement in sys.modules and executes it
+# under a private lock, outside Python's standard import lock. Other importers can
+# observe that partially initialized module. The numpy/pyarrow race corrupted
+# native types (#1551); cold live qualification also saw a missing openai.Omit.
+# Preloading the SDK here keeps LiteLLM from seeing its partial namespace. This
+# must happen at module import: build_app can race a prior app's startup worker.
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import numpy  # noqa: E402, F401
+import openai  # noqa: E402, F401
 import pyarrow  # noqa: E402, F401
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

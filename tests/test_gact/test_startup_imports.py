@@ -53,6 +53,35 @@ def test_protocol_metadata_matches_the_installed_sdk() -> None:
     assert registry.TASKS_EXTENSION_ID == TASKS_EXTENSION_ID
 
 
+@pytest.mark.timeout(90)  # Cold real SDK/DSPy/LiteLLM imports exercise startup workers.
+def test_model_sdk_is_complete_before_concurrent_startup_imports(tmp_path: Path) -> None:
+    """A lazy SDK proxy must not expose an incomplete namespace to provider threads."""
+    code = """
+import importlib, json, sys, types
+from concurrent.futures import ThreadPoolExecutor
+from clio_agent.gact.app import build_app
+sdk = sys.modules.get('openai')
+assert type(sdk) is types.ModuleType and 'Omit' in vars(sdk), 'partial model SDK'
+def load(name):
+    importlib.import_module(name)
+    from openai import Omit, OpenAI
+    return Omit.__name__, OpenAI.__name__
+with ThreadPoolExecutor(max_workers=8) as pool:
+    values = list(pool.map(load, ['dspy', 'litellm'] * 4))
+assert values == [('Omit', 'OpenAI')] * 8, values
+print(json.dumps({'completed_workers': len(values)}))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "CLIO_AGENT_HOME": str(tmp_path / "agent"), "CLIO_ENV_FILE_LOADED": "1"},
+        capture_output=True,
+        text=True,
+        timeout=80,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["completed_workers"] == 8
+
+
 def test_standalone_file_policy_does_not_import_the_tool_execution_stack(tmp_path: Path) -> None:
     result = subprocess.run(
         [
