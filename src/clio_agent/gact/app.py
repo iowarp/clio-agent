@@ -1429,7 +1429,7 @@ def build_app(
     from clio_agent.gact.scheduler import ScheduleStore as _SchedStore
 
     app.state.schedules = _SchedStore(
-        path=(session_store_path.parent / "schedules.json") if session_store_path is not None else None
+        path=session_store_path.with_name("schedules.json") if session_store_path else None
     )
     initialize_session_defaults(app, sessions_path)
     app.state.scheduler_task = None
