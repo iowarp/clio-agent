@@ -309,6 +309,51 @@ class Faults(LongHorizonAcceptance):
             meta,
         )
 
+    def iteration_control(self) -> None:
+        """Isolate the runtime cap from the model's separate file-task compliance."""
+        sid = self.session("Two-iteration control cap")
+        self.command(
+            sid,
+            "loop",
+            "60s --max-iters=2 In every turn, call loop_wakeup exactly once with "
+            "delay_seconds=60, prompt='', stop=false. Preserve this instruction. "
+            "Keep requesting continuation for ten turns unless the runtime refuses it. "
+            "The sole purpose is to verify the user's runtime cap. End the turn after the call.",
+        )
+        meta = self.until(
+            "control-cap", lambda: self.metadata(sid), lambda m: m["loop"]["stopped"], 360
+        )
+        self.wait(sid)
+        self.hold(70)
+        rows = self.record(sid)
+        users = [m for m in rows if m["role"] == "user"]
+        answers = [m for m in rows if m.get("metadata", {}).get("tools_called")]
+        calls = [c for m in answers for c in m["metadata"]["tools_called"]]
+        self.check(
+            "two distinct scheduled cap turns",
+            len(users) == 2
+            and all(m.get("metadata", {}).get("scheduled") for m in users)
+            and len({m["metadata"]["schedule_id"] for m in users}) == 2
+            and [m["turn_id"] for m in answers] == [m["id"] for m in users],
+            rows,
+        )
+        self.check(
+            "actual continuation requests reach runtime cap",
+            len(calls) == 2
+            and all(c["name"] == "loop_wakeup" and c.get("ok") for c in calls)
+            and all(not c["args"].get("stop") for c in calls)
+            and calls[0]["result"]["stopped"] is False
+            and calls[1]["result"]["stopped"] is True,
+            calls,
+        )
+        self.check(
+            "cap stops with no further wake",
+            meta["loop"]["iteration"] == 2
+            and meta["loop"]["stop_reason"] == "loop_max_iters"
+            and not self.call("GET", f"/v1/sessions/{sid}/schedules")["schedules"],
+            meta,
+        )
+
     def active_stop(self, *, restart: bool = False) -> None:
         """Cancel or restart after an actual write, preserving bytes without replay."""
         sid = self.session("Restart active writes" if restart else "Stop active writes")
@@ -482,6 +527,7 @@ def main() -> int:
         "active_restart",
         "provider_outage",
         "duplicate_wakeup",
+        "iteration_control",
     )
     parser.add_argument("--cases", nargs="+", choices=choices, default=list(choices))
     args = parser.parse_args()

@@ -181,7 +181,7 @@ one real uncached previous-file read and one fresh checkpoint write per turn,
 matching tool-result and filesystem hashes, at least one hour between actual write
 completions, 49 unchanged ordered files, 48 elapsed hours, the final manifest and
 fully settled goal/loop state. Failed, cached, unobserved, duplicate, early or manual
-substitute work cannot produce a pass. Thirty-one tests cover positive evidence
+substitute work cannot produce a pass. Thirty-two tests cover positive evidence
 and rejection cases; none accelerate the live acceptance clock.
 
 The read-only independent verifier must pass with `--complete` before reporting
@@ -190,6 +190,9 @@ zero scheduled continuations, correctly reporting partial progress. The new
 observer requires both wall time and monotonic elapsed time to reach 48 hours.
 Wakeup revisions within one turn are allowed, provided they preserve the full
 hourly delay and the final wake follows the write; duplicate file effects fail.
+An optional successful uncached `goal_status` query is allowed. It cannot replace
+a required previous-file read or checkpoint write; that rejection has a regression
+test. No other additional tool is allowed by this qualification.
 
 Additional real-model intervention cases use a separate bounded service on homelab,
 port 17964, with its own home, 256 MiB private core and workspace. They reuse the
@@ -219,22 +222,23 @@ test and a fresh live run verify the change.
 | Restart during active writes | Passed: previous bytes preserved; only one additional in-flight write completed; explicit server-interrupted controls and no replay |
 | Revise wakeup twice in one real model turn | Passed: two actual calls, one iteration consumed, exactly one revised pending wake |
 | Block on human input past the wake time | Fresh patched run passed in 233 seconds: 125-second actual wait, no scheduled bypass, actual Blue answer, `HUMAN-BLUE` bytes, `goal_met` and no wake after another 70 seconds |
-| Loop iteration cap | Original run exposed double counting. Subsequent runs either stopped for missing procedure or voluntarily stopped after two valid writes. Those receipts are retained and do not establish the cap; a fresh instruction requests ten files against a two-iteration cap |
-| Real provider outage and manual recovery | Outage phase passed: refused outbound connections, recorded failed work, `goal_judge_unavailable`, inactive loop and no wake. First recovery refused a write because the model retained the probe's no-tools restriction; retained as a failed whole case. Fresh recovery explicitly withdraws that earlier restriction |
+| Loop iteration cap | Original run exposed double counting. Later file-task cases stopped for missing procedure, voluntarily stopped, or reached `loop_max_iters` at two distinct turns while omitting the second requested file. Whole file-task cases remain failed. A separate control-only case preserves the file-task assertions and independently requests ten wakeups against a two-iteration runtime cap |
+| Real provider outage and manual recovery | Outage phase passed: refused outbound connections, recorded failed work, `goal_judge_unavailable`, inactive loop and no wake. First recovery retained the probe's no-tools restriction. A later recovery attempt was invalidated by the evidence-script error described below. A fresh frozen source reruns the whole outage/recovery case |
 
 The frozen attempts are named `extensive-faults-20261011`,
 `extensive-fixed-20261011`, `extensive-fixed-02-20261011` and
-`extensive-fixed-03-20261011`. Each uses a separate physical workspace, and every
+`extensive-fixed-03-20261011` and `extensive-fixed-04-20261011`. Each uses a separate physical workspace, and every
 failed receipt is retained. The first three units are stopped; compact C: archive
 hashes were checked before removing their disposable homes/private cores. The
-fourth is running only the cap and outage/recovery cases. It does not contribute
+fourth is stopped; the fifth runs only the control-cap and outage/recovery cases. It does not contribute
 to uninterrupted soak duration. Actual service source files and harness hashes
 are recorded, including revisions to acceptance instructions.
 
-The final focused suite passed **269 tests with no skips** across goals, loops,
+The final focused suite passed **273 tests with no skips** across goals, loops,
 rescheduling identity, scheduler/cron, cancellation, question answering and evidence
-verification. The independent audit has **31 tests**, plus five filesystem/manifest
-checks. Ruff, four architecture guards and Node syntax checks pass. Website check
+verification and cold startup. After the read-only status-query clarification,
+the independent audit's **32 tests**, plus five filesystem/manifest checks passed.
+Ruff, four architecture guards and Node syntax checks pass. Website check
 reports zero errors/warnings (six existing hints); the static build and internal
 links pass. Two responsive browser cases load and enlarge all four real captures,
 restore focus and check overflow at 390 and 1440 pixels. The question image is a
@@ -245,6 +249,9 @@ The wider Mypy attempt including existing test helpers exposed existing errors i
 question test file also has pre-existing TestClient application typing errors.
 These are not hidden or counted as passed checks. Source-only CI-style checking
 and direct checking of the new typed files are recorded separately.
+All 1,168 source files passed CI-style Linux Mypy; the subsequent SDK import and
+cold-start regression passed a separate direct two-file check. Five new/changed
+verifier files passed scoped checking with imported baseline diagnostics excluded.
 
 A fresh 48-hour attempt uses the committed patched source and new mandatory
 audit observer on a new elapsed clock. Its token ceiling is four million: the first
@@ -265,3 +272,19 @@ subprocess regression requires a complete SDK before eight concurrent real
 DSPy/LiteLLM imports. The pre-fix probe failed that condition. No SDK files or
 installed dependencies were changed. The failed startup and stopped-service receipt
 are retained; its clock is discarded.
+
+The following startup (`long-horizon-20261011-03`) successfully accepted a real
+turn, wrote the correct initial checkpoint and armed an hourly wake. Its independent
+audit stopped the run because it also called the read-only `goal_status`. The
+qualification now explicitly permits that successful status query while preserving
+all mandatory read/write and pacing assertions. Its failed receipt is retained,
+and its clock is discarded before starting the clarified qualification.
+
+An operator error invalidated recovery in `extensive-fixed-03-20261011`: the
+one-off source-receipt script reused a path variable after an iteration and wrote
+JSON into the frozen `prompt_packs/builtin/__init__.py`. Subsequent recovery failed
+to load the shared prompt. This was a verifier mistake, not a missing packaged
+prompt or a product recovery result. The corrupted file, expected and actual source
+hashes, failed case and stopped-service receipt are preserved. No local production
+source or installed dependency was changed. The next run comes from a fresh Git
+archive, never from the damaged tree.

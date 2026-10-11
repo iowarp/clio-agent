@@ -167,6 +167,27 @@ def build_run(root: Path, count: int = 2) -> tuple[list[dict[str, Any]], dict[st
     return rows, hashes, workspace
 
 
+def test_read_only_goal_status_does_not_substitute_checkpoint_work(
+    audit: ModuleType, tmp_path: Path
+) -> None:
+    """Control inspection is valid, while every real read/write remains mandatory."""
+    rows, hashes, workspace = build_run(tmp_path)
+    status = {
+        "call_id": "status-query",
+        "name": "goal_status",
+        "args": {},
+        "ok": True,
+        "cached": False,
+        "telemetry_source": "live_observer",
+        "result": {"active": True},
+    }
+    rows[1]["metadata"]["tools_called"].insert(0, status)
+    assert audit.verify_transcript(rows, hashes, workspace)["checkpoints"] == 2
+    rows[3]["metadata"]["tools_called"][0] = status
+    with pytest.raises(AssertionError, match="read once and write once"):
+        audit.verify_transcript(rows, hashes, workspace)
+
+
 def test_partial_can_never_claim_full_qualification(audit: ModuleType, tmp_path: Path) -> None:
     build_run(tmp_path)
     result = audit.audit_record(tmp_path)

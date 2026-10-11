@@ -187,7 +187,8 @@ class Soak:
         )
         instruction = (
             f"This is a fictional 48-hour software soak, marker {MARKER}. No science, subagents, questions, web, "
-            "shell, packages or extra tools. In EACH turn write exactly ONE new numbered JSON checkpoint, "
+            "shell, packages or extra tools, except optional read-only goal_status checks. "
+            "In EACH turn write exactly ONE new numbered JSON checkpoint, "
             "then end. Numbers run 0 through 48 inclusive. Determine the next number from the latest successful "
             "create_artifact result in this conversation (start with 0). BEFORE every checkpoint after 0, "
             "use fs_read_file on the previous checkpoint's absolute workspace path and verify its marker and next number. "

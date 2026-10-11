@@ -72,11 +72,12 @@ def verify_transcript(
             c.get("ok") is not True
             or c.get("cached") is not False
             or c.get("telemetry_source") != "live_observer"
-            or c.get("name") not in {"fs_read_file", "create_artifact", "loop_wakeup"}
+            or c.get("name")
+            not in {"fs_read_file", "create_artifact", "loop_wakeup", "goal_status"}
             for c in calls
         ):
             raise AssertionError("Failed, cached, unobserved or unexpected tool call")
-        work = [c for c in calls if c["name"] != "loop_wakeup"]
+        work = [c for c in calls if c["name"] not in {"loop_wakeup", "goal_status"}]
         wakes = [c for c in calls if c["name"] == "loop_wakeup"]
         names = [c["name"] for c in work]
         expected = (["fs_read_file"] if number else []) + ["create_artifact"]
