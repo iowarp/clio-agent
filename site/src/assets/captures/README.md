@@ -45,9 +45,10 @@ fictional test fixture with four child agents and twelve tool calls. They test
 the production React components, including duration geometry, agent filters,
 keyboard activation and resize behavior. They are not website session captures
 or evidence of fresh inference. The fixture lives only under the UI test tree.
-# Memory recall — 10 October 2026
+## Memory recall — 10 October 2026
 
-`docs-memory-search.png` is an original browser detail capture of the production
+`docs-memory-search.png` is an original browser detail capture at two device
+pixels per CSS pixel (1792 × 782), of the production
 Memory settings UI searching retained fictional station conversations. It shows
 the controls and the first of four matches. The matching Open link was followed
 to the recorded message. No OPAL content, fabricated UI or new model inference
