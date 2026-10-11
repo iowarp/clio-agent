@@ -119,6 +119,45 @@ refuses to overwrite earlier evidence.
 
 ## Remaining qualification
 
+The real 48-hour soak is now running on `homelab` in the isolated user unit
+`clio-long-horizon-20261011.service`. The service uses the merged `develop` source
+`5a92bd80354f5658f7cbe945763bf41df4960abb`, Python 3.14.6, clio-core 2.3.1 and real
+Codex/Luna authentication. Its evidence root is
+`/home/jcernuda/.local/share/clio-qualification/long-horizon-20261011`.
+The installed service on port 17800 and the task-system qualification are untouched.
+
+`scripts/live_verification/long_horizon_soak.py` sends one initial instruction,
+then independently observes production goals, loops and schedules. Acceptance
+requires 49 distinct saved checkpoints: one initial checkpoint and 48 hourly
+continuations over at least 48 real hours. The observer checks contents, marker
+retention, file hashes, unchanged previous outputs, minimum spacing, final manifest,
+goal completion and no pending wakeup. It does not send the later turns itself.
+
+Systemd enforces one CPU, 3 GiB memory, 192 tasks and a 54-hour deadline. The observer
+also stops on more than 80 descendant processes, 4 GiB of allocated run files, less
+than 10 GiB free disk, excessive measured RSS, a stalled checkpoint, or a request
+for human intervention. These limits cover this qualification; they are not claims
+that CLIO automatically enforces equivalent host limits for every user deployment.
+
+The main Python runtime is an isolated hardlink snapshot, including its interpreter,
+and uses no new Git worktree. MCP preparation caches also stay inside the bounded
+run directory. The actual dependency
+receipt records one lock deviation: `orjson` 3.13.0 supplies a Python 3.14 wheel,
+whereas frozen sync could not build locked 3.11.3 on this host. All other installed
+locked package versions match. This qualifies that recorded runtime, not every
+possible installation. Early unaccepted startup attempts are retained separately;
+their two empty 512 MiB core files were removed after shutdown was confirmed.
+
+The acceptance clock starts on 2026-10-11 at approximately 21:49 UTC. **No multi-day
+pass is claimed yet.** The earliest possible pass is October 13 at 21:49 UTC;
+normal scheduling and model latency can move completion later. The unit, compact
+receipts, checkpoint outputs and cleanup are monitored by a follow-up in this chat.
+The initial checkpoint has passed independent byte/hash verification, with the goal
+active and an hourly wakeup persisted. A separate real conversation successfully
+used `fs_read_file` to read that checkpoint and saved its actual fields in an artifact.
+Five evidence-verifier tests, Ruff and scoped Mypy passed. The unrelated declared
+web MCP mount was degraded during startup; this run does not qualify web tools.
+
 A real elapsed multi-day soak still needs to demonstrate repeated checkpointing,
 bounded resource growth, provider/authentication continuity, context retention,
 extended host availability and clean shutdown on the intended deployment host.
