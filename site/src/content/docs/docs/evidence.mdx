@@ -1,6 +1,6 @@
 ---
-title: Memory and evidence
-description: Search earlier sessions, inspect what each run read, changed, and produced, and export the provenance record.
+title: Evidence and lineage
+description: Inspect what a run read, changed, and produced, follow artifact lineage, and export its provenance record.
 ---
 
 import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
@@ -8,19 +8,12 @@ import evidence from '../../../assets/captures/current-data.png';
 import lineage from '../../../assets/captures/current-lineage.png';
 import { Image } from 'astro:assets';
 
-CLIO keeps a record of what happens in each run, so you can check an answer after the fact and build on earlier work. This page covers the record you see in the interface, and the memory the agent can search.
+CLIO records the inputs, actions and outputs of a session so you can check how
+a result was produced. Start with the source files and expanded tool results,
+then follow the artifact versions and declared input relationships.
 
-## Session memory
-
-An agent can search your past sessions and read their summaries, so a new question can start from earlier results instead of from nothing. Three memory tools do this:
-
-- `memory_search_sessions` finds matching excerpts.
-- `memory_read_session_summary` reads a session's summary.
-- `memory_read_context_frame` reads a saved piece of context from a session.
-
-By default a search covers the current session. Searching across other sessions in the workspace, or across all of them, is an explicit choice that follows the memory policy. Open Settings and choose **Memory** to search retained conversations yourself, see how full a session's context is, and review when its history was compacted.
-
-A blueprint grants memory tools to the experts that need them. An expert that does not list them cannot search memory, and a blueprint cannot override the memory policy.
+[Memory and recall](/docs/memory/) has its own guide: finding earlier
+conversation excerpts, understanding session summaries, and checking compaction.
 
 ## Data and Work
 
@@ -123,6 +116,7 @@ Provenance records describe what the agent did, including network domains contac
 ## Next steps
 
 <CardGrid>
+	<LinkCard title="Memory and recall" description="Find earlier decisions and understand where summaries come from." href="/docs/memory/" />
 	<LinkCard title="Sessions and modes" description="Control how much the agent may do on its own." href="/docs/sessions/" />
 	<LinkCard title="Your first analysis" description="See evidence for a real run." href="/tutorials/guides/first-analysis/" />
 </CardGrid>

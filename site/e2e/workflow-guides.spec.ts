@@ -75,7 +75,7 @@ test('the beginner path puts files before dashboards and alternatives under Go f
 	await page.goto('/docs/dashboards/');
 	const sidebar = page.locator('#starlight__sidebar');
 	const order = await sidebar.locator('a').evaluateAll((links) => links.map((link) => link.getAttribute('href')));
-	const basic = ['/docs/sessions/', '/docs/working-with-files/', '/docs/dashboards/', '/docs/exports/', '/docs/memory-and-evidence/'];
+	const basic = ['/docs/sessions/', '/docs/working-with-files/', '/docs/dashboards/', '/docs/exports/', '/docs/evidence/', '/docs/memory/'];
 	for (let i = 1; i < basic.length; i++) expect(order.indexOf(basic[i])).toBeGreaterThan(order.indexOf(basic[i - 1]));
 	const advanced = sidebar.locator('details').filter({ has: page.locator('summary', { hasText: 'Go further' }) });
 	await expect(advanced.getByRole('link', { name: 'Compare and refine answers', exact: true })).toBeVisible();
@@ -101,4 +101,26 @@ test('task guides include playable short recordings, captions, and actual output
 	for (const url of ['/examples/bike-dashboard.png', '/examples/bike-dashboard.html', '/datasets/bike-stations.csv']) {
 		expect((await page.request.get(url)).ok()).toBe(true);
 	}
+});
+
+test('memory and evidence are separate guides and existing bookmarks redirect', async ({ page }) => {
+	await page.goto('/docs/memory-and-evidence/');
+	await expect(page).toHaveURL(/\/docs\/evidence\/$/);
+	await expect(page.getByRole('heading', { level: 1, name: 'Evidence and lineage' })).toBeVisible();
+	const sidebar = page.locator('#starlight__sidebar');
+	await sidebar.getByRole('link', { name: 'Memory and recall', exact: true }).click();
+	await expect(page.getByRole('heading', { level: 1, name: 'Memory and recall' })).toBeVisible();
+	await expect(sidebar.getByRole('link', { name: 'Evidence and lineage', exact: true })).toBeVisible();
+	const image = page.getByRole('button', { name: /^View larger:/ });
+	await image.scrollIntoViewIfNeeded();
+	await image.click();
+	await expect(page.getByRole('dialog')).toContainText('first of four matches');
+	await page.keyboard.press('Escape');
+	await page.getByText('Inspect an actual returned overview', { exact: true }).click();
+	const resultLink = page.getByRole('link', { name: 'recorded tool result', exact: true });
+	const result = await page.request.get((await resultLink.getAttribute('href'))!);
+	expect(result.ok()).toBe(true);
+	const overview = await result.json();
+	expect(overview.summary.metadata.source).toBe('gact_visible_transcript_summary');
+	expect(overview.summary.recent_excerpts).toHaveLength(3);
 });

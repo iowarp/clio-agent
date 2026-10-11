@@ -45,3 +45,14 @@ fictional test fixture with four child agents and twelve tool calls. They test
 the production React components, including duration geometry, agent filters,
 keyboard activation and resize behavior. They are not website session captures
 or evidence of fresh inference. The fixture lives only under the UI test tree.
+# Memory recall — 10 October 2026
+
+`docs-memory-search.png` is an original browser detail capture of the production
+Memory settings UI searching retained fictional station conversations. It shows
+the controls and the first of four matches. The matching Open link was followed
+to the recorded message. No OPAL content, fabricated UI or new model inference
+is included. The summary JSON under `public/examples/` is the actual read-only
+tool result from that same retained session.
+
+Raw contextual and detail screenshots, source responses and capture code are
+archived under `D:/Libraries/Videos/clio_recordings/2026-10-10-docs-memory-evidence/`.
