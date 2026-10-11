@@ -396,3 +396,30 @@ def test_exhausted_schedule_retries_settle_loop_and_goal(tmp_path: Path, monkeyp
     assert _get_loop(app, sid)["stop_reason"] == "loop_schedule_failed"
     assert _get_goal(app, sid)["clear_reason"] == "goal_loop_stopped"
     assert not app.state.schedules.list(session_id=sid)
+
+
+def test_startup_storage_failure_retries_before_firing(tmp_path: Path, monkeypatch: Any) -> None:
+    """A transient startup read failure must neither fire unsafe work nor kill the scheduler."""
+    from clio_agent.gact import scheduler_runtime
+
+    app = _app(tmp_path)
+    attempts: list[str] = []
+
+    def reconcile(app: Any) -> None:
+        attempts.append("reconcile")
+        if len(attempts) == 1:
+            raise OSError("Temporary storage outage")
+
+    def tick(app: Any) -> None:
+        attempts.append("tick")
+        raise asyncio.CancelledError
+
+    async def sleep(delay: float) -> None:
+        assert delay >= 0.5
+
+    monkeypatch.setattr(scheduler_runtime, "reconcile_autonomous_controls", reconcile)
+    monkeypatch.setattr(scheduler_runtime, "_scheduler_tick_once", tick)
+    monkeypatch.setattr(scheduler_runtime.asyncio, "sleep", sleep)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(scheduler_runtime._scheduler_tick(app))
+    assert attempts == ["reconcile", "reconcile", "tick"]

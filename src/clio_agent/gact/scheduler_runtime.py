@@ -205,7 +205,17 @@ async def _scheduler_tick(app: "FastAPI") -> None:
     with a typed reason (never silently dropped), and the sleep is aligned to just past
     the next minute boundary so slow ticks don't drift past cron minutes."""
 
-    await asyncio.to_thread(reconcile_autonomous_controls, app)
+    reconciled = False
     while True:
-        _scheduler_tick_once(app)
+        if not reconciled:
+            try:
+                await asyncio.to_thread(reconcile_autonomous_controls, app)
+            except (OSError, RuntimeError):
+                logger.error(
+                    "scheduler startup delayed reason=control_reconciliation_failed", exc_info=True
+                )
+            else:
+                reconciled = True
+        if reconciled:
+            _scheduler_tick_once(app)
         await asyncio.sleep(_seconds_until_next_minute(datetime.now(timezone.utc)))

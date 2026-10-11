@@ -59,6 +59,8 @@ retained in the transcript, not edited out of the evidence.
   chronological recent evidence, bounded to 40 messages and 32,000 characters.
 - Exhausted staging retries could leave a loop labelled active. They now stop
   paired work with `loop_schedule_failed`.
+- Transient startup storage failure delays and retries reconciliation with an
+  explicit error, before firing work, instead of killing the scheduler task.
 
 Earlier failed receipts remain: `paced-01` exposed schedule persistence;
 `paced-02` exposed missing artifact facts; `paced-03` correctly rejected overwriting
@@ -71,7 +73,7 @@ These failures are not presented as successful live checks.
 
 ## Automated and browser checks
 
-- 183 focused pytest tests passed: goals, loop controls, scheduler/cron, inbox,
+- 184 focused pytest tests passed: goals, loop controls, scheduler/cron, inbox,
   off-loop judge/finalization and new admission/restart integration cases.
 - All 1,168 source files passed Mypy using `--platform linux`, matching CI's OS.
   Native Windows full-tree checking reports existing POSIX-only API errors in
