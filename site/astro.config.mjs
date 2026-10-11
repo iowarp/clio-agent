@@ -18,7 +18,6 @@ export default defineConfig({
 		'/docs.html': '/docs/',
 		'/uninstall.html': '/docs/uninstall/',
 		'/contributing.html': '/docs/contributing/',
-		'/docs/memory-and-evidence': '/docs/evidence/',
 	},
 	integrations: [
 		starlight({

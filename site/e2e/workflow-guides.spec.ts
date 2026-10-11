@@ -123,4 +123,9 @@ test('memory and evidence are separate guides and existing bookmarks redirect', 
 	const overview = await result.json();
 	expect(overview.summary.metadata.source).toBe('gact_visible_transcript_summary');
 	expect(overview.summary.recent_excerpts).toHaveLength(3);
+	await page.goto('/docs/memory-and-evidence/#follow-artifact-lineage');
+	await expect(page).toHaveURL(/\/docs\/evidence\/#follow-artifact-lineage$/);
+	await expect(page.getByRole('heading', { name: 'Follow artifact lineage', exact: true })).toBeVisible();
+	await page.goto('/docs/memory-and-evidence/#session-memory');
+	await expect(page).toHaveURL(/\/docs\/memory\/#find-an-earlier-conversation$/);
 });

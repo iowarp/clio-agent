@@ -1,0 +1,25 @@
+---
+// Preserve public section bookmarks when splitting the former combined guide.
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Memory and evidence guides have moved | CLIO</title>
+    <link rel="canonical" href="https://clio.iowarp.ai/docs/evidence/" />
+    <script is:inline>
+      const target = window.location.hash === '#session-memory'
+        ? '/docs/memory/#find-an-earlier-conversation'
+        : `/docs/evidence/${window.location.hash}`;
+      window.location.replace(target);
+    </script>
+    <noscript><meta http-equiv="refresh" content="0;url=/docs/evidence/" /></noscript>
+  </head>
+  <body>
+    <p>This guide is now two pages:
+      <a href="/docs/memory/">Memory and recall</a> and
+      <a href="/docs/evidence/">Evidence and lineage</a>.
+    </p>
+  </body>
+</html>
