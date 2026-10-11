@@ -222,15 +222,15 @@ test and a fresh live run verify the change.
 | Restart during active writes | Passed: previous bytes preserved; only one additional in-flight write completed; explicit server-interrupted controls and no replay |
 | Revise wakeup twice in one real model turn | Passed: two actual calls, one iteration consumed, exactly one revised pending wake |
 | Block on human input past the wake time | Fresh patched run passed in 233 seconds: 125-second actual wait, no scheduled bypass, actual Blue answer, `HUMAN-BLUE` bytes, `goal_met` and no wake after another 70 seconds |
-| Loop iteration cap | Original run exposed double counting. Later file-task cases stopped for missing procedure, voluntarily stopped, or reached `loop_max_iters` at two distinct turns while omitting the second requested file. Whole file-task cases remain failed. A separate control-only case preserves the file-task assertions and independently requests ten wakeups against a two-iteration runtime cap |
-| Real provider outage and manual recovery | Outage phase passed: refused outbound connections, recorded failed work, `goal_judge_unavailable`, inactive loop and no wake. First recovery retained the probe's no-tools restriction. A later recovery attempt was invalidated by the evidence-script error described below. A fresh frozen source reruns the whole outage/recovery case |
+| Loop iteration cap | Fresh control-only case passed in 271 seconds: ten requested wakeups, exactly two distinct scheduled turns and two real continuation calls; the second returns stopped, metadata records `loop_max_iters`/iteration 2, and no wake or third delivery remains after 70 seconds. Earlier whole file-task cases remain failed when the model omitted work or voluntarily stopped; their assertions are preserved |
+| Real provider outage and manual recovery | Fresh whole case passed in 81 seconds: actual refused outbound connections, recorded failed work, `goal_judge_unavailable`, inactive loop and no wake; restored connection plus a new authorized request saved exactly `RECOVERY-VERIFIED` in `recovered.md`. Earlier instruction-refusal and operator-invalidated recovery receipts remain failed |
 
 The frozen attempts are named `extensive-faults-20261011`,
 `extensive-fixed-20261011`, `extensive-fixed-02-20261011` and
 `extensive-fixed-03-20261011` and `extensive-fixed-04-20261011`. Each uses a separate physical workspace, and every
 failed receipt is retained. The first three units are stopped; compact C: archive
 hashes were checked before removing their disposable homes/private cores. The
-fourth is stopped; the fifth runs only the control-cap and outage/recovery cases. It does not contribute
+fourth is stopped; the fifth passed both control-cap and outage/recovery cases. It does not contribute
 to uninterrupted soak duration. Actual service source files and harness hashes
 are recorded, including revisions to acceptance instructions.
 
@@ -288,3 +288,30 @@ prompt or a product recovery result. The corrupted file, expected and actual sou
 hashes, failed case and stopped-service receipt are preserved. No local production
 source or installed dependency was changed. The next run comes from a fresh Git
 archive, never from the damaged tree.
+
+## Active fresh 48-hour qualification
+
+The current run is `clio-long-horizon-20261011-04.service` on homelab, port 17963,
+with root `/home/jcernuda/.local/share/clio-qualification/long-horizon-20261011-04`.
+It uses frozen commit `d705a749428301b9c3a98e32c38a3c4153a4127e` and its own pinned
+marketplace copy. Every source file and harness hash is retained in
+`source-identity.json`. The read-only interpreter remains in the original run's
+`venv` and sibling `interpreters`; those dependencies must remain until this run
+finishes. Its private core is 256 MiB.
+
+Session `sess_455c360b170d` started at **2026-10-11 22:50:37 UTC**. The earliest
+possible pass is **October 13 at 22:50:37 UTC**, subject to scheduling/model latency.
+The first independent audit passed one real checkpoint and zero scheduled
+continuations, explicitly `qualified=false`. A follow-up monitors the current
+unit and mandatory audit, stays quiet while healthy, and preserves failures.
+Only this new run's actual elapsed time counts. No multi-day qualification is
+claimed before 49 independently verified files and the complete audit pass.
+
+Failed/superseded units are stopped and their disposable homes, caches and private
+cores were removed after compact archive/C: hash verification. The corrupted frozen
+fault source was removed only after preserving its damaged module and hash mismatch.
+The owned local UI server, tunnel and browser-test preview are closed. Automatic
+approval review rejected local cleanup with `blocked by policy`: the earlier
+approximately 532 MiB of local runtime/test leftovers plus 149,606,400 bytes of
+source-transfer archives remain documented in the two cleanup receipts on C:.
+No alternative deletion mechanism was attempted.
