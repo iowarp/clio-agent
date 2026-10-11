@@ -62,6 +62,8 @@ from concurrent.futures import ThreadPoolExecutor
 from clio_agent.gact.app import build_app
 sdk = sys.modules.get('openai')
 assert type(sdk) is types.ModuleType and 'Omit' in vars(sdk), 'partial model SDK'
+# Match the real preflight's LiteLLM-before-builder ordering.
+importlib.import_module('litellm')
 def load(name):
     importlib.import_module(name)
     from openai import Omit, OpenAI

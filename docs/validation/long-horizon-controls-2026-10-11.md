@@ -228,11 +228,15 @@ test and a fresh live run verify the change.
 The frozen attempts are named `extensive-faults-20261011`,
 `extensive-fixed-20261011`, `extensive-fixed-02-20261011` and
 `extensive-fixed-03-20261011` and `extensive-fixed-04-20261011`. Each uses a separate physical workspace, and every
-failed receipt is retained. The first three units are stopped; compact C: archive
+failed receipt is retained. All five fault units are stopped; compact C: archive
 hashes were checked before removing their disposable homes/private cores. The
-fourth is stopped; the fifth passed both control-cap and outage/recovery cases. It does not contribute
+fifth passed both control-cap and outage/recovery cases. It does not contribute
 to uninterrupted soak duration. Actual service source files and harness hashes
 are recorded, including revisions to acceptance instructions.
+The final accepted fault archive has SHA-256
+`4175f4f7d21f8b0d1d79a28b9df9bd4bdd9653797464ae1ab6f7203554949b85`.
+Its 1,168 actual product source files match the active soak's actual source bytes
+and both identity receipts. Both runs reused the same read-only interpreter.
 
 The final focused suite passed **273 tests with no skips** across goals, loops,
 rescheduling identity, scheduler/cron, cancellation, question answering and evidence
