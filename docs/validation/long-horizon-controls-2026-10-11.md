@@ -101,7 +101,7 @@ These failures are not presented as successful live checks.
 The user guide is `site/src/content/docs/docs/long-running-work.mdx`, linked from
 Sessions and modes and the Use CLIO sidebar. It explains commands, defaults,
 limits, judge limitations, pacing, human input, stopping and restart recovery with
-three reviewed captures. Public publication follows the normal website release;
+four reviewed captures. Public publication follows the normal website release;
 source on develop must not be described as already deployed.
 
 ## Reproduce overdue restart acceptance
@@ -117,9 +117,9 @@ Verification retains the recovered transcript, checks single delivery and actual
 goal/loop completion, and stops the owned service in its finalizer. Each phase
 refuses to overwrite earlier evidence.
 
-## Remaining qualification
+## Initial soak and recorded runtime
 
-The real 48-hour soak is now running on `homelab` in the isolated user unit
+The initial 48-hour attempt ran on `homelab` in the isolated user unit
 `clio-long-horizon-20261011.service`. The service uses the merged `develop` source
 `5a92bd80354f5658f7cbe945763bf41df4960abb`, Python 3.14.6, clio-core 2.3.1 and real
 Codex/Luna authentication. Its evidence root is
@@ -133,7 +133,10 @@ continuations over at least 48 real hours. The observer checks contents, marker
 retention, file hashes, unchanged previous outputs, minimum spacing, final manifest,
 goal completion and no pending wakeup. It does not send the later turns itself.
 
-Systemd enforces one CPU, 3 GiB memory, 192 tasks and a 54-hour deadline. The observer
+Systemd enforces one CPU, 3 GiB memory, 384 tasks and a 54-hour deadline. The task
+ceiling was raised from 192 before the first scheduled continuation, after the
+separate read preflight measured 191 native tasks. This changed neither the
+acceptance clock nor the session's work. The observer
 also stops on more than 80 descendant processes, 4 GiB of allocated run files, less
 than 10 GiB free disk, excessive measured RSS, a stalled checkpoint, or a request
 for human intervention. These limits cover this qualification; they are not claims
@@ -148,10 +151,13 @@ locked package versions match. This qualifies that recorded runtime, not every
 possible installation. Early unaccepted startup attempts are retained separately;
 their two empty 512 MiB core files were removed after shutdown was confirmed.
 
-The acceptance clock starts on 2026-10-11 at approximately 21:49 UTC. **No multi-day
-pass is claimed yet.** The earliest possible pass is October 13 at 21:49 UTC;
-normal scheduling and model latency can move completion later. The unit, compact
-receipts, checkpoint outputs and cleanup are monitored by a follow-up in this chat.
+Its acceptance clock started on 2026-10-11 at approximately 21:49 UTC. This attempt
+was explicitly superseded and stopped at approximately 22:42 UTC, with one verified
+checkpoint, to qualify the newly discovered fixes and mandatory independent audit
+on a fresh clock. **No multi-day pass is claimed.** Its elapsed time is not carried
+forward. The compact retained archive has SHA-256
+`90ce10fef0e719c7b9fa8555ed2764f7a26cd1ce45817d74ef4c588c98d0a952`;
+the C: copy was independently checked before disposable state cleanup.
 The initial checkpoint has passed independent byte/hash verification, with the goal
 active and an hourly wakeup persisted. A separate real conversation successfully
 used `fs_read_file` to read that checkpoint and saved its actual fields in an artifact.
@@ -165,3 +171,85 @@ The current implementation permits multi-day plans but does not establish those
 environmental guarantees. Limits are checked between turns; they cannot interrupt
 an individual tool operation at an exact monetary or time boundary. Session token
 and cost rollups are not a billing guarantee, especially for secondary judge calls.
+
+## Extensive intervention and evidence audit
+
+The October 11 follow-up adds an independent transcript audit in
+`scripts/live_verification/long_horizon_evidence.py`. A partial audit always reports
+`qualified=false`. A complete audit requires 48 distinct scheduled continuations,
+one real uncached previous-file read and one fresh checkpoint write per turn,
+matching tool-result and filesystem hashes, at least one hour between actual write
+completions, 49 unchanged ordered files, 48 elapsed hours, the final manifest and
+fully settled goal/loop state. Failed, cached, unobserved, duplicate, early or manual
+substitute work cannot produce a pass. Thirty-one tests cover positive evidence
+and rejection cases; none accelerate the live acceptance clock.
+
+The read-only independent verifier must pass with `--complete` before reporting
+qualification. The first independent audit found one valid initial checkpoint and
+zero scheduled continuations, correctly reporting partial progress. The new
+observer requires both wall time and monotonic elapsed time to reach 48 hours.
+Wakeup revisions within one turn are allowed, provided they preserve the full
+hourly delay and the final wake follows the write; duplicate file effects fail.
+
+Additional real-model intervention cases use a separate bounded service on homelab,
+port 17964, with its own home, 256 MiB private core and workspace. They reuse the
+existing interpreter read-only and create no worktree or dependency environment.
+Each case retains requests, transcript, control state, saved bytes and SHA-256s.
+The original run is `/home/jcernuda/.local/share/clio-qualification/extensive-faults-20261011`.
+
+The first iteration-cap case failed: the model called `loop_wakeup` twice during
+one actual turn, spending a two-iteration allowance after creating only
+`loop-1.md`. The runtime stopped safely, but repeated rescheduling should replace
+one pending wakeup without consuming another iteration in that same turn.
+`last_reschedule_turn_id` now records the real execution context identity and
+counts once per turn. Every call still checks time, token and cost budgets, and
+sticky stopped loops remain stopped. The failed receipt and original driver are
+preserved; this is not counted as passing validation.
+
+The question-choice schema also exposed a real defect. Its generic object items
+gave the model no label/value properties, resulting in repeated empty options.
+The schema now describes the choice fields and requires a nonempty label; the
+existing runtime still defaults an omitted value to the label. A schema regression
+test and a fresh live run verify the change.
+
+| Intervention | Live evidence and result |
+|---|---|
+| Clear goal, then replace a loop | Passed: one replacement wake, only `new-output.md` with `NEW-ONLY`; no old delivery or additional delivery during a 70-second hold |
+| Cancel an active writing turn | Passed: only the first actual file remained after an 80-second hold; goal/loop inactive and no pending wake |
+| Restart during active writes | Passed: previous bytes preserved; only one additional in-flight write completed; explicit server-interrupted controls and no replay |
+| Revise wakeup twice in one real model turn | Passed: two actual calls, one iteration consumed, exactly one revised pending wake |
+| Block on human input past the wake time | Fresh patched run passed in 233 seconds: 125-second actual wait, no scheduled bypass, actual Blue answer, `HUMAN-BLUE` bytes, `goal_met` and no wake after another 70 seconds |
+| Loop iteration cap | Original run exposed double counting. Subsequent runs either stopped for missing procedure or voluntarily stopped after two valid writes. Those receipts are retained and do not establish the cap; a fresh instruction requests ten files against a two-iteration cap |
+| Real provider outage and manual recovery | Outage phase passed: refused outbound connections, recorded failed work, `goal_judge_unavailable`, inactive loop and no wake. First recovery refused a write because the model retained the probe's no-tools restriction; retained as a failed whole case. Fresh recovery explicitly withdraws that earlier restriction |
+
+The frozen attempts are named `extensive-faults-20261011`,
+`extensive-fixed-20261011`, `extensive-fixed-02-20261011` and
+`extensive-fixed-03-20261011`. Each uses a separate physical workspace, and every
+failed receipt is retained. The first three units are stopped; compact C: archive
+hashes were checked before removing their disposable homes/private cores. The
+fourth is running only the cap and outage/recovery cases. It does not contribute
+to uninterrupted soak duration. Actual service source files and harness hashes
+are recorded, including revisions to acceptance instructions.
+
+The final focused suite passed **269 tests with no skips** across goals, loops,
+rescheduling identity, scheduler/cron, cancellation, question answering and evidence
+verification. The independent audit has **31 tests**, plus five filesystem/manifest
+checks. Ruff, four architecture guards and Node syntax checks pass. Website check
+reports zero errors/warnings (six existing hints); the static build and internal
+links pass. Two responsive browser cases load and enlarge all four real captures,
+restore focus and check overflow at 390 and 1440 pixels. The question image is a
+reviewed crop of the fresh accepted run, showing actual choices and Waiting for you.
+
+The wider Mypy attempt including existing test helpers exposed existing errors in
+`tests/_cte_isolation.py` and `scripts/live_verification/_common.py`; the existing
+question test file also has pre-existing TestClient application typing errors.
+These are not hidden or counted as passed checks. Source-only CI-style checking
+and direct checking of the new typed files are recorded separately.
+
+A fresh 48-hour attempt will run the committed patched source and new mandatory
+audit observer on a new elapsed clock. Its token ceiling is four million: the first
+real Base Agent batch used about 39,000 input tokens, so the earlier one-million
+cap could prevent 49 valid batches. Iteration, time, process, memory and disk bounds
+remain explicit. The wakeup preserves the complete original procedure rather than
+replacing it with an under-specified “continue” instruction. This setup change
+does not turn partial evidence into a multi-day reliability claim.

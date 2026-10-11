@@ -418,3 +418,19 @@ def test_async_expiry_preserves_blocking_anchor(
     assert session.status == "waiting_user"
     assert session.metadata["pending_user_question_id"] == blocking["id"]
     assert [q.status for q in client.app.state.user_questions.values()] == ["pending", "expired"]
+
+
+def test_choice_tool_schema_describes_required_option_fields() -> None:
+    """The model must see actual choice fields, rather than generate empty objects."""
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import ValidationError
+
+    tool = build_ask_user_tool(AgentDef(id="main", title="CLIO", tools=["ask_user"]))
+    schema = tool.args["options"]
+    validator = Draft202012Validator(schema)
+    validator.validate([{"label": "Blue", "value": "blue", "description": "Use blue"}])
+    validator.validate([{"label": "Green"}])  # Existing label-as-value shorthand stays valid.
+    with pytest.raises(ValidationError):
+        validator.validate([{}])
+    with pytest.raises(ValidationError):
+        validator.validate([{"label": ""}])

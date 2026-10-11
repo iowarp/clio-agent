@@ -9,6 +9,7 @@ import { captureImage } from "../../../lib/captures";
 import goalCompleted from "../../../assets/captures/docs-goal-completed.png";
 import loopSetup from "../../../assets/captures/docs-loop-setup.png";
 import loopCompleted from "../../../assets/captures/docs-loop-completed.png";
+import loopQuestion from "../../../assets/captures/docs-loop-human-question.png";
 
 Use a **goal** to keep working toward a clear finishing condition. Add a **loop**
 when each batch should wait before the next one. Both work in the same conversation,
@@ -100,23 +101,46 @@ The agent uses **loop_wakeup** to schedule its next turn. If it finishes without
 rescheduling, CLIO grants one fallback wakeup, then stops if it still does not
 reschedule. A loop may also stop because the agent decides to stop.
 
+If the agent revises its wakeup more than once in the same turn, the latest
+instruction replaces the pending wakeup. That turn consumes at most one
+rescheduling iteration. Time, token and cost limits are still checked on each
+call; revising a wakeup does not reset those limits.
+
 Intervals range from **one minute to one hour**. The scheduler checks on minute
 boundaries, so a wakeup may start almost a minute after its requested time. A busy
 conversation waits until its current turn finishes; it does not run two turns
 concurrently.
 
+## When a run needs your answer
+
+A blocking question pauses the conversation. An overdue loop wakeup waits too;
+it cannot answer for you or bypass the question. Choose an option or enter your
+answer, then select **Send response**. CLIO resumes with that actual answer.
+If the resulting work meets the goal, its pending loop wakeup is cancelled.
+
+<Capture client:visible image={await captureImage(loopQuestion)}
+  alt="Loop waiting for a human answer with Blue and Green choices and Send response"
+  caption="A live control check waited beyond its loop deadline. Answering Blue resumed the conversation, saved HUMAN-BLUE in answer.md and completed the goal without an extra scheduled turn."
+  sizes="(min-width: 50rem) 36rem, 100vw" />
+
 ## Set a bounded multi-day plan
 
 Begin with a short trial using the same tools, permissions and output locations
 as your intended run. Confirm that each batch reads its checkpoint, writes a new
-one and can stop. Then choose explicit limits for the longer plan, for example:
+one and can stop. Before scheduling, ask CLIO to prepare **plan.md** and an initial
+**checkpoint.md**, then open and review both. The plan should define the allowed
+work and its stopping condition. The initial checkpoint should explicitly say
+that no batches are complete, which batch comes first, and where outputs will go.
+An instruction to “continue” needs an existing procedure and starting state.
+
+Then choose explicit limits for the longer plan, for example:
 
 ```text
 /goal --max-iters=72 --max-hours=72 The planned exploration batches are complete and the final comparison report records all completed batches and validation results.
 ```
 
 ```text
-/loop 1h --max-iters=72 --max-hours=72 --max-tokens=1000000 Read checkpoint.md. Perform one bounded batch from the approved plan. Save outputs under a new batch number, update checkpoint.md and the comparison report, and record failures. Reschedule with loop_wakeup for one hour if useful work remains. Do not repeat a completed batch.
+/loop 1h --max-iters=72 --max-hours=72 --max-tokens=1000000 Read plan.md and checkpoint.md. Perform one bounded batch from the approved plan. Save outputs under a new batch number, update checkpoint.md and the comparison report, and record failures. Reschedule with loop_wakeup for one hour if useful work remains, preserving these instructions in its prompt. Do not repeat a completed batch.
 ```
 
 These commands permit work within the limits; they do not reserve a model quota

@@ -478,9 +478,9 @@ def loop_wakeup_impl(
     """Reschedule this session's loop after a delay, or ``stop:true`` to end it.
 
     The model's control door (⚑ RULE 1 — the model decides; clio enforces). On a
-    non-stop call: clamps ``delay_seconds`` (typed reason if clamped), increments the
-    iteration, and — if no typed bound trips — arms the next wakeup (reusing the scheduler
-    one-shot). When a bound trips OR ``stop:true``, the loop ends with a typed reason and
+    non-stop call: clamps ``delay_seconds`` (typed reason if clamped), counts at most one
+    rescheduling iteration per turn, and — if no typed bound trips — arms the next scheduler
+    one-shot. When a bound trips OR ``stop:true``, the loop ends with a typed reason and
     the pending wakeup is cancelled (cancel-both). Returns
     ``{loop_id, next_fire_at, stopped}``.
 
@@ -511,6 +511,10 @@ def loop_wakeup_impl(
                     reason="loop_bound_tripped_rearm_denied",
                 )
             started = start_loop(app, sid, prompt=prompt, interval_s=delay_seconds)
+            if turn_id := _ctx.active_turn_id():
+                initiated = _get_loop(app, sid)
+                initiated["last_reschedule_turn_id"] = turn_id
+                _put_loop(app, sid, initiated)
             return {
                 "loop_id": started["loop_id"],
                 "next_fire_at": started["next_fire_at"],
@@ -533,7 +537,10 @@ def loop_wakeup_impl(
                 delay,
             )
 
-        loop["iteration"] = int(loop.get("iteration", 0)) + 1
+        turn_id = _ctx.active_turn_id()
+        if not turn_id or loop.get("last_reschedule_turn_id") != turn_id:
+            loop["iteration"] = int(loop.get("iteration", 0)) + 1
+            loop["last_reschedule_turn_id"] = turn_id
 
         stop_reason = _check_bounds(app, sid, loop)
         if stop_reason:

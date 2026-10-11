@@ -27,6 +27,7 @@ SOURCE = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(SOURCE), str(SOURCE / "src")]
 
 from _common import terminate_server  # noqa: E402
+from long_horizon_evidence import audit_record  # noqa: E402
 
 from tests._cte_isolation import isolate_cte_env, reap_private_daemon  # noqa: E402
 
@@ -38,6 +39,7 @@ MAX_DISK = 4 * 1024**3
 MIN_FREE = 10 * 1024**3
 MAX_RSS = 3 * 1024**3
 MAX_CHILDREN = 80
+MAX_TOKENS = 4_000_000
 
 
 def publish(path: Path, value: Any) -> None:
@@ -114,6 +116,7 @@ class Soak:
         self.endpoint = f"http://127.0.0.1:{port}"
         self.sid = ""
         self.started = 0.0
+        self.started_mono = 0.0
         self.hashes: dict[str, str] = {}
         self.observed: dict[str, float] = {}
         self.workspace = root / "runtime/workspace"
@@ -191,8 +194,7 @@ class Soak:
             f"Workspace: {self.workspace}. Use create_artifact(name='batch-NNN.json', kind='other', pdf_preview=false, "
             f"content=JSON with exactly batch:N, next:N+1, previous:N-1, marker:'{MARKER}'). "
             "NNN is zero-padded to three digits. Preserve every previous file. After each checkpoint below 48, "
-            "call loop_wakeup(delay_seconds=3600, prompt='Continue the original hourly checkpoint procedure; "
-            "read the previous durable checkpoint, write exactly one next checkpoint, then reschedule for 3600 seconds.'). "
+            "call loop_wakeup(delay_seconds=3600, prompt='') to preserve this complete original procedure. "
             "Never reduce the one-hour delay. At checkpoint 48 ALSO create final-manifest.json, kind other, "
             f"pdf_preview=false, containing exactly marker:'{MARKER}' and files:[all 49 batch-NNN.json filenames "
             "in ascending order]. Then finish without another wakeup. Do not claim science or broader reliability. "
@@ -201,23 +203,28 @@ class Soak:
         publish(self.root / "instruction.json", {"text": instruction})
         self.command(
             "goal",
-            "--max-iters=64 --max-hours=54 --max-tokens=1000000 "
+            f"--max-iters=64 --max-hours=54 --max-tokens={MAX_TOKENS} "
             "All 49 checkpoints batch-000.json through batch-048.json and final-manifest.json exist, "
             "with successful create_artifact results, preserved marker and ordered file list.",
         )
-        self.command("loop", "1h --max-iters=64 --max-hours=54 --max-tokens=1000000 " + instruction)
+        self.command(
+            "loop", f"1h --max-iters=64 --max-hours=54 --max-tokens={MAX_TOKENS} " + instruction
+        )
         self.started = time.time()
+        self.started_mono = time.monotonic()
         publish(
             self.root / "identity.json",
             {
                 "session_id": self.sid,
                 "workspace_id": wid,
                 "started": self.started,
+                "started_monotonic": self.started_mono,
                 "earliest_pass": self.started + MIN_SECONDS,
                 "hard_deadline": self.started + MAX_SECONDS,
                 "marker": MARKER,
                 "checkpoints": COUNT,
                 "minimum_elapsed_seconds": MIN_SECONDS,
+                "max_tokens": MAX_TOKENS,
             },
         )
         admission_deadline = time.monotonic() + 240
@@ -264,6 +271,7 @@ class Soak:
             "session_id": self.sid,
             "session_status": session["status"],
             "elapsed_seconds": now - self.started,
+            "elapsed_monotonic_seconds": time.monotonic() - self.started_mono,
             "checkpoints": len(self.hashes),
             "goal": meta.get("goal"),
             "loop": meta.get("loop"),
@@ -271,6 +279,8 @@ class Soak:
             "resources": resources(self.root),
         }
         publish(self.root / "status.json", status)
+        if session["status"] == "idle" and self.hashes:
+            publish(self.root / "independent-audit.json", audit_record(self.root))
         with (self.root / "metrics.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(
                 json.dumps(
@@ -284,13 +294,22 @@ class Soak:
             )
         if len(self.hashes) == COUNT and meta.get("goal", {}).get("clear_reason") == "goal_met":
             verify_manifest(self.workspace)
-            if now - self.started < MIN_SECONDS or schedules or meta.get("loop", {}).get("active"):
+            if (
+                now - self.started < MIN_SECONDS
+                or status["elapsed_monotonic_seconds"] < MIN_SECONDS
+                or schedules
+                or meta.get("loop", {}).get("active")
+            ):
                 raise AssertionError("Premature completion or pending work")
             for n in range(1, COUNT):
                 a = self.workspace / f"batch-{n - 1:03d}.json"
                 b = self.workspace / f"batch-{n:03d}.json"
                 if b.stat().st_mtime - a.stat().st_mtime < 3590:
                     raise AssertionError("Checkpoint interval was shortened")
+            audit = audit_record(self.root, complete=True)
+            if audit.get("qualified") is not True:
+                raise AssertionError("Independent transcript audit did not qualify the run")
+            publish(self.root / "independent-audit.json", audit)
             publish(self.root / "verdict.json", {"passed": True, **status, "status": "passed"})
             return True
         if session["status"] in {"error", "cancelled", "waiting_user", "waiting_permission"}:

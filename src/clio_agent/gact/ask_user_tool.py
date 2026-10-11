@@ -250,7 +250,26 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "options": {
                 "type": "array",
                 "description": "Choice options with label, value, and optional description.",
-                "items": {"type": "object"},
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Visible choice text.",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "Answer value; defaults to label when omitted.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional explanation of this choice.",
+                        },
+                    },
+                    "required": ["label"],
+                    "additionalProperties": False,
+                },
             },
             "allowFreeform": {
                 "type": "boolean",

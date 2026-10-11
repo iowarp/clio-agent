@@ -10,6 +10,7 @@ for (const width of [390, 1440]) {
       'Completed three-checkpoint goal',
       'Active goal and hourly loop',
       'Completed paced goal and stopped loop',
+      'Loop waiting for a human answer',
     ].entries()) {
       const button = page.getByRole('button', { name: new RegExp(`^View larger: ${title}`) });
       await button.scrollIntoViewIfNeeded();
