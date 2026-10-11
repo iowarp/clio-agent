@@ -156,7 +156,7 @@ those outputs to their recorded inputs and actions.
 | `/loop stop` | Cancel the pending wakeup and paired goal; the model cannot undo this stop |
 | `/goal clear` | Remove the goal and discard queued goal continuations; an independently armed loop remains |
 | Stop the current run | Cancel that turn and its goal/loop controls; separately accepted tasks have their own lifecycle |
-| Backend restarts while a loop is waiting | Preserve its durable wakeup and limits; overdue work is considered on a scheduler tick |
+| Backend restarts while a loop is waiting | Preserve its durable wakeup and limits; overdue work waits for model readiness, then is considered on a scheduler tick |
 | Backend restarts during a turn, or loses the control's pending wakeup | Stop the interrupted controls explicitly; do not replay potentially completed file writes |
 | Judge fails or exceeds its 60-second timeout | Stop the goal and paired loop with an unavailable-judge reason |
 | A scheduled turn repeatedly fails to start | Retry within the scheduler's bound, then stop the loop and paired goal with a scheduling-failure reason |

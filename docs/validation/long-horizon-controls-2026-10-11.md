@@ -33,6 +33,8 @@ originals are under `captures/originals/`; publication crops are separate files.
 | `goal-expiration-01` | A one-second goal budget expires before the longer loop budget; no model turn is staged; both controls stop |
 | `interrupted-01` | Restart during an accepted real turn yields `goal_server_interrupted` and `loop_server_interrupted`; no replay or pending schedule |
 | `question-04` | Base Agent's actual blocking `ask_user` holds `waiting_user` across a due wakeup; no scheduled turn is delivered over it |
+| `iterations-03` | An unmet goal permits exactly one additional continuation, then stops with `goal_max_iters`; two real model turns and no third turn |
+| `overdue-02` | Backend and private core are stopped until after the wakeup is overdue; cold startup restores model readiness, delivers the original schedule once, saves `overdue.md`, and stops with `goal_met` / `loop_goal_met` without a startup turn error |
 
 `artifact-verification.json` records an independent byte fetch for all five output
 files. All sizes and SHA-256 hashes match their resource metadata. Contents record
@@ -61,6 +63,10 @@ retained in the transcript, not edited out of the evidence.
   paired work with `loop_schedule_failed`.
 - Transient startup storage failure delays and retries reconciliation with an
   explicit error, before firing work, instead of killing the scheduler task.
+- An overdue wakeup could start before the runtime host was ready, leaving the
+  completion judge without an owning model. Admission now waits for readiness
+  and provider binding. A scheduled session's saved model can restore the host
+  when no global provider is configured; that path also has focused coverage.
 
 Earlier failed receipts remain: `paced-01` exposed schedule persistence;
 `paced-02` exposed missing artifact facts; `paced-03` correctly rejected overwriting
@@ -69,11 +75,14 @@ timed out during an unnecessary provider rebind, removed from the driver;
 `expiration-02` incorrectly counted a synthetic command result as a model turn.
 `question-01` used a tool-less built-in main instead of activating Base Agent;
 `question-02/03` exposed errors in acceptance setup, before any question was sent.
+`iterations-01/02` received typed `503 starting` refusals before model readiness;
+the final driver waits and retries only that unaccepted starting request.
+`overdue-01` exposed the real startup admission defect described above.
 These failures are not presented as successful live checks.
 
 ## Automated and browser checks
 
-- 184 focused pytest tests passed: goals, loop controls, scheduler/cron, inbox,
+- 187 focused pytest tests passed: goals, loop controls, scheduler/cron, inbox,
   off-loop judge/finalization and new admission/restart integration cases.
 - All 1,168 source files passed Mypy using `--platform linux`, matching CI's OS.
   Native Windows full-tree checking reports existing POSIX-only API errors in
@@ -94,6 +103,19 @@ Sessions and modes and the Use CLIO sidebar. It explains commands, defaults,
 limits, judge limitations, pacing, human input, stopping and restart recovery with
 three reviewed captures. Public publication follows the normal website release;
 source on develop must not be described as already deployed.
+
+## Reproduce overdue restart acceptance
+
+Use `scripts/live_verification/conversation_control_server.py` with a fresh bounded
+evidence directory on the chosen drive, and wait for startup. With that service
+running, execute `scripts/live_verification/overdue_loop_restart.py prepare
+--out <case-directory> --service <service-directory>` using `uv run --no-sync python`.
+Preparation saves the original schedule and stops the owned service and core.
+Wait at least 70 real seconds, resume the service with `--resume`, then run the
+same verifier with phase `verify`. Neither clocks nor responses are replaced.
+Verification retains the recovered transcript, checks single delivery and actual
+goal/loop completion, and stops the owned service in its finalizer. Each phase
+refuses to overwrite earlier evidence.
 
 ## Remaining qualification
 

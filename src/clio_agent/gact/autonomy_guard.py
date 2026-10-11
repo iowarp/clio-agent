@@ -10,6 +10,27 @@ from collections.abc import Mapping
 from typing import Any
 
 
+async def prepare_scheduled_host(app: Any) -> None:
+    """Restore a scheduled session's selected model when no global host was configured."""
+    if not hasattr(app.state, "agent") or app.state.agent is not None:
+        return
+    if getattr(app.state, "lm_config_status", {}).get("state") == "configuring":
+        return
+    boot = getattr(app.state, "agent_construction_task", None)
+    if boot is not None and not boot.done():
+        return  # Admission defers until the existing startup build finishes.
+    from clio_agent.gact.message_contract import PostMessageRequest
+    from clio_agent.gact.session_host_agent import ensure_host_agent, selected_ref
+
+    for schedule in app.state.schedules.list():
+        if not schedule.enabled:
+            continue
+        request = PostMessageRequest(text=schedule.question)
+        if selected_ref(app, schedule.session_id, request) is not None:
+            await ensure_host_agent(app, schedule.session_id, request)
+            return
+
+
 def admit_loop_wakeup(app: Any, schedule: Any) -> bool:
     """Reject a deleted wakeup or a loop whose limit expired while it was waiting."""
     from clio_agent.gact.autonomous_loop import _LOOP_MUTEX, _check_bounds, _get_loop

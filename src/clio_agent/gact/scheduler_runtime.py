@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.autonomy_guard import (
     admit_loop_wakeup,
+    prepare_scheduled_host,
     reconcile_autonomous_controls,
     settle_failed_loop_schedule,
 )
@@ -88,6 +89,16 @@ def _fire_schedule(app: "FastAPI", sch: Any) -> None:
         app.state.schedules.mark_fired(sch.id)
         logger.warning(
             "scheduler tick error reason=schedule_session_not_found schedule_id=%s session_id=%s",
+            sch.id,
+            sch.session_id,
+        )
+        return
+    if (hasattr(app.state, "agent") and app.state.agent is None) or (
+        getattr(app.state, "lm_config_status", {}).get("state") == "configuring"
+    ):
+        app.state.deferred_schedules.add(sch.id)
+        logger.info(
+            "scheduler tick deferred reason=schedule_agent_unavailable schedule_id=%s session_id=%s",
             sch.id,
             sch.session_id,
         )
@@ -207,15 +218,13 @@ async def _scheduler_tick(app: "FastAPI") -> None:
 
     reconciled = False
     while True:
-        if not reconciled:
-            try:
+        try:
+            if not reconciled:
                 await asyncio.to_thread(reconcile_autonomous_controls, app)
-            except (OSError, RuntimeError):
-                logger.error(
-                    "scheduler startup delayed reason=control_reconciliation_failed", exc_info=True
-                )
-            else:
                 reconciled = True
-        if reconciled:
+            await prepare_scheduled_host(app)
+        except (OSError, RuntimeError):
+            logger.error("scheduler tick delayed reason=control_preparation_failed", exc_info=True)
+        else:
             _scheduler_tick_once(app)
         await asyncio.sleep(_seconds_until_next_minute(datetime.now(timezone.utc)))

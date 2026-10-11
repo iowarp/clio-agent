@@ -423,3 +423,61 @@ def test_startup_storage_failure_retries_before_firing(tmp_path: Path, monkeypat
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(scheduler_runtime._scheduler_tick(app))
     assert attempts == ["reconcile", "reconcile", "tick"]
+
+
+@pytest.mark.parametrize("starting", [True, False])
+def test_overdue_wakeup_waits_for_runtime_readiness(
+    tmp_path: Path, monkeypatch: Any, starting: bool
+) -> None:
+    from clio_agent.gact import app as app_mod
+
+    app = _app(tmp_path)
+    sid = _session(app)
+    start_loop(app, sid, prompt="One checkpoint", interval_s=60)
+    schedule = app.state.schedules.get(_get_loop(app, sid)["pending_schedule_id"])
+    app.state.agent = None if starting else object()
+    app.state.lm_config_status = {"state": "ready" if starting else "configuring"}
+    app.state.turn_runner = SimpleNamespace(busy=lambda sid: False)
+    staged: list[str] = []
+    monkeypatch.setattr(
+        app_mod, "_turn_start_background_user_turn", lambda *a, **k: staged.append(sid)
+    )
+    _fire_schedule(app, schedule)
+    assert not staged and schedule.id in app.state.deferred_schedules
+    assert app.state.schedules.get(schedule.id).enabled
+    app.state.agent = object()
+    app.state.lm_config_status = {"state": "ready"}
+    _fire_schedule(app, schedule)
+    assert staged == [sid]
+    assert app.state.schedules.get(schedule.id) is None
+
+
+def test_scheduler_restores_a_sessions_own_model(tmp_path: Path, monkeypatch: Any) -> None:
+    from clio_agent.gact import session_host_agent
+    from clio_agent.gact.autonomy_guard import prepare_scheduled_host
+
+    app = _app(tmp_path)
+    sid = _session(app)
+    app.state.sessions.update(sid, model={"provider_id": "codex", "model_id": "gpt-6-luna"})
+    start_loop(app, sid, prompt="One checkpoint")
+    app.state.agent = None
+    app.state.agent_construction_task = SimpleNamespace(done=lambda: False)
+    built: list[str] = []
+
+    async def build(app: Any, session_id: str, request: Any) -> None:
+        ref = session_host_agent.selected_ref(app, session_id, request)
+        assert ref.provider_id == "codex" and ref.model_id == "gpt-6-luna"
+        built.append(session_id)
+        app.state.agent = object()
+
+    monkeypatch.setattr(session_host_agent, "ensure_host_agent", build)
+    asyncio.run(prepare_scheduled_host(app))
+    assert not built
+    app.state.agent_construction_task = None
+    app.state.lm_config_status = {"state": "configuring"}
+    asyncio.run(prepare_scheduled_host(app))
+    assert not built
+    app.state.lm_config_status = {"state": "ready"}
+    asyncio.run(prepare_scheduled_host(app))
+    asyncio.run(prepare_scheduled_host(app))
+    assert built == [sid]
