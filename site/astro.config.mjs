@@ -18,6 +18,7 @@ export default defineConfig({
 		'/docs.html': '/docs/',
 		'/uninstall.html': '/docs/uninstall/',
 		'/contributing.html': '/docs/contributing/',
+		'/docs/memory-and-evidence': '/docs/evidence/',
 	},
 	integrations: [
 		starlight({
@@ -54,7 +55,8 @@ export default defineConfig({
 						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{ label: 'Dashboards', slug: 'docs/dashboards' },
 						{ label: 'Exports and downloads', slug: 'docs/exports' },
-						{ label: 'Memory and evidence', slug: 'docs/memory-and-evidence' },
+						{ label: 'Evidence and lineage', slug: 'docs/evidence' },
+						{ label: 'Memory and recall', slug: 'docs/memory' },
 						{
 							label: 'Worked examples', collapsed: true,
 							items: [{ label: 'Report and presentation', slug: 'docs/examples/reports-and-slides' }],

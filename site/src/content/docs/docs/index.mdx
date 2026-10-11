@@ -20,7 +20,7 @@ Work happens in sessions, and each session belongs to a workspace, which is a fo
 2. The agent for that session plans the work. Each session runs one [agent blueprint](/docs/blueprints/), which defines the agent's instructions, its tools, and the expert agents it can call on.
 3. The agent calls tools to read files, query data sources, and run analyses. When a task suits a domain expert, it hands that task to one of the expert agents its blueprint declares. Each expert runs as its own child session, and several can work at the same time.
 4. When a choice is yours to make, the agent stops and asks you. The question can be free text, a list of choices, a confirmation, or an interactive view such as a map.
-5. Results come back with their evidence: the files that were read, the changes that were proposed, and the artifacts that were created. See [Memory and evidence](/docs/memory-and-evidence/).
+5. Results come back with their evidence: the files that were read, the changes that were proposed, and the artifacts that were created. See [Evidence and lineage](/docs/evidence/).
 
 The model decides what to do next. CLIO does not route your request with keyword rules, and an agent can only call the experts its blueprint declares.
 

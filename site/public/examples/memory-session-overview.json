@@ -1,0 +1,65 @@
+{
+  "tool": "memory_read_session_summary",
+  "summary": {
+    "session_id": "sess_b8da563aa65f",
+    "title": "Compare report introductions — Best of N",
+    "workspace_id": "ws_default",
+    "status": "idle",
+    "created_at": "2026-10-10T20:03:23.774536-05:00",
+    "updated_at": "2026-10-10T20:06:09.602251-05:00",
+    "message_count": 12,
+    "visible_message_ids": [
+      "6097c429-b412-4240-8ccd-c1e1afe475ac",
+      "msg_asst_55efcaa87fd2",
+      "msg_user_e04a3e91608e",
+      "msg_asst_1b4a1eb93486",
+      "msg_user_ec9c02444874",
+      "msg_asst_b70b1737ae88",
+      "2c22e56a-0f1c-4ed6-a586-3661d98bd3b8",
+      "msg_asst_ad2f7583afe9",
+      "msg_user_b42da4c3b307",
+      "msg_asst_e305b495b612",
+      "msg_user_a96b1f50870a",
+      "msg_asst_631158ae9206"
+    ],
+    "recent_excerpts": [
+      {
+        "message_id": "msg_user_b42da4c3b307",
+        "role": "user",
+        "created_at": "2026-10-10T20:05:59.213921-05:00",
+        "excerpt": "[Answer to agent question]\nQuestion: Which draft should continue the conversation? Add a comment to have it refined; pick without a comment to accept it.\nSelected option(s): main#run0\nAnswer: For a nontechnical colleague: use plain language, keep all figures, and say these snapshots do not prove individual bike journeys."
+      },
+      {
+        "message_id": "msg_user_a96b1f50870a",
+        "role": "user",
+        "created_at": "2026-10-10T20:06:08.702667-05:00",
+        "excerpt": "[Answer to agent question]\nQuestion: Which draft should continue the conversation? Add a comment to have it refined; pick without a comment to accept it.\nSelected option(s): main#run1"
+      },
+      {
+        "message_id": "msg_asst_631158ae9206",
+        "role": "assistant",
+        "created_at": "2026-10-10T20:06:09.356786-05:00",
+        "excerpt": "The fictional station snapshots show 54 bikes in total; from 6–9 am, Hill has 37 fewer bikes and Downtown has 37 more. Fernhill is the first station with no bikes, at 8:15; the snapshots do not prove that any individual bikes travelled between stations."
+      }
+    ],
+    "last_rollback": {},
+    "excluded_message_ids": [],
+    "metadata": {
+      "source": "gact_visible_transcript_summary",
+      "raw_transcript_included": false,
+      "excerpt_limit": 3
+    }
+  },
+  "metadata": {
+    "policy_decision": "allow_same_session",
+    "policy_scope": "session",
+    "audit_id": "memtool_25c004a6a2f9",
+    "caller": {},
+    "provenance": {
+      "source": "gact_memory_tool",
+      "tool_name": "memory_read_session_summary",
+      "session_id": "sess_b8da563aa65f",
+      "target_session_id": "sess_b8da563aa65f"
+    }
+  }
+}
