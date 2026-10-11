@@ -41,6 +41,9 @@ def main() -> int:
     parser.add_argument("--ui-port", type=int, default=5187)
     parser.add_argument("--hold-seconds", type=int, default=3600)
     parser.add_argument(
+        "--stack-timeout", type=int, default=0, help="Dump stacks after this many seconds"
+    )
+    parser.add_argument(
         "--resume", action="store_true", help="Reuse a stopped run's state and storage"
     )
     args = parser.parse_args()
@@ -77,6 +80,7 @@ def main() -> int:
             "CLIO_GACT_CORS_ORIGINS": f"http://127.0.0.1:{args.ui_port}",
             "LITELLM_LOCAL_MODEL_COST_MAP": "True",
             "PYTHONPATH": str(ROOT / "src"),
+            "CLIO_STREAM_AUDIT_LOG": str(out / "stream-audit.jsonl"),
         }
     )
     isolation = isolate_cte_env(out / "private-core", env)
@@ -96,7 +100,13 @@ def main() -> int:
                         [
                             sys.executable,
                             "-c",
-                            "from clio_agent.gact.app import run_server; "
+                            (
+                                "import faulthandler; faulthandler.enable(); "
+                                f"faulthandler.dump_traceback_later({args.stack_timeout}); "
+                                if args.stack_timeout > 0
+                                else ""
+                            )
+                            + "from clio_agent.gact.app import run_server; "
                             f"run_server(host='127.0.0.1', port={args.port})",
                         ],
                         cwd=workspace,

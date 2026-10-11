@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.autonomy_limits import normalize_limits, parse_limit_options
 from clio_agent.gact.cron_tools import cancel_schedule
 from clio_agent.runtime import trace
 
@@ -77,6 +78,10 @@ LOOP_STOP_REASONS = (
     "loop_no_reschedule",  # the bounded fallback fired once and still no reschedule
     "loop_session_ended",  # session end/cancel cancelled the loop (cancel-both)
     "loop_restarted",  # a new start_loop() superseded a still-active prior loop
+    "loop_goal_capped",  # the paired goal exhausted a limit or lost its judge
+    "loop_server_interrupted",  # restart cannot safely replay an interrupted turn
+    "loop_user_cancelled",  # the user's /loop stop cannot be undone by the model
+    "loop_schedule_failed",  # scheduling retries were exhausted
 )
 
 #: STICKY stop reasons: a loop that halted for one of these hit a HARD bound (the
@@ -86,7 +91,17 @@ LOOP_STOP_REASONS = (
 #: the field pattern (Claude ``/loop``, Codex): a tripped hard bound is a wall the model
 #: cannot self-lift. ``loop_user_stopped`` is deliberately EXCLUDED — the model's own
 #: stop is a decision it may reverse; a bound is not.
-LOOP_STICKY_STOP_REASONS = frozenset({"loop_max_iters", "loop_budget", "loop_session_ended"})
+LOOP_STICKY_STOP_REASONS = frozenset(
+    {
+        "loop_max_iters",
+        "loop_budget",
+        "loop_session_ended",
+        "loop_goal_capped",
+        "loop_server_interrupted",
+        "loop_user_cancelled",
+        "loop_schedule_failed",
+    }
+)
 
 #: Typed delay-clamp reasons (never a silent clamp).
 CLAMP_FLOOR = "loop_delay_clamped_floor"
@@ -358,6 +373,19 @@ def start_loop(
     resolved bounds)."""
 
     text = (prompt or "").strip()
+    try:
+        limits = normalize_limits(
+            {
+                "max_iters": max_iters,
+                "max_wallclock_s": max_wallclock_s,
+                "max_tokens": max_tokens,
+                "max_usd": max_usd,
+            }
+        )
+    except ValueError as exc:
+        raise LoopError(str(exc), reason="loop_invalid_limit") from exc
+    max_iters, max_tokens = int(limits["max_iters"]), int(limits["max_tokens"])
+    max_wallclock_s, max_usd = float(limits["max_wallclock_s"]), float(limits["max_usd"])
     if not text:
         raise LoopError(
             "a loop needs a prompt to re-drive each iteration", reason="loop_missing_prompt"
@@ -414,6 +442,9 @@ def start_loop(
         }
         _put_loop(app, sid, loop)
         next_fire = _arm(app, sid, loop, text, delay)
+        from clio_agent.gact.autonomy_guard import bind_goal_to_loop
+
+        bind_goal_to_loop(app, sid, loop_id)
     logger.info(
         "loop started loop_id=%s interval_s=%s max_iters=%s max_wallclock_s=%s "
         "max_tokens=%s next_fire_at=%s",
@@ -623,7 +654,7 @@ def parse_loop_command(request_body: Mapping[str, Any]) -> tuple[int, str, dict[
         interval_s = _parse_interval(str(args.get("interval"))) or 0
     prompt = text or str(args.get("prompt") or "").strip()
 
-    bounds: dict[str, Any] = {}
+    prompt, bounds = parse_limit_options(prompt)
     for key in ("max_iters", "max_wallclock_s", "max_tokens", "max_usd"):
         if key in args:
             bounds[key] = args[key]
@@ -636,7 +667,16 @@ def run_loop_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
     The whole parse + start + message logic lives here so the catalog dispatch route stays
     a thin one-liner (no-accretion — the route file is a ratcheted god-file)."""
 
-    interval_s, prompt, bounds = parse_loop_command(request_body)
+    text = str(request_body.get("input") or request_body.get("text") or "").strip().lower()
+    if text in {"stop", "clear", "cancel", "off"}:
+        from clio_agent.gact.autonomy_guard import stop_loop_and_goal
+
+        stop_loop_and_goal(app, sid, reason="loop_user_cancelled")
+        return "Loop stopped. Its pending wakeup and paired goal were cancelled."
+    try:
+        interval_s, prompt, bounds = parse_loop_command(request_body)
+    except ValueError as exc:
+        return f"/loop rejected: {exc} (reason=loop_invalid_limit)"
     if not prompt:
         return (
             "usage: /loop [interval] <prompt> — a prompt is required to re-drive each "

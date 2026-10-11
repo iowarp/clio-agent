@@ -35,6 +35,7 @@ import asyncio
 import contextvars
 from typing import TYPE_CHECKING, Any, Callable
 
+from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.goal import dispatch_goal_at_finalize
 from clio_agent.gact.turn_finalize import (
     compose_goal_loop_stop_at_finalize,
@@ -82,6 +83,11 @@ async def finalize_turn_async(
         executor=_forward_executor(state),  # #1334: the post-judge persistence, off-loop
     )
     compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
+    if goal_decision is not None and getattr(goal_decision, "outcome", None) == "capped":
+        await loop.run_in_executor(
+            _forward_executor(state),
+            lambda: stop_session_loop(state.app, state.sid, reason="loop_goal_capped"),
+        )
 
 
 __all__ = ["finalize_turn_async"]

@@ -115,7 +115,7 @@ def test_goal_judge_transcript_includes_bounded_tool_call_and_result(tmp_path: P
                     tool_name="goal_status",
                     is_error=False,
                     presentation={"summary": "Goal is at iteration 0"},
-                    structured_content={"message": "raw fallback must not win"},
+                    structured_content={"message": "Goal is active: save the final report"},
                     metadata={},
                     content=[],
                 ),
@@ -125,7 +125,7 @@ def test_goal_judge_transcript_includes_bounded_tool_call_and_result(tmp_path: P
 
     assert goal_mod._build_transcript(app, sid) == (
         "assistant tool call: goal_status\n"
-        "assistant tool result: goal_status completed: Goal is at iteration 0"
+        "assistant tool result: goal_status completed: Goal is active: save the final report"
     )
 
 

@@ -32,7 +32,7 @@ from clio_agent.arc.loop_guard import (
     reset_guard_hits,
 )
 from clio_agent.gact.app import build_app
-from clio_agent.gact.goal import dispatch_goal_at_finalize
+from clio_agent.gact.goal import GoalJudgement, dispatch_goal_at_finalize
 from clio_agent.gact.part_atoms import load_message_part_atoms
 
 from .conftest import complete_turn, settle_turn_slot
@@ -146,7 +146,7 @@ def test_post_judge_goal_persistence_runs_off_the_loop(monkeypatch: Any) -> None
     app.state.loop_inboxes = {}
 
     async def _judge(*_a: Any, **_k: Any) -> Any:
-        return type("V", (), {"met": True, "reason": "ok"})()
+        return GoalJudgement(met=True, reason="ok")
 
     monkeypatch.setattr(goal_module, "run_llm_judge", _judge)
     monkeypatch.setattr(goal_module, "_enqueue_goal_redrive", lambda *a, **k: None)

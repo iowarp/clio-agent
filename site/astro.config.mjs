@@ -52,6 +52,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Sessions and modes', slug: 'docs/sessions' },
 						{ label: 'Branch and rewind', slug: 'docs/branch-and-rewind' },
+						{ label: 'Goals and long-running work', slug: 'docs/long-running-work' },
 						{ label: 'Working with files', slug: 'docs/working-with-files' },
 						{ label: 'Dashboards', slug: 'docs/dashboards' },
 						{ label: 'Exports and downloads', slug: 'docs/exports' },

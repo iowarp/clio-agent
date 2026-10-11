@@ -39,7 +39,9 @@ one-directional.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -48,6 +50,8 @@ from typing import Any, Literal, Optional
 
 from clio_agent import conf
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.autonomy_guard import goal_loop_state
+from clio_agent.gact.autonomy_limits import normalize_limits, parse_limit_options
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.work_state import work_record_patch
 from clio_agent.runtime import trace
@@ -66,10 +70,15 @@ GOAL_OUTCOME_REASONS = (
     "goal_budget",  # the wall-clock / token budget was exhausted -> settle done
     "goal_abandoned",  # cleared without satisfaction (user /goal clear or session end)
     "goal_redrive",  # unmet -> re-drive one more turn (the continue reason, not a stop)
+    "goal_judge_unavailable",
+    "goal_loop_stopped",
+    "goal_server_interrupted",
 )
 
 #: Hard iteration ceiling when ``max_goal_iters`` is unset (0) — a goal always terminates.
 DEFAULT_MAX_GOAL_ITERS = 25
+DEFAULT_JUDGE_TIMEOUT_S = 60.0
+_GOAL_MUTEX = threading.RLock()
 
 
 class GoalError(ValueError):
@@ -214,8 +223,8 @@ def _tool_result_fact(part: Any) -> str:
     """Project the user-facing result summary already recorded on a tool part."""
 
     for owner, keys in (
-        (getattr(part, "presentation", None), ("summary",)),
         (getattr(part, "structured_content", None), ("message", "summary", "status")),
+        (getattr(part, "presentation", None), ("summary",)),
         (getattr(part, "metadata", None), ("result",)),
     ):
         if not isinstance(owner, Mapping):
@@ -242,7 +251,9 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
     except Exception:  # noqa: BLE001 - a ledger read must never break the goal gate
         return ""
     lines: list[str] = []
-    for message in list(messages)[-max_messages:]:
+    for message in sorted(messages, key=lambda row: str(getattr(row, "created_at", "")))[
+        -max_messages:
+    ]:
         role = str(getattr(message, "role", "") or "")
         for part in getattr(message, "parts", []) or []:
             part_type = str(getattr(part, "type", ""))
@@ -262,7 +273,7 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
                 fact = _tool_result_fact(part)
                 suffix = f": {fact}" if fact else ""
                 lines.append(f"{role} tool result: {name} {outcome}{suffix}")
-    return "\n".join(lines)
+    return "\n".join(lines)[-32_000:]
 
 
 async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJudgement":
@@ -270,8 +281,8 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
 
     A separate judge model (``dspy.context``) that ONLY reads the transcript — it never acts.
     Its verdict is the sole completion decision (the deterministic tier was deleted, A4); the
-    typed loop bounds remain the hard stops. A judge failure degrades to a not-met verdict with
-    a typed reason (so an unavailable judge re-drives until a bound trips, never falsely halts).
+    typed loop bounds remain the hard stops. An unavailable judge stops the goal explicitly
+    rather than spending further turns without a working completion check.
 
     The judge is awaited on the server loop through the native async path
     (``Predict.acall`` -> ``LM.aforward`` -> the provider's ``acompletion``), never a sync
@@ -288,14 +299,17 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
         judge = dspy.Predict(_judge_signature())
         lm, adapter = _judge_route(app)
         with dspy.context(lm=lm, adapter=adapter):
-            pred = await judge.acall(goal_condition=condition, transcript=transcript)
+            async with asyncio.timeout(DEFAULT_JUDGE_TIMEOUT_S):
+                pred = await judge.acall(goal_condition=condition, transcript=transcript)
         return GoalJudgement(
             met=bool(getattr(pred, "met", False)),
             reason=str(getattr(pred, "reason", "") or ""),
         )
     except Exception as exc:  # noqa: BLE001 - the judge is advisory; degrade to not-met
         logger.warning("goal LLM judge failed: %s", exc, exc_info=True)
-        return GoalJudgement(met=False, reason="Goal evaluation is temporarily unavailable.")
+        return GoalJudgement(
+            met=False, reason="Goal judge unavailable; work stopped.", available=False
+        )
 
 
 # Bounded decision (PURE — no I/O, unit-testable).
@@ -305,6 +319,7 @@ class GoalJudgement:
 
     met: bool
     reason: str = ""
+    available: bool = True
 
 
 @dataclass(frozen=True)
@@ -340,6 +355,11 @@ def evaluate_goal(
     met = llm.met
     guidance = llm.reason
     state = dict(goal)
+    if not llm.available:
+        state.update(active=False, cleared=True, clear_reason="goal_judge_unavailable", met=False)
+        return GoalDecision(
+            outcome="capped", reason="goal_judge_unavailable", guidance=guidance, new_state=state
+        )
     if met:
         state.update(
             {
@@ -412,6 +432,18 @@ def arm_goal(
     stops, never runs away). Raises :class:`GoalError` on an empty condition."""
 
     text = (condition or "").strip()
+    try:
+        limits = normalize_limits(
+            {
+                "max_goal_iters": max_goal_iters,
+                "max_wallclock_s": max_wallclock_s,
+                "max_tokens": max_tokens,
+            }
+        )
+    except ValueError as exc:
+        raise GoalError(str(exc), reason="goal_invalid_limit") from exc
+    max_goal_iters, max_tokens = int(limits["max_goal_iters"]), int(limits["max_tokens"])
+    max_wallclock_s = float(limits["max_wallclock_s"])
     if not text:
         raise GoalError(
             "a goal needs a condition to gate completion on", reason="goal_missing_condition"
@@ -439,7 +471,12 @@ def arm_goal(
         "clear_reason": "",
         "met": False,
     }
-    _put_goal(app, sid, goal)
+    with _GOAL_MUTEX:
+        sess = app.state.sessions.get(sid)
+        loop = (getattr(sess, "metadata", None) or {}).get("loop") or {}
+        if loop.get("active") and not loop.get("stopped"):
+            goal["loop_id"] = loop.get("loop_id")
+        _put_goal(app, sid, goal)
     logger.info("goal armed goal_id=%s max_goal_iters=%s", goal_id, goal["max_goal_iters"])
     trace.event("GOAL", "goal %s armed (max_goal_iters=%s)", goal_id, goal["max_goal_iters"])
     return {
@@ -457,12 +494,13 @@ def clear_goal(app: Any, sid: str, *, reason: str = "goal_abandoned") -> bool:
     Used by ``/goal clear`` (user) and :func:`stop_session_goal` (session end). A cleared
     goal no longer gates completion — the ``reason`` is recorded (no silent stop)."""
 
-    goal = _get_goal(app, sid)
-    if not goal or not goal.get("active") or goal.get("cleared"):
-        return False
-    goal.update({"active": False, "cleared": True, "clear_reason": reason, "met": False})
-    if app.state.sessions.get(sid) is not None:
-        _put_goal(app, sid, goal)
+    with _GOAL_MUTEX:
+        goal = _get_goal(app, sid)
+        if not goal or not goal.get("active") or goal.get("cleared"):
+            return False
+        goal.update({"active": False, "cleared": True, "clear_reason": reason, "met": False})
+        if app.state.sessions.get(sid) is not None:
+            _put_goal(app, sid, goal)
     logger.info("goal cleared goal_id=%s reason=%s", goal.get("goal_id"), reason)
     trace.event("GOAL", "goal %s cleared reason=%s", goal.get("goal_id"), reason)
     return True
@@ -508,7 +546,7 @@ def _enqueue_goal_redrive(
 
 def _settle_goal_decision(
     app: Any, session_id: str, goal: dict[str, Any], llm: Any, turn_id: str, trace_id: str
-) -> GoalDecision:
+) -> GoalDecision | None:
     """The post-judge persistence (snapshot, redrive enqueue, ``goal.<outcome>`` event).
 
     Runs OFF the loop (#1334: the semantic event is a store RPC; the loop thread waited
@@ -516,12 +554,23 @@ def _settle_goal_decision(
     enqueue still precedes the TurnRunner's done-callback drain.
     """
 
-    elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
-    decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
-    if app.state.sessions.get(session_id) is not None:
+    with _GOAL_MUTEX:
+        current = _get_goal(app, session_id)
+        if current.get("goal_id") != goal.get("goal_id") or not current.get("active"):
+            return None
+        goal = current
+        elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
+        decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
+        mode = goal_loop_state(app, session_id, goal)
+        if decision.outcome == "redrive" and mode == "stopped":
+            state = dict(
+                goal, active=False, cleared=True, clear_reason="goal_loop_stopped", met=False
+            )
+            decision = GoalDecision(outcome="capped", reason="goal_loop_stopped", new_state=state)
+        decision.new_state["judge_reason"] = llm.reason
         _put_goal(app, session_id, decision.new_state)
-    if decision.outcome == "redrive":
-        _enqueue_goal_redrive(app, session_id, decision, goal)
+        if decision.outcome == "redrive" and mode == "immediate":
+            _enqueue_goal_redrive(app, session_id, decision, goal)
     _emit_goal_event(app, session_id, decision, turn_id=turn_id, trace_id=trace_id)
     return decision
 
@@ -552,7 +601,15 @@ async def dispatch_goal_at_finalize(
         goal = _get_goal(app, session_id)
         if not goal or not goal.get("active") or goal.get("cleared"):
             return None
-        llm = await run_llm_judge(app, session_id, goal)
+        elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
+        preflight = evaluate_goal(
+            goal, llm=GoalJudgement(met=False), elapsed_s=elapsed_s, tokens_spent=tokens_spent
+        )
+        llm = (
+            GoalJudgement(met=False, reason="The goal limit was reached before judging.")
+            if preflight.reason == "goal_budget"
+            else await run_llm_judge(app, session_id, goal)
+        )
         current = _get_goal(app, session_id)
         if (
             not current
@@ -568,6 +625,8 @@ async def dispatch_goal_at_finalize(
         decision = await run_off_loop(
             _settle_goal_decision, app, session_id, goal, llm, turn_id, trace_id, executor=executor
         )
+        if decision is None:
+            return None
         logger.info(
             "goal eval goal_id=%s outcome=%s reason=%s",
             goal.get("goal_id"),
@@ -605,6 +664,7 @@ def _emit_goal_event(
             actor={"component": "goal"},
             payload={
                 "reason": decision.reason,
+                "guidance": decision.guidance,
                 "iters_elapsed": int(decision.new_state.get("iters_elapsed", 0) or 0),
             },
         )
@@ -635,7 +695,7 @@ def parse_goal_command(
         return "", {}, True
 
     condition = text or str(args.get("condition") or "").strip()
-    bounds: dict[str, Any] = {}
+    condition, bounds = parse_limit_options(condition, goal=True)
     for key in ("max_goal_iters", "max_wallclock_s", "max_tokens"):
         if key in args:
             bounds[key] = args[key]
@@ -647,7 +707,10 @@ def run_goal_command(app: Any, sid: str, request_body: Mapping[str, Any]) -> str
 
     Parse + arm + message live here so the catalog dispatch route stays a thin one-liner."""
 
-    condition, bounds, clear = parse_goal_command(request_body)
+    try:
+        condition, bounds, clear = parse_goal_command(request_body)
+    except ValueError as exc:
+        return f"/goal rejected: {exc} (reason=goal_invalid_limit)"
     if clear:
         cleared = clear_goal(app, sid, reason="goal_abandoned")
         return "Goal cleared." if cleared else "There is no active goal to clear."

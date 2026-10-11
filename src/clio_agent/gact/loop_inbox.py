@@ -61,6 +61,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from clio_agent.gact.agent_tasks import STATUS_COMPLETED, STATUS_FAILED
+from clio_agent.gact.autonomy_guard import goal_redrive_is_current
 
 # How a steer is composed for the model and settled lives in its own owner
 # module; this carrier only buffers and drains. USER_STEER_MARKER is re-exported
@@ -425,7 +426,7 @@ def drain_inbox_to_new_turn(app: "FastAPI", sid: str) -> None:
     from clio_agent.gact.composer_runtime import session_autostart_suspended  # noqa: PLC0415
 
     queue_paused = session_autostart_suspended(app, sid)
-    events = inbox.drain()
+    events = [e for e in inbox.drain() if goal_redrive_is_current(app, sid, e.metadata)]
     # Stop pauses future work, not feedback already accepted into the transcript.
     # Internal resumes without a durable human message remain suspended.
     steers = [
@@ -547,7 +548,7 @@ def drain_active_session_inbox(app: "FastAPI") -> list[tuple[str, str]]:
         inbox = app.state.loop_inboxes.get(sid)
         if inbox is None:
             return []
-        events = inbox.drain()
+        events = [e for e in inbox.drain() if goal_redrive_is_current(app, sid, e.metadata)]
         if not events:
             return []
 

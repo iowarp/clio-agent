@@ -1,0 +1,172 @@
+---
+title: Goals and long-running work
+description: Repeat work toward a goal, pace it with a loop, set limits, and inspect why it stopped.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+import Capture from "../../../components/overview/Capture";
+import { captureImage } from "../../../lib/captures";
+import goalCompleted from "../../../assets/captures/docs-goal-completed.png";
+import loopSetup from "../../../assets/captures/docs-loop-setup.png";
+import loopCompleted from "../../../assets/captures/docs-loop-completed.png";
+
+Use a **goal** to keep working toward a clear finishing condition. Add a **loop**
+when each batch should wait before the next one. Both work in the same conversation,
+so later turns can use its recorded results and files.
+
+| What you need | Use |
+|---|---|
+| Continue immediately until a result is ready | `/goal`, followed by your work request |
+| Work in batches with a delay between them | `/goal` plus `/loop` |
+| Run a question at a particular time or on a calendar | A scheduled turn; ask CLIO to create one and inspect its next run in Work |
+
+<Aside type="note" title="Development build">
+This guide describes the development build. The acceptance example uses fictional
+checkpoint files and real model/tool calls. It verifies conversation controls,
+not scientific validity or a multi-day reliability claim.
+</Aside>
+
+## Try a small goal first
+
+<Steps>
+
+1. Open a conversation in the workspace containing your working files.
+2. Send this command to set a finishing condition and limits:
+
+   ```text
+   /goal --max-iters=4 --max-hours=0.1 Three checkpoint files have been successfully created: checkpoint-1.md, checkpoint-2.md and checkpoint-3.md.
+   ```
+
+3. Send the work request separately. Setting a goal does not start a turn:
+
+   ```text
+   This is a fictional control check, not a scientific calculation.
+   Write exactly one new checkpoint file per turn using create_artifact.
+   Start at checkpoint-1.md. Each file contains its checkpoint number.
+   End the turn after that one file. When continued, write the next file.
+   Stop after checkpoint-3.md. Report only what was actually saved.
+   ```
+
+4. Open the conversation's Data and Work panel, then choose **Open Work view**.
+   Inspect the goal's state, continuation count and stopping reason alongside the
+   recorded artifact calls. Expand **Previous** to see completed or stopped goals.
+   Open the files to check their contents.
+
+</Steps>
+
+After each turn, a separate model call reads recent conversation text and tool
+results to judge the condition. If unmet, a goal alone requests another turn.
+When satisfied, **Goal met** appears in Work and further goal continuations stop.
+
+<Capture client:visible image={await captureImage(goalCompleted)}
+  alt="Completed three-checkpoint goal with two automatic continuations and Goal met in Work"
+  caption="A real model saved one fictional checkpoint per turn. Work retains the completed goal and its stopping reason."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+The judge is a completion check, not a scientific validator. Give it observable
+conditions such as saved reports and recorded validation results. A claim in a
+response can influence its judgment; independently check important results.
+It reads at most the latest 40 messages and 32,000 characters. Keep a concise
+checkpoint report current during long runs so the recent record remains useful.
+
+## Pace repeated work with a loop
+
+Set the goal first, then start a loop. This schedules the first batch after the
+specified delay; no additional work request is needed:
+
+```text
+/goal --max-iters=6 --max-hours=1 Three checkpoint reports have been created and a final comparison is saved.
+```
+
+```text
+/loop 5m --max-iters=6 --max-hours=1 Read the latest checkpoint. Do one planned batch, save a numbered report, and update the best-so-far comparison. Then use loop_wakeup to continue after five minutes, or stop if there is no useful work remaining.
+```
+
+An unmet goal respects the loop's delay. It does not start an extra immediate
+turn. When the goal is met, CLIO cancels the loop's pending wakeup. If either
+control reaches its limit, the paired work stops without declaring success.
+
+<Capture client:visible image={await captureImage(loopSetup)}
+  alt="Active goal and hourly loop in Work with the next scheduled batch below them"
+  caption="Both commands were sent through the conversation composer. Work shows the finishing condition, loop instruction and next run. This example was stopped after capture."
+  sizes="(min-width: 50rem) 46rem, 100vw" />
+
+<Capture client:visible image={await captureImage(loopCompleted)}
+  alt="Completed paced goal and stopped loop after two scheduled batches"
+  caption="In a separate live check, the waiting loop survived a backend restart, wrote two reports and stopped when the goal was met. Expand Previous to inspect both records."
+  sizes="(min-width: 50rem) 30rem, 100vw" />
+
+The agent uses **loop_wakeup** to schedule its next turn. If it finishes without
+rescheduling, CLIO grants one fallback wakeup, then stops if it still does not
+reschedule. A loop may also stop because the agent decides to stop.
+
+Intervals range from **one minute to one hour**. The scheduler checks on minute
+boundaries, so a wakeup may start almost a minute after its requested time. A busy
+conversation waits until its current turn finishes; it does not run two turns
+concurrently.
+
+## Set a bounded multi-day plan
+
+Begin with a short trial using the same tools, permissions and output locations
+as your intended run. Confirm that each batch reads its checkpoint, writes a new
+one and can stop. Then choose explicit limits for the longer plan, for example:
+
+```text
+/goal --max-iters=72 --max-hours=72 The planned exploration batches are complete and the final comparison report records all completed batches and validation results.
+```
+
+```text
+/loop 1h --max-iters=72 --max-hours=72 --max-tokens=1000000 Read checkpoint.md. Perform one bounded batch from the approved plan. Save outputs under a new batch number, update checkpoint.md and the comparison report, and record failures. Reschedule with loop_wakeup for one hour if useful work remains. Do not repeat a completed batch.
+```
+
+These commands permit work within the limits; they do not reserve a model quota
+or guarantee 72 hours of successful execution. The backend and its execution
+host must remain running and awake. Keep model authentication and required
+services available. Permission requests or questions that require you will wait
+for your answer. Configure the permissions you intend to grant before leaving.
+
+| Limit | Goal | Loop |
+|---|---|---|
+| `--max-iters=N` | Maximum additional immediate continuations; with a loop, limits unmet goal evaluations | Maximum loop rescheduling/fallback iterations |
+| `--max-hours=N` | Elapsed time since the goal was set | Elapsed time since the loop started, including waits |
+| `--max-tokens=N` | Recorded session token increase since setting the goal | Recorded session token increase since starting the loop |
+| `--max-usd=N` | Not available | Recorded session cost increase, when the provider reports a cost |
+
+Put options before the instruction. Invalid or negative limits are rejected.
+Omitting an iteration limit uses **25** for a goal and **100** for a loop.
+A loop also defaults to a **24-hour** limit. The loop's default interval is five
+minutes. A zero token or cost limit leaves that limit unset; zero iteration
+limits use the defaults.
+
+Limits are checked between turns and before a scheduled loop wakeup starts.
+They do not interrupt an individual tool operation at an exact spending or time
+threshold. Tokens may be estimated; provider billing and secondary judge calls
+are not a guaranteed match to the session rollup. Use iteration and elapsed-time
+limits together, and set provider-side spending limits when needed.
+
+## Inspect, stop and resume deliberately
+
+Open **Work** to see goals, loops and schedules. The conversation retains tool
+inputs, results and output links; [Evidence and lineage](/docs/evidence/) connects
+those outputs to their recorded inputs and actions.
+
+| Action or interruption | Result |
+|---|---|
+| Close the browser | Work can continue while the backend stays running |
+| `/loop stop` | Cancel the pending wakeup and paired goal; the model cannot undo this stop |
+| `/goal clear` | Remove the goal and discard queued goal continuations; an independently armed loop remains |
+| Stop the current run | Cancel that turn and its goal/loop controls; separately accepted tasks have their own lifecycle |
+| Backend restarts while a loop is waiting | Preserve its durable wakeup and limits; overdue work is considered on a scheduler tick |
+| Backend restarts during a turn, or loses the control's pending wakeup | Stop the interrupted controls explicitly; do not replay potentially completed file writes |
+| Judge fails or exceeds its 60-second timeout | Stop the goal and paired loop with an unavailable-judge reason |
+| A scheduled turn repeatedly fails to start | Retry within the scheduler's bound, then stop the loop and paired goal with a scheduling-failure reason |
+
+After an interrupted run, inspect the latest checkpoint, files and recorded
+failure before reissuing `/goal` and `/loop`. Reissuing a loop replaces its old
+pending wakeup and starts new limits. Reissuing a goal sets a new condition and
+continuation allowance. Existing files remain available; these controls do not
+undo writes or create filesystem snapshots.
+
+Use numbered outputs and a checkpoint that records **completed batches, the next
+batch, best-so-far results, validation performed and unresolved failures**. This
+makes recovery understandable when a provider, tool or machine fails.
