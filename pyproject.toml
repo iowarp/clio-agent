@@ -209,7 +209,7 @@ claude-code = [
     # USER-UPDATABLE COMPONENT (providers/components/registry.py): a floor,
     # never an upper bound; updated in place from the provider panel and bumped
     # weekly by the provider-sdk-bump workflow.
-    "claude-agent-sdk>=0.2.159",
+    "claude-agent-sdk>=0.2.165",
 ]
 
 flowcept = [
