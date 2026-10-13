@@ -33,7 +33,7 @@ The older task infrastructure already present in develop is retained.
 | SPOTTER | Arming a reviewer after activity has occurred requests review of that existing conversation. After a restart, initialize the host agent from the watched session before waking the reviewer. Show a compact review entry. | `spotter_arm_review.py`, `spotter_watcher.py`; UI `subagent-card.tsx` |
 | Transcript | Keep reminders and results inside activity, preserve operation continuity across question exchanges, and omit completion footers for empty boundaries and ongoing updates. Keep adjacent text paragraphs 8 pixels apart, separate text from activity groups by 20 pixels, and expanded reasoning from tools by 12 pixels. | UI conversation grouping, injection and footer components |
 | Work | Distinguish todos from asynchronous tasks, emphasize current todos, remember disclosure choices, and link delegated work to its details. Wait receipts identify any/all, selected tasks and pending outcomes. | UI Work/evidence components; `task_wait_presentation.py` |
-| APPL-CORE | Complete and verify a generated loader and views before reporting onboarding as ready. An ended child turn is insufficient evidence of successful onboarding. | Marketplace onboarding and audit skills |
+| APPL-CORE | The initial merge required a generated loader and views. The follow-up below removes that restriction: investigate the actual read-only source, adapt the analysis, and substantiate findings. An ended child turn remains insufficient evidence of a result. | Marketplace onboarding and audit skills |
 
 End-user coverage of the transcript and Work changes is in the website guides for
 [following work](../../site/src/content/docs/docs/following-work.mdx),
@@ -63,6 +63,25 @@ card, loader, audits or generated views. A new session alone is insufficient:
 dataset artifacts are stored under the workspace's Agent state. Keep the raw
 export and existing evidence intact, and use an isolated workspace state for
 fresh onboarding.
+
+The source must remain read-only even when an operator has a writable copy.
+Do not repair its data or metadata to make a demo pass. Example schemas,
+`loader.py`, and the card helper are optional starting points, not a required
+analysis pipeline. A different export version, missing manifest entry, unavailable
+helper, or irregular table requires investigation and adaptation where data is
+accessible. It does not justify inventing meaning or refusing the entire export.
+Derived outputs belong outside the source. Scientific conclusions still need
+traceable observations, defensible calculations, and explicit uncertainty.
+
+This corrects the onboarding requirement introduced by marketplace PR 97.
+[Marketplace PR 98](https://github.com/iowarp/clio-agent-marketplace/pull/98)
+updates the shared data-semantics guidance, APPL-CORE skills, and behavioral
+evaluation together. The evaluator accepts alternative tool/code paths and
+requires independent read-only and unchanged-source evidence. It no longer
+rewards refusing an export solely because its version differs from an example.
+The marketplace follow-up merged to `develop` at
+`295308495af6e98bd43eb737e51db6f8855798ea` after all four CI jobs passed. The
+clio-agent follow-up pins that revision. This is not evidence of a fresh OPAL run.
 
 Submit one request, inspect the actual response, running work and questions,
 then decide whether the next request is appropriate. Do not advance the chain

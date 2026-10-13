@@ -61,8 +61,8 @@ beta 2. The branch and historical check inventory is in
    it must affect the actual selected folder. Keep upstream deletion separate.
 4. In Marketplace, select APPL-CORE and let CLIO materialize its pinned blueprint.
    Confirm connected-host identity, effective revision and ready tools. Its dataset
-   card helper now uses `CLIO_AGENT_WORKSPACE_STATE_DIR`, supplied by CLIO's shell.
-   Inspect the returned dataset directory; no new workspace `.clio` is acceptable.
+   optional card helper uses `CLIO_AGENT_WORKSPACE_STATE_DIR`, supplied by CLIO's
+   shell. Keep any generated code, notes and data outside the source export.
 
 ## 3. Prepare services and attention
 
@@ -100,6 +100,15 @@ The three prompts in [opal-live-inputs.json](opal-live-inputs.json) are the broa
 onboarding, treatment-response and growth-curve path. They use the real export,
 not the recorded-table chain below.
 
+The source is messy and read-only. Do not pre-clean it, repair metadata between
+turns, give the model a solution loader, or require five normalized view schemas.
+Use actual read-only source access and retain its receipt. Keep any derived
+outputs in a separate permitted workspace location. The agent must discover
+usable evidence, adapt its queries/code to structure and environment, and explain
+uncertain meaning. An unfamiliar version or a failed example helper does not
+justify refusing all accessible data. Keep source fingerprints and mutation
+evidence outside the model context for independent preservation checks.
+
 Run interactively or use the operator-side runner with the authenticated CLIO
 endpoint/tunnel and this session's ID:
 
@@ -116,8 +125,10 @@ or user questions. Answer those in CLIO and resume with the same receipt. It pin
 accepted message IDs and the explicit model; retrying never starts a substitute
 session or guesses a reply by ordinal position.
 
-Check the experiment card's stated/checked/inferred claims, units, exclusions,
-verified loader/views and real chart selections. Inspect text, tools, artifacts,
+Check source-backed claims, units, analytical exclusions and real chart selections.
+Inspect the particular calculations and any derived outputs the answer uses;
+an experiment card, fixed loader or example-schema pass is not a prerequisite.
+Confirm the source stayed unchanged. Inspect text, tools, artifacts,
 image/A2UI selections and any availability explanations. Discuss findings in the
 existing reviewer; Inspect evidence must return to the exact capture/profile/content.
 Archive the transcript, references, artifacts, capture hashes and reviewer findings.
