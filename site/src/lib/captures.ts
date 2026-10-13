@@ -7,11 +7,17 @@
 import { getImage } from 'astro:assets';
 import type { CaptureImage } from '@/components/overview/Capture';
 
-const WIDTHS = [480, 800, 1246];
+const MAX_WIDTH = 1246;
+const WIDTHS = [480, 800, MAX_WIDTH];
 
 /** Produce responsive sources for one capture. */
 export async function captureImage(source: ImageMetadata): Promise<CaptureImage> {
-	const widths = WIDTHS.filter((w) => w <= source.width);
+	// Keep a native-size candidate when a capture falls between our presets.
+	// Otherwise a 722px detail capture offers only 480px for a 710px embed.
+	const widths = [...new Set([
+		...WIDTHS.filter((w) => w <= source.width),
+		Math.min(source.width, MAX_WIDTH),
+	])];
 	const responsive = await getImage({ src: source, format: 'webp', widths, quality: 82 });
 	const full = await getImage({ src: source, format: 'webp', quality: 90 });
 	return {

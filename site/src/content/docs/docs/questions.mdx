@@ -3,27 +3,32 @@ title: Answering CLIO's questions
 description: Answer in text, choose an option, or respond through a visual form while keeping track of open questions.
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
-import question from '../../../assets/captures/docs-question-choice.png';
-import visualControls from '../../../assets/captures/docs-question-visual-controls.png';
+import confirmation from '../../../assets/captures/docs-question-confirmation.png';
+import textResponse from '../../../assets/captures/docs-question-text.png';
+import visualQuestion from '../../../assets/captures/docs-visual-question.png';
+import openQuestions from '../../../assets/captures/docs-open-questions.png';
 
 When CLIO needs your judgment, it can ask a question in the conversation. Open the
 question, read its context, and answer using the offered controls. Your answer
 stays associated with that question, including when a delegated agent asked it.
 
-<Aside type="note" title="Development interface">
-This guide describes the development interface. Question placement, the open
-question list, and remembered panel choices can differ in an installed release.
-The recorded examples below use fictional data.
-</Aside>
+<Capture client:visible priority image={await captureImage(confirmation)}
+  alt="CLIO asks whether to keep a capacity-check table, with Yes, No and Send response controls"
+  caption="A confirmation asks for one decision. Choose Yes or No, then Send response. Answer when ready means the question can stay open while independent work continues."
+/>
+
+These screenshots use the development interface and a fictional bike-station
+example. Click an image to enlarge it. The questions were authored through
+CLIO's real tools; no new model analysis was run.
 
 ## Ways to answer
 
 | What you see | How to respond | Example |
 | --- | --- | --- |
-| A text question | Write an answer in the composer opened for that question. | “What timezone should I use?” |
+| A text question | Type in **Your response**, or choose **Answer in message box** to use the composer. | “What timezone should I use?” |
 | A list of choices | Choose the option that fits. An **Other** answer is available when the question allows it. | “Compare by station or by day?” |
 | A confirmation | Choose the offered response. | “Keep this version of the report?” |
 | Checkboxes or a multiple-selection list | Select the requested items, then submit. | “Which measurements should the export include?” |
@@ -40,9 +45,15 @@ Several open questions are separate decisions. A form groups related fields into
 one response; multiple selection lets you choose several items for one question.
 These are different from having several independent questions waiting at once.
 
-<Capture client:visible image={await captureImage(question)}
-  alt="Recorded question asking whether to use blue or green, with separate choice buttons"
-  caption="A real recorded choice question displayed with the development question controls. This is a replay of the recorded question, without a new model run."
+### Write an answer
+
+For a text question, open it and type in **Your response**. Read the question
+above the field before sending, especially when several decisions are open.
+**Answer in message box** moves the response into the conversation's composer.
+
+<Capture client:visible image={await captureImage(textResponse)}
+  alt="A timezone question with a written America/Chicago response ready to send"
+  caption="The question and your draft stay together. This example is ready to send; the screenshot does not show a submitted answer."
 />
 
 ## Questions with images and interactive views
@@ -60,9 +71,16 @@ with checkboxes, or an image with a text field for your explanation. These are
 examples of requests, rather than guaranteed layouts: CLIO chooses from the
 controls available in the current workspace.
 
-<Capture client:visible image={await captureImage(visualControls)}
-  alt="Interactive Choice Picker example in the CLIO widget gallery"
-  caption="The widget gallery lets you try a choice control used in interactive views. This is a gallery example, rather than an unanswered agent question."
+### Inspect the view, choose, then add context
+
+In this example, the chart shows morning changes at fictional bike stations.
+The question asks which station group the report should focus on. Select
+**Hill stations** or **Downtown stations**, add an optional comment, and use
+**Send response** when the decision is ready.
+
+<Capture client:visible image={await captureImage(visualQuestion)}
+  alt="An unanswered visual question containing a bike-station bar chart, Hill and Downtown choices, an optional comment and Send response"
+  caption="One complete visual question: evidence, a choice and an explanation in the same view. Hill stations is selected and a comment is drafted; no answer has been submitted."
 />
 
 Changing a filter, zooming a plot, or adjusting a field does not by itself answer
@@ -103,6 +121,11 @@ Hover over or open the question count near the conversation to see **Open questi
 Each entry has a short preview, a control to show the full question, and actions
 to answer or go to its location in the conversation. The list also appears in
 the full **Work** view, so opening the right-hand panel keeps questions accessible.
+
+<Capture client:visible image={await captureImage(openQuestions)}
+  alt="Open questions list with three previews and the third question expanded to show its full prompt and Read and answer button"
+  caption="Three independent decisions remain open. The arrow expands a clipped preview; Read and answer opens that question's response controls."
+/>
 
 When answering in the composer, check which question is selected before sending.
 After submission, its recorded answer remains in the conversation. A question

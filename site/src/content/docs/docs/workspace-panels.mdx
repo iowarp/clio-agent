@@ -3,30 +3,35 @@ title: Using the right-hand panels
 description: Use the compact Data and Work summaries, then open Evidence, Timeline, Gantt, Context, or a file for detail.
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
-import evidence from '../../../assets/captures/current-data.png';
+import compactWork from '../../../assets/captures/docs-compact-work.png';
+import evidence from '../../../assets/captures/docs-panel-evidence.png';
 import gantt from '../../../assets/captures/docs-conversation-family-gantt.png';
-import work from '../../../assets/captures/docs-work-goal.png';
+import work from '../../../assets/captures/docs-work-questions-todos.png';
+import preview from '../../../assets/captures/docs-panel-file-preview.png';
 
 The conversation explains the work. The right-hand area lets you inspect its
 files, ongoing operations, context, and results without leaving the conversation.
 Start with the compact **Data** and **Work** summaries, then open full details
 when you need more room.
 
-<Aside type="note" title="Development interface">
-This guide describes the development interface. The compact summaries, remembered
-disclosures, and question list may differ in your installed release. Captures
-below come from recorded development examples with fictional data.
-</Aside>
+<Capture client:visible priority image={await captureImage(compactWork)}
+  alt="Compact Work summary with three open questions, three of five current todos and Show completed"
+  caption="The compact Work summary keeps unanswered questions and current todos beside the conversation. Use the open-view control in its header when you need the full Work tab."
+/>
+
+The images use the development interface and fictional examples. The bike-station
+workspace was authored through CLIO's real tools without a new model analysis.
+Click an image to enlarge it.
 
 ## The compact summaries
 
 | Summary | Use it to find |
 | --- | --- |
 | Data | Context usage, connected sources, files, changes, and outputs associated with the conversation. |
-| Work | Child agents, tool calls, background tasks, and current todos where available. Open the full Work view for its question list and long-running controls. |
+| Work | Open questions, child agents, tool calls, background tasks, and current todos where available. Open the full Work view for the work inventory and long-running controls. |
 
 Expand a section to inspect its items. Tool calls start collapsed. Your section
 choices are remembered for the conversation, so reopening the summary restores
@@ -53,8 +58,8 @@ These are views of recorded work. Missing timing or context information is not
 proof that no work occurred; some connected services provide less detail.
 
 <Capture client:visible image={await captureImage(evidence)}
-  alt="Evidence view listing six source and output files in a fictional bike-station example"
-  caption="Evidence connects the conversation to registered files and outputs. This fictional bike-station example was prepared through the real artifact tools, rather than a new model analysis."
+  alt="Observability tab with Evidence, Timeline, Gantt and Context navigation above registered bike-station artifacts"
+  caption="Choose Evidence to find registered outputs. Its navigation also opens Timeline, Gantt and Context. Expand Artifacts, search or filter the list, then select the file you want to inspect."
 />
 
 Open a file or artifact to read it in its own tab. Where available, **Lineage**
@@ -73,8 +78,8 @@ loops, and schedules. Use it to answer a question, inspect limits, stop active
 controls, or review previous work. It is separate from the Gantt timing view.
 
 <Capture client:visible image={await captureImage(work)}
-  alt="Work tab showing a completed goal, an active loop, and schedule controls"
-  caption="A recorded development example shows a completed goal alongside an independent active loop. Stopping one control does not stop the others."
+  alt="Work selected beside Observability, with open questions and the current todo list"
+  caption="The full Work tab keeps the same questions and checklist accessible when you open the larger panel. Observability remains a separate tab beside it."
 />
 
 For background task status and child agents, start with the compact Work summary
@@ -92,6 +97,11 @@ Selecting a file opens a preview; it does not by itself attach that file to a
 new message. Use [attachments or references](/docs/files/) to give CLIO file
 context. Reading a tool result or switching detail views does not start a new
 agent operation.
+
+<Capture client:visible image={await captureImage(preview)}
+  alt="morning-findings.md open in its own tab beside Observability and Work, with Preview, Versions and Lineage controls"
+  caption="Selecting morning-findings.md opens its preview in a new tab. Preview reads the document; Versions and Lineage inspect its history and declared relationships. The Work and Observability tabs remain available."
+/>
 
 <CardGrid>
   <LinkCard title="Follow tools and tasks" href="/docs/following-work/" description="Distinguish execution, checklist status, and returned evidence." />

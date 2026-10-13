@@ -3,21 +3,26 @@ title: Understanding injections
 description: See the reminders, recovered context, and background results CLIO supplies to an agent.
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
-import injection from '../../../assets/captures/docs-injection-detail.png';
+import collection from '../../../assets/captures/docs-injection-collection.png';
+import injection from '../../../assets/captures/docs-injection-collection-open.png';
+import goal from '../../../assets/captures/docs-injection-goal.png';
 
 An **Injection** is context CLIO supplies to the agent during its work. It can
 deliver a background result, remind the agent of unfinished todos, or restore
 context from earlier conversation. The row records what the agent received and
 why it received it.
 
-<Aside type="note" title="Development interface">
-In the development interface, injections appear inside the conversation's
-activity collection alongside tools and commands. Older releases can show them
-as separate rows between responses.
-</Aside>
+<Capture client:visible priority image={await captureImage(collection)}
+  alt="Activity collection labelled Received loop wake, ran commands, containing an Injection Loop wake row followed by Run"
+  caption="An injection belongs to the activity collection. Here, a loop wake supplies the instruction and the Run row records the command used to check the files."
+/>
+
+These images replay retained fictional workflow records in the development
+interface. They preserve the supplied text and recorded command results.
+Click an image to enlarge it.
 
 ## Read an injection
 
@@ -27,8 +32,8 @@ Expand the activity collection and find the syringe icon followed by
 record.
 
 <Capture client:visible image={await captureImage(injection)}
-  alt="An Injection row labeled Loop wake, expanded to show its recorded instruction"
-  caption="A real recorded loop wake displayed with the development injection row. The instruction is preserved from the retained monitoring example."
+  alt="The same activity collection with Injection Loop wake expanded to show its instruction and Open exact details"
+  caption="Open Injection Loop wake to read what the agent received. Open exact details exposes the recorded data; expanding the row does not run the command again."
 />
 
 An injection is not a message you typed or the agent's final answer. Its presence
@@ -56,6 +61,17 @@ the evidence.
 
 Not every conversation uses every type. Goals, loops, schedules, hooks, and
 connected tools determine which additions are relevant.
+
+## Example: a goal still needs work
+
+A **Goal judgment** can explain why work should continue. Read the reason before
+treating a finished turn as a finished assignment. In this recorded example,
+two files had confirmed saves and the third still needed to be saved.
+
+<Capture client:visible image={await captureImage(goal)}
+  alt="Expanded Goal judgment explaining that plan.md and results.md were saved but report.md still needed a successful save"
+  caption="The judgment names the missing deliverable and carries the goal's continuation instructions. It records the controller's guidance at that point in the workflow."
+/>
 
 ## Example: a task returns while you read
 

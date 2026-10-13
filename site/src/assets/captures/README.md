@@ -80,7 +80,35 @@ Originals, selected source records, display projections, rejected framing,
 browser review, and authoring notes are retained at
 `D:/Libraries/Videos/clio_recordings/2026-10-12-user-work-guides/`.
 `user-work-guides-manifest.json` records file checksums and source identity.
-The question/operation disclosure changes are local development work, not a
-claim about the public release. A complete visual question with images and a
-submitted structured answer still needs a dedicated public-safe live capture;
-the gallery screenshot is explicitly not that acceptance evidence.
+The initial guides were merged into develop in PR #1724. The gallery screenshot
+is illustrative and is not visual-question submission evidence.
+
+## Work guides visual expansion — 12 October 2026
+
+Sixteen additional images replace the sparse arrangement in the four work
+guides. Each page now introduces its subject visually before the reference
+tables. `work-guides-visual-expansion-manifest.json` records the exact assets,
+dimensions, checksums, source revisions and framing crops.
+
+The native confirmation, text response, full visual question, open-question list,
+todos, compact Work, Evidence inventory and report preview come from a new
+isolated fictional bike-station documentation workspace. Real production tools
+created its artifacts, chart surface, three durable async questions and five
+todos. The real UI controls were opened, expanded and filled. No answer was
+submitted and no model inference was started.
+
+The command, wait and injection images replay retained public-example records in
+the production components at UI commit `3d3ce9b2`. The unbounded wait uses the
+actual `timeout_s: null` input and collected subagent result from
+`delegation-acceptance-corrected/parent-transcript.json`. The loop wake and shell
+operation are from the same turn in `long-horizon/docs-final-transcript.json`.
+The goal judgment is shown separately. No source instruction or result text was
+invented. These are still walkthroughs, not recordings of a new agent run.
+
+Original browser captures, contextual frames, source excerpts, tool display
+projections, authoring code, crop specifications and review evidence are under
+`D:/Libraries/Videos/clio_recordings/2026-10-12-work-guides-visual-expansion/`.
+Rejected edge crops and redundant frames remain in that archive; only the
+manifest's selected images are installed in the site. The complete visual
+question replaces the thin Choice Picker strip in the guide. A submitted
+structured-answer-and-resumption video is still outside this capture's evidence.

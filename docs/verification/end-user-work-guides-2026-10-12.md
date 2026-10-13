@@ -1,7 +1,9 @@
 # End-user questions and work guides
 
 Date: 12 October 2026. Website source: `site/` in the current checkout.
-Status: local documentation changes, uncommitted and unpublished.
+Initial guides: merged into develop through PR #1724. Visual follow-up: local
+changes on `codex/visual-work-guides`, based on develop `0b0e7e25`. The follow-up
+has not been published to the website.
 
 ## Reader coverage
 
@@ -48,19 +50,36 @@ UI source reviewed: `conversation-harness-injection.tsx`, `tool-invocation.tsx`,
 
 ## Media and evidence limits
 
-Seven images accompany the guides: four new detail captures and three reused
-authentic product captures. The new images show a genuine recorded question,
-command/output, and loop instruction in current production components, plus
-the actual widget gallery. Replays and fictional examples are labelled in
-captions. The question, command, and instruction text are preserved.
+The original seven images were insufficient: two pages had one image each,
+the first images followed long tables, and the visual-question illustration was
+only a thin gallery control. The follow-up replaces that layout with seventeen
+placed images: sixteen new captures and the retained conversation-family Gantt.
+Each page begins with a useful product frame before its reference tables.
 
-No model inference, OPAL prompt, onboarding command, task execution, question
-submission, or session deletion was performed. These captures are not fresh
-runtime acceptance. In particular, the Choice Picker image illustrates a
-control; it is not a complete visual-question submission walkthrough. A future
-public-safe live shoot should show an image/chart plus fields, submission, the
-recorded structured answer, and continued work. Multiple open questions also
-merit a dedicated capture once live demos resume.
+The new captures show a native confirmation, a drafted text answer, a complete
+chart-enriched choice question with optional comment, three open questions,
+collapsed and expanded command details, a collected unbounded task wait,
+current and completed todos, grouped injections, a goal judgment, compact Work,
+Evidence navigation, the full Work inventory, and a report opened in its tab.
+
+The fictional bike-station workspace, artifacts, dashboard, A2UI surface, three
+async questions and five todos were authored through production tools in an
+isolated service. The chart is attached to a real durable question. Drafts were
+entered through actual response controls, but no answer was submitted. This
+does not claim that a model resumed after submission or that the proposed
+always-async question contract is implemented.
+
+Commands, waits and injections replay authentic retained public-example
+records. Their input, output, instructions and timing are preserved. The
+`wait_tasks` record has `return_when="all"`, `timeout_s=null`, one completed
+subagent result, no pending tasks, and `timed_out=false`. The replay did not
+execute the command or delegate another agent. The loop collection uses the
+loop wake and shell call from the same recorded turn.
+
+No model inference, OPAL run, Aurora infrastructure test or private-session
+import was performed. These are documentation stills, not continuous video or
+fresh model/runtime qualification. Only framing crops were applied; no controls,
+labels, answers or result pixels were painted or composited.
 
 Archive:
 `D:/Libraries/Videos/clio_recordings/2026-10-12-user-work-guides/`.
@@ -69,7 +88,14 @@ images. Rejected technical-dialog framing and extra gallery space remain in
 `rejected/`. The site capture manifest records SHA-256 checksums and source
 identity, including dirty source-file hashes rather than relying on HEAD alone.
 
-## Review
+Follow-up archive:
+`D:/Libraries/Videos/clio_recordings/2026-10-12-work-guides-visual-expansion/`.
+`work-guides-visual-expansion-manifest.json` records the sixteen assets, hashes,
+source heads and crops. The archive keeps the isolated authoring script, real
+question/work/artifact responses, original stills, contextual frames, recorded
+source excerpts, display projections and browser-review evidence.
+
+## Initial review
 
 - `pnpm check`: passed, zero errors/warnings and six existing hints.
 - `pnpm build`: passed, 85 pages, all internal links valid. The bundler reports
@@ -81,10 +107,23 @@ identity, including dirty source-file hashes rather than relying on HEAD alone.
   and updated crosslinks checked. No new middot separators.
 - Test suites were not run, following the user's earlier instruction.
 
-The existing large Gantt/Work screenshots provide an overview at embedded size;
-their full-size viewers expose the detailed text. A future release capture can
-replace these with focused captures once its interface is settled.
+## Visual follow-up review
+
+- `pnpm check`: passed, zero errors/warnings and six existing hints.
+- `pnpm build`: passed, 85 pages and all internal links valid; existing module
+  directive warnings remain.
+- Production preview on port 4323: seventeen images across all four guides loaded
+  and opened in the full-size viewer. All four guides were reviewed at 1440 and
+  390 CSS pixels, with no document-width overflow or browser page errors.
+- Rendered review found that the capture helper offered only 480px for source
+  images between 480px and 800px. It now includes a native-size candidate below
+  the existing 1246px cap. The Work and question-list captures use their available
+  resolution rather than enlarging the 480px version.
+- Build output, responsive image checks and rendered desktop/mobile evidence are
+  retained in the follow-up archive.
+- No test suite was run, following the user's earlier instruction.
 
 Publication still follows the website's main-branch release path. This work
-does not establish that develop, main, the installed product, or the public site
-contains these new guides.
+does not establish that main, the installed product, or the public site contains
+the visual follow-up. Develop contains the original guides; the branch and local
+preview contain the additional media described above.

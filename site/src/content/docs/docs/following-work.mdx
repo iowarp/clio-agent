@@ -3,20 +3,28 @@ title: Following tools and tasks
 description: Read the activity log, distinguish background tasks from todos, and inspect what actually finished.
 ---
 
-import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 import Capture from '../../../components/overview/Capture';
 import { captureImage } from '../../../lib/captures';
-import tool from '../../../assets/captures/docs-tool-call.png';
+import collapsedTool from '../../../assets/captures/docs-tool-collapsed.png';
+import tool from '../../../assets/captures/docs-tool-command-output.png';
+import waitResult from '../../../assets/captures/docs-wait-all-result.png';
+import currentTodos from '../../../assets/captures/docs-todos-current.png';
+import completedTodos from '../../../assets/captures/docs-todos-completed.png';
 
 Expand the activity collection under a CLIO response to follow its operations.
 You can read a command, inspect a result, and open the details of delegated work.
 The **Work** summary on the right keeps ongoing work accessible while you read
 the conversation.
 
-<Aside type="note" title="Development interface">
-This guide describes the development layout. Installed releases may use different
-labels or grouping for activity, todos, and task results.
-</Aside>
+<Capture client:visible priority image={await captureImage(collapsedTool)}
+  alt="Collapsed Run tool row showing a command, exit code zero, duration and disclosure arrow"
+  caption="Start with the compact receipt: what ran, its exit code and its duration. Open the row for the command and output; the information icon opens technical details."
+/>
+
+The images use the development interface and fictional examples. Command and
+task results are replays of retained operations, without rerunning them.
+Click any image to inspect it at full size.
 
 ## Tools, tasks, and todos
 
@@ -41,7 +49,7 @@ input and the returned result.
 
 <Capture client:visible image={await captureImage(tool)}
   alt="A recorded tool call expanded to show the input and returned result"
-  caption="An operation from a retained public example, displayed with the development tool controls. The recorded input and result are preserved."
+  caption="The same Run row, opened. Command is what CLIO executed; Output is what the process returned. Show more expands the retained preview."
 />
 
 An exit code or failure belongs to that operation. Read its output and CLIO's
@@ -82,6 +90,11 @@ pending after a wait returns, inspect whether the agent requested a timeout or a
 immediate check. Stopping a wait and cancelling its background task are separate
 actions. Use the task's cancellation control when you intend to stop that work.
 
+<Capture client:visible image={await captureImage(waitResult)}
+  alt="Expanded Wait for all tasks receipt showing No deadline, one result collected, and the subagent's mean calculation"
+  caption="This recorded wait had no deadline and returned one collected result. Turn ended describes the child agent's status; the text beneath it is the result to inspect."
+/>
+
 Long-running goals can also park until a task finishes and resume when its result
 arrives. See [Goals, loops and scheduled work](/docs/long-running-work/).
 
@@ -90,6 +103,19 @@ arrives. See [Goals, loops and scheduled work](/docs/long-running-work/).
 Pending and in-progress items appear first. **Show completed** reveals finished
 items when you need the history. A count such as **3/5 current** means three items
 remain open out of five total.
+
+<Capture client:visible image={await captureImage(currentTodos)}
+  alt="Todos showing three current items and a Show completed control for two finished items"
+  caption="Keep attention on the three open items. The yellow icon marks work in progress; empty boxes mark pending work. Two completed items stay under Show completed."
+/>
+
+Open **Show completed** when you need the history. The current items remain
+above the finished ones, and **Hide completed** returns to the focused list.
+
+<Capture client:visible image={await captureImage(completedTodos)}
+  alt="The same todo list with completed dashboard and capacity-check items revealed below the current work"
+  caption="The same checklist after opening completed history. Revealing these items changes the display, not their status."
+/>
 
 Use the checklist to understand the plan and the tool results to check the work.
 You can ask:

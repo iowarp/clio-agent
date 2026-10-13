@@ -1,0 +1,159 @@
+{
+  "date": "2026-10-12",
+  "core_head": "0b0e7e25d89d17080dc7542005067bc6fda8be5e",
+  "ui_head": "3d3ce9b27120fcbc1ca43a08124d6060234313b0",
+  "mode": "Real tool-authored questions, dashboard, artifacts and todos; authentic recorded command, wait and injection replays",
+  "archive": "D:/Libraries/Videos/clio_recordings/2026-10-12-work-guides-visual-expansion",
+  "no_new_inference": true,
+  "no_opal": true,
+  "no_aurora_rerun": true,
+  "no_answers_submitted": true,
+  "stills_only": true,
+  "crops": [
+    {
+      "name": "docs-work-questions-todos.png",
+      "source": "work-full-context.png",
+      "height": 550
+    },
+    {
+      "name": "docs-panel-evidence.png",
+      "source": "evidence-full-context.png",
+      "height": 970
+    },
+    {
+      "name": "docs-panel-file-preview.png",
+      "source": "report-full-context.png",
+      "height": 640
+    }
+  ],
+  "assets": [
+    {
+      "name": "docs-question-confirmation.png",
+      "width": 1344,
+      "height": 519,
+      "bytes": 43934,
+      "sha256": "24176ad465215a5702343ce125f21b4684006933957744ecf9c2f61ba7469867",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-question-text.png",
+      "width": 1344,
+      "height": 519,
+      "bytes": 54804,
+      "sha256": "80e659076e04e92fa72b257032e03708e05ef98e429227cfae04c6aada670151",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-visual-question.png",
+      "width": 1344,
+      "height": 1392,
+      "bytes": 122916,
+      "sha256": "be770a89d2283718bc3ed10068b79d13dbcd786b40f3b11604ad8855bd4d8c42",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-open-questions.png",
+      "width": 578,
+      "height": 467,
+      "bytes": 51040,
+      "sha256": "82464f4c5fe7b5e341222be3a872dbe7c7806206d072a59733f458e4b94782bc",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-tool-collapsed.png",
+      "width": 1275,
+      "height": 114,
+      "bytes": 12143,
+      "sha256": "14eb10d161ba7c76cc5343a23a044aff543eb3b9e3ef2a2369b2457ec8421ae5",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-tool-command-output.png",
+      "width": 1275,
+      "height": 705,
+      "bytes": 57604,
+      "sha256": "a74e8811fb58c6ce60f9f5e3cc35286d2e40ce3c15c209ac915e5c55dcd3ad7c",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-wait-all-result.png",
+      "width": 1275,
+      "height": 231,
+      "bytes": 31526,
+      "sha256": "1fa2f99bd01f6719f0945b03e96c735b9d7d6db48dc6ed00593eba91bd8047b5",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-todos-current.png",
+      "width": 1050,
+      "height": 248,
+      "bytes": 23508,
+      "sha256": "2e97f5c77b56a8635e426eddbf3f33ad3e055ca12193b2bc653ee1d3d5791277",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-todos-completed.png",
+      "width": 1050,
+      "height": 335,
+      "bytes": 34454,
+      "sha256": "f0742113a4e8a685aef751a4d36aa45acff9359efaf1460e2d61b64e77e0e3c9",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-injection-collection.png",
+      "width": 1275,
+      "height": 264,
+      "bytes": 21501,
+      "sha256": "765c2275886dcbe53deb35fa21f14b3e6d5a5844c6a1b6532a2ea5ed8781ab15",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-injection-collection-open.png",
+      "width": 1275,
+      "height": 366,
+      "bytes": 32209,
+      "sha256": "9a65d6a7a9c4e38f65a0fc3fe3070eb9302c8b3282f687a415f27bf32eea0d97",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-injection-goal.png",
+      "width": 1275,
+      "height": 519,
+      "bytes": 75237,
+      "sha256": "e76fb4806354618bd63ec04b5ab69a045d752dc85d983d5f4d8f31b3c67c440b",
+      "source": "Unmodified browser detail capture of the recorded goal judgment alone"
+    },
+    {
+      "name": "docs-compact-work.png",
+      "width": 722,
+      "height": 569,
+      "bytes": 55496,
+      "sha256": "31d76cfb19faecab8cf2af61b3f42535d2f5b34393e581373295754b2f04bf42",
+      "source": "Unmodified browser detail capture"
+    },
+    {
+      "name": "docs-work-questions-todos.png",
+      "width": 1920,
+      "height": 550,
+      "bytes": 66509,
+      "sha256": "3746e116f4805ae68556df142a8278478d81b490db16dd8d81d197c3fca388b7",
+      "source": "Unmodified crop of retained contextual browser capture"
+    },
+    {
+      "name": "docs-panel-evidence.png",
+      "width": 1920,
+      "height": 970,
+      "bytes": 120862,
+      "sha256": "b95341f04abce62bd2b334302f89cbc30690b34521479c17171e56ed00f0f0a5",
+      "source": "Unmodified crop of retained contextual browser capture"
+    },
+    {
+      "name": "docs-panel-file-preview.png",
+      "width": 1920,
+      "height": 640,
+      "bytes": 101892,
+      "sha256": "8747ded0282b0e596c33b07421ce2ebf6dbf32a448bc4df5f68c27300de24c77",
+      "source": "Unmodified crop of retained contextual browser capture"
+    }
+  ]
+}
