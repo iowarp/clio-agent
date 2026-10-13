@@ -125,5 +125,5 @@ source excerpts, display projections and browser-review evidence.
 
 Publication still follows the website's main-branch release path. This work
 does not establish that main, the installed product, or the public site contains
-the visual follow-up. Develop contains the original guides; the branch and local
-preview contain the additional media described above.
+the visual follow-up. At capture review time, develop contained the original
+guides; this revision and the local preview contain the additional media above.

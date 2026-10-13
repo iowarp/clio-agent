@@ -79,9 +79,11 @@ updates the shared data-semantics guidance, APPL-CORE skills, and behavioral
 evaluation together. The evaluator accepts alternative tool/code paths and
 requires independent read-only and unchanged-source evidence. It no longer
 rewards refusing an export solely because its version differs from an example.
-The marketplace follow-up merged to `develop` at
-`295308495af6e98bd43eb737e51db6f8855798ea` after all four CI jobs passed. The
-clio-agent follow-up pins that revision. This is not evidence of a fresh OPAL run.
+Marketplace PR 98 and the remaining optional-record corrections in
+[PR 99](https://github.com/iowarp/clio-agent-marketplace/pull/99) merged to
+`develop`; each passed all four CI jobs. The clio-agent follow-up pins their
+result, `74728757ef15d568a164c382ddbd901db553caf4`.
+This is not evidence of a fresh OPAL run.
 
 Submit one request, inspect the actual response, running work and questions,
 then decide whether the next request is appropriate. Do not advance the chain
