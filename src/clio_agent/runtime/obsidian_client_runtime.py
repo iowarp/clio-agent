@@ -27,12 +27,17 @@ class ObsidianClientError(ValueError):
         self.code = code
 
 
+def _hidden_process_options() -> dict[str, Any]:
+    """Keep Windows client processes hidden while preserving portable subprocess options."""
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 def prepare_client_environment(workspace: Path) -> dict[str, str]:
     """Prepare managed Node in an isolated installer, without widening agent permissions."""
     environment = {**os.environ, "CLIO_ALLOWED_ROOTS": str(workspace.resolve())}
-    flags: dict[str, Any] = (
-        {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-    )
+    flags = _hidden_process_options()
     try:
         result = subprocess.run(
             [sys.executable, "-m", "clio_agent.runtime.obsidian_node", str(workspace)],
@@ -114,9 +119,7 @@ class ManagedObsidianClient:
                 **os.environ,
                 "PATH": str(Path(node).parent) + os.pathsep + os.environ.get("PATH", ""),
             }
-            flags: dict[str, Any] = (
-                {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-            )
+            flags = _hidden_process_options()
             try:
                 installed = subprocess.run(
                     [node, node_path(str(npm)), "ci", "--no-audit", "--no-fund"],
@@ -170,9 +173,7 @@ class ManagedObsidianClient:
         """Run the official CLI with private stdin and no secret-bearing process argv."""
         command = self.command()
         payload = json.dumps({"args": args, "secrets": secrets or {}})
-        flags: dict[str, Any] = (
-            {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
-        )
+        flags = _hidden_process_options()
         try:
             return subprocess.run(
                 [command[0], node_path(str(CLIENT_FILES / "launch.mjs")), command[1]],
