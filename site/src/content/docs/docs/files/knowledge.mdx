@@ -1,6 +1,6 @@
 ---
 title: Knowledge source
-description: Bring an Obsidian vault or a selected folder into CLIO, explore its links, and give the agent tools for working with your notes.
+description: Create a new Obsidian-compatible vault, attach existing notes, or let CLIO manage Obsidian Sync as a knowledge source.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -9,30 +9,45 @@ import GuideScreenshot from '../../../../components/GuideScreenshot.astro';
 
 <FilesGuideNav active="knowledge" />
 
-Connect your Obsidian notes as a **knowledge source** in CLIO. Browse a graph of
-their links, switch to a file list, and read notes beside the conversation. The
+Create or connect a vault as a **knowledge source** in CLIO. Browse a graph of
+its links, switch to a file list, and read notes beside the conversation. The
 agent gains tools to search notes, follow their relationships, and capture the
 material it uses in an answer.
 
 <Aside type="note" title="Next release preview">
   This guide shows the development build for the next release. All screenshots
-  use a fictional **Field notebook** created for this walkthrough, including a
-  smaller **Field study** folder. No
-  personal vault content is shown.
+  use fictional example notebooks and notes. No personal vault content is shown.
 </Aside>
 
-## Connect a vault—or just one folder
+## What is an Obsidian vault?
 
-1. In a workspace, open **+ → Attach → Obsidian vault**.
-2. Name the source and choose **Vault on this host**.
-3. Choose the vault folder, or a folder inside it. New sources start **Read only**.
-4. Select **Connect vault**. A tab named after your source opens in the workspace canvas.
+[Obsidian](https://obsidian.md/) is a notes app that connects Markdown files with
+links. Its **vault** is the folder holding those notes. CLIO uses the same note,
+link, tag, and frontmatter semantics to make that folder a knowledge source.
+**The Obsidian app does not need to be installed.** You can start a new vault in
+CLIO, or use an existing notes folder, and open it in Obsidian later if you want.
 
-The path is on the machine running the connected CLIO service. Connecting a local
-vault needs no Obsidian cloud login or plugin. CLIO recognizes the enclosing vault
-by its `.obsidian` directory and keeps those private settings out of the source.
+## Create a new vault or attach an existing one
 
-<GuideScreenshot name="knowledge-connect" alt="Connect an Obsidian knowledge source using the Field study folder and read-only access" caption="Choose a whole vault or a folder inside it. This example connects only Field study, rather than the rest of the example notebook." />
+In a workspace, open **+ → Attach**, find **Obsidian**, and choose **Connect**.
+The form offers three explicit starting points:
+
+- **Create a new vault:** name it and select **Create vault**. CLIO creates an empty
+  vault in its managed storage on the connected host. **Allow CLIO to create and
+  edit notes** is selected for a new vault; clear it to make the source read only.
+- **Attach an existing vault or folder:** use **Choose folder** to select the vault
+  or just one folder inside it. A plain Markdown folder works too; attaching it
+  does not add configuration or rewrite its files. Existing sources start read only.
+- **Sync from Obsidian:** sign in and let CLIO manage a dedicated synced copy, as
+  described below. This optional path requires an Obsidian Sync subscription.
+
+<GuideScreenshot name="knowledge-connect" alt="The Obsidian knowledge-source form offers Create a new vault, Attach an existing vault or folder, and Sync from Obsidian" caption="Start a new vault directly in CLIO. Neither an existing vault nor the Obsidian app is required." />
+
+A tab named after your source opens in the workspace canvas. An empty editable
+vault is ready for the agent to create its first Markdown notes, including links
+between them. You can also add files to its folder and choose **Refresh**.
+
+<GuideScreenshot name="knowledge-existing" alt="Attach existing notes using CLIO's shared folder browser and read-only access" caption="The folder picker browses the connected CLIO host. It uses the same host-selection semantics as other folder sources." />
 
 **The selected folder is the boundary.** Search, the graph, the reader, and note
 edits use only its contents. Paths are relative to that folder. A link to a note
@@ -42,7 +57,8 @@ to use more of the vault. Hidden folders, symlinks, and junctions are excluded.
 To try the same workflow, [download the example vault](/examples/field-notebook.zip),
 extract it, and select **Field notebook** for the 62-note overview, or its
 **Field study** folder for the six-note example. The ZIP includes the minimal
-`.obsidian` directory needed to recognize it as a vault. Every note is fictional.
+`.obsidian` directory so the same notebook can be opened in Obsidian. CLIO also
+accepts notes folders without that directory. Every note is fictional.
 
 ## Explore the graph and read a note
 
@@ -103,6 +119,7 @@ does not automatically become a knowledge source.
 | `knowledge_search` | Find notes by text or metadata and inspect bounded results. |
 | `knowledge_related` | Follow authored links, embeds, and backlinks around a note. |
 | `knowledge_open` | Capture a chosen note or attachment as a workspace resource. The agent reads that capture with `workspace_resource_read`. |
+| `knowledge_create` | Create a new Markdown note in an editable source, refusing to overwrite an existing note. |
 | `knowledge_edit` | Replace an existing Markdown note when the source permits edits, using its captured revision to reject stale changes. |
 
 <GuideScreenshot name="knowledge-tools" alt="A real CLIO agent turn uses knowledge tools to answer a question about the fictional field notebook" caption="An actual Codex/Luna turn over the example source. The tools find and capture the notes used to explain the daily checks." />
@@ -113,8 +130,10 @@ agent's permissions or instructions.
 
 ## Control edits and source access
 
-**Read only** is the default and keeps note editing unavailable. If you choose a
-working copy, edits are staged for review before publication. With direct writes,
+Existing folders and synced copies start **Read only**, which keeps note creation
+and editing unavailable. New vaults allow edits when the corresponding checkbox
+is selected. If you choose a working copy, edits are staged for review before
+publication. With direct writes,
 approved edits update the original note and retain its previous contents. Sync
 direction and agent edit permission are separate choices.
 
@@ -124,22 +143,30 @@ Original notes and captures already retained in the workspace remain. See
 [Manage sources](/docs/files/manage/) and [Download or link](/docs/files/download-or-link/)
 for the shared source controls.
 
-## Optional: keep a synced copy on the CLIO host
+## Manage Obsidian in Settings
 
-For a vault delivered through Obsidian Sync, use the official
-[Headless Sync client](https://help.obsidian.md/sync/headless) to set up a dedicated
-local copy on the CLIO host. Complete login, vault selection, and initial sync
-privately with that client, then choose **Obsidian Headless Sync copy** when
-connecting it in CLIO. The client is currently in open beta and requires an
-Obsidian Sync subscription. Follow Obsidian's setup guidance to use one sync
-method per device.
+Open **Settings → Data sources → Obsidian → Manage**. This is the shared place
+to manage the official Sync client and its account on the connected service.
+Local vaults work without installing that client or signing in.
 
-The source tab offers **Start sync** and **Stop sync** for the configured copy,
-and shows sync state separately from the knowledge index. Pull-only is the
-default. Choose **Refresh** after synchronized changes arrive.
+<GuideScreenshot name="knowledge-settings" alt="Obsidian appears in Settings Data sources alongside Google Drive, Globus and GitHub" caption="Manage the Obsidian account and optional Sync client in Settings. Connecting a particular vault remains a workspace action." />
 
-You can select a folder within that copy as the knowledge source. The official
-client still synchronizes the enclosing vault copy; the folder selection limits
-what CLIO's knowledge tools can access. Account credentials and encryption keys
-stay in the official client's private setup. The screenshots here demonstrate
-local access; they do not show an authenticated Sync session.
+## Optional: sync a vault through your account
+
+1. Choose **Install Sync client**. CLIO installs and verifies the official
+   [Obsidian Headless client](https://github.com/obsidianmd/obsidian-headless)
+   in its managed environment and shows installation progress.
+2. Sign in with your Obsidian account and, if enabled, a two-factor code.
+3. In a workspace's Obsidian connection form, choose **Sync from Obsidian** and
+   select a remote vault. Enter its encryption password if required.
+4. Choose the sync direction and whether CLIO may edit notes, then select
+   **Connect vault**. CLIO configures and manages the local copy itself.
+
+<GuideScreenshot name="knowledge-sync" alt="The official Obsidian Sync client is installed in CLIO and ready for account sign-in" caption="CLIO manages installation and sign-in in the application. This capture shows the real installed client ready for sign-in." />
+
+**Download remote changes** is the default; **Sync changes both ways** is a
+separate choice from allowing the agent to create or edit notes. The source tab
+offers **Start sync** and **Stop sync** and refreshes its index as changes arrive.
+Account credentials and vault encryption keys stay in the official client's
+private storage, separate from the notes available to knowledge tools. Signing
+in alone does not attach a vault or grant the agent access to it.

@@ -57,3 +57,22 @@ tool result from that same retained session.
 
 Raw contextual and detail screenshots, source responses and capture code are
 archived under `D:/Libraries/Videos/clio_recordings/2026-10-10-docs-memory-evidence/`.
+
+## Obsidian vault setup — 13 October 2026
+
+The knowledge-source guide adds four production-browser captures: creating a
+new vault, attaching an existing Markdown folder, the Obsidian row in Data
+sources, and the installed official Sync client ready for sign-in. They use
+light mode at two device pixels per CSS pixel, with fictional names and notes.
+CLIO created the new vault through its actual connection form; the folder
+picker attached a normal Markdown folder read only without adding `.obsidian`.
+No remote Sync account was used in these captures.
+
+The four graph, file-list, and tool images retain the fictional notebook captures
+from 11 October. The tool image is that recorded actual Codex/Luna turn, not a
+new model run. `knowledge-source-manifest.json` records all eight image hashes,
+source revisions, and the unchanged example ZIP. Originals, conversion code,
+rendered-page review, and verification receipts are archived under
+`D:/Libraries/Videos/clio_recordings/2026-10-13-obsidian-managed-vaults/`.
+The personal-vault acceptance capture and file manifests remain private and are
+excluded from the website and public capture archive.

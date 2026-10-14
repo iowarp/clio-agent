@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-13",
+  "agent_revision": "bd2819a96cd99496889454a861bb4221e10b930f",
+  "ui_revision": "308c7b6a1d9c781945be33d1cfefa32208ca174b",
+  "archive": "D:/Libraries/Videos/clio_recordings/2026-10-13-obsidian-managed-vaults",
+  "theme": "light",
+  "export": "Original browser PNG to JPEG95 4:4:4; no compositing or painted controls",
+  "live_checks": [
+    "UI-created empty vault",
+    "Plain Markdown folder attached read only using host picker",
+    "Official client 0.0.14 installed and native SQLite executed",
+    "1254-note personal vault graph/read/pointer selection in read-only mode; 16931 files unchanged by hash and mtime"
+  ],
+  "limitations": [
+    "No authenticated remote Sync account was available; sign-in/remote selection have automated test coverage only",
+    "Retained knowledge-tools image is a prior actual turn, not new model inference"
+  ],
+  "screenshots": [
+    {
+      "name": "knowledge-connect",
+      "sha256": "24ea18dff21706996dcb38082ce55f7a29b92a0c2137e064b9c7d1a1c1fcd0cc",
+      "width": 1344,
+      "height": 1516,
+      "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
+    },
+    {
+      "name": "knowledge-existing",
+      "sha256": "dbd9f55a4b52abccd2977d46122932e6172ab2c91d0e0a307a596b9c2b6b90a1",
+      "width": 1344,
+      "height": 1670,
+      "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
+    },
+    {
+      "name": "knowledge-settings",
+      "sha256": "18ac787bd21da325cbbc85d0495e79a3587c639be5681d4945ebca62204ae4ca",
+      "width": 1676,
+      "height": 990,
+      "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
+    },
+    {
+      "name": "knowledge-sync",
+      "sha256": "359694b8aaa6a625433c3a8a32dd8396f157221a4988e681b9ea4eef673637b3",
+      "width": 1676,
+      "height": 1370,
+      "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
+    },
+    {
+      "name": "knowledge-overview",
+      "sha256": "58eef674d693bab1fc016069cb266855939825e15690f0c63dc889133a7d2ac3",
+      "width": 1040,
+      "height": 820,
+      "origin": "Retained 2026-10-11 fictional notebook capture; tools image is the recorded actual Codex/Luna turn"
+    },
+    {
+      "name": "knowledge-graph",
+      "sha256": "4f4b83a993843689ef9c63bac222e94b9ad4b395496159c9e3546ffa70a02884",
+      "width": 1040,
+      "height": 820,
+      "origin": "Retained 2026-10-11 fictional notebook capture; tools image is the recorded actual Codex/Luna turn"
+    },
+    {
+      "name": "knowledge-files",
+      "sha256": "12ca6932ccd1f59c2e3398670f6d4423164da46952c6ec3e3c55420b111030f6",
+      "width": 1040,
+      "height": 820,
+      "origin": "Retained 2026-10-11 fictional notebook capture; tools image is the recorded actual Codex/Luna turn"
+    },
+    {
+      "name": "knowledge-tools",
+      "sha256": "7a5fc4cbf2f0d9a3adb0df7ad4a748223d1ae82bd7943f50c954921046aff9dc",
+      "width": 900,
+      "height": 690,
+      "origin": "Retained 2026-10-11 fictional notebook capture; tools image is the recorded actual Codex/Luna turn"
+    }
+  ],
+  "example_zip": {
+    "path": "public/examples/field-notebook.zip",
+    "sha256": "32e2d176c90f90b75ccfdeedd666c911e2b24099d2677cba6822350aea0c2103"
+  }
+}
