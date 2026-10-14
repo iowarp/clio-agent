@@ -72,7 +72,9 @@ class ManagedObsidianClient:
             if not node.is_file() or not entry.is_file() or receipt["version"] != CLIENT_VERSION:
                 raise ValueError("Incomplete installation")
             for name in ("package.json", "package-lock.json"):
-                if (self.project / name).read_bytes() != (CLIENT_FILES / name).read_bytes():
+                cached = json.loads((self.project / name).read_text(encoding="utf-8"))
+                shipped = json.loads((CLIENT_FILES / name).read_text(encoding="utf-8"))
+                if cached != shipped:
                     raise ValueError("Changed managed installation")
             return [node_path(str(node)), node_path(str(entry))]
         except (OSError, ValueError, KeyError, TypeError) as exc:

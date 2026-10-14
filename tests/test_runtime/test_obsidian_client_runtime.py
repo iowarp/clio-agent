@@ -56,6 +56,13 @@ def test_installer_creates_environment_and_requires_native_verification(
             str(client.project / "node_modules" / "obsidian-headless" / "cli.js"),
         ]
         assert client.installed()
+        manifest = client.project / "package.json"
+        content = json.loads(manifest.read_text())
+        manifest.write_text(json.dumps(content, indent=4) + "\n", encoding="utf-8")
+        assert client.installed(), "Git or OS newline formatting does not change the pinned client"
+        content["dependencies"]["obsidian-headless"] = "0.0.0"
+        manifest.write_text(json.dumps(content), encoding="utf-8")
+        assert not client.installed(), "A different dependency still requires repair"
     else:
         with pytest.raises(runtime.ObsidianClientError, match="could not start"):
             client.install(progress.append)
