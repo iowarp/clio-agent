@@ -67,7 +67,7 @@ def test_sync_setup_failure_does_not_start_client(
     monkeypatch.setattr(obsidian_sync.subprocess, "run", Mock(return_value=Mock(returncode=1)))
     launcher = Mock()
     monkeypatch.setattr(obsidian_sync.subprocess, "Popen", launcher)
-    with pytest.raises(ValueError, match="privately"):
+    with pytest.raises(ValueError, match="CLIO's Obsidian setup"):
         obsidian_sync.ObsidianSync().start(record)
     launcher.assert_not_called()
     record.source = record.source.model_copy(update={"connection": "local_vault"})
@@ -99,18 +99,12 @@ def test_sync_subfolder_uses_enclosing_vault_without_changing_source_scope(
     sync.shutdown()
 
 
-def test_windows_npm_wrapper_resolves_official_javascript(
+def test_sync_selects_managed_client_instead_of_personal_installation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Resolve npm's Windows shim without executing shell command text."""
-    wrapper = tmp_path / "ob.cmd"
-    wrapper.write_text("unused")
-    package = tmp_path / "node_modules" / "obsidian-headless"
-    package.mkdir(parents=True)
-    (package / "package.json").write_text('{"bin":{"ob":"cli.js"}}')
-    (package / "cli.js").write_text("// official client fixture")
-    monkeypatch.setenv("CLIO_OBSIDIAN_HEADLESS_CLI", str(wrapper))
-    monkeypatch.setattr(
-        obsidian_sync.shutil, "which", lambda name: "node.exe" if name == "node" else None
-    )
-    assert obsidian_sync.client_command() == ["node.exe", str(package / "cli.js")]
+    """The sync owner uses CLIO's verified client even when a personal ob is configured."""
+    monkeypatch.setenv("CLIO_OBSIDIAN_HEADLESS_CLI", str(tmp_path / "personal-ob.cmd"))
+    managed = Mock()
+    managed.command.return_value = ["managed-node.exe", "managed-cli.js"]
+    monkeypatch.setattr(obsidian_sync, "ManagedObsidianClient", lambda: managed)
+    assert obsidian_sync.client_command() == ["managed-node.exe", "managed-cli.js"]

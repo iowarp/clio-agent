@@ -66,9 +66,13 @@ class StorageService:
         self.store = SourceStore(root)
         self.auth = StorageAuth(credential_path)
         self.github = GitHubAccess()
+        from clio_agent.gact.storage.obsidian_account import ObsidianAccount
         from clio_agent.gact.storage.obsidian_sync import ObsidianSync
 
-        self.obsidian_sync = ObsidianSync()
+        self.obsidian_account = ObsidianAccount(
+            credential_path.parent / "obsidian", root.parent / "knowledge-vaults"
+        )
+        self.obsidian_sync = ObsidianSync(self.obsidian_account)
         # GACT currently authenticates one owner (loopback or the instance bearer).
         # Bind to that OS owner, not an ephemeral Desktop launch token or a
         # client-supplied username. Future multi-user auth supplies distinct subjects.
@@ -131,7 +135,7 @@ class StorageService:
     def create(
         self, workspace_id: str, body: CreateSource, workspace_root: Path | None = None
     ) -> SourceRecord:
-        """Register an explicitly selected source without materializing or writing data."""
+        """Register a selected source, creating owned empty storage only when requested."""
         record = self._prepare_source(workspace_id, body, workspace_root)
         self.store.put("source", record.source.id, record)
         return record
@@ -160,6 +164,12 @@ class StorageService:
             if body.mode not in capabilities.supported_modes:
                 raise ValueError("This SSH connection currently supports read-only transfers")
         root = body.root
+        if body.create_vault:
+            vault = self.store.root.parent / "knowledge-vaults" / uuid.uuid4().hex
+            vault.mkdir(parents=True, exist_ok=False)
+            (vault / ".obsidian").mkdir()
+            (vault / ".obsidian" / "app.json").write_text("{}\n", encoding="utf-8")
+            root = str(vault)
         if body.provider == "google_drive":
             root = drive_folder_id(root)
         if body.provider == "github":
@@ -270,6 +280,8 @@ class StorageService:
         self, record: SourceRecord, body: CreateSource, workspace_root: Path
     ) -> SourceRecord:
         """Edit setup in place and reevaluate access against the saved account's grants."""
+        if body.create_vault:
+            raise ValueError("Create a new source to create a new vault")
         self.require_idle(record)
         if body.provider != record.source.provider:
             raise ValueError("Connect a new source to use a different provider")

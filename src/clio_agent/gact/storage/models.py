@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from clio_schemas.connected_resources import AccessMode, ConnectedSource
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
 
 def now() -> str:
@@ -49,11 +49,24 @@ class CreateSource(StorageModel):
     """Approve one source on the connected CLIO for one workspace."""
 
     provider: Literal["local", "sftp", "google_drive", "globus", "github", "obsidian"]
-    root: str = Field(min_length=1, max_length=4096)
+    root: str = Field(default="", max_length=4096)
+    create_vault: bool = False
     label: str = Field(min_length=1, max_length=120)
     mode: AccessMode = "read_only"
     configuration: SourceConfiguration = Field(default_factory=SourceConfiguration)
     sftp_credentials: SftpCredentials | None = Field(default=None, exclude=True, repr=False)
+
+    @model_validator(mode="after")
+    def validate_vault_creation(self) -> CreateSource:
+        """Create only a new CLIO-owned vault; existing sources require an explicit root."""
+        if self.create_vault:
+            if self.provider != "obsidian" or self.root:
+                raise ValueError("New vaults use Obsidian semantics and CLIO-managed storage")
+            if self.configuration.obsidian_connection != "local_vault":
+                raise ValueError("Create a local vault or select a remote Sync vault")
+        elif not self.root.strip():
+            raise ValueError("Choose a source folder")
+        return self
 
 
 class SourceRecord(StorageModel):

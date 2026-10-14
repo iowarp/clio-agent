@@ -98,6 +98,36 @@ class KnowledgeService:
             "access": record.linked_access,
         }
 
+    def create(self, workspace_id: str, source_id: str, path: str, content: str) -> dict[str, Any]:
+        """Create a new Markdown note without overwriting existing source contents."""
+        record = self.record(workspace_id, source_id)
+        if record.linked_access == "read_only" or not record.source.capabilities.note_write:
+            raise PermissionError("This knowledge source is read only")
+        if not path.lower().endswith(".md"):
+            raise PermissionError("Knowledge notes must be Markdown files")
+        encoded = content.encode("utf-8")
+        if len(encoded) > 2 * 1024 * 1024:
+            raise ValueError("Note exceeds the 2 MiB reader limit")
+        if not record.linked_manifest_id:
+            record = link_folder(self.storage, record)
+        from clio_agent.gact.storage.source_filesystem import SourceFileSystem
+
+        fs = SourceFileSystem(
+            self.storage,
+            workspace_id,
+            source_id,
+            self.resources,
+            revision=record.linked_manifest_id or "",
+        )
+        with fs.open(path, "xb") as writer:
+            writer.write(encoded)
+        return {
+            "source_id": source_id,
+            "path": path,
+            "revision": fs.revision,
+            "writes_propagate": record.linked_access == "write_through",
+        }
+
     def edit(
         self, workspace_id: str, source_id: str, path: str, content: str, revision: str
     ) -> dict[str, Any]:

@@ -187,12 +187,20 @@ def test_subfolder_source_confines_index_reader_links_and_edits(
     assert (vault / "a.md").read_text(encoding="utf-8").startswith("---")
 
 
-def test_subfolder_rejects_private_scope_and_nonvault_folder(tmp_path: Path, vault: Path) -> None:
+def test_subfolder_rejects_private_scope_and_accepts_plain_notes(
+    tmp_path: Path, vault: Path
+) -> None:
     """A selected source cannot expose Obsidian private state as its content root."""
     with pytest.raises(PermissionError, match="approved vault"):
         ObsidianSource(str(vault / ".obsidian"))
-    with pytest.raises(ValueError, match="folder inside"):
-        ObsidianSource(str(tmp_path))
+    plain = tmp_path / "plain-notes"
+    plain.mkdir()
+    (plain / "First.md").write_text("# First\n[[Second]]", encoding="utf-8")
+    (plain / "Second.md").write_text("# Second", encoding="utf-8")
+    adapter = ObsidianSource(str(plain))
+    assert adapter.vault_root == plain
+    assert [entry.path for entry in adapter.entries()] == ["First.md", "Second.md"]
+    assert not (plain / ".obsidian").exists()
 
 
 def test_live_http_read_only_custody_gating_and_revocation(
@@ -247,6 +255,8 @@ def test_live_http_read_only_custody_gating_and_revocation(
         assert resource.sha256 == note["revision"]
         with pytest.raises(PermissionError):
             knowledge_tools.knowledge_edit(source["id"], "a.md", "bad", note["revision"])
+        with pytest.raises(PermissionError):
+            knowledge_tools.knowledge_create(source["id"], "new.md", "denied")
         assert client.get(prefix.replace("/w/", "/elsewhere/") + "/knowledge").status_code == 404
         assert client.post(
             prefix + "/knowledge/open", json={"path": "../outside.md"}
@@ -259,6 +269,41 @@ def test_live_http_read_only_custody_gating_and_revocation(
     assert {
         path.relative_to(vault): path.read_bytes() for path in vault.rglob("*") if path.is_file()
     } == before
+
+
+def test_editable_vault_enables_creation_and_revocation_removes_write_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Creation is available only with an approved editable source, including after revocation."""
+    storage = StorageService(tmp_path / "sources", tmp_path / "auth" / "credentials.json")
+    record = storage.create(
+        "w", CreateSource(provider="obsidian", create_vault=True, label="New", mode="write_enabled")
+    )
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            sessions={"s": SimpleNamespace(workspace_id="w")},
+            connected_storage=storage,
+            knowledge=KnowledgeService(
+                storage, ResourceStore(root=tmp_path / "resources", max_resource_bytes=4096)
+            ),
+        )
+    )
+    monkeypatch.setattr(knowledge_tools.context, "active_app", lambda: app)
+    monkeypatch.setattr(knowledge_tools.context, "active_session_id", lambda: "s")
+    assert {tool.name for tool in knowledge_tools.build_knowledge_tools()} >= {
+        "knowledge_create",
+        "knowledge_edit",
+    }
+    knowledge_tools.knowledge_create(record.source.id, "First.md", "# First")
+    storage.set_link_access(record, "read_only")
+    storage.store.put("source", record.source.id, record)
+    assert {tool.name for tool in knowledge_tools.build_knowledge_tools()} == {
+        "knowledge_open",
+        "knowledge_search",
+        "knowledge_related",
+    }
+    with pytest.raises(PermissionError):
+        knowledge_tools.knowledge_create(record.source.id, "Second.md", "denied")
 
 
 @pytest.mark.parametrize("mode", ["working_copy", "write_enabled"])

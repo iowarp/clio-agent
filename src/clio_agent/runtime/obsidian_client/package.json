@@ -1,0 +1,6 @@
+{
+  "name": "clio-managed-obsidian-client",
+  "private": true,
+  "version": "1.0.0",
+  "dependencies": { "obsidian-headless": "0.0.14" }
+}

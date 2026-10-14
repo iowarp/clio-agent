@@ -2,44 +2,31 @@
 
 from __future__ import annotations
 
-import json
-import os
-import shutil
 import subprocess
 import sys
 import threading
-from pathlib import Path
 from typing import Any
 
+from clio_agent import paths
 from clio_agent.gact.storage.models import SourceRecord
 from clio_agent.gact.storage.obsidian import ObsidianSource
+from clio_agent.gact.storage.obsidian_account import ObsidianAccount
+from clio_agent.runtime.obsidian_client_runtime import ManagedObsidianClient
 
 
 def client_command() -> list[str]:
-    """Locate the installed official client; never download or execute a shell string."""
-    explicit = os.environ.get("CLIO_OBSIDIAN_HEADLESS_CLI", "")
-    executable = explicit or shutil.which("ob") or ""
-    if not executable:
-        raise ValueError("Install the official obsidian-headless client on this CLIO host")
-    path = Path(executable).resolve()
-    if path.suffix.lower() in {".cmd", ".ps1"}:
-        package = path.parent / "node_modules" / "obsidian-headless"
-        manifest = json.loads((package / "package.json").read_text(encoding="utf-8"))
-        binary = manifest["bin"]
-        path = (package / (binary["ob"] if isinstance(binary, dict) else binary)).resolve()
-        path.relative_to(package.resolve())
-    if path.suffix in {".js", ".mjs", ".cjs"}:
-        node = shutil.which("node")
-        if not node or not path.is_file():
-            raise ValueError("Obsidian Headless requires Node.js 22 or later")
-        return [node, str(path)]
-    return [str(path)]
+    """Select CLIO's managed official client, independent of the user's PATH."""
+    return ManagedObsidianClient().command()
 
 
 class ObsidianSync:
     """Own source-scoped sync processes, independently from agent edit permissions."""
 
-    def __init__(self) -> None:
+    def __init__(self, account: ObsidianAccount | None = None) -> None:
+        self.account = account or ObsidianAccount(
+            paths.user_config_dir() / "storage-auth" / "obsidian",
+            paths.user_data_dir() / "knowledge-vaults",
+        )
         self._processes: dict[str, subprocess.Popen[bytes]] = {}
         self._lock = threading.RLock()
 
@@ -56,7 +43,7 @@ class ObsidianSync:
                 else "stopped",
                 "mode": record.configuration.obsidian_sync_mode,
                 "connection": record.source.connection,
-                "error": "Headless Sync stopped; check private client setup on this host"
+                "error": "Obsidian Sync stopped. Check the account in Settings → Data sources."
                 if process and code
                 else None,
             }
@@ -72,8 +59,7 @@ class ObsidianSync:
         with self._lock:
             if self.status(record)["state"] == "running":
                 return self.status(record)
-            # Setup/login happen interactively in the official client. No account,
-            # encryption password or authentication output enters CLIO tool results.
+            environment = self.account.environment()
             checked = subprocess.run(
                 [*command, "sync-status", "--path", sync_root],
                 stdin=subprocess.DEVNULL,
@@ -81,9 +67,10 @@ class ObsidianSync:
                 stderr=subprocess.DEVNULL,
                 timeout=30,
                 check=False,
+                env=environment,
             )
             if checked.returncode:
-                raise ValueError("Run ob login and ob sync-setup privately on this CLIO host first")
+                raise ValueError("Connect this Sync vault through CLIO's Obsidian setup first.")
             configured = subprocess.run(
                 [
                     *command,
@@ -98,6 +85,7 @@ class ObsidianSync:
                 stderr=subprocess.DEVNULL,
                 timeout=30,
                 check=False,
+                env=environment,
             )
             if configured.returncode:
                 raise ValueError("The official client could not configure this vault's sync mode")
@@ -110,6 +98,7 @@ class ObsidianSync:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=creationflags,
+                env=environment,
             )
             return self.status(record)
 

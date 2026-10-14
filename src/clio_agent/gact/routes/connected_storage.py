@@ -152,6 +152,10 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         async with source_changes:
             return await run(update)
 
+    from clio_agent.gact.routes.storage_obsidian import register_storage_obsidian_routes
+
+    register_storage_obsidian_routes(app, service, run, change_access)
+
     def start_browser_auth(
         request: Request, record: SourceRecord, body: StartSignIn | None
     ) -> dict[str, Any]:
@@ -252,7 +256,7 @@ def register_connected_storage_routes(app: FastAPI) -> None:
         definitions = []
         for identifier, label, logo in [
             ("local", "Files on this CLIO", "folder"),
-            ("obsidian", "Obsidian vault", "knowledge"),
+            ("obsidian", "Obsidian", "obsidian"),
             ("sftp", "SSH / SFTP", "ssh"),
             ("google_drive", "Google Drive", "google-drive"),
             ("globus", "Globus", "globus"),

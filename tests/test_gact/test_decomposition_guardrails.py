@@ -192,7 +192,7 @@ from clio_agent.gact.app import build_app
 # 372 -> 376: source-scoped knowledge snapshot/open and Sync status/action routes,
 # owned by routes/knowledge.py and registered from routes/connected_storage.py.
 # 381 -> 383: read-only search-session POST and bounded workspace file-passage GET.
-EXPECTED_ROUTE_METHOD_PAIRS = 383
+EXPECTED_ROUTE_METHOD_PAIRS = 389
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

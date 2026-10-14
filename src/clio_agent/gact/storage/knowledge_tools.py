@@ -66,6 +66,16 @@ def knowledge_related(
     )
 
 
+def knowledge_create(source_id: str, path: str, content: str) -> dict[str, Any]:
+    """Create a Markdown note in an editable knowledge source, refusing to overwrite a note.
+
+    Use a source-relative .md path. Obsidian-style links, tags and frontmatter are
+    indexed after creation. This tool is available only when note edits are allowed.
+    """
+    service, wid = owner()
+    return service.create(wid, source_id, path, content)
+
+
 def knowledge_edit(source_id: str, path: str, content: str, revision: str) -> dict[str, Any]:
     """Replace an existing Markdown note using its content hash from knowledge_open.
 
@@ -100,7 +110,7 @@ def build_knowledge_tools() -> list[Any]:
     if any(
         row.linked_access != "read_only" and row.source.capabilities.note_write for row in sources
     ):
-        functions.append(knowledge_edit)
+        functions.extend([knowledge_create, knowledge_edit])
     declarations = {
         "source_id": {
             "type": "string",
@@ -111,7 +121,7 @@ def build_knowledge_tools() -> list[Any]:
         "offset": {"type": "integer", "description": "Page offset."},
         "limit": {"type": "integer", "description": "Page size, maximum 500."},
         "revision": {"type": "string", "description": "Indexed revision or captured content hash."},
-        "content": {"type": "string", "description": "Complete replacement Markdown."},
+        "content": {"type": "string", "description": "Complete Markdown note content."},
     }
     import inspect
 
@@ -125,7 +135,7 @@ def build_knowledge_tools() -> list[Any]:
             representation="row",
             domain="resources",
             title=function.__name__.replace("_", " ").capitalize(),
-            read_only=function is not knowledge_edit,
+            read_only=function not in {knowledge_edit, knowledge_create},
         )
         for function in functions
     ]

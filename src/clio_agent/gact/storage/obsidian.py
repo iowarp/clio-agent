@@ -34,7 +34,11 @@ def vault_root(root: Path) -> Path:
                 vault_path(relative, [])
                 safe_child(candidate, relative)
             return candidate
-    raise ValueError("Select an Obsidian vault or a folder inside one (.obsidian required)")
+    if root.name.startswith("."):
+        raise ValueError("Select a notes folder, not a private settings directory")
+    # Markdown folders have the same knowledge semantics without an installed app.
+    # Attaching one never creates configuration or changes its existing contents.
+    return root
 
 
 class ObsidianSource(LocalSource):
