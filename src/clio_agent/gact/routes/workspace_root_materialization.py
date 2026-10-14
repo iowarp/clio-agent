@@ -6,6 +6,10 @@ An accepted-but-absent root is not caught at the route; it surfaces much later a
 an ENOENT from the MCP fleet (``MCPSpawnError``) or the shell server
 (``cwd_not_found``), on a turn the user did not connect to the workspace edit.
 
+Both paths also refuse a root another workspace already pins (gact-tui#219); the
+store detects it and :func:`workspace_root_conflict` turns it into the 409 the
+client shows.
+
 Kept in its own leaf module so :mod:`clio_agent.gact.routes.workspaces` stays under
 the file-size ratchet and both handlers share one implementation of the guarantee.
 """
@@ -17,6 +21,8 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
+from clio_agent.gact.workspace_roots import WorkspaceRootConflict
+from clio_agent.gact.workspaces import workspace_display_name
 
 
 def materialize_workspace_root(root_path: str) -> None:
@@ -49,4 +55,41 @@ def materialize_workspace_root(root_path: str) -> None:
         ) from exc
 
 
-__all__ = ["materialize_workspace_root"]
+def workspace_root_conflict(exc: WorkspaceRootConflict) -> HTTPException:
+    """The 409 for a root another workspace already pins.
+
+    Args:
+        exc: The store's conflict, naming the workspace that owns the folder.
+
+    Returns:
+        An ``HTTPException`` whose ``workspace_root_conflict`` envelope names that
+        workspace, so a client can offer to open it instead.
+    """
+
+    existing = exc.existing
+    label = workspace_display_name(
+        workspace_id=existing.id,
+        name=existing.name,
+        root_path=existing.root_path,
+        metadata=existing.metadata,
+        configured_display_name=existing.display_name,
+    )
+    return HTTPException(
+        status_code=409,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="workspace_root_conflict",
+                message=f'{exc.root_path} is already the folder of workspace "{label}"',
+                details={
+                    "root_path": exc.root_path,
+                    "workspace_id": existing.id,
+                    "workspace_name": label,
+                    "workspace_root": existing.root_path,
+                },
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
+__all__ = ["materialize_workspace_root", "workspace_root_conflict"]
