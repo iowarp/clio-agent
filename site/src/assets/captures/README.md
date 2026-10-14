@@ -76,3 +76,19 @@ rendered-page review, and verification receipts are archived under
 `D:/Libraries/Videos/clio_recordings/2026-10-13-obsidian-managed-vaults/`.
 The personal-vault acceptance capture and file manifests remain private and are
 excluded from the website and public capture archive.
+
+## Knowledge source actions and provider information — 13 October 2026
+
+The Settings, new-vault, existing-folder, and Sync captures were refreshed after
+adding explicit New vault and Connect actions. A fifth capture shows the shared
+provider info icon, with the knowledge graph explained before the optional
+Obsidian app and paid Sync service. The other four fictional notebook captures
+remain unchanged. The current manifest records nine image hashes.
+
+Live checks used Settings to create an empty vault and connect a fictional
+Markdown folder read only, then opened their source-named graph tabs. Provider
+info was checked on hover, keyboard focus, and touch; Settings and the connection
+flow were reviewed at 390px. The final media comes from the production build,
+with untouched originals and checks archived at
+`D:/Libraries/Videos/clio_recordings/2026-10-13-knowledge-source-actions/`.
+Authenticated remote Sync was not exercised. No personal vault data appears.

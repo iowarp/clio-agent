@@ -10,7 +10,9 @@ for (const width of [390, 1440]) {
     await expect(page.locator('.sl-markdown-content')).toContainText('fictional');
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1);
     const captures = page.locator('.guide-screenshot');
-    await expect(captures).toHaveCount(8);
+    await expect(captures).toHaveCount(9);
+    await expect(page.locator('.sl-markdown-content')).toContainText('New vault and Connect');
+    await expect(page.locator('.sl-markdown-content')).toContainText('info icon');
     await expect(page.locator('.sl-markdown-content')).toContainText('Create a new vault');
     await expect(page.locator('.sl-markdown-content')).toContainText('Attach an existing vault or folder');
     await expect(page.locator('.sl-markdown-content')).toContainText('Obsidian app does not need to be installed');

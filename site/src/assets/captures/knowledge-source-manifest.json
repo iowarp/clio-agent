@@ -1,15 +1,17 @@
 {
   "date": "2026-10-13",
-  "agent_revision": "bd2819a96cd99496889454a861bb4221e10b930f",
-  "ui_revision": "308c7b6a1d9c781945be33d1cfefa32208ca174b",
-  "archive": "D:/Libraries/Videos/clio_recordings/2026-10-13-obsidian-managed-vaults",
+  "agent_revision": "ae788553a268284fe6599a6b116477d824108437",
+  "ui_revision": "04a0f773d63d3ef06f59de1b997b4f91969f9c8c",
+  "archive": "D:/Libraries/Videos/clio_recordings/2026-10-13-knowledge-source-actions",
+  "previous_archive": "D:/Libraries/Videos/clio_recordings/2026-10-13-obsidian-managed-vaults",
   "theme": "light",
   "export": "Original browser PNG to JPEG95 4:4:4; no compositing or painted controls",
   "live_checks": [
-    "UI-created empty vault",
-    "Plain Markdown folder attached read only using host picker",
-    "Official client 0.0.14 installed and native SQLite executed",
-    "1254-note personal vault graph/read/pointer selection in read-only mode; 16931 files unchanged by hash and mtime"
+    "Settings New vault creates an editable knowledge source and opens its source-named tab",
+    "Settings Connect opens existing-folder setup with read-only default and connects fictional Markdown notes",
+    "All provider info icons explain their source on hover; Obsidian also checked on keyboard focus and touch",
+    "Settings and connection flow fit a 390px viewport",
+    "Production build captures reviewed at website delivery width"
   ],
   "limitations": [
     "No authenticated remote Sync account was available; sign-in/remote selection have automated test coverage only",
@@ -18,30 +20,37 @@
   "screenshots": [
     {
       "name": "knowledge-connect",
-      "sha256": "24ea18dff21706996dcb38082ce55f7a29b92a0c2137e064b9c7d1a1c1fcd0cc",
+      "sha256": "1a1ae04776c3dd4450f1f1c15178eb7674382a574648520a6236d23faf8e203d",
       "width": 1344,
-      "height": 1516,
+      "height": 1612,
       "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
     },
     {
       "name": "knowledge-existing",
-      "sha256": "dbd9f55a4b52abccd2977d46122932e6172ab2c91d0e0a307a596b9c2b6b90a1",
+      "sha256": "f02539fb519e6784ab5b07563eb78ab278dda98eebf87a35aff431cb27b4cc8d",
       "width": 1344,
-      "height": 1670,
+      "height": 1690,
       "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
     },
     {
       "name": "knowledge-settings",
-      "sha256": "18ac787bd21da325cbbc85d0495e79a3587c639be5681d4945ebca62204ae4ca",
+      "sha256": "935fe22d89ea6518fbf222a349ceb87591864188c83102876251f1d219fd9ba5",
       "width": 1676,
       "height": 990,
       "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
     },
     {
       "name": "knowledge-sync",
-      "sha256": "359694b8aaa6a625433c3a8a32dd8396f157221a4988e681b9ea4eef673637b3",
+      "sha256": "816acc27aa03bcd8007f060c49ba24bbd62565c9f25b4059d17747cf0d10dcc8",
+      "width": 1344,
+      "height": 722,
+      "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
+    },
+    {
+      "name": "knowledge-source-info",
+      "sha256": "a0a14db4b86fe5b9427efba590503e77e4ad5de422279ea6993b95f3d0347ace",
       "width": 1676,
-      "height": 1370,
+      "height": 990,
       "origin": "2026-10-13 production browser capture, DPR 2, fictional notes"
     },
     {

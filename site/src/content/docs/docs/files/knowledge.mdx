@@ -19,18 +19,25 @@ material it uses in an answer.
   use fictional example notebooks and notes. No personal vault content is shown.
 </Aside>
 
-## What is an Obsidian vault?
+## A knowledge graph of your notes
 
-[Obsidian](https://obsidian.md/) is a notes app that connects Markdown files with
-links. Its **vault** is the folder holding those notes. CLIO uses the same note,
-link, tag, and frontmatter semantics to make that folder a knowledge source.
-**The Obsidian app does not need to be installed.** You can start a new vault in
-CLIO, or use an existing notes folder, and open it in Obsidian later if you want.
+A knowledge source connects Markdown notes through their authored links, tags,
+aliases, and frontmatter. Its **vault** is the folder holding those notes. CLIO
+can create a new vault or connect an existing notes folder, then let you explore
+the graph, read its notes, and use it with the agent.
+
+**The Obsidian app does not need to be installed.**
+[Obsidian](https://obsidian.md/) is a popular knowledge app that can open and
+review the same vault and graph. Its optional paid cross-device Sync service
+can also be managed by CLIO.
 
 ## Create a new vault or attach an existing one
 
-In a workspace, open **+ → Attach**, find **Obsidian**, and choose **Connect**.
-The form offers three explicit starting points:
+In **Settings → Data sources**, the Obsidian row offers **New vault** and
+**Connect**. Choose the workspace, then continue to its connection form.
+The same actions are available in a workspace through **+ → Attach → Obsidian**.
+**New vault** starts with creation; **Connect** starts with an existing folder
+and read-only access. You can change the starting point in the form:
 
 - **Create a new vault:** name it and select **Create vault**. CLIO creates an empty
   vault in its managed storage on the connected host. **Allow CLIO to create and
@@ -143,23 +150,31 @@ Original notes and captures already retained in the workspace remain. See
 [Manage sources](/docs/files/manage/) and [Download or link](/docs/files/download-or-link/)
 for the shared source controls.
 
-## Manage Obsidian in Settings
+## New vault and Connect in Settings
 
-Open **Settings → Data sources → Obsidian → Manage**. This is the shared place
-to manage the official Sync client and its account on the connected service.
-Local vaults work without installing that client or signing in.
+Open **Settings → Data sources** to create a vault or connect a source to a
+workspace. Obsidian offers **New vault** and **Connect**. Google Drive, Globus,
+and GitHub offer separate **Sign in** and **Connect** actions. Signing in alone
+does not connect any data to a workspace.
 
-<GuideScreenshot name="knowledge-settings" alt="Obsidian appears in Settings Data sources alongside Google Drive, Globus and GitHub" caption="Manage the Obsidian account and optional Sync client in Settings. Connecting a particular vault remains a workspace action." />
+<GuideScreenshot name="knowledge-settings" alt="Settings offers New vault and Connect for Obsidian, and Sign in and Connect for Google Drive, Globus and GitHub" caption="Choose an action, then choose its workspace. New vault and Connect open the same source form available from Attach." />
+
+Each source has an **info icon** beside its name. Hover, focus it with the
+keyboard, or tap it for a brief explanation. Obsidian's explanation starts with
+the knowledge graph; the optional app and paid Sync service come last.
+
+<GuideScreenshot name="knowledge-source-info" alt="The Obsidian info popup explains linked Markdown knowledge graphs, creating or connecting a vault, and the optional app and paid Sync service" caption="Provider information explains the source before asking you to connect it." />
 
 ## Optional: sync a vault through your account
 
-1. Choose **Install Sync client**. CLIO installs and verifies the official
+1. Choose **Connect** for Obsidian, select a workspace if you started in Settings,
+   and choose **Sync from Obsidian** in the connection form.
+2. Choose **Install Sync client** if needed. CLIO installs and verifies the official
    [Obsidian Headless client](https://github.com/obsidianmd/obsidian-headless)
    in its managed environment and shows installation progress.
-2. Sign in with your Obsidian account and, if enabled, a two-factor code.
-3. In a workspace's Obsidian connection form, choose **Sync from Obsidian** and
-   select a remote vault. Enter its encryption password if required.
-4. Choose the sync direction and whether CLIO may edit notes, then select
+3. Sign in with your Obsidian account and, if enabled, a two-factor code.
+4. Select a remote vault. Enter its encryption password if required.
+5. Choose the sync direction and whether CLIO may edit notes, then select
    **Connect vault**. CLIO configures and manages the local copy itself.
 
 <GuideScreenshot name="knowledge-sync" alt="The official Obsidian Sync client is installed in CLIO and ready for account sign-in" caption="CLIO manages installation and sign-in in the application. This capture shows the real installed client ready for sign-in." />
