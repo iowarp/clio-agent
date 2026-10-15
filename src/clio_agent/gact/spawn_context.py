@@ -107,17 +107,16 @@ def validate_task_spec(app: "FastAPI", spec: "TaskSpec") -> tuple[str, str, dict
     self-contained binding failures retain the same typed SpawnError.
     """
 
+    from clio_agent.gact.agent_task_limits import max_spawn_depth  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         _runtime_declared_child_ids,
     )
-    from clio_agent.gact.turn_spawn import (  # noqa: PLC0415
-        MAX_SPAWN_DEPTH,
-        SpawnError,
-    )
+    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
 
-    if spec.depth > MAX_SPAWN_DEPTH:
+    limit = max_spawn_depth()
+    if limit > 0 and spec.depth > limit:
         raise SpawnError(
-            f"spawn depth {spec.depth} exceeds max {MAX_SPAWN_DEPTH}",
+            f"spawn depth {spec.depth} exceeds max {limit}",
             reason="spawn_depth_exceeded",
         )
     parent = app.state.sessions.get(spec.parent_session_id)

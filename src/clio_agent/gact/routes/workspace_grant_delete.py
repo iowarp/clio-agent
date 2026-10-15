@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
@@ -41,4 +42,16 @@ def register_workspace_grant_delete_route(app: FastAPI) -> None:
             )
         from clio_agent.gact.runtime import grants  # noqa: PLC0415
 
-        return {"workspace_id": wid, "grant": grants.revoke_root_grant(app, wid, pattern)}
+        result = grants.revoke_root_grant(app, wid, pattern, emit=False)
+        if result["revoked"]:
+            await run_off_loop(
+                lambda: grants.emit_boundary_revoked(
+                    app,
+                    kind=grants.KIND_ROOT,
+                    scope=grants.SCOPE_WORKSPACE,
+                    grantor=grants.GRANTOR_USER,
+                    pattern=result["pattern"],
+                    workspace_id=wid,
+                )
+            )
+        return {"workspace_id": wid, "grant": result}

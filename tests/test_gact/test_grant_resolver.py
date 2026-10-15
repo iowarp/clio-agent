@@ -15,6 +15,7 @@ Asserts the load-bearing invariants of ``grant_resolver.resolve`` / ``is_read_on
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -498,7 +499,7 @@ def test_sticky_append_does_not_collide_with_migrated_legacy_row(tmp_path: Path)
     assert legacy_row["priority"] == 1  # sole row -> migrated to priority=1
     app.state.permission_policies = [legacy_row]
 
-    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"})
+    asyncio.run(_apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"}))
 
     assert len(app.state.permission_policies) == 2
     appended = app.state.permission_policies[1]
@@ -527,8 +528,10 @@ def test_two_successive_sticky_appends_both_preserve_first_match(tmp_path: Path)
     migrate_priorities([legacy_row])
     app.state.permission_policies = [legacy_row]
 
-    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"})
-    _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.rebase", "decision": "deny"})
+    asyncio.run(_apply_kind_grant(app, ws.id, "tool", {"pattern": "git.push", "decision": "deny"}))
+    asyncio.run(
+        _apply_kind_grant(app, ws.id, "tool", {"pattern": "git.rebase", "decision": "deny"})
+    )
 
     priorities = [row["priority"] for row in app.state.permission_policies]
     assert len(set(priorities)) == 3  # all three rows uniquely prioritized, no collisions
