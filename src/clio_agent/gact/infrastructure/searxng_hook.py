@@ -72,7 +72,11 @@ def _members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
         parts = member.name.split("/", 1)
         if len(parts) != 2 or not parts[1]:
             continue
-        member.name = parts[1]
+        # tar names use POSIX separators. Python normalizes them while extracting
+        # files, but not in extractall's directory-metadata pass. Windows rejects
+        # that mixed path under a Desktop-supplied \\?\ prefix (WinError 123).
+        # Normalize on the host before BOTH passes; keep filter="data" below.
+        member.name = os.path.normpath(parts[1])
         selected.append(member)
     return selected
 
