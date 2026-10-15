@@ -330,6 +330,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         "user-skill",
         "connect-data",
         "create-dashboard",
+        "hdf5",
         "planning",
         "present-interactive-analysis",
         "review-visual-presentation",
