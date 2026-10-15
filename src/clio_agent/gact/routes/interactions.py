@@ -406,7 +406,10 @@ def _a2ui_interactions(
                 task_id=owner_task_id,
                 status="answered" if settled else "pending",
                 title="Interactive surface",
-                requires_human_response=not settled,
+                # An offered action is not a request for an answer. Only an
+                # explicit question owns human attention; retain this row for
+                # action routing/history without moving the surface into it.
+                requires_human_response=False,
                 source=PendingInteractionSource(
                     protocol="native",
                     tool_name="create_a2ui_surface",

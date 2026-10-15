@@ -18,27 +18,20 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from clio_agent.gact.agent_task_limits import DEFAULT_MAX_SPAWN_DEPTH
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
 
-#: Runaway backstop on spawn depth (NOT a 3-tier rule): ``tier`` is semantic
-#: weight, not depth, so deep declared chains are legitimate. A spawn whose
-#: computed depth would exceed this is refused (``spawn_depth_exceeded``). Defined
-#: here, in the leaf module both the spawn path and every read-side walk import,
-#: rather than in ``turn_spawn`` (which imports this module).
-MAX_SPAWN_DEPTH = 8
+#: Compatibility name for the default, not the current configurable spawn limit.
+MAX_SPAWN_DEPTH = DEFAULT_MAX_SPAWN_DEPTH
 
-#: Ceiling on descendant-session traversal (:func:`descendant_sessions`,
-#: :func:`~clio_agent.gact.provenance.child_projection.child_session_lineage`).
-#: Deliberately THE SAME constant as the spawn backstop: a walk that stopped
-#: shallower would silently hide legitimate children, and one that went deeper
-#: could only find a graph that spawning refuses to create. Two independent
-#: numbers is how the aggregation walk and the lineage walk came to disagree
-#: about what the tree even is.
-_DEFAULT_DESCENDANT_DEPTH = MAX_SPAWN_DEPTH
+#: Existing children stay visible even after the admission limit is lowered.
+#: Traversal terminates over the finite graph using the shared seen set.
+_DEFAULT_DESCENDANT_DEPTH: int | None = None
 
 #: A descendant a durable :class:`AgentTask` delegated.
 AGENT_TASK_ATTRIBUTION = "agent_task"
@@ -81,9 +74,9 @@ def _session_store_index(app: "FastAPI") -> dict[str, list[str]]:
 
 
 def descendant_walk(
-    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+    app: "FastAPI", root_session_id: str, *, max_depth: int | None = _DEFAULT_DESCENDANT_DEPTH
 ) -> tuple[list[SessionDescendant], bool]:
-    """Return every descendant of ``root_session_id`` (BFS, bounded), typed by origin.
+    """Return descendants by origin, with an optional explicit BFS depth bound.
 
     The second element is TRUNCATED: the walk stopped at ``max_depth`` with a
     frontier still to visit. A caller that serves the lineage needs it, and it is
@@ -103,7 +96,7 @@ def descendant_walk(
     first (the registry's ``for_parent`` order).
     """
 
-    if max_depth < 1:
+    if max_depth is not None and max_depth < 1:
         return [], False
     reg = getattr(app.state, "agent_task_registry", None)
     forks = _session_store_index(app)
@@ -111,7 +104,7 @@ def descendant_walk(
     seen: set[str] = {root_session_id}
     frontier = [root_session_id]
     depth = 0
-    while frontier and depth < max_depth:
+    while frontier and (max_depth is None or depth < max_depth):
         next_frontier: list[str] = []
         for parent in frontier:
             delegated: list[tuple[str, str]] = []
@@ -158,7 +151,7 @@ def descendant_walk(
 
 
 def descendant_sessions(
-    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+    app: "FastAPI", root_session_id: str, *, max_depth: int | None = _DEFAULT_DESCENDANT_DEPTH
 ) -> list[SessionDescendant]:
     """The rows-only view of :func:`descendant_walk`."""
 
@@ -166,7 +159,7 @@ def descendant_sessions(
 
 
 def descendant_session_ids(
-    app: "FastAPI", root_session_id: str, *, max_depth: int = _DEFAULT_DESCENDANT_DEPTH
+    app: "FastAPI", root_session_id: str, *, max_depth: int | None = _DEFAULT_DESCENDANT_DEPTH
 ) -> list[str]:
     """The id-only view of :func:`descendant_sessions`, in the same order.
 
