@@ -12,25 +12,25 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
 <Steps>
 
-1. Open the deploy dialog.
+1. ### Open the deploy dialog
 
    Open CLIO. On the start screen, choose **Deploy CLIO** in the **Open CLIO** card.
 
    ![The CLIO start screen with Deploy CLIO highlighted](../../../../assets/tutorials/remote-deployment/01-start-screen.png)
 
-2. Choose a remote host.
+2. ### Choose a remote host
 
    In the **Deploy CLIO** dialog, choose **Remote host**.
 
    ![The Deploy CLIO dialog with Remote host highlighted](../../../../assets/tutorials/remote-deployment/02-remote-host.png)
 
-3. Name the deployment.
+3. ### Name the deployment
 
    In **Name**, enter a name you will recognize, for example `Notchpeak1 Login`.
 
    ![The Name field filled in](../../../../assets/tutorials/remote-deployment/03-name.png)
 
-4. Choose how to reach the remote computer.
+4. ### Choose how to reach the remote computer
 
    Under **SSH host**, open **Choose the destination computer**. It offers two options:
 
@@ -41,7 +41,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The destination menu open with Type an OpenSSH alias or address highlighted](../../../../assets/tutorials/remote-deployment/04-destination.png)
 
-5. Enter the remote address.
+5. ### Enter the remote address
 
    Type your username and the remote computer's address as `username@hostname`, for example `username@notchpeak1.chpc.utah.edu`. Choose the checkmark to confirm it.
 
@@ -51,7 +51,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The SSH host field with an address entered and the checkmark highlighted](../../../../assets/tutorials/remote-deployment/05-ssh-address.png)
 
-6. Configure the host.
+6. ### Configure the host
 
    A **Configure** window opens with the **Address**, **Port**, **Username**, and **Name** filled in from what you typed. Check that the **Address**, **Port**, and **Username** are correct. **Name** is a label for this host, and you can change it to any name you like.
 
@@ -67,7 +67,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The Configure window with Test connection and Save host highlighted](../../../../assets/tutorials/remote-deployment/06-configure-login-node.png)
 
-7. Add a hop to the compute node.
+7. ### Add a hop to the compute node
 
    To run CLIO on a compute node, connect through the login node you just saved. Choose **Add hop**. The login node moves up to become the first hop, and a new **Choose the destination computer** row appears below it for the compute node.
 
@@ -75,7 +75,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The SSH host route with the login node as the first hop, and Add hop and Type an OpenSSH alias or address highlighted](../../../../assets/tutorials/remote-deployment/07-add-compute-hop.png)
 
-8. Configure the compute node.
+8. ### Configure the compute node
 
    Enter the compute node in the new row, then choose the settings gear on that row to open **Add an SSH host**.
 
@@ -91,7 +91,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The Add an SSH host window with Address, CLIO install and runtime location, Test connection, and Save host highlighted](../../../../assets/tutorials/remote-deployment/08-configure-compute-node.png)
 
-9. Choose a port.
+9. ### Choose a port
 
    Back in **Deploy CLIO**, the **SSH host** route now runs from this computer through the login node to the compute node.
 
@@ -99,7 +99,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
    ![The Deploy CLIO dialog with Remote agent port highlighted](../../../../assets/tutorials/remote-deployment/09-agent-port.png)
 
-10. Choose whether the agent keeps running, then deploy.
+10. ### Choose whether the agent keeps running, then deploy
 
     **Keep this remote agent running when CLIO Desktop closes** controls what happens to the agent when you close the desktop app:
 
@@ -112,7 +112,7 @@ This tutorial deploys CLIO to a remote computer over SSH from the CLIO desktop a
 
     ![The Deploy CLIO dialog with the keep running checkbox checked, and the checkbox and Deploy and connect highlighted](../../../../assets/tutorials/remote-deployment/10-keep-agent-running.png)
 
-11. Sign in and follow the deployment.
+11. ### Sign in and follow the deployment
 
     CLIO shows each stage of the deployment as it runs, with the time each one takes:
 
