@@ -66,13 +66,66 @@ The same rules are available over the HTTP API at `GET` and `PUT /v1/policies`.
 
 ## File access
 
+### Workspace folders
+
+Open the workspace's menu in the sidebar and choose **Edit workspace**. The
+**Primary folder** is where its tools start. If you move that folder, choose its
+new location and **Save workspace**. CLIO keeps the same workspace and saved
+conversations; it changes the path without moving your files. Finish or stop
+running conversations first.
+
+Under **Additional permitted folders**, choose a folder or enter its path, then
+save. You can use **Add permitted folder** to prepare several additions before
+saving; Save also includes the folder currently entered. These are paths on the
+computer running the connected CLIO service. Desktop's native folder picker
+browses the computer running Desktop, so enter the service computer's path when
+working remotely.
+
+Additional folders permit file tools to read and write there, subject to the
+usual file and action rules. They survive restarting CLIO and remain attached
+when you change the primary path. The Files view includes additional folders as
+separate expandable entries. Agents can use their absolute paths or reference a
+file from Files. Files actually consumed or produced participate in artifact
+hashing and version tracking; allowing a folder does not bulk-index its contents.
+
+### Requests for another folder
+
+When a built-in file tool needs an unpermitted path, CLIO asks before running it.
+The request shows the operation, service computer, exact file and folder paths,
+reason, and permission duration. **Allow for workspace** adds read/write access to
+the displayed folders, saves the decision, and continues the original operation.
+**Deny** returns your refusal to the agent so it can choose another approach.
+The grant persists after restart; remove it from **Additional permitted folders**.
+Workspaces with the same primary folder share that boundary.
+
+For shell commands, the agent declares `access_paths` and `access_reason` before
+execution. A move includes both source and destination. An undeclared write that
+hits the OS fence returns instructions for requesting access through that same
+approval flow. Arbitrary shell reads are not universally restricted by the write
+sandbox. Folder approval cannot override connected-source credential protection,
+read-only source storage, or disabled symlinks.
+
+Remove a folder in the editor and save to withdraw that additional grant. This
+does not delete files or remove access supplied by another rule. Already-running
+tool processes keep their sandbox until they finish and restart; new processes
+use the updated boundary. The OS sandbox controls writes, while file-tool policy
+also checks reads. A permitted folder is not a read-only source connection.
+
+Workspaces using the same primary folder share its file-tool boundary. Removing
+an additional grant from one keeps any grant still held by the other.
+
+### Other file-policy settings
+
 File tools can only reach certain folders. By default these are:
 
 - The workspace root.
 - The directory CLIO was started in.
 - The operating system's temporary directory.
 
-A path outside them fails with `outside_allowed_roots`, and the agent sees that reason. To change the list, set `CLIO_ALLOWED_ROOTS` or the configuration key `tools.file_policy.allowed_roots`. Two more settings apply:
+Managed built-in file calls request your approval for paths outside these folders.
+App-less callers have no approval channel and receive `outside_allowed_roots`.
+Administrators can also configure `CLIO_ALLOWED_ROOTS` or
+`tools.file_policy.allowed_roots`. Two more settings apply:
 
 - `CLIO_MAX_FILE_SIZE_BYTES` limits the size of files the tools handle.
 - `CLIO_ALLOW_SYMLINKS` is off by default. Set it to true to follow symbolic links.

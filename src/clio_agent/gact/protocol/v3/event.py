@@ -311,12 +311,11 @@ def _task_path(payload: dict[str, Any]) -> list[str]:
     Without it a client holding a ``subagent.upserted`` frame knows the run exists
     but not WHERE in the tree it belongs, so a nested spawn renders as another
     top-level row. The chain is read off the live registry (the same one the
-    provenance lineage reads) and bounded by the spawn backstop, so a cyclic or
-    torn projection terminates.
+    provenance lineage reads). Its seen set terminates cyclic or torn
+    projections without hiding children after a nesting-limit change.
     """
 
     from clio_agent.gact.context import active_app  # noqa: PLC0415 - avoid cycle
-    from clio_agent.gact.session_descendants import MAX_SPAWN_DEPTH  # noqa: PLC0415
 
     task_id = str(payload.get("task_id") or "")
     app = active_app()
@@ -329,13 +328,14 @@ def _task_path(payload: dict[str, Any]) -> list[str]:
     path = [task_id]
     parent_session_id = str(payload.get("parent_session_id") or "")
     seen = {task_id}
-    for _ in range(MAX_SPAWN_DEPTH):
+    while parent_session_id:
         owner = owner_of.get(parent_session_id)
         if owner is None or owner.task_id in seen:
             break
         seen.add(owner.task_id)
-        path.insert(0, owner.task_id)
+        path.append(owner.task_id)
         parent_session_id = owner.parent_session_id
+    path.reverse()
     return path
 
 

@@ -12,7 +12,9 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictFloat, StrictInt
 
 from clio_agent import conf
 from clio_agent.arc import history_mode
+from clio_agent.gact.agent_task_limits import DEFAULT_MAX_SPAWN_DEPTH
 from clio_agent.gact.context_preferences_types import DEFAULT_AUTOCOMPACT_PCT
+from clio_agent.gact.turn_spawn_executor import DEFAULT_MAX_CONCURRENT_AGENT_TASKS
 from clio_agent.user_config_document import (
     USER_CONFIG_LOCK,
     read_document,
@@ -47,9 +49,34 @@ class SettingDefinition:
     maximum: float | None = None
     integer: bool = False
     unit: str | None = None
+    unlimited_value: int | None = None
 
 
 _DEFINITIONS = (
+    SettingDefinition(
+        "agent_tasks.max_concurrent",
+        "CLIO_MAX_CONCURRENT_AGENT_TASKS",
+        "Concurrent subagents",
+        "Maximum running child tasks at each nesting level across this service. Extra tasks queue. Agent-specific limits may be lower.",
+        "Subagents",
+        float(DEFAULT_MAX_CONCURRENT_AGENT_TASKS),
+        "Applies immediately. Running tasks finish; queued tasks use the new limit.",
+        minimum=0,
+        integer=True,
+        unlimited_value=0,
+    ),
+    SettingDefinition(
+        "agent_tasks.max_depth",
+        "CLIO_MAX_AGENT_TASK_DEPTH",
+        "Maximum nesting depth",
+        "How many levels of subagents may be created. The first child is level 1.",
+        "Subagents",
+        float(DEFAULT_MAX_SPAWN_DEPTH),
+        "Applies to new subagents immediately. Existing descendants remain visible.",
+        minimum=0,
+        integer=True,
+        unlimited_value=0,
+    ),
     SettingDefinition(
         "limits.lm_call_s",
         "CLIO_MAX_LM_CALL_S",
@@ -146,6 +173,7 @@ class RuntimeSetting(BaseModel):
     has_user_value: bool
     editable: bool
     reason: str | None
+    unlimited_value: int | None = None
 
 
 class RuntimeSettings(BaseModel):
@@ -235,6 +263,7 @@ def _snapshot(document: dict[str, Any]) -> RuntimeSettings:
                 has_user_value=_contains(document, definition.key),
                 editable=reason is None,
                 reason=reason,
+                unlimited_value=definition.unlimited_value,
             )
         )
     # Both the full file and effective sources participate: an external edit to

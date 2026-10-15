@@ -38,6 +38,9 @@ def build_create_a2ui_surface_tool() -> Any:
         ``catalog.json#/components/<ExactComponentId>`` for its schema.
         Connect every component to ``id=root``; use a layout for several views.
         The renderer supplies selection, zoom, and export.
+        Buttons and sliders do not create a pending question. When a decision
+        needs an answer, call ask_user with this surface_id and its answer_action.
+        The question links back to this view without moving its tabs or controls.
         """
 
         resolved = _common.active_app_and_session()

@@ -370,6 +370,8 @@ def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | Non
     """
     limits_text = _limits_text(limits or _SHELL_LIMITS)
     task_text = (
+        "For files outside permitted folders, declare access_paths and access_reason so CLIO "
+        "asks the user before execution. Include source and destination for moves. "
         "By default background=false waits for command completion. Set background=true to "
         "return a durable Shell task handle as soon as the command starts, before completion. "
         "Continue independent work; use query_tasks, observe_tasks, wait_tasks, get_task_result "
@@ -477,6 +479,15 @@ async def bash(
             description="True returns a durable task handle before completion; false waits for exit."
         ),
     ] = False,
+    access_paths: Annotated[
+        list[str] | None,
+        Field(
+            description="Files or folders outside the workspace needed by this command. CLIO asks the user for folder access before running. Include both source and destination for a move."
+        ),
+    ] = None,
+    access_reason: Annotated[
+        str, Field(description="Explain why this command needs the declared external paths.")
+    ] = "",
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
@@ -496,6 +507,15 @@ async def bash(
             "command must be a non-empty string.",
             details={"field": "command"},
         )
+    if access_paths:
+        # The managed gate asks first; app-less callers still cannot use this
+        # declaration to self-grant territory or bypass connected-source policy.
+        from clio_agent.gact.folder_access import requested_folders
+
+        if requested_folders("shell_bash", {"access_paths": access_paths}):
+            return _error(
+                "folder_access_required", "Ask the user to permit the declared folders first."
+            )
     background_app, background_sid = None, ""
     if background:
         from clio_agent.gact import context as task_context

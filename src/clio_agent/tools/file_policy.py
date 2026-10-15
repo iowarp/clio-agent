@@ -481,6 +481,20 @@ def _coerce_path(filepath: str, *, field: str) -> Path:
             )
             base = Path.cwd()
         path = base / path
+    from clio_agent.runtime.workspace_folders import resolve_folder_location
+
+    workspace = _active_workspace_root()
+    if workspace is not None:
+        try:
+            path = resolve_folder_location(workspace, path) or path
+        except PermissionError as exc:
+            raise FilePolicyError(
+                code="outside_allowed_roots",
+                message=str(exc),
+                field=field,
+                path=str(path),
+                next_action="Ask the user to permit this folder again.",
+            ) from exc
     return path
 
 

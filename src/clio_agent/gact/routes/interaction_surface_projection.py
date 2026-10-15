@@ -6,6 +6,43 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.types import UserQuestion
+
+
+def _question_correlation(app: "FastAPI", question: "UserQuestion") -> dict[str, str]:
+    """Resolve tool/task correlation, including a forwarded child question."""
+    metadata = question.metadata if isinstance(question.metadata, Mapping) else {}
+    elicitation = metadata.get("elicitation")
+    elicitation = elicitation if isinstance(elicitation, Mapping) else {}
+    child = app.state.user_questions.get(str(metadata.get("forwarded_from_question") or ""))
+    child_meta = child.metadata if isinstance(getattr(child, "metadata", None), Mapping) else {}
+    child_elicitation = child_meta.get("elicitation")
+    child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
+    return {
+        "tool_name": str(
+            metadata.get("tool_name")
+            or elicitation.get("tool_name")
+            or child_meta.get("tool_name")
+            or child_elicitation.get("tool_name")
+            or ""
+        ),
+        "invocation_id": str(
+            metadata.get("invocation_id")
+            or elicitation.get("invocation_id")
+            or child_meta.get("invocation_id")
+            or child_elicitation.get("invocation_id")
+            or ""
+        ),
+        "task_id": str(
+            metadata.get("task_id")
+            or elicitation.get("task_id")
+            or child_meta.get("task_id")
+            or child_elicitation.get("task_id")
+            or ""
+        ),
+        "input_key": str(elicitation.get("input_key") or child_elicitation.get("input_key") or ""),
+    }
+
 
 def _task_id_for_owner(app: "FastAPI", owner: str) -> str:
     """Return the newest registered agent task belonging to this session."""
