@@ -66,9 +66,13 @@ def _session_rows(client: TestClient, *, root_path: str, workspace: Path) -> dic
     """Activate the blueprint and return the ``/v1/mcp/servers`` body."""
 
     del workspace
-    wid = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path}).json()[
-        "id"
-    ]
+    created = client.post("/v1/workspaces", json={"name": "Workspace", "root_path": root_path})
+    # One workspace per folder: a later app over the same store reuses the first one's.
+    wid = (
+        created.json()["error"]["details"]["workspace_id"]
+        if created.status_code == 409
+        else created.json()["id"]
+    )
     sid = client.post("/v1/sessions", json={"title": "Earth", "workspace_id": wid}).json()["id"]
     activated = client.post(
         f"/v1/sessions/{sid}/agent-blueprint", json={"blueprint_id": "earthscope"}
