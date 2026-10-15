@@ -114,6 +114,7 @@ _AUDIT_SINK_TARGETS = (
     "clio_agent.gact.message_wire.stream_audit",
     "clio_agent.runtime.lm_activity.stream_audit",
     "clio_agent.gact.transcript.stream_audit",
+    "clio_agent.gact.transcript_drops.stream_audit",
 )
 
 

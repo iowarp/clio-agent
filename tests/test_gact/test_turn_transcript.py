@@ -224,10 +224,12 @@ def test_whitespace_only_part_is_dropped_and_emits_nothing() -> None:
     transcript.close_open_text()
 
     assert transcript.snapshot() == []
-    assert publisher.of_type("message.part.completed") == []
-    # The part.added + deltas already went out (live streaming is honest),
-    # but the close emits nothing and the ledger no longer holds the part.
-    assert len(publisher.of_type("message.part.added")) == 1
+    # Never announced either (gact-tui#368): a part goes out on its first
+    # non-whitespace chunk, so a live client never sees one reload won't have.
+    assert (
+        publisher.of_type("message.part.added", "message.part.delta", "message.part.completed")
+        == []
+    )
     assert not transcript.has_closed_text("main", "answer")
 
 
@@ -503,9 +505,10 @@ def fold_published_events(events: list[tuple[str, dict[str, Any]]]) -> list[dict
     """Reconstruct the persisted parts list from the published event stream.
 
     Fold rule: parts arrive via ``message.part.added`` in order; text/thinking
-    parts take their final text from ``message.part.completed`` and are DROPPED
-    when no completed event ever arrives (the empty-after-clean removal);
-    atomic parts persist as added. Sequence = 1-based fold order.
+    parts take their final text from ``message.part.completed``; atomic parts
+    persist as added. Sequence = 1-based fold order. A streamed part that was
+    announced but never completed is a live/reload divergence (gact-tui#368):
+    clients keep it, so the fold refuses it rather than dropping it.
     """
 
     order: list[str] = []
@@ -524,8 +527,9 @@ def fold_published_events(events: list[tuple[str, dict[str, Any]]]) -> list[dict
     for part_id in order:
         wire = added[part_id]
         is_streamed_text = wire["type"] in {"text", "thinking"}
-        if is_streamed_text and part_id not in final_texts:
-            continue  # dropped whitespace-only part (#881): close emitted nothing
+        assert not (is_streamed_text and part_id not in final_texts), (
+            f"{part_id} was announced live but never completed"
+        )
         folded.append(
             {
                 "id": part_id,
