@@ -8,8 +8,14 @@ as a PowerShell literal (:mod:`clio_agent.gact.infrastructure.powershell`);
 from __future__ import annotations
 
 from clio_agent.gact.infrastructure import powershell
+from clio_agent.gact.infrastructure.model_runtime_installation import runtime_observation
+from clio_agent.gact.infrastructure.model_runtime_readiness import (
+    health_command,
+    identity_health_command,
+)
 from clio_agent.gact.infrastructure.models import CommandSpec, InfrastructureTarget
-from clio_agent.gact.infrastructure.plan import DriverPlan
+from clio_agent.gact.infrastructure.node_service import MARKER
+from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 
 # One llama.cpp build for the Windows archive and the ghcr server images.
@@ -62,11 +68,13 @@ def native_windows_llama_plan(
         return DriverPlan(
             (
                 powershell.command(
-                    prefix + "$pidFile=Join-Path $root 'server.pid'; "
-                    "if (!(Test-Path -LiteralPath $pidFile)) { Write-Output 'stopped'; exit 0 }; "
-                    "$process=Get-Process -Id (Get-Content -LiteralPath $pidFile) "
-                    "-ErrorAction SilentlyContinue; "
-                    "if ($process) { Write-Output 'running' } else { Write-Output 'stopped' }"
+                    prefix
+                    + "$installed=[bool](Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1); "
+                    "$pidFile=Join-Path $root 'server.pid'; $running=$false; "
+                    "if (Test-Path -LiteralPath $pidFile) { $running=[bool](Get-Process -Id (Get-Content -LiteralPath $pidFile) -ErrorAction SilentlyContinue) }; "
+                    "$phase=if ($running) { 'running' } elseif ($installed) { 'stopped' } else { 'not_installed' }; "
+                    "$receipt=@{phase=$phase;installed=$installed;running=$running;serving=$false;observed_at=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()}; "
+                    f"Write-Output ({powershell.literal(MARKER)} + ($receipt | ConvertTo-Json -Compress))"
                 ),
             ),
             connection_port=NATIVE_PORT,
@@ -82,11 +90,15 @@ def native_windows_llama_plan(
             )
         )
     if action == "stop":
-        return DriverPlan((_stop(prefix),))
+        return DriverPlan(
+            (_stop(prefix), *native_windows_llama_plan("status", "", target).commands)
+        )
     if action == "uninstall":
         return DriverPlan((_stop(prefix), _remove(prefix)))
-    if not model_path:
+    if action == "start" and not model_path:
         raise ValueError("model_path is required")
+    if action not in {"install", "reinstall", "start"}:
+        raise ValueError(f"Unsupported lifecycle action {action!r}")
     commands: list[CommandSpec] = []
     if action == "reinstall":
         commands.extend((_stop(prefix), _remove(prefix)))
@@ -96,10 +108,12 @@ def native_windows_llama_plan(
                 "$ErrorActionPreference='Stop'; "
                 + prefix
                 + "New-Item -ItemType Directory -Force -Path $root | Out-Null; "
-                "$archive=Join-Path $env:TEMP 'clio-llama.zip'; "
+                "$archive=Join-Path $root 'clio-llama.zip'; "
                 f"Invoke-WebRequest -UseBasicParsing -Uri {powershell.literal(LLAMA_WINDOWS_CPU_ARCHIVE)} "
                 "-OutFile $archive; "
-                "$digest=(Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant(); "
+                "$stream=[IO.File]::OpenRead($archive); $sha=[Security.Cryptography.SHA256]::Create(); "
+                "try { $digest=([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-','').ToLowerInvariant() } "
+                "finally { $sha.Dispose(); $stream.Dispose() }; "
                 f"if ($digest -ne {powershell.literal(LLAMA_WINDOWS_CPU_SHA256)}) {{ "
                 "Remove-Item -LiteralPath $archive -Force; "
                 'throw "llama.cpp archive sha256 $digest does not match the pinned release" }; '
@@ -112,6 +126,8 @@ def native_windows_llama_plan(
                 timeout_seconds=900,
             )
         )
+        commands.append(runtime_observation(True))
+        return DriverPlan(tuple(commands))
     server_args = [
         "-m",
         model_path,
@@ -135,10 +151,31 @@ def native_windows_llama_plan(
         "-PassThru; Set-Content -LiteralPath (Join-Path $root 'server.pid') -Value $process.Id"
     )
     # The server process inherits the key from this PowerShell's environment.
+    commands.append(_stop(prefix))
     commands.append(
         with_secret_env(launch, "LLAMA_API_KEY", api_key, windows=True) if api_key else launch
     )
-    return DriverPlan(tuple(commands), connection_port=NATIVE_PORT)
+    url = f"http://127.0.0.1:{NATIVE_PORT}"
+    alive = powershell.command(
+        prefix
+        + "$pidFile=Join-Path $root 'server.pid'; if ((Test-Path -LiteralPath $pidFile) -and (Get-Process -Id (Get-Content -LiteralPath $pidFile) -ErrorAction SilentlyContinue)) { 'running' } else { 'exited' }"
+    )
+    readiness = Readiness(
+        health=identity_health_command(
+            url + "/health", url + "/v1/models", "", "LLAMA_API_KEY", api_key, True
+        )
+        if api_key
+        else health_command(url + "/health", True),
+        alive=alive,
+        logs=native_windows_llama_plan("logs", "", target).commands[0],
+        label="llama.cpp",
+    )
+    return DriverPlan(
+        tuple(commands),
+        connection_port=NATIVE_PORT,
+        readiness=readiness,
+        after_ready=(runtime_observation(True, serving=True),),
+    )
 
 
 def _stop(prefix: str) -> CommandSpec:

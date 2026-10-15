@@ -139,19 +139,22 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         surface_id: str = "",
         answer_action: str = "question.submit",
         response_mode: str = "blocking",
+        surface_presentation: str = "linked",
     ) -> str:
         """Ask the user for intent, an explanation, or a choice.
 
         response_mode="blocking" (default) ends this turn when the answer is needed
         to continue. response_mode="async" leaves a question open while you keep
         working; its answer arrives as a normal queued message. Supply options for
-        choices, or use freeform for a text answer. Pass surface_id to present an
+        choices, or use freeform for a text answer. Pass surface_id to link an
         existing A2UI surface with images, text, charts, or bound form controls.
         For a visual question, create that surface first using the active catalog,
-        then pass its surface ID here so the visual opens with the question.
+        then pass its surface ID here. The question shows a Go to control; the
+        surface stays in its original view. Use surface_presentation="inline"
+        explicitly for a small form that belongs inside the question itself.
         Only the named answer_action (default question.submit) submits the surface's
         structured context and input values as the answer. Other visual controls
-        do not answer the question. Each open visual question owns its surface;
+        do not answer the question. Each open visual question links its surface;
         omit surface_id for text-only questions.
         Leave pause and queue explanations to the native question UI; the A2UI
         surface supplies visual context and controls, not the question lifecycle.
@@ -166,6 +169,8 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             raise AskUserError("ask_user could not resolve the active session.")
         if response_mode not in {"blocking", "async"}:
             raise AskUserError("response_mode must be blocking or async.")
+        if surface_presentation not in {"linked", "inline"}:
+            raise AskUserError("surface_presentation must be linked or inline.")
         answer_action = answer_action.strip() or "question.submit"
         if surface_id:
             surface = app.state.a2ui_store.get(session_id, surface_id)
@@ -214,6 +219,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "surfaced": False,
             "a2ui_surface_id": str(surface_id or "").strip(),
             "a2ui_answer_action": answer_action.strip(),
+            "a2ui_presentation": surface_presentation,
         }
         if response_mode == "async":
             from clio_agent.gact.async_user_question import publish_async_question
@@ -286,13 +292,21 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "surface_id": {
                 "type": "string",
                 "description": (
-                    "Optional: an existing A2UI surface in this session to show with the question. "
+                    "Optional: an existing A2UI surface in this session to link from the question. "
                     "The named answer_action answers with structured form values."
                 ),
             },
             "answer_action": {
                 "type": "string",
                 "description": "Surface action that submits the answer (default: question.submit). Exploring other controls does not answer.",
+            },
+            "surface_presentation": {
+                "type": "string",
+                "enum": ["linked", "inline"],
+                "description": (
+                    "linked (default): keep the surface in its original view and show Go to. "
+                    "inline: explicitly embed a small question form."
+                ),
             },
         },
     )
@@ -376,6 +390,7 @@ def restore_pending_ask_user_questions(app: Any) -> int:
                     "selected_agent": str(caller.get("agent_id") or ""),
                     "a2ui_surface_id": str(pending_raw.get("a2ui_surface_id") or ""),
                     "a2ui_answer_action": str(pending_raw.get("a2ui_answer_action") or ""),
+                    "a2ui_presentation": str(pending_raw.get("a2ui_presentation") or "linked"),
                 },
             )
 

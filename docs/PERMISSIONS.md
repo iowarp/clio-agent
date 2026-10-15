@@ -24,7 +24,7 @@ cannot enforce.
 ## What triggers the gate
 
 `_make_permission_gate` (in `gact/permission_gate.py`) classifies **positively**:
-a provable *read* is always allowed, and everything the gate cannot prove is a
+a provable *read* inside permitted file territory needs no action approval, and everything the gate cannot prove is a
 read proceeds to the resolution paths below. There is no tool-name
 "destructive" substring list and no shell-command safety parser — both were
 deleted (#1032). Writes and network egress are governed by the OS sandbox fence
@@ -38,7 +38,20 @@ The gate decides in this order:
    tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
    static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
    `fs_propose_edit`). A read returns `allow` **before** the mode lock and
-   records no permission row, in every `session.mode`. Reads are never gated.
+   records no tool-action permission row, in every `session.mode`. This does not
+   grant access to a new folder: a managed built-in file call outside permitted
+   roots parks on a `kind="folder_access"` request first.
+
+   Folder requests show the exact operation, command, computer, paths, reason,
+   and workspace duration. Only a human `allow_workspace` applies the existing
+   persisted root grant and wakes the original call; `deny` returns an actionable
+   refusal. No broad tool allow policy is derived. The Files browser includes
+   granted folders; actual consumed/produced files use the artifact identity and
+   version pipeline without bulk indexing. `shell_bash` declares `access_paths`
+   and `access_reason`, including both ends of a move. Built-in calls and newly
+   spawned shell children see grants immediately; leased external server fleets
+   retain the existing drain-aware restart. Arbitrary shell reads remain outside
+   the write fence's universal coverage.
 
 2. **Policy resolution** — `grant_resolver.resolve(kind, pattern, …)` (which
    `_policy_action_for_tool` and the egress `_host_action_for` both delegate to)

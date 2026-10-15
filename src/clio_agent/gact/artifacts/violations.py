@@ -101,11 +101,11 @@ def _grant_affordance(workspace_id: str, path: str) -> str:
         except (OSError, ValueError):
             parent = path
     target = parent or path or "the out-of-root directory"
-    wid = workspace_id or "{wid}"
     return (
-        f"This write was blocked by the workspace write-fence. To permit it, request a root "
-        f"grant for {target} — POST /v1/workspaces/{wid}/grants {{'root': '{target}'}} — which a "
-        f"user must approve; then retry, or write inside the workspace root instead."
+        f"This write was blocked by the workspace write-fence. To request access, retry the "
+        f"shell call with access_paths=['{target}'] and access_reason explaining why it is "
+        f"needed. CLIO asks the user before executing it. If declined, use permitted files "
+        f"or explain an alternative. Never call the workspace grants API to approve yourself."
     )
 
 

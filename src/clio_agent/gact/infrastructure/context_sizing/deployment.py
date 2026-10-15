@@ -446,7 +446,9 @@ def sized_model_runtime_plan(
         build: Compiles the plan for a configuration (the engine driver).
     """
 
-    if action not in {"install", "reinstall", "start"}:
+    if action not in {"install", "reinstall", "start"} or (
+        engine == "llama_cpp" and action in {"install", "reinstall"}
+    ):
         return build(configuration)
     request = sizing_request(engine, configuration)
     base = dict(configuration)
@@ -457,7 +459,7 @@ def sized_model_runtime_plan(
         if request.choice == "number":
             return _finish(build, engine, base, decide(engine, request, None, None))
         return build(base)
-    if not _relaunches(action, variant_id, configuration):
+    if engine != "llama_cpp" and not _relaunches(action, variant_id, configuration):
         return build(configuration)  # the container restarts as it was created
     located = model_locator(engine, base)
     if request.choice == "number" or isinstance(located, str) or facts.os != "linux":

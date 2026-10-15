@@ -20,6 +20,7 @@ from clio_agent.gact.autonomy_limits import normalize_limits, parse_limit_option
 from clio_agent.gact.goal_evidence import _build_transcript as _build_transcript
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.work_state import work_record_patch
+from clio_agent.lm.resources import async_model_resources
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -232,25 +233,26 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
         transcript = _build_transcript(app, sid)
         import dspy  # noqa: PLC0415
 
-        judge = dspy.Predict(_judge_signature())
-        caller_ref = goal.get("_caller_model")
-        if caller_ref:
-            from clio_agent.gact.fleet_settings import model_route
+        async with async_model_resources():
+            judge = dspy.Predict(_judge_signature())
+            caller_ref = goal.get("_caller_model")
+            if caller_ref:
+                from clio_agent.gact.fleet_settings import model_route
 
-            caller, caller_adapter = await run_off_loop(
-                model_route, caller_ref["provider_id"], caller_ref["model_id"]
-            )
-            with dspy.context(lm=caller, adapter=caller_adapter):
-                lm, adapter = await run_off_loop(_judge_route, app)
-        else:
-            lm, adapter = await run_off_loop(_judge_route, app)
-        with dspy.context(lm=lm, adapter=adapter):
-            async with asyncio.timeout(DEFAULT_JUDGE_TIMEOUT_S):
-                pred = await judge.acall(
-                    goal_condition=condition,
-                    transcript=transcript,
-                    previous_progress=str(goal.get("progress") or ""),
+                caller, caller_adapter = await run_off_loop(
+                    model_route, caller_ref["provider_id"], caller_ref["model_id"]
                 )
+                with dspy.context(lm=caller, adapter=caller_adapter):
+                    lm, adapter = await run_off_loop(_judge_route, app)
+            else:
+                lm, adapter = await run_off_loop(_judge_route, app)
+            with dspy.context(lm=lm, adapter=adapter):
+                async with asyncio.timeout(DEFAULT_JUDGE_TIMEOUT_S):
+                    pred = await judge.acall(
+                        goal_condition=condition,
+                        transcript=transcript,
+                        previous_progress=str(goal.get("progress") or ""),
+                    )
         if not isinstance(pred.met, bool) or getattr(pred, "next_action", "continue") not in {
             "continue",
             "needs_input",

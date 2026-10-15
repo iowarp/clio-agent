@@ -59,9 +59,15 @@ from clio_agent.gact.infrastructure.llama_native_windows import (
     native_windows_llama_plan,
 )
 from clio_agent.gact.infrastructure.model_instances import engine_of, instance_container_name
+from clio_agent.gact.infrastructure.model_runtime_installation import (
+    container_installation_plan,
+    runtime_observation,
+    runtime_storage,
+)
 from clio_agent.gact.infrastructure.model_runtime_readiness import (
     health_command,
     identity_health_command,
+    llama_served_id,
 )
 from clio_agent.gact.infrastructure.models import (
     RUNTIME_LABELS,
@@ -84,7 +90,6 @@ from clio_agent.gact.infrastructure.native_vllm import (
 from clio_agent.gact.infrastructure.ollama_context_apply import ollama_context_hook
 from clio_agent.gact.infrastructure.plan import DriverPlan, Readiness
 from clio_agent.gact.infrastructure.resource_ledger import (
-    StepRecorder,
     container_recorder,
     create_directory_command,
     directory_recorder,
@@ -513,15 +518,6 @@ def _launch(
     )
 
 
-def _llama_served_id(args: tuple[str, ...]) -> str:
-    """The model id llama-server lists: its ``--alias``, else the ``-hf`` repo spec."""
-
-    for flag in ("--alias", "-hf"):
-        if flag in args and args.index(flag) + 1 < len(args):
-            return args[args.index(flag) + 1]
-    return ""
-
-
 def _check_value(key: str, value: str) -> None:
     if any(character in value for character in ("\0", "\r", "\n")) or value.startswith("-"):
         raise ValueError(f"{key} is not a valid value")
@@ -586,9 +582,11 @@ def build_model_runtime_plan(
     if api_key and spec.engine not in KEY_VARIABLES:
         raise ValueError(f"{spec.label} has no API key support")
     if spec.engine == "llama_cpp" and variant_id == "native-windows-cpu":
-        compiled = compile_parameters("llama_cpp", "cpu", configuration)
+        flags = (
+            compile_parameters("llama_cpp", "cpu", configuration).flags if action == "start" else ()
+        )
         return native_windows_llama_plan(
-            action, configuration.get("model_path", "").strip(), target, compiled.flags, api_key
+            action, configuration.get("model_path", "").strip(), target, flags, api_key
         )
     variant = next((row for row in spec.variants if row.id == variant_id), None)
     if variant is None:
@@ -619,37 +617,33 @@ def build_model_runtime_plan(
         )
     if action == "stop":
         return DriverPlan(
-            (stop_command(runtime, name),), connection_port=port, configuration=resolved
+            (stop_command(runtime, name),)
+            + ((runtime_observation(windows),) if spec.engine == "llama_cpp" else ()),
+            connection_port=port,
+            configuration=resolved,
         )
-    service_dir = configuration.get("storage.service_directory") or service_directory(
-        spec.container_name, facts, target
-    )
+    storage = runtime_storage(name, configuration, facts, target)
+    cache_dir, temporary_dir = storage.cache, storage.temporary
+    images_dir, image_store = storage.images, storage.image_store
+    resolved.update(storage.configuration)
     module = ntpath if windows else posixpath
-    cache_dir = configuration.get("storage.model_cache") or module.join(service_dir, "cache")
-    temporary_dir = configuration.get("storage.temporary") or module.join(service_dir, "tmp")
-    # Pulled images outlive one deployment's failure (they are a cache of a
-    # pinned digest, not a half-built deployment) and are shared across hosts.
-    image_store = module.join(module.dirname(service_dir.rstrip("/\\")), "apptainer-images")
-    if target and any(target.storage.model_dump().values()):
-        from clio_agent.gact.infrastructure.storage import resolved_locations  # noqa: PLC0415
-
-        locations = resolved_locations(target, facts)
-        cache_dir = configuration.get("storage.model_cache") or module.join(
-            locations.models, facts.hostname or facts.target_id, spec.container_name
+    if spec.engine == "llama_cpp" and action in {"install", "reinstall"}:
+        compatible, reason = _variant_compatible(variant, facts)
+        if not compatible:
+            raise ValueError(reason)
+        return container_installation_plan(
+            runtime=runtime,
+            name=name,
+            image=variant.image,
+            action=action,
+            configuration=resolved,
+            os=facts.os,
+            cache_dir=cache_dir,
+            temporary_dir=temporary_dir,
+            images_dir=images_dir,
+            image_store=image_store,
+            owned=owned,
         )
-        temporary_dir = configuration.get("storage.temporary") or module.join(
-            locations.temporary, facts.hostname or facts.target_id, spec.container_name
-        )
-        image_store = module.join(locations.service_data, "apptainer-images")
-    image_store = configuration.get("storage.image_store") or image_store
-    resolved.update(
-        {
-            "storage.service_directory": service_dir,
-            "storage.model_cache": cache_dir,
-            "storage.temporary": temporary_dir,
-        }
-    )
-    images_dir = module.join(service_dir, "images")
     launch = _launch(
         spec,
         variant,
@@ -680,7 +674,7 @@ def build_model_runtime_plan(
                 f"http://127.0.0.1:{port}/v1/models",
                 served_model(launch.args[1], launch.args)
                 if spec.engine == "vllm"
-                else _llama_served_id(launch.args),
+                else llama_served_id(launch.args),
                 KEY_VARIABLES[spec.engine],
                 api_key,
                 windows,
@@ -712,20 +706,36 @@ def build_model_runtime_plan(
                 cpu_threads=variant_id == "cpu",
             )
     if action == "start":
+        recreate = spec.engine == "llama_cpp" or runtime == "apptainer"
+        start_commands = (
+            [remove_container_command(runtime, name)] if spec.engine == "llama_cpp" else []
+        )
+        if spec.engine == "llama_cpp" and not windows:
+            start_commands.append(_port_free_command(port))
+        recorders = (
+            {len(start_commands): container_recorder(runtime, name, facts.hostname)}
+            if recreate
+            else {}
+        )
         command = (
             start_command(runtime, name)
-            if runtime != "apptainer"
-            else keyed(run_command(runtime, launch, facts.identity, images_dir))
+            if not recreate
+            else keyed(
+                run_command(
+                    runtime, launch, facts.identity, images_dir, rootless=runtime_fact.rootless
+                )
+            )
         )
-        recorders: dict[int, StepRecorder] = (
-            {0: container_recorder(runtime, name, facts.hostname)} if runtime == "apptainer" else {}
-        )
+        start_commands.append(command)
         return DriverPlan(
-            (command,),
+            tuple(start_commands),
             connection_port=port,
             recorders=recorders,
             readiness=readiness,
             configuration=resolved,
+            after_ready=(runtime_observation(windows, serving=True),)
+            if spec.engine == "llama_cpp"
+            else (),
         )
     if action not in {"install", "reinstall"}:
         raise ValueError(f"Unsupported lifecycle action {action!r}")

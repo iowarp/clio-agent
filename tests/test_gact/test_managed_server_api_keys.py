@@ -79,7 +79,7 @@ def _plan(service: str, *, api_key: str | None, runtime: str = "docker", os: str
     )
     return build_driver_plan(
         service_id=service,
-        action="install",
+        action="start" if service == "llama_cpp" else "install",
         variant_id="cpu",
         configuration=configuration,
         facts=_facts(runtime, os),
@@ -236,6 +236,21 @@ def _llama(target_id: str, action: str = "install", **extra: str) -> ServiceActi
     )
 
 
+async def _install_and_start(
+    runtime: InfrastructureRuntime, store: InfrastructureStore, request: ServiceActionRequest
+) -> Any:
+    """Prepare the image first; only Start can exercise server access enforcement."""
+    installed = await _finish(runtime, store, "llama_cpp", request)
+    assert installed.state == "succeeded", installed.error
+    record = store.service(request.target_id, "llama_cpp")
+    assert record is not None and record.state == "stopped"
+    assert record.observation is not None and record.observation.installed
+    assert not record.observation.serving
+    return await _finish(
+        runtime, store, "llama_cpp", request.model_copy(update={"action": "start"})
+    )
+
+
 @pytest.mark.asyncio
 async def test_install_generates_stores_and_sends_a_key_and_checks_it_is_enforced(
     tmp_path: Path,
@@ -244,7 +259,7 @@ async def test_install_generates_stores_and_sends_a_key_and_checks_it_is_enforce
     server = LlamaServer(target)
     runtime, store, target_id = _runtime(tmp_path, target, server)
 
-    done = await _finish(runtime, store, "llama_cpp", _llama(target_id))
+    done = await _install_and_start(runtime, store, _llama(target_id))
 
     assert done.state == "succeeded", done.error
     key = target.key_of("clio-llama-cpp")
@@ -273,6 +288,8 @@ async def test_reinstall_rotates_the_key_and_uninstall_removes_it(tmp_path: Path
     first = ProviderApiKeyStore().load(ref)
     reinstalled = await _finish(runtime, store, "llama_cpp", _llama(target_id, "reinstall"))
     second = ProviderApiKeyStore().load(ref)
+    started = await _finish(runtime, store, "llama_cpp", _llama(target_id, "start"))
+    assert started.state == "succeeded", started.error
 
     assert reinstalled.state == "succeeded", reinstalled.error
     assert second and second != first
@@ -288,9 +305,7 @@ async def test_a_shareable_deployment_has_no_key_and_says_who_can_use_it(tmp_pat
     target = KeyedTarget()
     runtime, store, target_id = _runtime(tmp_path, target, LlamaServer(target))
 
-    done = await _finish(
-        runtime, store, "llama_cpp", _llama(target_id, **{SHAREABLE_FIELD: "true"})
-    )
+    done = await _install_and_start(runtime, store, _llama(target_id, **{SHAREABLE_FIELD: "true"}))
 
     assert done.state == "succeeded", done.error
     assert target.key_of("clio-llama-cpp") == ""
@@ -308,7 +323,7 @@ async def test_a_server_that_does_not_refuse_a_missing_key_is_never_shown_as_pro
     target = KeyedTarget()
     runtime, store, target_id = _runtime(tmp_path, target, LlamaServer(target, enforces=False))
 
-    done = await _finish(runtime, store, "llama_cpp", _llama(target_id))
+    done = await _install_and_start(runtime, store, _llama(target_id))
 
     assert done.state == "succeeded", done.error
     record = store.service(target_id, "llama_cpp")
@@ -320,7 +335,7 @@ async def test_a_server_that_does_not_refuse_a_missing_key_is_never_shown_as_pro
 @pytest.mark.asyncio
 async def test_a_failed_install_removes_the_key_it_made(tmp_path: Path) -> None:
     target = KeyedTarget()
-    target.fail_run = True
+    target.fail_pull = True
     runtime, store, target_id = _runtime(tmp_path, target, LlamaServer(target))
 
     done = await _finish(runtime, store, "llama_cpp", _llama(target_id))
@@ -386,7 +401,7 @@ def test_a_saved_server_linked_to_a_deployment_resolves_that_deployments_key(
 async def test_saving_a_managed_deployment_as_a_server_links_its_key(tmp_path: Path) -> None:
     target = KeyedTarget()
     runtime, store, target_id = _runtime(tmp_path, target, LlamaServer(target))
-    await _finish(runtime, store, "llama_cpp", _llama(target_id))
+    await _install_and_start(runtime, store, _llama(target_id))
     record = store.service(target_id, "llama_cpp")
     assert record is not None and record.connection_url
 

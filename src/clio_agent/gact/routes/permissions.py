@@ -175,6 +175,8 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         body = await json_body(request, route="POST /v1/permissions/{pid}")
         action = body.get("action") or ""
+        if row.get("kind") == "folder_access" and action not in row.get("actions", []):
+            raise HTTPException(status_code=422, detail="Choose Deny or Allow for workspace")
         if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
             raise HTTPException(
                 status_code=422,

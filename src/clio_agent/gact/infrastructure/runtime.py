@@ -418,6 +418,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 )
             target_row = self.store.target(request.target_id)
             if installed is not None and request.action != "install":
+                from clio_agent.gact.infrastructure.model_runtime_installation import (
+                    llama_start_configuration,  # noqa: PLC0415
+                )
+
                 # Lifecycle actions operate on what is installed: its variant,
                 # negotiated runtime and parameters, not the form's current
                 # state (empty after a reload). A reinstall keeps the installed
@@ -430,7 +434,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                     update={
                         "variant_id": installed.variant_id,
                         "configuration": (
-                            {**installed_configuration, **typed}
+                            llama_start_configuration(
+                                installed_configuration, request.configuration
+                            )
+                            if engine_of(row.service_id) == "llama_cpp"
+                            and request.action == "start"
+                            else {**installed_configuration, **typed}
                             if request.action == "reinstall"
                             else {**request.configuration, **installed_configuration}
                         ),
