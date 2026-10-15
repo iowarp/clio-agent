@@ -128,6 +128,50 @@ def test_async_question_route_and_projection_do_not_pause_session(client: TestCl
     assert interaction["payload"]["response_mode"] == "async"
 
 
+@pytest.mark.parametrize("presentation", ["linked", "inline"])
+@pytest.mark.parametrize("response_mode", ["blocking", "async"])
+def test_surface_presentation_is_explicit_and_persisted(
+    client: TestClient, presentation: str, response_mode: str
+) -> None:
+    """Placement follows the producer decision, independently of pause semantics."""
+    from tests.test_gact.test_a2ui_v3 import HEADERS, _create_message
+
+    sid = client.post("/v1/sessions", json={}).json()["id"]
+    created = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message()]},
+    )
+    assert created.status_code == 200
+    _ask_tool(
+        client,
+        sid,
+        question="Review this view?",
+        surface_id="surface_1",
+        response_mode=response_mode,
+        surface_presentation=presentation,
+    )
+    if response_mode == "blocking":
+        stored = client.app.state.sessions.get(sid).metadata["pending_ask_user"]
+        assert stored["a2ui_presentation"] == presentation
+        assert stored["a2ui_surface_id"] == "surface_1"
+    else:
+        row = next(iter(client.app.state.user_questions.values()))
+        assert row.metadata["a2ui_presentation"] == presentation
+        restore_user_questions(client.app)
+        restored = client.app.state.user_questions[row.id]
+        assert restored.metadata["a2ui_presentation"] == presentation
+
+
+def test_invalid_surface_presentation_does_not_create_a_question(client: TestClient) -> None:
+    """Unknown placement cannot silently become inline or pause the session."""
+    sid = client.post("/v1/sessions", json={}).json()["id"]
+    with pytest.raises(AskUserError, match="surface_presentation"):
+        _ask_tool(client, sid, question="Review?", surface_presentation="guess")
+    assert client.app.state.user_questions == {}
+    assert "pending_ask_user" not in client.app.state.sessions.get(sid).metadata
+
+
 @pytest.mark.parametrize("answer_action", ["question.submit", "", "   "])
 def test_surface_action_answers_async_question_while_running(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, answer_action: str
@@ -153,6 +197,7 @@ def test_surface_action_answers_async_question_while_running(
     )
     question = next(iter(app.state.user_questions.values()))
     assert question.metadata["a2ui_answer_action"] == "question.submit"
+    assert question.metadata["a2ui_presentation"] == "linked"
     _ask_tool(client, sid, question="Another question", response_mode="async")
     with pytest.raises(AskUserError, match="already belongs"):
         _ask_tool(client, sid, question="Duplicate", response_mode="async", surface_id="surface_1")
@@ -162,6 +207,8 @@ def test_surface_action_answers_async_question_while_running(
         if row["payload"].get("question_id") == question.id
     )
     assert interaction["source"]["surface_id"] == "surface_1"
+    assert interaction["requires_human_response"] is True
+    assert interaction["payload"]["metadata"]["a2ui_presentation"] == "linked"
     action = _event(
         "question.submit", "surface_1", {"explanation": "X is stiffness"}, "2026-10-08T00:00:00Z"
     )

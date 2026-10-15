@@ -34,9 +34,14 @@ def readable_workspace_file(app: FastAPI, workspace_id: str, path: str) -> Path:
     if workspace is None:
         refuse(404, "not_found", f"workspace not found: {workspace_id}")
     root = Path(workspace.root_path or os.getcwd()).expanduser().resolve()
+    from clio_agent.runtime.workspace_folders import resolve_folder_location
+
     try:
-        managed = resolve_managed_input(app, workspace_id, root, path)
+        additional = resolve_folder_location(root, path)
+        managed = additional or resolve_managed_input(app, workspace_id, root, path)
         target = managed or (root / path).resolve()
+    except PermissionError as exc:
+        refuse(403, "folder_access_denied", str(exc))
     except (OSError, ValueError, RuntimeError):
         refuse(400, "invalid_path", f"could not resolve path: {path}")
     try:
@@ -58,6 +63,13 @@ def readable_workspace_file(app: FastAPI, workspace_id: str, path: str) -> Path:
         )
     if not target.is_file():
         refuse(404, "not_found", f"file not found: {path}")
+    if additional:
+        policy = FileAccessPolicy.from_mapping(os.environ)
+        policy._check_connected_storage(target, field="path")
+        from clio_agent.tools.file_policy import _has_symlink
+
+        if not policy.allow_symlinks and _has_symlink(target):
+            refuse(403, "symlink_denied", "Symlink files are excluded")
     try:
         max_bytes = FileAccessPolicy.from_mapping(os.environ).max_file_size_bytes
     except (ValueError, TypeError, OSError) as exc:

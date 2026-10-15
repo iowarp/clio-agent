@@ -70,6 +70,7 @@ from clio_agent.gact.runtime.type_parsing import (
     _parse_field_annotation,
     _structured_output_enabled,
 )
+from clio_agent.lm.resources import model_resources
 from clio_agent.runtime import trace
 from clio_agent.tools.task_call_context import task_arguments
 
@@ -258,14 +259,13 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
-            # Resolve the credential fresh for this call (tokens rotate); the
-            # dspy.context boundary itself is unchanged (design §4).
+            # Resolve the credential per forward so rotated tokens take effect.
             cfg = self._resolved_spec.materialize(self._cred_resolver)
             scope_token = _ctx.set_react_scope(str(self.agent_def.id), "react")
             session_token = _ctx.set_react_session(session_id)
             window_token = _ctx.set_react_window(_resolve_expert_context_window(cfg))
             try:
-                with dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
+                with model_resources(), dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
                     result = self.answer_synthesizer(
                         system_prompt=self.system_prompt,
                         question=question,
@@ -1035,13 +1035,13 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             )
             _visible_answer_token = _ctx.set_visible_answer_stream(_answer_visible)
             try:
-                # Resolve the credential fresh for this call (tokens rotate); the
-                # dspy.context boundary below is unchanged (design §4).
+                # Resolve the credential per forward so rotated tokens take effect.
                 _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
                 try:
                     # track_usage installs the usage tracker so the live plane's
                     # auto-compaction can read the call's exact prompt_tokens.
                     with (
+                        model_resources(),
                         dspy.track_usage(),
                         dspy.context(lm=create_hooked_lm(_fwd_config)),
                     ):
@@ -1210,10 +1210,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             try:
                 # track_usage installs the tracker so auto-compaction can read each
                 # call's exact prompt_tokens.
-                # Resolve the credential fresh for this call (tokens rotate); the
-                # dspy.context boundary itself is unchanged (design §4).
+                # Resolve the credential per forward so rotated tokens take effect.
                 cfg = self._resolved_spec.materialize(self._cred_resolver)
-                with dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
+                with model_resources(), dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
                     result = self.react_agent(
                         system_prompt=self.system_prompt,
                         question=question,

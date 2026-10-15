@@ -30,6 +30,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from clio_agent.gact.composer_runtime import delete_workspace_resources
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.workspace_directory_listing import collect_workspace_directory
@@ -41,6 +42,10 @@ from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.routes.workspace_warmup import register_workspace_warmup_route
+from clio_agent.gact.runtime.workspace_root_change import (
+    rebind_workspace_root_grants,
+    require_idle_workspace,
+)
 from clio_agent.gact.types import (
     CreateWorkspaceRequest,
     ErrorEnvelope,
@@ -174,7 +179,7 @@ def _grant_workspace_tool(
     return {"granted": True, "kind": KIND_TOOL, "pattern": pattern, "decision": decision}
 
 
-def _apply_kind_grant(
+async def _apply_kind_grant(
     app: FastAPI, workspace_id: str, kind: str, body: dict[str, Any]
 ) -> dict[str, Any]:
     """Apply a ``kind``-dispatched workspace grant (#1034, ADDITIVE to the subset-probe body).
@@ -214,7 +219,7 @@ def _apply_kind_grant(
             ).model_dump(exclude_none=True),
         )
     if normalized == KIND_ROOT:
-        return _apply_root_kind_grant(app, workspace_id, pattern)
+        return await _apply_root_kind_grant(app, workspace_id, pattern)
     if normalized == KIND_DOMAIN:
         return _grant_workspace_domain(app, workspace_id, pattern.lower())
     if normalized == KIND_TOOL:
@@ -231,11 +236,23 @@ def _apply_kind_grant(
     )
 
 
-def _apply_root_kind_grant(app: FastAPI, workspace_id: str, pattern: str) -> dict[str, Any]:
-    """Thin adapter so the kind-dispatch reuses the exact ``apply_root_grant`` semantics."""
+async def _apply_root_kind_grant(app: FastAPI, workspace_id: str, pattern: str) -> dict[str, Any]:
+    """Apply folder state on the route loop, then await its blocking ARC record off-loop."""
     from clio_agent.gact.runtime import grants  # noqa: PLC0415
 
-    return grants.apply_root_grant(app, workspace_id, pattern)
+    result = grants.apply_root_grant(app, workspace_id, pattern, emit=False)
+    await run_off_loop(
+        lambda: grants.emit_boundary_granted(
+            app,
+            kind=grants.KIND_ROOT,
+            scope=grants.SCOPE_WORKSPACE,
+            grantor=_GRANTOR_USER,
+            pattern=result["pattern"],
+            workspace_id=workspace_id,
+            reason=result["reason"],
+        )
+    )
+    return result
 
 
 def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -279,7 +296,9 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # (WorkspaceStore has no bus). Emit at the ROUTE layer (which has ``app``), keeping the
         # store leaf-pure. ``grantor=user`` (a direct user action, never a clio decision, ⚑).
         if ws.root_path:
-            _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
+            await run_off_loop(
+                lambda: _emit_boundary_root(app, ws.id, ws.root_path, grantor=_GRANTOR_USER)
+            )
         return project_for_request(
             request,
             v3=lambda: JSONResponse(content=workspace_to_v3(ws), status_code=201),
@@ -326,12 +345,25 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             metadata = body.get("config")
         # Capture the prior root so a root_path change emits an honest revoked→granted pair.
         prior = app.state.workspaces.get(wid)
-        prior_root = str(getattr(prior, "root_path", "") or "") if prior is not None else ""
+        if prior is None:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"workspace not found: {wid}",
+                        details={"workspace_id": wid},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+        prior_root = prior.root_path
         new_root = root_path.strip() if isinstance(root_path, str) and root_path.strip() else None
         # Repointing a root carries the same guarantee create does: the pinned root
         # exists on disk before the workspace advertises it (and before the boundary
         # event below records a grant over it).
         if new_root is not None and new_root != prior_root:
+            require_idle_workspace(app, wid)
             materialize_workspace_root(new_root)
         # Route the mutation through the store so it serialises under the
         # WorkspaceStore lock (no torn write / flush racing a concurrent
@@ -363,9 +395,16 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # B5 #979.2: a root_path change is an effective write-territory boundary change —
         # emit revoked(old)→granted(new) so the mutation is on the record, not silent.
         if new_root is not None and new_root != prior_root:
+            rebind_workspace_root_grants(app, ws, prior_root)
             if prior_root:
-                _emit_boundary_root(app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True)
-            _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
+                await run_off_loop(
+                    lambda: _emit_boundary_root(
+                        app, wid, prior_root, grantor=_GRANTOR_USER, revoked=True
+                    )
+                )
+            await run_off_loop(
+                lambda: _emit_boundary_root(app, wid, new_root, grantor=_GRANTOR_USER)
+            )
         return project_for_request(
             request,
             v3=lambda: JSONResponse(content=workspace_to_v3(ws)),
@@ -416,7 +455,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         deny_mode = body.get("deny_mode")
         write_gate = body.get("network_write_gate")
         if isinstance(kind, str) and kind.strip():
-            result["grant"] = _apply_kind_grant(app, wid, kind.strip(), body)
+            result["grant"] = await _apply_kind_grant(app, wid, kind.strip(), body)
         if isinstance(deny_mode, bool):
             ws.config[grants.DENY_MODE_CONFIG_KEY] = deny_mode
             app.state.workspaces.update(wid, metadata_patch=None)
@@ -431,7 +470,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         # When a kind-dispatch already consumed ``root``/``domain`` via ``kind``, do NOT re-apply
         # the same subject through the subset probe (the kind branch is authoritative for its shape).
         if "grant" not in result and isinstance(root, str) and root.strip():
-            result["root"] = grants.apply_root_grant(app, wid, root.strip())
+            result["root"] = await _apply_root_kind_grant(app, wid, root.strip())
         if "grant" not in result and isinstance(domain, str) and domain.strip():
             result["domain"] = _grant_workspace_domain(app, wid, domain.strip().lower())
         if not any(

@@ -209,8 +209,30 @@ async def collect_workspace_directory(
     root = root.resolve()
 
     def collect() -> dict[str, Any]:
-        if directory == ".clio-agent/inputs":
-            rows: Iterable[dict[str, Any]] = _uploads(app, workspace_id, root)
+        from clio_agent.runtime.workspace_folders import folder_locations, resolve_folder_location
+
+        try:
+            additional = resolve_folder_location(root, directory)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        rows: Iterable[dict[str, Any]]
+        if additional is not None:
+            from clio_agent.tools.file_policy import FileAccessPolicy
+
+            FileAccessPolicy.from_env()._check_connected_storage(additional, field="directory")
+            folders = folder_locations(root)
+            prefix = next(p for p in folders if directory == p or directory.startswith(p + "/"))
+            rows = (
+                {**row, "path": f"{prefix}/{row['path']}"}
+                for row in _local_children(
+                    folders[prefix],
+                    directory[len(prefix) :].strip("/"),
+                    include_hidden=include_hidden,
+                    exclude_service_storage=exclude_service_storage,
+                )
+            )
+        elif directory == ".clio-agent/inputs":
+            rows = _uploads(app, workspace_id, root)
         elif any(
             directory == group or directory.startswith(group + "/") for group in list(_GROUPS)[:2]
         ):
@@ -234,7 +256,11 @@ async def collect_workspace_directory(
                         else _sources(app, workspace_id, path)
                     )
                 ]
-                rows = chain(rows, groups)
+                additional_groups = [
+                    _directory(prefix, f"{folder.name} · Additional folder")
+                    for prefix, folder in folder_locations(root).items()
+                ]
+                rows = chain(rows, groups, additional_groups)
         page = heapq.nsmallest(
             offset + DIRECTORY_PAGE_SIZE + 1,
             rows,

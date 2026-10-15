@@ -695,6 +695,7 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path, monkeypatch) 
         row = next(item for item in listed if item["kind"] == "a2ui")
         assert row["owner_session_id"] == child
         assert row["source"]["surface_id"] == "child-form"
+        assert row["requires_human_response"] is False
         mismatched = {
             **action,
             "action": {**action["action"], "surfaceId": "different-surface"},
