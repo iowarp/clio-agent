@@ -66,11 +66,10 @@ not automatically enrolled. Set `CLIO_ARC_CTE_AUTO_EXPAND=false` (or
 `arc.cte.auto_expand=false`) to retain a fixed managed capacity. Editing a
 journaled config also opts it out until an operator reconciles it.
 
-This requires the Core capacity/target-query and stable async registration
-bindings in the [Core 2.3.2 maintenance patch](https://github.com/iowarp/clio-core/pull/1292).
-Published Core 2.3.1 does not contain those bindings. The Agent change must ship
-with an API-capable Core wheel and updated dependency/bundle pins; a source PR
-alone does not update an installed beta.
+CLIO requires the capacity/target-query and stable async registration bindings
+in [Core 2.3.2](https://github.com/iowarp/clio-core/releases/tag/v2.3.2). Its package
+dependency and bundled-runtime lock select the published wheels. Core 2.3.1
+does not expose those Python bindings.
 
 The 2.3.2 maintenance patch leaves native runtime, transport and CTE-core sources
 unchanged. CLIO permits that exact client version to attach to a recorded 2.3.1
