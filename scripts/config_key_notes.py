@@ -166,6 +166,10 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the CTE file-tier capacity that triggers a disk-space warning; lower "
         "for earlier warnings before the tier fills."
     ),
+    "arc.cte.auto_expand": (
+        "Allow bounded live capacity additions when CLIO's generated file store is full; "
+        "disable to retain a fixed capacity. Explicit file_capacity settings disable growth."
+    ),
     "arc.cte.file_capacity": (
         'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
         "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."

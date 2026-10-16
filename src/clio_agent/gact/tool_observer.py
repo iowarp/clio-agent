@@ -850,12 +850,27 @@ def _make_tool_observer(app: "FastAPI"):
                         **cancellation_metadata,
                     }
                 )
-            # Canonical trace captures the FULL tool result (never capped) -- the
-            # bounded projection in `payload` is only for the wire bus event +
-            # ledger/assistant-metadata. (SSE still redacts `result` via
-            # SENSITIVE_KEYS; only the durable trace keeps the full value.)
+            # Trace keeps the full result; wire/ledger projections are bounded.
+            # SSE redacts `result` through SENSITIVE_KEYS.
             trace_payload = {**payload, "result": result} if result is not None else payload
-            with terminal_tool_delivery(app, sid, payload):
+            try:
+                with terminal_tool_delivery(app, sid, payload):
+                    _emit_semantic_event(
+                        app,
+                        sid,
+                        "tool.call.completed",
+                        turn_id=_ctx.active_turn_id(),
+                        trace_id=_ctx.active_trace_id(),
+                        status="completed" if ok else "failed",
+                        summary=result_summary,
+                        actor={"tool": name},
+                        subject={"call_id": call_id},
+                        payload=trace_payload,
+                    )
+                from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
+
+                wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
+            finally:
                 if representation != "handoff":
                     result_text = completed_tool_text(result, completion_error)
                     _append_live_assistant_part(
@@ -893,21 +908,6 @@ def _make_tool_observer(app: "FastAPI"):
                             ),
                         ),
                     )
-                _emit_semantic_event(
-                    app,
-                    sid,
-                    "tool.call.completed",
-                    turn_id=_ctx.active_turn_id(),
-                    trace_id=_ctx.active_trace_id(),
-                    status="completed" if ok else "failed",
-                    summary=result_summary,
-                    actor={"tool": name},
-                    subject={"call_id": call_id},
-                    payload=trace_payload,
-                )
-            from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
-
-            wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
         return None
 
     return observe

@@ -28,6 +28,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_ATTEMPTS` | `arc.clio_core_write_retry.attempts` | int | `3` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_BACKOFF_FACTOR` | `arc.clio_core_write_retry.backoff_factor` | float | `3.0` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_FIRST_DELAY_S` | `arc.clio_core_write_retry.first_delay_s` | float | `0.2` | `src/clio_agent/arc/clio_core_retry.py` |
+| `CLIO_ARC_CTE_AUTO_EXPAND` | `arc.cte.auto_expand` | bool | `true` | `src/clio_agent/arc/clio_core_growth.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_DISK_WARN_FRACTION` | `arc.cte.disk_warn_fraction` | float | `0.5` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |

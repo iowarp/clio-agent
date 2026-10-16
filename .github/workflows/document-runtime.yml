@@ -38,7 +38,8 @@ jobs:
       - name: Prepare and exercise real PDF, DOCX, PPTX and XLSX operations
         run: |
           mkdir -p document-evidence-legacy
-          docker run --rm -v "$PWD/document-evidence-legacy:/evidence" clio-document-glibc228
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp/clio-document-home \
+            -v "$PWD/document-evidence-legacy:/evidence" clio-document-glibc228
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -62,7 +62,7 @@ not automatically enrolled. Set `CLIO_ARC_CTE_AUTO_EXPAND=false` (or
 journaled config also opts it out until an operator reconciles it.
 
 This requires the Core capacity/target-query and stable async registration
-bindings in [clio-core #1291](https://github.com/iowarp/clio-core/pull/1291).
+bindings in the [Core 2.3.2 maintenance patch](https://github.com/iowarp/clio-core/pull/1292).
 Published Core 2.3.1 does not contain those bindings. The Agent change must ship
 with an API-capable Core wheel and updated dependency/bundle pins; a source PR
 alone does not update an installed beta.
@@ -75,6 +75,11 @@ tool event even when durable trace recording raises. That event distinguishes a
 recording failure from execution success, clears the active-call latch, and lets
 the original recording error propagate. It does not rerun the command or claim
 the result was saved durably. Provenance receives the original call start time.
+
+For historical turns whose terminal result was never recorded, the transcript
+shows the execution outcome as Unknown once the turn ends. Captured output is
+retained; CLIO neither fabricates a completion time nor keeps incrementing a
+running timer. An actual recorded result takes precedence over that uncertainty.
 
 The screenshots in #1783 establish lost persistence and a stale Running row.
 They do not establish the affected host's exact placement failure or repeated

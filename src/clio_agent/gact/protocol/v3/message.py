@@ -486,6 +486,14 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
     failed = bool(part.get("is_error"))
     part_type = str(part.get("type") or "")
     state = "failed" if failed else ("succeeded" if part_type == "tool_result" else "running")
+    if state == "running" and context.wire.get("stop_reason") in {
+        "end_turn",
+        "error",
+        "cancelled",
+        "failed",
+        "interrupted",
+    }:
+        state = "unknown"
     output = current.get("output")
     if part_type == "tool_result":
         for key in ("structured_content", "content_blocks", "content", "text"):
@@ -527,6 +535,14 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         ),
         **timing,
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
+        **(
+            {
+                "error": "Execution outcome unavailable: the turn ended before CLIO recorded this "
+                "tool's result. Inspect any captured output before rerunning it."
+            }
+            if state == "unknown"
+            else {}
+        ),
     }
 
 
