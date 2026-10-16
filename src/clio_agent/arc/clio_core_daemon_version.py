@@ -17,6 +17,10 @@ mismatch is refused BEFORE ``client_init`` with the typed reason
 ``clio_core_version_mismatch`` naming both versions and the fix. A daemon with no
 record (spawned by an older CLIO) is refused the same way
 (``clio_core_daemon_version_unknown``): attaching blind is what crashes daemons.
+The only qualified exception is a 2.3.2 client on a 2.3.1 daemon: that maintenance
+release adds Python bindings without changing native runtime/transport/CTE-core
+sources. Native cross-version capacity, simultaneous-client and restart tests
+qualify that exact direction; future versions never inherit this exception.
 
 FIRST CONFIG WINS. Two CLIOs can generate different ``cte.yaml`` files (capacity,
 tiers, storage paths) before either attaches, but only one daemon runs. iowarp-core
@@ -159,7 +163,7 @@ def refuse_if_incompatible_daemon(
     client_version: str | None = None,
     on_failure: Callable[[], None] | None = None,
 ) -> DaemonVersionRecord:
-    """Refuse to attach unless the running daemon runs this process's iowarp-core version.
+    """Require matching versions or the explicitly qualified maintenance upgrade pair.
 
     Args:
         state_dir: ``runtime_state_dir()``, where the daemon's record lives.
@@ -168,7 +172,7 @@ def refuse_if_incompatible_daemon(
             process holds no vote in the daemon's last-one-out refcount).
 
     Returns:
-        The daemon's record (versions match).
+        The daemon's record (matching versions or the qualified upgrade pair).
 
     Raises:
         ClioCoreDaemonIncompatibleError: ``clio_core_version_mismatch`` naming both
@@ -186,6 +190,14 @@ def refuse_if_incompatible_daemon(
             details={"client_version": client, "record_path": str(_record_file(state_dir))},
             on_failure=on_failure,
         )
+    if (client, record.iowarp_core_version) == ("2.3.2", "2.3.1"):
+        logger.warning(
+            "reason=clio_core_compatible_daemon_patch client_version=%s daemon_version=%s "
+            "qualification=bindings_only_231_to_232",
+            client,
+            record.iowarp_core_version,
+        )
+        return record
     if record.iowarp_core_version != client:
         raise _refuse(
             f"Refusing to attach to the running clio-core daemon: it runs iowarp-core "

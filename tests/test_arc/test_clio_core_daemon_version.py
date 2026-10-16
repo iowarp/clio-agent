@@ -287,3 +287,41 @@ def test_spawn_path_records_version_and_config(monkeypatch, tmp_path):
     assert record.config_path == "/cfg/cte.yaml"
     assert record.daemon_binary == "/opt/bin/clio_run"
     assert record.iowarp_core_version == installed_iowarp_core_version()
+
+
+def test_qualified_232_client_can_keep_the_231_daemon(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The bindings-only maintenance upgrade keeps an existing daemon usable."""
+    _write_record(tmp_path, version="2.3.1", config_path="/owned/cte.yaml")
+    record = refuse_if_incompatible_daemon(
+        tmp_path,
+        client_version="2.3.2",
+        on_failure=lambda: pytest.fail("A qualified compatible client was refused"),
+    )
+    assert record.iowarp_core_version == "2.3.1"
+    assert "reason=clio_core_compatible_daemon_patch" in caplog.text
+    assert "client_version=2.3.2 daemon_version=2.3.1" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "client,daemon",
+    [
+        ("2.3.3", "2.3.1"),
+        ("2.3.3", "2.3.2"),
+        ("2.3.1", "2.3.2"),
+        ("2.3.2.dev1", "2.3.1"),
+        ("2.3.2", "2.3.0"),
+    ],
+)
+def test_upgrade_exception_never_admits_other_version_pairs(
+    tmp_path: Path,
+    client: str,
+    daemon: str,
+) -> None:
+    """No inferred patch compatibility, reverse upgrade or prerelease is admitted."""
+    _write_record(tmp_path, version=daemon, config_path="/owned/cte.yaml")
+    with pytest.raises(ClioCoreDaemonIncompatibleError) as refusal:
+        refuse_if_incompatible_daemon(tmp_path, client_version=client)
+    assert refusal.value.degradation_reason == CLIO_CORE_VERSION_MISMATCH

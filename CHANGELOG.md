@@ -14,6 +14,9 @@ TUI/HTTP surface aren't tracked here.
 - Recover exhausted CLIO-managed conversation stores by adding a journaled,
   bounded storage target. Preserve existing records and explicit storage limits;
   retry only the refused write. Require Core 2.3.2's capacity bindings (#1783).
+- Allow the qualified Core 2.3.2 client to recover storage on a still-running
+  Core 2.3.1 daemon during an upgrade. Preserve the daemon and other connected
+  clients; retain strict refusal of unknown or unqualified version pairs.
 - Deliver observed tool completion when durable trace recording fails. After a
   restart, show missing historical completions as Unknown, stop their elapsed
   timers, explain the uncertainty and retain captured output. Never replay a
@@ -26,7 +29,8 @@ TUI/HTTP surface aren't tracked here.
 
 Native qualification covers glibc 2.28 Office installation and document
 rendering, plus full Windows Core 2.3.2 store exhaustion, automatic growth and
-byte-identical readback after restart. The reporter's exact storage placement
+byte-identical readback after restart, including two clients across the
+2.3.1-to-2.3.2 upgrade. The reporter's exact storage placement
 failure is not established from screenshots; other placement failures remain
 explicit errors.
 

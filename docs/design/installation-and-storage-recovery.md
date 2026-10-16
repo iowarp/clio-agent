@@ -72,6 +72,15 @@ Published Core 2.3.1 does not contain those bindings. The Agent change must ship
 with an API-capable Core wheel and updated dependency/bundle pins; a source PR
 alone does not update an installed beta.
 
+The 2.3.2 maintenance patch leaves native runtime, transport and CTE-core sources
+unchanged. CLIO permits that exact client version to attach to a recorded 2.3.1
+daemon when another CLIO process keeps it alive during an upgrade. Isolated
+Windows qualification uses each version's complete SDK, audits the loaded native
+library origins, recovers a capacity refusal while the original client remains
+connected, and reads every record through both clients. Restart with the 2.3.2
+daemon preserves the target paths, capacity accounting and byte-identical data.
+Future, reverse and unknown version pairs retain the strict compatibility guard.
+
 ## Tool execution versus recording
 
 A command can finish successfully while recording its completion fails. CLIO
