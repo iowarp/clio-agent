@@ -171,15 +171,31 @@ def test_hard_kill_of_owned_worker_reaps_its_real_server(service: Any) -> None:
 
 def test_server_exit_reaps_descendant_holding_the_output_pipe(service: Any) -> None:
     root, request = service
+    # A Windows venv may insert an interpreter redirector. Wait for the real
+    # descendant to start and publish its own PID before its server exits, so
+    # the test exercises an inherited output pipe rather than launcher startup.
     (root / "launch.py").write_text(
-        "import subprocess,sys\nfrom pathlib import Path\n"
-        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(90)'])\n"
-        "Path('owned-child.pid').write_text(str(child.pid))\n",
+        "import subprocess,sys,time\nfrom pathlib import Path\n"
+        "child=subprocess.Popen([sys.executable,'-c',"
+        '"import os,time; from pathlib import Path; '
+        "Path('owned-child.pid').write_text(str(os.getpid())); time.sleep(90)\"])\n"
+        "Path('owned-launcher.pid').write_text(str(child.pid))\n"
+        "deadline=time.monotonic()+10\n"
+        "while not Path('owned-child.pid').is_file():\n"
+        "    if time.monotonic() >= deadline: raise RuntimeError('Descendant never started')\n"
+        "    time.sleep(0.01)\n",
         encoding="utf-8",
     )
     node_service.control(request)
     wait_for(lambda: (root / "owned-child.pid").is_file())
     child = int((root / "owned-child.pid").read_text())
-    wait_for(lambda: node_service.read_receipt(root)["phase"] == "stopped")
+    launcher = int((root / "owned-launcher.pid").read_text())
+    try:
+        wait_for(lambda: node_service.read_receipt(root)["phase"] == "stopped")
+    except pytest.fail.Exception:
+        receipt = node_service.read_receipt(root)
+        logs = (root / "logs/supervisor.log").read_text(encoding="utf-8")
+        pytest.fail(f"The worker did not settle after server exit: {receipt!r}; logs: {logs}")
     assert not node_service.identity(child)
+    assert not node_service.identity(launcher)
     assert not node_service.observation(root)["worker_alive"]
