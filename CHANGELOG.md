@@ -4,6 +4,32 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.5-beta.7.2] - 2026-10-16
+
+### Fixed
+
+- Install the native Office renderer on older Linux x86-64 hosts with a private,
+  checksum-pinned C/C++ runtime. Keep host libraries unchanged and support
+  installation without root privileges (#1782).
+- Recover exhausted CLIO-managed conversation stores by adding a journaled,
+  bounded storage target. Preserve existing records and explicit storage limits;
+  retry only the refused write. Require Core 2.3.2's capacity bindings (#1783).
+- Deliver observed tool completion when durable trace recording fails. After a
+  restart, show missing historical completions as Unknown, stop their elapsed
+  timers, explain the uncertainty and retain captured output. Never replay a
+  command to repair its history (#1783).
+- Retry transient Office download and checksum failures with fresh, verified
+  downloads under one bounded deadline. Retain Windows installer diagnostics
+  even when setup fails before Desktop starts.
+- Restore fresh desktop builds with the supported updater, a committed Rust
+  dependency lock and signed Tauri v2 artifact support.
+
+Native qualification covers glibc 2.28 Office installation and document
+rendering, plus full Windows Core 2.3.2 store exhaustion, automatic growth and
+byte-identical readback after restart. The reporter's exact storage placement
+failure is not established from screenshots; other placement failures remain
+explicit errors.
+
 ## [0.9.5-beta.7.1] - 2026-10-15
 
 ### Added
