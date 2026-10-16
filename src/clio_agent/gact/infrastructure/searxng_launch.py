@@ -141,7 +141,7 @@ def serve(manifest: dict[str, Any]) -> None:
     Granian(
         "searx.webapp:app",
         address="127.0.0.1",
-        port=int(manifest["port"]),
+        port=int(manifest["searxng"]["settings"]["server"]["port"]),
         interface=Interfaces.WSGI,
         workers=1,
     ).serve()

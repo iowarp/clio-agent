@@ -165,6 +165,9 @@ def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
         pass
     # A per-forward LM reaches the running turn's usage rollup only via this.
     turn_lm_ledger.record(lm)
+    from clio_agent.lm.resources import record_created_lm  # noqa: PLC0415
+
+    record_created_lm(lm)
     return lm
 
 

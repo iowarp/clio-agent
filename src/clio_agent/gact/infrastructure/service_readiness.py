@@ -163,7 +163,10 @@ async def observe_service(
     }
     variant = (
         "cpu"
-        if record.variant_id == "native-windows-cpu"
+        if record.variant_id.startswith(("native-windows-", "native-linux-", "native-macos-"))
+        and record.variant_id.endswith("-cpu")
+        else record.variant_id.rsplit("-", 1)[-1]
+        if record.variant_id.startswith(("native-windows-", "native-linux-", "native-macos-"))
         else "cuda"
         if record.variant_id.startswith("native-cuda")
         else "xpu"

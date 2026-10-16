@@ -63,7 +63,7 @@ def _facts(accelerator: str = "nvidia", os: str = "linux") -> TargetFacts:
 def _plan(service: str, variant: str, configuration: dict[str, str], **kw) -> DriverPlan:
     return build_driver_plan(
         service_id=service,
-        action=kw.pop("action", "install"),
+        action=kw.pop("action", "start" if service == "llama_cpp" else "install"),
         variant_id=variant,
         configuration=configuration,
         facts=kw.pop("facts", _facts()),

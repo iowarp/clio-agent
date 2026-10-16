@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
@@ -635,6 +636,10 @@ def test_stack_readiness_requires_every_owned_component(
 ) -> None:
     """Container stacks (Apptainer instances run in their own session) prove identity by hook."""
     monkeypatch.setattr(node_service, "alive", lambda receipt: True)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / "environment/.venv")],
+        check=True,
+    )
     (tmp_path / "stack.py").write_text(
         "import sys\nsys.exit(0 if sys.argv[1] == 'running' and " + repr(up) + " else 1)\n"
     )

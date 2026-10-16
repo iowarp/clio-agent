@@ -22,9 +22,7 @@ import uuid
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Iterator
-from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import ProxyHandler, Request, build_opener
 
 MARKER = "CLIO_SERVICE_OBSERVATION "
 #: Earlier runs' logs kept beside the current one; ``server.log.1`` is the previous run.
@@ -233,16 +231,7 @@ def listeners(port: int) -> list[tuple[str, str]]:
     return found
 
 
-def http_get(url: str, key: str = "") -> tuple[int, bytes]:
-    """Status and body of a direct (proxy-free) loopback GET; 0 when nothing answered."""
-    request = Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
-    try:
-        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
-            return response.status, response.read()
-    except HTTPError as error:
-        return error.code, b""
-    except (OSError, URLError, ValueError):
-        return 0, b""
+http_get = platform_helper().http_get
 
 
 def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
@@ -282,7 +271,7 @@ def serves_identity(root: Path, receipt: dict[str, Any], key: str = "") -> bool:
             return False
         try:
             completed = subprocess.run(
-                [sys.executable, str(script), "running"],
+                [str(environment_python(root)), str(script), "running"],
                 cwd=root,
                 capture_output=True,
                 timeout=60,
@@ -356,6 +345,8 @@ def stop(root: Path) -> None:
         platform_helper().stop(receipt)
     elif alive(receipt):
         platform_helper().stop_posix(receipt, alive)
+    if sys.platform == "win32":
+        platform_helper().wait_launcher_exit(receipt)
     hook(root, "stop")
     receipt.update(
         phase="not_installed" if receipt["phase"] == "not_installed" else "stopped",
@@ -370,11 +361,28 @@ def launch(root: Path, request: dict[str, Any]) -> None:
     """Start one supervised install or runtime, idempotently for the same revision."""
     action = request["action"]
     manifest = request["manifest"]
-    revision = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    # Native binary installation is independent of the model/port chosen later.
+    # Only explicitly allowed launch fields may vary; installer/source changes
+    # still require installation. A live launch also compares its runtime files.
+    runtime_fields = manifest.get("runtime_fields", [])
+    if any(name not in {"port", "identity"} for name in runtime_fields):
+        raise ValueError("Invalid runtime-configurable native manifest field")
+    installation = {key: value for key, value in manifest.items() if key not in runtime_fields}
+    revision = hashlib.sha256(json.dumps(installation, sort_keys=True).encode()).hexdigest()
+    launch_revision = hashlib.sha256(
+        json.dumps([manifest, request.get("runtime_files") or {}], sort_keys=True).encode()
+    ).hexdigest()
     current = read_receipt(root)
     if alive(current):
         wanted = "installing" if action == "install" else "running"
-        if current.get("configuration_revision") == revision and current["phase"] == wanted:
+        if (
+            current.get("configuration_revision") == revision
+            and current["phase"] == wanted
+            and (
+                action == "install"
+                or current.get("launch_revision", launch_revision) == launch_revision
+            )
+        ):
             return
         raise ValueError("Stop the current operation before changing native service configuration")
     if action == "start":
@@ -396,6 +404,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         with socket.socket() as listener:
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", manifest["port"]))
+        write_json(root / "manifest.json", manifest)
     else:
         required = manifest.get("installation_bytes", 20 * 1024**3)
         if shutil.disk_usage(root).free < required:
@@ -448,6 +457,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
         **current,
         "phase": "installing" if action == "install" else "running",
         "configuration_revision": revision,
+        "launch_revision": launch_revision,
         "definition_version": manifest["definition_version"],
         "health_url": f"http://127.0.0.1:{manifest['port']}{manifest['health_path']}",
         "installed": False if action == "install" else True,
@@ -475,6 +485,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
             close_fds=True,
         )
     if os.name == "nt":
+        receipt.update(launcher_pid=process.pid, launcher_identity=identity(process.pid))
         receipt.update(platform_helper().await_worker(root, generation))
     else:
         receipt.update(pid=process.pid, process_identity=identity(process.pid))
@@ -486,29 +497,7 @@ def launch(root: Path, request: dict[str, Any]) -> None:
 with_host_setup = platform_helper().with_host_setup
 
 
-def worker_environment(
-    root: Path, manifest: dict[str, Any], base: dict[str, str]
-) -> dict[str, str]:
-    """Isolate the service from CLIO's interpreter and expose its own environment's tools.
-
-    Runtimes JIT-compile with console scripts installed beside their interpreter (vLLM's flashinfer
-    runs ``ninja``), so the service environment's ``bin`` leads ``PATH``.
-    """
-    env = {**base, **manifest.get("environment", {})}
-    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
-        env.pop(name, None)
-    env.update(
-        UV_CACHE_DIR=str(root / "cache/uv"),
-        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
-        TMPDIR=str(root / "tmp"),
-        TEMP=str(root / "tmp"),
-        TMP=str(root / "tmp"),
-        HF_HOME=str(root / "cache/huggingface"),
-        PATH=os.pathsep.join(
-            item for item in (str(environment_python(root).parent), env.get("PATH", "")) if item
-        ),
-    )
-    return env
+worker_environment = platform_helper().worker_environment
 
 
 def reuse_helper() -> Any:
@@ -579,7 +568,7 @@ def worker(root: Path, action: str, generation: str) -> None:
             "--project",
             str(root / "environment"),
             "--python",
-            "3.12",
+            str(manifest.get("python_version", "3.12")),
             *(["--managed-python"] if os.name == "nt" else []),
             *(["--refresh"] if env.get("CLIO_FROM_SCRATCH") == "1" else []),
         ]
@@ -596,8 +585,20 @@ def worker(root: Path, action: str, generation: str) -> None:
     credentials = root / "credentials.json"
     if credentials.is_file():
         secrets.extend(
-            str(value) for value in json.loads(credentials.read_text()).values() if value
+            str(value)
+            for name, value in json.loads(credentials.read_text()).items()
+            if value
+            and (not manifest.get("credential_fields") or name in manifest["credential_fields"])
         )
+    settings = manifest.get("database_settings_path")
+    if manifest.get("database_mode") == "site" and settings:
+        source = Path(settings)
+        if source.is_file() and not source.is_symlink():
+            secrets.extend(
+                str(value)
+                for name, value in json.loads(source.read_text()).items()
+                if value and name in manifest.get("credential_fields", [])
+            )
     log = root / "logs" / ("install.log" if action == "install" else "server.log")
     try:
         rotate_log(log)

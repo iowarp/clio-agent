@@ -1,0 +1,213 @@
+{
+  "backend_code_commit": "39802deb6ffac2cd9eea4f869f56de6a3808d6fd",
+  "ui_commit": "3bb53a7c577268ae1bbe3502a509811518364e0b",
+  "environment": "Windows AMD RX 6950 XT and native WSL Ubuntu 24.04 x86-64; private roots and ports; no container engine invoked",
+  "services": {
+    "ollama": {
+      "lifecycle": "passed",
+      "real_driver_closures": true,
+      "inference_model": "smollm2:135m",
+      "nonempty_completion": true,
+      "effective_context": "512"
+    },
+    "web_search": {
+      "lifecycle": "passed",
+      "real_driver_closures": true,
+      "verification": [
+        {
+          "definition_version": "web-search-native-1",
+          "configuration_revision": "2a992188123caa0b653c82118085c299b203a5ec599cbe06e9b82ca3ba9e95dc",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": false,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792158380.9872484,
+          "effective_artifacts": {
+            "python_lock_sha256": "6ff157be6d40026a7ce3b49e7fa8146e12d2c4305ad6fe5509b1d1417b266565"
+          }
+        }
+      ],
+      "verification_after_restart": [
+        {
+          "definition_version": "web-search-native-1",
+          "configuration_revision": "2a992188123caa0b653c82118085c299b203a5ec599cbe06e9b82ca3ba9e95dc",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": false,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792158386.494967,
+          "effective_artifacts": {
+            "python_lock_sha256": "6ff157be6d40026a7ce3b49e7fa8146e12d2c4305ad6fe5509b1d1417b266565"
+          }
+        }
+      ],
+      "fresh_probe": {
+        "service": "web_search",
+        "search_ok": true,
+        "result_count": 10,
+        "first_result_url": "https://www.hdfgroup.org/solutions/hdf5/",
+        "verified_at": 1792158386.2787309,
+        "configuration_revision": "2a992188123caa0b653c82118085c299b203a5ec599cbe06e9b82ca3ba9e95dc",
+        "generation": "166672cf-723d-4118-a94c-ead9fd0f4d9c"
+      }
+    },
+    "flowcept": {
+      "lifecycle": "passed",
+      "real_driver_closures": true,
+      "verification": [
+        {
+          "definition_version": "monitoring-native-1",
+          "configuration_revision": "35a356be4359fdd332e0dead389b882e3fa297f6ac4a2195c52ef09e726f83ba",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": true,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792158282.7818983,
+          "effective_artifacts": {
+            "python_lock_sha256": "d34ba28c794c0718298c7d67b8e033d9478b46bfb5027027b146955a5adecb48"
+          }
+        }
+      ],
+      "verification_after_restart": [
+        {
+          "definition_version": "monitoring-native-1",
+          "configuration_revision": "35a356be4359fdd332e0dead389b882e3fa297f6ac4a2195c52ef09e726f83ba",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": true,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792158293.1000152,
+          "effective_artifacts": {
+            "python_lock_sha256": "d34ba28c794c0718298c7d67b8e033d9478b46bfb5027027b146955a5adecb48"
+          }
+        }
+      ],
+      "fresh_probe": {
+        "task_id": "92b05e5b-fe3e-4cf0-8aae-f032bef42b0b",
+        "workflow_id": "92b05e5b-fe3e-4cf0-8aae-f032bef42b0b",
+        "write_readback": true,
+        "service": "flowcept",
+        "provenance_ingesting": true,
+        "verified_at": 1792158292.1800382,
+        "configuration_revision": "35a356be4359fdd332e0dead389b882e3fa297f6ac4a2195c52ef09e726f83ba",
+        "generation": "3b723de7-fc70-42b7-a177-0760d6d59011"
+      }
+    },
+    "cmf": {
+      "lifecycle": "passed",
+      "real_driver_closures": true,
+      "verification": [
+        {
+          "definition_version": "monitoring-native-1",
+          "configuration_revision": "00027f47b540899f0e5266ef328e26f427dc82d69cf9f2be206c1681d67b5384",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": true,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792159060.7272515,
+          "effective_artifacts": {
+            "python_lock_sha256": "761b0658344faf66f01fed5d73ef5b3c845e459681fe7b08ac5392c3904d6662"
+          }
+        }
+      ],
+      "verification_after_restart": [
+        {
+          "definition_version": "monitoring-native-1",
+          "configuration_revision": "00027f47b540899f0e5266ef328e26f427dc82d69cf9f2be206c1681d67b5384",
+          "phase": "running",
+          "installed": true,
+          "running": true,
+          "serving": true,
+          "worker_alive": true,
+          "provenance_ingesting": true,
+          "attention_verified": false,
+          "error": null,
+          "observed_at": 1792159064.882759,
+          "effective_artifacts": {
+            "python_lock_sha256": "761b0658344faf66f01fed5d73ef5b3c845e459681fe7b08ac5392c3904d6662"
+          }
+        }
+      ],
+      "fresh_probe": {
+        "execution_id": "fc7c874f-1b9f-4c20-9155-1e503b842d7d",
+        "pipeline": "clio-setup-verification",
+        "input_output_lineage": true,
+        "write_readback": true,
+        "service": "cmf",
+        "provenance_ingesting": true,
+        "verified_at": 1792159064.7965865,
+        "configuration_revision": "00027f47b540899f0e5266ef328e26f427dc82d69cf9f2be206c1681d67b5384",
+        "generation": "af5f90d8-6ff9-43b3-a6e9-122abcc7cfe4"
+      }
+    },
+    "llama_cpp_linux": {
+      "lifecycle": "passed",
+      "nonempty_completion": true
+    }
+  },
+  "windows_amd": {
+    "recommended_variant": "native-windows-vulkan",
+    "actual_native_gpu_memory_and_model_probe": {
+      "gpus": [
+        {
+          "total": 17163091968,
+          "free": 16325279744
+        }
+      ],
+      "weights_bytes": 19077344,
+      "gguf": {
+        "general.architecture": "llama",
+        "llama.context_length": 128,
+        "llama.embedding_length": 288,
+        "llama.feed_forward_length": 768,
+        "llama.attention.head_count": 6,
+        "llama.block_count": 6,
+        "llama.rope.dimension_count": 48,
+        "llama.attention.layer_norm_rms_epsilon": 9.999999747378752e-06
+      }
+    },
+    "install_start_inference_restart_stop_uninstall": "passed",
+    "gpu_evidence": [
+      "0.00.099.492 I cmn  common_param:   - Vulkan0 : AMD Radeon RX 6950 XT (16368 MiB, 15569 MiB free)",
+      "0.00.193.544 I load_tensors: offloaded 7/7 layers to GPU",
+      "0.00.285.376 I load_tensors: offloaded 7/7 layers to GPU"
+    ]
+  },
+  "legacy_windows": {
+    "refused_unrelated_saved_pid": true,
+    "real_start_stop_selective_uninstall_retains_unrelated_files_and_model": true
+  },
+  "checks": {
+    "linux_backend": 149,
+    "ui_unit": 33,
+    "browser_cases": 3,
+    "selected_test_skips": 0,
+    "ruff": "passed",
+    "mypy": "passed (1221 source files, Linux target)",
+    "real_windows_supervisor_cases": 5,
+    "real_linux_supervisor_cases": 4,
+    "ui_root_lint": "passed",
+    "ui_root_typecheck": "passed",
+    "production_and_offline_builds": "passed"
+  }
+}

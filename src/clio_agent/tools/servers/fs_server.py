@@ -22,9 +22,10 @@ gate fires).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
+from pydantic import Field
 
 from clio_agent import conf
 from clio_agent.tools.builtin_annotations import (
@@ -65,7 +66,15 @@ _MAX_READ_BYTES = conf.resolve(
 
 
 @fs_server.tool(annotations=_READ_FILE_ANNOTATIONS)
-def read_file(filepath: str) -> dict[str, Any]:
+def read_file(
+    filepath: str,
+    access_reason: Annotated[
+        str,
+        Field(
+            description="Explain why this file is needed when requesting access outside permitted folders."
+        ),
+    ] = "",
+) -> dict[str, Any]:
     """Read a file's contents from disk.
 
     Capped at 256 KB. Larger files return ``truncated: true`` plus
@@ -92,7 +101,13 @@ def read_file(filepath: str) -> dict[str, Any]:
 
 
 @fs_server.tool(annotations=_PROPOSE_EDIT_ANNOTATIONS)
-def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
+def propose_edit(
+    filepath: str,
+    new_content: str,
+    access_reason: Annotated[
+        str, Field(description="Explain why this file edit needs access outside permitted folders.")
+    ] = "",
+) -> dict[str, Any]:
     """Produce a unified diff for an edit WITHOUT touching disk.
 
     The agent uses this when planning a change: it reads the file,
@@ -136,7 +151,13 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
     annotations=_APPLY_EDIT_WRITE_ANNOTATIONS,
     meta={"ui": {"visibility": ["model:plan"]}},
 )
-def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
+def apply_edit_write(
+    filepath: str,
+    new_content: str,
+    access_reason: Annotated[
+        str, Field(description="Explain why this write needs access outside permitted folders.")
+    ] = "",
+) -> dict[str, Any]:
     """Write ``new_content`` to ``filepath`` on disk. Its declared MCP
     annotations (``destructiveHint=True``, not read-only) project to the
     catalog ``write`` tag. The tool remains in the effective runtime catalog

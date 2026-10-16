@@ -29,6 +29,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import posixpath
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +97,11 @@ GPU_VARIANTS = frozenset(
         "native-cuda-attention",
         "native-xpu",
         "native-xpu-attention",
+        *(
+            f"native-{platform}-{backend}"
+            for platform in ("windows", "linux", "macos")
+            for backend in ("vulkan", "rocm", "cuda", "metal")
+        ),
     }
 )
 #: vLLM's own --gpu-memory-utilization default.
@@ -321,13 +327,30 @@ def model_locator(engine: EngineId, configuration: Mapping[str, str]) -> tuple[s
     return "Ollama reads the model only once it is pulled"
 
 
-def probe_command(kind: str, path: str) -> CommandSpec:
+def probe_command(
+    kind: str,
+    path: str,
+    *,
+    windows: bool = False,
+    native_directory: str = "",
+    native_owner: str = "",
+) -> CommandSpec:
     """The target-side read of the model's layout and the GPUs' memory."""
 
     return CommandSpec(
-        program="python3",
+        program=sys.executable if windows else "python3",
         args=["-c", Path(target_probe.__file__).read_text(encoding="utf-8")],
-        stdin=json.dumps({"kind": kind, "path": path}),
+        stdin=json.dumps(
+            {
+                "kind": kind,
+                "path": path,
+                **(
+                    {"native_directory": native_directory, "native_owner": native_owner}
+                    if native_directory
+                    else {}
+                ),
+            }
+        ),
         timeout_seconds=60,
     )
 
@@ -345,11 +368,27 @@ def parse_probe(stdout: str) -> dict[str, Any] | None:
     return None
 
 
-async def probe_model(execute: Execute, kind: str, path: str) -> dict[str, Any]:
+async def probe_model(
+    execute: Execute,
+    kind: str,
+    path: str,
+    *,
+    windows: bool = False,
+    native_directory: str = "",
+    native_owner: str = "",
+) -> dict[str, Any]:
     """Run the probe on the host; a failure is an answer with an ``error``."""
 
     try:
-        result = await execute(probe_command(kind, path))
+        result = await execute(
+            probe_command(
+                kind,
+                path,
+                windows=windows,
+                native_directory=native_directory,
+                native_owner=native_owner,
+            )
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         return {"error": f"the host could not be asked: {exc}"}
     answer = parse_probe(result.stdout) if result.exit_code == 0 else None
@@ -385,9 +424,16 @@ async def gather_inputs(
     located = model_locator(engine, configuration)
     if isinstance(located, str):
         return None, None, located
-    if facts.os != "linux":
-        return None, None, "the model and GPU are read on Linux execution hosts only"
-    answer = await probe_model(execute, *located)
+    native = engine == "llama_cpp" and variant_id.startswith("native-")
+    if facts.os != "linux" and not native:
+        return None, None, "this model/GPU probe needs Linux or native llama.cpp"
+    answer = await probe_model(
+        execute,
+        *located,
+        windows=facts.os == "windows",
+        native_directory=str(configuration.get("storage.service_directory", "")) if native else "",
+        native_owner=str(configuration.get("native_owner", "")) if native else "",
+    )
     profile, why = profile_from_probe(engine, answer)
     gpus = answer.get("gpus") if isinstance(answer.get("gpus"), list) else None
     weights = profile.weights_bytes if profile is not None else 0
@@ -446,7 +492,9 @@ def sized_model_runtime_plan(
         build: Compiles the plan for a configuration (the engine driver).
     """
 
-    if action not in {"install", "reinstall", "start"}:
+    if action not in {"install", "reinstall", "start"} or (
+        engine == "llama_cpp" and action in {"install", "reinstall"}
+    ):
         return build(configuration)
     request = sizing_request(engine, configuration)
     base = dict(configuration)
@@ -457,10 +505,15 @@ def sized_model_runtime_plan(
         if request.choice == "number":
             return _finish(build, engine, base, decide(engine, request, None, None))
         return build(base)
-    if not _relaunches(action, variant_id, configuration):
+    if engine != "llama_cpp" and not _relaunches(action, variant_id, configuration):
         return build(configuration)  # the container restarts as it was created
     located = model_locator(engine, base)
-    if request.choice == "number" or isinstance(located, str) or facts.os != "linux":
+    native = engine == "llama_cpp" and variant_id.startswith("native-")
+    if (
+        request.choice == "number"
+        or isinstance(located, str)
+        or (facts.os != "linux" and not native)
+    ):
         why = located if isinstance(located, str) else "the model is read on Linux hosts only"
         return _finish(build, engine, base, decide(engine, request, None, None, why=why))
 
@@ -534,6 +587,11 @@ def context_spec(engine: EngineId, facts: TargetFacts) -> ContextSizingSpec:
 
     if engine == "ollama":
         available, reason = True, "computed from the GPU memory Ollama reports, once pulled"
+    elif engine == "llama_cpp" and facts.accelerator in {"nvidia", "amd", "intel"}:
+        available, reason = (
+            True,
+            "computed from the installed native backend and the model's layout",
+        )
     elif facts.os != "linux":
         available, reason = False, "Fit to GPU reads the model and GPU on Linux hosts only"
     elif facts.accelerator not in {"nvidia", "amd"}:

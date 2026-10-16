@@ -297,6 +297,7 @@ def build_driver_plan(
             configuration,
             facts,
             target or InfrastructureTarget(id=facts.target_id, label=facts.label, kind="local"),
+            variant_id,
         )
     if service_id == ROUTER_SERVICE:
         return router_plan(action, configuration, facts, target, api_key, router)
@@ -339,7 +340,7 @@ def build_driver_plan(
             configuration=configuration,
         )
 
-    return build_web_search_plan(action, configuration, facts, target, owned)
+    return build_web_search_plan(action, configuration, facts, target, owned, variant_id)
 
 
 def _relay_plan(

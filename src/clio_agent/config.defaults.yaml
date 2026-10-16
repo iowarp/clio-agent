@@ -381,9 +381,15 @@ limits.view_pdf_source_max_bytes: 536870912
 # the cron scheduler.
 
 # CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/turn_spawn_executor.py
-# Max child agent-task threads run concurrently at one spawn depth; raise to
-# widen fan-out on a big host, lower to cap CPU use.
+# Maximum running child tasks per nesting depth; 0 means unlimited. Changes
+# in Settings apply immediately to admission while existing work finishes.
 agent_tasks.max_concurrent: 3
+
+# CLIO_MAX_AGENT_TASK_DEPTH  (int)  <- src/clio_agent/gact/agent_task_limits.py
+# Maximum nesting level for new subagents (first child is level 1); 0 means
+# unlimited. Changes apply to new spawns; existing deeper descendants remain
+# visible.
+agent_tasks.max_depth: 8
 
 # CLIO_CHILD_FORWARD_DEADLINE_S  (float)  <- src/clio_agent/gact/child_forward.py
 # Seconds before an unattended parent's forwarded HITL question auto-fails

@@ -110,6 +110,8 @@ def test_start_status_stop_restart_uninstall_and_delete_owned_data(service: Any)
     wait_for(lambda: node_service.observation(root, key="owned-test-key")["serving"])
     first = node_service.read_receipt(root)
     assert first["pid"] > 0 and node_service.alive(first)
+    if sys.platform == "win32":
+        assert first["launcher_pid"] > 0 and first["launcher_identity"]
     node_service.control(request)  # Idempotent start owns the same worker.
     assert node_service.read_receipt(root)["pid"] == first["pid"]
     with pytest.raises(ValueError, match="another deployment"):
@@ -117,6 +119,8 @@ def test_start_status_stop_restart_uninstall_and_delete_owned_data(service: Any)
     assert node_service.alive(first)
     node_service.control({**request, "action": "stop"})
     assert not node_service.alive(first)
+    if sys.platform == "win32":
+        assert platform.identity(first["launcher_pid"]) != first["launcher_identity"]
     assert not node_service.listeners(request["manifest"]["port"])
     assert node_service.observation(root)["installed"]
     node_service.control(request)
@@ -136,7 +140,12 @@ def test_reused_pid_identity_cannot_stop_a_foreign_process(service: Any) -> None
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         receipt = node_service.read_receipt(root)
-        receipt.update(pid=child.pid, process_identity="foreign-creation-time")
+        receipt.update(
+            pid=child.pid,
+            process_identity="foreign-creation-time",
+            launcher_pid=child.pid,
+            launcher_identity="foreign-creation-time",
+        )
         node_service.write_json(root / "receipt.json", receipt)
         node_service.control({**request, "action": "stop"})
         assert child.poll() is None

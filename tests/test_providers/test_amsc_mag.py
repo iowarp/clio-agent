@@ -6,12 +6,78 @@ import pytest
 
 from clio_agent.config import LMProviderConfig
 from clio_agent.lm.factory import _resolve_model_name
+from clio_agent.providers.capabilities.combine import combine_capabilities
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.catalog_types import Provider
 from clio_agent.providers.handshake import get_handshake_for
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import AuthState, ConnectivityState
 from tests.test_providers.test_handshake_openai_compat import FakeAsyncClient, FakeResponse
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "context", "output"),
+    [
+        ("claude-opus-5-5-high@amazon", 1_000_000, 128_000),
+        ("claude-opus-5-5-compact@amazon", 1_000_000, 128_000),
+        ("gpt-6-luna@openai", 922_000, 128_000),
+        ("llama-4-scout@amazon", 10_000_000, 8192),
+        ("opaque-deployment", 128, 64),
+    ],
+)
+async def test_mag_reports_independent_deployment_limits(
+    mag_provider: Provider, model_id: str, context: int, output: int
+) -> None:
+    """The actual MAG handshake feeds reported limits into the shared capability view."""
+    raw = {"id": model_id, "max_input_tokens": context, "max_output_tokens": output}
+    ctx = HandshakeContext(
+        provider_id=mag_provider.id,
+        provider_kind=mag_provider.provider_kind,
+        api_base=mag_provider.api_base,
+        api_key="unit-mag-pat",
+        allow_external_sources=False,
+    )
+    handshake = get_handshake_for(mag_provider.provider_kind, mag_provider)
+    client = FakeAsyncClient(routes={})
+    facts = await handshake.discover_model_config(client, ctx, raw)
+    effective = combine_capabilities(facts.model, None, facts.deployment)
+    assert facts.discovered.id == model_id
+    assert facts.discovered.raw == raw
+    assert effective.context.value == context
+    assert effective.output_max.value == output
+    assert effective.context.source == effective.output_max.source == "server_report"
+    assert effective.context.decided_by == effective.output_max.decided_by == "deployment"
+    assert "max_input_tokens" in facts.deployment.context_served.detail
+    assert "max_output_tokens" in facts.deployment.output_max.detail
+    assert not client.calls  # /models already supplied the limits; no per-model requests.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", [None, True, False, 0, -1, "1000000", 1.5])
+async def test_mag_unknown_limits_are_independent(mag_provider: Provider, invalid: object) -> None:
+    """Bad/missing input limits never borrow an output limit or invent a context tag."""
+    ctx = HandshakeContext(
+        provider_id=mag_provider.id,
+        provider_kind=mag_provider.provider_kind,
+        api_base=mag_provider.api_base,
+        allow_external_sources=False,
+    )
+    handshake = get_handshake_for(mag_provider.provider_kind, mag_provider)
+    for input_value, output_value in [(invalid, 128_000), (1_000_000, invalid)]:
+        facts = await handshake.discover_model_config(
+            FakeAsyncClient(routes={}),
+            ctx,
+            {
+                "id": "unknown-model",
+                "max_input_tokens": input_value,
+                "max_output_tokens": output_value,
+            },
+        )
+        assert facts.deployment.context_served.value == (
+            1_000_000 if input_value == 1_000_000 else None
+        )
+        assert facts.deployment.output_max.value == (128_000 if output_value == 128_000 else None)
 
 
 @pytest.fixture

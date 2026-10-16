@@ -92,7 +92,10 @@ def test_the_slim_digest_constant_is_empty_or_a_sha256() -> None:
 def test_catalog_artifact_follows_the_default_image(slim_published: None) -> None:
     del slim_published
     row = next(r for r in service_definitions(facts("apptainer")) if r.id == "web_search")
-    assert row.variants[0].artifact == SLIM_IMAGE
+    assert (
+        next(variant for variant in row.variants if variant.id == "container").artifact
+        == SLIM_IMAGE
+    )
 
 
 # --- full image stays the effective default until the slim digest is pinned ----------------

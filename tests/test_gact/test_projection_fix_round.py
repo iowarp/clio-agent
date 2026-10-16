@@ -266,20 +266,15 @@ def test_the_interactions_projection_bounds_the_owners_it_walks(tmp_path: Path) 
 # --------------------------------------------------------------------------- #
 
 
-def test_child_lineage_is_actually_bounded_and_says_when_it_truncates(tmp_path) -> None:
-    """The docstring promised "bounded"; the walk had no depth cap at all.
-
-    ``descendant_session_ids`` stops at ``MAX_SPAWN_DEPTH``; ``child_session_lineage``
-    walked the same graph with nothing but a ``seen`` set, so the two substrates
-    disagreed about what the tree even is.
-    """
+def test_child_lineage_explicit_bound_reports_truncation_and_default_keeps_history(
+    tmp_path,
+) -> None:
+    """Both topology readers honor explicit bounds and retain all existing children by default."""
 
     from clio_agent.gact.provenance.child_projection import child_session_lineage
     from clio_agent.gact.session_descendants import _DEFAULT_DESCENDANT_DEPTH, MAX_SPAWN_DEPTH
 
-    assert _DEFAULT_DESCENDANT_DEPTH == MAX_SPAWN_DEPTH, (
-        "the aggregation cap must track the spawn backstop, not drift from it"
-    )
+    assert _DEFAULT_DESCENDANT_DEPTH is None
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root = app.state.sessions.create(workspace_id="ws_default", title="root")
@@ -289,9 +284,11 @@ def test_child_lineage_is_actually_bounded_and_says_when_it_truncates(tmp_path) 
         _seed_task(app, parent=parent_id, child=child.id, task_id=f"task_{depth}", depth=depth)
         parent_id = child.id
 
-    lineage, truncated = child_session_lineage(app, root.id)
+    lineage, truncated = child_session_lineage(app, root.id, max_depth=MAX_SPAWN_DEPTH)
     assert truncated is True
     assert max(row["depth"] for row in lineage) == MAX_SPAWN_DEPTH
+    full, truncated = child_session_lineage(app, root.id)
+    assert not truncated and max(row["depth"] for row in full) == MAX_SPAWN_DEPTH + 2
 
 
 def test_the_execution_projection_reports_its_own_depth_and_truncation(tmp_path) -> None:

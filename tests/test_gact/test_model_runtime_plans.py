@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -218,7 +219,7 @@ def test_ollama_requires_a_model_to_pull() -> None:
 def test_rootless_podman_runs_without_user_mapping_or_restart_policy() -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
-        action="install",
+        action="start",
         variant_id="cpu",
         configuration={
             "hf_model": "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M",
@@ -253,7 +254,7 @@ def test_llama_cpp_needs_exactly_one_model_source() -> None:
         with pytest.raises(ValueError, match="either a GGUF model path"):
             build_driver_plan(
                 service_id="llama_cpp",
-                action="install",
+                action="start",
                 variant_id="cpu",
                 configuration=configuration,
                 facts=_facts("docker"),
@@ -263,7 +264,7 @@ def test_llama_cpp_needs_exactly_one_model_source() -> None:
 def test_llama_cpp_mounts_a_gguf_path_read_only() -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
-        action="install",
+        action="start",
         variant_id="cpu",
         configuration={"model_path": "/scratch/qwen.gguf"},
         facts=_facts("docker"),
@@ -487,7 +488,7 @@ def test_a_mount_path_that_would_change_the_bind_is_refused() -> None:
         with pytest.raises(ValueError, match="bind-mounted"):
             build_driver_plan(
                 service_id="llama_cpp",
-                action="install",
+                action="start",
                 variant_id="cpu",
                 configuration={"model_path": path},
                 facts=_facts("docker"),
@@ -529,14 +530,21 @@ def test_native_windows_llama_passes_server_parameters_to_the_process() -> None:
         target=local,
     )
 
-    script = plan.commands[-1].args[-1]
-    # Values are PowerShell literals inside the script, never trailing args
-    # (-Command does not bind them to $args).
-    assert plan.commands[-1].args[:3] == ["-NoProfile", "-NonInteractive", "-Command"]
-    assert (
-        "@('-m','C:/models/q.gguf','--host','127.0.0.1','--port','8088','--parallel','3')" in script
-    )
-    assert "$args" not in script
+    # The detached launcher receives exact argv through JSON and closes all
+    # other handles; model serving must not hold the operation's output pipes.
+    assert plan.commands[-1].args[0] == "-c"
+    request = json.loads(plan.commands[-1].args[-1])
+    assert request["arguments"] == [
+        "-m",
+        "C:/models/q.gguf",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8088",
+        "--parallel",
+        "3",
+    ]
+    assert "close_fds=True" in plan.commands[-1].args[1]
 
 
 def test_every_container_image_is_digest_pinned() -> None:
@@ -669,7 +677,7 @@ def test_llama_cpp_gpu_variants_follow_the_host_gpu(accelerator: str, offered: s
 def test_llama_cpp_cuda_container_passes_the_gpu_and_offloads_every_layer(runtime: str) -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
-        action="install",
+        action="start",
         variant_id="cuda",
         configuration={"model_path": "/models/q.gguf", "container_runtime": runtime},
         facts=_gpu_facts("nvidia", runtime),
@@ -698,7 +706,7 @@ def test_llama_cpp_identity_expects_the_served_model(
 ) -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
-        action="install",
+        action="start",
         variant_id="cuda",
         configuration={**configuration, "container_runtime": "apptainer"},
         facts=_gpu_facts("nvidia", "apptainer"),
@@ -712,7 +720,7 @@ def test_llama_cpp_identity_expects_the_served_model(
 def test_llama_cpp_vulkan_on_nvidia_gets_the_driver_graphics_capability() -> None:
     plan = build_driver_plan(
         service_id="llama_cpp",
-        action="install",
+        action="start",
         variant_id="vulkan",
         configuration={
             "model_path": "/models/q.gguf",
@@ -745,7 +753,11 @@ def test_windows_llama_archive_is_sha256_verified_before_unpacking() -> None:
     )
     script = " ".join(plan.commands[0].args)
     assert LLAMA_WINDOWS_CPU_SHA256 in script
-    assert script.index("Get-FileHash") < script.index("Expand-Archive")
+    assert (
+        script.index("ComputeHash")
+        < script.index("if ($digest -ne")
+        < script.index("Expand-Archive")
+    )
     assert len(LLAMA_WINDOWS_CPU_SHA256) == 64
 
 
@@ -759,13 +771,15 @@ def test_container_vllm_serves_a_downloaded_model_under_its_path_with_family_par
     model = tmp_path / "Qwen--Qwen3-4B"
     model.mkdir()
     (model / "config.json").write_text('{"model_type": "qwen3"}')
+    # The fake target is Linux even when the source fixture lives on Windows.
+    target_path = model.as_posix().removeprefix(model.drive)
 
     def plan(api_key: str | None = None, **extra: str):
         return build_model_runtime_plan(
             service_id="vllm",
             action="install",
             variant_id="cuda",
-            configuration={"model": str(model), "container_runtime": "apptainer", **extra},
+            configuration={"model": target_path, "container_runtime": "apptainer", **extra},
             facts=_gpu_facts("nvidia", "apptainer"),
             target=None,
             api_key=api_key,
@@ -776,11 +790,11 @@ def test_container_vllm_serves_a_downloaded_model_under_its_path_with_family_par
 
     keyed = plan("launch-key").readiness
     assert keyed is not None
-    assert str(model) in keyed.health.args  # identity expects the served path
+    assert target_path in keyed.health.args  # identity expects the served path
 
     launched = args()
     assert launched[launched.index("--model") + 1] == "/models/downloaded"
-    assert launched[launched.index("--served-model-name") + 1] == str(model)
+    assert launched[launched.index("--served-model-name") + 1] == target_path
     assert launched[launched.index("--tool-call-parser") + 1] == "hermes"
     assert "--enable-auto-tool-choice" in launched
     assert launched[launched.index("--reasoning-parser") + 1] == "qwen3"

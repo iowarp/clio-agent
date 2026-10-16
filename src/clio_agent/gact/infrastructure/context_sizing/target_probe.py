@@ -13,6 +13,7 @@ only the model's own ``<arch>.*`` scalars and short numeric arrays.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import struct
@@ -146,11 +147,13 @@ def weights_bytes(path: Path) -> int:
     return 0
 
 
-def _run(command: list[str]) -> str:
+def _run(command: list[str], env: dict[str, str] | None = None) -> str:
     if shutil.which(command[0]) is None:
         return ""
     try:
-        done = subprocess.run(command, capture_output=True, text=True, timeout=20, check=False)
+        done = subprocess.run(
+            command, capture_output=True, text=True, timeout=20, check=False, env=env
+        )
     except (OSError, subprocess.SubprocessError):
         return ""
     return done.stdout if done.returncode == 0 else ""
@@ -201,10 +204,45 @@ def gpu_memory() -> list[dict[str, int]]:
     )
 
 
+def parse_llama_devices(text: str) -> list[dict[str, int]]:
+    """Read actual Vulkan/CUDA/ROCm/Metal memory from llama.cpp's device inventory."""
+    return [
+        {"total": int(match[1]) << 20, "free": int(match[2]) << 20}
+        for match in re.finditer(r"\((\d+)\s+MiB,\s*(\d+)\s+MiB\s+free\)", text)
+    ]
+
+
+def native_gpu_memory(directory: str, expected_owner: str) -> list[dict[str, int]]:
+    """Inspect an installed owned llama.cpp backend, including AMD on Windows."""
+    root = Path(directory)
+    try:
+        owner = json.loads((root / "owner.json").read_text(encoding="utf-8"))
+        binary = json.loads((root / "native-binary.json").read_text(encoding="utf-8"))
+        executable = root / binary["executable"]
+        if owner.get("owner") != expected_owner or Path(owner.get("root", "")) != root:
+            return []
+        if (
+            not executable.resolve().is_relative_to((root / "environment").resolve())
+            or not executable.is_file()
+        ):
+            return []
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    env = os.environ.copy()
+    env["PATH"] = str(executable.parent) + os.pathsep + env.get("PATH", "")
+    if os.name != "nt":
+        env["LD_LIBRARY_PATH"] = (
+            str(executable.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+        )
+    return parse_llama_devices(_run([str(executable), "--list-devices"], env))
+
+
 def probe(request: dict[str, Any]) -> dict[str, Any]:
     """Answer one request ``{"kind": "hf" | "gguf", "path": ...}``."""
 
-    result: dict[str, Any] = {"gpus": gpu_memory()}
+    native = str(request.get("native_directory") or "")
+    gpus = native_gpu_memory(native, str(request.get("native_owner") or "")) if native else []
+    result: dict[str, Any] = {"gpus": gpus or gpu_memory()}
     path = Path(str(request.get("path") or ""))
     if not path.is_absolute() or not path.exists():
         result["error"] = "model not found on this host"

@@ -110,6 +110,10 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         accelerator = "amd"
     elif _intel_datacenter_gpu():
         accelerator = "intel"
+    elif platform.system() == "Windows":
+        accelerator = _windows_gpu()
+    elif _amd_gpu():
+        accelerator = "amd"
     return TargetFacts(
         target_id=target.id,
         label=target.label,
@@ -126,6 +130,49 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         agent_data_root=str(user_data_dir()),
         hostname=platform.node().split(".")[0],
     )
+
+
+def _windows_gpu() -> str:
+    """Read display-controller PCI vendors, without requiring ROCm on Windows."""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty PNPDeviceID",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "none"
+    devices = result.stdout.upper() if result.returncode == 0 else ""
+    return next(
+        (
+            vendor
+            for pci, vendor in (("VEN_10DE", "nvidia"), ("VEN_1002", "amd"), ("VEN_8086", "intel"))
+            if pci in devices
+        ),
+        "none",
+    )
+
+
+def _amd_gpu(drm: str = "/sys/class/drm") -> bool:
+    """Detect an AMD display controller even when rocminfo is not installed."""
+    from pathlib import Path  # noqa: PLC0415
+
+    for vendor in Path(drm).glob("card[0-9]*/device/vendor"):
+        try:
+            if vendor.read_text().strip().lower() == "0x1002":
+                return True
+        except OSError:
+            continue
+    return False
 
 
 async def probe_target(
@@ -168,7 +215,9 @@ async def probe_target(
                 "$gpu='none';if(Get-Command nvidia-smi -ErrorAction SilentlyContinue){"
                 "$names=nvidia-smi --query-gpu=name --format=csv,noheader 2>$null;"
                 "if($LASTEXITCODE -eq 0 -and $names){$gpu='nvidia'}}"
-                "elseif(Get-Command rocminfo -ErrorAction SilentlyContinue){$gpu='amd'};"
+                "if($gpu -eq 'none'){$pci=(Get-CimInstance Win32_VideoController | "
+                "Select-Object -ExpandProperty PNPDeviceID) -join ' ';"
+                "if($pci -match 'VEN_1002'){$gpu='amd'}elseif($pci -match 'VEN_8086'){$gpu='intel'}};"
                 "Write-Output ('windows|'+$env:PROCESSOR_ARCHITECTURE+'|'+$gpu+'|'+"
                 "[int][bool]$d+'|'+[int]$ready+'|'+[int][bool]$u)",
             ],
@@ -183,6 +232,8 @@ async def probe_target(
                 "if nvgpu=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) "
                 '&& [ -n "$nvgpu" ]; then gpu=nvidia; fi; '
                 'if [ "$gpu" = none ] && rocminfo 2>/dev/null | grep -q "Name:.*gfx"; then gpu=amd; fi; '
+                'if [ "$gpu" = none ]; then for c in /sys/class/drm/card*/device/vendor; do '
+                '[ "$(cat "$c" 2>/dev/null)" = 0x1002 ] && gpu=amd; done; fi; '
                 'if [ "$gpu" = none ]; then for c in /sys/class/drm/card*/device; do '
                 '[ "$(cat "$c/vendor" 2>/dev/null)" = 0x8086 ] && case "$(cat "$c/class" 2>/dev/null)" in '
                 "0x0380*) gpu=intel ;; esac; done; fi; "

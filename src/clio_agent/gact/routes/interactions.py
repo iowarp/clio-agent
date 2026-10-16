@@ -21,6 +21,9 @@ from clio_agent.gact.routes.interaction_surface_projection import (
     _latest_action_record as _latest_action_record,
 )
 from clio_agent.gact.routes.interaction_surface_projection import (
+    _question_correlation as _question_correlation,
+)
+from clio_agent.gact.routes.interaction_surface_projection import (
     _surface_actions as _surface_actions,
 )
 from clio_agent.gact.routes.interaction_surface_projection import (
@@ -107,40 +110,6 @@ def _session_scope(app: FastAPI, root_session_id: str, include_children: bool) -
             if attended_session_id(app, child) == attended
         )
     return scope
-
-
-def _question_correlation(app: FastAPI, question: UserQuestion) -> dict[str, str]:
-    metadata = question.metadata if isinstance(question.metadata, Mapping) else {}
-    elicitation = metadata.get("elicitation")
-    elicitation = elicitation if isinstance(elicitation, Mapping) else {}
-    child = app.state.user_questions.get(str(metadata.get("forwarded_from_question") or ""))
-    child_meta = child.metadata if isinstance(getattr(child, "metadata", None), Mapping) else {}
-    child_elicitation = child_meta.get("elicitation")
-    child_elicitation = child_elicitation if isinstance(child_elicitation, Mapping) else {}
-    return {
-        "tool_name": str(
-            metadata.get("tool_name")
-            or elicitation.get("tool_name")
-            or child_meta.get("tool_name")
-            or child_elicitation.get("tool_name")
-            or ""
-        ),
-        "invocation_id": str(
-            metadata.get("invocation_id")
-            or elicitation.get("invocation_id")
-            or child_meta.get("invocation_id")
-            or child_elicitation.get("invocation_id")
-            or ""
-        ),
-        "task_id": str(
-            metadata.get("task_id")
-            or elicitation.get("task_id")
-            or child_meta.get("task_id")
-            or child_elicitation.get("task_id")
-            or ""
-        ),
-        "input_key": str(elicitation.get("input_key") or child_elicitation.get("input_key") or ""),
-    }
 
 
 def _agent_answer_task_projection(app: FastAPI, value: object) -> dict[str, Any] | None:
@@ -316,6 +285,22 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
     owner = str(row.get("session_id") or "")
     tool_call = row.get("tool_call")
     tool_call = tool_call if isinstance(tool_call, Mapping) else {}
+    import platform
+
+    sessions = getattr(app.state, "sessions", None)
+    session = sessions.get(owner) if sessions is not None else None
+    workspaces = getattr(app.state, "workspaces", None)
+    workspace = (
+        workspaces.get(getattr(session, "workspace_id", ""))
+        if session is not None and workspaces is not None
+        else None
+    )
+    tool_input = tool_call.get("input")
+    tool_input = tool_input if isinstance(tool_input, Mapping) else {}
+    execution = {
+        "computer": platform.node(),
+        "cwd": str(tool_input.get("cwd") or getattr(workspace, "root_path", "") or ""),
+    }
     status: Literal["pending", "answered", "cancelled"] = "pending"
     if row.get("status") != "pending":
         status = (
@@ -348,9 +333,16 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
         revision=str(
             row.get("updated_at") or row.get("resolved_at") or row.get("created_at") or ""
         ),
-        payload={"permission_id": str(row.get("id") or ""), "tool_call": dict(tool_call)},
+        payload={
+            "permission_id": str(row.get("id") or ""),
+            "tool_call": dict(tool_call),
+            "execution": execution,
+            **({"access": row["access"]} if isinstance(row.get("access"), Mapping) else {}),
+        },
         actions=(
-            ["allow", "deny", "allow_session", "allow_workspace"] if status == "pending" else []
+            list(row.get("actions") or ["allow", "deny", "allow_session", "allow_workspace"])
+            if status == "pending"
+            else []
         ),
     )
 
@@ -406,7 +398,10 @@ def _a2ui_interactions(
                 task_id=owner_task_id,
                 status="answered" if settled else "pending",
                 title="Interactive surface",
-                requires_human_response=not settled,
+                # An offered action is not a request for an answer. Only an
+                # explicit question owns human attention; retain this row for
+                # action routing/history without moving the surface into it.
+                requires_human_response=False,
                 source=PendingInteractionSource(
                     protocol="native",
                     tool_name="create_a2ui_surface",
@@ -736,6 +731,8 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             action = request.action
             if action not in {"allow", "deny", "allow_session", "allow_workspace"}:
                 raise _error(422, "validation_error", "permission response action is invalid")
+            if permission.get("kind") == "folder_access" and action not in permission["actions"]:
+                raise _error(422, "validation_error", "Choose Deny or Allow for workspace")
             # P2.6 parity with ``POST /v1/permissions/{pid}``: an approved PreToolUse
             # defer may carry the modify/synthesize the approval decides. Dropping it
             # here made the normalized responder a strictly weaker door for the same

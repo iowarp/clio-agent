@@ -396,6 +396,24 @@ def resolve_permission(
     grantor: str = GRANTOR_USER,
     intercept: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    """Resolve a request, serializing folder grants against duplicate responses."""
+    from clio_agent.gact.folder_access import FOLDER_ACCESS_KIND, FOLDER_RESOLUTION_LOCK
+
+    row = app.state.permissions.get(pid)
+    if row is not None and row.get("kind") == FOLDER_ACCESS_KIND:
+        with FOLDER_RESOLUTION_LOCK:
+            return _resolve_permission(app, pid, action, grantor=grantor, intercept=intercept)
+    return _resolve_permission(app, pid, action, grantor=grantor, intercept=intercept)
+
+
+def _resolve_permission(
+    app: "FastAPI",
+    pid: str,
+    action: str,
+    *,
+    grantor: str = GRANTOR_USER,
+    intercept: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
     """Resolve one pending permission row and wake any blocked bridge thread.
 
     Lifted verbatim from ``routes/permissions.py::respond_permission`` (#1044) so the
@@ -418,6 +436,10 @@ def resolve_permission(
     row = app.state.permissions.get(pid)
     if row is None or row.get("status") != "pending":
         return None
+    from clio_agent.gact.folder_access import FOLDER_ACCESS_KIND, apply_folder_permission
+
+    if row.get("kind") == FOLDER_ACCESS_KIND:
+        apply_folder_permission(app, row, action, grantor)
     row["status"] = "resolved"
     row["action"] = action
     row["resolved_at"] = datetime.now(timezone.utc).isoformat()
@@ -430,7 +452,11 @@ def resolve_permission(
             row["resolution_result"] = intercept.get("result")
         elif isinstance(intercept.get("input"), Mapping):
             row["resolution_input"] = dict(intercept["input"])
-    policy = _append_permission_policy_from_resolution(app, row=row, action=action)
+    policy = (
+        None
+        if row.get("kind") == FOLDER_ACCESS_KIND
+        else _append_permission_policy_from_resolution(app, row=row, action=action)
+    )
     if policy is not None:
         row["policy"] = policy
         # iowarp/clio-agent#759: sticky grants must survive a server restart, so flush
@@ -530,13 +556,21 @@ def _make_permission_gate(app: "FastAPI"):
         from clio_agent.gact.hooks import stash_pre_tool_intercept  # noqa: PLC0415
 
         stash_pre_tool_intercept(None)
-        # #1032: reads are NEVER gated. A provably read-only call (MCP
+        # #1032: reads inside permitted territory need no action approval. A provably read-only call (MCP
         # readOnlyHint annotation OR a static catalog ``read`` tag) fast-allows
         # here as the FIRST branch — before any hook or the plan/architect lock —
-        # the structural invariant that no mode, policy, or hook can gate a read.
+        # no mode or action hook can gate that read. New folder access still
+        # requires a human boundary decision, independently of action approval.
         # (P2.2 #1070 fixes the old ordering bug where the pre_tool hook fired
         # BEFORE this branch and could gate a read-only call.)
+        from clio_agent.gact.folder_access import request_folder_access, requested_folders
+
+        folders = requested_folders(name, args)
         if is_read_only("tool", name, args, context):
+            if folders:
+                sid, current = _resolve_tool_session(app)
+                if sid:
+                    return request_folder_access(app, sid, current, name, args, folders)
             return "allow"
         subject = (
             "external MCP tool"
@@ -616,6 +650,11 @@ def _make_permission_gate(app: "FastAPI"):
         # var (single-fire: PreToolUse dispatched exactly once, here) — the interceptor
         # is a pure consumer that reads it after this gate returns "allow".
         stash_pre_tool_intercept(hook_outcome)
+        if hook_outcome.is_modify:
+            args = dict(hook_outcome.modify_input or {})
+            folders = requested_folders(name, args)
+        elif hook_outcome.is_synthesize:
+            folders = []  # no file operation will run
         # P1.1 #1063: the plan/architect/read-only-side lock is a set of built-in plan_acl rows the
         # ONE resolver evaluates — the policy mode (plan, architect, or read_only for a side session)
         # makes ``resolve`` deny every non-read tool (@40); plan keeps its ``<plans>/*.md`` carve-out
@@ -645,6 +684,8 @@ def _make_permission_gate(app: "FastAPI"):
             # of the generic executor string. The typed audit reason above stays ``policy_deny``;
             # a non-plan (user-policy) deny returns an empty message and the plain "deny" string.
             return DenyDecision(plan_deny_message) if plan_deny_message else "deny"
+        if folders:
+            return request_folder_access(app, sid, current, name, args, folders)
         if policy_action in {"allow", "allow_session", "allow_workspace"}:
             _record_resolved_permission(
                 app,

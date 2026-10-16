@@ -7,6 +7,14 @@ from clio_agent.gact.infrastructure.models import CommandSpec
 from clio_agent.gact.infrastructure.secret_env import with_secret_env
 
 
+def llama_served_id(args: tuple[str, ...]) -> str:
+    """The model id llama-server lists: its explicit alias, else the HF repository spec."""
+    for flag in ("--alias", "-hf"):
+        if flag in args and args.index(flag) + 1 < len(args):
+            return args[args.index(flag) + 1]
+    return ""
+
+
 def health_command(url: str, windows: bool) -> CommandSpec:
     """Readiness by the health URL alone (servers with no per-launch key)."""
 

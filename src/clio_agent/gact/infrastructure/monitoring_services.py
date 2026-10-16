@@ -21,6 +21,10 @@ from clio_agent.gact.infrastructure.models import (
     ServiceVariant,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.native_monitoring import (
+    native_monitoring_plan,
+    native_monitoring_variant,
+)
 from clio_agent.gact.infrastructure.native_vllm import FLOWCEPT_REVISION
 from clio_agent.gact.infrastructure.plan import DriverPlan
 from clio_agent.gact.infrastructure.storage import resolved_locations
@@ -91,7 +95,8 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
     for service, label in (("flowcept", "Flowcept"), ("cmf", "HPE CMF")):
         engines = monitoring_engines(service, facts)
         compatible = facts.os == "linux" and facts.uv_available and bool(engines)
-        runtimes = "Docker, Podman or Apptainer" if service == "flowcept" else "Docker or Podman"
+        runtimes = "Docker, Podman or Apptainer"
+        native = native_monitoring_variant(service, facts)
         result.append(
             ManagedServiceDefinition(
                 id=service,
@@ -101,11 +106,11 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                 if service == "flowcept"
                 else "Artifact lineage with direct server access.",
                 definition_version=f"{service}-managed-2",
-                recommended_variant="managed",
+                recommended_variant="native" if native.compatible else "managed",
                 variants=[
                     ServiceVariant(
                         id="managed",
-                        label="Managed service",
+                        label="Native application + container databases",
                         version="1.0.3" if service == "flowcept" else CMF_REVISION[:8],
                         install_type="supervised_stack",
                         artifact=FLOWCEPT_REVISION if service == "flowcept" else CMF_REVISION,
@@ -121,7 +126,8 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                             if not facts.uv_available
                             else f"Start or install {runtimes} on this computer, then inspect again."
                         ),
-                    )
+                    ),
+                    native,
                 ],
                 configuration_fields=[
                     ServiceConfigurationField(
@@ -129,17 +135,32 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                         label="Dependency runtime",
                         options=engines,
                         placeholder=engines[0] if engines else "No supported engine",
+                        variants=["managed"],
                     ),
                     ServiceConfigurationField(
                         id="image_storage",
                         label="Container images",
                         options=["engine", "service"],
                         placeholder="service" if engines[:1] == ["apptainer"] else "engine",
+                        variants=["managed"],
                     ),
                     ServiceConfigurationField(
                         id="port",
                         label="Service port",
                         placeholder=str(monitoring_port(service, {})),
+                    ),
+                    ServiceConfigurationField(
+                        id="database_mode",
+                        label="Native databases",
+                        options=["managed", "site"],
+                        placeholder="managed",
+                        variants=["native"],
+                    ),
+                    ServiceConfigurationField(
+                        id="database_settings_path",
+                        label="Site database settings file",
+                        placeholder="/path/to/private-databases.json",
+                        variants=["native"],
                     ),
                     *(
                         [
@@ -156,6 +177,7 @@ def monitoring_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]
                                 id="server_image",
                                 label="Existing server image digest (optional)",
                                 placeholder="sha256:…; otherwise build the pinned HPE source",
+                                variants=["managed"],
                             ),
                         ]
                     ),
@@ -206,8 +228,13 @@ def monitoring_plan(
     configuration: dict[str, str],
     facts: TargetFacts,
     target: InfrastructureTarget,
+    variant_id: str = "managed",
 ) -> DriverPlan:
     """Compile the common supervisor and backend-specific dependencies and probes."""
+    if variant_id == "native":
+        return native_monitoring_plan(
+            service, action, configuration, facts, target, verification_document()
+        )
     definition = next(row for row in monitoring_definitions(facts) if row.id == service)
     if action in {"install", "reinstall", "start"} and not definition.variants[0].compatible:
         raise ValueError(definition.variants[0].reason)

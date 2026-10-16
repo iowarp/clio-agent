@@ -660,7 +660,8 @@ def test_interactions_row_flips_pending_to_answered_once_delivered(
     before = project_pending_interactions(app, sid, include_children=False)
     [row_before] = [r for r in before.rows if r.kind == "a2ui"]
     assert row_before.status == "pending"
-    assert row_before.requires_human_response is True
+    # Offering a button does not request an answer or take over its UI view.
+    assert row_before.requires_human_response is False
 
     action = _event("agent.submit", "surface_1", {"text": "go"}, "2026-09-17T00:00:00Z")
     response = client.post(

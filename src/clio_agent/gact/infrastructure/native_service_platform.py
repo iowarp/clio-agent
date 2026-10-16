@@ -22,6 +22,8 @@ from contextlib import contextmanager
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Iterator
+from urllib.error import HTTPError, URLError
+from urllib.request import ProxyHandler, Request, build_opener
 
 _JOB: Any = None
 LOG_GENERATIONS = 3
@@ -40,6 +42,39 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 def python_path(root: Path) -> Path:
     """The service environment's interpreter on the execution host."""
     return root / "environment/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def http_get(url: str, key: str = "") -> tuple[int, bytes]:
+    """Status and body of a proxy-free loopback GET; 0 when nothing answered."""
+    request = Request(url, headers={"Authorization": f"Bearer {key}"} if key else {})
+    try:
+        with build_opener(ProxyHandler({})).open(request, timeout=3) as response:
+            return response.status, response.read()
+    except HTTPError as error:
+        return error.code, b""
+    except (OSError, URLError, ValueError):
+        return 0, b""
+
+
+def worker_environment(
+    root: Path, manifest: dict[str, Any], base: dict[str, str]
+) -> dict[str, str]:
+    """Isolate interpreter and caches; expose the service's own console tools first."""
+    env = {**base, **manifest.get("environment", {})}
+    for name in ("UV_PROJECT_ENVIRONMENT", "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(name, None)
+    env.update(
+        UV_CACHE_DIR=str(root / "cache/uv"),
+        UV_PYTHON_INSTALL_DIR=str(root / "cache/python"),
+        TMPDIR=str(root / "tmp"),
+        TEMP=str(root / "tmp"),
+        TMP=str(root / "tmp"),
+        HF_HOME=str(root / "cache/huggingface"),
+        PATH=os.pathsep.join(
+            item for item in (str(python_path(root).parent), env.get("PATH", "")) if item
+        ),
+    )
+    return env
 
 
 def is_link(path: Path) -> bool:
@@ -300,6 +335,19 @@ def stop(receipt: dict[str, Any]) -> None:
         if job:
             kernel.CloseHandle(job)
         kernel.CloseHandle(process)
+
+
+def wait_launcher_exit(receipt: dict[str, Any]) -> None:
+    """Await the venv broker outside the job before deleting its mapped executable."""
+    pid = receipt.get("launcher_pid", 0)
+    expected = receipt.get("launcher_identity", "")
+    if not pid or not expected:
+        return
+    deadline = time.monotonic() + 10
+    while identity(pid) == expected:
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Native Python launcher did not exit; runtime files retained")
+        time.sleep(0.02)
 
 
 def release_children() -> None:
