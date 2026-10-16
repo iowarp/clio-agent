@@ -10,6 +10,9 @@ Two layers of proof that PR1 changes nothing on the wire:
    The goldens were recaptured after a0e1d9a9 (clean delegation wire): routing
    decisions are ``routing.decision`` semantic events now, so the streams carry
    no ``routing_decision`` ``message.part.added`` and persist no routing part.
+   The thinking completion golden also carries its final part, so recorded
+   phase timing can reach live clients as well as reload. Timing values remain
+   volatile here; test_reasoning_timing asserts their exact independent bounds.
    To (re)capture the goldens, check out the reference tree and run::
 
        CLIO_TURN_TRANSCRIPT_GOLDEN_REGEN=1 uv run --extra dev pytest \

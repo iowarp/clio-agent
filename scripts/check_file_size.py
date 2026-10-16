@@ -276,7 +276,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1265,  # MCP task bridge moved to external_mcp_calls.py
+    "src/clio_agent/gact/agents/builders.py": 1263,  # session-owned work LM contexts
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -579,7 +579,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_blueprint_requires.py (install_refusal_http_exception,
     # path_activation_invalid_http_exception) instead of building the
     # ErrorEnvelope inline here.
-    "src/clio_agent/gact/routes/catalog.py": 830,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
+    "src/clio_agent/gact/routes/catalog.py": 822,  # Command receipt presentation lives in gact/command_presentation.py.
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
     # prompt/list branches) -- the classification logic itself lives in the owner

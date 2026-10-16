@@ -80,6 +80,20 @@
       "payload": {
         "final_text": "Weighing the options...",
         "message_id": "<msg#4>",
+        "part": {
+          "agent_id": "main",
+          "id": "<part#5>",
+          "metadata": {
+            "default_collapsed": true,
+            "provider_source": "anthropic",
+            "signature_field_name": "provider_thinking:anthropic",
+            "stream_source": "live",
+            "thinking_source": "provider"
+          },
+          "sequence": 1,
+          "text": "Weighing the options...",
+          "type": "thinking"
+        },
         "part_id": "<part#5>",
         "stream_source": "live",
         "turn_id": "<msg#1>"

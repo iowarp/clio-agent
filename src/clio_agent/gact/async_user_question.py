@@ -105,7 +105,8 @@ def publish_async_question(app: Any, pending: dict[str, Any], turn_id: str) -> U
         expires_at=pending["expires_at"],
         source="native",
         turn_id=turn_id,
-        metadata={
+        metadata=dict(pending.get("metadata") or {})
+        | {
             key: pending[key]
             for key in (
                 "reason",
@@ -117,7 +118,10 @@ def publish_async_question(app: Any, pending: dict[str, Any], turn_id: str) -> U
                 "a2ui_answer_action",
             )
         }
-        | {"resume_on_answer": True},
+        | {
+            "resume_on_answer": True,
+            "a2ui_presentation": pending.get("a2ui_presentation") or "linked",
+        },
     )
     record_user_question(app, row)
     _emit_semantic_event(

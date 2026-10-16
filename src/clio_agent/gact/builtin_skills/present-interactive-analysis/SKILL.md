@@ -32,6 +32,17 @@ to that view in prose instead of repeating the figure as a Markdown image.
 Give a new figure a distinct surface ID so its source map, chart, or model
 remains available. Reuse the image surface only for revisions of that figure.
 
+For authored SVG and HTML, use CLIO's CSS variables for adaptive presentation:
+`--background`, `--foreground`, `--primary`, `--muted`, `--muted-foreground`,
+`--border`, `--radius`, `--font-sans`, `--font-mono` and `--chart-1` through
+`--chart-5`. SVG text and neutral shapes can use `currentColor`. Explicit author
+colors are preserved, so avoid hard-coded black/white when the visual should
+follow the app theme. Give SVG a `viewBox` and keep ordinary HTML in document
+flow so its preview can grow and shrink with its content. Theme changes preserve
+live HTML controls; canvas scripts can repaint on `clio:theme-change`. Keep using
+the existing artifact and surface tools; do not invent a separate widget tool
+or ask the person to move code between viewers.
+
 Component shapes are NOT in this skill — the catalog itself is the allowlist and
 the source of truth (`docs/design/a2ui-compat-campaign-2026-09.md` S2/S4). Load a
 catalog's index with `load_skill("a2ui-catalog-<slug>")` (see "Skills available to

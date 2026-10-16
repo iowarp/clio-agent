@@ -276,8 +276,10 @@ async def finalize_desktop_shutdown(app: "FastAPI", agent: object) -> None:
     """Reap owned children, unregister the loop, and finish desktop exit."""
 
     from clio_agent.arc import loop_guard
+    from clio_agent.lm.session_clients import close_session_model_clients
     from clio_agent.runtime.process_tree import shutdown_child_processes
 
+    await asyncio.to_thread(close_session_model_clients, app)
     await asyncio.to_thread(shutdown_child_processes, agent)
     loop_guard.unregister_server_loop(app.state.mcp_app_loop)
     terminate_process_after_cleanup(app)

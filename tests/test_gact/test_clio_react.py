@@ -535,6 +535,37 @@ def test_a_provider_thinking_field_wins_and_inline_tags_stay_text(
     assert (recorded["text"], recorded["source"]) == ("real", "provider_field")
 
 
+def test_failed_call_drains_buffered_reasoning_and_preserves_the_error(
+    live_lanes: dict[str, list[Any]],
+) -> None:
+    from clio_agent.gact.agents.clio_react import _call_lm
+    from clio_agent.providers.claude_code_cancel import active_stream_sessions
+
+    original = ValueError("invalid provider response")
+    pieces = [f"reasoning {index}. " for index in range(40)]
+
+    class FailingLM:
+        model = "failed-stream"
+
+        async def acall(self, request: Request) -> Any:
+            # No checkpoints: every piece remains queued when the call raises.
+            send = dspy.settings.send_stream
+            for text in ["<think>", *pieces]:
+                send.send_nowait({"choices": [{"delta": {"content": text}}]})
+            raise original
+
+    with (
+        _in_session("sess-failed-drain"),
+        cancellation_checker(lambda: False),
+        pytest.raises(ValueError) as failed,
+    ):
+        _call_lm(FailingLM(), _one_message(FailingLM.model))
+    assert failed.value is original
+    assert "".join(text for _, text in live_lanes["thinking"]) == "".join(pieces)
+    assert live_lanes["answer"] == []
+    assert "sess-failed-drain" not in active_stream_sessions()
+
+
 def test_an_empty_think_block_records_no_thinking(thoughts: list[dict[str, Any]]) -> None:
     pred, _ = _run([Reply(text="<think>\n\n</think>\n\nHi")], [search])
     assert pred.answer == "Hi"

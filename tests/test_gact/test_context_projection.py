@@ -158,14 +158,20 @@ def test_steers_and_child_results_arrive_at_the_step_boundary(arc: ARCMemory) ->
     """What arrives mid-turn (a user steer, a finished child's result) reaches the model
     at the next step boundary as a message of its own -- after any step, whatever tool
     it ran -- and the tool observation it was once glued onto stays as it was."""
-    arrivals = [[], [("steer", "use 2024 only"), ("task_results", "child: done")]]
+    arrivals: list[list[tuple[str, str]]] = []
+
+    def search(q: str) -> str:
+        # This feedback arrives during an already executing tool. A steer
+        # during model generation is covered by test_steering_order instead.
+        arrivals.append([("steer", "use 2024 only"), ("task_results", "child: done")])
+        return f"hits for {q}"
 
     def drain() -> list[tuple[str, str]]:
         return arrivals.pop(0) if arrivals else []
 
     lm, engine = scripted_lm([calls(("search", {"q": "x"})), Reply(text="ok")])
     with _plane(arc, pending_loop_inbox_drain=drain), dspy.context(lm=lm):
-        _agent()(question="q")
+        ClioReAct("question -> answer", tools=[search])(question="q")
     assert wire(engine.requests[1])[-3:] == [
         ("tool", [("result", "call_0_0", "hits for x", False)]),
         ("user", [("text", "use 2024 only")]),

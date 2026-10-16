@@ -78,6 +78,8 @@ def _work_row(record: Mapping[str, Any], kind: str, current_id: str) -> dict[str
                 "stop_text",
                 "waiting_tasks",
                 "judge_reason",
+                "judge_started_at",
+                "judge_duration_s",
                 "progress",
             )
             if name in record

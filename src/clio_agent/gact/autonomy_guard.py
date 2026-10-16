@@ -71,7 +71,9 @@ def settle_failed_loop_schedule(app: Any, schedule: Any) -> None:
 
 
 def goal_redrive_is_current(app: Any, sid: str, metadata: Mapping[str, Any]) -> bool:
-    """Discard goal wakeups left behind by a clear, replacement."""
+    """Discard stale goal wakeups and yield to accepted human input."""
+    from clio_agent.gact.goal_steering import pending_steer
+
     if not metadata.get("goal_redrive"):
         return True
     session = app.state.sessions.get(sid)
@@ -80,8 +82,12 @@ def goal_redrive_is_current(app: Any, sid: str, metadata: Mapping[str, Any]) -> 
         goal.get("active")
         and not goal.get("cleared")
         and goal.get("goal_id") == metadata.get("goal_id")
+        and (
+            "goal_iters" not in metadata
+            or metadata["goal_iters"] == int(goal.get("iters_elapsed", 0) or 0)
+        )
     )
-    return current and not expire_goal_budget(app, sid, goal)
+    return current and not expire_goal_budget(app, sid, goal) and not pending_steer(app, sid)
 
 
 def expire_goal_budget(app: Any, sid: str, goal: Mapping[str, Any]) -> bool:

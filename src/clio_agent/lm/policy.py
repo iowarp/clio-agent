@@ -2,7 +2,9 @@
 
 DSPy 3.4 owns retries (``dspy.LM(num_retries=...)``): it retries only a retryable
 provider error, backs off honoring ``retry-after``, and never re-issues a call that has
-already streamed anything. CLIO sets the count; nothing else wraps a call.
+already streamed anything. The local-function agent loop can also recover an
+interrupted stateless chat generation before public answer text appears, using
+the same configured count. Completed tools are never replayed.
 """
 
 from __future__ import annotations

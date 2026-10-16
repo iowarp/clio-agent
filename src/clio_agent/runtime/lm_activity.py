@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -127,6 +128,36 @@ def reset_live_chunks(token: Token[tuple[Any, Any, Any] | None] | None) -> None:
     """Undo :func:`redirect_live_chunks` (a ``None`` token changed nothing)."""
     if token is not None:
         _LIVE_CHUNK_EMITTER.reset(token)
+
+
+def after_live_chunks(operation: Callable[[], Any]) -> None:
+    """Run a transcript boundary after already scheduled live chunk callbacks.
+
+    Called from the synchronous agent worker. The normal emitter has no suspension
+    points; scheduling on its owner loop orders the boundary after its queued
+    chunks. Variants keep the same owner loop and context attribution.
+    """
+    emitter = _LIVE_CHUNK_EMITTER.get()
+    if emitter is None:
+        operation()
+        return
+    loop = emitter[0]
+    try:
+        current = asyncio.get_running_loop()
+    except RuntimeError:
+        current = None
+    if current is loop:
+        raise RuntimeError("after_live_chunks requires an agent worker, not the emitter loop")
+
+    async def append() -> None:
+        operation()
+
+    boundary = asyncio.run_coroutine_threadsafe(append(), loop)
+    try:
+        boundary.result(timeout=10)
+    except TimeoutError:
+        boundary.cancel()
+        raise
 
 
 def note_suppressed_extract_field(

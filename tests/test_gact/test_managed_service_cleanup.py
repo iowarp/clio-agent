@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import posixpath
+import time
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,7 @@ class FakeLinuxTarget:
         self.containers: dict[str, dict[str, Any]] = {}
         self.dirs = {"/", "/home", HOME} | set(dirs or ())
         self.fail_run = False
+        self.fail_pull = False
         self.exit_on_start = False
         self.daemon_can_remove_images = True
         self.commands: list[CommandSpec] = []
@@ -64,6 +66,8 @@ class FakeLinuxTarget:
         del target_id
         self.commands.append(spec)
         program, args = spec.program, spec.args
+        if program == "sh" and len(args) > 2 and args[2] == "clio-install-receipt":
+            return CommandResult(exit_code=0, stdout=args[-1] + str(time.time()) + "}\n")
         if program == "sh" and args[:1] == ["-c"] and "read -r clio_secret" in args[1]:
             # Like sh: read the secret from stdin into the environment, then
             # exec the wrapped command (``sh -c SCRIPT sh docker run ...``).
@@ -140,6 +144,8 @@ class FakeLinuxTarget:
         if verb == "image":
             return CommandResult(exit_code=0 if args[-1] in self.images else 1)
         if verb == "pull":
+            if self.fail_pull:
+                return CommandResult(exit_code=1, stderr="image download failed")
             self.images.add(args[-1])
             return CommandResult(exit_code=0)
         if verb == "rmi":

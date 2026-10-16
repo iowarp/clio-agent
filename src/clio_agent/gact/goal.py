@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -18,8 +19,10 @@ from typing import Any, Literal, Optional
 from clio_agent import conf
 from clio_agent.gact.autonomy_limits import normalize_limits, parse_limit_options
 from clio_agent.gact.goal_evidence import _build_transcript as _build_transcript
+from clio_agent.gact.goal_steering import pending_steer
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.work_state import work_record_patch
+from clio_agent.lm.resources import async_model_resources
 from clio_agent.runtime import trace
 
 logger = logging.getLogger(__name__)
@@ -37,6 +40,7 @@ GOAL_OUTCOME_REASONS = (
     "goal_abandoned",  # cleared without satisfaction (user /goal clear or session end)
     "goal_redrive",  # unmet -> re-drive one more turn (the continue reason, not a stop)
     "goal_judge_unavailable",
+    "goal_judge_interrupted",
     "goal_loop_stopped",
     "goal_server_interrupted",
     "goal_recovered",
@@ -232,24 +236,42 @@ async def run_llm_judge(app: Any, sid: str, goal: Mapping[str, Any]) -> "GoalJud
         transcript = _build_transcript(app, sid)
         import dspy  # noqa: PLC0415
 
-        judge = dspy.Predict(_judge_signature())
-        caller_ref = goal.get("_caller_model")
-        if caller_ref:
-            from clio_agent.gact.fleet_settings import model_route
+        async with async_model_resources():
+            judge = dspy.Predict(_judge_signature())
+            caller_ref = goal.get("_caller_model")
+            if caller_ref:
+                from clio_agent.gact.fleet_settings import model_route
 
-            caller, caller_adapter = await run_off_loop(
-                model_route, caller_ref["provider_id"], caller_ref["model_id"]
-            )
-            with dspy.context(lm=caller, adapter=caller_adapter):
+                caller, caller_adapter = await run_off_loop(
+                    model_route, caller_ref["provider_id"], caller_ref["model_id"]
+                )
+                with dspy.context(lm=caller, adapter=caller_adapter):
+                    lm, adapter = await run_off_loop(_judge_route, app)
+            else:
                 lm, adapter = await run_off_loop(_judge_route, app)
-        else:
-            lm, adapter = await run_off_loop(_judge_route, app)
-        with dspy.context(lm=lm, adapter=adapter):
-            async with asyncio.timeout(DEFAULT_JUDGE_TIMEOUT_S):
-                pred = await judge.acall(
-                    goal_condition=condition,
-                    transcript=transcript,
-                    previous_progress=str(goal.get("progress") or ""),
+            with dspy.context(lm=lm, adapter=adapter):
+                from clio_agent.runtime.stream_audit import stream_audit
+
+                stream_audit(
+                    "goal.judge.started",
+                    goal_id=goal.get("goal_id"),
+                    session_id=sid,
+                    model=str(getattr(lm, "model", "")),
+                    client_id=id(lm),
+                )
+                logger.info(
+                    "goal judge started goal_id=%s model=%s",
+                    goal.get("goal_id"),
+                    getattr(lm, "model", "unknown"),
+                )
+                async with asyncio.timeout(DEFAULT_JUDGE_TIMEOUT_S):
+                    pred = await judge.acall(
+                        goal_condition=condition,
+                        transcript=transcript,
+                        previous_progress=str(goal.get("progress") or ""),
+                    )
+                stream_audit(
+                    "goal.judge.returned", goal_id=goal.get("goal_id"), session_id=sid, met=pred.met
                 )
         if not isinstance(pred.met, bool) or getattr(pred, "next_action", "continue") not in {
             "continue",
@@ -543,11 +565,22 @@ def _settle_goal_decision(
         current = _get_goal(app, session_id)
         if current.get("goal_id") != goal.get("goal_id") or not current.get("active"):
             return None
+        current["judge_duration_s"] = goal.get("judge_duration_s")
         goal = current
         if turn_id and goal.get("last_evaluated_turn_id") == turn_id:
             return None
         elapsed_s, tokens_spent = _budget_spent(app, session_id, goal)
-        decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
+        limit = evaluate_goal(
+            goal, llm=GoalJudgement(met=False), elapsed_s=elapsed_s, tokens_spent=tokens_spent
+        )
+        if pending_steer(app, session_id):
+            if limit.reason not in {"goal_budget", "goal_max_iters"}:
+                goal["phase"] = "working"
+                _put_goal(app, session_id, goal)
+                return None
+            decision = limit
+        else:
+            decision = evaluate_goal(goal, llm=llm, elapsed_s=elapsed_s, tokens_spent=tokens_spent)
         decision.new_state["judge_reason"] = llm.reason
         decision.new_state["last_evaluated_turn_id"] = turn_id
         _put_goal(app, session_id, decision.new_state)
@@ -592,11 +625,31 @@ async def dispatch_goal_at_finalize(
         preflight = evaluate_goal(
             goal, llm=GoalJudgement(met=False), elapsed_s=elapsed_s, tokens_spent=tokens_spent
         )
-        llm = (
-            GoalJudgement(met=False, reason="The goal limit was reached before judging.")
-            if preflight.reason == "goal_budget"
-            else await run_llm_judge(app, session_id, goal)
+        from clio_agent.gact.goal_activity import begin_goal_check, cancel_goal_check
+
+        steer_pending = pending_steer(app, session_id)
+        if steer_pending and preflight.reason not in {"goal_budget", "goal_max_iters"}:
+            return None
+        limit_without_judge = preflight.reason == "goal_budget" or (
+            preflight.reason == "goal_max_iters" and steer_pending
         )
+        if not limit_without_judge and not await run_off_loop(
+            begin_goal_check, app, session_id, goal, turn_id, trace_id, executor=executor
+        ):
+            return None
+        started = time.monotonic()
+        try:
+            llm = (
+                GoalJudgement(met=False, reason="The goal limit was reached before judging.")
+                if limit_without_judge
+                else await run_llm_judge(app, session_id, goal)
+            )
+        except asyncio.CancelledError:
+            await run_off_loop(
+                cancel_goal_check, app, session_id, str(goal.get("goal_id")), executor=executor
+            )
+            raise
+        goal["judge_duration_s"] = round(time.monotonic() - started, 3)
         current = _get_goal(app, session_id)
         if (
             not current
@@ -653,6 +706,7 @@ def _emit_goal_event(
                 "reason": decision.reason,
                 "guidance": decision.guidance,
                 "iters_elapsed": int(decision.new_state.get("iters_elapsed", 0) or 0),
+                "judge_duration_s": decision.new_state.get("judge_duration_s"),
             },
         )
     except Exception:  # noqa: BLE001 - capture never breaks a settled turn

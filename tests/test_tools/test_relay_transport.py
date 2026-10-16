@@ -80,6 +80,12 @@ def _fake_relay(capture: _RelayCapture) -> FastMCP:
         return {"outcome": "done", "idempotency_key": idempotency_key}
 
     @server.tool(task=relay_task)
+    async def relay_wait_for_cancel() -> dict[str, str]:
+        """Keep the task working until cancellation, independently of runner speed."""
+        await asyncio.Event().wait()
+        raise AssertionError("The cancellation-only task cannot complete normally")
+
+    @server.tool(task=relay_task)
     async def mismatched_job() -> dict[str, str]:
         """Return a forged relay job identity for the client-side rejection test."""
 
@@ -441,11 +447,13 @@ async def test_timeline_streams_while_running_and_artifact_fetch_returns_bytes(
     """The HTTP door streams task events and fetches out-of-band artifact bytes."""
 
     async with _client(relay_backend) as relay:
-        task = await relay.submit("relay_run", {"delay": 1.0})
-        event = await _first(relay.stream_events(task))
-        assert (await relay.poll(task)).status == "working"
-        content = await relay.fetch_artifact("artifact-1")
-        await relay.cancel(task)
+        task = await relay.submit("relay_wait_for_cancel", {})
+        try:
+            event = await _first(relay.stream_events(task))
+            assert (await relay.poll(task)).status == "working"
+            content = await relay.fetch_artifact("artifact-1")
+        finally:
+            await relay.cancel(task)
         cancel_record = task_record_store().get(task.key)
         assert cancel_record is not None and cancel_record.cancel_requested is True
         cancelled = await relay.poll(task)

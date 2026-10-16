@@ -153,6 +153,11 @@ class BearerAuthMiddleware:
         self._state = state
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        from clio_agent.gact.html_renderer import is_public_html_renderer
+
+        if is_public_html_renderer(scope):
+            await self._app(scope, receive, send)
+            return
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
@@ -185,6 +190,9 @@ def configure_bearer_auth(app: FastAPI) -> None:
     """Configure bearer admission, the cross-site origin guard, and the peer-address seam."""
 
     token = configured_bearer_token()
+    from clio_agent.gact.html_renderer import register_html_renderer
+
+    register_html_renderer(app)
     app.state.bearer_token = token
     app.state.peer_address_getter = peer_address_from_scope
     # Inner to the bearer check: a request admitted without a valid token

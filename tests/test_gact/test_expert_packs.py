@@ -876,7 +876,9 @@ def test_prompt_agent_passes_through_empty_answer(
         lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
     )
     monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm", lambda config: dspy.utils.dummies.DummyLM([{"answer": ""}])
+    )
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._runtime_dynamic_agent_children_context",
@@ -890,7 +892,9 @@ def test_prompt_agent_passes_through_empty_answer(
         title="Proteomics Root",
     )
 
-    app_token = ctx.set_app(object())
+    app_token = ctx.set_app(
+        SimpleNamespace(state=SimpleNamespace(sessions={"sess_test": object()}))
+    )
     session_token = ctx.set_session_id("sess_test")
     try:
         module = _build_prompt_user_agent_module(object(), agent_def)

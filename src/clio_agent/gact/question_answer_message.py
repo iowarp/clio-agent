@@ -97,6 +97,14 @@ def prepare_question_answer(
             session_id=sid,
             question_id=question.id,
         )
+    if question.metadata.get("question_bundle"):
+        raise _refuse(
+            422,
+            "question_bundle_needs_form",
+            "Submit all answers together using the question form.",
+            session_id=sid,
+            question_id=question.id,
+        )
     if (question.metadata or {}).get("variants_id"):
         # A drafts pick names one draft (selected_options), which a message cannot
         # carry: it is answered through the answer route, the message text its comment.

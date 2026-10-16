@@ -59,13 +59,7 @@ def _err_code(error_info: Any) -> str:
     return str(getattr(error_info, "error", "") or "")
 
 
-# Runaway backstop (NOT a 3-tier rule): ``tier`` is semantic weight, not depth —
-# deep chains (tier-1 → tier-2 → tier-2 → tier-2 → tier-3s) are legitimate. This
-# only refuses a spawn whose computed depth would exceed the backstop, bounding
-# runaway self-spawning (and, per the per-depth pools below, the number of pools).
-# It now LIVES in ``agent_tasks`` (the leaf this module already imports) so the
-# read-side descendant/lineage walks bound themselves by the same number instead
-# of carrying an independent copy that drifts.
+# Compatibility default; validate_task_spec reads the current runtime limit.
 MAX_SPAWN_DEPTH = _MAX_SPAWN_DEPTH
 _ANSWER_EXCERPT_MAX = 2000
 
@@ -191,7 +185,7 @@ def _queued_admissible(
     task declares a ``fanout_bound``) the fan-out batch bound must both have room —
     else admitting it would exceed the parent's declared max_workers (#948 S5)."""
 
-    if running_by_depth.get(task.depth, 0) >= cap:
+    if cap > 0 and running_by_depth.get(task.depth, 0) >= cap:
         return False
     if task.fanout_bound > 0:
         key = _batch_key(
@@ -287,7 +281,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     cap = getattr(app.state, "max_concurrent_agent_tasks", 3)
     snap = reg.snapshot()
     running = sum(1 for t in snap if t.status == STATUS_RUNNING and t.depth == spec.depth)
-    global_at_cap = running >= cap
+    global_at_cap = cap > 0 and running >= cap
     # Fan-out admission bound (#948 S5): a declared ``fanout.max_workers`` caps this
     # parent expert's concurrent children at this depth. A batch spawn beyond the
     # bound QUEUES (typed ``concurrency_cap``) even when the global per-depth cap has

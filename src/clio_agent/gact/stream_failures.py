@@ -317,6 +317,33 @@ def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> A
     known = cli_provider_stream_failure(exc, provider_id=provider_id)
     if known is not None:
         return ErrorInfo(error="provider_error", message=known, details=details, recoverable=True)
+    from clio_agent.gact.agents.clio_react_recovery import transport_failure  # noqa: PLC0415
+
+    transport = transport_failure(exc)
+    if transport is not None:
+        from dspy.utils.exceptions import LMTimeoutError  # noqa: PLC0415
+
+        timed_out = isinstance(transport, LMTimeoutError)
+        reason = "model_request_timeout" if timed_out else "model_stream_interrupted"
+        label = provider_label(provider_id) or "Model provider"
+        message = (
+            "The model request timed out."
+            if timed_out
+            else "The model connection closed before the response finished."
+        )
+        return ErrorInfo(
+            error="provider_error",
+            message=f"{label}: {message} Completed tool results are saved.",
+            details={
+                **details,
+                "reason": reason,
+                "provider_id": provider_id,
+                "provider_label": label,
+                "diagnostic": str(transport),
+                "recovery_actions": ["retry"],
+            },
+            recoverable=True,
+        )
     provider_message = turn_failure_message(exc, provider_id=provider_id, otherwise="")
     if provider_message:
         return ErrorInfo(

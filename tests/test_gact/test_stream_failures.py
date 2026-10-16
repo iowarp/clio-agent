@@ -25,6 +25,30 @@ from clio_agent.gact.stream_failures import (
 _OPENROUTER_BODY = '{"error":{"message":"No endpoints available for openrouter/free","code":404}}'
 
 
+@pytest.mark.parametrize("timeout", [False, True])
+def test_typed_transport_failure_has_a_plain_message_and_retains_diagnostics(timeout: bool) -> None:
+    from dspy.utils.exceptions import LMTimeoutError, LMTransportError
+
+    cls = LMTimeoutError if timeout else LMTransportError
+    exc = cls("connection closed mid-chunk", model="openai/gemini-4-argon-high@google")
+    info = forward_error_info(_state("argonne"), exc, "")
+    assert info.error == "provider_error"
+    assert "agent.forward" not in info.message
+    assert "Completed tool results are saved" in info.message
+    assert info.details["reason"] == (
+        "model_request_timeout" if timeout else "model_stream_interrupted"
+    )
+    assert info.details["diagnostic"] == str(exc)
+    assert info.details["provider_id"] == "argonne"
+    assert info.recoverable is True
+
+
+def test_transport_failure_is_not_guessed_from_an_arbitrary_tool_error() -> None:
+    exc = RuntimeError("connection closed mid-chunk")
+    info = forward_error_info(_state("argonne"), exc, "")
+    assert info.error == "agent_error"
+
+
 def _state(provider_id: str) -> Any:
     """The slice of ``TurnState`` ``forward_error_info`` reads: the turn's route."""
 

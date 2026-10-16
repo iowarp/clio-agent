@@ -147,6 +147,10 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     lm._clio_tool_result_media = (
         "native" if _resolved_litellm_prefix(config) == "anthropic" else "user_message"
     )
+    # These stateless chat requests propose local function calls; the loop
+    # executes them only after receiving a complete response. SDK/native-tool
+    # engines retain their own recovery policy.
+    lm._clio_stream_recovery = _resolved_litellm_prefix(config) == "openai"
     return _record_identity(lm, config)
 
 
@@ -165,6 +169,9 @@ def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
         pass
     # A per-forward LM reaches the running turn's usage rollup only via this.
     turn_lm_ledger.record(lm)
+    from clio_agent.lm.resources import record_created_lm  # noqa: PLC0415
+
+    record_created_lm(lm)
     return lm
 
 

@@ -193,6 +193,17 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
             service.connection_url = refreshed.connection_url
             service.connection_strategy = refreshed.connection_strategy
             service.configuration = dict(refreshed.configuration)
+            if (
+                engine_of(service.id) == "llama_cpp"
+                and refreshed.variant_id == "native-windows-cpu"
+                and not refreshed.configuration.get("native_owner")
+            ):
+                service.variants = [
+                    row.model_copy(update={"install_type": "native_archive", "compatible": True})
+                    if row.id == refreshed.variant_id
+                    else row
+                    for row in service.variants
+                ]
             service.owned_resources = list(refreshed.owned_resources)
             service.access = refreshed.access
             service.observation = refreshed.observation
@@ -418,6 +429,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                 )
             target_row = self.store.target(request.target_id)
             if installed is not None and request.action != "install":
+                from clio_agent.gact.infrastructure.model_runtime_installation import (
+                    llama_start_configuration,  # noqa: PLC0415
+                )
+
                 # Lifecycle actions operate on what is installed: its variant,
                 # negotiated runtime and parameters, not the form's current
                 # state (empty after a reload). A reinstall keeps the installed
@@ -430,7 +445,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
                     update={
                         "variant_id": installed.variant_id,
                         "configuration": (
-                            {**installed_configuration, **typed}
+                            llama_start_configuration(
+                                installed_configuration, request.configuration
+                            )
+                            if engine_of(row.service_id) == "llama_cpp"
+                            and request.action == "start"
+                            else {**installed_configuration, **typed}
                             if request.action == "reinstall"
                             else {**request.configuration, **installed_configuration}
                         ),
@@ -757,7 +777,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin, ModelRo
         if target.kind != "ssh" or target.ssh is None:
             raise ValueError("Managed services require a local or SSH target")
         host = target.ssh.host.strip()
-        if host and not loopback_only(service_id):
+        installed = self.store.service(target_id, service_id)
+        native_loopback = bool(
+            installed
+            and (installed.variant_id == "native" or installed.variant_id.startswith("native-"))
+        )
+        if host and not loopback_only(service_id) and not native_loopback:
             direct = f"http://{host}:{port}"
             attempts = 10 if wait_for_direct else 1
             for attempt in range(attempts):

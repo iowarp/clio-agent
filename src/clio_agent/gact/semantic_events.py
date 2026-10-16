@@ -68,6 +68,11 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
         "react.step.completed",
+        "goal.judging",
+        "goal.redrive",
+        "goal.met",
+        "goal.capped",
+        "goal.waiting",
         # A compaction: the "Summarizing context" row, then its record (or failure).
         "compaction.started",
         "compaction.completed",

@@ -551,6 +551,7 @@ def test_variant_selection_reaches_assistant_message_metadata(
 
 def test_builder_variant_forward_returns_winner_and_stamps_metadata(
     monkeypatch: pytest.MonkeyPatch,
+    clio_core_plane: Any,
 ) -> None:
     """Forward the BUILT module under a stubbed LM: the returned prediction is the WINNING
     try's output AND carries variant_selection across the boundary (#953 [5]/[9]/[10]).
@@ -577,6 +578,7 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
         ),
         lm=lm,
     )
+    clio_core_plane.state.sessions = {"s1": object()}
     pred = module(question="pick the best", session_id="s1")
     assert pred.answer == "second"
     assert pred.variant_selection is not None

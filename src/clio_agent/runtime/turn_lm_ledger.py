@@ -1,16 +1,15 @@
-"""The LMs a turn constructed, so its usage rollup can read their history.
+"""The LM instances and isolated views a turn used, for usage-history rollup.
 
 A turn's token and cost rollup (``gact.turn_usage`` / ``gact.usage``) sums the
 history of every LM the turn called. The long-lived LMs (the boot default, the
 agent's ``_main_lm``) are reachable from the app, but an expert or dynamic
-agent builds a FRESH LM for each forward from its resolved provider spec
-(``create_hooked_lm(cfg)`` inside ``dspy.context``). Those per-forward LMs were
-invisible to the rollup, so a turn that ran entirely on one of them (ALCF Metis,
-Codex, any per-message model) recorded zero tokens.
+agent borrows a fresh history view over its session-owned provider client.
+Those per-forward views must join the rollup so a turn on ALCF Metis, Codex or
+any per-message model records its own usage without recounting earlier turns.
 
 The turn opens a ledger (:func:`open_ledger`) before its forward; every LM
-built while it is open (:func:`record`, called from ``lm.factory.create_lm``)
-joins it; the rollup reads :func:`ledger_lms`. The ledger is a list held in a
+built or borrowed while it is open (:func:`record`, called by the factory and
+session-client owner) joins it; the rollup reads :func:`ledger_lms`. It is held in a
 ``ContextVar``: the forward runs in executor threads under a
 ``contextvars.copy_context()`` of the turn, and a copied context shares the SAME
 list object, so an LM built in a worker thread is visible to the turn coroutine.
@@ -55,6 +54,6 @@ def record(lm: Any) -> None:
 
 
 def ledger_lms() -> list[Any]:
-    """The LMs built so far in the current turn (empty outside a turn)."""
+    """The LMs and views used so far in the current turn (empty outside a turn)."""
 
     return list(_LEDGER.get() or ())

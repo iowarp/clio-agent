@@ -6,6 +6,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from clio_agent.gact.goal_steering import ordered_evidence
+
 
 def bounded_inputs(value: Any) -> str:
     """Preserve relevant inputs while redacting structured credentials and large data."""
@@ -47,6 +49,26 @@ def _bounded_judge_fact(value: Any, *, limit: int = 500) -> str:
 def _tool_result_fact(part: Any) -> str:
     """Project the user-facing result summary already recorded on a tool part."""
 
+    structured = getattr(part, "structured_content", None)
+    raw = (getattr(part, "metadata", None) or {}).get("result")
+    if not isinstance(structured, Mapping) and isinstance(raw, Mapping):
+        structured = raw.get("structuredContent")
+    if isinstance(structured, Mapping) and any(
+        key in structured for key in ("exit_code", "stdout", "stderr", "timed_out")
+    ):
+        # Command text can be several thousand characters long. A prefix of
+        # the whole result hides the actual exit status and test output from
+        # the judge, causing already-completed phases to be repeated.
+        facts = {key: structured[key] for key in ("exit_code", "timed_out") if key in structured}
+        for key in ("stdout", "stderr"):
+            text = str(structured.get(key) or "")
+            if text:
+                facts[key] = (
+                    text
+                    if len(text) <= 2400
+                    else text[:800] + "\n[...truncated...]\n" + text[-1600:]
+                )
+        return json.dumps(facts, ensure_ascii=False)
     for owner, keys in (
         (getattr(part, "structured_content", None), ("message", "summary", "status")),
         (getattr(part, "presentation", None), ("summary",)),
@@ -73,14 +95,13 @@ def _build_transcript(app: Any, sid: str, *, max_messages: int = 40) -> str:
         return ""
     messages = store.get(sid, [])
     lines: list[str] = []
-    for message in sorted(messages, key=lambda row: str(getattr(row, "created_at", "")))[
-        -max_messages:
-    ]:
+    recent = sorted(messages, key=lambda row: str(getattr(row, "created_at", "")))[-max_messages:]
+    for message, parts in ordered_evidence(recent):
         role = str(getattr(message, "role", "") or "")
         turn_id = _bounded_judge_fact(getattr(message, "turn_id", ""), limit=120) or "unassigned"
         message_id = _bounded_judge_fact(getattr(message, "id", ""), limit=120) or "unassigned"
         lines.append(f"--- {role} turn {turn_id}; message {message_id} ---")
-        for part in getattr(message, "parts", []) or []:
+        for part in parts:
             part_type = str(getattr(part, "type", ""))
             if part_type == "text":
                 text = str(getattr(part, "text", "") or "").strip()

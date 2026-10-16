@@ -32,8 +32,8 @@ from typing import Any
 
 from clio_agent.providers import host_credentials
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
+from clio_agent.providers.capabilities.dialects import amsc_mag, cloud_thinking
 from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
-from clio_agent.providers.capabilities.dialects import cloud_thinking
 from clio_agent.providers.capabilities.dialects import llama_cpp as llama_cpp_dialect
 from clio_agent.providers.capabilities.dialects import openrouter as openrouter_dialect
 from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect
@@ -357,6 +357,10 @@ class OpenAICompatHandshake(ProviderHandshake):
             deployment = cloud_dialect.build_deployment_capabilities(
                 ctx.provider_id, ctx.api_base, model_id
             )
+            if ctx.provider_id == "amsc_mag":
+                deployment = amsc_mag.parse_models_row(
+                    raw, provider_id=ctx.provider_id, api_base=ctx.api_base, observed_at=_now_iso()
+                )
             row_facts = cloud_dialect.model_row_facts(dialect, raw, observed_at=_now_iso())
             model = ModelCapabilities(
                 model_key=self._bare_model_key(model_id),

@@ -137,7 +137,12 @@ class CASStore:
         """Map a content hash to its addressed blob path (``<root>/<sha[:2]>/<sha>``)."""
         current = self._root / sha256[:2] / sha256
         legacy = self._legacy / sha256[:2] / sha256
-        return legacy if not current.exists() and legacy.is_file() else current
+        return (
+            legacy
+            if not os.path.exists(win_extended_path(current))
+            and os.path.isfile(win_extended_path(legacy))
+            else current
+        )
 
     def has_blob(self, sha256: str) -> bool:
         """Whether a blob for ``sha256`` is present on disk."""
@@ -211,10 +216,10 @@ class CASStore:
     def _tmp_bytes(self) -> int:
         """Sum the on-disk size of every file in the ``.tmp`` staging shard."""
         tmp = self._root / ".tmp"
-        if not tmp.is_dir():
+        if not os.path.isdir(win_extended_path(tmp)):
             return 0
         total = 0
-        for entry in tmp.iterdir():
+        for entry in _directory_entries(tmp):
             if not entry.is_file():
                 continue
             try:
@@ -233,12 +238,12 @@ class CASStore:
         alone. Only bytes for files CONFIRMED gone after the unlink are counted.
         """
         tmp = self._root / ".tmp"
-        if not tmp.is_dir():
+        if not os.path.isdir(win_extended_path(tmp)):
             return (0, 0)
         now = time.time()
         count = 0
         freed = 0
-        for entry in sorted(tmp.iterdir()):
+        for entry in sorted(_directory_entries(tmp), key=lambda item: item.name):
             if not entry.is_file():
                 continue
             try:
@@ -248,20 +253,20 @@ class CASStore:
             if now - float(stat.st_mtime) <= grace_seconds:
                 continue  # inside the in-flight grace — a concurrent ingest, leave it
             size = int(stat.st_size)
-            _silent_unlink(entry)
-            if not entry.exists():
+            _silent_unlink(entry.path)
+            if not os.path.exists(entry.path):
                 count += 1
                 freed += size
         return (count, freed)
 
     def iter_blobs(self) -> Iterator[BlobEntry]:
         """Yield every published blob as a :class:`BlobEntry` (``.tmp`` excluded)."""
-        if not self._root.is_dir():
+        if not os.path.isdir(win_extended_path(self._root)):
             return
-        for shard in sorted(self._root.iterdir()):
+        for shard in sorted(_directory_entries(self._root), key=lambda item: item.name):
             if not shard.is_dir() or shard.name == ".tmp":
                 continue
-            for blob in sorted(shard.iterdir()):
+            for blob in sorted(_directory_entries(shard.path), key=lambda item: item.name):
                 if not blob.is_file():
                     continue
                 try:
@@ -270,7 +275,7 @@ class CASStore:
                     continue
                 yield BlobEntry(
                     sha256=blob.name,
-                    path=blob,
+                    path=self._root / shard.name / blob.name,
                     size_bytes=int(stat.st_size),
                     mtime=float(stat.st_mtime),
                 )
@@ -288,11 +293,11 @@ class CASStore:
         """
         blob = self._root / sha256[:2] / sha256
         try:
-            size = blob.stat().st_size
+            size = os.stat(win_extended_path(blob)).st_size
         except OSError:
             return 0
         _silent_unlink(blob)
-        if blob.exists():
+        if os.path.exists(win_extended_path(blob)):
             # Unlink failed (blob still on disk) — report zero freed, never the size.
             return 0
         return int(size)
@@ -466,6 +471,12 @@ def harness_write_identity(
             custody=Custody.WORKSPACE_REFERENCED,
             reason="harness_in_hand_fallback",
         )
+
+
+def _directory_entries(path: str | Path) -> list[os.DirEntry[str]]:
+    """Enumerate owned CAS paths without losing Windows extended-length support."""
+    with os.scandir(win_extended_path(path)) as entries:
+        return list(entries)
 
 
 def _silent_unlink(path: str | Path) -> None:

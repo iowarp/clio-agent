@@ -116,8 +116,7 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)
-    # The LMs this turn built for itself -- every expert / dynamic-agent forward
-    # makes a fresh one from its resolved provider spec (runtime.turn_lm_ledger).
+    # Include this turn's fresh LMs and isolated views over session-owned pools.
     for built in turn_lm_ledger.ledger_lms():
         if not any(built is known for known in lms):
             lms.append(built)

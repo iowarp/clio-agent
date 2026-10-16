@@ -5,8 +5,7 @@ This concern owns the ``/v1/sessions`` lifecycle and scoped ask/retry protocol:
 * CRUD creates, lists, patches, and permission-gates session deletion.
 * Undo/rewind drop trailing messages and publish their lifecycle events.
 * Fork/import/export provide branching and portable JSON transfer.
-* Compaction appends one evidence-preserving checkpoint (``gact.compaction``); the
-  visible transcript is retained in full, only the MODEL-facing context shrinks.
+* Compaction retains the transcript; ``gact.compaction`` shrinks model-facing context.
 * Cancel cooperatively stops an in-flight turn and publishes its status.
 * Ask-user and retry own question resumption and recorded source-message attempts.
 Fork, question-answer, and retry share ``deps.start_background_user_turn``. Shared
@@ -72,6 +71,7 @@ from clio_agent.gact.types import (
 from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.gact.user_question_resume import finish_cancelled_question, resume_answered_question
+from clio_agent.lm.session_clients import close_session_model_clients
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -220,9 +220,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             summary=f"delete session {sid}",
             reason="user_requested_session_delete",
         )
-        # P4.1 #1079 cancel-both: a deleted session must not orphan its loop wakeup.
         stop_session_loop(app, sid)
-        stop_session_goal(app, sid)  # P4.2 #1080: abandon any active goal (goal_abandoned)
+        stop_session_goal(app, sid)
         try:
             await cleanup_session_mcp_apps(app, sid)
         except RuntimeError as exc:
@@ -251,6 +250,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        await run_off_loop(close_session_model_clients, app, sid)
         deps.delete_session_context_files(app, sid)
         await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes

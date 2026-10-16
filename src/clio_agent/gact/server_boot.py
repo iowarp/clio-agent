@@ -179,8 +179,9 @@ async def _construct(app: "FastAPI") -> Any:
 async def process_arc_off_loop(app: "FastAPI") -> Any:
     """Return the per-process ARC, constructing it on a worker thread at most once.
 
-    Must be called on the app's event loop (every caller is a route or a lifespan
-    task). The first caller starts the construction task; concurrent callers await
+    Bind routes can run in an executor's temporary event loop. Dispatch those calls
+    onto the app's lifespan loop before touching shared boot tasks. The first caller
+    starts the construction task; concurrent callers await
     the same task. ``asyncio.shield`` keeps a cancelled caller (a dropped request)
     from cancelling the shared construction. A failed construction is not cached,
     so the next caller retries.
@@ -192,6 +193,13 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
         The ``ARCMemory`` stored on ``app.state.arc``; ``None`` in the loud History mode
         (:mod:`clio_agent.arc.history_mode`), decided once and cached like an ARC.
     """
+    owner: asyncio.AbstractEventLoop | None = getattr(app.state, "mcp_app_loop", None)
+    if owner is not None and owner is not asyncio.get_running_loop():
+        if not owner.is_running():
+            raise RuntimeError("The CLIO application event loop is not running")
+        pending = asyncio.run_coroutine_threadsafe(process_arc_off_loop(app), owner)
+        return await asyncio.wrap_future(pending)
+
     from clio_agent.gact.sandbox_setup import prepare_sandbox_before_tools  # noqa: PLC0415
 
     await prepare_sandbox_before_tools(app)

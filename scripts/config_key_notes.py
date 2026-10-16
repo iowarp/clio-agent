@@ -94,8 +94,12 @@ KEY_NOTES: dict[str, str] = {
         "producers with legitimately long text fields."
     ),
     "agent_tasks.max_concurrent": (
-        "Max child agent-task threads run concurrently at one spawn depth; raise to widen fan-out "
-        "on a big host, lower to cap CPU use."
+        "Maximum running child tasks per nesting depth; 0 means unlimited. Changes in Settings "
+        "apply immediately to admission while existing work finishes."
+    ),
+    "agent_tasks.max_depth": (
+        "Maximum nesting level for new subagents (first child is level 1); 0 means unlimited. "
+        "Changes apply to new spawns; existing deeper descendants remain visible."
     ),
     "agents.child_forward_deadline_s": (
         "Seconds before an unattended parent's forwarded HITL question auto-fails the waiting "

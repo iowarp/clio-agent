@@ -53,6 +53,7 @@ from typing import Any, Callable, Optional, Protocol
 from clio_agent.gact.events import Event, EventBus
 from clio_agent.gact.field_stream import FieldStream  # noqa: F401 - re-export
 from clio_agent.gact.reasoning_extract import thinking_part_metadata
+from clio_agent.gact.reasoning_timing import ReasoningClock
 from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
@@ -163,6 +164,7 @@ class TurnTranscript:
         sink: Optional[PartSink] = None,
     ) -> None:
         self.session_id = session_id
+        self._reasoning_clock = ReasoningClock()
         self.turn_id = turn_id
         self.message_id: str = ""
         self._publisher = publisher
@@ -464,6 +466,7 @@ class TurnTranscript:
                         **(thinking_part_metadata(field) if is_thinking else {}),
                     },
                 )
+                self._reasoning_clock.start(part)
                 self._parts.append(part)
                 self._buffers[part.id] = []
                 self._open_part = part
@@ -769,13 +772,10 @@ class TurnTranscript:
         self._open_agent = ""
         open_field = self._open_field
         self._open_field = ""
-        # Closed live (whether kept or dropped-empty below) — the finalize
-        # publish loop consults this so live parts are never re-published.
+        self._reasoning_clock.finish(part)
+        # Finalize must not republish closed live parts, including empty ones.
         self._closed_live_part_ids.add(part.id)
         buffered = "".join(self._buffers.pop(part.id, []))
-        # #881: text is stored VERBATIM — no visible-text prose cleaner runs here.
-        # The buffer is the model's text byte-for-byte; the only transform is the
-        # whitespace-only drop below (a part with no content emits nothing).
         if not buffered.strip():
             # Whitespace-only: remove from the ledger, emit nothing. Identity-based
             # removal -- Part equality is by value and live ledgers can hold dupes.
@@ -799,8 +799,7 @@ class TurnTranscript:
                 chars=len(buffered),
             )
             return
-        # Mutate in place: external alias views (app.state.live_assistant_parts)
-        # must observe the close (design §9 alias-view aliasing).
+        # Keep alias views of this part current; text is verbatim (#881).
         part.text = buffered
         self._closed_text.setdefault((part.agent_id, open_field), []).append(buffered)
         self._seal_locked(part, "live")  # #1337: final text -> one atom, before the publish
@@ -812,6 +811,7 @@ class TurnTranscript:
                 "part_id": part.id,
                 "stream_source": "live",
                 "final_text": buffered,
+                **({"part": part.to_wire()} if part.type == "thinking" else {}),
             },
         )
 

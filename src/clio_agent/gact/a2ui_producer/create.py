@@ -30,14 +30,14 @@ def build_create_a2ui_surface_tool() -> Any:
     ) -> dict[str, Any]:
         """Create or update an inline interactive view or widget in this conversation.
 
-        Choose focused catalog views for evidence and editable drafts as part of the answer.
-        Users need not ask for widgets; use evidence and retain units and identifiers.
-        Use ``session_surface_ids`` to find a view and revise it in place; ``inspect_a2ui_surface`` reads it.
+        Use focused views for evidence and drafts; retain units and identifiers.
+        Find ``session_surface_ids``, call ``inspect_a2ui_surface``, then revise it in place.
         Pass exactly one of ``components`` or ``components_path``.
-        Load skill ``a2ui-catalog-<slug>`` for guidance and inspect
-        ``catalog.json#/components/<ExactComponentId>`` for its schema.
+        Load ``a2ui-catalog-<slug>`` and inspect ``catalog.json#/components/<ExactComponentId>``.
         Connect every component to ``id=root``; use a layout for several views.
-        The renderer supplies selection, zoom, and export.
+        The renderer supplies selection, zoom and export; controls do not create questions.
+        Request decisions with ``ask_user(surface_id=..., answer_action=...)``.
+        Questions link back here without moving tabs or controls.
         """
 
         resolved = _common.active_app_and_session()

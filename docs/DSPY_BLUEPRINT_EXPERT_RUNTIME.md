@@ -282,6 +282,34 @@ order per parent-turn + child) that disambiguates the otherwise-identical rows;
 surfaces every collision as a typed `workflow_state_merge_conflict` row (no silent
 last-writer).
 
+### Runtime limits
+
+**Settings → Execution & history → Subagents** exposes **Concurrent subagents**
+(default 3 per nesting depth) and **Maximum nesting depth** (default 8). Each
+offers an explicit **Unlimited** choice. Saving applies these service limits
+without restarting CLIO. Raising concurrency admits eligible queued tasks;
+lowering it lets running tasks finish before admitting more. A lower nesting
+limit restricts new children and never hides existing descendants or their
+questions, permissions, task paths or provenance.
+
+**Settings → Agents → Edit agent → Per-agent parallelism** edits the agent's
+`fanout.max_workers`. Its **Unlimited** choice removes the extra parallel-batch
+bound; a finite service concurrency limit still applies. Agent-definition edits
+apply to new turns without a service restart. Existing batches retain the bound
+recorded when they were accepted.
+
+Configuration files use `0` for Unlimited; removing a user override inherits the
+workspace/environment/default value and is a separate operation:
+
+```yaml
+agent_tasks:
+  max_concurrent: 3  # 0: Unlimited, per nesting depth
+  max_depth: 8       # 0: Unlimited
+```
+
+These service limits do not change an inference provider's request limits or
+the computer's available resources.
+
 ## Native Expert Removal
 
 `DataExpert`, `AnalysisExpert`, `VisualizationExpert`, `NDPExpert`, and

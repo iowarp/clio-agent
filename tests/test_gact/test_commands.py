@@ -52,6 +52,50 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         yield test_client
 
 
+def test_goal_command_retains_a_clickable_notice_without_starting_twice(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import json
+    import os
+
+    from clio_agent.gact.protocol.v3.message import message_to_v3
+
+    launches: list[str] = []
+
+    async def launch(app: Any, sid: str) -> None:
+        launches.append(sid)
+
+    monkeypatch.setattr("clio_agent.gact.goal_control.launch_pending_goal", launch)
+    sid = client.post("/v1/sessions", json={"title": "Goal presentation"}).json()["id"]
+    response = client.post(
+        f"/v1/sessions/{sid}/commands/goal", json={"input": "Continue until the report is ready"}
+    )
+    assert response.status_code == 200
+    assert launches == [sid]
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    receipt = next(m for m in messages if m.get("metadata", {}).get("command") == "/goal")
+    assert receipt["parts"][0]["type"] == "notice"
+    projected = message_to_v3(receipt)
+    assert projected["blocks"][0]["code"] == "goal_started"
+    assert projected["blocks"][0]["text"] == "Continue until the report is ready"
+    assert "[/goal]" not in json.dumps(projected)
+    work = client.get(f"/v1/sessions/{sid}/work")
+    assert work.status_code == 200
+    review = {"message": projected, "work": work.json()}
+    (tmp_path / "goal-notice-review.json").write_text(json.dumps(review), encoding="utf-8")
+    if destination := os.environ.get("CLIO_GOAL_REVIEW_OUTPUT"):
+        Path(destination).write_text(json.dumps(review, indent=2), encoding="utf-8")
+    cleared = client.post(f"/v1/sessions/{sid}/commands/goal", json={"input": "clear"})
+    assert cleared.status_code == 200
+    latest = next(
+        row
+        for row in client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        if row["id"] != receipt["id"] and row.get("metadata", {}).get("command") == "/goal"
+    )
+    assert message_to_v3(latest)["blocks"][0]["code"] == "goal_stopped"
+    assert launches == [sid]
+
+
 def test_commands_listed(client: TestClient) -> None:
     body = client.get("/v1/commands").json()
     ids = {c["id"] for c in body["commands"]}

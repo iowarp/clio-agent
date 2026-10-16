@@ -300,7 +300,7 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             minimum=0,
             maximum=10_000,
             default_behavior="Every layer on the GPU",
-            variants=["cuda", "vulkan"],
+            variants=["cuda", "vulkan", "rocm", "metal"],
         ),
     ),
     "ollama": (

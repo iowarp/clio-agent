@@ -6,8 +6,10 @@ catalog and resource references.
 
 `ask_user` accepts `response_mode="blocking"` (the default) when the agent needs
 an answer to continue. The question appears immediately in the composer tray.
-`response_mode="async"` leaves the agent running: the transcript shows a compact
-question entry that opens a dialog. Both modes appear in the open-question control
+`response_mode="async"` leaves the agent running. Both modes appear in the shared
+attention panel above the composer, one request at a time with previous/next
+navigation. Transcript and open-question links reveal the corresponding request.
+Drafts survive navigation and collapsing the panel. Both modes appear in the open-question control
 at the bottom right of the current conversation and in observability.
 
 For example, an agent can ask which of three directions to pursue while showing
@@ -36,6 +38,36 @@ a second answer is refused. Queue promotion rechecks references and waits while
 a blocking question remains pending. Native replies retain the source turn's
 model and per-message behavior, including planning and reasoning settings.
 
-Dragging the bottom-anchored tray upward increases its height. Expanded questions
-use a centered, scrollable dialog at the selected transcript width. Questions from
+To ask several related questions and receive their answers together, use one
+native `ask_user` call with a bundle:
+
+```python
+ask_user(
+    question="Choose the analysis",
+    questions=[
+        {"id": "view", "question": "Which evidence view?", "kind": "choice",
+         "options": [{"label": "Station table", "value": "table"},
+                     {"label": "Displacement plot", "value": "plot"}]},
+        {"id": "region", "question": "Which region?", "kind": "choice",
+         "allowFreeform": True, "options": [{"label": "Europe", "value": "eu"}]},
+        {"id": "notes", "question": "What should I emphasize?"},
+    ],
+)
+```
+
+The UI keeps each answer as a draft and offers **Submit all answers** on the last
+question. The entire bundle is one durable native question, not several independently
+answered questions. All required answers are validated before the atomic transition;
+partial or invalid submissions return 422 and leave the bundle open. Cancellation
+and expiry settle the whole bundle. Recovery preserves the complete question
+definition. Both blocking and async delivery retain their existing ownership and
+one-resume/one-queued-message semantics. Bundles cannot simultaneously link an A2UI
+surface. Each bundled item defines its own kind, options and freeform setting;
+top-level single-question fields are ignored when `questions` is present. MCP structured forms continue
+using their existing schema and submission contract.
+
+The bottom-anchored panel uses a bounded scrollable viewport. Permissions show the
+action, exact paths/command and computer, with one Allow button and a duration
+selector containing only server-offered scopes. Folder access grants explicitly
+show their persistent read/write boundary. Questions from
 other conversations remain in navigation instead of appearing in this composer.

@@ -461,7 +461,8 @@ def test_policy_violation_carries_grant_affordance() -> None:
     from clio_agent.gact.artifacts.violations import PolicyViolation, _grant_affordance
 
     text = _grant_affordance("ws1", "/etc/passwd")
-    assert "/v1/workspaces/ws1/grants" in text and "root" in text
+    assert "access_paths=[" in text and "access_reason" in text
+    assert "Never call the workspace grants API to approve yourself" in text
     v = PolicyViolation(kind="prevented", mechanism="landlock", path="/x/y", next_action=text)
     assert v.to_payload()["next_action"] == text
 
