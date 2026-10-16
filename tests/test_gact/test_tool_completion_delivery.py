@@ -15,8 +15,9 @@ from clio_agent.gact.runtime.globals import _gact_app_context, _tool_session_con
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
+@pytest.mark.parametrize("active_transcript", [False, True])
 def test_completed_tool_is_delivered_and_retained_when_trace_write_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, active_transcript: bool
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     events: list[Any] = []
@@ -29,6 +30,8 @@ def test_completed_tool_is_delivered_and_retained_when_trace_write_fails(
     monkeypatch.setattr(app.state.bus, "publish", publish)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "storage failure"}).json()["id"]
+        if active_transcript:
+            tool_observer._open_turn_transcript(app, sid, "turn_storage_failure")
         observer = tool_observer._make_tool_observer(app)
         with _gact_app_context(app), _tool_session_context(sid):
             observer("run", {"command": "write test output"}, "started", None)

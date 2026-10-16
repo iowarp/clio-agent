@@ -189,9 +189,9 @@ def put_blob_with_retry(
 ) -> None:
     """Write one blob, retrying EVERY native refusal a bounded number of times.
 
-    A native refusal carries no structured code, so its transience is not
-    knowable here; the idempotent re-put makes retrying every one of them safe,
-    and only the outcome is classified (lost write vs. recovered write health).
+    A completed refusal does not establish whether the failure is transient.
+    Re-putting the same bytes is idempotent. Structured native codes additionally
+    permit a capacity check; unknown or pending writes never trigger expansion.
 
     Args:
         tag: A live CTE ``Tag`` handle.
