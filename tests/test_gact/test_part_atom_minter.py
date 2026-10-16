@@ -264,31 +264,47 @@ def test_tool_call_seals_on_its_result_carrying_a_presentation_delta(tmp_path: P
 def test_seal_never_touches_the_store_under_the_transcript_lock(tmp_path: Path) -> None:
     arc = _arc(tmp_path)
     real_lock_for = arc._segments._lock_for
+    caller_thread = threading.get_ident()
+    store_threads: list[int] = []
+    reached = threading.Event()
+    release = threading.Event()
 
-    def _slow_lock_for(session_id: str, scope: str) -> Any:
-        time.sleep(0.2)  # stands in for a slow store RPC
+    def _blocked_lock_for(session_id: str, scope: str) -> Any:
+        thread_id = threading.get_ident()
+        store_threads.append(thread_id)
+        reached.set()
+        # An accidental inline call is recorded and fails below without hanging
+        # the caller. The actual persistence worker stays blocked until both
+        # transcript operations have returned, independent of scheduler speed.
+        if thread_id != caller_thread:
+            assert release.wait(timeout=5.0), "test released the store worker too late"
         return real_lock_for(session_id, scope)
 
-    arc._segments._lock_for = _slow_lock_for  # type: ignore[method-assign]
+    arc._segments._lock_for = _blocked_lock_for  # type: ignore[method-assign]
     app = _fake_app(arc)
     minter = open_turn_minter(app, "sess5", "turn5")
     transcript = _transcript("sess5", "turn5", app)
 
-    started = time.monotonic()
-    transcript.append_text_delta("main", "answer", "quick")
-    transcript.close_open_text()
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.05, f"close_open_text() blocked on the store: {elapsed:.3f}s"
+    try:
+        transcript.append_text_delta("main", "answer", "quick")
+        transcript.close_open_text()
+        assert reached.wait(timeout=2.0), "the seal never reached the store"
+        assert caller_thread not in store_threads, "close_open_text() touched the store inline"
 
-    started = time.monotonic()
-    transcript.append_part(_tool_call("call_y", "tc_y"))
-    transcript.append_part(_tool_result("call_y", "tr_y"))
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.05, f"append_part() blocked on the store: {elapsed:.3f}s"
+        # The first store operation is still blocked. A tool result must also
+        # seal and return while that operation remains unfinished.
+        transcript.append_part(_tool_call("call_y", "tc_y"))
+        transcript.append_part(_tool_result("call_y", "tr_y"))
+        assert not release.is_set()
+        assert caller_thread not in store_threads, "append_part() touched the store inline"
+    finally:
+        release.set()
+        assert minter.drain()
+        minter.close()
+        arc._segments._lock_for = real_lock_for  # type: ignore[method-assign]
 
-    assert minter.drain()  # the slow mints DID land, off the caller's thread
+    assert store_threads and all(thread_id != caller_thread for thread_id in store_threads)
     assert len(_atoms_on_lane(arc, "sess5")) == 2
-    minter.close()
 
 
 # --------------------------------------------------------------------------- #
