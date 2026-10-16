@@ -31,6 +31,7 @@ def test_bad_download_checksum_never_extracts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(office.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(b"corrupt"))
+    monkeypatch.setattr(office.time, "sleep", lambda seconds: None)
     with pytest.raises(DocumentError, match="pinned SHA-256"):
         office._download("https://example.invalid/official", tmp_path / "archive", "0" * 64)
 

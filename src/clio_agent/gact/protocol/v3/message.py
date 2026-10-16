@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.summarization_record import legacy_compaction_block
 from clio_agent.gact.tool_result_presentation import project_presentation
 
@@ -471,6 +472,7 @@ class _TranscriptProjection:
     session_id: str
     wire: Mapping[str, Any]
     subagent_links: Mapping[str, Mapping[str, Any]]
+    active_message_ids: frozenset[str] | None = None
     tools: dict[str, dict[str, Any]] = field(default_factory=dict)
     tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
     subagents: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -485,15 +487,7 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
     current = context.tools.get(tool_id, {})
     failed = bool(part.get("is_error"))
     part_type = str(part.get("type") or "")
-    state = "failed" if failed else ("succeeded" if part_type == "tool_result" else "running")
-    if state == "running" and context.wire.get("stop_reason") in {
-        "end_turn",
-        "error",
-        "cancelled",
-        "failed",
-        "interrupted",
-    }:
-        state = "unknown"
+    state = tool_execution_state(context.wire, part, context.active_message_ids)
     output = current.get("output")
     if part_type == "tool_result":
         for key in ("structured_content", "content_blocks", "content", "text"):
@@ -535,14 +529,7 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
         ),
         **timing,
         **({"error": str(part.get("text") or "Tool failed")} if failed else {}),
-        **(
-            {
-                "error": "Execution outcome unavailable: the turn ended before CLIO recorded this "
-                "tool's result. Inspect any captured output before rerunning it."
-            }
-            if state == "unknown"
-            else {}
-        ),
+        **({"error": MISSING_EXECUTION_OUTCOME} if state == "unknown" else {}),
     }
 
 
@@ -657,8 +644,13 @@ def transcript_entities(
     *,
     subagent_links: Mapping[str, Mapping[str, Any]] | None = None,
     catalogs: "CatalogResolver | None" = None,
+    active_message_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Return a normalized transcript snapshot and its referenced entities.
+
+    ``active_message_ids`` supplies authoritative runtime ownership when known;
+    an empty set marks unfinished historical calls as Unknown, including when
+    failed persistence left no terminal stop reason.
 
     ``messages`` MUST arrive in ledger order (oldest first) and that order is
     PRESERVED. The projection used to re-sort by the ``created_at`` string, which
@@ -693,6 +685,7 @@ def transcript_entities(
             session_id=session_id,
             wire=wire,
             subagent_links=subagent_links or {},
+            active_message_ids=active_message_ids,
         )
         raw_parts = _list(wire.get("parts"))
         created_at = str(projected.get("created_at") or wire.get("created_at") or "")

@@ -465,11 +465,19 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
                 session_catalog_resolver,
             )
 
+            live_id = str(
+                (getattr(app.state, "live_assistant_message_ids", {}) or {}).get(sid) or ""
+            )
+            turn_task = app.state.in_flight_turns.get(sid)
+            owns_turn = turn_task is not None and not turn_task.done()
+            paused = sess.status in {"waiting_user", "waiting_permission"}
+            active_ids = frozenset({live_id}) if live_id and (owns_turn or paused) else frozenset()
             snapshot = transcript_entities(
                 list(reversed(rows)),
                 sid,
                 subagent_links=subagent_links,
                 catalogs=session_catalog_resolver(app, sid),
+                active_message_ids=active_ids,
             )
             snapshot["cursor"] = str(app.state.bus.latest_event_id(sid))
             # The paging cursor is a MESSAGE id and a different fact from the

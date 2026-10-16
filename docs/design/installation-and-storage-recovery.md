@@ -19,7 +19,12 @@ retain their existing pinned renderer packages.
 
 The private launcher honors LibreOffice's normal profile-initialization restart
 code 81, with a three-launch ceiling. It propagates crashes and other exit codes.
-The renderer is probed before publication and before warm reuse. Linux still
+The renderer is probed before publication and before warm reuse. Network and
+integrity failures permit at most three fresh download attempts under one
+600-second budget; each attempt must match the existing pinned SHA-256.
+Permanent HTTP failures, size limits and deadline exhaustion remain explicit
+errors. Failed downloads are removed; diagnostics include the actual checksum,
+byte count and resolved source URL. Linux still
 needs LibreOffice's ordinary host graphics/font/NSS libraries. Qualification on
 Rocky Linux 8 (glibc 2.28) includes cold preparation, warm reuse, and real DOCX
 and PPTX conversions to PDF; the unmodified launcher fails on that same host.
@@ -79,7 +84,10 @@ the result was saved durably. Provenance receives the original call start time.
 For historical turns whose terminal result was never recorded, the transcript
 shows the execution outcome as Unknown once the turn ends. Captured output is
 retained; CLIO neither fabricates a completion time nor keeps incrementing a
-running timer. An actual recorded result takes precedence over that uncertainty.
+running timer. The live API checks current turn ownership as well as recorded
+stop reasons, so a restart cannot leave a partial message looking active just
+because its final state was never saved. An actual recorded result takes
+precedence over that uncertainty.
 
 The screenshots in #1783 establish lost persistence and a stale Running row.
 They do not establish the affected host's exact placement failure or repeated

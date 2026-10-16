@@ -133,7 +133,9 @@ jobs:
             install_directory = $installDir
             started_at = [DateTime]::UtcNow.ToString('o')
           } | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/installer-start.json" -Encoding utf8
-          if (-not $installer.WaitForExit(600000)) {
+          # Office download and private MSI extraction have separate 600s and
+          # 300s limits; the outer bound must let their errors reach diagnostics.
+          if (-not $installer.WaitForExit(1200000)) {
             try {
               Get-CimInstance Win32_Process |
                 Select-Object Name, ProcessId, ParentProcessId, ExecutablePath |
@@ -148,7 +150,7 @@ jobs:
               $installer.Kill($true)
               if (-not $installer.WaitForExit(10000)) { Write-Warning 'Installer cleanup did not finish within 10 seconds' }
             }
-            throw 'NSIS installer did not exit within 10 minutes; see the retained timing and process diagnostics'
+            throw 'NSIS installer did not exit within 20 minutes; see the retained timing and process diagnostics'
           }
           $timer.Stop()
           @{
