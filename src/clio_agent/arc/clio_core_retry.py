@@ -13,9 +13,10 @@ bounded and loud, never a silent fallback.
 
 Two rules govern this module, both learned by breaking them:
 
-* **No message-text classification.** A native ``PutBlob`` refusal arrives as
-  a bare :class:`RuntimeError` whose text carries no structured code, so clio
-  cannot tell transient from permanent from the outside. Splitting on captured
+* **No message-text classification.** Legacy ``PutBlob`` refusals arrive as
+  bare :class:`RuntimeError` values. The async adapter now preserves native
+  return codes, allowing a capacity check for placement/allocation refusals.
+  Only freshly measured insufficient capacity permits growth. Splitting on captured
   incident strings (``rc=13``, ``pool_id 512.0``) silently stripped the retry
   from every deployment whose text differed. Every native refusal therefore
   takes the SAME bounded retry; only the OUTCOME is classified.
@@ -32,6 +33,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -178,7 +180,12 @@ def _reset_put_write_health_for_tests() -> None:
 
 
 def put_blob_with_retry(
-    tag: Any, name: str, payload: bytes, *, first_failure: RuntimeError | None = None
+    tag: Any,
+    name: str,
+    payload: bytes,
+    *,
+    first_failure: RuntimeError | None = None,
+    recover_capacity: Callable[[], bool] | None = None,
 ) -> None:
     """Write one blob, retrying EVERY native refusal a bounded number of times.
 
@@ -193,6 +200,8 @@ def put_blob_with_retry(
         payload: The exact bytes to store.
         first_failure: The refusal of a first attempt already made elsewhere (a
             batch's concurrent put); the ladder continues from attempt 2.
+        recover_capacity: Optional managed-store recovery. Called at most once,
+            only after a completed put returns structured code 12 or 13.
 
     Raises:
         RuntimeError: The final native refusal unmodified after
@@ -202,6 +211,7 @@ def put_blob_with_retry(
     attempts = max(1, write_retry_attempts())
     backoff_factor = write_retry_backoff_factor()
     delay = write_retry_first_delay_s()
+    recovery_checked = False
     for attempt in range(attempts):
         try:
             if attempt == 0 and first_failure is not None:
@@ -211,6 +221,26 @@ def put_blob_with_retry(
             if attempt == attempts - 1:
                 _record_lost_write(name=name, payload=payload, exc=exc)
                 raise
+            if (
+                not recovery_checked
+                and getattr(exc, "native_code", None) in {12, 13}
+                and recover_capacity is not None
+            ):
+                recovery_checked = True
+                try:
+                    if recover_capacity():
+                        continue
+                except TimeoutError:
+                    # The original put was conclusively refused. A pending
+                    # capacity RPC must not cause it to be issued again here.
+                    _record_lost_write(name=name, payload=payload, exc=exc)
+                    raise
+                except (RuntimeError, OSError, ValueError) as recovery_error:
+                    logger.exception("reason=clio_core_capacity_recovery_failed name=%s", name)
+                    _record_lost_write(name=name, payload=payload, exc=exc)
+                    raise RuntimeError(
+                        f"{exc}; capacity recovery failed: {recovery_error}"
+                    ) from recovery_error
             logger.warning(
                 "reason=%s name=%s attempt=%d/%d error=%s",
                 CLIO_CORE_PUT_RETRY,

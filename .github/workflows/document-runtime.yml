@@ -27,6 +27,23 @@ on:
       - ".github/workflows/document-runtime.yml"
 
 jobs:
+  document-legacy-linux:
+    name: document runtime (glibc 2.28)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the old Linux qualification host
+        run: docker build -f scripts/qualification/document_runtime/Dockerfile.glibc228 -t clio-document-glibc228 .
+      - name: Prepare and exercise real PDF, DOCX, PPTX and XLSX operations
+        run: |
+          mkdir -p document-evidence-legacy
+          docker run --rm -v "$PWD/document-evidence-legacy:/evidence" clio-document-glibc228
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: document-evidence-glibc228
+          path: document-evidence-legacy
   document-smoke:
     runs-on: ${{ matrix.os }}
     env:

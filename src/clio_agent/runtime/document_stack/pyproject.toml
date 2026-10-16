@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "filelock>=3.19,<4",
     "truststore==0.10.4",
+    "zstandard==0.25.0",
     "pymupdf>=1.26,<2",
     "pypdf>=5.1,<7",
     "pdfplumber>=0.11,<1",

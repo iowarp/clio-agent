@@ -25,6 +25,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from clio_agent.arc.rpc_liveness import resolve_liveness_policy
@@ -143,6 +144,14 @@ class TagIds:
             self.get(kind)
 
 
+class ClioCorePutRefused(RuntimeError):
+    """A completed native put was refused, with its structured return code."""
+
+    def __init__(self, name: str, code: int) -> None:
+        self.native_code = code
+        super().__init__(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
+
+
 class AsyncPutTag:
     """A ``Tag``-shaped writer over ``AsyncPutBlob`` (for :func:`put_blob_with_retry`).
 
@@ -161,7 +170,7 @@ class AsyncPutTag:
         )
         code = future.wait(0)
         if code != 0:
-            raise RuntimeError(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
+            raise ClioCorePutRefused(name, code)
 
 
 def delete_blob(client: Any, tag_id: Any, name: str) -> bool:
@@ -176,9 +185,16 @@ def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
     Reads ``store._client`` and the tag id at call time, so a stall-ladder retry after a
     reconnect uses the fresh client and re-resolved tag.
     """
+    from clio_agent.arc.clio_core_growth import recover_capacity  # noqa: PLC0415
     from clio_agent.arc.clio_core_retry import put_blob_with_retry  # noqa: PLC0415
 
-    put_blob_with_retry(AsyncPutTag(store._client, store._tag_ids.get(kind)), name, body)
+    tag_id = store._tag_ids.get(kind)
+    put_blob_with_retry(
+        AsyncPutTag(store._client, tag_id),
+        name,
+        body,
+        recover_capacity=partial(recover_capacity, store, tag_id, name, len(body)),
+    )
 
 
 def store_put_many(
@@ -199,6 +215,8 @@ def store_put_many(
     )
 
     client = store._client
+    from clio_agent.arc.clio_core_growth import recover_capacity  # noqa: PLC0415
+
     tag_id = store._tag_ids.get(kind)
     issued = [(name, data, client.AsyncPutBlob(tag_id, name, data, 0)) for name, data in blobs]
     lost: dict[str, RuntimeError] = {}
@@ -206,10 +224,16 @@ def store_put_many(
         try:
             code = await_future(future, op_name="put").wait(0)
             if code != 0:
-                raise RuntimeError(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
+                raise ClioCorePutRefused(name, code)
         except RuntimeError as refused:
             try:
-                put_blob_with_retry(AsyncPutTag(client, tag_id), name, data, first_failure=refused)
+                put_blob_with_retry(
+                    AsyncPutTag(client, tag_id),
+                    name,
+                    data,
+                    first_failure=refused,
+                    recover_capacity=partial(recover_capacity, store, tag_id, name, len(data)),
+                )
             except RuntimeError as final:
                 lost[name] = final
         else:

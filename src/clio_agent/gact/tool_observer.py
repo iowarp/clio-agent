@@ -35,6 +35,7 @@ from clio_agent.gact.runtime.globals import (
     _resolve_tool_session,
 )
 from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
+from clio_agent.gact.tool_completion_delivery import terminal_tool_delivery
 from clio_agent.gact.tool_observer_parts import completed_tool_metadata, completed_tool_text
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
@@ -757,6 +758,7 @@ def _make_tool_observer(app: "FastAPI"):
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             completed_epoch = time.time()
             duration_ms = (completed_epoch - t0) * 1000 if t0 else 0.0
+            _OBSERVER_CALL_T0.value = None  # The tool has returned, even if recording fails.
             cancel_event = app.state.cancel_events.get(sid)
             completed_after_cancel = sid in app.state.cancel_flags or (
                 cancel_event is not None and cancel_event.is_set()
@@ -796,7 +798,9 @@ def _make_tool_observer(app: "FastAPI"):
             from clio_agent.gact.artifacts.transforms import observe_tool_transform  # noqa: PLC0415
 
             transform_record = (
-                observe_tool_transform(app, sid, name, dict(args), call_id, ok, result)
+                observe_tool_transform(
+                    app, sid, name, dict(args), call_id, ok, result, call_started_at=t0
+                )
                 if not completed_after_cancel
                 else None
             )
@@ -851,69 +855,59 @@ def _make_tool_observer(app: "FastAPI"):
             # ledger/assistant-metadata. (SSE still redacts `result` via
             # SENSITIVE_KEYS; only the durable trace keeps the full value.)
             trace_payload = {**payload, "result": result} if result is not None else payload
-            _emit_semantic_event(
-                app,
-                sid,
-                "tool.call.completed",
-                turn_id=_ctx.active_turn_id(),
-                trace_id=_ctx.active_trace_id(),
-                status="completed" if ok else "failed",
-                summary=result_summary,
-                actor={"tool": name},
-                subject={"call_id": call_id},
-                payload=trace_payload,
-            )
-            app.state.bus.publish(
-                Event(
-                    type="tool.call.completed",
-                    session_id=sid,
-                    payload=payload,
+            with terminal_tool_delivery(app, sid, payload):
+                if representation != "handoff":
+                    result_text = completed_tool_text(result, completion_error)
+                    _append_live_assistant_part(
+                        app,
+                        sid,
+                        Part(
+                            id=f"live_{call_id}_result",
+                            type="tool_result",
+                            agent_id=invoking_expert,
+                            call_id=call_id,
+                            tool_name=name,
+                            is_error=not ok,
+                            duration_ms=duration_ms,
+                            cached=False,
+                            # #1190: the structured copy is a TOP-LEVEL part field (the UI
+                            # render ladder's contract) — ONE home, never mirrored into
+                            # ``metadata``. Wire-only: the model's observation is the
+                            # separate ``model_text`` built at the execution boundary.
+                            structured_content=structured_content,
+                            presentation=presentation,
+                            content_blocks=content_blocks_for_wire(result),  # #1188
+                            content=[
+                                Part(
+                                    id=f"live_{call_id}_result_text",
+                                    type="text",
+                                    agent_id=invoking_expert,
+                                    text=result_text,
+                                )
+                            ],
+                            metadata=completed_tool_metadata(
+                                result,
+                                completed_at=_iso_from_epoch(completed_epoch),
+                                cancellation=cancellation_metadata,
+                                provenance=provenance,
+                            ),
+                        ),
+                    )
+                _emit_semantic_event(
+                    app,
+                    sid,
+                    "tool.call.completed",
+                    turn_id=_ctx.active_turn_id(),
+                    trace_id=_ctx.active_trace_id(),
+                    status="completed" if ok else "failed",
+                    summary=result_summary,
+                    actor={"tool": name},
+                    subject={"call_id": call_id},
+                    payload=trace_payload,
                 )
-            )
             from clio_agent.gact.spotter_watcher import wake_on_parent_activity  # noqa: PLC0415
 
             wake_on_parent_activity(app, sid, tool_name=name, ok=ok, result=structured_content)
-            _OBSERVER_CALL_T0.value = (
-                None  # finding [3]: clear the latch (idle thread -> DIRTY lease)
-            )
-            if representation == "handoff":
-                return None
-            result_text = completed_tool_text(result, completion_error)
-            _append_live_assistant_part(
-                app,
-                sid,
-                Part(
-                    id=f"live_{call_id}_result",
-                    type="tool_result",
-                    agent_id=invoking_expert,
-                    call_id=call_id,
-                    tool_name=name,
-                    is_error=not ok,
-                    duration_ms=duration_ms,
-                    cached=False,
-                    # #1190: the structured copy is a TOP-LEVEL part field (the UI
-                    # render ladder's contract) — ONE home, never mirrored into
-                    # ``metadata``. Wire-only: the model's observation is the
-                    # separate ``model_text`` built at the execution boundary.
-                    structured_content=structured_content,
-                    presentation=presentation,
-                    content_blocks=content_blocks_for_wire(result),  # #1188
-                    content=[
-                        Part(
-                            id=f"live_{call_id}_result_text",
-                            type="text",
-                            agent_id=invoking_expert,
-                            text=result_text,
-                        )
-                    ],
-                    metadata=completed_tool_metadata(
-                        result,
-                        completed_at=_iso_from_epoch(completed_epoch),
-                        cancellation=cancellation_metadata,
-                        provenance=provenance,
-                    ),
-                ),
-            )
         return None
 
     return observe

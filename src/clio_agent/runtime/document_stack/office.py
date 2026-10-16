@@ -22,8 +22,10 @@ import truststore
 from filelock import FileLock
 
 if TYPE_CHECKING or __package__:
+    from . import office_compat
     from .process import DocumentError, inherit_parent_access, run
 else:
+    import office_compat
     from process import DocumentError, inherit_parent_access, run
 
 VERSION = "26.2.6"
@@ -81,6 +83,7 @@ def asset() -> tuple[str, str, str]:
 def executable(root: Path) -> Path | None:
     """Find an executable only inside a private renderer tree."""
     candidates = [
+        *([root / office_compat.WRAPPER] if office_compat.supported() else []),
         root / "program" / "soffice.com",
         root / "LibreOffice" / "program" / "soffice.com",
         root / "LibreOffice.app" / "Contents" / "MacOS" / "soffice",
@@ -208,6 +211,13 @@ def ensure_office(root: Path) -> str:
     with FileLock(str(root.parent / f"{root.name}.lock"), timeout=600):
         existing = executable(root)
         if existing:
+            if office_compat.supported():
+                office_compat.prepare(root, download=_download, deb_data=_deb_data)
+                existing = executable(root)
+                if existing is None:
+                    raise DocumentError(
+                        "Private LibreOffice launcher disappeared during preparation"
+                    )
             inherit_parent_access(root)
             run([str(existing), "--version"], cwd=root, timeout=30)
             return str(existing)
@@ -230,6 +240,8 @@ def ensure_office(root: Path) -> str:
             image.mkdir()
             try:
                 _extract(archive, image)
+                if office_compat.supported():
+                    office_compat.prepare(image, download=_download, deb_data=_deb_data)
                 inherit_parent_access(image)
                 candidate = executable(image)
                 if candidate is None:

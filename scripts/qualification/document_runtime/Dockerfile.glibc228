@@ -1,0 +1,11 @@
+# Container isolation supplies the old test host; CLIO's renderer runs natively.
+FROM rockylinux:8
+RUN dnf install -y python3.12 python3.12-pip ca-certificates \
+    nss fontconfig cups-libs cairo libX11-xcb libXinerama libSM libICE \
+    && dnf clean all
+RUN python3.12 -m pip install uv==0.12.23
+COPY src/clio_agent/runtime/document_stack /stack
+ENV UV_PROJECT_ENVIRONMENT=/runtime
+ENV CLIO_DOCUMENT_OFFICE_ROOT=/office-cache/renderer
+RUN uv sync --frozen --project /stack --no-install-project --python /usr/bin/python3.12
+ENTRYPOINT ["/runtime/bin/python", "/stack/smoke.py", "/evidence"]

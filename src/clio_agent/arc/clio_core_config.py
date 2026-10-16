@@ -131,7 +131,8 @@ def runtime_state_dir() -> Path:
 # clio-core's WORKING memory. Data lives on the ONE file tier at the
 # user-designated dir (arc.cte.dir): disk-only data means no RAM data tier,
 # no eviction pressure, no rc=13 class (owner: "data is in memory or is in
-# disk"). Disk stays effectively unbounded at the user's endpoint.
+# disk"). Generated file tiers expand by adding independent durable targets,
+# bounded by the disk reserve and managed growth policy (clio_core_growth).
 #
 # INDEXER CHIMOD (clio-core 2.2.0, upstream issue #905): ``SemanticSearch`` (the BM25
 # scope search Thread D relies on) moved OUT of ``clio_cte_core`` into a separate,
@@ -397,6 +398,9 @@ def default_cte_config_path() -> str:
             ),
             encoding="utf-8",
         )
+        from clio_agent.arc.clio_core_growth import initialize_managed_capacity  # noqa: PLC0415
+
+        initialize_managed_capacity(cfg)
     return str(cfg)
 
 
