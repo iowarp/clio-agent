@@ -30,9 +30,10 @@ def connected_data_status() -> dict[str, Any]:
     if workspace is None:
         raise ValueError("The session workspace is unavailable on this CLIO")
     from clio_agent.gact.storage.auth import application
+    from clio_agent.gact.storage.ndp_oauth import configuration as ndp_configuration
 
     accounts = []
-    for provider in ("github", "google_drive", "globus"):
+    for provider in ("github", "google_drive", "globus", "ndp"):
         authenticated = service.auth.account_connected(
             service.principal, service.store.clio_id, provider
         )
@@ -41,7 +42,9 @@ def connected_data_status() -> dict[str, Any]:
                 "provider": provider,
                 "authenticated": authenticated,
                 "sign_in_available": bool(
-                    application(provider).client_id and application(provider).redirect_uri
+                    ndp_configuration()[1]
+                    if provider == "ndp"
+                    else (application(provider).client_id and application(provider).redirect_uri)
                 ),
                 "login_action": {
                     "name": f"data_source/login/{provider}",

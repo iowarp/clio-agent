@@ -125,14 +125,14 @@ def test_build_scripts_pin_nothing_outside_the_lock(path: Path) -> None:
     assert not any("--prerelease" in line for line in _code_lines(path))
 
 
-def test_bundle_extras_exist_and_desktop_carries_clio_kit() -> None:
-    """Every bundle extra is declared; clio-kit is locked through the desktop extra."""
+def test_bundle_extras_exist_and_base_carries_clio_kit() -> None:
+    """Every extra is declared; all services carry the pinned NDP catalog client."""
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     extras = pyproject["project"]["optional-dependencies"]
     for extra in cbl.BUNDLE_EXTRAS:
         assert extra in extras, extra
-    desktop = extras["desktop"]
-    clio_kit = [req for req in desktop if req.startswith("clio-kit")]
+    base = pyproject["project"]["dependencies"]
+    clio_kit = [req for req in base if req.startswith("clio-kit")]
     assert len(clio_kit) == 1
     locked = cbl.load_lock_versions(REPO_ROOT / "uv.lock")
     assert clio_kit[0] == f"clio-kit=={locked['clio-kit']}"
@@ -141,7 +141,7 @@ def test_bundle_extras_exist_and_desktop_carries_clio_kit() -> None:
 def test_real_lock_export_covers_the_bundle_packages() -> None:
     """The real export for BUNDLE_EXTRAS includes what the bundle ships.
 
-    clio-kit and the Web Search adapter's deps come from the desktop extra;
+    clio-kit is a base dependency; the Web Search adapter's deps come from the desktop extra;
     pytz is pulled in by those deps (the package that drifted unlocked).
     """
     scope = cbl.load_bundle_scope(REPO_ROOT, cbl.BUNDLE_EXTRAS)

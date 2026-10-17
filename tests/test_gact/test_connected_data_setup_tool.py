@@ -64,6 +64,7 @@ def test_tool_only_returns_approved_owner_workspace_sources(
         "github",
         "google_drive",
         "globus",
+        "ndp",
     }
     assert all(not account["authenticated"] for account in result["accounts"])
     assert result["accounts"][1]["login_action"]["name"] == "data_source/login/google_drive"

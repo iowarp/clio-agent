@@ -599,6 +599,7 @@ name = "clio-agent"
 version = "0.9.5b7.post2"
 source = { editable = "." }
 dependencies = [
+    { name = "clio-kit" },
     { name = "clio-schemas" },
     { name = "dspy" },
     { name = "fastapi" },
@@ -657,7 +658,6 @@ adios = [
 all = [
     { name = "adios2", marker = "sys_platform != 'win32'" },
     { name = "claude-agent-sdk" },
-    { name = "clio-kit" },
     { name = "ddgs" },
     { name = "flowcept", extra = ["mongo", "redis"] },
     { name = "globus-sdk" },
@@ -685,7 +685,6 @@ claude-code = [
     { name = "claude-agent-sdk" },
 ]
 desktop = [
-    { name = "clio-kit" },
     { name = "ddgs" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
@@ -718,8 +717,8 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
-    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=9da9b00a2b327db62ab39aa8c5845f3c22ab4573" },
+    { name = "clio-kit", specifier = "==2.10.6" },
+    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=b8a07be069d83aeb5fdf335179c7b5e38ef23bf6" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.4.0" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -805,8 +804,8 @@ wheels = [
 
 [[package]]
 name = "clio-schemas"
-version = "0.6.0b9"
-source = { git = "https://github.com/iowarp/clio-schemas.git?rev=9da9b00a2b327db62ab39aa8c5845f3c22ab4573#9da9b00a2b327db62ab39aa8c5845f3c22ab4573" }
+version = "0.6.0b11"
+source = { git = "https://github.com/iowarp/clio-schemas.git?rev=b8a07be069d83aeb5fdf335179c7b5e38ef23bf6#b8a07be069d83aeb5fdf335179c7b5e38ef23bf6" }
 dependencies = [
     { name = "annotated-types" },
     { name = "jsonschema", extra = ["format"] },

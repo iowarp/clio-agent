@@ -85,7 +85,9 @@ def connected_data_connect(
             raise PermissionError("Source connection was not approved")
         service.store.put("source", prepared.source.id, prepared)
         existing = prepared
-    if provider in {"github", "google_drive", "globus"} and not service.auth.connected(existing):
+    if provider in {"github", "google_drive", "globus", "ndp"} and not service.auth.connected(
+        existing
+    ):
         result = connected_data_status()
         result["connection"] = {"source_id": existing.source.id, "state": "sign_in_required"}
         return result

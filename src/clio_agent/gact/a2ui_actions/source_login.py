@@ -24,7 +24,7 @@ def deliver_source_login(
     """Record an in-owner user click; only the client's existing private UI signs in."""
     session = app.state.sessions.get(session_id)
     service = getattr(app.state, "connected_storage", None)
-    allowed = {f"data_source/login/{p}" for p in ("github", "google_drive", "globus")}
+    allowed = {f"data_source/login/{p}" for p in ("github", "google_drive", "globus", "ndp")}
     valid = (
         record.action_name in allowed
         and service is not None

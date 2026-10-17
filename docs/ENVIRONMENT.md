@@ -369,6 +369,9 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_STORAGE_GITHUB_APP_URL` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GITHUB_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/github_oauth.py` |
 | `CLIO_STORAGE_GOOGLE_API_KEY` | unmigrated | `src/clio_agent/gact/storage/drive_filesystem.py` |
+| `CLIO_STORAGE_NDP_CLIENT_ID` | unmigrated | `src/clio_agent/gact/storage/ndp_oauth.py` |
+| `CLIO_STORAGE_NDP_ENDPOINTS` | unmigrated | `src/clio_agent/gact/storage/ndp_catalog.py` |
+| `CLIO_STORAGE_NDP_ISSUER` | unmigrated | `src/clio_agent/gact/storage/ndp_oauth.py` |
 | `CLIO_VLLM_ATTN_CONNECTOR` | unmigrated | `src/clio_agent/gact/infrastructure/native_vllm.py` |
 
 ## Owned elsewhere

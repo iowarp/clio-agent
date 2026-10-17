@@ -302,6 +302,17 @@ def linked_adapter(
                 excluded=record.configuration.obsidian_excluded_folders,
             )
         )
+    elif provider == "ndp":
+        if refresh:
+            from clio_agent.gact.storage.ndp_catalog import NDPSelection
+
+            selection = service.store.get(
+                "ndp-selection", record.configuration.ndp_selection_id, NDPSelection
+            )
+            selection.dataset = service.ndp.refresh(selection.dataset)
+            service.store.put("ndp-selection", selection.id, selection)
+        with service.adapter(record) as adapter:
+            yield adapter
     elif provider == "local":
         yield FsspecFolder(
             LocalFileSystem(auto_mkdir=False),

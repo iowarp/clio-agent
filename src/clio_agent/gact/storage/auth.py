@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 from clio_schemas.connected_resources import ConnectedSource, ResourceOwner, SourceCapabilities
 
-from clio_agent.gact.storage import github_oauth
+from clio_agent.gact.storage import github_oauth, ndp_oauth
 from clio_agent.gact.storage.accounts import (
     Entries,
     account_for,
@@ -52,6 +52,8 @@ class OAuthApplication:
 
 def application(provider: str) -> OAuthApplication:
     """Use CLIO's native registration, with optional distributor overrides."""
+    if provider == "ndp":
+        return ndp_oauth.application()
     if provider == "google_drive":
         prefix = "CLIO_STORAGE_GOOGLE"
         authorize = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -140,14 +142,14 @@ class StorageAuth:
     @staticmethod
     def account_login(principal: str, clio_id: str, provider: str) -> SourceRecord:
         """Bind provider-only OAuth to this user and host without creating a workspace source."""
-        if provider not in {"google_drive", "globus", "github"}:
+        if provider not in {"google_drive", "globus", "github", "ndp"}:
             raise ValueError("This provider does not use browser sign-in")
         return SourceRecord(
             principal=principal,
             source=ConnectedSource(
                 id="account-login-"
                 + hashlib.sha256(f"{principal}\0{clio_id}\0{provider}".encode()).hexdigest(),
-                provider=cast(Literal["google_drive", "globus", "github"], provider),
+                provider=cast(Literal["google_drive", "globus", "github", "ndp"], provider),
                 label=provider,
                 root="account",
                 owner=ResourceOwner(clio_id=clio_id, host_id="local"),
@@ -187,6 +189,12 @@ class StorageAuth:
         """Forget this user's provider logins on this CLIO, across all workspaces."""
         with self._lock:
             entries = self._entries()
+            if provider == "ndp":
+                for entry in entries.values():
+                    if owned_by(entry, principal, clio_id, host_id, provider):
+                        tokens = entry.get("tokens")
+                        if isinstance(tokens, dict):
+                            ndp_oauth.revoke(tokens)
             entries = {
                 key: value
                 for key, value in entries.items()
@@ -376,9 +384,13 @@ class StorageAuth:
                 app = replace(app, redirect_uri=pending.receiver.redirect_uri)
                 pending.app = app
             self._pending[identifier] = pending
-        if app.provider == "github":
+        if app.provider in {"github", "ndp"}:
             try:
-                device = github_oauth.begin(app.client_id)
+                device = (
+                    ndp_oauth.begin(app, verifier)
+                    if app.provider == "ndp"
+                    else github_oauth.begin(app.client_id)
+                )
             except Exception:
                 with self._lock:
                     self._pending.pop(identifier, None)
@@ -561,7 +573,11 @@ class StorageAuth:
         """Poll under the auth lock so disconnect/sign-out cannot race a saved grant."""
         assert pending.device is not None
         try:
-            tokens = github_oauth.poll(pending.device, pending.app.client_id, client)
+            tokens = (
+                ndp_oauth.poll(pending.device, pending.app, pending.verifier, client)
+                if pending.app.provider == "ndp"
+                else github_oauth.poll(pending.device, pending.app.client_id, client)
+            )
         except Exception:
             self._pending.pop(flow_id, None)
             raise
@@ -602,6 +618,7 @@ class StorageAuth:
             tokens = response.json()
             if app.provider == "github":
                 return github_oauth.token_bundle(tokens)
+            candidates: list[dict[str, Any]] = []
             if app.provider == "globus":
                 candidates = [tokens, *tokens.get("other_tokens", [])]
                 tokens = next(
@@ -668,6 +685,11 @@ class StorageAuth:
                 app = application(record.source.provider)
                 if record.source.provider == "github" and tokens.get("client_id") != app.client_id:
                     raise PermissionError("The GitHub application changed; sign in again")
+                if (
+                    record.source.provider == "ndp"
+                    and (tokens.get("issuer"), tokens.get("client_id")) != ndp_oauth.configuration()
+                ):
+                    raise PermissionError("The NDP realm or client changed; sign in again")
                 payload = {
                     "grant_type": "refresh_token",
                     "refresh_token": str(refresh),
@@ -690,6 +712,27 @@ class StorageAuth:
                     tokens["refresh_token"] = refresh
                 self._vault.write_entries(entries)
             return str(tokens["access_token"])
+
+    def cancel(self, record: SourceRecord, flow_id: str) -> None:
+        """Cancel only this owner's pending device flow without signing out other sources."""
+        with self._lock:
+            flow = self._pending.get(flow_id)
+            if flow and (flow.source_id, flow.principal, flow.clio_id) == (
+                record.source.id,
+                record.principal,
+                record.source.owner.clio_id,
+            ):
+                self._remove_pending(flow_id)
+
+    def account_name(self, principal: str, clio_id: str, provider: str) -> str:
+        """Return a profile label only, never credential material or token role claims."""
+        with self._lock:
+            for entry in self._entries().values():
+                if owned_by(entry, principal, clio_id, "local", provider) and usable(entry):
+                    tokens = entry.get("tokens")
+                    if isinstance(tokens, dict):
+                        return str(tokens.get("username", ""))
+        return ""
 
     def disconnect(self, source_id: str) -> None:
         """Stop this source and its pending flows, retaining reusable browser accounts."""

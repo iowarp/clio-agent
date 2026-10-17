@@ -8,7 +8,7 @@ import time
 from clio_agent.gact.storage.models import SourceRecord
 
 Entries = dict[str, dict[str, object]]
-OAUTH_PROVIDERS = {"google_drive", "globus", "github"}
+OAUTH_PROVIDERS = {"google_drive", "globus", "github", "ndp"}
 
 
 def source_binding(record: SourceRecord) -> dict[str, object]:
@@ -39,6 +39,19 @@ def owned_by(
     )
 
 
+def ndp_account_matches(entry: dict[str, object]) -> bool:
+    """Keep a saved grant bound to the realm/client under which it was issued."""
+    if entry.get("provider") != "ndp":
+        return True
+    from clio_agent.gact.storage.ndp_oauth import configuration
+
+    tokens = entry.get("tokens")
+    return (
+        isinstance(tokens, dict)
+        and (tokens.get("issuer"), tokens.get("client_id")) == configuration()
+    )
+
+
 def usable(entry: dict[str, object]) -> bool:
     """A current access token or refreshable grant counts as signed in."""
     tokens = entry.get("tokens")
@@ -51,6 +64,7 @@ def usable(entry: dict[str, object]) -> bool:
             or float(tokens.get("expires_at", 0)) > time.time()
         )
         and not entry.get("invalid")
+        and ndp_account_matches(entry)
     )
 
 
@@ -90,6 +104,7 @@ def account_for(entries: Entries, record: SourceRecord) -> tuple[str, dict[str, 
                 entry, record.principal, source.owner.clio_id, source.owner.host_id, source.provider
             )
             and usable(entry)
+            and ndp_account_matches(entry)
             and (
                 source.provider != "google_drive"
                 or record.linked_access == "read_only"
