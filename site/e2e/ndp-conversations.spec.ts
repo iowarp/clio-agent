@@ -4,7 +4,6 @@ for (const [slug, title, messages] of [
   ['alta', /Alta seasonal/, 6],
   ['tahoe', /Tahoe/i, 6],
   ['konza', /Konza/i, 6],
-  ['ares', /Ares/i, 14],
 ] as const) {
   test(`${slug}: public native archive renders saved results without contacting services`, async ({ page, baseURL }) => {
     // Self-contained exports carry 40-81 MB of real snapshots and need time to hydrate.
@@ -37,3 +36,8 @@ for (const [slug, title, messages] of [
     expect(externalRequests).toEqual([]);
   });
 }
+
+test('unqualified Ares archive is unpublished', async ({ page }) => {
+  const response = await page.goto('/conversations/ndp/ares/');
+  expect(response?.status()).toBe(404);
+});
