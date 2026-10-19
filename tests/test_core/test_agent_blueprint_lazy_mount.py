@@ -591,6 +591,33 @@ class TestActiveToolExecutorBlueprintScoping:
         assert gateway_key is executor
         assert getattr(executor, "_clio_mounted_blueprint_id", None) == "pack-a"
 
+    def test_workspace_gateway_reads_the_workspace_mcp_yaml_not_the_process_cwds(
+        self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """#1300: a workspace gateway loads ``<root>/.clio-agent/shared/mcp.yaml``.
+
+        Before the fix the per-workspace gateway passed its root to blueprint
+        discovery but not to ``load_mcp_servers``, so the workspace-scope
+        ``mcp.yaml`` came from the server process's cwd. ``GET /v1/mcp/handshake``
+        reads the workspace root, so it could report a server the agent's turns
+        never saw.
+        """
+
+        workspace = tmp_path / "workspace"
+        shared = workspace / ".clio-agent" / "shared"
+        shared.mkdir(parents=True)
+        (shared / "mcp.yaml").write_text(
+            "mcp_servers:\n  wsonly: uvx workspace-only-mcp serve\n", encoding="utf-8"
+        )
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setenv("CLIO_SEARCH_BACKEND", "none")
+
+        gateway = agent._build_tool_gateway(cwd=str(workspace))
+
+        assert "wsonly" in namespace_specs(gateway)
+
     def test_second_blueprint_merges_into_resident_fleet_without_evicting(
         self, agent: ClioAgent, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
