@@ -16,6 +16,7 @@ from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.protocol.v3.tool_outcome import MISSING_EXECUTION_OUTCOME, tool_execution_state
 from clio_agent.gact.reasoning_timing import reasoning_timing
 from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
+from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
 from clio_agent.gact.summarization_record import legacy_compaction_block
 from clio_agent.gact.tool_result_presentation import project_presentation
 
@@ -501,7 +502,9 @@ def _project_tool(context: _TranscriptProjection, part: Mapping[str, Any], part_
                 output = value
                 break
     presentation = project_presentation(
-        legacy_ssh_presentation(part, current.get("input")) or part.get("presentation"),
+        legacy_ssh_presentation(part, current.get("input"))
+        or legacy_ndp_presentation(part, current.get("input"))
+        or part.get("presentation"),
         context.session_id,
         tool_id,
         running=state == "running",
