@@ -37,7 +37,7 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import BlobNameDecodeError, frame, unframe
+from clio_agent.arc.blob_frame import BlobNameDecodeError, BlobReadError, frame, unframe
 from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put, store_put_many
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
@@ -666,7 +666,11 @@ class ClioCoreStore:
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
-        return unframe(name, tag.GetBlob(name, size, 0))
+        try:
+            body = tag.GetBlob(name, size, 0)
+        except RuntimeError as exc:  # the binding's bare "GetBlob operation failed"
+            raise BlobReadError(self.tag(kind), name, exc) from exc
+        return unframe(name, body)
 
     @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:

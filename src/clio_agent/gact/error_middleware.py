@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -163,7 +163,8 @@ def install_error_envelope(app: FastAPI) -> None:
 
 
 def install_typed_error_handlers(app: FastAPI) -> None:
-    """Register HTTP, request-validation, and skill errors in the GACT envelope."""
+    """Register HTTP, request-validation, skill, and ledger errors in the GACT envelope."""
+    from clio_agent.gact.messages import LedgerReadError
     from clio_agent.gact.skills import SkillNotDelegatableError
 
     @app.exception_handler(HTTPException)
@@ -199,6 +200,25 @@ def install_typed_error_handlers(app: FastAPI) -> None:
         )
         return JSONResponse(
             status_code=400, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
+        )
+
+    @app.exception_handler(LedgerReadError)
+    async def _ledger_unreadable(request: Request, exc: LedgerReadError) -> JSONResponse:
+        """Typed, recoverable 503 when a session's stored transcript cannot be read (#1172).
+
+        The session exists and its transcript is known to be stored, so this is not
+        a 404, and serving ``[]`` would present a lost transcript as an empty one.
+        A client can say the messages are unavailable and offer to retry or remove
+        the session.
+        """
+        info = ErrorInfo(
+            error="messages_unavailable",
+            message="This session's stored messages cannot be read.",
+            details={"session_id": request.path_params.get("sid"), "reason": str(exc)},
+            recoverable=True,
+        )
+        return JSONResponse(
+            status_code=503, content=ErrorEnvelope(error=info).model_dump(exclude_none=True)
         )
 
     @app.exception_handler(RequestValidationError)
