@@ -14,14 +14,15 @@ any depth -- inside a ``FunctionDef`` / ``AsyncFunctionDef``:
 * A file **not** in :data:`RATCHET_BASELINE` may have **zero** such violations
   -- a new hidden class anywhere fails the check.
 * A file **in** :data:`RATCHET_BASELINE` (the modules still carrying known
-  hidden classes) may not exceed its *recorded* violation count.
+  hidden classes) must match its *recorded* violation count exactly. More
+  ("regressed") fails; fewer ("padded") fails until the entry is lowered, so a
+  lifted class cannot be traded for a new one later (#1203); an entry whose
+  file no longer exists ("stale") fails until it is removed.
 
 The baseline may only ratchet DOWN (house precedent:
-``check_silent_fallbacks.py::BASELINE_TOTAL``). When a file loses a hidden
-class, the check reports the ratchet-down and the same PR that lifted the class
-updates :data:`RATCHET_BASELINE` (lowering the number, or removing the entry
-once the file has zero violations). Ratchet-down reports are advisory: they do
-not fail the build.
+``check_silent_fallbacks.py::BASELINE_TOTAL``). The PR that lifts a hidden class
+lowers the file's entry (or removes it once the file has zero violations); the
+check fails until it does.
 
 Run as part of CI (blocking) and locally::
 
@@ -38,8 +39,9 @@ from typing import NamedTuple
 
 # Per-file ratchet baseline: modules still carrying hidden classes, at their
 # current violation counts (iowarp/clio-agent#714, #767). This mapping may only
-# ratchet DOWN -- when a class is lifted to module scope, lower its number here
-# (or drop the entry once the file reaches zero) in the same change. Paths are
+# ratchet DOWN, and each entry must equal the file's real count -- when a class
+# is lifted to module scope, lower its number here (or drop the entry once the
+# file reaches zero) in the same change, or the check fails. Paths are
 # relative to the repository root, forward slashes.
 RATCHET_BASELINE: dict[str, int] = {
     # (agent_elicitation_answer_inline.py's entry retired, #1331 review round:
@@ -58,29 +60,13 @@ SRC_ROOT = "src/clio_agent"
 
 
 class Failure(NamedTuple):
-    """A file that breaks the ratchet (fails the check)."""
+    """A file or baseline entry that breaks the ratchet (fails the check)."""
 
     rel: str
-    count: int
-    kind: str  # "new" (non-baselined has violations) or "regressed" (over recorded)
+    count: int  # 0 for "stale": the file does not exist
+    kind: str  # "new" | "regressed" | "padded" | "stale"
     baseline: int  # recorded count (0 for a non-baselined file)
     sites: list[tuple[int, str]]  # (lineno, classname) for reporting
-
-
-class RatchetDown(NamedTuple):
-    """A baselined file that lost violations -- advisory, not a failure."""
-
-    rel: str
-    count: int
-    baseline: int
-    cleared: bool  # True once count == 0 (drop the entry entirely)
-
-
-class Result(NamedTuple):
-    """Outcome of a scan: failures fail the build, ratchet_downs are advisory."""
-
-    failures: list[Failure]
-    ratchet_downs: list[RatchetDown]
 
 
 def _repo_root() -> Path:
@@ -131,26 +117,26 @@ def check_no_class_in_function(
     *,
     rel_to: Path | None = None,
     baseline: dict[str, int] | None = None,
-) -> Result:
+) -> list[Failure]:
     """Evaluate the per-file class-in-function ratchet under ``scan_root``.
 
     Args:
         scan_root: Directory tree to walk for ``*.py`` files.
         rel_to: Base directory used to compute the forward-slash relative path
             that keys into ``baseline``. Defaults to ``scan_root``.
-        baseline: Per-file recorded violation counts. Defaults to
+        baseline: Per-file exact recorded violation counts. Defaults to
             :data:`RATCHET_BASELINE`.
 
     Returns:
-        A :class:`Result` splitting build-failing offenders from advisory
-        ratchet-down reports.
+        Every offense: a hidden class in a non-baselined file, a baselined file
+        whose count differs from its entry in either direction, or an entry
+        whose file no longer exists. Empty means the ratchet holds.
     """
     if baseline is None:
         baseline = RATCHET_BASELINE
     base = rel_to if rel_to is not None else scan_root
 
     failures: list[Failure] = []
-    ratchet_downs: list[RatchetDown] = []
     seen: set[str] = set()
     for path in sorted(scan_root.rglob("*.py")):
         rel = path.relative_to(base).as_posix()
@@ -165,47 +151,37 @@ def check_no_class_in_function(
         if count > recorded:
             failures.append(Failure(rel, count, "regressed", recorded, sites))
         elif count < recorded:
-            ratchet_downs.append(RatchetDown(rel, count, recorded, cleared=count == 0))
-
-    # A baselined file that vanished (deleted/renamed) is also a ratchet-down:
-    # its recorded violations are gone. Report so the stale entry gets removed.
+            failures.append(Failure(rel, count, "padded", recorded, sites))
     for rel, recorded in baseline.items():
         if rel not in seen:
-            ratchet_downs.append(RatchetDown(rel, 0, recorded, cleared=True))
+            failures.append(Failure(rel, 0, "stale", recorded, []))
+    return failures
 
-    return Result(failures=failures, ratchet_downs=ratchet_downs)
+
+def _note(entry: Failure) -> str:
+    """Why ``entry`` fails, and for a stale baseline the edit that fixes it."""
+    if entry.kind == "new":
+        return "new violation(s) in a non-baselined file"
+    if entry.kind == "regressed":
+        return f"regressed past recorded baseline {entry.baseline}"
+    if entry.kind == "stale":
+        return f"baselined at {entry.baseline} but the file no longer exists -- remove its entry"
+    fix = "remove its entry" if entry.count == 0 else f"lower its entry to {entry.count}"
+    return f"baseline claims {entry.baseline} -- {fix}"
 
 
-def _print_report(result: Result) -> None:
-    """Print the ratchet report (failures then advisory ratchet-downs)."""
-    for entry in result.ratchet_downs:
-        if entry.cleared:
-            print(
-                f"OK (ratchet down): {entry.rel} now has no class-in-function "
-                "-- remove it from RATCHET_BASELINE in "
-                "scripts/check_no_class_in_function.py."
-            )
-        else:
-            print(
-                f"OK (ratchet down): {entry.rel} dropped {entry.baseline} -> "
-                f"{entry.count} violation(s) -- lower its RATCHET_BASELINE entry "
-                f"to {entry.count} in scripts/check_no_class_in_function.py."
-            )
-
-    if not result.failures:
-        print(f"OK: no class-in-function under {SRC_ROOT} exceeds its ratchet baseline.")
+def _print_report(failures: list[Failure]) -> None:
+    """Print the ratchet report."""
+    if not failures:
+        print(f"OK: every class-in-function count under {SRC_ROOT} is exactly at its baseline.")
         return
 
-    total = sum(len(entry.sites) for entry in result.failures)
-    print(f"FAIL: {total} class-in-function violation(s) break the ratchet (#714, #774):")
-    for entry in result.failures:
-        if entry.kind == "new":
-            note = "new violation(s) in a non-baselined file"
-        else:
-            note = f"regressed past recorded baseline {entry.baseline}"
-        print(f"  {entry.rel}: {entry.count} ({note}):")
+    print(f"FAIL: {len(failures)} entry(ies) break the class-in-function ratchet (#714, #774):")
+    for entry in failures:
+        print(f"  {entry.rel}: {entry.count} ({_note(entry)})")
         for lineno, name in entry.sites:
             print(f"    {entry.rel}:{lineno}:{name}")
+    print("Baselines live in RATCHET_BASELINE in scripts/check_no_class_in_function.py.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -214,9 +190,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
 
     repo_root = _repo_root()
-    result = check_no_class_in_function(repo_root / SRC_ROOT, rel_to=repo_root)
-    _print_report(result)
-    return 1 if result.failures else 0
+    failures = check_no_class_in_function(repo_root / SRC_ROOT, rel_to=repo_root)
+    _print_report(failures)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
