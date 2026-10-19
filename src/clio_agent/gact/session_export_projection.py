@@ -7,6 +7,7 @@ from typing import Any
 
 from clio_agent.gact.protocol.v3.message import transcript_entities
 from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
+from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
 
 
 def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
@@ -23,11 +24,21 @@ def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
         if "interactions" in row:
             projection["interactions"] = row["interactions"]
         records = {record["call_id"]: record for record in row.get("tool_records", [])}
+        calls = {
+            p["call_id"]: p.get("input")
+            for m in row["messages"]
+            for p in m.get("parts", [])
+            if p.get("type") == "tool_call" and p.get("call_id")
+        }
         presentations: dict[str, dict[str, Any]] = {}
         for message in row["messages"]:
             for part in message.get("parts", []):
                 call_id = part.get("call_id")
-                value = legacy_ssh_presentation(part) or part.get("presentation")
+                value = (
+                    legacy_ssh_presentation(part)
+                    or legacy_ndp_presentation(part, calls.get(call_id))
+                    or part.get("presentation")
+                )
                 if not call_id or not value:
                     continue
                 previous = presentations.get(call_id, {})

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.storage.ndp_presentations import ndp_presentation
 from clio_agent.gact.storage.service import StorageService
 
 
@@ -117,12 +117,3 @@ def build_ndp_discovery_tools() -> list[Any]:
             presentation=ndp_presentation,
         ),
     ]
-
-
-def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
-    """Show catalog result counts without placing private source locators in Activity."""
-    row = structured if isinstance(structured, Mapping) else result
-    if not isinstance(row, Mapping):
-        return {"summary": "NDP discovery unavailable", "blocks": []}
-    key = "datasets" if "datasets" in row else "organizations"
-    return {"summary": f"{len(row.get(key, []))} NDP {key}", "blocks": []}

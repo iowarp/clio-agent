@@ -199,6 +199,7 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Page persisted presentation content within the owning session only."""
 
         from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
+        from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
         from clio_agent.gact.tool_result_presentation import presentation_page
 
         if app.state.sessions.get(sid) is None:
@@ -208,7 +209,15 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         for part in reversed(parts):
             if part.call_id != call_id:
                 continue
-            presentation = legacy_ssh_presentation(part.model_dump()) or part.presentation or {}
+            args = next(
+                (p.input for p in parts if p.call_id == call_id and p.type == "tool_call"), None
+            )
+            presentation = (
+                legacy_ssh_presentation(part.model_dump())
+                or legacy_ndp_presentation(part.model_dump(), args)
+                or part.presentation
+                or {}
+            )
             for block in presentation.get("blocks", []):
                 if block["id"] == block_id:
                     try:

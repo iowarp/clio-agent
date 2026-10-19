@@ -55,6 +55,24 @@ def test_agent_denial_and_actual_response_custody(bound: tuple[Any, Any, Path], 
     receipt = service.ndp_endpoints.captures("ws_default", connection["id"])[0]
     assert receipt.workspace_path == capture["workspace_path"]
 
+    # The observer must expose the response from this actual HTTP request using
+    # the tool's declared adapter, while preserving the model's original result.
+    from clio_agent.gact.agents.tool_instrumentation import instrument_tools
+    from clio_agent.gact.presentation_observer import completed_presentation
+
+    instrument_tools(ndp_endpoint_tools.build_ndp_endpoint_tools())
+    observed, view = completed_presentation(
+        "connected_data_ndp_endpoint_request", {}, capture, None, ""
+    )
+    assert observed is capture
+    assert any(
+        block["id"] == "response-preview" and "ANMO" in block["text"] for block in view["blocks"]
+    )
+    assert any(
+        block["id"] == "saved-response" and block["uri"] == capture["resource_id"]
+        for block in view["blocks"]
+    )
+
 
 def test_native_permission_names_the_operation_and_destination(
     bound: tuple[Any, Any, Path], peer: str

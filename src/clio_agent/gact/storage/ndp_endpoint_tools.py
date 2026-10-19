@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from clio_agent.gact import context
@@ -13,6 +13,7 @@ from clio_agent.gact.permission_gate import _invoke_permission_gate
 from clio_agent.gact.storage.ndp_endpoint_models import EndpointConnectionInput, EndpointRequest
 from clio_agent.gact.storage.ndp_endpoint_operations import resolve_request
 from clio_agent.gact.storage.ndp_endpoints import materialize_capture
+from clio_agent.gact.storage.ndp_presentations import endpoint_presentation
 from clio_agent.gact.storage.ndp_ssh_discovery import discover_ndp_ssh_urls
 from clio_agent.tools.task_call_context import require_admission
 
@@ -288,21 +289,6 @@ def connected_data_ndp_upload_artifact(
             },
         )
         return upload_artifact(service.store, record, upload, token)
-
-
-def endpoint_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> dict[str, Any]:
-    """Describe actual operation/capture progress without exposing authentication."""
-    row = structured if isinstance(structured, Mapping) else result
-    if not isinstance(row, Mapping):
-        return {"summary": "NDP Endpoint operation", "blocks": []}
-    summary = (
-        f"{row['size']} bytes verified in NDP storage"
-        if row.get("state") == "verified" and row.get("artifact_id")
-        else f"{row['bytes_received']} bytes captured, {row['stop_reason']}"
-        if "bytes_received" in row
-        else f"{len(row.get('operations', []))} Endpoint operations"
-    )
-    return {"summary": summary, "blocks": []}
 
 
 def build_ndp_endpoint_tools() -> list[Any]:
