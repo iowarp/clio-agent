@@ -6,7 +6,7 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.5-beta.8] - 2026-10-18
+## [0.9.5-beta.8] - 2026-10-20
 
 ### Added
 
@@ -56,6 +56,19 @@ TUI/HTTP surface aren't tracked here.
 - Keep exactly one active question-gallery panel during rapid tab switches.
 - Reject release memory measurements when delegated tasks fail or remain active,
   even when their parent session is idle.
+- Read approved connected-source data through shell analysis while the OS fence
+  protects the original files; write derived results in the workspace.
+- Explain invalid catalog or resource selections as local selection errors rather
+  than attributing them to NDP access refusal. Resolve saved catalog connections
+  consistently and keep discovery available before a dataset is attached.
+- Connect the first NDP Endpoint in an empty workspace, inspect its operations,
+  upload files using the deployed multipart schema and retain stream checkpoints
+  separately from bounded response previews.
+- Show tool purpose and readable returned content, distinguish skill instructions
+  from reference reads and retain the original failure when a later request retries.
+- Retain interactive chart sizing and selection and render saved map geometry in
+  portable HTML conversations. Publish four multi-question NDP examples with
+  complete recorded activity.
 
 ## [0.9.5-beta.7.2] - 2026-10-16
 
