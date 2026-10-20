@@ -31,7 +31,13 @@ For `load_skill`, distinguish the main procedure from supporting reads. The main
 row uses the skill's display title or recorded description/heading; a reference
 row names its exact relative file or distinct-file count. Expansion includes the
 skill ID, purpose, each requested file (including JSON fragments), actual resolved
-source links and bounded loaded content. A reference must never open `SKILL.md`
+source links and bounded loaded content. Present the recorded discovery description
+as **When to use**, before the instructions, and retain it when opening the full
+viewer. Keep the directory and source links under Source; loader-only instructions
+such as `use as SKILL_ROOT` do not belong in the human document body. The metadata
+comes from the resolved skill used for discovery and is retained with the load
+event; do not replace missing historical descriptions with today's text.
+A reference must never open `SKILL.md`
 merely because older metadata recorded only the main skill path. Display titles
 do not rename skill IDs or change model-facing procedures.
 

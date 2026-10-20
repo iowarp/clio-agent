@@ -91,6 +91,8 @@ def test_load_records_exact_procedure_and_bundled_body_at_load_time(
     for row in recorded:
         assert row["content_sha256"] == hashlib.sha256(row["content"].encode()).hexdigest()
         assert row["size"] == len(row["content"].encode())
+        assert row["skill_description"] == "Judge data quality"
+        assert Path(row["skill_directory"]).samefile(pack / "skills/quality-rubric")
     (pack / "skills/quality-rubric/references/checklist.md").write_text(
         "later edit", encoding="utf-8"
     )
@@ -247,6 +249,7 @@ def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monke
     assert shape["scope"] == "pack"
     assert shape["lines"] == 1
     assert shape["skill_description"] == "Judge data quality"
+    assert Path(shape["skill_directory"]).samefile(pack / "skills/quality-rubric")
     assert "file" not in shape
 
 

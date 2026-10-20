@@ -21,8 +21,10 @@ def _body(result: Any, skill_id: str) -> str:
     lines = result.splitlines(keepends=True)
     if lines and lines[0].strip() == f"# Skill: {skill_id}":
         lines.pop(0)
-        if lines and lines[0].startswith("Skill directory (use as SKILL_ROOT):"):
-            lines.pop(0)
+    # Older text presenters had already removed the identity heading, leaving
+    # this model-facing carrier at the start of the displayed document.
+    if lines and lines[0].startswith(("Skill directory (use as SKILL_ROOT):", "Skill directory:")):
+        lines.pop(0)
     return "".join(lines).lstrip("\r\n")
 
 
@@ -51,10 +53,25 @@ def skill_presentation(args: Mapping[str, Any], result: Any, structured: Any) ->
         action = "Load skill"
         blocks.append({"id": subject, "type": "text", "text": purpose, "label": purpose})
         summary = "Main procedure"
-    blocks.append({"id": "skill-identity", "type": "text", "label": "Skill", "text": skill_id})
     if description:
         blocks.append(
-            {"id": "skill-description", "type": "text", "label": "Purpose", "text": description}
+            {"id": "skill-description", "type": "text", "label": "When to use", "text": description}
+        )
+    blocks.append({"id": "skill-identity", "type": "text", "label": "Skill", "text": skill_id})
+    directory = row.get("skill_directory")
+    if (
+        not directory
+        and isinstance(row.get("path"), str)
+        and (PureWindowsPath(row["path"]).is_absolute() or row["path"].startswith("/"))
+    ):
+        directory = (
+            str(PureWindowsPath(row["path"]).parent)
+            if "\\" in row["path"]
+            else row["path"].rsplit("/", 1)[0]
+        )
+    if directory:
+        blocks.append(
+            {"id": "skill-directory", "type": "text", "label": "Skill directory", "text": directory}
         )
     for index, filename in enumerate(files or ["SKILL.md"]):
         path = file_paths.get(filename) if isinstance(file_paths, Mapping) else None

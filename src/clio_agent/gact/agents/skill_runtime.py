@@ -347,6 +347,7 @@ def _declare_load_skill_structured_content(
     bundled_files: list[str] | None = None,
     skill_title: str = "",
     skill_description: str = "",
+    skill_directory: str = "",
     file_paths: dict[str, str] | None = None,
 ) -> None:
     """Declare ``load_skill``'s typed wire payload (P5 wire semantics — the
@@ -375,6 +376,7 @@ def _declare_load_skill_structured_content(
         "bytes": len(text.encode("utf-8")),
         "skill_title": skill_title,
         "skill_description": skill_description,
+        "skill_directory": skill_directory,
     }
     if file:
         payload["file"] = file
@@ -486,6 +488,9 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 "content": content,
                 "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "agent_id": agent_id,
+                "skill_title": ref.title,
+                "skill_description": ref.description,
+                "skill_directory": ref.dir,
             }
             if bundled_file:
                 payload["file"] = bundled_file
@@ -580,6 +585,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 file_paths=loaded_paths,
                 skill_title=ref.title,
                 skill_description=ref.description,
+                skill_directory=ref.dir,
             )
             return combined
         elif requested_files:
@@ -602,6 +608,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 file_paths=loaded_paths,
                 skill_title=ref.title,
                 skill_description=ref.description,
+                skill_directory=ref.dir,
             )
             return content
         # P1.0 (#1062): a skill may declare a PRIVILEGED runtime EFFECT in its
@@ -657,6 +664,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             bundled_files=bundled,
             skill_title=ref.title,
             skill_description=ref.description,
+            skill_directory=ref.dir,
         )
         return f"# Skill: {skill_id}\nSkill directory (use as SKILL_ROOT): {skill_dir}\n{body}{listing}"
 

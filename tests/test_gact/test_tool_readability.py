@@ -342,3 +342,34 @@ def test_document_calculation_exposes_actual_cell_failures() -> None:
     )
     assert view["status"] == "failed"
     assert "B4" in str(view) and "#DIV/0!" in str(view) and "Formulas: 2" in str(view)
+
+
+@pytest.mark.parametrize("header", ["", "# Skill: work-with-ndp\n"])
+def test_skill_use_metadata_is_retained_and_loader_carrier_is_not_instruction_text(
+    header: str,
+) -> None:
+    result = (
+        header
+        + "Skill directory (use as SKILL_ROOT): /skills/work-with-ndp\n# Work with NDP\nOriginal procedure.\n"
+    )
+    view = skill_presentation(
+        {"skill_id": "work-with-ndp"},
+        result,
+        {
+            "skill_id": "work-with-ndp",
+            "skill_description": "Use when a scientist asks to find and analyze NDP observations.",
+            "path": "/skills/work-with-ndp/SKILL.md",
+        },
+    )
+    description = next(b for b in view["blocks"] if b["id"] == "skill-description")
+    assert description["label"] == "When to use"
+    assert description["text"] == "Use when a scientist asks to find and analyze NDP observations."
+    assert (
+        next(b for b in view["blocks"] if b["id"] == "skill-directory")["text"]
+        == "/skills/work-with-ndp"
+    )
+    assert (
+        next(b for b in view["blocks"] if b["id"] == "content")["text"]
+        == "# Work with NDP\nOriginal procedure.\n"
+    )
+    assert "use as SKILL_ROOT" in result
