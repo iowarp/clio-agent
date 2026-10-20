@@ -13,6 +13,7 @@ import catalog from '../../../../assets/tutorials/ndp/ndp-catalog.jpg';
 import catalogList from '../../../../assets/tutorials/ndp/catalog-collapsed.png';
 import expandedDataset from '../../../../assets/tutorials/ndp/catalog-expanded.png';
 import endpointSsh from '../../../../assets/tutorials/ndp/endpoint-ssh.png';
+import endpointCapture from '../../../../assets/tutorials/ndp/endpoint-stream-capture.jpg';
 
 <FilesGuideNav active="ndp" />
 <NdpBrand />
@@ -150,7 +151,7 @@ records automatically:
 | **Services** | Browse registered services, inspect their source links, and choose **Query service**. FDSN station services have Network, Station, channel and time fields; other services accept named filters. |
 | **Stations** | Filter station codes returned by the service. **Start stream** preselects a station in a reviewable form; selecting it does not start a producer. |
 | **Files** | Browse the service's archived files and save a bounded sample. **Sample CSV from URL** also accepts an archived CSV address when the service supports it. |
-| **Streams** | Inspect current sessions/sources and stop a specific one after review. |
+| **Streams** | Inspect the service's readers or sessions. For a Kafka consumer-view API, open a cataloged stream, capture records, continue from its saved checkpoint, and stop or resume that reader. |
 
 Only views advertised by the connected service appear. Ordinary browsing refreshes
 metadata without filling Sources with a capture for every keystroke. Search filters
@@ -191,12 +192,18 @@ immediately or return to **Captured responses**. The retained record includes
 the operation and inputs, timestamps, byte count, content hash and why capture
 stopped. The agent can inspect or analyze its local copy.
 
-Expand **Response limits** to change stream sampling. Captures default to
-**10 seconds / 100 SSE events**, with limits of **30 seconds,
+Expand **Sample limits** to change the request budget. Captures default to
+**30 seconds / 100 SSE events**, with limits of **30 seconds,
 1,000 events and 2 MiB**. Control messages such as `hello` and `done` count as
-events. For a finite API that returns a resume cursor, the agent should retain it
-and use it for the next segment, checking for repeated measurements. You should
+events. This budget includes connection and authentication time; the service's
+record limit or wait interval can finish a read earlier. For a finite API that
+returns a resume cursor, the agent should retain it and use it for the next
+segment, checking for repeated measurements. You should
 not need to copy an opaque token for an ordinary analysis request.
+
+<Capture client:visible image={await captureImage(endpointCapture)}
+  alt="Actual native Endpoint stream capture with a five-record limit, saved continuation checkpoint and Capture next records"
+  caption="A finite capture saves the records and their checkpoint. Continue without copying a resource ID or continuation token." />
 
 Closing a capture closes CLIO's read. If you separately started a remote producer,
 retain its session ID and stop that specific producer when finished. Stream
@@ -205,11 +212,12 @@ the data live.
 
 ## Ask the agent
 
-NDP-specific agent tools load only when the current workspace has a connected
-NDP dataset or a visible saved Endpoint. Select one through **Attach > NDP**
-first, then send your request. A saved NDP login alone does not enable those tools
-in other workspaces. Disconnecting the last dataset or hiding/removing the last
-Endpoint removes them on the next turn; retained downloads stay available as files.
+You can ask the agent to connect an existing Endpoint using its URL and saved
+SSH route, or select data through **Attach > NDP**. Operational NDP tools load
+after the workspace has a connected dataset or visible saved Endpoint. A saved
+NDP login alone does not attach data. Disconnecting the last dataset or
+hiding/removing the last Endpoint removes its operational tools on the next turn;
+retained downloads stay available as files.
 
 See [scientific questions for NDP](/docs/examples/ndp-science/) for snow, fire,
 habitat and hydrology investigations that start from an ordinary research request.
@@ -249,6 +257,10 @@ resource to an existing dataset while keeping its other resources, or correct
 catalog metadata. These are separate workflows; the three-artifact example does
 not determine the number of datasets for other requests. Local catalog creation,
 staging and publication to the federation are checked separately when requested.
+
+Open the [seven-question Endpoint conversation](/conversations/ndp/endpoint/)
+to follow real discovery, private file storage, metadata updates, public
+test-catalog submission and reuse in an interactive map and table.
 
 Try the
 [EarthScope investigation guide](/docs/examples/ndp-earthscope/) for provenance

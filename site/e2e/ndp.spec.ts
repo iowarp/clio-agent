@@ -40,9 +40,12 @@ for (const theme of ['light', 'dark']) {
         expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual Alta-Collins search/) }),
         expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^NDP dataset search/) }),
         expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual Endpoint setup/) }),
+        expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual native Endpoint stream capture/) }),
       ]);
       const streams = media.guides.find((guide: { id: string }) => guide.id === 'docs/files/ndp-streams');
       expect(streams.media).toEqual([
+        expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual exported scientific map/) }),
+        expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual native Endpoint stream capture/) }),
         expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual historical replay form/) }),
         expect.objectContaining({ kind: 'image', alt: expect.stringMatching(/^Actual completed stream sample/) }),
       ]);

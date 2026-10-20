@@ -10,7 +10,8 @@ export const ndpConversations = [
     sha256: '58a93fa96435f2489307130565002f732cece325e0f7a5509c60a89cad709bfa' },
   { slug: 'konza', file: 'Konza-session-maps-v2.html', bytes: 46724377,
     sha256: 'd9653d6835153479e2395f0eae082c8b8b07388cfd93ba22e349a901c0104f93' },
-
+  { slug: 'endpoint', file: 'Endpoint-workflow-session.html', bytes: 33013584,
+    sha256: '682061c54d38863eba3deae981b12b142f204ca12f24880e0de0cacba50cb144' },
 ] as const;
 
 interface ConversationAsset {
