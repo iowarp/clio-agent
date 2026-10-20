@@ -1,5 +1,6 @@
 ---
 name: work-with-spreadsheets
+title: Analyze and create spreadsheets
 description: Create, edit and analyze Excel workbooks and CSV/TSV tables, preserving formulas and checking calculated values and rendered sheets.
 ---
 

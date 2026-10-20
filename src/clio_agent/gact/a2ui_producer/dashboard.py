@@ -40,7 +40,7 @@ def build_publish_dashboard_report_tool() -> Any:
         name="publish_dashboard_report",
         title="Save dashboard report",
         domain="surfaces",
-        presentation="text",
+        presentation="dashboard_report",
         read_only=False,
         desc=publish_report.__doc__,
         args={

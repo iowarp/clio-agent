@@ -1,5 +1,6 @@
 ---
 name: work-with-word
+title: Read, create and review Word documents
 description: Create, edit and inspect Word documents and templates, preserving existing formatting and checking rendered pages.
 ---
 

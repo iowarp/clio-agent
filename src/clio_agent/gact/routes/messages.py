@@ -30,7 +30,7 @@ unsupported-override error, and the agent-not-available error) travel on
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -198,6 +198,10 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         """Page persisted presentation content within the owning session only."""
 
+        from clio_agent.gact.agents.recorded_inspection_presentation import (
+            legacy_inspection_presentation,
+        )
+        from clio_agent.gact.agents.skill_presentation import legacy_skill_presentation
         from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
         from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
         from clio_agent.gact.tool_result_presentation import presentation_page
@@ -215,6 +219,8 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             presentation = (
                 legacy_ssh_presentation(part.model_dump())
                 or legacy_ndp_presentation(part.model_dump(), args)
+                or legacy_skill_presentation(part.model_dump(), args)
+                or legacy_inspection_presentation(part.model_dump(), args)
                 or part.presentation
                 or {}
             )
@@ -382,9 +388,9 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess.message_count == 0 and not has_persisted_ledger:
             get_if_resident = getattr(messages, "get_if_resident", None)
             if callable(get_if_resident):
-                chronological_rows = list(get_if_resident(sid) or [])
+                chronological_rows = list(cast(list[Message] | None, get_if_resident(sid)) or [])
             elif isinstance(messages, dict):
-                chronological_rows = list(messages.get(sid, []))
+                chronological_rows = list(cast(list[Message], messages.get(sid, [])))
             else:
                 chronological_rows = []
         else:

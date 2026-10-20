@@ -223,12 +223,16 @@ def connected_data_ndp_endpoint_request(
             from clio_agent.gact.storage.setup_tool import connected_data_status
 
             return {"state": "sign_in_required", **connected_data_status()}
-    return materialize_capture(
+    captured = materialize_capture(
         app,
         service.ndp_endpoints.invoke(
             session.workspace_id, endpoint_id, request, app.state.resource_store, token
         ),
     )
+    from clio_agent.gact.agents.tool_instrumentation import declare_structured_content
+
+    declare_structured_content({**captured, "operation_summary": operation.get("summary") or ""})
+    return captured
 
 
 def connected_data_ndp_upload_artifact(

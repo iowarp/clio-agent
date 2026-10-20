@@ -50,7 +50,7 @@ def build_delete_a2ui_surface_tool() -> Any:
     return native_tool(
         delete_a2ui_surface,
         name="delete_a2ui_surface",
-        presentation="text",
+        presentation="surface_deletion",
         title="Delete widget",
         domain="surfaces",
         desc=delete_a2ui_surface.__doc__,

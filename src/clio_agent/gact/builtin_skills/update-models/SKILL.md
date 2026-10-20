@@ -1,5 +1,6 @@
 ---
 name: update-models
+title: Refresh available models
 description: Refresh the LM provider model catalogs (codex, claude_code, and every configured HTTP backend) and report what changed per provider.
 ---
 

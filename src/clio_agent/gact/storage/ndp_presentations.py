@@ -90,7 +90,15 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
     key = "datasets" if "datasets" in row else "organizations"
     entries = row.get(key, [])
     blocks = []
-    filters = {key: value for key, value in args.items() if value != "" and value is not None}
+    filters = "\n".join(
+        f"{label}: {args[key]}"
+        for key, label in (
+            ("query", "Search terms"),
+            ("organization", "Publisher"),
+            ("endpoint_id", "Catalog"),
+        )
+        if args.get(key)
+    )
     if filters:
         blocks.append(_text("search", "Search", filters))
     if key == "datasets":
@@ -149,16 +157,27 @@ def ndp_presentation(args: Mapping[str, Any], result: Any, structured: Any) -> d
             _text(
                 "page",
                 "Result page",
-                f"Showing {len(entries)} of {row['total']} datasets (offset {start}).",
+                f"Showing results {start + 1}–{start + len(entries)} of {row['total']}."
+                if entries
+                else f"No results; {row['total']} datasets in this catalog.",
             )
         )
     if row.get("next_offset") is not None:
-        blocks.append(_text("next-page", "More results", f"Next offset: {row['next_offset']}"))
+        blocks.append(
+            _text("next-page", "More results", "More datasets are available on the next page.")
+        )
     blocks.extend(
         _text(f"warning-{i}", "Catalog warning", warning, severity="warning")
         for i, warning in enumerate(row.get("warnings", []))
     )
-    return {"summary": f"{len(entries)} NDP {key}", "blocks": blocks}
+    query = str(args.get("query") or "")
+    if query:
+        blocks.insert(0, {"id": "query", "type": "text", "text": query})
+    return {
+        "summary": f"{len(entries)} NDP {key}",
+        "blocks": blocks,
+        **({"subject": "query"} if query else {}),
+    }
 
 
 def _connection(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
@@ -175,6 +194,15 @@ def _connection(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, An
 
 def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
     blocks = [
+        _text(
+            "request-action",
+            str(
+                row.get("operation_summary")
+                or row.get("operation_id")
+                or args.get("operation_id", "")
+            ),
+            row.get("operation_summary") or row.get("operation_id") or args.get("operation_id", ""),
+        ),
         _connection(row, args),
         _text("operation", "Operation", row.get("operation_id") or args.get("operation_id", "")),
     ]
@@ -246,7 +274,13 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
     if row.get("sha256"):
         blocks.append(_text("checksum", "SHA-256", row["sha256"]))
     return {
-        "summary": f"{row['bytes_received']} bytes captured, {row.get('stop_reason', 'unknown')}",
+        "subject": "request-action",
+        **(
+            {"status": "failed"}
+            if isinstance(row.get("status_code"), int) and row["status_code"] >= 400
+            else {}
+        ),
+        "summary": f"HTTP {row.get('status_code', 'unknown')}, {row['bytes_received']} bytes saved",
         "blocks": blocks,
     }
 

@@ -31,6 +31,7 @@ def build_inspect_a2ui_surface_tool() -> Any:
             return resolved
         app, session_id = resolved
         requested_id = surface_id.strip()
+        surface: Any = None
         report_identity: dict[str, Any] = {}
         if artifact_id:
             from types import SimpleNamespace
@@ -137,7 +138,7 @@ def build_inspect_a2ui_surface_tool() -> Any:
         name="inspect_a2ui_surface",
         title="Inspect widget",
         domain="surfaces",
-        presentation="text",
+        presentation="surface_inspection",
         read_only=True,
         desc=inspect_a2ui_surface.__doc__,
         args={

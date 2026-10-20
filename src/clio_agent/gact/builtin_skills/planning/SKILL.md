@@ -1,5 +1,6 @@
 ---
 name: planning
+title: Plan the work before implementation
 description: Produce an approval plan when the user asks to plan before execution or an unresolved implementation decision needs approval. Loading this skill enters Plan Mode and stops ordinary writes. Routine authorized creation of reports, slides or other deliverables does not require this separate planning workflow.
 effect: {kind: "enter_mode", mode: "plan"}
 ---

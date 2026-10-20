@@ -21,6 +21,8 @@ import json
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from clio_agent.gact.agents.native_presenters_inspection import INSPECTION_PRESENTERS
+
 # Re-exported (not just used) so ``native_presenters._resource_link`` /
 # ``native_presenters._session_link`` remain valid monkeypatch targets for
 # tests/test_gact/test_native_presentation_density.py even though the real
@@ -166,6 +168,8 @@ def native_presentation(
     presentation_status = ""
     subject = ""
 
+    if declaration in INSPECTION_PRESENTERS:
+        return INSPECTION_PRESENTERS[declaration](args, row)
     if declaration == "text":
         if isinstance(result, str):
             skill_id = str(args.get("skill_id") or "").strip()
@@ -224,6 +228,8 @@ def validate_declaration(value: str | Presenter) -> None:
     """Reject missing or unknown declarations when a native tool is registered."""
 
     if callable(value):
+        return
+    if value in INSPECTION_PRESENTERS:
         return
     if value in {
         "text",

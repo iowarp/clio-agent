@@ -149,7 +149,7 @@ def build_capture_a2ui_surface_tool() -> Any:
         name="capture_a2ui_surface",
         title="Inspect rendered widget",
         domain="surfaces",
-        presentation="text",
+        presentation="surface_capture",
         read_only=True,
         desc=capture_a2ui_surface.__doc__,
         args={

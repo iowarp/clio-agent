@@ -176,7 +176,7 @@ def build_weather_forecast_tool() -> Any:
     return native_tool(
         fetch_weather_forecast,
         name="get_weather_forecast",
-        presentation="text",
+        presentation="weather_forecast",
         title="Get weather forecast",
         domain="resources",
         desc=(

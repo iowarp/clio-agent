@@ -6,7 +6,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from clio_agent.gact.storage.ndp_presentations import _safe, endpoint_presentation, ndp_presentation
+from clio_agent.gact.storage.ndp_presentations import endpoint_presentation, ndp_presentation
 
 _DISCOVERY = {"connected_data_search_ndp", "connected_data_ndp_organizations"}
 _ENDPOINT = {
@@ -42,19 +42,14 @@ def legacy_ndp_presentation(
         except ValueError:
             return {
                 **presentation,
+                "status": "degraded",
+                "summary": "Only a partial result was retained",
                 "blocks": [
-                    {
-                        "id": "recorded-output",
-                        "type": "code",
-                        "language": "text",
-                        "label": "Recorded result preview",
-                        "text": _safe(result["preview"]),
-                    },
                     {
                         "id": "recorded-limit",
                         "type": "text",
                         "severity": "warning",
-                        "text": "Only a truncated result was retained in this older activity record.",
+                        "text": "Only a truncated result was retained in this older activity record. Its exact preview remains in technical details.",
                     },
                 ],
             }

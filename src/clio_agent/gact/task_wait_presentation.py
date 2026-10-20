@@ -43,11 +43,7 @@ def wait_presentation(args: Mapping[str, Any], result: Mapping[str, Any]) -> dic
         else "Return when all requested tasks settle."
     )
     if poll:
-        policy = "Immediate status check (timeout_s: 0); this call did not wait."
-    elif timeout is None:
-        policy += " No deadline."
-    else:
-        policy += f" Wait deadline: {timeout:g} seconds."
+        policy = "Immediate status check; this call did not wait."
     if result.get("timed_out") and not poll:
         policy += " The deadline expired; pending tasks continue running."
     elif pending:

@@ -1,5 +1,6 @@
 ---
 name: review-visual-presentation
+title: Review figures and layouts
 description: Inspect, control, capture and refine complex data views before presenting them. Review matching pixels at the user's viewing size; preserve coherent composition, linked evidence and consistent meanings. Use during visual investigation or for substantial dashboards.
 ---
 

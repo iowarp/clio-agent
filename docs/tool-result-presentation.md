@@ -5,6 +5,43 @@ must be able to understand what the agent did, what it learned or changed, and
 what is happening now. Technical details remain the audit trail, not the only
 way to understand a result.
 
+## Three levels of understanding
+
+The compact row answers **what action, on what, with what outcome**. Use a short
+human purpose, selected filename, query, destination or named result. Stable IDs
+remain available in expansion and technical details; they are rarely a useful
+subject on their own. Descriptive subjects use normal text; commands and file
+paths can retain monospace styling.
+
+Expansion answers **what was requested and what was actually returned or changed**.
+Show the relevant selection, returned items, checks, readable content, saved output
+links, coverage and limitations. An exit code alone is not command output, a byte
+count is not an API response, and a successful inspection does not prove its
+widget is ready. Explicitly identify an empty recorded command output. Present
+missing imports and failed HTTP responses as such even if execution returned a
+structured receipt successfully.
+
+Technical details preserve the exact recorded arguments, output, diagnostics and
+timing. Routine timeout ceilings, internal scheduler limits and transport options
+belong here. Actual timeouts and limits that affected the result remain visible
+in the compact/expanded result. Do not copy an entire structured result into the
+middle view just to fill an empty panel.
+
+For `load_skill`, distinguish the main procedure from supporting reads. The main
+row uses the skill's display title or recorded description/heading; a reference
+row names its exact relative file or distinct-file count. Expansion includes the
+skill ID, purpose, each requested file (including JSON fragments), actual resolved
+source links and bounded loaded content. A reference must never open `SKILL.md`
+merely because older metadata recorded only the main skill path. Display titles
+do not rename skill IDs or change model-facing procedures.
+
+Historical presentation repairs use retained inputs and observations only. Never
+read today's skill as if it were the original instruction, rerun an old request,
+or rewrite the evidence ledger. Native archives can recover a full observation
+from their durable tool record when message metadata kept only a preview. Without
+that evidence, disclose the partial record and keep its raw preview in technical
+details rather than inventing a successful result.
+
 ## Observer contract
 
 `ToolInvocation.presentation` has a concise provider-authored `summary` and
@@ -106,3 +143,7 @@ The completion gate is this entire inventory, not three illustrative tools:
 
 Registration tests are a coverage floor. Each row additionally needs meaningful
 result assertions and live inspection; an unavailable path stays unqualified.
+The readability guard also rejects a string-only presenter on a structured-returning
+native callback. Contract tests must exercise real result shapes, errors and empty
+results, with unchanged model observations and consistent history, paging and export
+views. A declared presenter with empty output is still an incomplete implementation.

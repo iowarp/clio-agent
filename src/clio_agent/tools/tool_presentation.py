@@ -392,6 +392,9 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
                 "id": "terminal",
                 "type": "terminal",
                 "command": str(row.get("command") or args.get("command") or ""),
+                "detail": f"Working directory: {row.get('cwd') or args.get('cwd')}"
+                if row.get("cwd") or args.get("cwd")
+                else "",
                 "text": str(row.get("stdout") or "") + str(row.get("stderr") or ""),
                 "exit_code": exit_code,
                 "timed_out": timed_out,

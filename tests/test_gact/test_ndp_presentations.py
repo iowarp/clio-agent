@@ -134,8 +134,8 @@ def test_catalog_page_shows_datasets_resources_filters_and_next_page() -> None:
         "snow-lab",
         "Snow.csv",
         "Resource ID: csv",
-        "Showing 1 of 80",
-        "Next offset: 50",
+        "Showing results 1–1 of 80",
+        "More datasets are available on the next page",
         "One Endpoint was unavailable",
     ]:
         assert expected in text
@@ -273,7 +273,7 @@ def test_truncated_historical_credentials_are_not_exposed() -> None:
     }
     text = body(legacy_ndp_presentation(part))
     assert "private-truncated-token" not in text
-    assert "[redacted]" in text
+    assert "technical details" in text
 
 
 def test_historical_response_pages_remain_scoped_and_reconstruct_the_recorded_body() -> None:

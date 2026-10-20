@@ -1,5 +1,6 @@
 ---
 name: work-with-presentations
+title: Create and review presentations
 description: Create, edit and inspect editable PowerPoint presentations, including slide content, images, notes and rendered layout review.
 ---
 

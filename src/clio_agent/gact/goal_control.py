@@ -112,7 +112,7 @@ def build_set_goal_tool() -> Any:
     return native_tool(
         set_goal,
         name="set_goal",
-        presentation="text",
+        presentation="goal_started",
         domain="autonomy",
         desc=set_goal.__doc__,
         title="Start goal",

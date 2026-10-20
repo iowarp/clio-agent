@@ -77,7 +77,7 @@ def build_goal_wait_tool() -> Any:
         desc=wait_for.__doc__,
         domain="autonomy",
         title="Wait for tasks",
-        presentation="text",
+        presentation="goal_wait",
         args={
             "tasks": {
                 "anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]

@@ -1,5 +1,6 @@
 ---
 name: connect-data
+title: Connect research data sources
 description: Use when the user asks to connect data, or when needed inputs are absent after inspecting supplied references and workspace folders. Connect external sources through CLIO's private setup UI.
 ---
 

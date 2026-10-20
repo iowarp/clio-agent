@@ -73,7 +73,8 @@ def test_any_wait_shows_selection_policy_and_each_result() -> None:
     )
     assert shown["action"] == "Wait for any task"
     assert shown["blocks"][0]["text"] == "worker_a, worker_b"
-    assert "No deadline" in shown["blocks"][1]["text"]
+    assert "Pending tasks continue running" in shown["blocks"][1]["text"]
+    assert "No deadline" not in shown["blocks"][1]["text"]
     assert shown["blocks"][2]["label"] == "worker_a: Turn ended"
     assert shown["blocks"][2]["text"] == "Audit incomplete; loader failed."
     assert shown["blocks"][3]["status"] == "pending"

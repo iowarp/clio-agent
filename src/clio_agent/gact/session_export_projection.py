@@ -5,6 +5,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from clio_agent.gact.agents.recorded_inspection_presentation import legacy_inspection_presentation
+from clio_agent.gact.agents.skill_presentation import legacy_skill_presentation
 from clio_agent.gact.protocol.v3.message import transcript_entities
 from clio_agent.gact.ssh_recorded_presentation import legacy_ssh_presentation
 from clio_agent.gact.storage.ndp_recorded_presentation import legacy_ndp_presentation
@@ -34,9 +36,26 @@ def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
         for message in row["messages"]:
             for part in message.get("parts", []):
                 call_id = part.get("call_id")
+                observed = part
+                record = records.get(call_id)
+                # A durable trace can retain a complete observation where older
+                # message metadata kept only a preview. Use those recorded bytes
+                # for display, without rewriting either copy of the evidence.
+                if part.get("type") == "tool_result" and record and "output" in record:
+                    result = record["output"]
+                    if isinstance(result, dict):
+                        result = result.get(
+                            "structuredContent", result.get("structured_content", result)
+                        )
+                    observed = {
+                        **part,
+                        "metadata": {**(part.get("metadata") or {}), "result": result},
+                    }
                 value = (
-                    legacy_ssh_presentation(part)
-                    or legacy_ndp_presentation(part, calls.get(call_id))
+                    legacy_ssh_presentation(observed)
+                    or legacy_ndp_presentation(observed, calls.get(call_id))
+                    or legacy_skill_presentation(observed, calls.get(call_id))
+                    or legacy_inspection_presentation(observed, calls.get(call_id))
                     or part.get("presentation")
                 )
                 if not call_id or not value:
@@ -65,5 +84,9 @@ def archive_transcript_views(transcript: dict[str, Any]) -> dict[str, Any]:
                     **(tool.get("presentation") or {}),
                     **presentations[tool["id"]],
                 }
+                if "status" not in presentations[tool["id"]]:
+                    # A complete retained result supersedes a limitation inferred
+                    # from the bounded message preview. Execution state is separate.
+                    tool["presentation"].pop("status", None)
         views[sid] = projection
     return views

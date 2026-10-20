@@ -91,6 +91,28 @@ def test_missing_declared_file_subject_does_not_invent_a_header() -> None:
     assert original == {"ok": True, "text": "readme contents"}
 
 
+def test_shell_context_and_timeout_outcome_use_recorded_facts() -> None:
+    args = {"command": "analyze data.csv", "cwd": "/requested", "timeout_s": 12345}
+    result = {
+        "structuredContent": {
+            "cwd": "/actual",
+            "stdout": "",
+            "stderr": "",
+            "exit_code": 0,
+            "timed_out": False,
+        }
+    }
+    view = present_mcp_result("shell_bash", args, result)
+    assert view["blocks"][0]["detail"] == "Working directory: /actual"
+    assert "12345" not in str(view)
+    assert result["structuredContent"]["stdout"] == ""
+    result["structuredContent"].update(timed_out=True, exit_code=1, stderr="deadline reached")
+    timed_out = present_mcp_result("shell_bash", args, result)
+    assert timed_out["status"] == "failed"
+    assert timed_out["blocks"][0]["timed_out"] is True
+    assert "deadline reached" in str(timed_out)
+
+
 def test_unknown_mcp_with_ok_false_structured_content_surfaces_failed() -> None:
     """#1333 (de0b7dd7): ``structured_tool_result_error`` widened typed-error
     qualification to the ``{"ok": false}`` MCP convention (alongside an explicit

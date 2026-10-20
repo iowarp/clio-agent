@@ -10,6 +10,7 @@ The default-registry root expert auto-declares workspace skills.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -245,6 +246,7 @@ def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monke
     assert shape["skill_id"] == "quality-rubric"
     assert shape["scope"] == "pack"
     assert shape["lines"] == 1
+    assert shape["skill_description"] == "Judge data quality"
     assert "file" not in shape
 
 
@@ -269,6 +271,39 @@ def test_load_skill_declares_typed_structured_content_for_bundled_file(
     )
     assert shape["skill_id"] == "quality-rubric"
     assert shape["file"] == "references/checklist.md"
+    assert Path(shape["file_paths"]["references/checklist.md"]).samefile(
+        pack / "skills/quality-rubric/references/checklist.md"
+    )
+
+
+def test_reference_paths_identify_the_actual_extra_root_for_batched_fragments(
+    pack: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    declared: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    extra = pack / "shared-catalog"
+    extra.mkdir()
+    (extra / "catalog.json").write_text(
+        json.dumps({"components": {"Chart": {"type": "object"}, "Map": {"type": "object"}}}),
+        encoding="utf-8",
+    )
+    runtime = _runtime(pack)
+    resolution = runtime.resolutions["quality-rubric"]
+    assert resolution.skill is not None
+    runtime.resolutions["quality-rubric"] = replace(
+        resolution, skill=replace(resolution.skill, extra_dirs=(str(extra),))
+    )
+    tool = build_load_skill_tool(_agent(pack), runtime)
+    files = ["catalog.json#/components/Chart", "catalog.json#/components/Map"]
+    body = tool.func(skill_id="quality-rubric", files=files)
+    assert "File 1/2" in body and "File 2/2" in body
+    assert set(declared[0]["file_paths"]) == set(files)
+    assert all(
+        Path(path).samefile(extra / "catalog.json") for path in declared[0]["file_paths"].values()
+    )
 
 
 # ---- tool-less experts get bodies -------------------------------------------------

@@ -1,5 +1,6 @@
 ---
 name: work-with-ndp
+title: Find, access and analyze scientific data
 description: "Use for National Data Platform (NDP) work: find and analyze scientific data, establish provenance and historical coverage, investigate streams, connect catalogs or services, and store or publish research outputs through approved connections."
 ---
 

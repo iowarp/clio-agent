@@ -97,7 +97,7 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
                 "description": "Optional Python module names to verify in the selected interpreter.",
             }
         },
-        presentation="fields:status,os,architecture,python_version,node_version",
+        presentation="runtime_inventory",
     )
 
 
@@ -176,5 +176,5 @@ def build_prepare_document_tool() -> Any:
             "cell_range": {"type": "string", "default": ""},
             "dpi": {"type": "integer", "minimum": 72, "maximum": 200, "default": 120},
         },
-        presentation="fields:status,action,manifest,error",
+        presentation="document_inspection",
     )

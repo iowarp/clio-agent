@@ -1,5 +1,6 @@
 ---
 name: work-with-pdfs
+title: Read, create and review PDF documents
 description: Read, create, edit and verify PDFs through bounded text extraction, structured conversion and rendered-page evidence.
 ---
 

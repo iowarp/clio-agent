@@ -314,7 +314,7 @@ def build_connected_data_open_tool() -> Any:
     return native_tool(
         connected_data_open,
         name="connected_data_open",
-        presentation="resource",
+        presentation="source_opened",
         representation="row",
         desc=connected_data_open.__doc__,
         args={
@@ -390,7 +390,7 @@ def build_connected_data_write_tool() -> Any:
             "content": {"type": "string", "description": "Complete replacement UTF-8 text."},
             "revision": {"type": "string", "description": "Current linked folder revision."},
         },
-        presentation="resource",
+        presentation="source_written",
         representation="row",
         domain="resources",
         title="Save linked file",
