@@ -76,6 +76,9 @@ from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents import clio_react_stream as stream
+from clio_agent.gact.agents.clio_react_inputs import MEDIA_INPUTS as _MEDIA_INPUTS
+from clio_agent.gact.agents.clio_react_inputs import SYSTEM_INPUT as _SYSTEM_INPUT
+from clio_agent.gact.agents.clio_react_inputs import bind_task_inputs
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.agents.github_shell_guidance import github_shell_guidance
 from clio_agent.gact.agents.task_guidance import task_guidance
@@ -92,8 +95,6 @@ __all__ = ["ClioReAct"]
 REACT_SUBMIT_FIELD_SUPPRESSED = "react_submit_field_suppressed"
 #: The ``submit`` tool rejected a typed/missing final-output arg: the value did not flow.
 REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
-_SYSTEM_INPUT = "system_prompt"
-_MEDIA_INPUTS = ("images", "files")
 _log = logging.getLogger(__name__)
 
 
@@ -350,7 +351,7 @@ class _Loop:
         self.agent = agent
         self.max_iters = int(input_args.pop("max_iters", agent.max_iters))
         input_args.pop("history", None)
-        self.inputs = {n: input_args[n] for n in agent.signature.input_fields if n in input_args}
+        self.inputs = bind_task_inputs(agent.signature, input_args)
         self.lm = agent.lm or dspy.settings.lm
         if self.lm is None:
             raise NoLanguageModelError()
