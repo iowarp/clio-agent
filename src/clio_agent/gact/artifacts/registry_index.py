@@ -10,11 +10,13 @@ projection + fold + mint and this owns the badge stamp/read-back.
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.artifacts.records import ArtifactRecord
     from clio_agent.gact.artifacts.registry import ArtifactRegistry
 
 logger = logging.getLogger(__name__)
@@ -24,14 +26,35 @@ logger = logging.getLogger(__name__)
 _SESSION_INDEX_NAME_CAP = 64
 
 
-def build_session_index(registry: "ArtifactRegistry", workspace_id: str) -> dict[str, Any]:
-    """Build the bounded per-workspace badge index.
+def produced_by(record: "ArtifactRecord", session_ids: Collection[str]) -> bool:
+    """Whether any version of ``record`` was produced by one of ``session_ids``.
+
+    The session-scoping rule shared by the badge index and
+    ``GET /v1/sessions/{sid}/artifacts``: records come from the session's workspace,
+    but a session only owns the ones it produced.
+    """
+    return any(
+        str((version.producer or {}).get("session_id") or "") in session_ids
+        for version in record.versions
+    )
+
+
+def build_session_index(
+    registry: "ArtifactRegistry", workspace_id: str, session_id: str
+) -> dict[str, Any]:
+    """Build the bounded badge index of ``session_id``'s artifacts.
 
     Shape ``{count, names: {name: {v, id, kind}}, names_truncated}`` — small, bounded
-    (:data:`_SESSION_INDEX_NAME_CAP` names). The full set always rebuilds from the
-    event log; this is never read back as a source (owner decision #966.8 / #966.4).
+    (:data:`_SESSION_INDEX_NAME_CAP` names). Session-scoped like
+    ``GET /v1/sessions/{sid}/artifacts``: only records with a version this session
+    produced, never the rest of a shared workspace (#1199). The full set always
+    rebuilds from the event log; this is never read back as a source (owner
+    decision #966.8 / #966.4).
     """
-    records = sorted(registry.list_for_workspace(workspace_id), key=lambda r: r.name)
+    records = sorted(
+        (r for r in registry.list_for_workspace(workspace_id) if produced_by(r, {session_id})),
+        key=lambda r: r.name,
+    )
     names: dict[str, Any] = {}
     truncated = False
     for record in records:
@@ -56,7 +79,7 @@ def patch_session_index(
     store = getattr(app.state, "sessions", None) or getattr(app.state, "session_store", None)
     if store is None:
         return
-    index = build_session_index(registry, workspace_id)
+    index = build_session_index(registry, workspace_id, sid)
     try:
         store.update(sid, metadata_patch={"artifacts": index})
     except Exception:  # noqa: BLE001 — a badge stamp must never break a turn
@@ -79,6 +102,7 @@ def rehydrate_session_index(app: "FastAPI", sid: str) -> dict[str, Any]:
 
 __all__ = [
     "build_session_index",
+    "produced_by",
     "patch_session_index",
     "rehydrate_session_index",
 ]
