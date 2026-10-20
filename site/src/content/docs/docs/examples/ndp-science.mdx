@@ -34,20 +34,23 @@ results and native viewer travel with the conversation.
 You can also download the same standalone HTML, including its CSS and viewer,
 for offline reading in a desktop browser.
 
-| Conversation | User questions | Data path | Read | Download |
+| Conversation | Questions | Data | Read | Download |
 | --- | --- | --- | --- | --- |
-| Alta-Collins snowfall | 3 | NDP discovery and acquisition of publisher-hosted observations | [Open conversation](/conversations/ndp/alta/) | [HTML, about 40 MB](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Alta-snowfall-session-maps-v2.html) |
-| Lake Tahoe area and shoreline | 3 | TRPA geometry acquired through NDP | [Open conversation](/conversations/ndp/tahoe/) | [HTML, about 61 MB](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Lake-Tahoe-session-maps-v2.html) |
-| Konza Prairie burn observations | 3 | Previously acquired NDP files and checked derived tables | [Open conversation](/conversations/ndp/konza/) | [HTML, about 47 MB](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Konza-session-maps-v2.html) |
+| Alta-Collins snowfall | 3 | NDP-acquired observations | [Open](/conversations/ndp/alta/) | [40 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Alta-snowfall-session-maps-v2.html) |
+| Lake Tahoe area and shoreline | 3 | NDP-acquired TRPA geometry | [Open](/conversations/ndp/tahoe/) | [61 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Lake-Tahoe-session-maps-v2.html) |
+| Konza Prairie burn observations | 3 | Previously acquired NDP data | [Open](/conversations/ndp/konza/) | [47 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Konza-session-maps-v2.html) |
+| Scientific data through an Endpoint | 7 | Discovery, storage and reuse | [Open](/conversations/ndp/endpoint/) | [33 MB HTML](https://github.com/iowarp/clio-agent/releases/download/ndp-scientific-conversations-2026-10-19/Endpoint-workflow-session.html) |
 
 The examples use **Sol 6.1**. Each archive includes the full conversation and
 recorded tool activity, including corrections made during the investigation.
 
 ## Follow the investigations
 
-Each investigation develops over three questions: establish a result, examine
-it more closely, then prepare it for a colleague. Alta and Tahoe start by finding
-data through NDP; Konza continues from data already acquired through NDP.
+Alta, Tahoe and Konza each develop over three questions: establish a result,
+examine it more closely, then prepare it for a colleague. The seven-question
+Endpoint conversation follows a collection through discovery, authoring,
+publication and reuse. Alta and Tahoe start by finding data through NDP; Konza
+and the Endpoint example reuse data already acquired through NDP.
 
 ### Alta: from a seasonal total to monthly explanations
 
@@ -117,9 +120,29 @@ does not establish a combustion source or a causal wind effect.
   alt="Agent-produced Konza figure showing paired particle and carbon-dioxide minute observations and correlations across different time windows"
   caption="Compare particle and carbon-dioxide observations across time windows. The association changes with the window; sensor limits and missing observations remain part of the interpretation." />
 
+### From discovery to a reusable Endpoint collection
+
+The [Endpoint conversation](/conversations/ndp/endpoint/) connects through a saved
+SSH profile and compares anonymous discovery with the signed-in account's view.
+CLIO reads an existing EarthScope station collection, selects metadata epochs
+covering its retrieval date, creates an organization, and saves a new private
+dataset. The CSV, map and methods note are each read back and checked against
+their original byte counts and SHA-256 hashes.
+
+Follow-up questions update the description without replacing the files, submit
+a separate public description to the configured NDP test catalog, and reload the
+stored CSV into a linked map and table. The public record contains only the
+original EarthScope service link; the derived collection remains private.
+
+Of the 312 selected entries, 52 are explicitly
+labeled synthetic by the source. The other 260 are not thereby confirmed as
+operating physical stations. Epoch dates describe metadata coverage; this
+conversation does not test waveform availability or live telemetry. Test-catalog
+submission is also distinct from production publication or scientific approval.
+
 ### Share the conversation and the reproducible work
 
-The three downloads on this page are **HTML only**, with the viewer assets and
+The four downloads on this page are **HTML only**, with the viewer assets and
 saved results embedded. They include the conversation, recorded tool activity,
 loaded skills and captured views. A transcript does not include every original
 data file or analysis artifact.

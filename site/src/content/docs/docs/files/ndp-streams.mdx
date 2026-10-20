@@ -8,6 +8,8 @@ import Capture from '../../../../components/overview/Capture';
 import { captureImage } from '../../../../lib/captures';
 import sampleForm from '../../../../assets/tutorials/ndp/stream-sample-form.png';
 import savedSample from '../../../../assets/tutorials/ndp/stream-saved-result.png';
+import kafkaCapture from '../../../../assets/tutorials/ndp/endpoint-stream-capture.jpg';
+import eventMap from '../../../../assets/tutorials/ndp/stream-earthquake-map.jpg';
 
 Ask the agent a scientific question. It should discover the appropriate source,
 retrieve and analyze the available observations, and explain which historical
@@ -80,10 +82,40 @@ and keep opaque cursors out of the ordinary answer. A missing completion positio
 must be reported before assuming a safe resume point. An SSE event ID, a replay
 row cursor and a broker offset are different concepts.
 
-Default capture limits are **10 seconds and 100 SSE events**; maxima are
+Default request limits are **30 seconds and 100 SSE events**; maxima are
 **30 seconds, 1,000 events and 2 MiB**. These bounds do not promise that many
 scientific observations: control messages count as events too. A limit may leave
 the final event incomplete, which must not be counted as a complete observation.
+The request budget includes connection and authentication. A stream's own record
+limit and waiting interval are separate controls.
+
+## Explore a catalog change stream
+
+```text
+What scientific streams are available on this Endpoint? Read a small sample,
+explain what the records represent, then show me where and when events occurred.
+```
+
+In the USGS earthquake example, the Endpoint publishes new and revised catalog
+entries. Its producer polls the official provider and preserves the
+original GeoJSON features, retrieval times and hashes. These are derived event
+estimates, not raw seismic waveforms. The producer is prepared by the service;
+opening a reader in CLIO does not deploy or start it.
+
+CLIO can read retained messages, continue from its checkpoint, stop and resume
+the reader, and analyze event versions. Count distinct event identities rather
+than messages: a revised magnitude or location can produce another message for
+the same earthquake. Keep origin time, catalog revision time and retrieval time
+separate when assessing freshness.
+
+<Capture client:visible image={await captureImage(eventMap)}
+  alt="Actual exported scientific map of 161 USGS earthquake event estimates, with 54 rows selected and a saved offline land outline"
+  caption="Select captured event estimates by location. Saved maps remain inspectable offline; reopening this figure does not acquire new observations." />
+
+A rolling provider window and a broker retention limit are not a historical
+archive. Ask CLIO to read the earliest available position and check the actual
+timestamps and gaps. An empty watch can mean that the provider has no changes;
+it does not establish producer health by itself.
 
 ## Replay and live acquisition
 
@@ -104,6 +136,17 @@ its terminal state, unless you asked to leave it active.
 The interface also exposes supported Files, Stations and Streams views. These
 controls are an optional way to inspect a service; they are not steps you must
 perform before asking the agent to analyze it.
+
+For a connected Kafka consumer-view API, choose **Streams → Open stream view**,
+select a named catalog resource and choose retained history or new arrivals.
+**Capture records** saves a finite batch; **Capture next records** uses its saved
+checkpoint automatically. Stopping this reader preserves its checkpoint and
+leaves the separate producer running. Other Endpoints may advertise different
+stream operations.
+
+<Capture client:visible image={await captureImage(kafkaCapture)}
+  alt="Actual native Endpoint stream capture with five records retained and a saved continuation checkpoint"
+  caption="Inspect records and continue through the native interface. The agent can perform the same analysis without asking you to operate these controls." />
 
 <Capture client:visible image={await captureImage(sampleForm)}
   alt="Actual historical replay form with a CSV URL, row limit and continuation options"
