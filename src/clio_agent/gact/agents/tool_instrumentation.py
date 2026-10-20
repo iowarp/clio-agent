@@ -572,7 +572,9 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
             result = func(*call_args, **call_kwargs)
         except Exception as exc:
             try:
-                _execution.notify_global_tool_observer(tool_name, args, "completed", error=str(exc))
+                _execution.notify_global_tool_observer(
+                    tool_name, args, "completed", error=str(exc) or type(exc).__name__
+                )
             finally:
                 # The real one-shot guarantee: consumed HERE, tied to the call
                 # boundary, whether or not the observer ever reached its own

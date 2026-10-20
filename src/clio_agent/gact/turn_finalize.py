@@ -53,7 +53,6 @@ from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import _tool_result_preview
 from clio_agent.gact.part_atom_minter import (
     close_turn_minter,
     failed_finalize_identity,
@@ -75,6 +74,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_handoff_tool_metadata,
     _sanitize_tools_called_metadata,
 )
+from clio_agent.gact.tool_result_reconcile import reconcile_tool_result_text
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
@@ -179,30 +179,7 @@ def finalize_turn(
     current_stream_part_id = state.transcript.current_stream_part_id
     live_assistant_parts = state.transcript.snapshot()
     has_live_parts = bool(live_assistant_parts or current_stream_part_id)
-    live_tool_calls = {
-        p.call_id: p for p in live_assistant_parts if p.type == "tool_call" and p.call_id
-    }
-    for part in live_assistant_parts:
-        if part.type != "tool_result" or not part.call_id:
-            continue
-        call_part = live_tool_calls.get(part.call_id)
-        if call_part is None:
-            continue
-        for row in state.tools_called:
-            if str(row.get("name") or "") != call_part.tool_name:
-                continue
-            if row.get("args") != call_part.input:
-                continue
-            if "result" not in row:
-                continue
-            part.content = [
-                Part(
-                    id=f"{part.id}_final_text",
-                    type="text",
-                    text=_tool_result_preview(row.get("result")),
-                )
-            ]
-            break
+    reconcile_tool_result_text(live_assistant_parts, state.tools_called)
 
     # Take the canonical-answer channel FIRST: its exactly-once identity seeds
     # from the pre-append ledger (the still-open streamed answer part included).

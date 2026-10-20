@@ -137,6 +137,23 @@ def test_seam_is_idempotent() -> None:
     assert tool.func is wrapped_once
 
 
+def test_empty_native_timeout_records_exception_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A blank socket timeout must not become a failed row labelled 'completed'."""
+    observed: list[tuple[str, str | None]] = []
+
+    def notify(name: str, args: dict, phase: str, error: str | None = None, result=None):
+        observed.append((phase, error))
+
+    def timed_out() -> str:
+        raise TimeoutError
+
+    monkeypatch.setattr(_execution, "notify_global_tool_observer", notify)
+    (tool,) = instrument_tools([_bare_tool(timed_out, "timeout_probe")])
+    with pytest.raises(TimeoutError):
+        tool()
+    assert observed[-1] == ("completed", "TimeoutError")
+
+
 # --------------------------------------------------------------------------- #
 # 1b. Finding A (proven leak): declare_structured_content is consumed at the  #
 #     wrapper's OWN call boundary, regardless of what the observer did — an   #
