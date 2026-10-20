@@ -8,6 +8,30 @@ For a scientific stream/history question, first load
 `scientific-stream-analysis.md`. Execute the acquisition and analysis yourself;
 the user should not have to operate the sampling form or carry a cursor for you.
 
+## Cataloged Kafka stream views
+
+Some Endpoints advertise `POST /streams`, `GET /streams` and
+`GET /streams/{stream_id}/segment`. Discover their actual schemas, then select a
+real local catalog resource with format `kafka`; a topic name alone is not a
+scientific source. Its catalog metadata should identify the provider, record
+meaning and historical coverage. This HTTP adapter keeps broker credentials on
+the Endpoint and uses the approved NDP account for access.
+
+Opening a view returns a checkpoint. Capture a bounded batch yourself, read the
+retained response file, and use its returned `next_cursor` for the next batch.
+The capture's `continuation` metadata preserves that control information even
+when the text preview is truncated. Keep cursors internal rather than asking the
+user to copy them. Retrying the same checkpoint returns the same recorded batch;
+advancing uses the next offsets. Do not count a retried batch twice.
+
+Stop/resume the owned consumer view with the advertised controls. Its upstream
+producer has a separate lifecycle: stopping consumption does not stop the sensor
+or feed. Compare record/event timestamps with acquisition time and distinguish a
+source's initial recent-event snapshot from later catalog updates. An updated
+version of the same event is not a new observation. Kafka retention is not the
+provider's complete historical archive. Report removed history or source errors
+as such; do not substitute an unrelated CSV replay.
+
 ## Connect and discover
 
 Reuse `connected_data_status.ndp_endpoints`. Hidden connections are intentionally
@@ -48,6 +72,13 @@ may provide queries without storage, or a local catalog without a live bridge.
 Operation search ranks matches to query words across IDs, summaries and descriptions.
 `operation_count` is the full inventory; `matched_count` describes this search only.
 An empty match list alone does not establish that a service or capability is absent.
+
+A service proxy's free-form query map does not describe the upstream service's
+accepted parameters. Read that service's published schema or parameter documentation
+before adding optional filters, and copy parameter names exactly. An upstream
+"unrecognized selection" response identifies a query error; it does not establish
+an NDP authentication or dataset-access failure. Correct the unsupported parameter
+while preserving the requested scientific selection.
 
 Use `connected_data_ndp_endpoint_request(endpoint_id, operation_id, parameters,
 body, max_seconds, max_events)` with observed IDs. It validates inputs, requests

@@ -241,9 +241,25 @@ def _app(root: Path) -> Any:
     )
 
 
-def test_three_artifacts_form_one_dataset_with_verified_bytes(tmp_path: Path, peer: str) -> None:
+@pytest.mark.parametrize(
+    "file_schema",
+    [
+        {"type": "string", "format": "binary"},
+        {"type": "string", "contentMediaType": "application/octet-stream"},
+    ],
+)
+def test_three_artifacts_form_one_dataset_with_verified_bytes(
+    tmp_path: Path, peer: str, monkeypatch: pytest.MonkeyPatch, file_schema: dict[str, Any]
+) -> None:
     """Exercise creation and read-back of an org, three objects, and one dataset."""
     app = _app(tmp_path)
+    monkeypatch.setitem(
+        SCHEMA["paths"]["/s3/objects/{bucket_name}"]["post"]["requestBody"]["content"][
+            "multipart/form-data"
+        ]["schema"]["properties"],
+        "file",
+        file_schema,
+    )
     store = SourceStore(tmp_path / "ledger")
     owner = NDPEndpointService(store, "tester")
     connection = owner.connect("ws", EndpointConnectionInput(name="Test lab", url=peer))

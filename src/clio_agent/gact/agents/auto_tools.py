@@ -195,6 +195,11 @@ def build_auto_react_tools(
         if ndp_enabled:
             tools.extend(build_ndp_discovery_tools())
             tools.extend(build_ndp_endpoint_tools())
+        else:
+            # Connecting is how an empty workspace acquires its first Endpoint.
+            # Keep the normal destination/SSH/permission checks on this setup
+            # tool; operational schemas still follow workspace activation.
+            tools.extend(build_ndp_endpoint_tools(setup_only=True))
         tools.append(build_connected_data_connect_tool())
         tools.append(build_connected_data_open_tool())
         tools.append(build_connected_data_write_tool())

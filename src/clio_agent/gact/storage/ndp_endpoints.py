@@ -10,7 +10,11 @@ from typing import Any
 
 from clio_agent.gact.resource_custody import ResourceStore
 from clio_agent.gact.storage.models import now
-from clio_agent.gact.storage.ndp_endpoint_capture import MAX_RESPONSE, capture_response
+from clio_agent.gact.storage.ndp_endpoint_capture import (
+    MAX_RESPONSE,
+    capture_response,
+    stream_continuation,
+)
 from clio_agent.gact.storage.ndp_endpoint_errors import raise_endpoint_error
 from clio_agent.gact.storage.ndp_endpoint_models import (
     EndpointCapture,
@@ -177,6 +181,7 @@ class NDPEndpointService:
             "GET /bridge/stations/catalog",
             "GET /bridge/stations",
             "GET /bridge/sessions",
+            "GET /streams",
         }
         if request.operation_id not in allowed or request.body is not None:
             raise ValueError("Choose a supported catalog, station or stream listing")
@@ -256,6 +261,7 @@ class NDPEndpointService:
             ssh_route=record.ssh_route,
             workspace_id=workspace_id,
             operation_id=request.operation_id,
+            operation_summary=str(operation["summary"])[:200],
             method=operation["method"],
             parameters=request.parameters,
             body=request.body,
@@ -268,6 +274,7 @@ class NDPEndpointService:
             events=count,
             resource_id=resource.id,
             sha256=digest,
+            continuation=stream_continuation(raw, reason, request),
         )
         self.store.put("ndp_capture", capture.id, capture)
         return {

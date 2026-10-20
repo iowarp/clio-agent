@@ -131,13 +131,19 @@ class EndpointSSHTransport(httpx.BaseTransport):
                 request=request,
                 extensions={"ndp_ssh_channel": channel},
             )
-        except BaseException:
+        except BaseException as exc:
             try:
                 connection.close()
                 if channel is not None:
                     channel.close()
             finally:
                 client.close()
+            if isinstance(exc, TimeoutError):
+                raise TimeoutError(
+                    f"NDP Endpoint did not send response headers within {self.timeout:g} seconds. "
+                    "The request budget includes server polling and identity validation. "
+                    "Use a longer finite request budget or a shorter poll."
+                ) from exc
             raise
 
 

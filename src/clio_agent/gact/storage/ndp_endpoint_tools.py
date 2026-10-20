@@ -167,7 +167,7 @@ def connected_data_ndp_endpoint_request(
     operation_id: str,
     parameters: dict[str, Any] | None = None,
     body: dict[str, Any] | None = None,
-    max_seconds: float = 10,
+    max_seconds: float = 30,
     max_events: int = 100,
 ) -> dict[str, Any]:
     """Execute a discovered API operation after approval and retain actual response bytes.
@@ -184,6 +184,9 @@ def connected_data_ndp_endpoint_request(
     inspect its status, capture actual data, and stop only sessions you own.
     Capture closes its HTTP/SSH connection on completion, error or time/event/
     byte limit (maximum 30 seconds, 1000 SSE messages, 2 MiB). This does not
+    allocate all of that time to the server's polling parameter: leave time for
+    SSH setup and identity validation. Use the default 30-second request budget
+    for short finite stream polls, rather than setting it equal to polling seconds.
     stop a separate remote background producer. Use its returned session ID to
     stop it explicitly. Preserve resume cursors from SSE done events for the
     next segment internally; do not make the user copy opaque cursors for an
@@ -295,7 +298,7 @@ def connected_data_ndp_upload_artifact(
         return upload_artifact(service.store, record, upload, token)
 
 
-def build_ndp_endpoint_tools() -> list[Any]:
+def build_ndp_endpoint_tools(*, setup_only: bool = False) -> list[Any]:
     """Expose operations to the root without granting them to unrelated specialists."""
     specs: list[tuple[Callable[..., Any], str, dict[str, Any]]] = [
         (
@@ -352,4 +355,5 @@ def build_ndp_endpoint_tools() -> list[Any]:
             read_only=function is connected_data_ndp_endpoint_operations,
         )
         for function, title, args in specs
+        if not setup_only or function is connected_data_ndp_endpoint_connect
     ]

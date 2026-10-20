@@ -28,6 +28,7 @@ from tests.test_gact.test_source_connect_runtime import bound as bound_fixture
 
 peer = peer_fixture
 bound = bound_fixture
+NDP_SETUP = {"connected_data_ndp_endpoint_connect"}
 NDP_TOOLS = {
     "connected_data_search_ndp",
     "connected_data_ndp_organizations",
@@ -82,7 +83,7 @@ def test_unrelated_workspace_has_no_ndp_model_schemas_or_credential_reads(
     monkeypatch.setattr(service.ndp, "endpoints", forbidden)
     assert not session_ndp_tools_enabled()
     names = _tool_names()
-    assert not names & NDP_TOOLS
+    assert names & NDP_TOOLS == NDP_SETUP
     assert {"connected_data_status", "connected_data_connect", "connected_data_open"} <= names
 
 
@@ -90,7 +91,7 @@ def test_dataset_activation_is_recomputed_for_each_turn_of_the_same_session(
     bound: tuple[StorageService, Any, Path],
 ) -> None:
     service, app, _ = bound
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
     record = _source(service, Path(app.state.workspaces.get("ws_default").root_path))
     assert session_ndp_tools_enabled()
     from clio_agent.gact.storage.setup_tool import connected_data_status
@@ -105,7 +106,7 @@ def test_dataset_activation_is_recomputed_for_each_turn_of_the_same_session(
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
     assert not _tool_names(child=True) & NDP_TOOLS
     service.disconnect(record)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
     # A retained snapshot or saved selection must not keep NDP enabled.
     assert service.sources("ws_default")
     record.connected = True
@@ -113,7 +114,7 @@ def test_dataset_activation_is_recomputed_for_each_turn_of_the_same_session(
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
     record.removed = True
     service.store.put("source", record.source.id, record)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 @pytest.mark.parametrize("foreign_owner", ["workspace", "principal", "clio"])
@@ -133,7 +134,7 @@ def test_another_owner_cannot_activate_ndp(
             update={"owner": record.source.owner.model_copy(update={"clio_id": "other-clio"})}
         )
     service.store.put("source", record.source.id, record)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 def test_endpoint_connect_hide_restore_and_remove_change_the_model_schemas(
@@ -145,11 +146,11 @@ def test_endpoint_connect_hide_restore_and_remove_change_the_model_schemas(
     )
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
     service.ndp_endpoints.update("ws_default", record.id, EndpointConnectionUpdate(hidden=True))
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
     service.ndp_endpoints.update("ws_default", record.id, EndpointConnectionUpdate(hidden=False))
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
     service.ndp_endpoints.disconnect("ws_default", record.id)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 def test_saved_catalog_connection_resolves_without_confusing_service_and_catalog_ids(
@@ -198,7 +199,7 @@ def test_foreign_endpoint_does_not_activate_ndp(
     if foreign_owner == "principal":
         record.principal = "someone-else"
         service.store.put("ndp_endpoint", record.id, record)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 def test_removing_one_of_several_sources_keeps_ndp_available(
@@ -212,7 +213,7 @@ def test_removing_one_of_several_sources_keeps_ndp_available(
     service.disconnect(source)
     assert _tool_names() & NDP_TOOLS == NDP_TOOLS
     service.ndp_endpoints.disconnect("ws_default", endpoint.id)
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 @pytest.mark.parametrize("app", [None, SimpleNamespace(state=SimpleNamespace(sessions={}))])
@@ -221,7 +222,7 @@ def test_missing_context_does_not_enable_ndp(app: Any, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(ndp_tool_activation.context, "active_app", lambda: app)
     monkeypatch.setattr(ndp_tool_activation.context, "active_session_id", lambda: "missing")
-    assert not _tool_names() & NDP_TOOLS
+    assert _tool_names() & NDP_TOOLS == NDP_SETUP
 
 
 def test_product_catalog_still_documents_optional_ndp_tools() -> None:

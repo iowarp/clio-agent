@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -9,11 +10,39 @@ import threading
 import time
 
 import httpx
+from pydantic import ValidationError
 
-from clio_agent.gact.storage.ndp_endpoint_models import EndpointRequest
+from clio_agent.gact.storage.ndp_endpoint_models import EndpointContinuation, EndpointRequest
 
 logger = logging.getLogger(__name__)
 MAX_RESPONSE = 2 * 1024 * 1024
+
+
+def stream_continuation(
+    raw: bytes, reason: str, request: EndpointRequest
+) -> EndpointContinuation | None:
+    """Separate observed control metadata from a potentially truncated text preview.
+
+    A partial body, malformed batch or another stream's response must never
+    advance the interface. The complete original response remains in custody.
+    """
+    if reason != "completed" or not request.parameters.get("stream_id"):
+        return None
+    try:
+        body = json.loads(raw)
+        if (
+            not isinstance(body, dict)
+            or body.get("complete") is not True
+            or body.get("stream_id") != request.parameters["stream_id"]
+            or not isinstance(body.get("records"), list)
+            or body.get("count") != len(body["records"])
+        ):
+            return None
+        return EndpointContinuation.model_validate(
+            {key: body[key] for key in EndpointContinuation.model_fields}, strict=True
+        )
+    except (ValueError, KeyError, ValidationError):
+        return None
 
 
 def capture_response(

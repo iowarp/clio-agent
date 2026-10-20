@@ -227,6 +227,15 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
     if "text/event-stream" in str(row.get("content_type")):
         receipt.append(f"SSE events: {row.get('events', 0)} (includes control events)")
     blocks.append(_text("receipt", "Response", "\n".join(receipt)))
+    continuation = row.get("continuation")
+    if isinstance(continuation, Mapping):
+        blocks.append(
+            _text(
+                "continuation",
+                "Stream records",
+                f"{continuation.get('count', 0)} records captured. A checkpoint is saved for the next capture; the agent or interface handles it.",
+            )
+        )
     if resource_id := row.get("resource_id"):
         name = PureWindowsPath(str(row.get("workspace_path") or "Saved NDP response")).name
         blocks.append(
@@ -280,7 +289,11 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(row.get("status_code"), int) and row["status_code"] >= 400
             else {}
         ),
-        "summary": f"HTTP {row.get('status_code', 'unknown')}, {row['bytes_received']} bytes saved",
+        "summary": (
+            f"{continuation.get('count', 0)} stream records captured"
+            if isinstance(continuation, Mapping)
+            else f"HTTP {row.get('status_code', 'unknown')}, {row['bytes_received']} bytes saved"
+        ),
         "blocks": blocks,
     }
 

@@ -33,11 +33,14 @@ For a request to connect an NDP Endpoint on a named SSH host without a URL,
 existing API through the approved connector. Do not guess its port or attempt
 shell SSH to perform that setup. Read `references/services-and-streams.md` for
 custom routes, explicit URLs and discovery limits.
-NDP-specific tools are available only when this workspace has a connected NDP
-dataset or a visible saved Endpoint. If absent, direct the user to **Attach >
-NDP** to select a dataset or connect an Endpoint, then continue on the next
-turn. A saved account alone does not activate these tools. Do not work around
-their absence with raw HTTP or credential access.
+The main agent's Endpoint connection tool is available before any dataset or
+Endpoint is attached. Use it for an explicit request to connect a supplied API
+or SSH destination; do not hand that connection task back to the user. Other
+NDP discovery and operation tools activate on the next turn once this workspace
+has a connected NDP dataset or visible saved Endpoint. A saved account alone
+does not activate them. If the user needs to choose an unspecified dataset,
+**Attach > NDP** remains available. Do not work around missing capabilities with
+raw HTTP or credential access.
 Connecting starts a metadata index. After its task completes, list and read the
 selected resources with `connected_data_open` using its default `linked=true`.
 For shell/Python analysis, use the approved `connected_data_download` task, then

@@ -127,8 +127,14 @@ def prepare_artifact_upload(
     )
     schema = operation["multipart_schema"]
     properties = schema.get("properties", {})
+    file_schema = properties.get("file", {})
+    binary_file = file_schema.get("format") == "binary" or (
+        file_schema.get("type") == "string"
+        and file_schema.get("contentMediaType") == "application/octet-stream"
+        and not file_schema.get("contentEncoding")
+    )
     if (
-        properties.get("file", {}).get("format") != "binary"
+        not binary_file
         or "object_key" not in properties
         or set(schema.get("required", [])) - {"file", "object_key"}
     ):

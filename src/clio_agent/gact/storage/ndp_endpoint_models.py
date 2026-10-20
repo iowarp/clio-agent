@@ -73,7 +73,7 @@ class EndpointRequest(StorageModel):
     operation_id: str = Field(min_length=1, max_length=500)
     parameters: dict[str, Any] = Field(default_factory=dict)
     body: dict[str, Any] | list[Any] | None = None
-    max_seconds: float = Field(default=10, ge=1, le=30)
+    max_seconds: float = Field(default=30, ge=1, le=30)
     max_events: int = Field(default=100, ge=1, le=1000)
 
     @model_validator(mode="after")
@@ -99,6 +99,15 @@ class EndpointRequest(StorageModel):
         return self
 
 
+class EndpointContinuation(StorageModel):
+    """Control metadata observed in a complete, retained stream response."""
+
+    stream_id: str = Field(min_length=1, max_length=160)
+    next_cursor: str = Field(min_length=1, max_length=4096)
+    count: int = Field(ge=0)
+    next_positions: dict[str, int]
+
+
 class EndpointCapture(StorageModel):
     """A durable receipt for actual bytes, distinct from catalog metadata."""
 
@@ -106,6 +115,7 @@ class EndpointCapture(StorageModel):
     endpoint_id: str
     workspace_id: str
     operation_id: str
+    operation_summary: str = ""
     method: str
     parameters: dict[str, Any]
     body: dict[str, Any] | list[Any] | None = None
@@ -124,3 +134,4 @@ class EndpointCapture(StorageModel):
     endpoint_url: str = ""
     ssh_profile: str = ""
     ssh_route: SshRoute | None = None
+    continuation: EndpointContinuation | None = None

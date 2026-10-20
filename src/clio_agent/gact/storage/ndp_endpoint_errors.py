@@ -42,6 +42,14 @@ def raise_endpoint_error(
             value = value.get("message")
         if isinstance(value, str):
             detail = value
+        if not detail and isinstance(body.get("checks"), dict):
+            failed_checks = []
+            for name, check in body["checks"].items():
+                if isinstance(check, dict) and check.get("status") not in {"up", "disabled"}:
+                    failed_checks.append(
+                        f"{name}: {check.get('error') or check.get('status') or 'unavailable'}"
+                    )
+            detail = "; ".join(failed_checks)
     elif raw and "text/plain" in response.headers.get("content-type", ""):
         detail = raw[:4096].decode("utf-8", errors="replace")
     if token:
@@ -52,5 +60,10 @@ def raise_endpoint_error(
     if detail:
         message += ": " + detail
     if response.status_code in {401, 403}:
-        raise PermissionError(message + "; check the account issuer and Endpoint role")
+        hint = (
+            "; use a connection authorized with the saved NDP account"
+            if token is None
+            else "; check this Endpoint's identity authority and access policy"
+        )
+        raise PermissionError(message + hint)
     raise ValueError(message)
