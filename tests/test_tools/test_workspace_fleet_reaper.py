@@ -160,7 +160,7 @@ def test_agent_getter_rebuilds_reaped_executor(monkeypatch) -> None:
     agent = _bare_agent()
     built: list[str] = []
 
-    def fake_build(*, cwd=None, set_catalog=False, blueprint_id=""):
+    def fake_build(*, cwd=None, set_catalog=False, server_set=""):
         assert cwd is not None
         built.append(cwd)
         return f"gateway:{cwd}"
@@ -392,6 +392,8 @@ def test_turn_lease_wiring_pins_root_during_context(monkeypatch, tmp_path) -> No
     )
     from clio_agent.gact import context as _ctx
 
+    # Leasing is the subject: the session's agent mounts no plugin servers.
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_server_set", lambda *_a: "")
     token = _ctx.set_app(app)
     try:
         with rt_globals._tool_session_context("sess_x"):
@@ -448,6 +450,7 @@ def test_forward_turn_pins_workspace_across_sequential_delegations(
         return object()
 
     monkeypatch.setattr(turn_forward, "_forward_turn_leased", run_catalog_then_runtime)
+    monkeypatch.setattr("clio_agent.gact.agents.resolution.session_server_set", lambda *_a: "")
     token = _ctx.set_app(app)
     try:
         asyncio.run(turn_forward.forward_turn(state))

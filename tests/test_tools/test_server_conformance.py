@@ -18,6 +18,8 @@ TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 
 FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "read_file": {"readOnlyHint": True, "openWorldHint": False},
+    "glob": {"readOnlyHint": True, "openWorldHint": False},
+    "grep": {"readOnlyHint": True, "openWorldHint": False},
     "propose_edit": {"readOnlyHint": True, "openWorldHint": False},
     "apply_edit_write": {
         "readOnlyHint": False,

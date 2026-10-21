@@ -295,7 +295,7 @@ def test_dynamic_agent_input_exhaustion_retains_uncertain_submission_handle(
 
     from fastapi.testclient import TestClient
 
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents.external_mcp_calls import _call_enabled_external_mcp_tool
     from clio_agent.gact.app import build_app
     from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
 
@@ -322,7 +322,7 @@ def test_dynamic_agent_input_exhaustion_retains_uncertain_submission_handle(
 
             with active_turn_fixture(app, session.id):
                 future = client.portal.start_task_soon(
-                    builders._call_enabled_external_mcp_tool,
+                    _call_enabled_external_mcp_tool,
                     app,
                     "srv",
                     info,
