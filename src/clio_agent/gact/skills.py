@@ -53,23 +53,6 @@ SkillStatus = Literal["resolved", "missing", "ambiguous", "unreadable"]
 _SCOPE_ORDER: tuple[SkillScope, ...] = ("plugin", "catalog", "workspace", "global")
 
 
-class SkillNotDelegatableError(RuntimeError):
-    """A skill id was used where a delegatable agent id is required (#918).
-
-    Skills stopped materializing as agents in the #916 skill-semantics change:
-    a skill is procedural knowledge an expert loads, not an actor to route to.
-    """
-
-    def __init__(self, skill_id: str, path: str = "") -> None:
-        super().__init__(
-            f"{skill_id!r} is a skill, not a delegatable agent — declare it under "
-            "`skills:` on the expert that needs it, or invoke the slash command "
-            "its frontmatter declares (if any)"
-        )
-        self.skill_id = skill_id
-        self.path = path
-
-
 class SkillBodyUnreadableError(RuntimeError):
     """A resolved skill's SKILL.md could not be read back for loading."""
 

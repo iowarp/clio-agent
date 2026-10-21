@@ -583,7 +583,6 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _record_resolved_permission,
 )
 from clio_agent.gact.sessions import SessionStore, _default_store_path
-from clio_agent.gact.skills import SkillNotDelegatableError as SkillNotDelegatableError
 
 # Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
 # re-exported for ``from clio_agent.gact.app import <name>`` callers.

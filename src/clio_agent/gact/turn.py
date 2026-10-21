@@ -47,7 +47,6 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_store import _append_session_message
-from clio_agent.gact.skills import SkillNotDelegatableError
 from clio_agent.gact.stream_failures import forward_error_info
 from clio_agent.gact.streaming import _extract_tools_called, _pop_stream_fallback
 from clio_agent.gact.tool_observer import (
@@ -536,22 +535,6 @@ async def _run_turn_in_background(
         state.tools_called = []
     except _ContextFileAccessError as exc:
         state.error_info = exc.error_info
-        state.answer_text = ""
-        state.tools_called = []
-    except SkillNotDelegatableError as exc:
-        # #918: a session/turn bound to a skill id fails TYPED (skills are not
-        # agents since the skill-semantics change), never as a generic
-        # agent_error that hides the fix.
-        state.error_info = ErrorInfo(
-            error="skill_not_delegatable",
-            message=str(exc),
-            details={
-                "skill_id": exc.skill_id,
-                "skill_path": exc.path,
-                "recovery_actions": ["choose_builtin_agent", "retry", "exit"],
-            },
-            recoverable=True,
-        )
         state.answer_text = ""
         state.tools_called = []
     except ClioError as exc:
