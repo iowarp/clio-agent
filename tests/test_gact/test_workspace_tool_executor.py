@@ -32,7 +32,7 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
     agent = _bare_agent()
     built: list[tuple[str | None, bool]] = []
 
-    def fake_build(*, cwd=None, set_catalog=False, blueprint_id=""):
+    def fake_build(*, cwd=None, set_catalog=False, server_set=""):
         built.append((cwd, set_catalog))
         return f"gateway:{cwd}"
 
@@ -73,7 +73,7 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
     assert set(agent._workspace_tool_executors) == {alpha, beta}
 
 
-def test_workspace_executor_preserves_user_service_declarations_without_blueprint(
+def test_workspace_executor_preserves_user_service_declarations_without_plugin_servers(
     monkeypatch,
 ) -> None:
     """User MCP services remain mountable in ordinary workspace sessions."""
