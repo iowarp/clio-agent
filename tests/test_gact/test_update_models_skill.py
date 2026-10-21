@@ -1,27 +1,31 @@
-"""iowarp/clio-agent#1211: the built-in ``/update-models`` skill.
+"""iowarp/clio-agent#1211: the ``core`` plugin's ``/update-models`` skill.
 
 The skill carries NO logic (pure prose instructing the refresh action + the
 delta report) -- mirrors ``tests/test_gact/test_planning_skill.py``'s discovery
-assertions for the other built-in skill.
+assertions for the other ``core`` skill.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import clio_agent.plugins
 from clio_agent.gact.skills import SkillCatalog, read_skill_body
+
+CORE_SKILLS = Path(clio_agent.plugins.__file__).resolve().parent / "builtin" / "core" / "skills"
 
 
 def _catalog() -> SkillCatalog:
-    # The conftest isolation keeps clio's shipped built-in root, so a normally-
-    # built catalog resolves the built-in `update-models` skill with no
-    # per-test authoring needed (same pattern as test_planning_skill.py).
-    return SkillCatalog()
+    # ``update-models`` ships in the core plugin (every agent carries it).
+    return SkillCatalog(plugin_skills=[("core", str(CORE_SKILLS))])
 
 
-def test_update_models_skill_is_discovered_as_builtin() -> None:
+def test_update_models_skill_is_discovered_in_the_core_plugin() -> None:
     res = _catalog().resolve("update-models")
     assert res.status == "resolved"
     assert res.skill is not None
-    assert res.skill.scope == "builtin"
+    assert res.skill.scope == "plugin"
+    assert res.skill.source == "core"
 
 
 def test_update_models_skill_declares_no_privileged_effect() -> None:
@@ -45,36 +49,19 @@ def test_update_models_skill_body_names_the_refresh_tool_and_report_contract() -
     assert "cli_default" not in body
 
 
-def test_refresh_provider_models_tool_exists_on_a_tier1_main_session() -> None:
-    """The skill's instructed tool name must match a REAL auto-attached tool
-    (#1211 review R6) on a tier-1 MAIN session (no parent_id) -- never a
-    dangling reference."""
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+def test_refresh_provider_models_tool_is_claimed_by_core() -> None:
+    """The skill's instructed tool name must match a REAL tool (#1211 review R6) that
+    the same ``core`` plugin claims -- never a dangling reference."""
+    from types import SimpleNamespace
 
-    from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.agents.native_tool_registry import build_native_tools
+    from clio_agent.plugins.service import PluginService
 
-    agent_def = AgentDef(id="main", source="expert_pack", title="Main", metadata={})
-    tools = build_auto_react_tools(agent_def)
-    names = {getattr(t, "name", "") for t in tools}
-    assert "refresh_provider_models" in names
-
-
-def test_refresh_provider_models_tool_absent_on_a_spawned_child() -> None:
-    """#1211 review S2 (DECISION): refresh_provider_models is a BILLED action
-    (each claude_code alias check is a real API call), so it must NOT be
-    auto-attached to every spawned Tier-2/3 child by default -- only to the
-    tier-1 main session that declares no parent_id."""
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
-
-    from clio_agent.gact.types import AgentDef
-
-    child_def = AgentDef(
-        id="child-expert", source="expert_pack", title="Child", parent_id="main", metadata={}
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    owners = {row["name"]: row["plugin"] for row in resolution.tools}
+    assert owners["refresh_provider_models"] == "core"
+    available, _gateway, withheld = build_native_tools(
+        SimpleNamespace(id="standard", metadata={}), ["refresh_provider_models"], {}
     )
-    tools = build_auto_react_tools(child_def)
-    names = {getattr(t, "name", "") for t in tools}
-    assert "refresh_provider_models" not in names
-    # SABOTAGE-sensitive: every OTHER auto-tool stays universal -- this is a
-    # scoping exception for ONE tool, not a change to the whole auto-attach set.
-    assert "create_artifact" in names
-    assert "plan_exit" in names
+    assert available["refresh_provider_models"].name == "refresh_provider_models"
+    assert withheld == {}
