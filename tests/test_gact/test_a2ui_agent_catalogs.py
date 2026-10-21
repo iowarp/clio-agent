@@ -86,7 +86,7 @@ def _row(plugin: str, name: str, path: Path | None = None) -> dict[str, str]:
 
 
 def _resolve(*rows: dict[str, str]) -> Any:
-    return resolve_agent_catalogs(plugin_catalog_sources(list(rows)), record=False)
+    return resolve_agent_catalogs(plugin_catalog_sources(list(rows), []), record=False)
 
 
 def _source(unit: str, raw: Any, root: Path) -> CatalogDeclarationSource:
@@ -146,9 +146,13 @@ def test_plugin_sources_are_one_per_plugin_in_resolution_order() -> None:
             _row("core", "clio-workspace"),
             _row("visuals", "minimal", MINIMAL_DIR),
             _row("extra", "basic"),
-        ]
+        ],
+        [{"id": "visuals", "executable_digest": "e1", "text_digest": "t1"}],
     )
 
+    by_unit = {source.unit_id: source.install_checksum for source in sources}
+    # A source carries its plugin's install checksum when the resolution lists it.
+    assert by_unit["plugin:visuals"] and not by_unit["plugin:core"]
     assert [source.unit_id for source in sources] == [
         "plugin:core",
         "plugin:visuals",

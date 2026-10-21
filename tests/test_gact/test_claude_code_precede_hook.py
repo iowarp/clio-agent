@@ -225,68 +225,35 @@ def _capture_hook_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
     return calls
 
 
-def test_run_blueprint_dspy_agent_wires_the_hook(monkeypatch: pytest.MonkeyPatch) -> None:
+def _resolved_runner(monkeypatch: pytest.MonkeyPatch, module: _FakeModule) -> Any:
+    """``run_resolved_agent`` over a pinned resolution whose module is ``module``."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.agents import builders, resolution
+
+    monkeypatch.setattr(builders, "build_agent_module", lambda *_args: module)
+    pinned = SimpleNamespace(pinned=lambda digest: object())
+    monkeypatch.setattr(resolution, "plugin_service", lambda _app: pinned)
+    return cast(
+        "AgentDef",
+        SimpleNamespace(id="standard", metadata={"resolution_digest": "d1", "agent_ref": "r"}),
+    )
+
+
+def test_run_resolved_agent_wires_the_hook(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_hook_calls(monkeypatch)
     config = _fake_config()
     module = _FakeModule(config, _FakeSignature)
-    monkeypatch.setattr(
-        runners, "_app_builder", lambda name: (lambda base_agent, agent_def: module)
-    )
+    agent_def = _resolved_runner(monkeypatch, module)
 
-    result = runners._run_blueprint_dspy_agent(
-        base_agent=object(),
-        agent_def=cast("AgentDef", object()),
-        question="hi",
-        session_id="sess-bp",
-    )
+    result = runners.run_resolved_agent(object(), agent_def, "hi", "sess-bp")
 
     assert result == "blueprint-result"
     assert len(calls) == 1
     assert calls[0]["config"] is config
     assert calls[0]["signature"] is _FakeSignature
     assert calls[0]["session_id"] == "sess-bp"
-
-
-def test_run_prompt_user_agent_wires_the_hook(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _capture_hook_calls(monkeypatch)
-    config = _fake_config()
-    module = _FakeModule(config, _FakeSignature)
-    monkeypatch.setattr(
-        runners, "_app_builder", lambda name: (lambda base_agent, agent_def: module)
-    )
-
-    result = runners._run_prompt_user_agent(
-        base_agent=object(),
-        agent_def=cast("AgentDef", object()),
-        question="hi",
-        session_id="sess-prompt",
-    )
-
-    assert result == "forward-result"
-    assert len(calls) == 1
-    assert calls[0]["config"] is config
-    assert calls[0]["session_id"] == "sess-prompt"
-
-
-def test_run_tool_user_agent_wires_the_hook(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _capture_hook_calls(monkeypatch)
-    config = _fake_config()
-    module = _FakeModule(config, _FakeSignature)
-    monkeypatch.setattr(
-        runners, "_app_builder", lambda name: (lambda base_agent, agent_def: module)
-    )
-
-    result = runners._run_tool_user_agent(
-        base_agent=object(),
-        agent_def=cast("AgentDef", object()),
-        question="hi",
-        session_id="sess-tool",
-    )
-
-    assert result == "forward-result"
-    assert len(calls) == 1
-    assert calls[0]["config"] is config
-    assert calls[0]["session_id"] == "sess-tool"
 
 
 def test_a_pool_exception_inside_the_hook_still_never_breaks_the_turn(
@@ -302,15 +269,8 @@ def test_a_pool_exception_inside_the_hook_still_never_breaks_the_turn(
 
     monkeypatch.setattr(ccs._STREAM_CLIENT_POOL, "precede_connect", _boom_pool_call)
     module = _FakeModule(_fake_config(), _FakeSignature)
-    monkeypatch.setattr(
-        runners, "_app_builder", lambda name: (lambda base_agent, agent_def: module)
-    )
+    agent_def = _resolved_runner(monkeypatch, module)
 
-    result = runners._run_prompt_user_agent(
-        base_agent=object(),
-        agent_def=cast("AgentDef", object()),
-        question="hi",
-        session_id="sess-y",
-    )
+    result = runners.run_resolved_agent(object(), agent_def, "hi", "sess-y")
 
-    assert result == "forward-result"  # the turn completed despite the pool blowing up
+    assert result == "blueprint-result"  # the turn completed despite the pool blowing up

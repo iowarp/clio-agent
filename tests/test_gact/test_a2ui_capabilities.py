@@ -747,7 +747,9 @@ def test_agent_resolve_route_carries_the_agents_catalogs(client: TestClient) -> 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["catalogs"] == [{"id": "clio-workspace", "plugin": "core", "path": ""}]
-    assert resolution_catalog_ids(SimpleNamespace(catalogs=body["catalogs"])) == [WORKSPACE_ID]
+    assert resolution_catalog_ids(
+        SimpleNamespace(catalogs=body["catalogs"], plugins=body["plugins"])
+    ) == [WORKSPACE_ID]
 
 
 def test_session_agent_route_carries_the_sessions_catalogs(client: TestClient) -> None:
@@ -944,7 +946,9 @@ def test_plugin_catalog_session_agent_route_carries_it(client: TestClient) -> No
         ("clio-workspace", "core"),
         ("minimal", MINIMAL_PLUGIN),
     ]
-    assert resolution_catalog_ids(SimpleNamespace(catalogs=resolution["catalogs"])) == [
+    assert resolution_catalog_ids(
+        SimpleNamespace(catalogs=resolution["catalogs"], plugins=resolution["plugins"])
+    ) == [
         WORKSPACE_ID,
         MINIMAL_CATALOG_ID,
     ]
@@ -967,7 +971,7 @@ def test_installed_plugin_route_carries_its_catalogs(client: TestClient) -> None
         "/v1/agents/resolve", params={"ref": "clio/standard", "add": MINIMAL_PLUGIN}
     )
     assert resolved.status_code == 200, resolved.text
-    assert resolution_catalog_ids(SimpleNamespace(catalogs=resolved.json()["catalogs"])) == [
+    assert resolution_catalog_ids(SimpleNamespace(**resolved.json())) == [
         WORKSPACE_ID,
         MINIMAL_CATALOG_ID,
     ]

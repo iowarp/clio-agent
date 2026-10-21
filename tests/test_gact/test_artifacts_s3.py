@@ -803,49 +803,16 @@ def _tool_names(module: Any) -> set[str]:
     return {str(getattr(t, "name", "")) for t in module.tools}
 
 
-def test_react_branches_attach_create_artifact_unconditionally(skill_pack, monkeypatch):
-    """Finding [8]: both react builder branches attach create_artifact REGARDLESS
-    of whether a skill resolved — proven on the REAL built module, not a source grep.
+def test_every_resolved_agent_carries_create_artifact_from_core() -> None:
+    """Finding [8]: create_artifact never depends on a skill resolving. ``core`` (which
+    no agent can remove) claims it, so every resolved agent and subagent carries it."""
 
-    Sabotage: indent the create_artifact append INSIDE the ``if skill_rt.resolved:``
-    guard (builders.py, either react site) → the skills-less assertions below go red
-    (the tool vanishes when no skill resolves, the exact regression this guards)."""
-    from clio_agent.gact.agents.builders import (
-        _build_blueprint_dspy_module,
-        _build_tool_user_agent_module,
-    )
+    from clio_agent.plugins.service import PluginService
 
-    _patch_lm(monkeypatch)
-    base = SimpleNamespace(tool_executor=None)
-
-    # (1) Blueprint react expert with NO resolvable skill: load_skill is absent, but
-    # create_artifact MUST still be attached (un-nested from the skill guard).
-    bp_noskill = _tool_names(
-        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=[]))
-    )
-    assert "create_artifact" in bp_noskill
-    assert "load_skill" not in bp_noskill
-    # With a resolved skill: BOTH the skill tool AND create_artifact are present.
-    bp_skill = _tool_names(
-        _build_blueprint_dspy_module(base, _react_agent(skill_pack, skills=["quality-rubric"]))
-    )
-    assert {"create_artifact", "load_skill"} <= bp_skill
-
-    # (2) The second react site (tool-declaring user agents) honors the same contract.
-    tu_noskill = _tool_names(
-        _build_tool_user_agent_module(
-            base, _react_agent(skill_pack, skills=[], source="user", module={})
-        )
-    )
-    assert "create_artifact" in tu_noskill
-    assert "load_skill" not in tu_noskill
-    tu_skill = _tool_names(
-        _build_tool_user_agent_module(
-            base,
-            _react_agent(skill_pack, skills=["quality-rubric"], source="user", module={}),
-        )
-    )
-    assert {"create_artifact", "load_skill"} <= tu_skill
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    owners = {row["name"]: row["plugin"] for row in resolution.tools}
+    assert owners["create_artifact"] == "core"
+    assert "load_skill" in owners
 
 
 # --------------------------------------------------------------------------- #
