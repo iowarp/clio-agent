@@ -179,7 +179,7 @@ class PluginService:
             try:
                 self.ensure_default_marketplace()
                 self.ready_error = None
-            except Exception as exc:  # noqa: BLE001 - recorded as a typed reason below
+            except (OSError, ValueError, RuntimeError) as exc:
                 self.ready_error = {
                     "reason": "default_marketplace_unavailable",
                     "source": default_marketplace_source(),

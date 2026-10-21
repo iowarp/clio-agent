@@ -63,6 +63,20 @@ class PluginLoadError(ValueError):
     """The package cannot be loaded at all (fatal manifest error)."""
 
 
+class PluginImportError(PluginLoadError):
+    """A plugin or marketplace Python module raised while importing."""
+
+
+def import_module_typed(name: str, label: str) -> types.ModuleType:
+    """Import ``name``; any failure of the imported (untrusted) code is a typed error."""
+
+    try:
+        return importlib.import_module(name)
+    except Exception as exc:
+        detail = traceback.format_exception_only(type(exc), exc)[-1].strip()
+        raise PluginImportError(f"{label}: {detail}") from exc
+
+
 def tree_digests(
     root: Path, executable_globs: Iterable[str] = _EXECUTABLE_GLOBS
 ) -> tuple[str, str]:
@@ -111,7 +125,7 @@ def import_plugin_module(root: Path, relative: str) -> types.ModuleType:
             sub.__path__ = [str(clio_dir.joinpath(*parts[:depth]))]
             sub.__package__ = name
             sys.modules[name] = sub
-    return importlib.import_module(".".join((package, *parts)))
+    return import_module_typed(".".join((package, *parts)), relative)
 
 
 def load_attribute(root: str | Path, module: str, attr: str) -> Any:
@@ -272,11 +286,8 @@ class _PythonParts:
 def _import(root: Path, relative: str, plugin: str, parts: _PythonParts) -> types.ModuleType | None:
     try:
         return import_plugin_module(root, relative)
-    except Exception as exc:  # noqa: BLE001 - a broken plugin module is a typed load error
-        detail = traceback.format_exception_only(type(exc), exc)[-1].strip()
-        parts.diagnostics.append(
-            Diagnostic("error", "plugin_import_failed", f"{relative}: {detail}", plugin)
-        )
+    except PluginImportError as exc:
+        parts.diagnostics.append(Diagnostic("error", "plugin_import_failed", str(exc), plugin))
         return None
 
 

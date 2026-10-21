@@ -325,6 +325,20 @@ def native_tool(
     return tool
 
 
+def plugin_tool(func: Callable[..., Any], *, name: str, desc: str | None, read_only: bool) -> Any:
+    """Construct a plugin's Python tool (``clio_agent.sdk.tool``), instrumented by definition.
+
+    A plugin tool declares only its name, description and read-only posture; its
+    arguments come from the function signature, it renders as a plain ``row``
+    titled by its name, and it carries no native domain.
+    """
+
+    setattr(func, REPRESENTATION_ATTR, DEFAULT_REPRESENTATION)
+    setattr(func, TITLE_ATTR, sanitize_tool_title(name))
+    setattr(func, READ_ONLY_ATTR, bool(read_only))
+    return _clio_native_tool_class()(func=func, name=name, desc=desc)
+
+
 def boundary_observed_tool(
     func: Callable[..., Any],
     *,

@@ -17,17 +17,20 @@ Agent classes are Python, so they are imported only for a trusted marketplace.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 import sys
-import traceback
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.claude_code import import_claude_plugin
-from clio_agent.plugins.loader import PluginLoadError, load_plugin
+from clio_agent.plugins.loader import (
+    PluginImportError,
+    PluginLoadError,
+    import_module_typed,
+    load_plugin,
+)
 from clio_agent.plugins.manifest import within
 from clio_agent.plugins.records import Diagnostic, PluginRecord
 from clio_agent.sdk.agent import Agent, AgentDefinitionError, AgentSpec
@@ -197,14 +200,9 @@ def load_agent_specs(root: Path, marketplace: str) -> tuple[list[AgentSpec], lis
         if path.name == "__init__.py":
             continue
         try:
-            module = importlib.import_module(f"{package}.agents.{path.stem}")
-        except Exception as exc:  # noqa: BLE001 - a broken agent module is a typed install error
-            detail = traceback.format_exception_only(type(exc), exc)[-1].strip()
-            diagnostics.append(
-                Diagnostic(
-                    "error", "agent_import_failed", f"agents/{path.name}: {detail}", marketplace
-                )
-            )
+            module = import_module_typed(f"{package}.agents.{path.stem}", f"agents/{path.name}")
+        except PluginImportError as exc:
+            diagnostics.append(Diagnostic("error", "agent_import_failed", str(exc), marketplace))
             continue
         for value in vars(module).values():
             if (

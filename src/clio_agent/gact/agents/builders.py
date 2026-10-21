@@ -154,8 +154,7 @@ def _gateway_and_namespace_tools(
 def _python_tools(resolution: "Resolution", sources: dict[str, str]) -> list[Any]:
     """The plugins' own Python tools as DSPy tools."""
 
-    import dspy  # noqa: PLC0415
-
+    from clio_agent.gact.agents.tool_instrumentation import plugin_tool  # noqa: PLC0415
     from clio_agent.plugins.loader import load_attribute  # noqa: PLC0415
 
     tools = []
@@ -163,7 +162,14 @@ def _python_tools(resolution: "Resolution", sources: dict[str, str]) -> list[Any
         if row["kind"] != "python":
             continue
         spec = load_attribute(row["root"], row["module"], row["attr"])
-        tools.append(dspy.Tool(spec.function, name=row["name"], desc=row["description"] or None))
+        tools.append(
+            plugin_tool(
+                spec.function,
+                name=row["name"],
+                desc=row["description"] or None,
+                read_only=bool(row.get("read_only")),
+            )
+        )
         toolset_inventory.register_tool_source(sources, row["name"], f"plugin:{row['plugin']}")
     return tools
 

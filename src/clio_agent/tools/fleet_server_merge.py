@@ -221,12 +221,9 @@ def _merge_cached_listing(executor: Any, namespace: str, spec: Any) -> int:
 
 
 def _specs_equal(a: Any, b: Any) -> bool:
-    """Whether two namespace specs describe the same server (defensive)."""
+    """Whether two namespace specs (plain declarations) describe the same server."""
 
-    try:
-        return bool(a == b)
-    except Exception:  # noqa: BLE001 - unequal-on-error keeps the first spec
-        return False
+    return bool(a == b)
 
 
 def _stamp(obj: Any, name: str, value: Any) -> None:
