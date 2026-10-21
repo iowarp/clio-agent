@@ -31,8 +31,9 @@ def test_live_gate_inherits_model_and_uses_real_marketplace_agent() -> None:
     destinations = {action.dest for action in parser._actions}
 
     assert "model" not in destinations
-    assert args.agent == "clio/earthscope-flat"
+    assert args.agent == "clio/earthscope-single-agent"
     agents = module.REPO / "external" / "clio-agent-marketplace" / "agents"
     assert any(
-        'id = "earthscope-flat"' in path.read_text(encoding="utf-8") for path in agents.glob("*.py")
+        'id = "earthscope-single-agent"' in path.read_text(encoding="utf-8")
+        for path in agents.glob("*.py")
     )

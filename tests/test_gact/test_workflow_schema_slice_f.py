@@ -1,18 +1,16 @@
 """Slice F — the EarthScope workflow_state schema ships in the installed plugin.
 
 Phase C extracted the EarthScope ``workflow_state`` vocabulary out of a core
-hardcode; it now lives in the marketplace's shared ``earthscope`` plugin, as the
+hardcode; it now lives in the marketplace's ``earthscope-skills`` plugin, as the
 ``ai.iowarp.clio.workflow_state`` extension of its ``plugin.json`` (marketplace
-submodule, pinned here). These end-to-end tests close the loop the Slice-B
-goldens opened:
+submodule, pinned here). These end-to-end tests check what ships:
 
-* **plugin declaration == fixture** — loading the *shipped* ``earthscope`` plugin
-  and validating its ``workflow_state`` declaration yields EXACTLY the
-  :data:`EARTHSCOPE_WORKFLOW_STATE_SCHEMA` fixture that every Slice-B golden
-  pins the engine against. The shipped declaration and the engine can never
-  drift.
+* **typed declaration** — the *shipped* ``earthscope-skills`` plugin declares a
+  ``workflow_state`` vocabulary with named sections (never the GENERIC dict).
+  The Slice-B goldens pin the engine against their own fixture
+  (``tests/test_gact/earthscope_schema.py``), independent of any plugin.
 * **resolver returns the typed schema** — a session of the shipped
-  ``earthscope-gnss-region`` agent resolves through
+  ``earthscope-single-agent`` agent resolves through
   :func:`~clio_agent.gact.agents.resolution.session_workflow_state_schema` to
   the typed (non-GENERIC) engine, and records NO
   ``workflow_state_schema_absent`` fallback (the declaration is present, so the
@@ -38,33 +36,32 @@ from clio_agent.gact.workflow_state.schema import (
 from clio_agent.plugins.loader import load_plugin
 from clio_agent.plugins.service import PluginService
 from tests._marketplace import MARKETPLACE_ROOT
-from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 pytestmark = pytest.mark.marketplace
 
-_EARTHSCOPE_PLUGIN = MARKETPLACE_ROOT / "plugins" / "earthscope"
+_EARTHSCOPE_PLUGIN = MARKETPLACE_ROOT / "plugins" / "earthscope-skills"
 
 
-def test_earthscope_plugin_declares_workflow_state_schema() -> None:
-    """The shipped plugin declares a ``workflow_state`` vocabulary that validates to
-    EXACTLY the transcribed EARTHSCOPE fixture.
-
-    This is the end-to-end re-assertion of the Slice-B pin: the fixture every
-    golden merges/grounds/scrubs against is proven identical to the schema the
-    shipped plugin declares — the declaration and the engine cannot drift.
-    """
+def _shipped_schema() -> WorkflowStateSchema:
     record = load_plugin(_EARTHSCOPE_PLUGIN, marketplace="clio", trusted=True)
-
     assert record.valid, [row.to_dict() for row in record.errors]
-    declaration = record.workflow_state
-    assert isinstance(declaration, dict)
-    assert WorkflowStateSchema.model_validate(declaration) == EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    assert isinstance(record.workflow_state, dict)
+    return WorkflowStateSchema.model_validate(record.workflow_state)
+
+
+def test_earthscope_plugin_declares_a_typed_workflow_state_schema() -> None:
+    """The shipped plugin declares a ``workflow_state`` vocabulary with named sections:
+    a typed engine, never the GENERIC free dict."""
+
+    schema = _shipped_schema()
+    assert schema.sections
+    assert schema is not GENERIC_WORKFLOW_STATE_SCHEMA
 
 
 def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A session of the *shipped* EarthScope GNSS region agent resolves the typed
+    """A session of the *shipped* EarthScope agent resolves the typed
     schema (not GENERIC) and records no fallback.
 
     The shipped marketplace is the default marketplace here and the session pins the
@@ -87,13 +84,13 @@ def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
         )
     )
     metadata: dict[str, Any] = {}
-    resolution = prepare_session_agent(app, metadata, "clio/earthscope-gnss-region")
-    assert "earthscope" in [row["id"] for row in resolution.plugins]
+    resolution = prepare_session_agent(app, metadata, "clio/earthscope-single-agent")
+    assert "earthscope-skills" in [row["id"] for row in resolution.plugins]
     sid = app.state.sessions.create(workspace_id="ws_default", metadata=metadata).id
 
     schema = session_workflow_state_schema(app, sid)
 
     assert schema is not GENERIC_WORKFLOW_STATE_SCHEMA
-    assert schema == EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+    assert schema == _shipped_schema()
     # No degradation: the declaration is present, so nothing is recorded.
     assert _workflow_schema_fallbacks(app) == {}

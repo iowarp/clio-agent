@@ -2,8 +2,8 @@
 """Live gate for #1000 (OBSERVE posture): observing a child task's intermediate state.
 
 Boots a GACT server with the Claude SDK transport, inherits the provider's
-selected model, pre-allows permissions, pins the marketplace ``earthscope-flat``
-agent (``clio/earthscope-flat``) to the session, and posts a prompt where acting
+selected model, pre-allows permissions, pins the marketplace EarthScope
+agent (``clio/earthscope-single-agent``) to the session, and posts a prompt where acting
 on INTERMEDIATE evidence is naturally advantageous — WITHOUT naming any tool.
 PASS = the main observes its child (the shared ``observe_tasks`` control, or the
 ``observe_agent_tasks`` compatibility alias #1000 introduced) to surface the
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=17818)
     parser.add_argument("--transport", default="sdk")
-    parser.add_argument("--agent", default="clio/earthscope-flat", help="agent ref to pin")
+    parser.add_argument("--agent", default="clio/earthscope-single-agent", help="agent ref to pin")
     parser.add_argument("--out", default="out/live_gate_observe_1000.json")
     parser.add_argument("--turn-timeout-s", type=float, default=900.0)
     return parser
@@ -114,7 +114,7 @@ def main() -> int:
         wsid = ws.get("id") or ws.get("workspace_id")
         sess = call("POST", "/v1/sessions", {"title": "observe-gate", "workspace_id": wsid})
         sid = sess["id"]
-        # pin the earthscope-flat agent to the session
+        # pin the EarthScope agent to the session
         pinned = call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": args.agent})
         verdict["agent"] = {
             "ref": pinned["resolution"]["agent"]["ref"],
