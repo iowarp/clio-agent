@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 932,  # Cooperative cancellation moved to runtime/cancellation.py.
+    "src/clio_agent/agent.py": 905,  # Cooperative cancellation moved to runtime/cancellation.py.
     "src/clio_agent/arc/memory.py": 1066,  # 11a: the segment-plane surface moved to arc/memory_segments.py
     "src/clio_agent/arc/segments.py": 951,  # Typed persistence errors live in segment_errors.py.
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -276,7 +276,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1162,  # MCP task bridge moved to external_mcp_calls.py
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -373,7 +372,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # route and the executing agent can never disagree. Genuinely new
     # decision logic (not a call-site wrap), hence living here rather than in
     # a caller.
-    "src/clio_agent/gact/agents/resolution.py": 829,
     # NEW entry (C1-S7, #1309 gate-review F1/F3): crossed the flat 800 cap
     # (795 -> 820) for two new optional TaskSpec fields (tool_allowlist /
     # agent_elicitation_depth) and the metadata_patch lines that stamp them
@@ -477,7 +475,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 2299,
+    "src/clio_agent/gact/app.py": 1840,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -579,7 +577,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_blueprint_requires.py (install_refusal_http_exception,
     # path_activation_invalid_http_exception) instead of building the
     # ErrorEnvelope inline here.
-    "src/clio_agent/gact/routes/catalog.py": 821,  # Command receipt presentation lives in gact/command_presentation.py.
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
     # prompt/list branches) -- the classification logic itself lives in the owner
@@ -599,7 +596,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 947,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 903,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -732,7 +729,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 812,  # tool session binding/lease moved to runtime/tool_session.py
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -763,7 +759,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1029,  # Result metadata/text moved to tool_observer_parts.
+    "src/clio_agent/gact/tool_observer.py": 1028,  # Result metadata/text moved to tool_observer_parts.
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -956,7 +952,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1073,  # shared task submission replaces transparent waits
+    "src/clio_agent/tools/execution.py": 1052,  # shared task submission replaces transparent waits
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.

@@ -631,14 +631,12 @@ class AgentCapabilityRef(BaseModel):
 class AgentDef(BaseModel):
     """GACT §6.5 + v0.2 §4.3.1 multi-tier additions.
 
-    The executable view of a resolved plugin agent (``agents.resolution.
-    resolution_agent_def``). Prompt/provider/model fields are explicit so the
-    turn engine and trace read them without unpacking the resolution.
+    The executable view of a resolved plugin agent (``resolution_agent_def``), with
+    prompt/provider/model explicit so the turn engine reads them directly.
     """
 
     id: str
-    #: ``plugin`` -- a resolved plugin agent or defined subagent (every session's agent);
-    #: ``skill`` -- the shim a skill command runs under; ``builtin`` -- internal describers.
+    #: plugin agent or subagent; ``skill`` command shim; ``builtin`` internal describer.
     source: Literal["plugin", "skill", "builtin"] = "builtin"
     title: str
     description: str = ""
