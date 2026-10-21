@@ -74,8 +74,8 @@ def _external_mcp_tool_annotations(info: Mapping[str, Any], tool_name: str) -> A
     """Return cached annotations for one external MCP tool, or ``None``.
 
     Runtime-installed servers retain their compact string tool list and keep
-    annotations in a side mapping. Agent-blueprint servers use richer tool
-    rows. Supporting both shapes keeps the existing registry/API contract while
+    annotations in a side mapping. A server recorded with full tool rows carries
+    them per row. Supporting both shapes keeps the existing registry/API contract while
     ensuring every external dispatch reaches the same fail-closed gate.
     """
 

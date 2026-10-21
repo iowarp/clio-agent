@@ -1,7 +1,7 @@
-"""Doctor check: MCP launcher commands declared by loaded packs must be on PATH.
+"""Doctor check: MCP launcher commands declared by installed plugins must be on PATH.
 
-Marketplace packs declare their MCP servers as stdio launcher commands in their
-``AGENT.md`` frontmatter (``mcp_servers:``). If a declared launcher is not installed
+Plugins declare their MCP servers as stdio launcher commands in their ``mcp.json``
+(Agent Plugins 1.0.0). If a declared launcher is not installed
 on PATH, the failure otherwise surfaces only at *first spawn* — deep inside the ReAct
 loop, three layers downstream as an opaque ``_UnsupportedSessionAgent`` / "tools
 unavailable". :func:`clio_agent.tools.mcp_config.transport_for` already raises a precise
@@ -28,7 +28,7 @@ WhichChecker = Callable[[str], str | None]
 
 # The clio-kit tool launcher and its exact provisioning command. Kept in lockstep with
 # install/install.sh + install/install.ps1 (which run this same ``uv tool install``) and
-# the marketplace packs that launch ``clio-kit mcp-server <name>``.
+# the marketplace plugins that launch ``clio-kit mcp-server <name>``.
 _CLIO_KIT_LAUNCHER = "clio-kit"
 _CLIO_KIT_REMEDIATION = (
     "uv tool install clio-kit==2.10.6, then ensure the directory reported by "
@@ -83,7 +83,7 @@ def probe_mcp_launchers(
 ) -> list[IntegrationStatus]:
     """Report a structured finding for each declared stdio MCP launcher missing on PATH.
 
-    A doctor sub-check: for every stdio MCP server declared by a loaded pack (or the
+    A doctor sub-check: for every stdio MCP server declared by an installed plugin (or the
     user/workspace ``mcp.yaml``) whose launcher command does not resolve on PATH, emit
     one :class:`~clio_agent.runtime.status.IntegrationStatus` naming the command and its
     remediation. This surfaces — before the first spawn — the exact precondition
@@ -110,9 +110,10 @@ def probe_mcp_launchers(
                     name="mcp_launchers",
                     state=IntegrationState.DEGRADED,
                     summary=f"Could not discover declared MCP servers to check launchers: {exc}",
-                    config_source="packs+mcp.yaml",
+                    config_source="plugins+mcp.yaml",
                     next_action=(
-                        "Inspect pack/blueprint discovery; MCP launcher provisioning was "
+                        "Inspect installed plugins (clio-agent plugin list) and mcp.yaml; "
+                        "MCP launcher provisioning was "
                         "not verified."
                     ),
                     required=False,
@@ -149,7 +150,7 @@ def probe_mcp_launchers(
                     f"MCP launcher {spec.command!r} is declared but not found on PATH; "
                     "the stdio MCP server(s) using it cannot spawn."
                 ),
-                config_source=spec.source or "packs+mcp.yaml",
+                config_source=spec.source or "plugins+mcp.yaml",
                 next_action=_remediation_for(spec.command),
                 fallback="none",
                 required=True,
@@ -176,7 +177,7 @@ def probe_mcp_yaml_declarations(
             process environment).
         discovered: True when the caller already ran discovery in this collection
             (:func:`probe_mcp_launchers` does), so the unreadable-file snapshot is
-            current and a second full blueprint scan per health call is skipped.
+            current and a second full plugin scan per health call is skipped.
 
     Returns:
         Zero or more findings -- one per unreadable file.

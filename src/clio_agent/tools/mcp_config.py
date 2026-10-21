@@ -1,9 +1,10 @@
 """Standard MCP server declarations — low-friction, human-writable.
 
 clio-agent core does not hardcode domain tool servers. Domain/case tools are
-ordinary MCP servers, consumed like any installable MCP. A marketplace pack
-declares the servers it needs right in its ``AGENT.md`` frontmatter, as a simple
-``name: <command-or-url>`` map — no JSON, no nested objects required:
+ordinary MCP servers, consumed like any installable MCP. A plugin declares the
+servers it needs in its ``mcp.json`` (Agent Plugins 1.0.0, see
+``clio_agent.plugins.servers``); a person declares their own in ``mcp.yaml``, as
+a simple ``name: <command-or-url>`` map — no JSON, no nested objects required:
 
     mcp_servers:
       files: npx -y @modelcontextprotocol/server-filesystem /data
@@ -16,7 +17,7 @@ For the rare case that needs env vars, headers, or OAuth, a mapping value is
 also accepted (``{command, args, env}`` or ``{url, headers, auth}``), but the string form is
 the documented, default surface.
 
-Scopes: workspace ``.clio-agent/shared/mcp.yaml`` > user config > pack > built-ins.
+Scopes: workspace ``mcp.yaml`` > user config > the session's plugin servers > built-ins.
 
 This module is parsing only; ``transport_for`` is the single FastMCP glue that
 turns a spec into a transport the existing ``execution.py`` machinery accepts.
@@ -107,7 +108,7 @@ class MCPTransportError(ValueError):
     """A raw ``{transport, command, args, url}`` dict spec cannot become a transport.
 
     Raised by :func:`transport_from_spec` when the stored spec of a REST-installed
-    or agent-blueprint MCP server is unusable: a stdio spec with no ``command``, an
+    MCP server is unusable: a stdio spec with no ``command``, an
     http/streamable-http/sse spec with no ``url``, or an unknown ``transport`` value
     outside the single canonical accepted set ``{stdio, http, streamable-http,
     sse}``. Callers map it to a client-actionable 4xx (e.g. ``mcp_spec_invalid``)
@@ -405,7 +406,7 @@ def specs_from_mapping(
     source: str,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
-    """Build specs from a ``name -> declaration`` mapping (e.g. AGENT.md frontmatter)."""
+    """Build specs from a ``name -> declaration`` mapping (e.g. a plugin's servers)."""
     return {
         str(name): spec_from_declaration(str(name), value, source=source, env=env)
         for name, value in servers.items()
@@ -687,14 +688,13 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 
 
 # The single canonical accepted transport set for raw dict specs. Every
-# REST-installed / agent-blueprint MCP server routes its construction through
+# REST-installed MCP server routes its construction through
 # :func:`transport_from_spec`, so this set is the one source of truth — no more
 # per-site ``{http}`` vs ``{http, streamable-http}`` vs ``{http, streamable-http,
 # sse}`` divergence. ``http``/``streamable-http`` share the Streamable-HTTP wire
 # protocol (``StreamableHttpTransport``); ``sse`` is a DISTINCT FastMCP wire
 # protocol (``SSETransport``) and is constructed separately in
-# :func:`transport_from_spec`. All three are accepted here and by the
-# agent-blueprint descriptor validator alike.
+# :func:`transport_from_spec`. All three are accepted here.
 _STREAMABLE_HTTP_TRANSPORTS = frozenset({"http", "streamable-http"})
 _HTTP_TRANSPORTS = _STREAMABLE_HTTP_TRANSPORTS | frozenset({"sse"})
 _CANONICAL_TRANSPORTS = frozenset({"stdio"}) | _HTTP_TRANSPORTS
@@ -729,7 +729,7 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     """Turn a raw MCP runtime dict into a validated FastMCP transport.
 
     This is the ONE construction site for the runtime third-party MCP surface —
-    the REST-installed servers and agent-blueprint MCP descriptors stored on
+    the REST-installed MCP server specs stored on
     ``app.state.external_mcp_servers[sid]["spec"]``. It complements
     :func:`transport_for` (which takes the typed :class:`MCPServerSpec` and does
     ``which()`` / cwd / ``CLIO_KIT_ARTIFACTS`` pinning) by covering the dict-spec

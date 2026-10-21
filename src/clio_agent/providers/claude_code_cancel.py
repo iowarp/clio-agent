@@ -1,6 +1,6 @@
 """Kill-on-cancel registry for in-flight ``claude_code`` SDK streams (#993).
 
-When a child turn is cancelled (the cancel cascade / a declared-workflow step stall),
+When a child turn is cancelled (the cancel cascade / a flow cancelling its subtree),
 its cooperative cancel flag stops the ReAct loop at the NEXT decision point — but the LM
 call already in flight keeps running to completion. On the pooled Claude Agent SDK
 transport that means the child's ``claude`` CLI subprocess keeps STREAMING after the task

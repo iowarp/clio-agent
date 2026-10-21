@@ -47,8 +47,8 @@ class _ProjectionCache:
     is a pure EXTENSION of these (verified by tuple slice equality) AND
     ``registry_generation``/``agent_identity`` still match. Anything
     else — a part removed, reordered, a late-arriving part whose stamp
-    sorts before the cached high-water mark, a pack install/uninstall, or
-    the session switching its active blueprint — is NOT a pure extension
+    sorts before the cached high-water mark, a plugin install/uninstall, or
+    the session switching its agent — is NOT a pure extension
     and triggers a full refold from scratch, recorded as a typed
     ``a2ui_projection_cache_invalidated`` reason (never a silent stale
     serve).
@@ -617,7 +617,7 @@ class A2UIStore:
             timestamp = utcnow_iso()
             # Every production door (HTTP POST /messages, create_a2ui_surface)
             # routes through here, so the session-producible gate lives in ONE
-            # place: a createSurface against an installed-but-inactive pack
+            # place: a createSurface against an installed-but-inactive plugin
             # catalog is refused with a2ui_catalog_not_producible regardless of
             # which door it came through.
             producible = frozenset(session_producible_catalog_ids(self._app, session_id))

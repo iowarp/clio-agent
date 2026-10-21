@@ -1,11 +1,12 @@
-"""Pack-declared workflow_state vocabulary (#646/#648, Phase C).
+"""Plugin-declared workflow_state vocabulary (#646/#648, Phase C).
 
 Core is a generic engine; the DOMAIN vocabulary (section names, status
 precedence, readiness rules, artifact fields, scrub aliases, failure rules)
-is declared once per Agent Blueprint in AGENT.md frontmatter under
-``workflow_state:`` and compiled into this frozen, typed schema. Copies the
+is declared once per plugin in ``plugin.json`` under
+``extensions."ai.iowarp.clio".workflow_state`` and compiled into this frozen,
+typed schema; at most one resolved plugin may declare it. Copies the
 enrichment.py empty-hook pattern: GENERIC (below) is the domain-free default --
-core reproduces EarthScope precedence for NO pack until the pack declares it.
+core reproduces EarthScope precedence for NO agent until a plugin declares it.
 """
 
 from __future__ import annotations
@@ -67,10 +68,10 @@ class WorkflowScrubAliases(BaseModel):
     in :mod:`clio_agent.gact.delegation`, both DELETED in #881: the client renders
     model prose VERBATIM and the server fixes leaks at the root, so clio no longer
     edits a model's visible text by matching a declared vocabulary. The fields are
-    RETAINED (not removed) purely for pack compatibility — external marketplace
-    ``AGENT.md`` blueprints already declare ``workflow_state.aliases`` and
-    :class:`WorkflowStateSchema` is ``extra="forbid"``, so dropping the field
-    would reject those blueprints at load. Nothing in core reads these values.
+    RETAINED (not removed) purely for plugin compatibility — marketplace plugins
+    (``earthscope``, ``earthscope-skills``) still declare ``workflow_state.aliases``
+    and :class:`WorkflowStateSchema` is ``extra="forbid"``, so dropping the field
+    would reject those plugins at load. Nothing in core reads these values.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")

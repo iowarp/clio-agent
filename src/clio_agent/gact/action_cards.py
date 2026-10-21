@@ -23,7 +23,7 @@ EVERY react tool-using expert exactly like ``create_artifact`` / ``load_skill``
 (:mod:`clio_agent.gact.agents.auto_tools`) — NOT counted against the 5-7 curated
 domain-tool budget, and available regardless of whether an expert's OWN curated
 ``tools:`` list declares it. This is deliberate: any spawned child (spotter's
-watcher included) needs the ability to notify its parent without every blueprint
+watcher included) needs the ability to notify its parent without every plugin
 author having to remember to declare it.
 """
 

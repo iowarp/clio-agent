@@ -87,7 +87,7 @@ def _active_lm_session() -> str:
 # --- Unified LM token highway (#693) -----------------------------------------
 # The single LM-stream tap (``ClioReAct``'s streamed call on the persistent LM loop)
 # feeds the live answer text to the SAME chat publisher (_emit_chunk) so a
-# blueprint/expert call running in an executor thread streams to the UI exactly like
+# agent or subagent call running in an executor thread streams to the UI exactly like
 # a chat turn — no separate streaming path. The turn sets (loop, async _emit_chunk) here; the tap
 # schedules the answer delta onto that loop. ContextVar so it's copied into the
 # executor that runs the expert (and is naturally absent off-turn = no-op).

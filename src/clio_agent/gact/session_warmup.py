@@ -1,7 +1,7 @@
 """Start a session's MCP servers in the background, before its first message.
 
 Owner, 2026-09-30: the first message must not pay for starting the session's
-servers. When a session is created or an Agent Blueprint is activated, CLIO starts
+servers. When a session is created (and again as each turn starts), CLIO starts
 the servers the session will use -- the session agent's plugin servers and
 any always-load service -- concurrently, off the request path: each is listed and
 connected. Nothing waits on the warm-up. A turn that arrives first builds its model

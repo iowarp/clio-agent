@@ -170,7 +170,7 @@ class TurnState:
     # --- Turn-scoped infra (set once, early, in the linear body) ---
     transcript: "TurnTranscript" = field(init=False)
     turn_cancel_event: "threading.Event" = field(init=False)
-    # #767 Phase C: the turn's active pack workflow_state schema, resolved once
+    # #767 Phase C: the turn's plugin workflow_state schema, resolved once
     # (the single resolver seam) in the linear body just before the transcript
     # opens; every delegation/grounding/scrub seam reads it off ``state``.
     workflow_schema: "WorkflowStateSchema" = field(init=False)

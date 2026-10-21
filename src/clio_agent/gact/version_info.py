@@ -10,9 +10,9 @@ single, independently testable owner.
 Ground rules this module holds itself to (system-cleanup-2026-07.md #775):
 
 * **Cheap and offline.** No network call, no subprocess, no git probe --
-  :mod:`clio_agent.gact.blueprint_update_check` (slice A4) already owns the
-  ``git ls-remote`` update check; this module only reads already-resolved
-  in-process constants and the persisted source ledger.
+  updating a marketplace is ``clio-agent plugin update`` (``POST
+  /v1/plugins/marketplaces/{name}/update``); this module only reads
+  already-resolved in-process constants and the plugin store's marketplace row.
 * **Never raises into capabilities.** A version probe is diagnostic, not
   load-bearing -- any failure degrades to the typed ``"unknown"`` placeholder
   (or ``marketplace=None``) rather than turning ``/v1/capabilities`` into a 500.

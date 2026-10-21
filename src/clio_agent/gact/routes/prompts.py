@@ -12,7 +12,8 @@ knowing where prompt files live on disk:
 * ``GET /v1/prompts/{prompt_id:path}`` -- resolve one prompt (optionally a named
   profile) to its effective definition.
 * ``POST /v1/prompts/{prompt_id:path}/render`` -- render a prompt against the
-  live template context (agent tree, active pack/blueprint, invocable commands)
+  live template context (available tools, the session's agent and its defined
+  subagents, invocable commands)
   plus any caller-supplied context overrides.
 * ``POST /v1/prompts/{prompt_id:path}/validate`` -- validate inline prompt text
   (or an on-disk row) for front-matter/template errors.

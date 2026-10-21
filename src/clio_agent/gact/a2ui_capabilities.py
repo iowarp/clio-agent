@@ -329,7 +329,7 @@ def agent_capabilities(app: "FastAPI", session_id: str | None) -> dict[str, Any]
             declares, in its declared preference order (v15 S8; no builtin
             is implicit) -- or ``None`` for the server-wide capability
             (every INSTALLED catalog in registry order, builtins then
-            discovered packs; no agent is in scope, so the order states no
+            installed plugins' catalogs; no agent is in scope, so the order states no
             preference) -- the shape ``GET /v1/capabilities`` advertises.
 
     Returns:

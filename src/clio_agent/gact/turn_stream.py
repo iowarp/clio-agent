@@ -194,9 +194,9 @@ async def emit_chunk(
 def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> None:
     """Bind this turn's loop + chat publisher onto the unified LM token highway (#693).
 
-    Binds ``partial(emit_chunk, state)`` so a blueprint/expert LM call streamed in
+    Binds ``partial(emit_chunk, state)`` so an agent or subagent LM call streamed in
     an executor thread feeds the SAME emitter — one streaming path for chat AND
-    blueprint turns, instead of the old executor drain-and-discard. The executor
+    agent turns, instead of the old executor drain-and-discard. The executor
     inherits this binding via the ``contextvars.copy_context()`` at the forward
     sites. Best-effort: live-stream wiring must never fail a turn.
 

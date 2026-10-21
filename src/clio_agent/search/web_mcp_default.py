@@ -5,7 +5,7 @@ default, or ``clio_web_search``), the main agent gets the Web MCP server
 (``clio-kit mcp-server web``) as namespace ``web`` without any declaration, and it
 loads for the root session by default. A person's own Web MCP declaration (any name,
 any scope) replaces this one, and it loads by default too, because a Web MCP server
-that only a blueprint can mount leaves the main agent without ``web_search``. With
+that only a plugin can mount leaves the main agent without ``web_search``. With
 ``search.backend: none``, nothing is declared. :func:`web_mcp_state_dir` is the
 writable state directory every Web MCP spawn gets: its own default
 (``~/.config/clio-kit``) is not writable under CLIO's tool sandbox.

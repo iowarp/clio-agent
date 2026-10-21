@@ -167,7 +167,7 @@ def _total_variant_failure(
         last_error,
     )
     return VariantTotalFailure(
-        f"blueprint expert {agent_id!r} variant {variant!r} exhausted all {n} tries "
+        f"agent {agent_id!r} variant {variant!r} exhausted all {n} tries "
         f"(every attempt raised); last try error follows | per-try: {summary}",
         agent_id=agent_id,
         variant=variant,

@@ -23,14 +23,14 @@ tier shadows). :meth:`SkillResolution.to_metadata` renders the
 ``prompt_resolution`` in :mod:`clio_agent.gact.agents.composition`).
 
 This module is a pure leaf: stdlib + no gact imports, so every gact layer
-(catalog, expert packs, builders) can depend on it without cycles. The one
+(catalog, plugin resolution, builders) can depend on it without cycles. The one
 exception is the ``catalog`` scope (S4, docs/design/a2ui-compat-campaign-
 2026-09.md): a generated skill per installed A2UI catalog, sourced from
 :mod:`clio_agent.gact.a2ui_catalogs.skills` through a DEFERRED import inside
 :meth:`SkillCatalog._catalog_refs` only -- the same "import at call time, not
 module scope" idiom the rest of gact uses to keep leaf/owner modules acyclic
-despite a real dependency (``a2ui_catalogs`` -> ``agent_blueprints`` already
-imports this module at its own top level).
+despite a real dependency (``a2ui_catalogs.skills`` imports this module at its
+own top level).
 """
 
 from __future__ import annotations
@@ -181,9 +181,9 @@ class SkillCatalog:
         # SESSION's producible A2UI catalogs for the ``catalog`` scope (S4) --
         # via the existing producibility/resolution seam
         # (``a2ui_catalogs.activation``), never a fresh registry construction
-        # (that would reintroduce the per-message blueprint-discovery cost
+        # (that would reintroduce the per-message plugin-discovery cost
         # the registry's own cache doctrine exists to avoid). Both are
-        # required together: a session's PATH-activated pack catalog (one
+        # required together: a session's plugin catalog (one
         # the app-level registry's own ``installed()`` never sees) only
         # resolves through the session-scoped resolver, so ``app`` alone is
         # not enough. Either missing means "no catalog skills this scan" --

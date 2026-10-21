@@ -7,7 +7,7 @@ Example:
     >>> from clio_agent.registry import AgentRegistry, AgentCapability
     >>>
     >>> registry = AgentRegistry()
-    >>> blueprint_agent = object()
+    >>> data_agent = object()
     >>>
     >>> capabilities = AgentCapability(
     ...     keywords=["hdf5", "parquet", "compression"],
@@ -16,8 +16,8 @@ Example:
     ...     specialization="data_io"
     ... )
     >>>
-    >>> registry.register_agent("data_blueprint", blueprint_agent, capabilities)
-    >>> agent = registry.get_agent("data_blueprint")
+    >>> registry.register_agent("data", data_agent, capabilities)
+    >>> agent = registry.get_agent("data")
 """
 
 import copy
@@ -63,16 +63,16 @@ class AgentRegistry:
 
     Example:
         >>> registry = AgentRegistry()
-        >>> blueprint_agent = object()
+        >>> data_agent = object()
         >>> caps = AgentCapability(
         ...     keywords=["hdf5", "data"],
         ...     description="Data I/O expert",
         ...     tools=["hdf5_analyze"],
         ...     specialization="data_io"
         ... )
-        >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
+        >>> registry.register_agent("data", data_agent, caps)
         >>> agents = registry.list_agents()
-        >>> ['data_blueprint']
+        >>> ['data']
     """
 
     def __init__(self):
@@ -96,14 +96,14 @@ class AgentRegistry:
             ValueError: If agent_id already exists or is invalid
 
         Example:
-            >>> blueprint_agent = object()
+            >>> data_agent = object()
             >>> caps = AgentCapability(
             ...     keywords=["hdf5"],
             ...     description="HDF5 expert",
             ...     tools=["hdf5_analyze"],
             ...     specialization="data_io"
             ... )
-            >>> registry.register_agent("data_blueprint", blueprint_agent, caps)
+            >>> registry.register_agent("data", data_agent, caps)
         """
         if not agent_id or not isinstance(agent_id, str):
             raise ValueError(f"Invalid agent_id: {agent_id}")

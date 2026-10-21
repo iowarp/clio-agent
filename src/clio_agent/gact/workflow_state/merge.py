@@ -198,7 +198,7 @@ def _merge_workflow_state_mapping(
     """Merge typed workflow state while preserving progressed semantic state.
 
     Precedence, normalization, and sticky-field rules are all declared by the
-    pack ``schema`` (rank / normalize_section / sticky_true_fields_for); this
+    plugin ``schema`` (rank / normalize_section / sticky_true_fields_for); this
     function contributes only the generic merge mechanics (provenance flattening,
     higher-rank-wins, non-empty overwrite).
     """

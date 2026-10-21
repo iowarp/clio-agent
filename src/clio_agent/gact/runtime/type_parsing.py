@@ -198,7 +198,7 @@ def _is_optional_annotation(annotation: Any) -> bool:
 
 
 def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
-    """Map a pack ``signature`` field 'type' DSL to a real Python annotation.
+    """Map a declared ``signature`` field 'type' DSL to a real Python annotation.
 
     Supports scalars (``str``/``int``/``float``/``bool``), ``dict``/``object``/
     ``json`` (generic JSON object), ``list[...]``/``array[...]``,
@@ -219,11 +219,11 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
                 model_name=f"{model_name}_{fname}",
             )
             # Precedence for a field's default: an EXPLICIT ``default:`` in the
-            # blueprint DSL wins (lets an author mark a stage-invariant field --
+            # declared signature DSL wins (lets an author mark a stage-invariant field --
             # e.g. discovery's ``analysis_ready: false`` -- so a model that drops
             # the boilerplate key gets the correct value instead of crashing the
             # whole delegation on a Pydantic "Field required"). This is NOT clio
-            # deciding semantics: the default is declared by the blueprint and is
+            # deciding semantics: the default is declared by the author and is
             # the field's known value at this stage; routing-critical fields (e.g.
             # ``status``) simply omit ``default`` and stay required. Otherwise an
             # Optional[...] field defaults to None; everything else stays required.
@@ -248,7 +248,7 @@ def _parse_field_annotation(spec: Any, *, model_name: str) -> Any:
 
     match = re.fullmatch(r"(?:list|array)\[(.+)\]", low)
     if match:
-        # Runtime type construction from a blueprint string: the inner is a real
+        # Runtime type construction from a declared type string: the inner is a real
         # type at runtime but is statically Any, which mypy cannot use as a
         # subscript. This is intentional dynamic typing, not a defect.
         inner_list = _parse_field_annotation({"type": match.group(1)}, model_name=model_name)

@@ -5,8 +5,8 @@ maps every ``ctx`` invocation id to what the task layer accepted for it (the
 handle) and, once settled, how it ended; ``ctx.step`` results and plan edits
 are recorded the same way. Each change is confirmed as a
 :class:`~clio_agent.arc.task_types.WorkflowCheckpoint` under the owning
-assignment, and the assignment's details point at the latest checkpoint, as
-the declared-workflow runner did. Nothing else stores flow state.
+assignment, and the assignment's details point at the latest checkpoint.
+Nothing else stores flow state.
 
 On restart the runtime re-runs ``forward()`` from the top and each call looks
 itself up here: a recorded handle is re-attached, a recorded step result is

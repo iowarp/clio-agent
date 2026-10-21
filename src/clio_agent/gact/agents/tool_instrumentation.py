@@ -8,8 +8,7 @@ one — stayed invisible unless someone remembered to hand-wrap it. This owner
 module replaces that per-tool opt-in with ONE assembly seam:
 
 * :func:`instrument_tools` — called where the final tool list is handed to the
-  react runtime (``builders._build_blueprint_dspy_module`` /
-  ``builders._build_tool_user_agent_module``). EVERY tool whose callable is not
+  react runtime (``builders.build_agent_module``). EVERY tool whose callable is not
   already marked observed gets wrapped with the observer notification
   (``started`` with bound args, ``completed`` with the verbatim result, the
   error surfaced on raise — never re-authored).
@@ -21,7 +20,7 @@ module replaces that per-tool opt-in with ONE assembly seam:
   - ``"row"`` (default): the live observer appends real ``tool_call`` /
     ``tool_result`` parts (with ``tool_title`` when curated);
   - ``"handoff"``: the action's wire representation IS its ``expert_handoff``
-    part (spawn_agent_task / spawn_agents_parallel / run_workflow) — that part
+    part (spawn_skill_task) — that part
     already IS call evidence, so the observer records telemetry (semantic
     events + ledger) but skips the redundant ``tool_call``/``tool_result`` row;
   - ``"chip"``: the action gets its normal ``tool_call``/``tool_result`` row
@@ -40,7 +39,7 @@ module replaces that per-tool opt-in with ONE assembly seam:
   ``TOOL_OBSERVED_ATTR`` from construction and the seam never double-wraps
   them (exactly-once notification).
 * :func:`rebuilt_tool` — for wrappers that re-construct a tool around a new
-  callable (``builders._recording_blueprint_tool``): propagates the
+  callable (``tool_recording.recording_tool``): propagates the
   instrumentation markers so a re-wrapped boundary tool stays exactly-once.
 
 The observer (``gact.tool_observer._make_tool_observer``) reads the declared
@@ -382,7 +381,7 @@ def rebuilt_tool(
     """Re-construct a tool around a replacement callable, keeping its markers.
 
     A wrapper that re-creates a ``dspy.Tool`` with a new callable (the
-    blueprint recording wrapper) would otherwise DROP the inner callable's
+    recorded-tool wrapper) would otherwise DROP the inner callable's
     instrumentation markers — a re-wrapped boundary tool would get
     double-wrapped at the seam and notify twice. Propagates the observed /
     representation / title / domain markers from ``inner_tool``'s callable

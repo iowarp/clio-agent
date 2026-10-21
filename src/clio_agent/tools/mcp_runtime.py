@@ -18,8 +18,8 @@ dispatch in ``gact/routes/mcp.py``, and the ``providers/handshake/mcp.py`` probe
 **The execution/introspection split (adopted default):** handlers wire on
 execution paths only (paths that ``call_tool`` / dispatch a proxy backend), so
 **list-only introspection sites do NOT migrate** and keep their bare
-``Client()`` — the catalog/blueprint/status/gateway-listing passes
-(``routes/catalog.py``, ``routes/blueprints.py``, ``runtime/status.py``,
+``Client()`` — the catalog/status/gateway-listing passes
+(``routes/catalog.py``, ``runtime/status.py``,
 ``tools/gateway.list_gateway_tools``) plus the install/reconnect/inventory
 ``list_tools`` passes in ``routes/mcp.py``. They never dispatch a tool call, so
 they never need the handler slot; forcing them through the factory would be pure
@@ -400,13 +400,13 @@ def make_mcp_client(
     Identity scope — a deliberate decision (#1111 review): identity is stamped on
     the EXECUTION paths that route here (tool dispatch, both gateway proxy
     branches, and the handshake probe) plus the readiness probe. The documented
-    list-only introspection sites (``routes/catalog.py``, ``routes/blueprints.py``,
+    list-only introspection sites (``routes/catalog.py``,
     ``runtime/status.py``, ``tools/gateway.list_gateway_tools``, the install/
     reconnect ``list_tools`` passes in ``routes/mcp.py``) keep their bare
     ``Client()``: they only enumerate tools and never dispatch a call or receive a
     server-initiated request, so ``clientInfo`` there is cosmetic. Routing them
     through this factory purely for identity would either re-plumb their list-only
-    test doubles for no functional gain or add a per-file import to four modules
+    test doubles for no functional gain or add a per-file import to modules
     that sit exactly at their size-ratchet baselines — accretion the no-accretion
     guard forbids. The meaningful connection surface (every dispatch path + the
     readiness handshake) carries identity; the display-only enumerations do not.

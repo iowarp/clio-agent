@@ -1,6 +1,6 @@
 """Normalize clone sources handed to ``git`` at the subprocess boundary.
 
-Agent Blueprint installation may receive a marketplace source as a ``file://``
+A marketplace install may receive its source as a ``file://``
 URI -- notably ``pathlib.Path.as_uri()`` produces ``file:///C:/Users/...`` on
 Windows. Older git-for-windows builds reject that shape when it is passed as a
 bare ``git clone`` argument (the URL's leading-slash path ``/C:/Users/...`` is
@@ -41,7 +41,7 @@ def normalize_git_clone_source(source: str) -> str:
     unchanged.
 
     Args:
-        source: The clone source as supplied to blueprint installation: a URL,
+        source: The clone source as supplied to a marketplace install: a URL,
             an SCP-like remote, a ``file://`` URI, or a local path.
 
     Returns:

@@ -68,10 +68,9 @@ from clio_agent.tools.mcp_runtime import wire_value
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
-# and resolved these through the ``app`` re-export shims; only the agent-builder /
-# blueprint-runner seams + ``_enrich_cancellation_error_info`` (the "danger set"
-# that tests monkeypatch as e.g. ``clio_agent.gact.app._build_tool_user_agent_module``)
-# are still read back through ``app`` at call time — via a function-local import at
+# and resolved these through the ``app`` re-export shims; only the agent-builder
+# seams + ``_enrich_cancellation_error_info`` (the "danger set" that tests
+# monkeypatch on ``clio_agent.gact.app``) are still read back through ``app`` at call time — via a function-local import at
 # their single call site — to preserve that monkeypatch contract with zero test
 # edits (``stage_intent_user_message`` keeps that contract for the user-message
 # persist seam). Those app imports are function-local, so the graph stays acyclic.
@@ -353,7 +352,7 @@ async def _run_turn_in_background(
     )
     from clio_agent.gact.tool_observer import _open_turn_transcript  # noqa: PLC0415
 
-    # #767 Phase C: resolve the turn's pack workflow_state schema at the one turn
+    # #767 Phase C: resolve the turn's plugin workflow_state schema at the one turn
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
     state.workflow_schema = session_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
@@ -362,8 +361,8 @@ async def _run_turn_in_background(
     # IN-PLACE mutations.
 
     # Unified LM token highway (#693): bind this turn's loop + chat publisher so a
-    # blueprint/expert LM call streamed in an executor thread feeds the SAME
-    # emitter — one streaming path for chat AND blueprint turns, instead of the
+    # agent or subagent LM call streamed in an executor thread feeds the SAME
+    # emitter — one streaming path for chat AND agent turns, instead of the
     # old executor drain-and-discard. The executor inherits this binding via the
     # contextvars.copy_context() at the forward sites below.
     bind_live_emitter(state, asyncio.get_running_loop())
@@ -414,7 +413,7 @@ async def _run_turn_in_background(
         # immediately before each model call, including subsequent iterations.
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
-        # forward -> expert-pack delegation settle lives in ``turn_forward.py``.
+        # forward (the agent's flow) lives in ``turn_forward.py``.
         # It sets state.active_agent_id / invocation_agent_id (IN PLACE, TRICKY
         # #1) / agent_runtime / prompt_resolution / dynamic_agent_used /
         # expert_handoffs and returns the prediction (TRICKY #2: pred is a seam

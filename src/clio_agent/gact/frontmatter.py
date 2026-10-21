@@ -1,5 +1,4 @@
-"""YAML frontmatter of the Markdown files blueprints, experts, packs and skills are
-written in: ``---`` fenced YAML, then the body."""
+"""YAML frontmatter of Markdown files: ``---`` fenced YAML, then the body."""
 
 from __future__ import annotations
 
@@ -11,9 +10,8 @@ from typing import Any
 __all__ = ["parse_frontmatter"]
 
 
-# Parsed frontmatter by text: every turn re-reads the installed blueprints, experts
-# and packs, and their YAML parse was ~1.3 s of a turn's prologue. Bounded; each
-# caller gets its own copy.
+# Parsed frontmatter by text, so re-reading the same file skips the YAML parse.
+# Bounded; each caller gets its own copy.
 _FRONTMATTER_MEMO: OrderedDict[str, tuple[dict[str, Any], str]] = OrderedDict()
 _FRONTMATTER_MEMO_MAX = 1024
 _FRONTMATTER_MEMO_LOCK = threading.Lock()

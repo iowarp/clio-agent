@@ -3,7 +3,8 @@
 The gateway composes tool servers under namespaced prefixes
 (``<namespace>_<tool>``). Core ships only the universal in-process built-ins
 (``fs``/``shell``); every domain/case tool is a **declared MCP server** that the
-active blueprint/pack brings in (see ``tools/mcp_config.py``). ``build_gateway``
+session's resolved plugins bring in (``mcp.json``) or the user declares in
+``mcp.yaml`` (see ``tools/mcp_config.py``). ``build_gateway``
 proxy-mounts those declared servers next to the built-ins, and
 ``build_tool_catalog`` derives the tool catalog from the connected namespaces
 merged with the static built-in entries.
@@ -146,8 +147,8 @@ def _proxy_for_spec(
         # MODERN front's mirror returns here, since our front (Client(proxy)
         # in mcp_executor.py) is always modern/in-process/instant --
         # fabricates a DiscoverResult locally and never contacts the peer. A
-        # genuinely legacy-only backend (fastmcp 3.4.7 in an agent-blueprint's
-        # own venv, e.g. spotter-ai/phenotype) then never gets the
+        # genuinely legacy-only backend (fastmcp 3.4.7 in a plugin server's
+        # own venv, e.g. the spotter and phenotype plugins) then never gets the
         # `initialize` its session state machine requires first, so it
         # rejects every later request forever -- deterministic, live-
         # reproduced (#1206), not a timing race. Mirroring "legacy" is kept
@@ -686,7 +687,7 @@ def build_tool_catalog(
     Args:
         declared_gateway: A gateway whose tools should be enumerated. When
             ``None``, the catalog equals the static catalog (a copy).
-        experts: Loaded pack experts (objects with ``id``, ``tools``, optional
+        experts: Agent definitions (objects with ``id``, ``tools``, optional
             ``metadata``) used to derive declared-tool visibility.
         static_catalog: The base catalog to merge onto. Defaults to ``TOOL_CATALOG``.
 

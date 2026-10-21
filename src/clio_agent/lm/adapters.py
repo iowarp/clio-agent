@@ -2,8 +2,9 @@
 
 The agent loop (:class:`~clio_agent.gact.agents.clio_react.ClioReAct`) calls the LM with a
 typed ``dspy.lm15.Request`` and uses no adapter. Everything else that runs a signature
--- the goal judge, the compaction summarizer, AI review, type parsing, non-ReAct
-blueprint agents, ``BestOfN``/``Refine`` variants -- goes through the adapter
+-- the goal judge, the compaction summarizer, AI review, type parsing, predictors
+inside flows (the council's synthesis, the arena's judge), ``BestOfN``/``Refine``
+spawn-strategy variants -- goes through the adapter
 :func:`create_chat_adapter` returns:
 
 * default: DSPy's ``ChatAdapter`` with a pre-flight context check (an oversize prompt

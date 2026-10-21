@@ -1,6 +1,6 @@
 """The provenance handoff: clio's EFFECTIVE provenance config, as one CLIO YAML file.
 
-A provenance-aware Agent Blueprint MCP server (the ``spotter-ai`` watcher is the
+A provenance-aware plugin MCP server (the ``spotter`` plugin's watcher is the
 first) reads "one explicit CLIO YAML path" to learn which agentic and artifact
 query stores to connect to. clio's own config cannot serve as that file: most
 of the values it needs are resolved IN CODE (the native JSONL journal root is

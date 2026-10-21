@@ -229,9 +229,9 @@ def _merge_workflow_state_from_value(
             _merge_workflow_state_from_value(item, state, schema=schema)
         return
     if not isinstance(value, Mapping):
-        # A typed workflow_state field may arrive as a Pydantic model when a pack
+        # A typed workflow_state field may arrive as a Pydantic model when a plugin
         # declares it as a nested object signature field. Convert it to a plain
-        # mapping so its sections merge. Generic across all packs.
+        # mapping so its sections merge. Generic across all plugins.
         if callable(getattr(value, "model_dump", None)):
             normalized = wire_value(value, mode="gact_runtime")
             if isinstance(normalized, Mapping):
@@ -351,10 +351,10 @@ def _prediction_workflow_state(result: Any, *, schema: "WorkflowStateSchema") ->
     the typed field directly via this helper and carry it on the structured
     carrier (the completed/handoff/ledger row's ``workflow_state`` Mapping).
 
-    A typed ``workflow_state`` field may arrive as a Pydantic model (when a pack
+    A typed ``workflow_state`` field may arrive as a Pydantic model (when a plugin
     declares it as a nested object signature field), a JSON string, or a plain
     dict. Each is normalized to a plain ``{section: ...}`` mapping. Generic for
-    all packs.
+    all plugins.
     """
 
     raw_state = getattr(result, "workflow_state", None)

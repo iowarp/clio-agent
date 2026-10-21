@@ -3,8 +3,8 @@
 An :class:`LMSpec` *fully* names an LM as plain, immutable DATA: provider,
 model, endpoint, a **credential reference** (a key, never an inline secret),
 transport, and the sampling surface. Because it carries no secret and no live
-object, a spec is safe to persist into a stored ``AgentDef``, a checked-in
-blueprint frontmatter, or a trace, and safe to ship with a work item to another
+object, a spec is safe to persist into a stored ``AgentDef``, checked-in
+plugin data, or a trace, and safe to ship with a work item to another
 node — where its ``credential_ref`` is resolved fresh against node-local
 sources (design ``docs/archive/per-expert-provider-lm.md`` §3.1/§3.2).
 

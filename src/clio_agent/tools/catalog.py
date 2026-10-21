@@ -3,8 +3,8 @@
 Core ships only the universal built-in tools (``fs``/``shell``). Their
 ownership/visibility lives here as the static base catalog. Every other tool
 is a *declared MCP* tool whose catalog entry is **derived at runtime** from the
-connected server namespace (see ``gateway.build_tool_catalog``) plus each pack
-expert's ``tools:`` list — not hand-written here.
+connected server namespace (see ``gateway.build_tool_catalog``) plus each
+agent's declared ``tools`` list — not hand-written here.
 """
 
 from __future__ import annotations

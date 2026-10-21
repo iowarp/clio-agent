@@ -25,7 +25,7 @@ class TurnRevisionGate:
         self._writers = asyncio.Lock()
         self._readers: set[asyncio.Task[Any]] = set()
         self._parent: ContextVar[asyncio.Task[Any] | None] = ContextVar(
-            "blueprint_revision_parent", default=None
+            "turn_revision_parent", default=None
         )
 
     async def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:

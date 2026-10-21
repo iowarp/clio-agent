@@ -3,7 +3,7 @@
 Research-pending (#801; tracked in
 https://github.com/iowarp/clio-agent/issues/633): the field mapping in
 ``_invocation_to_example`` targets the native data/analysis/visualization
-experts that were deleted in the Agent Blueprint migration, so the
+experts that were deleted when domain agents moved to marketplace plugins, so the
 training-example schema needs a redesign as part of the #633 research work —
 not patching. No entry point invokes this module today.
 

@@ -260,10 +260,10 @@ def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int 
 def _injected_workflow_state_field_type(schema: "WorkflowStateSchema") -> Any:
     """Annotation for the auto-injected ``workflow_state`` output (Consumer A, #648).
 
-    The type is built FROM THE PACK SCHEMA, not hardcoded:
+    The type is built FROM THE PLUGIN SCHEMA, not hardcoded:
 
     * GENERIC schema (no declared sections) -> ``dict[str, Any]`` byte-identically,
-      preserving the historical free-dict contract for domain-free packs.
+      preserving the historical free-dict contract for domain-free agents.
     * A schema that declares its section vocabulary -> a nested pydantic model.
       Each declared section becomes ``Optional[<SectionModel>] = None``, and every
       ``SectionModel`` carries a single typed ``status: Optional[Literal[...]] = None``
@@ -359,10 +359,10 @@ def _agent_signature(
         raw_inputs,
         [("system_prompt", "Runtime instructions", str), ("question", "User request", str)],
     )
-    # A blueprint that declares its own inputs (e.g. just `question`) REPLACES the
-    # defaults, which silently dropped the `system_prompt` input -- so the expert's
-    # built system prompt (blueprint body + orchestrator briefing + workspace context,
-    # assembled into runtime_system_prompt) was never passed to the model at all; it
+    # An agent definition that declares its own inputs (e.g. just `question`) REPLACES
+    # the defaults, which silently dropped the `system_prompt` input -- so the agent's
+    # built system prompt (composed prompt + workspace context, assembled into
+    # runtime_system_prompt) was never passed to the model at all; it
     # ran on the generic 47-char signature instruction + the question only. Always
     # carry a `system_prompt` input so the body actually reaches the model. (Under the
     # contract state machine this was latent -- routing was deterministic -- but with
@@ -392,12 +392,12 @@ def _agent_signature(
     # a typed output field; nothing injects or reads an inert artifacts structured key.
     # Declaring them *required* only enlarged the contract and made strict-adapter
     # models (nemotron's remote JSONAdapter path) hard-fail an otherwise-correct run
-    # when they sensibly omitted an empty one -- so we no longer auto-inject them. (A
-    # blueprint that genuinely needs one can still declare it in its `outputs:`.)
+    # when they sensibly omitted an empty one -- so we no longer auto-inject them. (An
+    # agent definition that genuinely needs one can still declare it in its `outputs:`.)
     # Resolve the session's active workflow_state schema once. Consumer A (#648): the injected
-    # workflow_state field is TYPED FROM THE PACK SCHEMA -- a GENERIC (no declared
+    # workflow_state field is TYPED FROM THE PLUGIN SCHEMA -- a GENERIC (no declared
     # sections) schema keeps the historical free ``dict[str, Any]`` byte-identically,
-    # while a pack that declares its vocabulary gets a nested pydantic model whose
+    # while a plugin that declares its vocabulary gets a nested pydantic model whose
     # per-section ``status`` is a real ``Optional[Literal[...]]`` (undeclared keys and
     # undeclared sections still validate via ``extra="allow"`` at both levels).
     _route_app = app if app is not None else _ctx.active_app()
@@ -420,7 +420,7 @@ def _agent_signature(
         if _structured_output_enabled(structured.get(name, False)) and name not in _declared:
             outputs.append((name, desc, field_type))
 
-    # #948 S4: an orchestrator (an expert with declared children) routes by CALLING
+    # #948 S4: an agent with defined subagents routes by CALLING
     # the spawn-runtime tools (spawn_agent_task / wait_agent_tasks), not by emitting a
     # typed routing field consumed by a settle loop. The signature therefore carries
     # NO routing field — its children are reachable as real child turns via the spawn

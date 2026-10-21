@@ -576,7 +576,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current="bearer" if bearer_enabled else "trust_socket",
             ),
         )
-        # Catalog discovery may initialize installed blueprint snapshots. Keep all
+        # Catalog discovery may initialize installed plugin snapshots. Keep all
         # filesystem work off the request loop so health/SSE remain responsive.
         return await run_off_loop(
             project_for_request,

@@ -70,8 +70,8 @@ if TYPE_CHECKING:
 
 # Core no longer bundles in-process scientific format servers, so it ships no
 # built-in binary context inspectors. Structured inspection of attached binary
-# files (parquet/hdf5/...) is the job of declared MCP tools the active pack
-# brings in. The extension -> inspector map stays as a generic, currently-empty
+# files (parquet/hdf5/...) is the job of declared MCP tools the session's
+# plugins bring in. The extension -> inspector map stays as a generic, currently-empty
 # hook so the context-file path below is unchanged.
 _BINARY_CONTEXT_INSPECTORS: dict[str, Any] = {}
 
