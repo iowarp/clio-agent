@@ -1,13 +1,11 @@
-"""Declarable ``dspy.BestOfN`` / ``dspy.Refine`` module variants (#948 S5).
+"""Spawn-requested ``dspy.BestOfN`` / ``dspy.Refine`` strategies (#948 S5).
 
-A blueprint widens its ``module`` declaration from ``{kind}`` to
-``{kind, variant, n, threshold, reward}``. When a variant is declared,
-:func:`wrap_module_variant` wraps the inner DSPy program (the ``predict`` /
-``chain_of_thought`` / ``react`` module the dispatch already built) in a REAL
-``dspy.BestOfN`` / ``dspy.Refine`` (the installed engine's loop, not a
+A spawn may ask for a ``strategy`` (``{variant, n, rubric, threshold, judge}``,
+validated by :func:`strategy_module` and stored on the child session). When the
+child's agent module is built, :func:`wrap_strategy` wraps its inner DSPy program
+in a REAL ``dspy.BestOfN`` / ``dspy.Refine`` (the installed engine's loop, not a
 re-implementation), whose ``reward_fn`` is a source-backed generated ``def`` that
-scores each attempt via an LM-as-judge ``dspy.Predict`` over the declared reward
-signature.
+scores each attempt via an LM-as-judge ``dspy.Predict`` over the rubric.
 
 Two clio-specific concerns are handled here, in this owner module (never accreted
 onto ``builders.py``):
@@ -37,7 +35,7 @@ index + score are stamped, typed and additive, onto the returned ``Prediction`` 
 ``variant_selection``. No silent retries — a reward parse failure logs a typed
 ``variant.reward.parse_failed`` and scores ``0.0`` rather than crashing the attempt.
 
-A ``judge: user`` declaration is not a DSPy loop at all: it pauses the turn on the
+A ``judge: user`` strategy is not a DSPy loop at all: it pauses the turn on the
 user's choice, so it is wrapped in
 :class:`~clio_agent.gact.agents.variant_drafts.UserJudgedVariant` instead.
 """
@@ -48,7 +46,7 @@ import contextvars
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 import dspy
 from dspy.predict.predict import Prediction
@@ -59,12 +57,8 @@ from clio_agent.gact.agents.variant_events import emit_selected, emit_try, try_c
 from clio_agent.gact.agents.variant_records import TryRecord, VariantRun, save_run
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
-    _blueprint_module_variant,
     parse_module_variant,
 )
-
-if TYPE_CHECKING:
-    from clio_agent.gact.types import AgentDef
 
 logger = logging.getLogger(__name__)
 
@@ -524,13 +518,13 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
 
 
 def strategy_module(strategy: Any, *, agent_id: str) -> dict[str, Any]:
-    """A spawn's ``strategy`` as the blueprint ``module`` variant it stands for, validated.
+    """A spawn's ``strategy`` as the module variant it stands for, validated.
 
     ``{variant, n, rubric, threshold, judge}``: ``rubric`` is what makes a try good (the
     LM judge's instructions; shown to the user with a human judge). ``judge`` is ``lm``
     (default) or ``user`` (the child pauses on a choice question, forwarded to the user).
     ``n`` is capped at ``variants.max_n``; the request is kept as ``n_requested``.
-    Raises ``ValueError`` with the same messages a blueprint declaration gets.
+    Raises ``ValueError`` naming what is invalid.
     """
     from clio_agent.gact.agents.variant_drafts import capped_n  # noqa: PLC0415
 
@@ -553,31 +547,27 @@ def strategy_module(strategy: Any, *, agent_id: str) -> dict[str, Any]:
     return module
 
 
-def with_session_strategy(agent_def: "AgentDef") -> "AgentDef":
-    """``agent_def`` with the active session's spawn strategy as its module variant."""
+def session_strategy() -> dict[str, Any] | None:
+    """The active session's spawn ``strategy`` (stored as ``variant_strategy``), if any."""
+
     sessions = getattr(getattr(_ctx.active_app(), "state", None), "sessions", None)
     row = sessions.get(_ctx.active_session_id()) if sessions is not None else None
     strategy = (getattr(row, "metadata", None) or {}).get("variant_strategy")
-    if not strategy:
-        return agent_def
-    module = {**dict(agent_def.module or {}), **dict(strategy)}
-    return agent_def.model_copy(update={"module": module})
+    return dict(strategy) if isinstance(strategy, Mapping) and strategy else None
 
 
-def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Module:
-    """Wrap ``inner`` in the declared ``dspy.BestOfN``/``Refine`` variant, or return it.
+def wrap_strategy(inner: dspy.Module, agent_id: str, strategy: Mapping[str, Any]) -> dspy.Module:
+    """Wrap ``inner`` in the spawn-requested ``dspy.BestOfN``/``Refine`` variant.
 
-    Called from the ``builders.py`` module-construction dispatch AFTER the inner
-    ``predict``/``chain_of_thought``/``react`` program is built. Returns ``inner``
-    unchanged when no ``module.variant`` is declared; otherwise returns a REAL
-    (subclassed) ``dspy.BestOfN``/``Refine`` whose ``module`` is the run-keyed inner and
-    whose ``reward_fn`` is the compiled source-backed judge. ``fail_count`` is left at
-    the engine default (``= N``). Raises ``ValueError`` on an invalid declaration (the
-    same typed error the loader surfaces)."""
-    spec = _blueprint_module_variant(agent_def)
+    ``strategy`` is the normalized :func:`strategy_module` mapping the spawn stored
+    on the child session. Returns a REAL (subclassed) ``dspy.BestOfN``/``Refine``
+    whose ``module`` is the run-keyed inner and whose ``reward_fn`` is the compiled
+    source-backed judge, or a user-judged variant when the judge is the user.
+    ``fail_count`` is left at the engine default (``= N``).
+    """
+    spec = parse_module_variant(strategy, agent_id=agent_id)
     if spec is None:
         return inner
-    agent_id = str(getattr(agent_def, "id", "") or "")
     if spec.judge == "user":
         from clio_agent.gact.agents.variant_drafts import UserJudgedVariant  # noqa: PLC0415
 

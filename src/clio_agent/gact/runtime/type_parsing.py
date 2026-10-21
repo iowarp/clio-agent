@@ -1,7 +1,7 @@
 """Type / signature-DSL leaf helpers for the GACT server (#714 decomposition).
 
-This module owns the pure, leaf-level helpers that translate a marketplace
-blueprint's ``signature`` field-type DSL (e.g. ``region: list[float]``,
+This module owns the pure, leaf-level helpers that translate a
+declared ``signature`` field-type DSL (e.g. ``region: list[float]``,
 ``status: Literal["staged","blocked"]``) into real Python / Pydantic annotations
 the DSPy adapter can force, parse, and validate -- replacing post-hoc regex
 inference. It is deliberately a *leaf*: every function here is pure (no closures,
@@ -12,7 +12,7 @@ move free of any ``app.py`` import.
 
 Responsibilities:
 
-* :func:`_parse_field_annotation` -- map a blueprint field-type spec to a real
+* :func:`_parse_field_annotation` -- map a declared field-type spec to a real
   annotation (scalars, ``dict``/``object``/``json``, ``list[...]``/``array[...]``,
   ``optional[...]``, ``Literal[...]``, and nested ``object`` with ``fields:``).
 * :func:`_sanitize_model_name` -- make a safe Pydantic model class name.
@@ -25,10 +25,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Optional
-
-if TYPE_CHECKING:
-    from clio_agent.gact.types import AgentDef
+from typing import Any, Literal, Optional
 
 _MODULE_VARIANTS = frozenset({"best_of_n", "refine"})
 _MODULE_JUDGES = frozenset({"lm", "user"})
@@ -54,10 +51,9 @@ def _structured_output_enabled(value: Any) -> bool:
 
 @dataclass(frozen=True)
 class VariantSpec:
-    """A validated ``dspy.BestOfN`` / ``dspy.Refine`` blueprint module variant (#948 S5).
+    """A validated ``dspy.BestOfN`` / ``dspy.Refine`` strategy (#948 S5).
 
-    A blueprint widens ``module`` from ``{kind}`` to
-    ``{kind, variant, n, threshold, reward}``. The ``reward`` sub-mapping declares an
+    A spawn ``strategy`` normalizes to ``{variant, n, threshold, judge, reward}``. The ``reward`` sub-mapping declares an
     LM-as-judge SIGNATURE (``instructions`` + optional ``inputs`` + ``target``) that
     :mod:`clio_agent.gact.agents.module_variants` compiles to a source-backed real
     ``def`` (so ``inspect.getsource`` works for ``dspy.Refine``). Fields:
@@ -86,9 +82,9 @@ class VariantSpec:
 
 
 def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> VariantSpec | None:
-    """Validate a blueprint ``module`` mapping's variant declaration (``None`` when absent).
+    """Validate a strategy mapping's variant (``None`` when it names none).
 
-    Raises ``ValueError`` (a loud blueprint-authoring error, never a silent degrade) on:
+    Raises ``ValueError`` (a loud error, never a silent degrade) on:
     an unknown ``variant``; a missing/non-integer/``< 1`` ``n``; a malformed
     ``threshold``; a missing/empty ``reward`` declaration; or a malformed
     ``reward.inputs``. ``refine`` composes with a ``react`` inner (verified against the
@@ -163,16 +159,6 @@ def parse_module_variant(module: Mapping[str, Any], *, agent_id: str) -> Variant
         reward_target=target,
         judge=judge,
     )
-
-
-def _blueprint_module_variant(agent_def: "AgentDef") -> VariantSpec | None:
-    """The validated variant of a blueprint AgentDef (``None`` when unset).
-
-    Thin AgentDef adapter over :func:`parse_module_variant` (the pure validator the
-    loader also calls) — same typed errors, so a build-time wrap and a load-time
-    diagnostic agree."""
-    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
-    return parse_module_variant(module, agent_id=str(getattr(agent_def, "id", "?")))
 
 
 _SCALAR_FIELD_TYPES: dict[str, Any] = {
