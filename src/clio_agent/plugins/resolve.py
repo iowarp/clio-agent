@@ -531,8 +531,24 @@ def _model_union(
     }
 
 
+#: Install locations: where a store keeps a plugin is not part of what resolved.
+_LOCATION_KEYS = frozenset({"root", "path"})
+
+
+def _without_locations(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {k: _without_locations(v) for k, v in value.items() if k not in _LOCATION_KEYS}
+    if isinstance(value, list):
+        return [_without_locations(v) for v in value]
+    return value
+
+
 def _digest(payload: Mapping[str, Any]) -> str:
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    """Content identity of a resolution: plugins, digests and prompt, not store paths."""
+
+    blob = json.dumps(
+        _without_locations(payload), sort_keys=True, separators=(",", ":"), default=str
+    )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 

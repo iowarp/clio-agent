@@ -184,5 +184,18 @@ class Agent:
             layers=tuple(layers),
             requires=requires.to_dict(),
             prefers=prefers.to_dict(),
-            source=f"{cls.__module__}.{cls.__qualname__}",
+            source=_source_name(cls),
         )
+
+
+def _source_name(cls: type) -> str:
+    """``agents.<module>.<Class>``: where in its marketplace an agent is defined.
+
+    A marketplace's agent modules import under a private package named after
+    the install location; that prefix is not part of the agent's identity.
+    """
+
+    module = cls.__module__
+    if module.startswith("_clio_marketplace_"):
+        module = module.split(".", 1)[1] if "." in module else module
+    return f"{module}.{cls.__qualname__}"
