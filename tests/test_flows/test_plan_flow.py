@@ -113,6 +113,34 @@ def test_approval_question_gates_an_added_node(flow_app: TestClient) -> None:
     assert polish["status"] == "completed" and polish["task_status"] == "completed"
 
 
+def test_cancelling_a_plan_waiting_for_approval_settles_it(flow_app: TestClient) -> None:
+    """A plan blocked on its approval Question is cancelled with the Question."""
+
+    sid = new_session(flow_app, "clio/editor")
+    post(flow_app, sid, "write a note, approve edits")
+    history = flow_app.app.state.task_history
+
+    def question() -> Any:
+        owner = history.latest_assignment(sid)
+        checkpoint = history.workflow_checkpoint(owner.handle) if owner else None
+        outer = history.read_content(checkpoint.content) if checkpoint else {}
+        rows = [r for r in outer.get("calls", {}).values() if r["kind"] == "flow"]
+        if not rows:
+            return None
+        child = history.task_snapshot(rows[0]["handle"])
+        inner = history.workflow_checkpoint(child.handle)
+        run = history.read_content(inner.content) if inner else {}
+        asks = [r for r in run.get("calls", {}).values() if r.get("kind") == "ask"]
+        return (asks[0]["handle"], child.handle) if asks else None
+
+    ask, plan_handle = wait_until(question, timeout=90)
+    response = flow_app.post(f"/v1/sessions/{sid}/tasks/cancel", json={"tasks": plan_handle})
+    assert response.status_code == 200 and response.json()["errors"] == [], response.text
+    wait_until(lambda: history.task_snapshot(plan_handle).terminal_at is not None, timeout=60)
+    assert history.task_snapshot(plan_handle).status == "cancelled"
+    assert history.task_snapshot(ask).terminal_at is not None
+
+
 def test_failed_node_is_a_typed_stall_in_the_run_view(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/planner")
     post(flow_app, sid, "FAIL the survey")
