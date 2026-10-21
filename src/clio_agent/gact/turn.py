@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.errors import ClioError
+from clio_agent.flows.outcomes import FlowOutcome
 from clio_agent.gact.agents.resolution import SessionAgentUnavailable
 from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
@@ -28,7 +29,6 @@ from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
-    _prediction_summary,
     _user_message_parts,
 )
 from clio_agent.gact.off_loop import emit_semantic_event_async
@@ -65,6 +65,7 @@ from clio_agent.gact.turn_watchdog import make_turn_cancel_event
 from clio_agent.gact.types import ErrorInfo, Message, Part, Session
 from clio_agent.gact.usage import _snapshot_lm_history_index
 from clio_agent.runtime import turn_lm_ledger
+from clio_agent.tools.mcp_runtime import wire_value
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -459,6 +460,19 @@ async def _run_turn_in_background(
         )
         state.answer_text = partial_answer
         state.tools_called = []
+    except FlowOutcome as exc:
+        # A flow ended on a typed outcome it did not handle (a failed gather, a
+        # limit, a stall, an uncertain task): the reason is the error, with the
+        # handle and details, never a guessed answer.
+        state.rationale = f"The agent's flow ended with {exc.reason}."
+        state.error_info = ErrorInfo(
+            error=exc.reason,
+            message=str(exc),
+            details=wire_value(exc.to_dict(), mode="gact_runtime"),
+            recoverable=True,
+        )
+        state.answer_text = ""
+        state.tools_called = []
     except SessionAgentUnavailable as exc:
         # The session's agent does not resolve (a plugin missing, untrusted,
         # colliding, or the agent uninstalled). Typed, with every resolution
@@ -587,11 +601,10 @@ async def _run_turn_in_background(
     finally:
         turn_lm_ledger.close_ledger(lm_ledger_token)
     from clio_agent.gact.conversations import ConversationOutcome
+    from clio_agent.gact.turn_finalize import turn_outputs
 
     return ConversationOutcome(
-        outputs=_prediction_summary(state.pred)
-        if state.pred is not None
-        else {"answer": state.answer_text},
+        outputs=turn_outputs(state),
         disposition=getattr(state.pred, "assignment_disposition", None),
         context=getattr(state.pred, "clio_context_boundary", None),
         error=state.error_info.model_dump(mode="json") if state.error_info is not None else None,

@@ -543,7 +543,6 @@ def publish_finalized_turn(
         )
     from clio_agent.gact.conversation_assignments import ConversationOutcome
     from clio_agent.gact.hooks.stop_loop import dispatch_stop_at_finalize
-    from clio_agent.gact.messaging import _prediction_summary
 
     publication_step(
         steps,
@@ -560,9 +559,7 @@ def publish_finalized_turn(
             if state.dynamic_agent_used is not None
             else '',
             completion=ConversationOutcome(
-                outputs=_prediction_summary(state.pred)
-                if state.pred is not None
-                else {"answer": state.answer_text},
+                outputs=turn_outputs(state),
                 context=getattr(state.pred, "clio_context_boundary", None),
                 error=state.error_info.model_dump(mode="json")
                 if state.error_info is not None
@@ -767,3 +764,21 @@ def publish_failed_finalize(
     publish_turn_settled_status(app, sid, "error")
     if app.state.cancel_events.get(sid) is turn_cancel_event:
         app.state.cancel_events.pop(sid, None)
+
+
+def turn_outputs(state: Any) -> dict[str, Any]:
+    """The assignment result a turn records: its prediction summary and typed state.
+
+    The typed ``workflow_state`` the turn produced rides on the result, so a flow
+    merging its children's results (``ctx.gather``) reads it from the task.
+    """
+
+    from clio_agent.gact.messaging import _prediction_summary  # noqa: PLC0415
+
+    outputs = (
+        _prediction_summary(state.pred) if state.pred is not None else {"answer": state.answer_text}
+    )
+    workflow_state = state.assistant_metadata.get("workflow_state")
+    if isinstance(workflow_state, Mapping) and workflow_state:
+        outputs["workflow_state"] = dict(workflow_state)
+    return outputs

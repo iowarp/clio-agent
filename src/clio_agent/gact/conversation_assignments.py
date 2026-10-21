@@ -580,7 +580,7 @@ async def spawn(
                     existing.description != assignment
                     or existing.owner.human_id != caller.human_id
                     or session is None
-                    or session.agent.get("id") != agent_id
+                    or session.metadata.get("spawn_target", session.agent.get("id")) != agent_id
                 ):
                     raise ValueError("Spawn invocation was reused with different work")
                 if session.metadata.get("variant_strategy") != normalized_strategy:

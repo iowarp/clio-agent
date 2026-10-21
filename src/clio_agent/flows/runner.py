@@ -47,14 +47,54 @@ def load_flow(resolution: Any, flow_id: str, options: dict[str, Any] | None = No
     return flow
 
 
+def flow_selection(app: Any, session_id: str, agent_def: Any) -> dict[str, Any]:
+    """The flow this session's turn runs: a started flow's override, else the agent's.
+
+    A flow started through ``run_flow``/``run_plan`` or ``ctx.call`` runs in a
+    child session whose metadata carries ``agent_flow`` (id, options, input,
+    depth); every other session runs its agent's selected flow.
+    """
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(session_id) if sessions is not None and session_id else None
+    override = (getattr(session, "metadata", None) or {}).get("agent_flow")
+    if isinstance(override, dict) and override.get("id"):
+        return dict(override)
+    return dict(agent_def.metadata.get("flow") or {"id": "react", "options": {}})
+
+
 def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
     """Run ``module``'s flow on this turn's inputs and return its prediction."""
 
-    from clio_agent.flows.context import TurnFlowContext  # noqa: PLC0415
+    import hashlib  # noqa: PLC0415
 
-    selection = dict(module.agent_def.metadata.get("flow") or {"id": "react", "options": {}})
-    flow = load_flow(
-        module.resolution, str(selection.get("id") or "react"), selection.get("options")
+    from clio_agent.flows.context import FlowContext  # noqa: PLC0415
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    app = _ctx.active_app()
+    session_id = str(kwargs.get("session_id") or _ctx.active_session_id())
+    selection = flow_selection(app, session_id, module.agent_def)
+    flow_id = str(selection.get("id") or "react")
+    flow = load_flow(module.resolution, flow_id, selection.get("options"))
+    task = selection["input"] if selection.get("input") is not None else kwargs["question"]
+    turn = _ctx.current_turn()
+    root_handle = turn.assignment_handle
+    if not root_handle and app is not None:
+        latest = app.state.task_history.latest_assignment(session_id)
+        root_handle = latest.handle if latest is not None else ""
+    marker = (
+        turn.input_notification_id
+        or hashlib.sha256(str(kwargs.get("question") or "").encode("utf-8")).hexdigest()[:24]
     )
-    ctx = TurnFlowContext(module=module, kwargs=kwargs, flow=flow)
-    return asyncio.run(ctx.run(kwargs["question"]))
+    ctx = FlowContext(
+        app=app,
+        session_id=session_id,
+        module=module,
+        flow=flow,
+        root_handle=root_handle,
+        run_invocation=f"flow:{flow_id}:{marker}",
+        task=task,
+        depth=int(selection.get("depth") or 0),
+        kwargs=kwargs,
+    )
+    return asyncio.run(ctx.run())

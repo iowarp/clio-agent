@@ -1,0 +1,215 @@
+"""Flows on the real task layer, with a scripted program standing in for the model.
+
+``flow_app`` builds a GACT app whose default marketplace is the hermetic fixture
+plus a ``flowtest`` plugin of test flows and agents that select them. The turn's
+agent module is the real flow runner (``run_agent_flow``) over the pinned
+resolution; only the ReAct program (the model) is scripted: ``program(question)``
+returns a prediction, so a flow's children run as real child assignments.
+"""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Iterator
+from typing import Any
+
+import dspy
+import pytest
+from fastapi.testclient import TestClient
+
+from clio_agent.gact.app import build_app
+from tests._harness import _commit_test_model_input
+from tests._plugin_fixtures import custom_marketplace
+
+FLOWS = '''
+from clio_agent.sdk import Flow
+
+
+class Fanout(Flow):
+    id = "fanout"
+
+    async def forward(self, task, ctx):
+        calls = [ctx.call("self", f"part {i} of {task}") for i in range(3)]
+        results = await ctx.gather(calls, limit=2)
+        return {"answer": " | ".join(r.answer for r in results), "handles": [r.handle for r in results]}
+
+
+class Tolerant(Flow):
+    id = "tolerant"
+
+    async def forward(self, task, ctx):
+        calls = [ctx.call("self", "ok one"), ctx.call("self", "FAIL two"), ctx.call("self", "ok three")]
+        results = await ctx.gather(calls, return_exceptions=True)
+        return {"answer": ",".join(type(r).__name__ for r in results)}
+
+
+class Strict(Flow):
+    id = "strict"
+
+    async def forward(self, task, ctx):
+        await ctx.gather([ctx.call("self", "ok one"), ctx.call("self", "FAIL two")])
+        return "unreachable"
+
+
+class Asker(Flow):
+    id = "asker"
+
+    async def forward(self, task, ctx):
+        if await ctx.ask("Proceed with the run?", schema=bool):
+            return (await ctx.call("self", "approved work")).answer
+        return "declined"
+
+
+class Stepper(Flow):
+    id = "stepper"
+    calls = []
+
+    async def forward(self, task, ctx):
+        first = await ctx.step(Stepper.record, "a")
+        second = await ctx.step(Stepper.record, "b")
+        return f"{first}{second}"
+
+    @staticmethod
+    def record(value):
+        Stepper.calls.append(value)
+        return value.upper()
+
+
+class Greedy(Flow):
+    id = "greedy"
+    max_model_calls = 2
+
+    async def forward(self, task, ctx):
+        for i in range(3):
+            await ctx.call("self", f"call {i}")
+        return "unreachable"
+'''
+
+AGENTS = '''
+from clio_agent.sdk import Agent, Flow
+
+
+def _agent(agent_id, flow):
+    return type(
+        agent_id.title(),
+        (Agent,),
+        {
+            "id": agent_id,
+            "version": "1.0.0",
+            "role": "a flow test agent",
+            "flow": flow,
+            "plugins": Agent.plugins + ["workspace", "delegation", "flowtest"],
+            "__module__": __name__,
+        },
+    )
+
+
+Fanouter = _agent("fanouter", "fanout")
+Tolerater = _agent("tolerater", "tolerant")
+Stricter = _agent("stricter", "strict")
+Askerer = _agent("askerer", "asker")
+Stepperer = _agent("stepperer", "stepper")
+Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
+'''
+
+
+class FakeHost:
+    """The base agent ``build_app`` needs; turns never call it (the module is scripted)."""
+
+    def forward(self, question: str, session_id: str) -> Any:  # pragma: no cover
+        raise AssertionError("the scripted flow module runs instead of the host")
+
+
+class ScriptedFlowModule:
+    """The agent module: the real flow runner over the resolution, a scripted program."""
+
+    def __init__(self, agent_def: Any, resolution: Any, program: Callable[..., Any]) -> None:
+        self.agent_def = agent_def
+        self.resolution = resolution
+        self.tools: list[Any] = []
+        self.program = program
+
+    def __call__(self, question: str, session_id: str, **kwargs: Any) -> Any:
+        from clio_agent.flows.runner import run_agent_flow
+
+        _commit_test_model_input(self.agent_def, question, session_id)
+        prediction = run_agent_flow(self, {"question": question, "session_id": session_id})
+        return dspy.Prediction(
+            answer=str(getattr(prediction, "answer", "")),
+            workflow_state=getattr(prediction, "workflow_state", ""),
+            selected_expert=self.agent_def.id,
+        )
+
+
+def default_program(question: str = "", **_: Any) -> Any:
+    if "FAIL" in question:
+        raise RuntimeError("scripted failure")
+    return dspy.Prediction(answer=f"done: {question.splitlines()[0][:60]}")
+
+
+@pytest.fixture
+def flow_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "flowtest": {
+                "files": {"ai.iowarp.clio/flows/test_flows.py": FLOWS},
+                "ext": {"requires": ["delegation"]},
+            }
+        },
+        agents={"flow_agents.py": AGENTS},
+    )
+    from clio_agent.gact.agents import builders
+
+    program: dict[str, Callable[..., Any]] = {"run": default_program}
+
+    def scripted(**kwargs: Any) -> Any:
+        # A child sees its assignment as delegated context, not as the turn question;
+        # the scripted "model" answers the assignment it was given.
+        from clio_agent.gact import context
+
+        app = context.active_app()
+        assignment = app.state.task_history.latest_assignment(context.active_session_id())
+        if assignment is not None and assignment.owner.parent_handle is not None:
+            kwargs["question"] = assignment.description
+        return program["run"](**kwargs)
+
+    def build(base_agent: Any, agent_def: Any, resolution: Any = None) -> ScriptedFlowModule:
+        return ScriptedFlowModule(agent_def, resolution, scripted)
+
+    monkeypatch.setattr(builders, "build_agent_module", build)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeHost())
+    app.state.flow_program = program
+    with TestClient(app) as client:
+        yield client
+
+
+def new_session(client: TestClient, agent_ref: str) -> str:
+    response = client.post("/v1/sessions", json={"title": agent_ref, "metadata": {"agent_ref": agent_ref}})
+    assert response.status_code in (200, 201), response.text
+    return response.json()["id"]
+
+
+def post(client: TestClient, sid: str, text: str) -> None:
+    ack = client.post(f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]})
+    assert ack.status_code == 202, ack.text
+
+
+def wait_until(predicate: Callable[[], Any], *, timeout: float = 60.0, interval: float = 0.05) -> Any:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = predicate()
+        if value:
+            return value
+        time.sleep(interval)
+    raise TimeoutError("condition not reached")
+
+
+def assistant_messages(client: TestClient, sid: str) -> list[dict[str, Any]]:
+    rows = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    return [m for m in rows if m["role"] == "assistant" and not m.get("metadata", {}).get("live")]
+
+
+def text_of(message: dict[str, Any]) -> str:
+    return "".join(p.get("text", "") for p in message.get("parts", []) if p.get("type") == "text")

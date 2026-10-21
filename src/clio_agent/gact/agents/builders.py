@@ -484,11 +484,22 @@ def _emit_agent_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException
         pass
 
 
+def _plan_editor() -> dict[str, Any] | None:
+    """The active session's ``plan_editor`` grant: set while it edits a running plan."""
+
+    app = _ctx.active_app()
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(_ctx.active_session_id()) if sessions is not None else None
+    editor = (getattr(session, "metadata", None) or {}).get("plan_editor")
+    return dict(editor) if isinstance(editor, Mapping) else None
+
+
 def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Resolution") -> Any:
     """Compile a resolved plugin agent into its running DSPy module."""
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents import module_variants as _module_variants  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
@@ -557,6 +568,15 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                     draft_tool = build_draft_alternatives_tool()
                     toolset_inventory.register_tool_sources(sources, [draft_tool], "native")
                     tools.append(draft_tool)
+                editor = _plan_editor()
+                if editor is not None:
+                    from clio_agent.gact.flow_tools import (  # noqa: PLC0415
+                        build_plan_editor_tools,
+                    )
+
+                    editor_tools = build_plan_editor_tools(editor)
+                    toolset_inventory.register_tool_sources(sources, editor_tools, "native")
+                    tools.extend(editor_tools)
                 from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
                     instrument_tools,
                 )
@@ -572,6 +592,10 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
             object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
+            # A spawn-requested BestOfN / Refine strategy wraps the program.
+            strategy = _module_variants.session_strategy()
+            if strategy is not None:
+                self.program = _module_variants.wrap_strategy(self.program, agent_def.id, strategy)
             active_app = _ctx.active_app()
             workspace_context = (
                 _runtime_active_workspace_context(active_app, session_id=_ctx.active_session_id())
@@ -612,9 +636,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             if "files" in self.signature.input_fields:
                 kwargs["files"] = list(files or [])
             tool_rows: list[dict[str, Any]] = []
-            tool_rows_token = (
-                _ctx.set_agent_tool_rows(tool_rows) if self.kind == "react" else None
-            )
+            tool_rows_token = _ctx.set_agent_tool_rows(tool_rows) if self.kind == "react" else None
             agent_id = str(getattr(self.agent_def, "id", "") or "")
             # ARC live-context-plane wiring (scope, session, window).
             scope_token = _ctx.set_react_scope(agent_id, self.kind)
