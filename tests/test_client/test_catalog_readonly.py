@@ -23,22 +23,16 @@ from clio_agent.client import (
 )
 
 
-def test_agents_decode_builtin_catalog(client: ClioClient) -> None:
+def test_agents_decode_the_installed_agents(client: ClioClient) -> None:
     agents = client.agents()
-    assert agents, "the built-in expert catalog must be non-empty"
+    assert agents, "the default marketplace's agents must be listed"
     assert all(isinstance(a, Agent) for a in agents)
 
-    by_id = {a.id: a for a in agents}
-    # 'main' is the tier-1 orchestrator; always present.
-    assert "main" in by_id
-    main = by_id["main"]
-    assert main.title  # display name the CLI /experts renders
-    assert main.tier in (0, 1)
-
-    # tier filter is honoured server-side.
-    tier2 = client.agents(tier=2)
-    assert all(a.tier == 2 for a in tier2)
-    assert {a.id for a in tier2} <= set(by_id)
+    by_ref = {a.ref: a for a in agents}
+    # The default agent every session runs unless it names another.
+    standard = by_ref["clio/standard"]
+    assert standard.name and standard.marketplace == "clio"
+    assert [row["ref"] for row in standard.plugins][0] == "core"
 
 
 def test_tools_decode_unified_catalog(client: ClioClient) -> None:

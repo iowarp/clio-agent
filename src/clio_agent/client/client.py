@@ -186,25 +186,15 @@ class ClioClient:
 
     # -- catalog + config read surfaces -------------------------------- #
 
-    def agents(
-        self,
-        *,
-        tier: int | None = None,
-        session_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> list[Agent]:
-        """GET /v1/agents — the agent catalog (SPEC §6.5).
+    def agents(self) -> list[Agent]:
+        """GET /v1/agents — the installed agents and the user's agents (SPEC §6.5).
 
-        Built-in tier-1/2 experts first, then any user/skill agents.
-        ``tier`` filters to one tier server-side; ``session_id`` /
-        ``workspace_id`` scope which user agents are visible. Backs the
-        CLI's ``/experts`` and ``/registry``.
+        Each row is an agent ref (``<marketplace>/<id>``) with its plugin
+        selection; user agents carry the parent they extend and their delta.
+        Backs the CLI's ``/experts`` and ``/registry``.
         """
 
-        params = _drop_missing(
-            {"tier": tier, "session_id": session_id, "workspace_id": workspace_id}
-        )
-        response = self._request("GET", "/v1/agents", params=params or None)
+        response = self._request("GET", "/v1/agents")
         return [Agent.model_validate(row) for row in response.json().get("agents", [])]
 
     def tools(self) -> list[Tool]:
