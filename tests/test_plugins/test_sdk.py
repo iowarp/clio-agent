@@ -95,3 +95,12 @@ def test_hook_rejects_unknown_events() -> None:
         hook("on_everything")
     spec = hook("tool_result", after="core.audit")(lambda ev: None)
     assert spec.after == ("core.audit",) and spec.event == "tool_result"
+
+
+def test_plugin_reference_may_name_its_marketplace() -> None:
+    from clio_agent.sdk.versions import PluginRef
+
+    ref = PluginRef.parse("clio-kit/clio-hdf5@^1.0")
+    assert (ref.marketplace, ref.id, ref.range) == ("clio-kit", "clio-hdf5", "^1.0")
+    assert str(ref) == "clio-kit/clio-hdf5@^1.0"
+    assert PluginRef.parse("xlsx") == PluginRef("xlsx")

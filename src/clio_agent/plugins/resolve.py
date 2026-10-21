@@ -165,11 +165,16 @@ class _Builder:
         self.diagnostics.append(Diagnostic("error", code, message, plugin))
 
     def pick(self, ref: PluginRef, wanted_by: str) -> PluginRecord | None:
-        candidates = [r for r in self.catalog.candidates(ref.id) if r.kind in ("plugin", "pack")]
+        candidates = [
+            r
+            for r in self.catalog.candidates(ref.id)
+            if r.kind in ("plugin", "pack")
+            and (not ref.marketplace or r.marketplace == ref.marketplace)
+        ]
         if not candidates:
             self.error(
                 "plugin_not_installed",
-                f"{ref.id!r} is not installed (needed by {wanted_by})",
+                f"{str(ref)!r} is not installed (needed by {wanted_by})",
                 ref.id,
             )
             return None
@@ -197,7 +202,8 @@ class _Builder:
         markets = ", ".join(sorted(r.marketplace for r in matching))
         self.error(
             "plugin_ambiguous",
-            f"{ref.id!r} is provided by more than one marketplace ({markets})",
+            f"{ref.id!r} is provided by more than one marketplace ({markets}); "
+            f"name one as <marketplace>/{ref.id}",
             ref.id,
         )
         return None

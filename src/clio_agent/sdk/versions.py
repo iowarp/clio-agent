@@ -42,25 +42,32 @@ def parse_version(value: str) -> tuple[int, int, int]:
 
 @dataclass(frozen=True)
 class PluginRef:
-    """A reference to a plugin by id with an optional version range."""
+    """A reference to a plugin by id, with an optional version range and marketplace.
+
+    ``<id>``, ``<id>@<range>`` or ``<marketplace>/<id>[@<range>]``: the marketplace
+    qualifier picks one of several installed marketplaces that provide the id.
+    """
 
     id: str
     range: str = ""
+    marketplace: str = ""
 
     @classmethod
     def parse(cls, text: str) -> "PluginRef":
         raw = str(text or "").strip()
-        plugin_id, _, version_range = raw.partition("@")
-        plugin_id = plugin_id.strip()
-        if not valid_plugin_id(plugin_id):
+        reference, _, version_range = raw.partition("@")
+        marketplace, _, plugin_id = reference.strip().rpartition("/")
+        plugin_id, marketplace = plugin_id.strip(), marketplace.strip()
+        if not valid_plugin_id(plugin_id) or (marketplace and not valid_plugin_id(marketplace)):
             raise VersionRangeError(f"invalid plugin id in reference {text!r}")
         version_range = version_range.strip()
         if version_range:
             _comparators(version_range)
-        return cls(plugin_id, version_range)
+        return cls(plugin_id, version_range, marketplace)
 
     def __str__(self) -> str:
-        return f"{self.id}@{self.range}" if self.range else self.id
+        name = f"{self.marketplace}/{self.id}" if self.marketplace else self.id
+        return f"{name}@{self.range}" if self.range else name
 
     def accepts(self, version: str) -> bool:
         """Return whether ``version`` satisfies this reference's range."""
