@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,49 @@ from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason
 from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, make_entry
 
 _CATALOG_FILES = ("catalog.json", "catalog.clio.json", "instructions.md")
+_CACHE_LIMIT = 256
+_cache: dict[tuple[Any, ...], tuple[CatalogEntry | None, list[str]]] = {}
+_cache_lock = threading.Lock()
+
+
+def plugin_checksum(executable_digest: str, text_digest: str) -> str:
+    """The install checksum of a plugin version: its executable and text digests."""
+
+    return hashlib.sha256(f"{executable_digest}:{text_digest}".encode()).hexdigest()
+
+
+def _signature(root: Path) -> tuple[tuple[int, int], ...] | None:
+    try:
+        stats = [(root / name).stat() for name in _CATALOG_FILES]
+    except OSError:
+        return None
+    return tuple((stat.st_mtime_ns, stat.st_size) for stat in stats)
+
+
+def cached_catalog_directory(
+    root: Path, name: str, *, install_checksum: str = ""
+) -> tuple[CatalogEntry | None, list[str]]:
+    """:func:`load_catalog_directory`, loaded once per unchanged catalog folder.
+
+    Every producibility lookup and fold resolves the session's catalogs, so the
+    folder is read and validated again only when one of its three files changes
+    (their modification time or size) or it is loaded for another plugin version.
+    """
+
+    signature = _signature(root)
+    if signature is None:
+        return load_catalog_directory(root, name, install_checksum=install_checksum)
+    key = (str(root), name, install_checksum, signature)
+    with _cache_lock:
+        cached = _cache.get(key)
+    if cached is not None:
+        return cached[0], list(cached[1])
+    loaded = load_catalog_directory(root, name, install_checksum=install_checksum)
+    with _cache_lock:
+        if len(_cache) >= _CACHE_LIMIT:
+            _cache.pop(next(iter(_cache)))
+        _cache[key] = (loaded[0], list(loaded[1]))
+    return loaded
 
 
 def _checksum(file: dict[str, Any]) -> str:
@@ -141,7 +185,11 @@ def installed_plugin_catalogs(records: list[Any]) -> list[CatalogEntry]:
         for catalog in record.catalogs:
             if not catalog.path:
                 continue
-            entry, errors = load_catalog_directory(Path(catalog.path), catalog.id)
+            entry, _errors = cached_catalog_directory(
+                Path(catalog.path),
+                catalog.id,
+                install_checksum=plugin_checksum(record.executable_digest, record.text_digest),
+            )
             if entry is None or entry.catalog_id in seen:
                 continue
             seen.add(entry.catalog_id)

@@ -72,7 +72,7 @@ def session_declaration_sources(app: "FastAPI", session_id: str) -> list[Any]:
                 unresolved=True,
             )
         ]
-    return plugin_catalog_sources(resolution.catalogs)
+    return plugin_catalog_sources(resolution.catalogs, resolution.plugins)
 
 
 def resolve_session_catalogs(app: "FastAPI", session_id: str) -> "ResolvedCatalogs":

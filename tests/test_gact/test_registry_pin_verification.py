@@ -88,13 +88,6 @@ def test_pinned_install_of_the_matching_commit_records_the_pin(tmp_path: Path) -
     assert entry["commit"] == head
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "production gap: plugins.sources.fetch swallows a failed `git rev-parse` on a local "
-        "git source (head='') with no structured reason (no-silent-fallback rule)"
-    ),
-)
 def test_unpinned_install_with_unresolvable_commit_records_a_reason_and_succeeds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

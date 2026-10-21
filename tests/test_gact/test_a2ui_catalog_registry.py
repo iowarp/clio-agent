@@ -821,13 +821,6 @@ def test_second_session_without_the_plugin_cannot_produce_its_catalog(tmp_path: 
     assert response.json()["error"]["error"] == "a2ui_catalog_not_producible"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "production gap: installed_plugin_catalogs / plugin_catalog_sources never pass the "
-        "declaring plugin's digest to load_catalog_directory, so install_checksum is empty"
-    ),
-)
 def test_plugin_catalog_entry_carries_the_owning_plugins_checksum(tmp_path: Path) -> None:
     """The entry's install_checksum names the OWNING plugin version, distinct from
     its own catalog-file content checksum (``CatalogEntry.install_checksum``)."""

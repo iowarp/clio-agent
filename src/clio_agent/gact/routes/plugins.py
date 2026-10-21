@@ -133,6 +133,12 @@ def _query_delta(request: Request) -> Delta:
 def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the plugin, agent and session-agent routes."""
 
+    def installed_changed() -> None:
+        # Installed plugins ship A2UI catalogs: the next lookup re-reads the set.
+        registry = getattr(app.state, "a2ui_catalogs", None)
+        if registry is not None:
+            registry.invalidate()
+
     # ----------------------------------------------------------- plugins
     @app.get("/v1/plugins")
     async def list_plugins() -> dict[str, Any]:
@@ -189,16 +195,20 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             commit=str(body.get("commit") or ""),
             name=str(body.get("name") or ""),
         )
+        installed_changed()
         summary.pop("federated_pins", None)
         return summary
 
     @app.post("/v1/plugins/marketplaces/{name}/trust")
     async def trust_marketplace(name: str) -> dict[str, Any]:
-        return await _call(plugin_service(app).store.trust, name)
+        summary = await _call(plugin_service(app).store.trust, name)
+        installed_changed()
+        return summary
 
     @app.post("/v1/plugins/marketplaces/{name}/update")
     async def update_marketplace(name: str) -> dict[str, Any]:
         summary = await _call(plugin_service(app).store.update, name)
+        installed_changed()
         summary.pop("federated_pins", None)
         return summary
 
@@ -212,6 +222,7 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             reason="user_requested_marketplace_uninstall",
         )
         await _call(plugin_service(app).store.uninstall, name)
+        installed_changed()
         return {"uninstalled": name}
 
     @app.post("/v1/plugins/check")

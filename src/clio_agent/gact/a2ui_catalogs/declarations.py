@@ -280,12 +280,15 @@ def parse_catalog_declarations(
     )
 
 
-def plugin_catalog_sources(catalogs: Sequence[Mapping[str, Any]]) -> list[CatalogDeclarationSource]:
+def plugin_catalog_sources(
+    catalogs: Sequence[Mapping[str, Any]], plugins: Sequence[Mapping[str, Any]]
+) -> list[CatalogDeclarationSource]:
     """One declaration source per resolved plugin, in plugin resolution order.
 
     ``catalogs`` is a resolution's ``catalogs`` list: ``{"id", "plugin", "path"}``
     rows where an empty ``path`` names a built-in catalog and a path is the
-    plugin's own ``ai.iowarp.clio/a2ui/<id>/`` folder.
+    plugin's own ``ai.iowarp.clio/a2ui/<id>/`` folder. ``plugins`` is the
+    resolution's plugin rows, whose digests become each source's install checksum.
     """
 
     builtins = builtin_catalog_names()
@@ -312,12 +315,21 @@ def plugin_catalog_sources(catalogs: Sequence[Mapping[str, Any]]) -> list[Catalo
                     f"is not a builtin catalog (builtins: {', '.join(builtins)})",
                 )
             )
+    from clio_agent.gact.a2ui_catalogs.plugin import plugin_checksum  # noqa: PLC0415
+
+    checksums = {
+        str(row.get("id")): plugin_checksum(
+            str(row.get("executable_digest") or ""), str(row.get("text_digest") or "")
+        )
+        for row in plugins
+    }
     return [
         CatalogDeclarationSource(
             unit_kind="plugin",
             unit_id=f"plugin:{plugin}",
             declared=True,
             declarations=tuple(declarations),
+            install_checksum=checksums.get(plugin, ""),
             parse_errors=tuple(errors.get(plugin, ())),
         )
         for plugin, declarations in grouped.items()
@@ -334,10 +346,10 @@ def _load_declaration(
         if entry is None:  # parse already refused unknown builtin names
             return None, [f"builtin catalog {declaration.name!r} is not shipped"]
         return entry, []
-    from clio_agent.gact.a2ui_catalogs.plugin import load_catalog_directory  # noqa: PLC0415
+    from clio_agent.gact.a2ui_catalogs.plugin import cached_catalog_directory  # noqa: PLC0415
 
     assert declaration.directory is not None
-    return load_catalog_directory(
+    return cached_catalog_directory(
         declaration.directory, declaration.name, install_checksum=source.install_checksum
     )
 

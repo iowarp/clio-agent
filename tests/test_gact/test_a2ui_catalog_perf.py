@@ -118,14 +118,6 @@ def test_discovery_is_called_at_most_once_across_50_transcript_reads(
     assert calls[0] <= 1, f"installed_plugin_catalogs called {calls[0]} times across 50 reads"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "production gap: activation.resolve_session_catalogs re-runs "
-        "declarations._load_declaration -> plugin.load_catalog_directory (3 file reads + JSON "
-        "parse + checksum) for every directory catalog on every producibility lookup"
-    ),
-)
 def test_plugin_catalog_surface_is_not_reloaded_from_disk_per_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
