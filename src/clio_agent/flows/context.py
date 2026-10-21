@@ -104,7 +104,7 @@ class FlowContext:
     ) -> None:
         self.app = app
         self.session_id = session_id
-        self.caller = app.state.conversations.caller(session_id) if app is not None else None
+        self._caller: Any = None
         self.module = module
         self.flow = flow
         self.task = task
@@ -138,6 +138,14 @@ class FlowContext:
         self.editor_tools: dict[str, Any] = {}
 
     # ------------------------------------------------------------ identity
+    @property
+    def caller(self) -> Any:
+        """This assignment's task caller, made on first use (a plain ``react`` turn needs none)."""
+
+        if self._caller is None and self.app is not None:
+            self._caller = self.app.state.conversations.caller(self.session_id)
+        return self._caller
+
     def _declaration(self) -> str:
         reference = self.flow.reference()
         resolution = self.resolution
