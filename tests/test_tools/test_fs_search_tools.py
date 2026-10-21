@@ -188,3 +188,26 @@ async def test_search_outside_allowed_roots_is_refused(tmp_path: Path, tool: str
         tool, {"pattern": "*" if tool == "glob" else "secret", "path": str(allowed)}
     )
     assert inside["root"] == str(allowed)
+
+
+def test_glob_and_grep_results_present_one_row_per_hit() -> None:
+    from clio_agent.tools.tool_presentation import MCP_PRESENTATION_ADAPTERS
+
+    glob = MCP_PRESENTATION_ADAPTERS["fs_glob"].present(
+        {"pattern": "*.py"},
+        {"structuredContent": {"paths": ["a.py", "b.py"], "truncated": False}},
+        None,
+    )
+    assert glob["summary"] == "2 files for *.py"
+    grep = MCP_PRESENTATION_ADAPTERS["fs_grep"].present(
+        {"pattern": "TODO"},
+        {
+            "structuredContent": {
+                "matches": [{"path": "a.py", "line": 3, "text": "# TODO"}],
+                "truncated": True,
+            }
+        },
+        None,
+    )
+    assert grep["summary"] == "1 match for TODO (more not shown)"
+    assert grep["blocks"][0]["text"] == "a.py:3: # TODO"

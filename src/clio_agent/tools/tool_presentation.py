@@ -404,6 +404,31 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
     }
 
 
+def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
+    """``fs_glob`` paths or ``fs_grep`` matching lines, one row per hit."""
+
+    del snapshot
+    row = _structured(result)
+    if "paths" in row:
+        hits = [str(path) for path in row.get("paths") or []]
+        noun = "file"
+    elif "matches" in row:
+        hits = [
+            f"{match.get('path')}:{match.get('line')}: {match.get('text')}"
+            for match in row.get("matches") or []
+            if isinstance(match, Mapping)
+        ]
+        noun = "match"
+    else:
+        return standard_mcp_presentation(result)
+    count = f"{len(hits)} {noun}{'' if len(hits) == 1 else 'es' if noun == 'match' else 's'}"
+    more = " (more not shown)" if row.get("truncated") else ""
+    return {
+        "summary": f"{count} for {args.get('pattern', row.get('pattern', ''))}{more}",
+        "blocks": [{"id": "hits", "type": "text", "text": "\n".join(hits) or "No matches."}],
+    }
+
+
 def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     del snapshot
     row = _structured(result)
@@ -528,6 +553,8 @@ register_presentation_adapter(
         _diff, _capture_write, start=_file_start, action="Write", subject="file-link"
     ),
 )
+register_presentation_adapter("fs_glob", PresentationAdapter(_search, action="Find files"))
+register_presentation_adapter("fs_grep", PresentationAdapter(_search, action="Search files"))
 register_presentation_adapter(
     "shell_bash",
     PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None), action="Run"),

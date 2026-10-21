@@ -33,7 +33,12 @@ def test_every_native_registration_declares_presentation() -> None:
     root = Path(__file__).parents[2] / "src" / "clio_agent"
     missing = []
     for path in root.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        text = path.read_text(encoding="utf-8")
+        # Plugins *claim* a built-in with the SDK's ``native_tool("name")``; only the
+        # instrumentation factory constructs tools.
+        if "tool_instrumentation import" not in text:
+            continue
+        for node in ast.walk(ast.parse(text)):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
