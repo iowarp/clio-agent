@@ -198,3 +198,36 @@ def _jsonable(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def repair_run_reference(app: Any, root_handle: str) -> None:
+    """Point an owning assignment at its latest flow checkpoint again (startup recovery).
+
+    A crash between confirming a checkpoint and updating the owner's details leaves
+    the owner's projection stale; this repairs only the projection, from the
+    already confirmed checkpoint, and never re-executes anything.
+    """
+
+    from clio_agent.arc.task_types import AssignmentDetails  # noqa: PLC0415
+    from clio_agent.gact.native_work import now  # noqa: PLC0415
+
+    history = app.state.task_history
+    with history.serialized():
+        root = history.task_snapshot(root_handle)
+        checkpoint = history.workflow_checkpoint(root_handle)
+        if root is None or checkpoint is None or root.details is None:
+            history.workflow_reference_repaired(root_handle)
+            return
+        details = AssignmentDetails.model_validate(history.read_content(root.details))
+        if details.workflow != checkpoint.content:
+            reference = history.write_content(
+                root.owner.session_id,
+                details.model_copy(
+                    update={"workflow": checkpoint.content, "workflow_id": checkpoint.execution_id}
+                ).model_dump(mode="json"),
+            )
+            history.record_snapshot(
+                root.model_copy(update={"details": reference, "updated_at": now()}),
+                observation_id=uuid4().hex,
+            )
+        history.workflow_reference_repaired(root_handle)

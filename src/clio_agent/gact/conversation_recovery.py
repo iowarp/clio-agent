@@ -94,23 +94,23 @@ def _input_committed(self: Conversations, staged: StagedInput) -> None:
 
 def _restore_input_projections(self: Conversations) -> None:
     """Repair display receipts from confirmed inputs, without redelivering mail."""
-    from clio_agent.gact.workflows import repair_workflow_reference
+    from clio_agent.flows.journal import repair_run_reference
 
     for root in self.history.pending_workflow_references():
         try:
-            repair_workflow_reference(self.app, root)
+            repair_run_reference(self.app, root)
         except ValueError as error:
-            logger.exception("Workflow reference unavailable root=%s", root)
+            logger.exception("Flow checkpoint reference unavailable root=%s", root)
             self.history.workflow_reference_unavailable(root, str(error))
         except (OSError, ClioError, RecordingUnconfirmed) as error:
             logger.exception(
-                "Workflow reference repair pending root=%s error_type=%s",
+                "Flow checkpoint reference repair pending root=%s error_type=%s",
                 root,
                 type(error).__name__,
             )
 
             async def repair(root: str = root) -> None:
-                await self.history.io.run(repair_workflow_reference, self.app, root)
+                await self.history.io.run(repair_run_reference, self.app, root)
 
             if self._loop is not None:
                 self._loop.call_soon_threadsafe(
