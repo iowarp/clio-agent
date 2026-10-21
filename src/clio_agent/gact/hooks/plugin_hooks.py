@@ -16,6 +16,7 @@ from typing import Any
 from clio_agent.gact.hooks.adapters import HookAdapter
 from clio_agent.gact.hooks.config import HookEntry, HookMatch, HookRun, _compile_anchored
 from clio_agent.gact.hooks.wire import HookDecision, HookEnvelope, HookInfraError
+from clio_agent.runtime import trace
 
 _CACHE: dict[str, list[HookEntry]] = {}
 _LOCK = threading.Lock()
@@ -55,12 +56,20 @@ def plugin_hook_entries(session_id: str) -> list[HookEntry]:
         session_resolution,
     )
 
+    # The dispatcher is process-wide; a session's plugins are the active app's.
     app = _ctx.active_app()
     if app is None or getattr(getattr(app, "state", None), "plugin_service", None) is None:
         return []
     try:
         resolution = session_resolution(app, session_id)
-    except SessionAgentUnavailable:
+    except SessionAgentUnavailable as exc:
+        trace.event(
+            "HOOKS",
+            "plugin_hooks_unavailable reason=%s session=%s agent=%s",
+            exc.reason,
+            session_id,
+            exc.ref,
+        )
         return []
     with _LOCK:
         cached = _CACHE.get(resolution.digest)
