@@ -714,8 +714,9 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
         def _run_flow(self, kwargs: dict[str, Any]) -> Any:
             """Run the agent's selected flow (``react`` by default) on this turn."""
 
-            from clio_agent.flows.runner import run_agent_flow  # noqa: PLC0415
+            from clio_agent.flows.runner import accept_flow_input, run_agent_flow  # noqa: PLC0415
 
+            accept_flow_input(self, str(kwargs["question"]), _ctx.active_session_id())
             return run_agent_flow(self, kwargs)
 
     return PluginAgentModule(base_agent, agent_def, resolution)

@@ -63,6 +63,35 @@ def flow_selection(app: Any, session_id: str, agent_def: Any) -> dict[str, Any]:
     return dict(agent_def.metadata.get("flow") or {"id": "react", "options": {}})
 
 
+def accept_flow_input(module: Any, question: str, session_id: str) -> None:
+    """Confirm this turn's input for a flow other than ``react``, before it runs.
+
+    The agent's ReAct program confirms the turn's staged input with its first model
+    request. Any other flow (a started council or plan, or an agent whose own flow is
+    not ``react``) makes no request in this session, so its input is confirmed here;
+    unconfirmed, the assignment keeps eligible mail, yields instead of completing,
+    and is admitted again at every turn end.
+    """
+
+    from dspy.lm15 import Message, TextPart  # noqa: PLC0415
+
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react import NoContextStoreError  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import StepRecorder, arc_scope  # noqa: PLC0415
+
+    app = _ctx.active_app()
+    if str(flow_selection(app, session_id, module.agent_def).get("id") or "react") == "react":
+        return
+    arc, session, scope = arc_scope()
+    if arc is None:
+        raise NoContextStoreError()
+    recorder = StepRecorder(arc, session, scope, expert_id=str(module.agent_def.id))
+    recorder.user_message(Message(role="user", parts=(TextPart(text=question),)))
+    recorder.injections(_ctx.turn_injections())
+    recorder.read_steps()
+    recorder.commit_input(0)
+
+
 def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
     """Run ``module``'s flow on this turn's inputs and return its prediction."""
 

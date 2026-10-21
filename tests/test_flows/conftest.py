@@ -198,9 +198,24 @@ class ScriptedFlowModule:
         self.program = program
 
     def __call__(self, question: str, session_id: str, **kwargs: Any) -> Any:
-        from clio_agent.flows.runner import run_agent_flow
+        from clio_agent.flows.runner import accept_flow_input, flow_selection, run_agent_flow
+        from clio_agent.gact import context
 
-        _commit_test_model_input(self.agent_def, question, session_id)
+        # As in production: a non-react flow confirms its input in the flow runner;
+        # under react, the scripted program stands in for ReAct's own confirmation.
+        if flow_selection(context.active_app(), session_id, self.agent_def).get("id") == "react":
+            _commit_test_model_input(self.agent_def, question, session_id)
+        else:
+            # The production module's forward sets the react scope before its flow runs.
+            tokens = [
+                context.set_react_scope(self.agent_def.id),
+                context.set_react_session(session_id),
+            ]
+            try:
+                accept_flow_input(self, question, session_id)
+            finally:
+                for token in reversed(tokens):
+                    context.reset(token)
         prediction = run_agent_flow(self, {"question": question, "session_id": session_id})
         return dspy.Prediction(
             answer=str(getattr(prediction, "answer", "")),

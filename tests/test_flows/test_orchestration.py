@@ -92,6 +92,10 @@ def test_run_flow_returns_the_handle_and_council_settles_under_it(flow_app: Test
 
     # The flow's result reaches the starting session through its mailbox.
     wait_until(lambda: len(assistant_messages(flow_app, sid)) >= 2, timeout=60)
+    # The flow's own session confirmed its input: one turn, nothing left to wake it.
+    child_sid = flow_task.owner.session_id
+    assert not flow_app.app.state.task_history.pending_mail(child_sid)
+    assert len(assistant_messages(flow_app, child_sid)) == 1
 
 
 def test_replaying_a_settled_flow_reattaches_to_its_handles(flow_app: TestClient) -> None:

@@ -288,19 +288,8 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
 
 
 def _has_own_content(record: PluginRecord) -> bool:
-    return any(
-        (
-            record.skills,
-            record.mcp_servers,
-            record.tools,
-            record.hooks,
-            record.subagents,
-            record.flows,
-            record.fragments,
-            record.commands,
-            record.catalogs,
-        )
-    )
+    parts = (record.skills, record.mcp_servers, record.tools, record.hooks, record.subagents)
+    return any(parts + (record.flows, record.fragments, record.commands, record.catalogs))
 
 
 def _order_hooks(entries: list[Entry], builder: _Builder) -> list[dict[str, Any]]:
