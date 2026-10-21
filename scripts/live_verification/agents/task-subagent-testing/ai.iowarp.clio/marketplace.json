@@ -1,0 +1,4 @@
+{
+  "name": "lv-task-subagent-testing",
+  "description": "Actual model qualification over owned task inputs, with a defined worker subagent."
+}

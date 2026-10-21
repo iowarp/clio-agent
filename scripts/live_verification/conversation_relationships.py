@@ -100,7 +100,7 @@ def main() -> int:
         "POST",
         f"/v1/sessions/{root}/messages",
         {
-            "text": 'Delegate one fictional calibration check using spawn_agent_task(blueprint_id="base-agent", agent="base", task="The three measured numerical values are 10, 12 and 14 (these are values, not reading IDs). Calculate their mean and whether any value differs from it by more than 2. Two sentences only, no tools or files."). Spawn exactly one child, collect it with wait_tasks, then summarize its result in one short sentence. No shell tools.'
+            "text": 'Delegate one fictional calibration check using spawn_agent_task(agent="clio/standard", task="The three measured numerical values are 10, 12 and 14 (these are values, not reading IDs). Calculate their mean and whether any value differs from it by more than 2. Two sentences only, no tools or files."). Spawn exactly one child, collect it with wait_tasks, then summarize its result in one short sentence. No shell tools.'
         },
     )
     runner.wait(root)

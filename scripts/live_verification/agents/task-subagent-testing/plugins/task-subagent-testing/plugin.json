@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "task-subagent-testing",
+  "version": "0.1.0",
+  "description": "Actual model qualification over owned task inputs, with a defined worker subagent.",
+  "author": {
+    "name": "IoWarp Team"
+  },
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "live-verification"
+  ]
+}

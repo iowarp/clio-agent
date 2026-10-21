@@ -66,6 +66,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 REPO = Path(__file__).resolve().parent.parent
+#: A shell-capable agent from the default marketplace, pinned for the P2 hook proof.
+SHELL_AGENT = "clio/standard"
 
 # The CTE pool names/ids are LOAD-BEARING (copied verbatim from the shipped
 # _DEFAULT_CTE_CONFIG_TEMPLATE). Only the port, the repo-local paths, and the bounded caps
@@ -459,25 +461,10 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
         ws = call("POST", "/v1/workspaces", {"name": "gov-gate", "root_path": str(ws_root)})
         wsid = ws.get("id") or ws.get("workspace_id")
 
-        # Gate-declared shell-capable agent (hermetic against box agent config: the default
-        # ``main`` agent on a given box may be a domain blueprint with NO shell tool, in which
-        # case the P2 hook proof would silently degrade to "model declined"). POST upserts.
-        call(
-            "POST",
-            "/v1/agents",
-            {
-                "id": "gov-gate-shell-agent",
-                "title": "Gov Gate Shell Agent",
-                "description": "Gate-declared react agent with shell for the PreToolUse proof.",
-                "system_prompt": (
-                    "You are a helpful autonomous agent. Use your tools to complete the "
-                    "task, then give a clear final answer."
-                ),
-                "tools": ["shell_bash", "fs_read_file"],
-                "metadata": {"module": {"kind": "react"}},
-            },
-            ok=(200, 201),
-        )
+        # The P2 hook proof pins a shell-capable agent explicitly (hermetic against box
+        # agent config: the session-default agent on a given box may be a domain agent
+        # with NO shell plugin, in which case the proof would silently degrade to "model
+        # declined"). ``clio/standard`` carries the ``shell`` and ``workspace`` plugins.
 
         # ---- P2 HOOK discovery (GET /v1/hooks) ------------------------------------
         hooks_seen = call("GET", "/v1/hooks", ok=(200,))
@@ -584,7 +571,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
                 "title": "hook-gate",
                 "workspace_id": wsid,
                 "mode": "edit",
-                "agent": {"id": "gov-gate-shell-agent"},
+                "agent": {"id": SHELL_AGENT},
             },
         )
         hsid = hsess["id"]
@@ -824,12 +811,6 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
     finally:
         out_path.write_text(json.dumps(verdict, indent=2, default=str), encoding="utf-8")
         print(json.dumps(verdict, indent=2, default=str), flush=True)
-        # Drop the gate-declared agent so the USER agent store is not polluted across runs
-        # (best-effort: the server may already be gone on a harness error).
-        try:
-            call("DELETE", "/v1/agents/gov-gate-shell-agent", ok=(200, 204, 404))
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            pass
         # Tear down the gact server first.
         try:
             proc.terminate()

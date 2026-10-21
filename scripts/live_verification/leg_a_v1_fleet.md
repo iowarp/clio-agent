@@ -80,15 +80,14 @@ CLIO_RUN_LIVE=1 uv run pytest \
 **data-semantics (hdf5/parquet breadth, agent-driven):** no committed
 `tests/test_real_cases/test_data_semantics_*.py` file exists yet (confirmed
 by search — only earthscope/wildfire/case13/case14 have real-case test
-files). The marketplace pack itself IS present and installable
-(`external/clio-agent-marketplace/data-semantics`, declares
+files). The marketplace agent itself IS present in the default marketplace
+(`clio/data-semantics`; its `data-semantics` plugin declares
 `hdf5`/`parquet`/`pandas`/`plot` exactly like the canonical fleet). Two
 options, in order of preference:
 
 1. **Preferred — author a thin real-case test** the same shape as
-   `test_deep_researcher_case.py` (blueprint_id=`data-semantics`,
-   `marketplace_source=<repo>/external/clio-agent-marketplace/data-semantics`,
-   a prompt that exercises an hdf5 inspect + a parquet read), gated
+   `test_deep_researcher_case.py` (the `clio/data-semantics` agent, a prompt
+   that exercises an hdf5 inspect + a parquet read), gated
    `CLIO_RUN_LIVE`/`live`/`real_case` exactly like its siblings. This is
    scoped OUTSIDE this prep slice (touches `tests/test_real_cases/` +
    `benchmark/`, not `scripts/live_verification/`) — file it as a follow-up
@@ -97,10 +96,8 @@ options, in order of preference:
    hdf5/parquet with "breadth", not "agent behavior").
 2. **Ad hoc** — drive it through the SAME `gact_server` fixture pattern by
    hand (a throwaway pytest function or a REPL session against a locally
-   booted server) using `clio_sut.ClioAgent` directly:
-   `agent.run({"task": ..., "blueprint_id": "data-semantics",
-   "marketplace_source": "<repo>/external/clio-agent-marketplace/
-   data-semantics", "workdir": <tmp dir>})`.
+   booted server) with a session pinned to `clio/data-semantics`
+   (`PATCH /v1/sessions/{sid}/agent` with `{"ref": "clio/data-semantics"}`).
 
 ## 3. Green means
 

@@ -11,7 +11,7 @@ in core; this script does the same at the tooling layer).
 
 Checks:
   - clio-kit launcher on PATH (+ version via ``uv tool list``)
-  - the marketplace submodule + the deep-researcher pack present
+  - the marketplace submodule + the deep-researcher plugin and agent present
   - ``runtime/mcp_launcher.py``'s own doctor probes (declared MCP launchers on
     PATH; mcp.yaml declarations parse cleanly) run directly, in-process
   - claude_code provider PRESENCE (the Claude Code binary the SDK runs,
@@ -90,19 +90,22 @@ def check_clio_kit() -> dict[str, Any]:
 
 def check_marketplace_submodule() -> dict[str, Any]:
     marketplace = common.REPO / "external" / "clio-agent-marketplace"
-    deep_researcher = marketplace / "deep-researcher" / "AGENT.md"
-    data_semantics = marketplace / "data-semantics" / "AGENT.md"
+    # The default marketplace: plugins in plugins/<id>/, agent classes in agents/*.py.
+    deep_researcher = marketplace / "plugins" / "deep-research" / "plugin.json"
+    data_semantics = marketplace / "plugins" / "data-semantics" / "plugin.json"
+    agents = marketplace / "agents" / "deep_researcher.py"
     submodule_present = marketplace.is_dir() and any(marketplace.iterdir())
-    ok = submodule_present and deep_researcher.is_file()
+    ok = submodule_present and deep_researcher.is_file() and agents.is_file()
     return {
-        "name": "marketplace_deep_researcher_pack",
+        "name": "marketplace_deep_researcher_agent",
         "required": True,
         "ok": ok,
         "detail": {
             "marketplace_dir": str(marketplace),
             "submodule_present": submodule_present,
-            "deep_researcher_agent_md": deep_researcher.is_file(),
-            "data_semantics_agent_md": data_semantics.is_file(),
+            "deep_research_plugin": deep_researcher.is_file(),
+            "deep_researcher_agent_class": agents.is_file(),
+            "data_semantics_plugin": data_semantics.is_file(),
         },
         "remediation": None
         if ok
@@ -146,7 +149,7 @@ def check_mcp_launcher_probes() -> dict[str, Any]:
             "required": False,
             "ok": False,
             "detail": {"error": f"{type(exc).__name__}: {exc}"},
-            "remediation": "Inspect pack/blueprint discovery; see the exception above.",
+            "remediation": "Inspect installed plugins (clio-agent plugin list); see the exception above.",
         }
 
 

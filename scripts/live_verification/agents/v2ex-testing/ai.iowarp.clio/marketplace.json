@@ -1,0 +1,4 @@
+{
+  "name": "lv-v2ex-testing",
+  "description": "Live-verification agent for the synthetic v2 MCP exerciser (tests/test_tools/mcp_exerciser.py)."
+}

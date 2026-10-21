@@ -141,7 +141,7 @@ budget in `scripts/mcp_mem_budget.json` (CI cannot run it — live LM + real CTE
 required — so it runs here):
 ```sh
 uv run python scripts/mcp_mem_attribution.py \
-    --pack external/clio-agent-marketplace/data-semantics \
+    --agent clio/data-semantics \
     --workspace <dir with sensor_readings.csv> \
     --sessions 3 --settle-s 180 --runs 3 --assert-budget    # must print GATE: PASS
 ```

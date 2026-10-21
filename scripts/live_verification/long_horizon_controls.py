@@ -278,7 +278,7 @@ class LongHorizonAcceptance(Acceptance):
     def question_case(self) -> None:
         """A due loop must not talk over a pending human question."""
         sid = self.session("Loop: waits for your answer")
-        self.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": "base-agent"})
+        self.call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": "clio/standard"})
         self.command(sid, "goal", "The user has selected a color and the selection is recorded")
         self.command(sid, "loop", "60s --max-iters=2 Continue only after the user answers")
         self.call(

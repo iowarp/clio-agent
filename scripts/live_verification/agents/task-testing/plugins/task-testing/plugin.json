@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "task-testing",
+  "version": "0.1.0",
+  "description": "Isolated live model qualification of production task owners and controls.",
+  "author": {
+    "name": "IoWarp Team"
+  },
+  "license": "BSD-3-Clause",
+  "keywords": [
+    "live-verification"
+  ]
+}

@@ -18,7 +18,7 @@ the honest-answer / correct-delegation / no-fabrication check.
 Sequencing (matches the owner spec):
   1. boot a server with the level set + stream audit on (unless ``--backend-url``),
   2. **pre-allow permissions via PUT /v1/policies FIRST**,
-  3. create workspace + a blueprint session,
+  3. create workspace + a session pinned to the agent,
   4. POST the LA one-shot question and wait for the turn to finish,
   5. run ``analyze_turn_waterfall.py`` on the capture,
   6. append the results row.
@@ -31,7 +31,7 @@ Usage::
 
     uv run python scripts/run_thinking_experiment.py --level low \
         --provider claude_code --model haiku \
-        --blueprint earthscope-gnss-region \
+        --agent clio/earthscope-gnss-region \
         --results out/thinking_experiment.jsonl
 """
 
@@ -53,7 +53,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The LA one-shot: the canonical full-study Los Angeles acceptance prompt (the
 # demo benchmark's LA mutation case) — full pipeline, staged CSV, PNG artifact.
 # Override with --question for other cases. NOTE: an earlier default here asked a
-# US-wide metadata-aggregation question that was never part of the blueprint's
+# US-wide metadata-aggregation question that was never part of the agent's
 # verified capability surface (no routing row computes tabular metadata stats) —
 # it was mislabeled as the LA one-shot and never passed; see #893 campaign log.
 DEFAULT_QUESTION = (
@@ -79,7 +79,7 @@ class ExperimentPlan:
     provider: str
     model: str
     transport: str
-    blueprint: str
+    agent: str
     questions: tuple[str, ...]
     workspace_root: Path
     results_path: Path
@@ -190,13 +190,13 @@ def _ensure_workspace(client: _Client, name: str, root: Path) -> str:
     return str(created["id"])
 
 
-def _create_session(client: _Client, workspace_id: str, blueprint: str) -> str:
+def _create_session(client: _Client, workspace_id: str, agent: str) -> str:
     created = client.call(
         "POST", "/v1/sessions", {"title": "thinking-experiment", "workspace_id": workspace_id}
     )
     sid = str(created["id"])
-    if blueprint:
-        client.call("POST", f"/v1/sessions/{sid}/agent-blueprint", {"blueprint_id": blueprint})
+    if agent:
+        client.call("PATCH", f"/v1/sessions/{sid}/agent", {"ref": agent})
     return sid
 
 
@@ -300,7 +300,7 @@ def build_plan(args: argparse.Namespace) -> ExperimentPlan:
         provider=args.provider,
         model=args.model,
         transport=args.transport,
-        blueprint=args.blueprint,
+        agent=args.agent,
         questions=tuple(args.question) if args.question else (DEFAULT_QUESTION,),
         workspace_root=workspace_root,
         results_path=Path(args.results).resolve(),
@@ -361,7 +361,7 @@ def run(plan: ExperimentPlan) -> dict[str, Any]:
         workspace_id = _ensure_workspace(
             client, f"thinking-experiment-{plan.workspace_root.name}", plan.workspace_root
         )
-        sid = _create_session(client, workspace_id, plan.blueprint)
+        sid = _create_session(client, workspace_id, plan.agent)
         wall_s = _run_turn(client, plan, workspace_id, sid)
         waterfall = _run_waterfall(plan, sid)
         share = _thinking_share(plan)
@@ -411,7 +411,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--provider", default="claude_code")
     p.add_argument("--model", default="haiku")
     p.add_argument("--transport", default="sdk")
-    p.add_argument("--blueprint", default="earthscope-gnss-region")
+    p.add_argument("--agent", default="clio/earthscope-gnss-region", help="agent ref to pin")
     p.add_argument(
         "--question",
         action="append",

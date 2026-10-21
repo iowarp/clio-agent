@@ -31,7 +31,7 @@ CORE = Path(__file__).resolve().parents[2]
 
 
 def lifecycle_cycle(
-    call: Any, proof: Path, wid: str, blueprint: str, number: int, server_pid: int
+    call: Any, proof: Path, wid: str, agent: str, number: int, server_pid: int
 ) -> dict[str, Any]:
     """Prove real model pause/resume, retained restart, held mail and subtree cancellation."""
     output = proof / f"cycle-{number}"
@@ -42,7 +42,7 @@ def lifecycle_cycle(
     held_text = "HELD_MESSAGE_" + secrets.token_hex(8)
     paths = evidence.worker_files(workspace, f"cycle-{number}", nonce)
     sid = common.create_session(call, wid, f"lifecycle cycle {number}")
-    common.activate_blueprint(call, sid, blueprint)
+    common.use_agent(call, sid, agent)
     command = common.quoted_command(sys.executable, str(paths["script"]))
     assignment = (
         "Do exactly this assignment, preserving accepted operation identities across resumes. "
@@ -315,15 +315,13 @@ def main() -> int:
     workspace = proof / "workspace"
     workspace.mkdir()
     (workspace / "sentinel.txt").write_text("independent real filesystem action", encoding="utf8")
-    pack = common.materialize_testing_pack(
+    pack = common.materialize_testing_marketplace(
         CORE / "scripts/live_verification/agents/task-subagent-testing", workspace, {}
     )
-    # The qualification coordinator needs a real Shell tool for its separate peer leg.
-    main_expert = pack / "experts/main.md"
+    # The qualification coordinator carries the shell plugin for its separate peer leg.
+    main_expert = common.testing_prompt(pack)
     main_expert.write_text(
-        main_expert.read_text(encoding="utf8").replace(
-            "  - fs_read_file", "  - fs_read_file\n  - shell_bash"
-        )
+        main_expert.read_text(encoding="utf8")
         + "\nExecute qualification requests directly unless they explicitly request spawning a worker. "
         "Never delegate peer discovery or messaging; use your own native memory and message tools.\n",
         encoding="utf8",
@@ -342,7 +340,7 @@ def main() -> int:
     if args.provider == "claude_code":
         # These missions exercise lifecycle behavior through the text-tool bridge.
         # Explicitly request its real call syntax; never reinterpret bare JSON as work.
-        for expert in (main_expert, pack / "experts/worker.md"):
+        for expert in (main_expert, common.testing_prompt(pack, "worker")):
             with expert.open("a", encoding="utf8") as prompt:
                 prompt.write(
                     "\nThis Claude SDK route invokes CLIO tools only through the complete "
@@ -410,7 +408,7 @@ def main() -> int:
             assert common.wait_health(call, max_elapsed=120)
             wid = common.create_workspace(call, "actual lifecycle qualification", workspace)
             common.allow_all(call)
-            blueprint = common.install_blueprint(call, pack, wid)["id"]
+            agent = common.install_testing_agent(call, pack)
             call(
                 "PUT",
                 "/v1/providers/lm",
@@ -426,10 +424,10 @@ def main() -> int:
                     from _lifecycle_human_controls import human_control_cycle
 
                     cycle = human_control_cycle
-                verdict["cycles"].append(cycle(call, proof, wid, blueprint, number, process.pid))
+                verdict["cycles"].append(cycle(call, proof, wid, agent, number, process.pid))
                 common.dump_json(proof / "verdict.json", verdict)
             if args.peer:
-                verdict["peer"] = peer_cycle(call, proof, wid, blueprint)
+                verdict["peer"] = peer_cycle(call, proof, wid, agent)
             if args.recovery:
 
                 def restart_service() -> int:
@@ -473,11 +471,11 @@ def main() -> int:
                     return process.pid
 
                 verdict["recovery"] = recovery_cycle(
-                    call, proof, wid, blueprint, process.pid, restart_service
+                    call, proof, wid, agent, process.pid, restart_service
                 )
             if args.ui:
                 assert args.web_dir is not None, "UI gate requires the qualified production build"
-                verdict["ui"] = ui_cycle(call, proof, wid, blueprint, process.pid)
+                verdict["ui"] = ui_cycle(call, proof, wid, agent, process.pid)
             verdict["pass"] = True
     except Exception as exc:
         verdict["error"] = f"{type(exc).__name__}: {exc}"

@@ -10,39 +10,33 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-import sys
 from pathlib import Path
 from typing import Any
 
 import _common as common
 import _lifecycle_evidence as evidence
-import yaml
 from _session_workflow_receipts import model_receipt
 
 
-def blueprint(call: Any, workspace: Path, wid: str) -> str:
-    """Install the existing task agent with the real conformance MCP backend."""
+def testing_agent(call: Any, workspace: Path, wid: str) -> str:
+    """Install the task testing agent with the real conformance MCP backend; return its ref."""
     core = Path(__file__).resolve().parents[2]
-    command = common.quoted_command(sys.executable, str(core / "tests/test_tools/mcp_exerciser.py"))
-    pack = common.materialize_testing_pack(
+    # ``python`` resolves to the server's interpreter (``common.boot_server`` and the
+    # owning controller put it first on PATH).
+    command = ["python", str(core / "tests/test_tools/mcp_exerciser.py")]
+    pack = common.materialize_testing_marketplace(
         core / "scripts/live_verification/agents/task-testing", workspace, {"v2ex": command}
     )
-    expert = pack / "experts/main.md"
-    _, metadata, body = expert.read_text().split("---", 2)
-    frontmatter = yaml.safe_load(metadata)
-    frontmatter["tools"] = ["v2ex_staller", "v2ex_guarded_input", "fs_read_file"]
-    expert.write_text(
-        "---\n"
-        + yaml.safe_dump(frontmatter)
-        + "---\n"
-        + body
+    prompt = common.testing_prompt(pack)
+    prompt.write_text(
+        prompt.read_text()
         + "\nOn an automatic completion wake, query_tasks and get_task_result for the "
         "supplied handle, report its exact handle, status and result, then finish. "
         "Report every supplied human intervention_id. Do not submit new work or reply. "
         "Use only declared arguments; correct input validation errors without replaying "
         "an accepted operation or retrying a permission denial.\n"
     )
-    return common.install_blueprint(call, pack, wid)["id"]
+    return common.install_testing_agent(call, pack)
 
 
 def _start(call: Any, root: Path, sid: str, tool: str, submission: str) -> dict[str, Any]:
@@ -176,7 +170,7 @@ def cycle(call: Any, root: Path, wid: str, pack: str, number: int) -> dict[str, 
     rows = []
     for mode in ("slow", "answer", "cancel"):
         sid = common.create_session(call, wid, f"MCP {number} {mode}")
-        common.activate_blueprint(call, sid, pack)
+        common.use_agent(call, sid, pack)
         tool = "v2ex_staller" if mode == "slow" else "v2ex_guarded_input"
         submission = (
             "Call v2ex_staller(seconds=120, steps=24)."
