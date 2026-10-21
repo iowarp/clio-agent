@@ -22,6 +22,8 @@ Rows follow [megachange-plan.md](megachange-plan.md). A row passes only with rec
 | D14 | `ctx.call("self", ...)` runs this agent as a worker on its `react` flow (pinned to the caller's exact resolution and delta), never its selected flow, so a flow's helpers cannot re-enter the flow; a flow recurses only through `ctx.call(<flow>)`. `run_flow`/`run_plan` start the flow in such a child, which is how a flow started by the model gets a handle at acceptance without a new `TaskKind` (D1). | Phase 3 |
 | D15 | Call targets resolve in this order: a flow object, `self`, a defined subagent, a resolved flow id, a resolved tool, an installed agent (`marketplace/id`). The plan flow keys each node's invocation by node id (`ctx.call(..., key=)`), since nodes start in completion order. | Phase 3 |
 | D16 | A plan editor's proposals are read from its own settled result (`tools_called` rows of `plan_add_node`/`plan_cancel_node`), so replay applies exactly the same edits with no extra store; the editor tools are granted by the child's `plan_editor` metadata, not claimable by a plugin. | Phase 3 |
+| D17 | Commands are a plugin capability: an agent may invoke exactly the agent-invocable commands its resolved plugins ship (`AgentDef.commands`). A command file without `agent:` runs on the session's agent; `agent:` names one of its defined subagents. | Phase 2 |
+| D18 | A flow's live view is published into its own checkpoint (`ctx.publish`, overwritten, never a checkpoint entry). The `plan` flow publishes its nodes and the proposals awaiting approval; `GET /v1/sessions/{sid}/tasks/{handle}/flow` joins that view with the run's calls, open questions, events and typed outcome for the run view. | Phase 3 |
 
 ## Phase rows
 
