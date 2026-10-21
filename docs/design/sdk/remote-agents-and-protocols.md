@@ -4,6 +4,8 @@ Oct 6, 2026 · @Jaime
 
 A2A is the protocol CLIO should build peers and exposure on. Academy is supported natively, so agents running on DOE machines are first-class peers. The Agent Client Protocol connects editors to CLIO and lets CLIO drive local coding agents.
 
+These protocols are for systems that are not CLIO. CLIO agents talk to each other through CLIO's own protocol: tasks, mailbox delivery, observe and wait, and search, on top of clio-core. That holds when CLIO runs distributed and will hold for federated clio-core. A2A, ACP and Academy are adapters at the boundary, and each one maps its protocol onto the same task semantics, so an external agent looks like a task and an external caller gets a session.
+
 ## What CLIO needs
 
 CLIO reaches external agents in two ways. An `external-agents` pack lets any agent discover and call the agents a user has connected. A plugin can also declare **specific peers** it needs, such as a Tosca runner for the manufacturing plugin, and the user binds their address and credentials. Separately, an agent can **expose** itself to other systems.
@@ -90,51 +92,73 @@ Only A2A serves as a general peer protocol; Academy covers HPC-resident agents a
 
 ## Design for CLIO
 
-External agents are reached through plugins, like every other capability. The `external-agents` pack gives an agent discovery and delegation over A2A, ACP and Academy, and a plugin that always needs a specific peer declares it. The agent itself owns only its exposure.
+This section is written against the plugins, SDK and flows change (`claude/sdk-plugins-flows`) and its acceptance-ledger decisions D1 to D23. External agents are reached through plugins like every other capability, every external call is an ordinary CLIO task, and an agent owns only its exposure.
+
+**The boundary.** Nothing inside CLIO uses these protocols. A flow calling another CLIO agent uses `ctx.call`, and a CLIO agent on another machine is reached through the task layer over clio-core. A2A, ACP and Academy are used only when the other side is not CLIO.
+
+**Protocol plugins.** The `external-agents` pack holds three plugins: `a2a`, `acp` and `academy`. Each ships one task-capable MCP server that is the client for its protocol, started lazily like any plugin server. A peer call is therefore a task-capable MCP call, and it inherits everything the task layer already does for external MCP tasks:
+
+- a handle at acceptance;
+- observe, wait and cancel through the shared controls;
+- recovery on the original backend identity after a restart;
+- `external_acknowledged` settlement for an observed terminal state;
+- an uncertain acceptance that is reported, never sent again.
+
+No new `TaskKind` is needed, which keeps decision D1. Cancelling the task makes the plugin server call the protocol's own cancel (`CancelTask` for A2A). The pack also contributes one prompt fragment, conditional on which protocol plugins are present, telling the agent it can discover and delegate to the external agents the user has connected.
+
+**Specific peers belong to plugins.** A plugin that always needs a particular external agent declares it in `ai.iowarp.clio/peers/` with the SDK's `Peer` class. Declaring a peer adds that protocol plugin as a hard requirement of the declaring plugin.
 
 ```python
-# manufacturing plugin, ai.iowarp.clio/peers/
+# manufacturing plugin, ai.iowarp.clio/peers/tosca_runner.py
 tosca_runner = Peer("tosca-runner", protocol="a2a",
                     skills=["topology optimization"])
+
+# a plugin for a DOE simulation service, ai.iowarp.clio/peers/aurora_sim.py
 aurora_sim = Peer("aurora-sim", protocol="academy",
                   actions={"run_case": "Run one simulation case and return its outputs"})
 
-# the agent owns only its exposure
-class Factorio(ScienceAgent):
-    plugins = ScienceAgent.plugins + ["manufacturing@^1"]
-    expose = Expose(a2a=True, acp=True)
+# a local coding agent driven over ACP
+code_agent = Peer("code-agent", protocol="acp", command="claude-code-acp")
 ```
 
+**One delegation interface.** A peer is addressed exactly like a defined subagent. In a flow, `ctx.call("tosca-runner", input)` resolves it. Peers join the target order from decision D15 right after defined subagents: a flow object, `self`, a defined subagent, a peer, a resolved flow id, a resolved tool, an installed agent. For the model, the same delegation tool it uses for defined subagents accepts a peer id. Either way the runtime submits the call to the protocol plugin's server with the peer's binding, and the result comes back as the task's result, with returned files stored as CLIO artifacts.
+
+**Binding is a requirement.** The address and credentials of a peer are operator or user configuration, never part of the plugin or the agent:
+
 ```yaml
-# operator binding, never in the agent definition
 peers:
   tosca-runner:
     card: https://<host>/.well-known/agent-card.json
-    auth: oauth2-client-credentials
+    auth: {scheme: bearer, credential: tosca-runner-token}
   aurora-sim:
-    exchange: globus
+    exchange: {kind: redis, url: redis://<host>:6379}   # or hybrid, or http with Globus
     agent: <academy agent id>
+  code-agent:
+    command: ["npx", "@zed-industries/claude-code-acp"]
 ```
 
-**Discovery, not fragments.** Peers describe themselves: A2A through Agent Cards, Academy through exchange discovery queries. No peer contributes a prompt fragment. The `external-agents` pack contributes one, telling the agent it has tools to discover and delegate to the agents the user has connected, conditional on which protocol plugins are present. Because Academy handles carry no descriptions, an Academy peer's actions are described in its declaration.
-
-**One delegation interface.** The root agent delegates to `tosca-runner` exactly as it would to a defined subagent. Results come back as CLIO artifacts and events, whichever protocol carried them.
-
-**Binding is a requirement.** A peer declared by a plugin is required configuration. The UI asks the user for its address and credentials, and the session does not start until the binding is filled or the plugin that needs it is removed. At session start the runtime fetches each bound peer's Agent Card, or queries the Academy exchange, and checks that the declared skills or actions are present.
+Credentials are stored in CLIO's existing credential store and referenced by name. Stage 2 of resolution checks bindings. An unbound peer blocks the session with the typed reason `peer_unbound`, and the UI asks for the binding or offers to remove the plugin that needs it. At session start the runtime fetches each bound A2A peer's Agent Card, or queries the Academy exchange, and checks the declared skills or actions are present; a mismatch blocks with `peer_unavailable` and names what is missing. A binding change is a plugin change and reaches a running session the way decision D21 describes.
 
 **Location.** The agent never fixes where a peer runs. It may state a preference, such as `prefers=Prefers(locality="hpc")`, the same way it states model preferences; the operator decides.
 
-**Long-running tasks.** A peer call is an external task in CLIO's task layer. It returns a handle at acceptance and is observed, waited on and cancelled with the same task controls as any other work, and its result reaches the caller through the mailbox. CLIO stores the A2A task id and `contextId` as the task's backend reference, polls or resubscribes from the server side, and treats the snapshot returned on resubscribe as the source of truth. An observed terminal state settles as externally acknowledged; lost visibility stays uncertain rather than becoming a failure, and an uncertain submission is never sent again. Webhooks are not used toward compute nodes, since they rarely accept inbound connections. Because A2A defines no progress fields, CLIO reads progress from status messages and partial artifacts.
+**A2A peers.** The `a2a` server sends with `SendStreamingMessage` when the card supports streaming and `SendMessage` otherwise. It stores the A2A task id and `contextId` as the task's backend reference. It follows a running task with `SubscribeToTask`, falling back to `GetTask` polling, and treats the snapshot returned on resubscribe as the source of truth. Webhooks are not used, since compute nodes rarely accept inbound connections. A2A defines no progress fields, so progress comes from status messages and partial artifacts. An A2A `input-required` state becomes a Question task for the caller, and the answer is sent back as the next message in the same context.
 
-**Academy peers.** An adapter turns an Academy handle into a CLIO external task with the same controls. With no streaming, the task reports working until the action returns. Action descriptions come from the `Remote` declaration, since Academy handles carry none, and Globus refresh tokens live in the operator's credentials to survive the 48-hour expiry.
+**Academy peers.** The `academy` server holds a Handle per bound peer through the configured exchange and runs each action as a task. With no streaming, the task reports working until the action returns. Action descriptions come from the `Peer` declaration, since Academy handles carry none. Globus refresh tokens live in the operator's credentials to survive the 48-hour expiry.
 
-**Exposure.** `Expose(a2a=True)` publishes an Agent Card generated from the resolved spec: the role becomes the description, and plugins and defined subagents become skills. The card is signed with the deployment's key. `Expose(acp=True)` ships a local stdio adapter so editors can drive the agent, mapping permission requests onto CLIO grants.
+**ACP peers.** The `acp` server starts the bound command as a subprocess and drives it as an Agent Client Protocol client: `initialize`, `session/new`, then `session/prompt`, collecting `session/update` notifications as task progress. The agent's permission requests become Question tasks for the caller. File system and terminal requests are answered inside the session workspace, under CLIO's write confinement.
 
-**Trust.** Everything a peer returns is data, never instructions to the agent, the same boundary that applies to tool results.
+**Exposure.** `Expose(a2a=True, acp=True)` is a field on the SDK `Agent` and part of its frozen spec. It is how a CLIO agent becomes reachable by systems that are not CLIO.
+
+- *A2A.* GACT serves each exposed agent at `/a2a/<marketplace>/<agent>/`, with its Agent Card at `.well-known/agent-card.json` under that path, using `a2a-sdk`'s server. The card is generated from the resolved spec: the role becomes the description, and plugins and defined subagents become skills. It advertises streaming and no push notifications, and it is signed with the deployment's key, which CLIO generates on first exposure if none is configured. Requests authenticate with the same bearer token GACT already uses. Each A2A `contextId` maps to one stable CLIO session running that agent, and each message starts an assignment whose handle is reported as the A2A task id. `GetTask`, `ListTasks`, `SubscribeToTask` and `CancelTask` map onto the shared task operations for that session. A Question the agent asks becomes A2A `input-required`, and an approval the agent needs becomes `input-required` with the request in the status message. CLIO artifacts are returned as Parts.
+- *ACP.* `clio-agent acp <marketplace/agent>` is a stdio adapter for editors. It does not embed the runtime; it talks to the local GACT server through `clio_agent.client`. `session/new` opens a CLIO session, `session/prompt` sends a message, and GACT's event stream is translated into `session/update` notifications. Approvals become ACP permission requests.
+
+**Trust.** Everything a peer returns is data, never instructions to the agent, the same boundary that applies to tool results. Inbound A2A and ACP requests run under the exposed agent's own plugins and the deployment's sandbox and approval settings, never with more rights than a local session.
 
 ## Decisions from review
 
+- **CLIO talks to CLIO through its own protocol.** A2A, ACP and Academy are only for systems that are not CLIO; distributed and federated CLIO use tasks, the mailbox and search over clio-core.
 - **Academy is supported natively.** CLIO is a science platform, and agents on DOE machines should be first-class peers rather than reached through a second protocol.
+- **A peer call is a task-capable MCP call** served by its protocol plugin, so it reuses the external task path and needs no new task kind.
 - **Missing peers block the session.** A required binding is surfaced in the UI for the user to fill; the agent does not silently run without it.
 - **Peers are discovered, not described in the prompt.** Only the `external-agents` pack contributes a fragment.
 - **Specific peers belong to plugins.** Agents own only their exposure.
