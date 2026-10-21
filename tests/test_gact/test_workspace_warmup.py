@@ -13,11 +13,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context, session_warmup, workspace_warmup
-from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import build_app
 from clio_agent.gact.session_defaults import UpdateSessionDefaultsRequest
-from clio_agent.tools.execution import get_active_tool_blueprint_id, get_active_tool_workspace_root
+from clio_agent.plugins.servers import server_set_declarations
+from clio_agent.tools.execution import get_active_tool_server_set, get_active_tool_workspace_root
 from clio_agent.tools.workspace_root import canonical_workspace_root
+from tests._plugin_fixtures import custom_marketplace
+
+SCIENCE_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class Science(Agent):
+    id = "science"
+    version = "1.0.0"
+    name = "Science"
+    role = "a science assistant"
+    description = "Carries the science plugin's MCP server."
+    plugins = Agent.plugins + ["science"]
+"""
 
 
 class _Executor:
@@ -50,12 +64,11 @@ class _Agent:
     def _active_tool_executor(self) -> _Executor:
         root = canonical_workspace_root(get_active_tool_workspace_root())
         assert root in [canonical_workspace_root(item) for item in self.leases]
-        self.bound.append((root, get_active_tool_blueprint_id(), context.active_tool_session_id()))
+        self.bound.append((root, get_active_tool_server_set(), context.active_tool_session_id()))
         return self.executors.setdefault(root, _Executor())
 
-    def _discover_pack_servers(self, blueprint_id: str, *, cwd: str | None) -> dict[str, Any]:
-        assert cwd
-        return {"science": {}} if blueprint_id == "science-blueprint" else {}
+    def _discover_plugin_servers(self, server_set: str = "") -> dict[str, dict[str, Any]]:
+        return server_set_declarations(server_set)
 
 
 @pytest.fixture
@@ -79,18 +92,24 @@ def threads(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[threading.Thread]]
 def test_draft_prepares_default_fleet_and_first_session_reuses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "AGENT.md").write_text("---\nid: science-blueprint\ntitle: Science\n---\nScience")
-    install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "science": {
+                "servers": {"science": {"type": "stdio", "command": "science-server", "args": []}}
+            }
+        },
+        agents={"science.py": SCIENCE_AGENT},
+    )
     mounted: list[tuple[_Executor, str]] = []
     completed = threading.Event()
     original_workspace_warmup = workspace_warmup._warm_and_release
     original_session_warmup = session_warmup._warm_and_release
 
-    def warm_workspace(app: Any, root: str, blueprint_id: str, key: tuple[int, str, str]) -> None:
+    def warm_workspace(app: Any, root: str, server_set: str, key: tuple[int, str, str]) -> None:
         try:
-            original_workspace_warmup(app, root, blueprint_id, key)
+            original_workspace_warmup(app, root, server_set, key)
         finally:
             completed.set()
 
@@ -115,9 +134,7 @@ def test_draft_prepares_default_fleet_and_first_session_reuses_it(
     with TestClient(app) as client:
         agent = _Agent()
         app.state.agent = agent
-        app.state.session_defaults.update(
-            UpdateSessionDefaultsRequest(blueprint_id="science-blueprint")
-        )
+        app.state.session_defaults.update(UpdateSessionDefaultsRequest(agent_ref="clio/science"))
         workspace = app.state.workspaces.create(name="draft", root_path=str(tmp_path))
         before = app.state.sessions.list()
         response = client.post(f"/v1/workspaces/{workspace.id}/warmup")
@@ -126,7 +143,10 @@ def test_draft_prepares_default_fleet_and_first_session_reuses_it(
         assert completed.wait(5), "draft preparation must finish before checking its fleet"
         assert app.state.sessions.list() == before
         assert {namespace for _, namespace in mounted} == {"web", "science"}
-        assert agent.bound == [(canonical_workspace_root(tmp_path), "science-blueprint", "")]
+        [(bound_root, server_set, bound_session)] = agent.bound
+        assert (bound_root, bound_session) == (canonical_workspace_root(tmp_path), "")
+        # The draft mounts the default agent's plugin servers (the persisted default).
+        assert server_set_declarations(server_set).keys() == {"science"}
         assert agent.leases == []
         executor = agent.executors[canonical_workspace_root(tmp_path)]
 
@@ -134,7 +154,11 @@ def test_draft_prepares_default_fleet_and_first_session_reuses_it(
         created = client.post("/v1/sessions", json={"workspace_id": workspace.id})
         assert created.status_code == 200
         assert completed.wait(5), "the first session must finish preparing the shared fleet"
-        assert agent.bound[-1][2] == created.json()["id"]
+        assert agent.bound[-1] == (
+            canonical_workspace_root(tmp_path),
+            server_set,
+            created.json()["id"],
+        )
         assert agent.executors[canonical_workspace_root(tmp_path)] is executor
         assert len(mounted) == 2, "already connected servers must not start again"
 
@@ -149,12 +173,9 @@ def test_warmup_validates_registered_root_and_advertises_support(tmp_path: Path)
         assert capabilities["capabilities"]["x_clio_workspace_warmup"] is True
 
 
-def _app(agent: Any, blueprint: str = "") -> Any:
+def _app(agent: Any, agent_ref: str = "") -> Any:
     return SimpleNamespace(
-        state=SimpleNamespace(
-            agent=agent,
-            session_defaults=SimpleNamespace(get=lambda: SimpleNamespace(blueprint_id=blueprint)),
-        )
+        state=SimpleNamespace(agent=agent, session_defaults=SimpleNamespace(agent_ref=agent_ref))
     )
 
 
@@ -180,6 +201,11 @@ def test_concurrent_requests_coalesce_but_other_workspaces_and_apps_do_not(
         return {}
 
     monkeypatch.setattr(session_warmup, "warm_session_servers", warm)
+    # No plugin store here: each default agent names its own plugin server set.
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution.agent_server_set",
+        lambda _app, ref: f"servers-{ref}",
+    )
     app = _app(_Agent())
     try:
         for _ in range(3):
@@ -188,7 +214,7 @@ def test_concurrent_requests_coalesce_but_other_workspaces_and_apps_do_not(
         workspace_warmup.start_workspace_warmup(app, str(tmp_path / "second"))
         workspace_warmup.start_workspace_warmup(_app(_Agent()), str(tmp_path))
         assert len(threads) == 3
-        app.state.session_defaults.get = lambda: SimpleNamespace(blueprint_id="changed")
+        app.state.session_defaults.agent_ref = "clio/changed"
         workspace_warmup.start_workspace_warmup(app, str(tmp_path))
         assert len(threads) == 4
     finally:

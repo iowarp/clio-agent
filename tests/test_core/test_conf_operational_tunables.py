@@ -262,38 +262,6 @@ def test_table_query_knobs_are_configurable() -> None:
 # --------------------------------------------------------------------------- #
 
 
-# --------------------------------------------------------------------------- #
-# Blueprint source clone (gact/agent_blueprint_sources.py)
-# --------------------------------------------------------------------------- #
-
-
-def test_blueprint_source_clone_timeout_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``gact.blueprint_source.clone_timeout_s`` bounds the source ``git clone``."""
-
-    from clio_agent.gact import agent_blueprint_sources as module
-
-    set_config("gact", {"blueprint_source": {"clone_timeout_s": 7.5}})
-    assert module.blueprint_source_clone_timeout_s() == 7.5
-
-    seen: dict[str, Any] = {}
-
-    def _fake_run(command: list[str], **kwargs: Any) -> Any:
-        seen.update(kwargs)
-        raise RuntimeError("clone stopped after capturing the timeout")
-
-    monkeypatch.setattr(module.subprocess, "run", _fake_run)
-    row = module.refresh_agent_blueprint_source(
-        {"source": "https://example.invalid/repo.git", "ref": ""}
-    )
-    assert row["status"] == "error"
-    assert seen["timeout"] == 7.5
-
-
-# --------------------------------------------------------------------------- #
-# SPOTTER clearance-event retention (gact/spotter_clearance.py)
-# --------------------------------------------------------------------------- #
-
-
 def test_spotter_clearance_event_retention_is_configurable() -> None:
     """``spotter.max_clearance_events`` triggers the watcher-less prune."""
 
@@ -494,21 +462,6 @@ def test_clio_core_write_retry_ladder_is_configurable() -> None:
         assert lost is not None and lost.name == "blob"
     finally:
         clio_core_retry._reset_put_write_health_for_tests()
-
-
-# --------------------------------------------------------------------------- #
-# Blueprint text-file limit prose (gact/routes/blueprint_file_write.py)
-# --------------------------------------------------------------------------- #
-
-
-def test_blueprint_too_large_message_is_derived_from_the_limit() -> None:
-    """The 413 prose is computed from the enforced byte limit, never restated."""
-
-    from clio_agent.gact.agent_blueprint_files import _BLUEPRINT_TEXT_FILE_LIMIT_BYTES
-    from clio_agent.gact.routes.blueprint_file_write import _too_large_message
-
-    expected_mib = _BLUEPRINT_TEXT_FILE_LIMIT_BYTES // (1024 * 1024)
-    assert f"{expected_mib} MiB" in _too_large_message()
 
 
 @pytest.mark.parametrize(

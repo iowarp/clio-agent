@@ -11,7 +11,6 @@ import pytest
 from dspy.lm15 import ToolResultPart
 
 from clio_agent.gact import context
-from clio_agent.gact.agents.blueprint_tool_recording import recording_blueprint_tool
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.tool_instrumentation import (
     declare_structured_content,
@@ -19,6 +18,7 @@ from clio_agent.gact.agents.tool_instrumentation import (
     native_tool,
     pop_declared_structured_content,
 )
+from clio_agent.gact.agents.tool_recording import recording_tool
 from clio_agent.tools import execution
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
 from tests._scripted_engine import Reply, calls, scripted_lm
@@ -97,7 +97,7 @@ def test_async_native_observation_waits_for_body_and_cleans_declarations(
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, asyncio.CancelledError])
-def test_recorded_async_native_failure_keeps_blueprint_evidence(
+def test_recorded_async_native_failure_keeps_tool_evidence(
     error_type: type[BaseException],
 ) -> None:
     async def refused(query: str) -> str:
@@ -105,7 +105,7 @@ def test_recorded_async_native_failure_keeps_blueprint_evidence(
         await asyncio.sleep(0)
         raise error_type("source interrupted")
 
-    tool = recording_blueprint_tool(
+    tool = recording_tool(
         native_tool(
             refused,
             name="async_refusal",
@@ -139,7 +139,7 @@ def test_clio_react_executes_recorded_and_instrumented_async_native_tool() -> No
 
     (tool,) = instrument_tools(
         [
-            recording_blueprint_tool(
+            recording_tool(
                 native_tool(
                     source,
                     name="async_source",

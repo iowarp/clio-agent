@@ -1,0 +1,4 @@
+{
+  "name": "clio",
+  "description": "A small hermetic stand-in for the default marketplace, used by the test suite."
+}

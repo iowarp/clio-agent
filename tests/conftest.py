@@ -38,6 +38,9 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 # ``gact.allowed_hosts`` itself, so a test that writes its own config (a registry
 # helper, a workspace ``.clio/config.yaml``) cannot lose it.
 _TEST_CLIENT_HOST = "testserver"
+
+#: The hermetic default marketplace every test session installs (tests/fixtures).
+_TEST_MARKETPLACE = Path(__file__).resolve().parent / "fixtures" / "plugin_marketplace"
 _ambient_hosts = [h for h in os.environ.get("CLIO_GACT_ALLOWED_HOSTS", "").split(",") if h.strip()]
 os.environ["CLIO_GACT_ALLOWED_HOSTS"] = ",".join(sorted({*_ambient_hosts, _TEST_CLIENT_HOST}))
 
@@ -614,9 +617,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     knobs are written to the per-test user ``config.yaml`` — the config-FILE layer
     :mod:`clio_agent.conf` resolves ABOVE the environment:
 
-    - ``agents.disable_default_registry_bootstrap: true`` — no network git clone in
-      unit tests; ``_write_test_default_registry_blueprint`` writes the default
-      blueprint on disk so discovery still finds it. No env-direct reader.
     - ``tools.file_policy.allowed_roots`` — ``tmp_path`` unioned with any dev-shell
       ``CLIO_ALLOWED_ROOTS`` (the union that previously lived in the env value now
       builds the file list). The stale env var is *deleted* so the file is the sole
@@ -640,10 +640,14 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
     # CLIO_USER_DIR is the only override platformdirs honors on EVERY OS —
     # XDG alone is a no-op on Windows, which let route-level writes (the
-    # blueprint-sources registry) land in the real %LOCALAPPDATA% (~100 dead
-    # pytest fixture rows found 2026-08-13). Point it at the same tree the XDG
-    # layout resolves to so both resolution paths agree.
+    # plugin store) land in the real %LOCALAPPDATA% (~100 dead pytest fixture
+    # rows found 2026-08-13). Point it at the same tree the XDG layout resolves
+    # to so both resolution paths agree.
     monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
+    # The default marketplace a test session resolves its agent from is a small
+    # hermetic fixture, never the real marketplace or its network URL.
+    monkeypatch.setenv("CLIO_DEFAULT_MARKETPLACE", str(_TEST_MARKETPLACE))
+    monkeypatch.delenv("CLIO_PLUGIN_STORE", raising=False)
     # Codex direct also signs in from the local Codex CLI login ($CODEX_HOME/auth.json):
     # a unit test must never see the developer's real login, so each gets an empty home.
     # A ``live`` test is the exception: it exists to call the real provider with the
@@ -681,14 +685,9 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         for _key in [k for k in os.environ if k.startswith("CLIO_RELAY_")]:
             monkeypatch.delenv(_key, raising=False)
 
-    # #948 S4b: the legacy native-expert runtime (the deleted Tier-1 planner) is
-    # gone, and its ``CLIO_AGENT_ENABLE_LEGACY_NATIVE_EXPERTS`` knob is retired, so
-    # a default/main session MUST resolve an Agent Blueprint react main to run. The
-    # blueprint is written on disk below; keep the network git bootstrap DISABLED.
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
     layer: dict[str, object] = {
-        "agents": {"disable_default_registry_bootstrap": True},
         # Unit tests start no MCP servers in the background (test_session_warmup
         # covers the warm-up itself); a live test runs it as an operator would.
         "tools": {
@@ -727,7 +726,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # The process-wide store caches its file layer; drop it so this test's
     # freshly-written user config.yaml (and XDG) take effect.
     conf.reload()
-    _write_test_default_registry_blueprint(xdg_root)
 
     # Isolate on-disk skill discovery (gact.skills owns the scanner, #917;
     # catalog.py consumes it). Without this, the repo's OWN .claude/skills (e.g.
@@ -742,14 +740,9 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
 
     def _isolated_skill_roots(home: Path, cwd: Path) -> list[tuple[Path, str, str]]:
         roots = _orig_skill_roots(home, cwd)
-        # Keep roots under tmp_path (per-test skills) AND clio's SHIPPED built-in root
-        # (the deterministic ``planning`` entry-skill, P1.5 #1067) — the latter is clio's
-        # own surface, not the ambient repo/home leakage this isolation exists to drop.
-        return [
-            (r, s, scope)
-            for (r, s, scope) in roots
-            if _path_under(r, tmp_path) or _path_under(r, _skills._BUILTIN_SKILLS_ROOT)
-        ]
+        # Keep only roots under tmp_path (per-test skills). Shipped skills come from
+        # the resolved plugins' skills/ folders, which are not user search roots.
+        return [(r, s, scope) for (r, s, scope) in roots if _path_under(r, tmp_path)]
 
     monkeypatch.setattr(_skills, "_skill_search_roots", _isolated_skill_roots)
 
@@ -878,202 +871,15 @@ def _path_under(path: Path, base: Path) -> bool:
         return False
 
 
-def _write_test_default_registry_blueprint(xdg_root: Path) -> None:
-    # Bind the fixture blueprint id to the loader's DEFAULT_AGENT_BLUEPRINT_ID so
-    # the two can never drift again: every explicit
-    # ``POST /v1/sessions/{sid}/agent-blueprint`` activation test that names
-    # DEFAULT_AGENT_BLUEPRINT_ID resolves THIS fixture's rows via
-    # load_agent_blueprints(blueprint_id=...), so a mismatch breaks every
-    # activated-session agent-catalog/expert-pack test. (Commit 3bf695b changed
-    # the constant to "earthscope-gnss-region" for the demo default registry but
-    # left this fixture on the old "data-semantics" id.) NOTE: this snapshot is
-    # no longer implicitly loaded for a BARE/unactivated session --
-    # catalog._builtin_agents() (owner ruling 2026-08-05) always returns just the
-    # code-shipped builtin main; only an EXPLICIT activation resolves this
-    # fixture's rows.
-    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID  # noqa: PLC0415
-
-    root = xdg_root / "clio-agent" / "agent-blueprints" / DEFAULT_AGENT_BLUEPRINT_ID
-    experts = root / "experts"
-    experts.mkdir(parents=True, exist_ok=True)
-    root.joinpath("AGENT.md").write_text(
-        f"""---
-id: {DEFAULT_AGENT_BLUEPRINT_ID}
-version: 0.1.0
-title: Data Semantics Agent
-description: Test default registry data semantics agent.
-root_expert: main
----
-Default test registry Agent Blueprint.
-""",
-        encoding="utf-8",
-    )
-    rows = {
-        "main": """---
-id: main
-title: Main Agent
-description: Tier-1 orchestrator.
-tier: 1
-module:
-  kind: react
-specialization: orchestrator
-prompt_id: clio.main.planner
----
-You are CLIO's agent planner.
-""",
-        "data": """---
-id: data
-title: Data Expert
-description: Specializes in scientific data files and discovery.
-parent_id: main
-tier: 2
-module:
-  kind: react
-specialization: data_analysis
-keywords:
-  - hdf5
-  - adios
-  - bp5
-  - data
-tools:
-  - hdf5_list_datasets
-  - hdf5_analyze_dataset
-  - hdf5_check_compression
-  - hdf5_optimize_chunking
-  - hdf5_analyze_file
-  - adios_inspect_file
-  - adios_inspect_variables
-  - adios_inspect_profiling
-prompt_id: clio.expert.data
----
-You are the CLIO Data Expert.
-""",
-        "analysis": """---
-id: analysis
-title: Analysis Expert
-description: Specializes in statistical analysis and data quality.
-parent_id: main
-tier: 2
-module:
-  kind: react
-specialization: data_analysis
-keywords:
-  - parquet
-  - csv
-  - statistics
-tools:
-  - parquet_analyze_schema
-  - parquet_query_data
-  - parquet_compute_statistics
-  - csv_read_table
-prompt_id: clio.expert.analysis
----
-You are the CLIO Analysis Expert.
-""",
-        "visualization": """---
-id: visualization
-title: Visualization Expert
-description: Produces scientific data visualizations.
-parent_id: main
-tier: 2
-specialization: data_visualization
-keywords:
-  - visualization
-  - plot
-tools:
-  - plot_histogram
-  - plot_bar_chart
-  - plot_scatter
-  - plot_summary
-prompt_id: clio.expert.visualization
----
-You are the CLIO Visualization Expert.
-""",
-        "ndp_catalog": """---
-id: ndp_catalog
-title: NDP Catalog Expert
-description: Nested data expert for dataset discovery and staging.
-parent_id: data
-tier: 3
-specialization: knowledge_retrieval
-keywords:
-  - ndp
-  - catalog
-tools:
-  - ndp_list_organizations
-  - ndp_search_datasets
-  - ndp_get_dataset_details
-  - ndp_stage_resource
-prompt_id: clio.expert.data
----
-You are the CLIO NDP Catalog Expert.
-""",
-        "sac_format": """---
-id: sac_format
-title: SAC Format Expert
-description: Nested format expert for SAC waveform archives.
-parent_id: analysis
-tier: 3
-specialization: data_analysis
-keywords:
-  - sac
-  - waveform
-tools:
-  - sac_inspect_archive
-  - sac_discover_earthscope_region_waveform
-  - sac_fetch_earthscope_waveform
-  - sac_compute_trace_statistics
-  - sac_plot_traces
-prompt_id: clio.expert.analysis
----
-You are the CLIO SAC Format Expert.
-""",
-        "utility": """---
-id: utility
-title: Utility Expert
-description: Exposes local permission-gated utility tools.
-parent_id: main
-tier: 2
-specialization: utility
-keywords:
-  - shell
-  - bash
-  - terminal
-  - command
-tools:
-  - shell_bash
-  - fs_propose_edit
-prompt_id: clio.chat
----
-You are the CLIO Utility Expert.
-""",
-    }
-    for name, text in rows.items():
-        experts.joinpath(f"{name}.md").write_text(text, encoding="utf-8")
-    root.joinpath(".clio-install.md").write_text(
-        """# CLIO Agent Blueprint install metadata
-
-source: git@github.com:JaimeCernuda/clio-agent-marketplace.git
-source_kind: git
-ref: main
-commit: 908e013d68a80b1e13d5e7d633309d1f6813d970
-pinned_commit: 908e013d68a80b1e13d5e7d633309d1f6813d970
-scope: global
-""",
-        encoding="utf-8",
-    )
-
-
 @pytest.fixture
 def host_agent_executor(monkeypatch):
     """Make a default session's react ``main`` execute the ``build_app`` host fake.
 
-    Opt-in seam (#948 S4b) for turn-engine tests (test_gact / test_sdk / test_ui)
+    Opt-in seam (#948 S4b) for turn-engine tests (test_gact / test_client / test_ui)
     that hand ``build_app`` a fake agent with a canned-``Prediction`` ``forward``
-    and assert the turn produced it. Since the legacy fall-through planner is
-    deleted, a default session now resolves the default-registry blueprint react
-    ``main``; this fixture routes that root's ONE build seam back to the host
-    fake's ``forward`` (see :mod:`tests._harness`). Request it via
+    and assert the turn produced it. A session runs its pinned plugin agent; this
+    fixture routes the ONE agent-module build seam back to the host fake's
+    ``forward`` (see :mod:`tests._harness`). Request it via
     ``pytestmark = pytest.mark.usefixtures("host_agent_executor")`` at module
     scope, or per test.
     """

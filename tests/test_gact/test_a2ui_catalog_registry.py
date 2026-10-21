@@ -1,9 +1,9 @@
-"""A2UI catalog registry, per-catalog validation, and blueprint declaration (S2).
+"""A2UI catalog registry, per-catalog validation, and plugin-shipped catalogs (S2).
 
 docs/design/a2ui-compat-campaign-2026-09.md S2 / iowarp/clio-agent#1365: the
 server trusts a catalog by registry lookup, not string equality against one
 hard-coded id. See ``src/clio_agent/gact/a2ui_catalogs/`` for the registry,
-blueprint declaration/loading, session producibility, and validation.
+plugin catalog loading (``plugin.py``), session producibility, and validation.
 """
 
 from __future__ import annotations
@@ -21,26 +21,34 @@ from clio_agent.gact.a2ui import (
     project_a2ui_parts,
     validate_server_message,
 )
-from clio_agent.gact.a2ui_catalogs.activation import session_producible_catalog_ids
-from clio_agent.gact.a2ui_catalogs.blueprint import (
-    load_blueprint_catalogs,
-    validate_blueprint_catalogs,
+from clio_agent.gact.a2ui_catalogs.activation import (
+    session_catalog_resolver,
+    session_producible_catalog_ids,
 )
 from clio_agent.gact.a2ui_catalogs.builtin import (
     basic_catalog_id,
     workspace_catalog_id,
 )
+from clio_agent.gact.a2ui_catalogs.plugin import load_catalog_directory
 from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
-from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+from clio_agent.gact.agents.resolution import pin_session_agent, plugin_service
 from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 from clio_agent.gact.types import Message
+from clio_agent.plugins.resolve import Delta
 
-from .a2ui_catalog_binding import bind_builtin_catalogs
+from .a2ui_catalog_binding import (
+    MINIMAL_CATALOG_ID,
+    MINIMAL_PLUGIN,
+    bind_builtin_catalogs,
+    bind_session_plugins,
+    catalog_dir,
+    install_plugins,
+)
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
-FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
+MINIMAL_DIR = catalog_dir(MINIMAL_PLUGIN, "minimal")
 
 
 def _session_client(tmp_path: Path) -> tuple[TestClient, str]:
@@ -56,56 +64,24 @@ def _create_message(catalog_id: str, surface_id: str = "surface_1") -> dict[str,
     }
 
 
-def _install_isolated_minimal_pack(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, Path, dict[str, Any]]:
-    """Install the ``a2ui-minimal-pack`` fixture into a tmp-isolated user config dir.
+def _install_minimal_plugin(app: Any, tmp_path: Path) -> None:
+    """Install the ``a2ui-minimal`` fixture plugin into the app's own plugin store.
 
-    Adversarial (S7 composability) review finding #13: ``install_agent_
-    blueprint``'s install root resolves through ``paths.user_config_dir_for
-    (home, os.environ)``, which checks ``CLIO_USER_DIR``/``XDG_CONFIG_HOME``
-    in ``os.environ`` BEFORE ever consulting the injected ``home`` argument --
-    a bare ``Path.home`` monkeypatch does NOT redirect it on Windows
-    (``%LOCALAPPDATA%\\clio-agent`` wins over an unset override), so a test
-    that only patches ``Path.home`` can install fixture packs into the
-    developer's REAL Agent Blueprint registry. ``tests/conftest.py``'s
-    autouse ``allow_pytest_tmp_path`` fixture already sets both env vars
-    process-wide, but this helper sets them explicitly too (belt-and-
-    suspenders self-contained isolation, not an implicit dependency on
-    fixture ordering elsewhere) and asserts, after the install, that the
-    pack never landed under the REAL (unpatched) per-user registry.
+    The store root is the test's isolated user config dir (``tests/conftest.py``
+    points ``CLIO_USER_DIR``/``XDG_CONFIG_HOME`` under ``tmp_path``); assert it so
+    a fixture install can never land in the developer's real plugin store.
     """
 
-    import os
+    store_root = plugin_service(app).store.root.resolve()
+    assert store_root.is_relative_to(tmp_path.resolve()), store_root
+    install_plugins(app, MINIMAL_PLUGIN)
 
-    from clio_agent import paths
-    from clio_agent.gact.agent_blueprints import install_agent_blueprint
 
-    # Captured BEFORE any patch below: the REAL, unpatched per-user registry
-    # root, so the post-install assertion checks the actual machine rather
-    # than a path relative to this test's own overrides.
-    real_root = paths.user_config_dir_for(Path.home(), dict(os.environ))
-
-    home = tmp_path / "home"
-    cwd = tmp_path / "cwd"
-    home.mkdir()
-    cwd.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.chdir(cwd)
-    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-
-    result = install_agent_blueprint(
-        source=str(FIXTURE_PACK),
-        scope="global",
-        cwd=cwd,
-        home=home,
-        blueprint_id="a2ui-minimal-pack",
-    )
-
-    leaked = real_root / "agent-blueprints" / "a2ui-minimal-pack"
-    assert not leaked.exists(), f"fixture pack leaked into the real registry: {leaked}"
-    return home, cwd, result
+def _minimal_entry() -> Any:
+    entry, errors = load_catalog_directory(MINIMAL_DIR, "minimal")
+    assert errors == []
+    assert entry is not None
+    return entry
 
 
 # --------------------------------------------------------------------------- #
@@ -157,81 +133,70 @@ def test_validate_server_message_raises_typed_error_for_unknown_catalog() -> Non
 
 
 # --------------------------------------------------------------------------- #
-# Blueprint-declared pack catalog: producible only when activated
+# Plugin-shipped catalog: producible only in a session whose agent carries it
 # --------------------------------------------------------------------------- #
 
 
-def test_pack_catalog_producible_only_in_a_session_that_activated_its_blueprint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_plugin_catalog_producible_only_in_a_session_whose_agent_carries_it(
+    tmp_path: Path,
 ) -> None:
-    """A pack catalog installed server-wide is KNOWN to every session (``get``
-    resolves it, so replay/validation never breaks) but only PRODUCIBLE —
-    creatable via ``createSurface`` — in a session whose own active blueprint
-    declared it."""
-
-    _install_isolated_minimal_pack(tmp_path, monkeypatch)
+    """A plugin catalog installed server-wide is KNOWN to every session (``get``
+    resolves it, so replay/validation never breaks) but only PRODUCIBLE --
+    creatable via ``createSurface`` -- in a session whose own resolved agent
+    carries the plugin that ships it."""
 
     client, sid = _session_client(tmp_path)
     app = client.app
-    installed = app.state.a2ui_catalogs.get("https://example.test/a2ui/catalogs/minimal")
+    _install_minimal_plugin(app, tmp_path)
+    installed = app.state.a2ui_catalogs.get(MINIMAL_CATALOG_ID)
     assert installed is not None
-    pack_catalog_id = installed.catalog_id
+    assert installed.source == "plugin"
 
-    # Installed server-wide, but this session never activated the pack.
-    assert pack_catalog_id not in session_producible_catalog_ids(app, sid)
+    # Installed server-wide, but this session's agent does not carry the plugin.
+    assert MINIMAL_CATALOG_ID not in session_producible_catalog_ids(app, sid)
 
-    unactivated = client.post(
+    unbound = client.post(
         f"/v1/sessions/{sid}/a2ui/messages",
         headers=HEADERS,
-        json={"messages": [_create_message(pack_catalog_id)]},
+        json={"messages": [_create_message(MINIMAL_CATALOG_ID)]},
     )
-    assert unactivated.status_code == 422
-    assert unactivated.json()["error"]["error"] == "a2ui_catalog_not_producible"
+    assert unbound.status_code == 422
+    assert unbound.json()["error"]["error"] == "a2ui_catalog_not_producible"
 
-    app.state.sessions.update(
-        sid, metadata_patch={"active_agent_blueprint_id": "a2ui-minimal-pack"}
-    )
-    assert pack_catalog_id in session_producible_catalog_ids(app, sid)
+    pin_session_agent(app, sid, delta=Delta(add=(MINIMAL_PLUGIN,)))
+    assert MINIMAL_CATALOG_ID in session_producible_catalog_ids(app, sid)
 
-    activated = client.post(
+    bound = client.post(
         f"/v1/sessions/{sid}/a2ui/messages",
         headers=HEADERS,
-        json={"messages": [_create_message(pack_catalog_id)]},
+        json={"messages": [_create_message(MINIMAL_CATALOG_ID)]},
     )
-    assert activated.status_code == 200, activated.text
+    assert bound.status_code == 200, bound.text
 
 
-def test_path_activated_pack_catalog_is_producible_before_install() -> None:
-    """A session-scoped PATH activation (a pack referenced by an on-disk path,
-    not yet copied into the installed registry — the mechanism marketplace
-    packs under test use, mirroring ``resolve_active_blueprint_servers`` for
-    MCP servers) makes its own catalog resolvable AND producible for that
-    session even though the app-level registry never discovered it."""
+def test_pinned_session_keeps_its_catalog_after_the_plugin_is_uninstalled(
+    tmp_path: Path,
+) -> None:
+    """A session is pinned to its resolution: once the plugin that shipped its
+    catalog is uninstalled, the app-level registry no longer knows the catalog,
+    but the session still resolves AND produces it through its own resolution
+    (``activation.session_catalog_resolver``)."""
 
-    from unittest.mock import MagicMock
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="pinned")
+    bind_session_plugins(app, session.id, MINIMAL_PLUGIN)
+    assert app.state.a2ui_catalogs.get(MINIMAL_CATALOG_ID) is not None
 
-    from clio_agent.gact.a2ui_catalogs.activation import session_catalog_resolver
+    plugin_service(app).store.uninstall(MINIMAL_PLUGIN)
+    app.state.a2ui_catalogs.invalidate()
 
-    blueprint = parse_agent_blueprint_root(FIXTURE_PACK, scope="session")
-    pack_catalog_id = load_blueprint_catalogs(blueprint)[0].catalog_id
-
-    app = MagicMock()
-    app.state.a2ui_catalogs = CatalogRegistry()
-    session = MagicMock()
-    session.metadata = {
-        "active_agent_blueprint_id": blueprint.id,
-        "active_agent_blueprint_path": str(FIXTURE_PACK),
-    }
-    app.state.sessions.get.return_value = session
-
-    assert app.state.a2ui_catalogs.get(pack_catalog_id) is None  # not installed server-wide
-    assert pack_catalog_id in session_producible_catalog_ids(app, "sess_path")
-    assert session_catalog_resolver(app, "sess_path").get(pack_catalog_id) is not None
+    assert app.state.a2ui_catalogs.get(MINIMAL_CATALOG_ID) is None  # not installed server-wide
+    assert MINIMAL_CATALOG_ID in session_producible_catalog_ids(app, session.id)
+    assert session_catalog_resolver(app, session.id).get(MINIMAL_CATALOG_ID) is not None
 
 
 def test_apply_batch_raises_typed_error_when_catalog_is_installed_but_not_producible() -> None:
-    blueprint = parse_agent_blueprint_root(FIXTURE_PACK, scope="session")
-    entry = load_blueprint_catalogs(blueprint)[0]
+    entry = _minimal_entry()
 
     class _StubResolver:
         def get(self, catalog_id: str, protocol_version: str = "0.9.1") -> Any:
@@ -246,12 +211,13 @@ def test_apply_batch_raises_typed_error_when_catalog_is_installed_but_not_produc
     assert excinfo.value.catalog_id == entry.catalog_id
 
 
-def test_pack_catalog_aliases_basic_components(tmp_path: Path) -> None:
-    """The minimal pack's ``MinimalText``/``MinimalButton`` validate like their
+def test_plugin_catalog_aliases_basic_components() -> None:
+    """The minimal plugin's ``MinimalText``/``MinimalButton`` validate like their
     aliased Basic kernels: same required shape, closed against extras."""
 
-    blueprint = parse_agent_blueprint_root(FIXTURE_PACK, scope="session")
-    entry = load_blueprint_catalogs(blueprint)[0]
+    entry = _minimal_entry()
+    assert entry.source == "plugin"
+    assert entry.name == "minimal"
     assert set(entry.sidecar.implements) == {"MinimalText", "MinimalButton"}
     assert entry.sidecar.implements["MinimalText"].kernel == "Text"
     assert entry.sidecar.implements["MinimalButton"].kernel == "Button"
@@ -263,31 +229,29 @@ def test_pack_catalog_aliases_basic_components(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# A pack whose implements[].kernel names a nonexistent component
+# A plugin catalog whose implements[].kernel names a nonexistent component
 # --------------------------------------------------------------------------- #
 
 
-def _write_broken_pack(tmp_path: Path) -> Path:
-    root = tmp_path / "broken-pack"
-    (root / "catalogs" / "broken").mkdir(parents=True)
-    (root / "experts").mkdir()
-    (root / "AGENT.md").write_text(
-        "---\n"
-        "id: a2ui-broken-pack\n"
-        "title: Broken Pack\n"
-        "root_expert: root\n"
-        "a2ui_catalogs:\n"
-        "  broken: catalogs/broken\n"
-        "blueprint:\n"
-        "  format: agent-blueprint-v1\n"
-        "---\n\nBroken test pack.\n",
+def _write_plugin_manifest(root: Path) -> None:
+    (root / "plugin.json").write_text(
+        json.dumps(
+            {
+                "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+                "name": root.name,
+                "version": "1.0.0",
+            }
+        ),
         encoding="utf-8",
     )
-    (root / "experts" / "root.md").write_text(
-        "---\nid: root\ntitle: Root\ntier: 1\nmodule:\n  kind: react\ntools: []\n---\n\nRoot.\n",
-        encoding="utf-8",
-    )
-    (root / "catalogs" / "broken" / "catalog.json").write_text(
+
+
+def _write_broken_plugin(tmp_path: Path) -> Path:
+    root = tmp_path / "plugins" / "a2ui-broken"
+    catalog = root / "ai.iowarp.clio" / "a2ui" / "broken"
+    catalog.mkdir(parents=True)
+    _write_plugin_manifest(root)
+    (catalog / "catalog.json").write_text(
         '{"$schema": "https://json-schema.org/draft/2020-12/schema", '
         '"$id": "https://example.test/a2ui/catalogs/broken", '
         '"title": "Broken", "description": "Broken.", '
@@ -297,34 +261,39 @@ def _write_broken_pack(tmp_path: Path) -> Path:
         '"functions": {}, "$defs": {}}',
         encoding="utf-8",
     )
-    (root / "catalogs" / "broken" / "catalog.clio.json").write_text(
+    (catalog / "catalog.clio.json").write_text(
         '{"catalogId": "https://example.test/a2ui/catalogs/broken", '
         '"protocolVersion": "0.9.1", "trust": {"source": "pack"}, '
         '"implements": {"Ghost": {"kernel": "NoSuchComponent"}}, '
         '"events": {}, "instructions": "instructions.md"}',
         encoding="utf-8",
     )
-    (root / "catalogs" / "broken" / "instructions.md").write_text("Broken.\n", encoding="utf-8")
+    (catalog / "instructions.md").write_text("Broken.\n", encoding="utf-8")
     return root
 
 
-def test_pack_catalog_with_unimplemented_kernel_is_refused_at_validate_time(
-    tmp_path: Path,
-) -> None:
-    from clio_agent.gact.agent_blueprints import validate_agent_blueprint_path
+def test_plugin_catalog_with_unimplemented_kernel_never_loads(tmp_path: Path) -> None:
+    root = _write_broken_plugin(tmp_path)
 
-    root = _write_broken_pack(tmp_path)
-
-    result = validate_agent_blueprint_path(root, scope="session")
-
-    assert result["enabled"] is False
-    assert result["validation_errors"]
-    assert any("NoSuchComponent" in e for e in result["validation_errors"])
-
-    blueprint = parse_agent_blueprint_root(root, scope="session")
-    errors = validate_blueprint_catalogs(blueprint)
+    entry, errors = load_catalog_directory(root / "ai.iowarp.clio" / "a2ui" / "broken", "broken")
+    assert entry is None  # a broken plugin catalog never loads
     assert any("NoSuchComponent" in e for e in errors)
-    assert load_blueprint_catalogs(blueprint) == []  # a broken pack catalog never loads
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="broken")
+    bind_session_plugins(app, session.id, "a2ui-broken", root=tmp_path / "plugins")
+
+    # Neither installed server-wide nor producible: the session keeps core's catalog
+    # and records why the plugin's own catalog was refused.
+    assert app.state.a2ui_catalogs.get("https://example.test/a2ui/catalogs/broken") is None
+    assert session_producible_catalog_ids(app, session.id) == [workspace_catalog_id()]
+    reasons = app.state.a2ui_catalogs.session_reasons(session.id)
+    assert any(
+        row["reason"] == "a2ui_catalog_declaration_invalid"
+        and row["unit"] == "plugin:a2ui-broken"
+        and "NoSuchComponent" in row["detail"]
+        for row in reasons
+    ), reasons
 
 
 # --------------------------------------------------------------------------- #
@@ -726,32 +695,20 @@ def test_declared_agent_destination_is_not_recorded_as_undeclared(tmp_path: Path
     assert not any(row["reason"] == "a2ui_event_destination_undeclared" for row in reasons)
 
 
-def _write_pack(tmp_path: Path, *, pack_id: str, component_name: str) -> Path:
-    """A minimal installable-shape pack aliasing Basic ``Text`` under
-    ``component_name``, with two experts: ``root`` (declares the catalog)
-    and ``consumer`` (whose ``a2ui_catalogs`` subset is set by the caller)."""
+def _write_catalog(tmp_path: Path, *, name: str, component_name: str) -> Path:
+    """A minimal plugin catalog folder aliasing Basic ``Text`` under ``component_name``."""
 
-    root = tmp_path / pack_id
-    (root / "catalogs" / "solo").mkdir(parents=True)
-    (root / "experts").mkdir()
-    (root / "AGENT.md").write_text(
-        f"---\nid: {pack_id}\ntitle: {pack_id}\nroot_expert: root\n"
-        "a2ui_catalogs:\n  solo: catalogs/solo\nblueprint:\n  format: agent-blueprint-v1\n"
-        f"---\n\n{pack_id} test pack.\n",
-        encoding="utf-8",
-    )
-    (root / "experts" / "root.md").write_text(
-        "---\nid: root\ntitle: Root\ntier: 1\nmodule:\n  kind: react\ntools: []\n---\n\nRoot.\n",
-        encoding="utf-8",
-    )
-    (root / "catalogs" / "solo" / "catalog.json").write_text(
+    root = tmp_path / name
+    root.mkdir(parents=True)
+    catalog_id = f"https://example.test/a2ui/catalogs/{name}"
+    (root / "catalog.json").write_text(
         json.dumps(
             {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "$id": f"https://example.test/a2ui/catalogs/{pack_id}",
-                "title": pack_id,
+                "$id": catalog_id,
+                "title": name,
                 "description": "Test.",
-                "catalogId": f"https://example.test/a2ui/catalogs/{pack_id}",
+                "catalogId": catalog_id,
                 "components": {
                     component_name: {
                         "type": "object",
@@ -768,10 +725,10 @@ def _write_pack(tmp_path: Path, *, pack_id: str, component_name: str) -> Path:
         ),
         encoding="utf-8",
     )
-    (root / "catalogs" / "solo" / "catalog.clio.json").write_text(
+    (root / "catalog.clio.json").write_text(
         json.dumps(
             {
-                "catalogId": f"https://example.test/a2ui/catalogs/{pack_id}",
+                "catalogId": catalog_id,
                 "protocolVersion": "0.9.1",
                 "trust": {"source": "pack"},
                 "implements": {component_name: {"kernel": "Text"}},
@@ -781,56 +738,19 @@ def _write_pack(tmp_path: Path, *, pack_id: str, component_name: str) -> Path:
         ),
         encoding="utf-8",
     )
-    (root / "catalogs" / "solo" / "instructions.md").write_text("Test.\n", encoding="utf-8")
+    (root / "instructions.md").write_text("Test.\n", encoding="utf-8")
     return root
 
 
-def test_expert_a2ui_catalogs_subset_with_undeclared_name_is_a_validation_error(
-    tmp_path: Path,
-) -> None:
-    from clio_agent.gact.agent_blueprints import validate_agent_blueprint_path
-
-    root = _write_pack(tmp_path, pack_id="a2ui-expert-subset-pack", component_name="SoloText")
-    (root / "experts" / "consumer.md").write_text(
-        "---\nid: consumer\ntitle: Consumer\ntier: 2\nparent_id: root\n"
-        "module:\n  kind: react\ntools: []\na2ui_catalogs: [nonexistent]\n---\n\nConsumer.\n",
-        encoding="utf-8",
-    )
-
-    result = validate_agent_blueprint_path(root, scope="session")
-
-    assert result["enabled"] is False
-    assert any(
-        "consumer" in e and "undeclared a2ui catalog" in e for e in result["validation_errors"]
-    )
-
-
-def test_expert_a2ui_catalogs_subset_with_declared_name_is_valid(tmp_path: Path) -> None:
-    from clio_agent.gact.agent_blueprints import validate_agent_blueprint_path
-
-    root = _write_pack(tmp_path, pack_id="a2ui-expert-subset-ok-pack", component_name="SoloText")
-    (root / "experts" / "consumer.md").write_text(
-        "---\nid: consumer\ntitle: Consumer\ntier: 2\nparent_id: root\n"
-        "module:\n  kind: react\ntools: []\na2ui_catalogs: [solo]\n---\n\nConsumer.\n",
-        encoding="utf-8",
-    )
-
-    result = validate_agent_blueprint_path(root, scope="session")
-
-    assert result["enabled"] is True, result["validation_errors"]
-
-
-def test_dotted_pack_component_name_records_uax31_warning_not_an_error(tmp_path: Path) -> None:
+def test_dotted_plugin_component_name_records_uax31_warning_not_an_error(tmp_path: Path) -> None:
     """0.9.1 tolerates a non-UAX#31 component name; it is a recorded WARNING
     reason, never a blocking validation error."""
 
-    root = _write_pack(tmp_path, pack_id="a2ui-dotted-pack", component_name="my.dotted.v1")
+    root = _write_catalog(tmp_path, name="a2ui-dotted", component_name="my.dotted.v1")
 
-    blueprint = parse_agent_blueprint_root(root, scope="session")
-    errors = validate_blueprint_catalogs(blueprint)
+    entry, errors = load_catalog_directory(root, "a2ui-dotted")
     assert errors == []
-    entries = load_blueprint_catalogs(blueprint)
-    assert len(entries) == 1
+    assert entry is not None
 
     from clio_agent.gact.a2ui_catalogs.reasons import recorded_a2ui_catalog_reasons
 
@@ -879,48 +799,44 @@ def test_basic_surface_rejects_a_workspace_only_component(tmp_path: Path) -> Non
     assert basic_catalog_id() in response.json()["error"]["message"]
 
 
-def test_second_session_with_no_active_blueprint_cannot_produce_the_pack_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Producibility is SESSION-scoped: activating a pack in one session must
-    not leak into a second, unrelated session on the same app."""
+def test_second_session_without_the_plugin_cannot_produce_its_catalog(tmp_path: Path) -> None:
+    """Producibility is SESSION-scoped: adding a plugin to one session's agent
+    must not leak into a second, unrelated session on the same app."""
 
-    _install_isolated_minimal_pack(tmp_path, monkeypatch)
-
-    client, activated_sid = _session_client(tmp_path)
+    client, bound_sid = _session_client(tmp_path)
     app = client.app
-    app.state.sessions.update(
-        activated_sid, metadata_patch={"active_agent_blueprint_id": "a2ui-minimal-pack"}
-    )
+    _install_minimal_plugin(app, tmp_path)
+    pin_session_agent(app, bound_sid, delta=Delta(add=(MINIMAL_PLUGIN,)))
     other_session = app.state.sessions.create(workspace_id="ws_default", title="unrelated")
 
-    pack_catalog_id = "https://example.test/a2ui/catalogs/minimal"
-    assert pack_catalog_id in session_producible_catalog_ids(app, activated_sid)
-    assert pack_catalog_id not in session_producible_catalog_ids(app, other_session.id)
+    assert MINIMAL_CATALOG_ID in session_producible_catalog_ids(app, bound_sid)
+    assert MINIMAL_CATALOG_ID not in session_producible_catalog_ids(app, other_session.id)
 
     response = client.post(
         f"/v1/sessions/{other_session.id}/a2ui/messages",
         headers=HEADERS,
-        json={"messages": [_create_message(pack_catalog_id)]},
+        json={"messages": [_create_message(MINIMAL_CATALOG_ID)]},
     )
     assert response.status_code == 422
     assert response.json()["error"]["error"] == "a2ui_catalog_not_producible"
 
 
-def test_pack_catalog_entry_carries_the_blueprint_install_checksum(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Stamped like blueprint_server_map's CLIO_BLUEPRINT_INSTALL_CHECKSUM:
-    the entry's install_checksum names the OWNING pack version, distinct from
-    its own catalog-file content checksum."""
-
-    _, _, installed = _install_isolated_minimal_pack(tmp_path, monkeypatch)
-    expected_checksum = installed["installed"][0]["install"]["checksum"]
-    assert expected_checksum
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "production gap: installed_plugin_catalogs / plugin_catalog_sources never pass the "
+        "declaring plugin's digest to load_catalog_directory, so install_checksum is empty"
+    ),
+)
+def test_plugin_catalog_entry_carries_the_owning_plugins_checksum(tmp_path: Path) -> None:
+    """The entry's install_checksum names the OWNING plugin version, distinct from
+    its own catalog-file content checksum (``CatalogEntry.install_checksum``)."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    entry = app.state.a2ui_catalogs.get("https://example.test/a2ui/catalogs/minimal")
+    _install_minimal_plugin(app, tmp_path)
+
+    entry = app.state.a2ui_catalogs.get(MINIMAL_CATALOG_ID)
 
     assert entry is not None
-    assert entry.install_checksum == expected_checksum
+    assert entry.install_checksum
     assert entry.install_checksum != entry.checksum

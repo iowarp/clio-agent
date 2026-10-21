@@ -3,26 +3,38 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
-from clio_agent.gact import document_tools
-from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
-from clio_agent.gact.agents.skill_runtime import effective_declared_skills
-from clio_agent.gact.catalog import _builtin_main_agent
-from clio_agent.gact.skills import SkillCatalog, read_skill_body
+from clio_agent.gact import context, document_tools
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
+from clio_agent.gact.agents.resolution import resolution_agent_def, session_resolution
+from clio_agent.gact.app import build_app
+from clio_agent.plugins.service import PluginService
 from clio_agent.tools.file_policy import FileAccessPolicy
+from tests._plugin_fixtures import FIXTURE, custom_marketplace
 
 
 def test_default_document_tools_are_available_without_vision() -> None:
     """Text-capable models can create and inspect documents; pixels remain gated."""
-    agent = _builtin_main_agent()
-    requested, available, gateway = resolve_declared_native_tools(agent, {})
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    agent = resolution_agent_def(resolution)
+    claimed = [row["name"] for row in resolution.tools if row["kind"] == "native"]
+    assert {
+        "prepare_document",
+        "prepare_document_runtime",
+        "prepare_execution_runtime",
+        "view_image",
+    } <= set(claimed)
+    available, gateway, withheld = build_native_tools(agent, claimed, {}, supports_vision=False)
     assert {"prepare_document", "prepare_document_runtime", "prepare_execution_runtime"} <= set(
         available
     )
-    assert "view_image" not in requested
+    assert "view_image" not in available
+    assert withheld["view_image"] == "model_lacks_image_input"
     assert not {"prepare_document", "prepare_document_runtime"} & set(gateway)
 
 
@@ -78,22 +90,63 @@ def test_execution_discovery_reports_missing_imports_and_keeps_commands_visible(
     assert "--with" in result["dependency_guidance"]
 
 
-def test_default_office_skills_resolve_independently_of_user_directories(tmp_path: Path) -> None:
-    """A bare-session skill declaration resolves the packaged workflows."""
-    agent = _builtin_main_agent()
-    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
-    resolutions = catalog.resolve_declared(effective_declared_skills(agent, catalog))
-    for skill_id in (
-        "work-with-pdfs",
-        "work-with-word",
-        "work-with-presentations",
-        "work-with-spreadsheets",
-    ):
-        resolution = resolutions[skill_id]
-        assert resolution.status == "resolved"
-        assert resolution.skill is not None
-        assert resolution.skill.scope == "builtin"
-        assert read_skill_body(resolution.skill)
+@pytest.mark.usefixtures("host_agent_executor")
+def test_document_runtime_reports_the_sessions_plugin_skill_folders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Document discovery names the folders of the skills the session's plugins ship."""
+    plugin_files = {
+        "ai.iowarp.clio/tools/builtin.py": (
+            FIXTURE / "plugins/document-runtime/ai.iowarp.clio/tools/builtin.py"
+        ).read_text(encoding="utf-8"),
+        "skills/work-with-pdfs/SKILL.md": (
+            "---\nname: work-with-pdfs\ndescription: Inspect PDFs.\n---\nRun the helper.\n"
+        ),
+        "skills/work-with-pdfs/scripts/prepare_pdf.py": "print('ok')\n",
+    }
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "document-runtime": {"ext": {"requires": ["shell"]}, "files": plugin_files},
+        },
+    )
+    root = tmp_path / "workspace"
+    root.mkdir()
+    monkeypatch.setattr(document_tools, "_workspace", lambda: root)
+    monkeypatch.setattr(
+        document_tools,
+        "prepare_document_runtime",
+        lambda workspace, **_: {"status": "ready", "python": "managed-python"},
+    )
+    tool = document_tools.build_prepare_document_runtime_tool()
+    # No active session: there are no plugin skills to report.
+    assert tool.func()["skills"] == {}
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json")) as client:
+        app = cast(FastAPI, client.app)
+        workspace = client.post("/v1/workspaces", json={"name": "docs", "root_path": str(root)})
+        assert workspace.status_code == 201, workspace.text
+        created = client.post("/v1/sessions", json={"workspace_id": workspace.json()["id"]})
+        assert created.status_code == 200, created.text
+        session_id = created.json()["id"]
+        resolution = session_resolution(app, session_id)
+        (row,) = [row for row in resolution.skills if row["id"] == "work-with-pdfs"]
+        assert row["plugin"] == "document-runtime"
+        app_token = context.set_app(app)
+        session_token = context.set_session_id(session_id)
+        try:
+            runtime = tool.func()
+        finally:
+            context.reset(session_token)
+            context.reset(app_token)
+    folder = Path(runtime["skills"]["work-with-pdfs"])
+    assert folder == Path(row["path"]).parent
+    assert (folder / "SKILL.md").is_file()
+    assert (folder / "scripts" / "prepare_pdf.py").is_file()
+    assert set(runtime["skills"]) == {skill["id"] for skill in resolution.skills}
+    # Execution discovery is not the document inventory and names no skills.
+    execution = document_tools.build_prepare_execution_runtime_tool()
+    assert "skills" not in execution.func()
 
 
 def test_document_tool_refuses_outside_workspace_before_preparing_runtime(

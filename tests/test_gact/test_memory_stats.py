@@ -1018,15 +1018,21 @@ def test_memory_tool_search_excludes_rewound_messages(tmp_path: Path, arc: ARCMe
 
 
 def test_root_agent_uses_shared_tasks_instead_of_memory_named_session_tools() -> None:
-    from types import SimpleNamespace
+    from clio_agent.gact.agents.native_tool_registry import build_native_tools
+    from clio_agent.gact.agents.resolution import resolution_agent_def
+    from clio_agent.plugins.service import PluginService
 
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
-
-    root = SimpleNamespace(id="main", parent_id="", tools=[])
-    names = {tool.name for tool in build_auto_react_tools(root)}
+    resolution = PluginService().resolve("clio/standard", pin=False)
+    names = set(resolution.tool_names)
     assert {"query_tasks", "observe_tasks", "send_agent_message"} <= names
-    assert not {
+    memory_tools = {
         "memory_search_sessions",
         "memory_read_session_summary",
         "memory_read_context_frame",
-    }.intersection(names)
+    }
+    assert not memory_tools.intersection(names)
+    task_tools = {"query_tasks", "observe_tasks", "send_agent_message"}
+    built, _gateway, withheld = build_native_tools(
+        resolution_agent_def(resolution), sorted(task_tools), {}
+    )
+    assert set(built) == task_tools and withheld == {}

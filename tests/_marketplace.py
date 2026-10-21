@@ -29,8 +29,11 @@ MARKETPLACE_MISSING_MESSAGE = (
 
 
 def marketplace_checked_out() -> bool:
-    """Whether the submodule is populated (its packs are present on disk)."""
-    return MARKETPLACE_ROOT.is_dir() and any(MARKETPLACE_ROOT.glob("*/AGENT.md"))
+    """Whether the submodule is populated (its plugins or packs are present on disk)."""
+    return MARKETPLACE_ROOT.is_dir() and (
+        (MARKETPLACE_ROOT / "ai.iowarp.clio" / "marketplace.json").is_file()
+        or any(MARKETPLACE_ROOT.glob("*/AGENT.md"))
+    )
 
 
 __all__ = [

@@ -717,33 +717,3 @@ class TestCaptureReasoning:
         assert _capture_reasoning_enabled() is False
 
 
-class TestDisableDefaultRegistryBootstrap:
-    """``agents.disable_default_registry_bootstrap`` / env — bootstrap gate."""
-
-    @staticmethod
-    def _dirs(tmp_path):
-        home = tmp_path / "home"
-        cwd = tmp_path / "cwd"
-        home.mkdir()
-        cwd.mkdir()
-        return home, cwd
-
-    def test_env_disables(self, monkeypatch, tmp_path):
-        from clio_agent.gact.agent_blueprints import ensure_default_registry_bootstrap
-
-        monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
-        home, cwd = self._dirs(tmp_path)
-        assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
-        # Disabled means NO install activity under the injected home.
-        assert list(home.rglob("*")) == []
-
-    def test_file_disables(self, monkeypatch, tmp_path):
-        from clio_agent.gact.agent_blueprints import ensure_default_registry_bootstrap
-
-        monkeypatch.delenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", raising=False)
-        _write_user_config(
-            monkeypatch, tmp_path, "agents:\n  disable_default_registry_bootstrap: true\n"
-        )
-        home, cwd = self._dirs(tmp_path)
-        assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
-        assert list(home.rglob("*")) == []

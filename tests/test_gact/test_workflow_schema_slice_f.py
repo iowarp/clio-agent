@@ -1,18 +1,19 @@
-"""Slice F — the EarthScope workflow_state schema ships in the installed pack.
+"""Slice F — the EarthScope workflow_state schema ships in the installed plugin.
 
-Phase C extracts the EarthScope ``workflow_state`` vocabulary out of a core
-hardcode and into the ``earthscope-gnss-region`` Agent Blueprint's AGENT.md
-frontmatter (marketplace submodule, pinned here). These end-to-end tests close
-the loop the Slice-B goldens opened:
+Phase C extracted the EarthScope ``workflow_state`` vocabulary out of a core
+hardcode; it now lives in the marketplace's shared ``earthscope`` plugin, as the
+``ai.iowarp.clio.workflow_state`` extension of its ``plugin.json`` (marketplace
+submodule, pinned here). These end-to-end tests close the loop the Slice-B
+goldens opened:
 
-* **pack declaration == fixture** — parsing the *installed* pack's AGENT.md
-  frontmatter and validating its ``workflow_state`` block yields EXACTLY the
+* **plugin declaration == fixture** — loading the *shipped* ``earthscope`` plugin
+  and validating its ``workflow_state`` declaration yields EXACTLY the
   :data:`EARTHSCOPE_WORKFLOW_STATE_SCHEMA` fixture that every Slice-B golden
   pins the engine against. The shipped declaration and the engine can never
   drift.
-* **resolver returns the typed schema** — a session whose active blueprint is
-  the installed EarthScope pack resolves through
-  :func:`~clio_agent.gact.agents.resolution._active_workflow_state_schema` to
+* **resolver returns the typed schema** — a session of the shipped
+  ``earthscope-gnss-region`` agent resolves through
+  :func:`~clio_agent.gact.agents.resolution.session_workflow_state_schema` to
   the typed (non-GENERIC) engine, and records NO
   ``workflow_state_schema_absent`` fallback (the declaration is present, so the
   no-silent-fallback path stays quiet).
@@ -20,72 +21,77 @@ the loop the Slice-B goldens opened:
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from clio_agent.gact import agent_blueprint_requires
-from clio_agent.gact.agents import resolution
-from clio_agent.gact.agents.resolution import _active_workflow_state_schema
-from clio_agent.gact.expert_packs import _parse_frontmatter
+from clio_agent.gact.agents.resolution import prepare_session_agent, session_workflow_state_schema
+from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.streaming import _workflow_schema_fallbacks
 from clio_agent.gact.workflow_state.schema import (
     GENERIC_WORKFLOW_STATE_SCHEMA,
     WorkflowStateSchema,
 )
+from clio_agent.plugins.loader import load_plugin
+from clio_agent.plugins.service import PluginService
 from tests._marketplace import MARKETPLACE_ROOT
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 pytestmark = pytest.mark.marketplace
 
-_EARTHSCOPE_ROOT = MARKETPLACE_ROOT / "earthscope-gnss-region"
+_EARTHSCOPE_PLUGIN = MARKETPLACE_ROOT / "plugins" / "earthscope"
 
 
-def test_earthscope_pack_declares_workflow_state_schema() -> None:
-    """The installed pack's AGENT.md frontmatter declares a ``workflow_state``
-    block that validates to EXACTLY the transcribed EARTHSCOPE fixture.
+def test_earthscope_plugin_declares_workflow_state_schema() -> None:
+    """The shipped plugin declares a ``workflow_state`` vocabulary that validates to
+    EXACTLY the transcribed EARTHSCOPE fixture.
 
     This is the end-to-end re-assertion of the Slice-B pin: the fixture every
     golden merges/grounds/scrubs against is proven identical to the schema the
-    shipped pack declares — the declaration and the engine cannot drift.
+    shipped plugin declares — the declaration and the engine cannot drift.
     """
-    text = (_EARTHSCOPE_ROOT / "AGENT.md").read_text(encoding="utf-8")
-    meta, _body = _parse_frontmatter(text)
+    record = load_plugin(_EARTHSCOPE_PLUGIN, marketplace="clio", trusted=True)
 
-    declaration = meta["workflow_state"]
+    assert record.valid, [row.to_dict() for row in record.errors]
+    declaration = record.workflow_state
     assert isinstance(declaration, dict)
     assert WorkflowStateSchema.model_validate(declaration) == EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
 
 def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A session whose active blueprint is the *installed* EarthScope pack
-    resolves the typed schema (not GENERIC) and records no fallback.
+    """A session of the *shipped* EarthScope GNSS region agent resolves the typed
+    schema (not GENERIC) and records no fallback.
 
-    Pins the two blueprint-identity seams to the on-disk EarthScope root and
-    lets the resolver parse it for real — the declaration is present, so the
-    typed engine is returned and the ``workflow_state_schema_absent`` ledger
-    stays empty (the loud generic-fallback path must NOT fire).
+    The shipped marketplace is the default marketplace here and the session pins the
+    agent the way session creation does; the declaration is present, so the typed
+    engine is returned and the ``workflow_state_schema_absent`` ledger stays empty
+    (the loud generic-fallback path must NOT fire).
     """
-    app: Any = SimpleNamespace(state=SimpleNamespace())
-    # The pack's requires.clio_agent floor names the release that ships this
-    # runtime, so a pre-release checkout is below it by construction; this test
-    # is about the workflow schema, not the floor (test_agent_blueprints covers it).
-    monkeypatch.setattr(agent_blueprint_requires, "_running_clio_agent_version", lambda: "0.9.4.17")
-    monkeypatch.setattr(
-        resolution,
-        "_runtime_active_agent_blueprint_id",
-        lambda app, session_id="": "earthscope-gnss-region",
+    # A snapshot of the shipped marketplace without local build output (plugin
+    # ``impl/.venv`` trees a concurrent server build may be writing).
+    snapshot = tmp_path / "marketplace"
+    shutil.copytree(
+        MARKETPLACE_ROOT,
+        snapshot,
+        ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__"),
     )
-    monkeypatch.setattr(
-        resolution,
-        "_runtime_active_agent_blueprint_path",
-        lambda app, session_id="": _EARTHSCOPE_ROOT,
+    monkeypatch.setenv("CLIO_DEFAULT_MARKETPLACE", str(snapshot))
+    app: Any = SimpleNamespace(
+        state=SimpleNamespace(
+            plugin_service=PluginService(), sessions=SessionStore(path=tmp_path / "sessions.json")
+        )
     )
+    metadata: dict[str, Any] = {}
+    resolution = prepare_session_agent(app, metadata, "clio/earthscope-gnss-region")
+    assert "earthscope" in [row["id"] for row in resolution.plugins]
+    sid = app.state.sessions.create(workspace_id="ws_default", metadata=metadata).id
 
-    schema = _active_workflow_state_schema(app, "sess-earthscope")
+    schema = session_workflow_state_schema(app, sid)
 
     assert schema is not GENERIC_WORKFLOW_STATE_SCHEMA
     assert schema == EARTHSCOPE_WORKFLOW_STATE_SCHEMA

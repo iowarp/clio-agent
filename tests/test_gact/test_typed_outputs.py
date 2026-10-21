@@ -1,6 +1,6 @@
 """Workstream A — typed signature outputs (the DSPy-native mechanism).
 
-Proves a marketplace expert can declare *typed* signature outputs
+Proves an agent can declare *typed* signature outputs
 (``list[float]``, ``Literal[...]``, ``optional[...]``, nested ``object`` -> a
 Pydantic model) and that they become real typed DSPy ``OutputField``s — the
 foundation for deleting the regex ``_infer_*`` backfill (case contamination) in
@@ -15,9 +15,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from clio_agent.gact.agents.builders import _injected_workflow_state_field_type
-from clio_agent.gact.app import _blueprint_runtime_signature, _parse_field_annotation
-from clio_agent.gact.expert_packs import _coerce_signature_fields
+from clio_agent.gact.agents.builders import _agent_signature, _injected_workflow_state_field_type
+from clio_agent.gact.runtime.type_parsing import _parse_field_annotation
 from clio_agent.gact.workflow_state.schema import GENERIC_WORKFLOW_STATE_SCHEMA
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
@@ -62,18 +61,6 @@ def test_empty_literal_rejected():
         _parse_field_annotation({"type": "Literal[]"}, model_name="t")
 
 
-def test_coerce_signature_fields_preserves_types():
-    # mapping form kept verbatim (carries per-field type)
-    mapping = {"region": {"description": "bbox", "type": "list[float]"}}
-    assert _coerce_signature_fields(mapping) == mapping
-    # list-of-dicts kept (not stringified)
-    rows = _coerce_signature_fields([{"name": "region", "type": "list[float]"}, "bare"])
-    assert rows[0]["type"] == "list[float]"
-    assert rows[1] == "bare"
-    # bare CSV -> names
-    assert _coerce_signature_fields("a, b, c") == ["a", "b", "c"]
-
-
 class _Def:
     """Minimal AgentDef stand-in for the signature builder."""
 
@@ -90,8 +77,8 @@ class _Def:
     structured_outputs = {"workflow_state": True}
 
 
-def test_pack_declared_outputs_are_typed_outputfields():
-    sig = _blueprint_runtime_signature(_Def())
+def test_agent_declared_outputs_are_typed_outputfields():
+    sig = _agent_signature(_Def())
     fields = sig.output_fields
     assert fields["region"].annotation == list[float]
     assert typing.get_origin(fields["status"].annotation) is typing.Literal
@@ -121,7 +108,7 @@ def test_generic_schema_keeps_free_dict_field_type():
 
 def test_generic_schema_injects_free_dict_via_signature():
     # No active app/session -> resolver returns GENERIC -> dict[str, Any] injected.
-    sig = _blueprint_runtime_signature(_Def())
+    sig = _agent_signature(_Def())
     assert sig.output_fields["workflow_state"].annotation == dict[str, Any]
 
 
@@ -168,13 +155,13 @@ def test_typed_model_rejects_out_of_vocabulary_status():
 
 
 def test_signature_injects_typed_model_when_schema_active(monkeypatch):
-    # When the session's active blueprint declares a schema, the injected
+    # When a resolved plugin declares the session's schema, the injected
     # workflow_state field is the nested typed model (not the free dict).
     monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._active_workflow_state_schema",
+        "clio_agent.gact.agents.builders.session_workflow_state_schema",
         lambda app, sid: EARTHSCOPE_WORKFLOW_STATE_SCHEMA,
     )
-    sig = _blueprint_runtime_signature(_Def())
+    sig = _agent_signature(_Def())
     annotation = sig.output_fields["workflow_state"].annotation
     assert annotation != dict[str, Any]
     assert issubclass(annotation, BaseModel)

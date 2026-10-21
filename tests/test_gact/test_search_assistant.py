@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import threading
 from pathlib import Path
 from typing import Any
@@ -14,13 +13,8 @@ from fastapi.testclient import TestClient
 
 from clio_agent import conf
 from clio_agent.gact import context
-from clio_agent.gact.agent_blueprint_sources import (
-    refresh_agent_blueprint_source,
-    source_registry_id,
-    upsert_agent_blueprint_source,
-)
-from clio_agent.gact.agents.blueprint_tool_recording import recording_blueprint_tool
 from clio_agent.gact.agents.tool_instrumentation import instrument_tools
+from clio_agent.gact.agents.tool_recording import recording_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
 from clio_agent.gact.runtime.memory_search import _memory_search_excerpt, _memory_search_response
@@ -33,9 +27,40 @@ from clio_agent.gact.search_assistant import (
 )
 from clio_agent.gact.side_sessions import READ_ONLY_SIDE_PROFILE, is_read_only_side_session
 from clio_agent.gact.types import Message, Part
-from tests._marketplace import MARKETPLACE_ROOT
+from tests._plugin_fixtures import custom_marketplace, tools_module
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
+
+#: A stand-in for the marketplace's CLIO Search agent: one plugin claiming the
+#: two search tools.
+SEARCH_AGENT_SOURCE = """
+from clio_agent.sdk import Agent
+
+
+class ClioSearch(Agent):
+    id = "clio-search"
+    version = "1.0.0"
+    name = "CLIO Search"
+    role = "a read-only search assistant over the user's connected sources"
+    plugins = Agent.plugins + ["clio-search"]
+"""
+
+
+def _search_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "clio-search": {
+                "files": {
+                    "ai.iowarp.clio/tools/search.py": tools_module(
+                        "clio_search", "clio_search_read"
+                    )
+                }
+            }
+        },
+        agents={"clio_search.py": SEARCH_AGENT_SOURCE},
+    )
 
 
 def test_literal_search_reads_the_corpus_off_the_request_loop(
@@ -216,17 +241,11 @@ def test_search_tools_require_server_owned_read_only_profile(tmp_path: Path) -> 
         context.reset(app_token)
 
 
-@pytest.mark.marketplace
-def test_explicit_search_blueprint_activation_inherits_model_without_copying_parent(
+def test_search_session_runs_the_search_agent_and_inherits_model_without_copying_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = tmp_path / "blueprint"
-    original = MARKETPLACE_ROOT / "clio-search"
-    shutil.copytree(original, source)
-    source_id = source_registry_id(str(source))
-    row = refresh_agent_blueprint_source({"id": source_id, "source": str(source), "name": "Search"})
-    upsert_agent_blueprint_source(row)
+    _search_marketplace(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     parent = app.state.sessions.create(
         workspace_id="ws_default",
@@ -245,7 +264,11 @@ def test_explicit_search_blueprint_activation_inherits_model_without_copying_par
         assert opened.model == parent.model
         assert opened.parent_session_id == ""
         assert opened.metadata["search_session"]["ephemeral"]
-        assert opened.metadata["active_agent_blueprint_id"] == "clio-search"
+        assert opened.metadata["agent_ref"] == "clio/clio-search"
+        assert opened.agent["id"] == "clio-search"
+        pinned = client.get(f"/v1/sessions/{opened.id}/agent").json()["resolution"]
+        assert "clio-search" in [row["id"] for row in pinned["plugins"]]
+        assert {"clio_search", "clio_search_read"} <= set(pinned["tool_names"])
         assert not app.state.messages.get(opened.id)
         assert app.state.messages[parent.id][0].parts[0].text == "This stays in the parent"
         assert client.delete(f"/v1/sessions/{opened.id}").status_code in {200, 204}
@@ -279,6 +302,21 @@ def test_explicit_search_blueprint_activation_inherits_model_without_copying_par
         assert denied.status_code == 403
 
 
+def test_search_session_without_the_search_agent_is_a_typed_422(tmp_path: Path) -> None:
+    """The hermetic default marketplace ships no ``clio-search`` agent."""
+
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=None)) as client:
+        before = {row["id"] for row in client.get("/v1/sessions").json()["sessions"]}
+        response = client.post("/v1/search/sessions", json={"workspace_id": "ws_default"})
+        assert response.status_code == 422, response.text
+        error = response.json()["error"]
+        assert error["error"] == "agent_unavailable"
+        assert error["details"]["agent_ref"] == "clio/clio-search"
+        assert error["details"]["reason"] == "agent_not_installed"
+        after = {row["id"] for row in client.get("/v1/sessions").json()["sessions"]}
+        assert after == before
+
+
 @pytest.mark.asyncio
 async def test_native_tools_read_real_sources_and_global_search_omits_ephemeral_chats(
     tmp_path: Path,
@@ -299,8 +337,8 @@ async def test_native_tools_read_real_sources_and_global_search_omits_ephemeral_
     try:
         search_tool, read_tool = instrument_tools(
             [
-                recording_blueprint_tool(build_clio_search_tool()),
-                recording_blueprint_tool(build_clio_search_read_tool()),
+                recording_tool(build_clio_search_tool()),
+                recording_tool(build_clio_search_read_tool()),
             ]
         )
 

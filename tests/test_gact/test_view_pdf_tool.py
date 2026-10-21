@@ -14,7 +14,7 @@ from dspy.lm15 import DocumentPart, TextPart, ToolResultPart
 from pypdf import PdfReader, PdfWriter
 
 from clio_agent.gact.agents.clio_react import ClioReAct
-from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.native_tool_registry import build_native_tools
 from clio_agent.gact.types import AgentDef
 from clio_agent.gact.view_pdf_tool import (
     VIEW_PDF_DESCRIPTOR_TYPE,
@@ -307,46 +307,75 @@ def test_the_loop_sends_a_real_document_part_for_the_tool_result(tmp_path: Path)
 def test_view_pdf_is_exposed_only_to_pdf_capable_agents() -> None:
     agent = AgentDef(id="reader", title="Reader", tools=["view_pdf"])
 
-    requested_text, available_text, gateway_text = resolve_declared_native_tools(
-        agent, {}, supports_pdf=False
+    available_text, gateway_text, withheld_text = build_native_tools(
+        agent, agent.tools, {}, supports_pdf=False
     )
-    requested_pdf, available_pdf, gateway_pdf = resolve_declared_native_tools(
-        agent, {}, supports_pdf=True
+    available_pdf, gateway_pdf, withheld_pdf = build_native_tools(
+        agent, agent.tools, {}, supports_pdf=True
     )
 
-    assert requested_text == []
     assert available_text == {}
     assert gateway_text == []
-    assert requested_pdf == ["view_pdf"]
+    assert withheld_text == {"view_pdf": "model_lacks_pdf_input"}
     assert list(available_pdf) == ["view_pdf"]
     assert gateway_pdf == []
+    assert withheld_pdf == {}
 
 
 def test_vision_only_config_still_gets_view_image_not_view_pdf() -> None:
     agent = AgentDef(id="both", title="Both", tools=["view_image", "view_pdf"])
 
-    requested, available, gateway = resolve_declared_native_tools(
-        agent, {}, supports_vision=True, supports_pdf=False
+    available, gateway, withheld = build_native_tools(
+        agent, agent.tools, {}, supports_vision=True, supports_pdf=False
     )
 
-    assert requested == ["view_image"]
     assert list(available) == ["view_image"]
     assert gateway == []
+    assert withheld == {"view_pdf": "model_lacks_pdf_input"}
 
 
 def test_image_only_codexlike_config_does_not_get_view_pdf() -> None:
     agent = AgentDef(id="both", title="Both", tools=["view_image", "view_pdf"])
 
-    requested, available, gateway = resolve_declared_native_tools(
-        agent, {}, supports_vision=True, supports_pdf=False
+    available, _gateway, withheld = build_native_tools(
+        agent, agent.tools, {}, supports_vision=True, supports_pdf=False
     )
 
-    assert "view_pdf" not in requested
     assert "view_pdf" not in available
+    assert withheld["view_pdf"] == "model_lacks_pdf_input"
+
+
+def test_view_pdf_reaches_an_agent_only_through_a_plugin_that_claims_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.agents.resolution import plugin_service, resolution_agent_def
+    from clio_agent.gact.app import build_app
+    from clio_agent.plugins.resolve import Delta
+    from tests._plugin_fixtures import custom_marketplace, tools_module
+
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={"pdf": {"files": {"ai.iowarp.clio/tools/builtin.py": tools_module("view_pdf")}}},
+    )
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    service = plugin_service(app)
+
+    standard = resolution_agent_def(service.resolve("clio/standard", pin=False))
+    with_pdf = service.resolve("clio/standard", delta=Delta(add=("pdf",)), pin=False)
+
+    assert "view_pdf" not in standard.tools
+    [row] = [row for row in with_pdf.tools if row["name"] == "view_pdf"]
+    assert (row["plugin"], row["kind"]) == ("pdf", "native")
+    agent = resolution_agent_def(with_pdf)
+    available, _gateway, withheld = build_native_tools(
+        agent, ["view_pdf"], {}, supports_vision=True, supports_pdf=True
+    )
+    assert list(available) == ["view_pdf"] and withheld == {}
 
 
 def test_declared_pdf_capability_uses_live_model_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.gact.agents.declared_native_tools import declared_view_pdf_capability
+    from clio_agent.gact.agents.native_tool_registry import declared_view_pdf_capability
 
     app = SimpleNamespace(state=SimpleNamespace())
     monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: app)

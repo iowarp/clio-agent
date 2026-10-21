@@ -1,34 +1,23 @@
 """SkillCatalog discovery + typed resolution (#916 S1 / #917).
 
-Covers the three-scope precedence contract (pack shadows workspace shadows
-global), every typed failure mode (missing / ambiguous / unreadable — never a
-silent skip), the ``skill_resolution`` agent-row diagnostic recorded by
-``parse_expert_file``, the ``/skills/`` scanner exclusion in ``_expert_files``
-(a loose pack SKILL.md must not materialize an expert), and the shipped
-marketplace fixtures resolving end-to-end.
+Covers the scope precedence contract (a resolved plugin's skills shadow the
+workspace, which shadows global), every typed failure mode (missing / ambiguous /
+unreadable — never a silent skip), the ``skill_resolution`` diagnostic, skill
+slash commands, and a shipped marketplace plugin's skills resolving end-to-end.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from clio_agent.gact.expert_packs import (
-    ExpertPackDefinition,
-    _expert_files,
-    parse_expert_file,
-)
 from clio_agent.gact.skills import (
     SkillBodyUnreadableError,
     SkillCatalog,
     read_skill_body,
 )
 from tests._marketplace import MARKETPLACE_ROOT
-
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_skill(root: Path, skill_id: str, *, body: str, layout: str = "skill_md") -> Path:
@@ -46,7 +35,7 @@ def _write_skill(root: Path, skill_id: str, *, body: str, layout: str = "skill_m
 
 @pytest.fixture
 def scopes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A home + cwd + pack layout, with the catalog pointed at them."""
+    """A home + cwd + plugin layout, with the catalog pointed at them."""
 
     home = tmp_path / "home"
     cwd = tmp_path / "work"
@@ -56,21 +45,25 @@ def scopes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     return {"home": home, "cwd": cwd, "pack": pack}
 
 
-def _catalog(scopes: dict[str, Path]) -> SkillCatalog:
-    return SkillCatalog(home=scopes["home"], cwd=scopes["cwd"])
+def _catalog(scopes: dict[str, Path], *, plugin: bool = False) -> SkillCatalog:
+    """The catalog over ``scopes``; ``plugin`` adds the ``pack`` plugin's ``skills/``."""
+
+    plugin_skills = [("pack", str(scopes["pack"] / "skills"))] if plugin else []
+    return SkillCatalog(home=scopes["home"], cwd=scopes["cwd"], plugin_skills=plugin_skills)
 
 
 # ---- precedence --------------------------------------------------------------
 
 
-def test_pack_shadows_workspace_shadows_global(scopes: dict[str, Path]) -> None:
+def test_plugin_shadows_workspace_shadows_global(scopes: dict[str, Path]) -> None:
     _write_skill(scopes["home"] / ".claude" / "skills", "review", body="GLOBAL BODY")
     _write_skill(scopes["cwd"] / ".claude" / "skills", "review", body="WORKSPACE BODY")
     _write_skill(scopes["pack"] / "skills", "review", body="PACK BODY")
 
-    with_pack = _catalog(scopes).resolve("review", pack_root=scopes["pack"])
+    with_pack = _catalog(scopes, plugin=True).resolve("review")
     assert with_pack.status == "resolved"
-    assert with_pack.skill is not None and with_pack.skill.scope == "pack"
+    assert with_pack.skill is not None and with_pack.skill.scope == "plugin"
+    assert with_pack.skill.source == "pack"
     assert read_skill_body(with_pack.skill) == "PACK BODY"
 
     without_pack = _catalog(scopes).resolve("review")
@@ -81,7 +74,7 @@ def test_pack_shadows_workspace_shadows_global(scopes: dict[str, Path]) -> None:
 
 def test_global_resolves_when_no_higher_scope(scopes: dict[str, Path]) -> None:
     _write_skill(scopes["home"] / ".claude" / "skills", "only-global", body="G")
-    res = _catalog(scopes).resolve("only-global", pack_root=scopes["pack"])
+    res = _catalog(scopes, plugin=True).resolve("only-global")
     assert res.status == "resolved"
     assert res.skill is not None and res.skill.scope == "global"
 
@@ -97,7 +90,7 @@ def test_flat_md_layout_resolves(scopes: dict[str, Path]) -> None:
 
 
 def test_missing_is_typed_not_silent(scopes: dict[str, Path]) -> None:
-    res = _catalog(scopes).resolve("nope", pack_root=scopes["pack"])
+    res = _catalog(scopes, plugin=True).resolve("nope")
     assert res.status == "missing"
     assert res.skill is None
     assert "nope" in res.detail
@@ -158,7 +151,7 @@ def test_unreadable_blocks_precedence_walk(scopes: dict[str, Path]) -> None:
     bad.parent.mkdir(parents=True)
     bad.write_bytes(b"\xff\xfe\x00garbage")
     _write_skill(scopes["cwd"] / ".claude" / "skills", "review", body="GOOD LOWER TIER")
-    res = _catalog(scopes).resolve("review", pack_root=scopes["pack"])
+    res = _catalog(scopes, plugin=True).resolve("review")
     assert res.status == "unreadable"
     assert res.candidates == (str(bad),)
 
@@ -191,9 +184,7 @@ def test_read_skill_body_raises_typed_when_file_vanishes(scopes: dict[str, Path]
 
 def test_resolve_declared_mixed_outcomes(scopes: dict[str, Path]) -> None:
     _write_skill(scopes["pack"] / "skills", "have", body="H")
-    out = SkillCatalog(home=scopes["home"], cwd=scopes["cwd"]).resolve_declared(
-        ["have", "have-not", "have"], pack_root=scopes["pack"]
-    )
+    out = _catalog(scopes, plugin=True).resolve_declared(["have", "have-not", "have"])
     assert list(out) == ["have", "have-not"]  # deduped, order preserved
     assert out["have"].status == "resolved"
     assert out["have-not"].status == "missing"
@@ -201,143 +192,44 @@ def test_resolve_declared_mixed_outcomes(scopes: dict[str, Path]) -> None:
 
 def test_resolved_metadata_carries_provenance(scopes: dict[str, Path]) -> None:
     _write_skill(scopes["pack"] / "skills", "prov", body="P")
-    meta = _catalog(scopes).resolve("prov", pack_root=scopes["pack"]).to_metadata()
+    meta = _catalog(scopes, plugin=True).resolve("prov").to_metadata()
     assert meta["status"] == "resolved"
-    assert meta["scope"] == "pack"
+    assert meta["scope"] == "plugin"
+    assert meta["source"] == "pack"
     assert Path(meta["path"]).name == "SKILL.md"
     assert len(meta["checksum"]) == 64  # sha256 hex
 
 
-def _expert_md(tmp_path: Path, *, skills: list[str]) -> Path:
-    lines = "\n".join(f"  - {s}" for s in skills)
-    path = tmp_path / "experts" / "analyst.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "---\n"
-        "id: analyst\n"
-        "title: Analyst\n"
-        "tier: 2\n"
-        "parent_id: root\n"
-        f"skills:\n{lines}\n"
-        "---\n\nAnalyze things.\n",
-        encoding="utf-8",
-    )
-    return path
-
-
-def test_parse_expert_file_records_skill_resolution(
-    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+def test_resolve_declared_metadata_reports_resolved_and_missing(
+    scopes: dict[str, Path],
 ) -> None:
-    """The row-level diagnostic: resolved + missing are both visible, and a
-    missing skill does NOT disable the expert (diagnostic, not validation
-    error — the `prompt_resolution` pattern)."""
+    """The ``skill_resolution`` diagnostic: resolved + missing are both visible."""
 
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
-    monkeypatch.setattr(os, "getcwd", lambda: str(scopes["cwd"]))
     _write_skill(scopes["pack"] / "skills", "real-skill", body="R")
-    pack = ExpertPackDefinition(
-        id="testpack",
-        version="1",
-        title="Test Pack",
-        description="",
-        scope="workspace",
-        root=scopes["pack"],
+    resolution = _catalog(scopes, plugin=True).resolve_declared_metadata(
+        ["real-skill", "ghost-skill"]
     )
-    row = parse_expert_file(
-        _expert_md(scopes["pack"], skills=["real-skill", "ghost-skill"]),
-        scope="workspace",
-        pack=pack,
-    )
-    resolution: dict[str, Any] = row.metadata["skill_resolution"]
     assert resolution["real-skill"]["status"] == "resolved"
-    assert resolution["real-skill"]["scope"] == "pack"
+    assert resolution["real-skill"]["scope"] == "plugin"
+    assert resolution["real-skill"]["source"] == "pack"
     assert resolution["ghost-skill"]["status"] == "missing"
-    assert row.enabled, "a missing skill is a diagnostic, not a disabling error"
-    assert all("skill" not in err for err in row.validation_errors)
+    assert "ghost-skill" in resolution["ghost-skill"]["detail"]
 
 
-def test_no_skills_declared_means_no_resolution_key(
-    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
-    monkeypatch.setattr(os, "getcwd", lambda: str(scopes["cwd"]))
-    path = scopes["pack"] / "experts" / "plain.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "---\nid: plain\ntitle: Plain\ntier: 2\nparent_id: root\n---\n\nBody.\n",
-        encoding="utf-8",
+def test_two_plugins_with_one_skill_id_are_ambiguous(scopes: dict[str, Path]) -> None:
+    """Two resolved plugins shipping the same skill id are one tier: typed ambiguity."""
+
+    other = scopes["pack"].parent / "other"
+    _write_skill(scopes["pack"] / "skills", "shared", body="A")
+    _write_skill(other / "skills", "shared", body="B")
+    catalog = SkillCatalog(
+        home=scopes["home"],
+        cwd=scopes["cwd"],
+        plugin_skills=[("pack", str(scopes["pack"] / "skills")), ("other", str(other / "skills"))],
     )
-    row = parse_expert_file(path, scope="workspace", pack=None)
-    assert "skill_resolution" not in row.metadata
-
-
-def test_load_expert_packs_resolves_against_passed_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The workspace tier of skill_resolution follows the cwd passed to
-    load_expert_packs (the session workspace), NOT the daemon process cwd."""
-
-    from clio_agent.gact.expert_packs import load_expert_packs
-
-    home = tmp_path / "home"
-    workspace = tmp_path / "ws"
-    _write_skill(workspace / ".claude" / "skills", "ws-skill", body="W")
-    pack_dir = workspace / ".clio" / "experts"
-    pack_dir.mkdir(parents=True)
-    (pack_dir / "analyst.md").write_text(
-        "---\nid: ws-analyst\ntitle: A\ntier: 1\nskills:\n  - ws-skill\n---\n\nBody.\n",
-        encoding="utf-8",
-    )
-    # Daemon cwd is elsewhere and has no such skill.
-    monkeypatch.chdir(tmp_path)
-    rows = {row.id: row for row in load_expert_packs(home=home, cwd=workspace)}
-    resolution = rows["ws-analyst"].metadata["skill_resolution"]["ws-skill"]
-    assert resolution["status"] == "resolved"
-    assert resolution["scope"] == "workspace"
-
-
-# ---- skills are not delegatable (#918) -----------------------------------------
-
-
-def test_resolver_raises_typed_for_skill_id(
-    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A skill id used as an agent id raises the typed error, not None/404."""
-
-    from clio_agent.gact.agents.resolution import _resolve_dynamic_agent
-    from clio_agent.gact.app import build_app
-    from clio_agent.gact.skills import SkillNotDelegatableError
-
-    _write_skill(scopes["cwd"] / ".claude" / "skills", "review", body="R")
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
-    monkeypatch.chdir(scopes["cwd"])
-    app = build_app(sessions_path=scopes["cwd"] / "s.json")
-    with pytest.raises(SkillNotDelegatableError) as excinfo:
-        _resolve_dynamic_agent(app, "review")
-    assert excinfo.value.skill_id == "review"
-    assert "skills:" in str(excinfo.value)
-
-
-def test_expert_id_beats_stray_same_id_skill(
-    scopes: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The skill check is the LAST resort: a real expert whose id collides with
-    a stray skill file still resolves — skills never shadow the agent namespace."""
-
-    from clio_agent.gact.agents.resolution import _resolve_dynamic_agent
-    from clio_agent.gact.app import build_app
-
-    _write_skill(scopes["cwd"] / ".claude" / "skills", "collide", body="STRAY")
-    expert_dir = scopes["cwd"] / ".clio" / "experts"
-    expert_dir.mkdir(parents=True)
-    (expert_dir / "collide.md").write_text(
-        "---\nid: collide\ntitle: Real Expert\ntier: 1\n---\n\nBody.\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: scopes["home"]))
-    monkeypatch.chdir(scopes["cwd"])
-    app = build_app(sessions_path=scopes["cwd"] / "s.json")
-    resolved = _resolve_dynamic_agent(app, "collide")
-    assert resolved is not None and resolved.title == "Real Expert"
+    res = catalog.resolve("shared")
+    assert res.status == "ambiguous"
+    assert len(res.candidates) == 2
 
 
 def test_skill_command_rows_derive_from_catalog(
@@ -414,42 +306,30 @@ def test_workspace_skill_command_shadows_global(
     assert "GLOBAL BODY" not in rows["/shared"]["prompt_template"]
 
 
-# ---- the /skills/ scanner exclusion -------------------------------------------
-
-
-def test_pack_skill_md_is_not_an_expert(tmp_path: Path) -> None:
-    """The loose-scan mis-parse: a SKILL.md under skills/ must never be picked
-    up as an expert markdown file."""
-
-    root = tmp_path / "pack"
-    _write_skill(root / "skills", "rubric", body="RUBRIC")
-    expert = root / "experts" / "real.md"
-    expert.parent.mkdir(parents=True)
-    expert.write_text("---\nid: real\ntier: 1\n---\n\nBody.\n", encoding="utf-8")
-    files = _expert_files(root)
-    assert expert in files
-    assert all("/skills/" not in p.as_posix() for p in files)
-
-
 # ---- marketplace fixtures ------------------------------------------------------
 
 
 @pytest.mark.marketplace
-def test_marketplace_data_semantics_skills_resolve(tmp_path: Path) -> None:
-    """The shipped fixtures resolve end-to-end: every skill the data-semantics
-    experts declare exists pack-locally and resolves with pack scope."""
+def test_marketplace_data_semantics_plugin_skills_resolve(tmp_path: Path) -> None:
+    """The shipped plugin resolves end-to-end: every skill the data-semantics
+    plugin ships exists plugin-locally and resolves with plugin scope."""
 
-    pack_root = MARKETPLACE_ROOT / "data-semantics"
-    catalog = SkillCatalog(home=tmp_path / "no-home", cwd=tmp_path / "no-cwd")
+    skills_root = MARKETPLACE_ROOT / "plugins" / "data-semantics" / "skills"
+    catalog = SkillCatalog(
+        home=tmp_path / "no-home",
+        cwd=tmp_path / "no-cwd",
+        plugin_skills=[("data-semantics", str(skills_root))],
+    )
     declared = [
-        "route_dataset_questions",
-        "inspect_dataset_structure",
-        "compare_variables",
-        "reason_about_quality",
-        "recommend_visual_checks",
+        "route-dataset-questions",
+        "inspect-dataset-structure",
+        "compare-variables",
+        "reason-about-quality",
+        "recommend-visual-checks",
     ]
-    out = catalog.resolve_declared(declared, pack_root=pack_root)
+    out = catalog.resolve_declared(declared)
     for skill_id, res in out.items():
         assert res.status == "resolved", f"{skill_id}: {res.detail}"
-        assert res.skill is not None and res.skill.scope == "pack"
+        assert res.skill is not None and res.skill.scope == "plugin"
+        assert res.skill.source == "data-semantics"
         assert read_skill_body(res.skill).strip(), f"{skill_id} body is empty"

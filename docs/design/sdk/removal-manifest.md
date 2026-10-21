@@ -2,7 +2,7 @@
 
 This manifest traces every module the plugins, Agent SDK and flows change removes, rewrites or keeps. It follows [megachange-plan.md](megachange-plan.md) Phase 0. Production callers were enumerated with Python AST over `src/clio_agent`, including function-local and relative imports, at clio-agent `2c100d5` (branch `claude/sdk-megachange-setup`). Module paths are relative to the repository root; caller names are relative to `clio_agent`.
 
-The guard test `tests/test_sdk/test_removal_guard.py` rejects imports of every module in the **Removed** tables and the listed symbols. Removal is complete when that test passes and no file below remains.
+The guard test `tests/test_plugins/test_removal_guard.py` rejects imports of every module in the **Removed** tables and the listed symbols. Removal is complete when that test passes and no file below remains.
 
 ## Removed: the blueprint system
 

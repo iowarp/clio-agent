@@ -8,12 +8,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent import __version__ as clio_agent_version
-from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.app import build_app
 from clio_agent.gact.events import Event
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol_v3 import event_to_v3, message_to_v3, part_to_v3_block
 from clio_agent.gact.types import Message, Tokens
+from tests._plugin_fixtures import custom_marketplace
 from tests.test_gact.task_records import record_delegation_fixture
 
 V3_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
@@ -113,14 +113,25 @@ def test_workspace_v3_uses_short_server_label_and_keeps_path_secondary(
 
 
 def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "AGENT.md").write_text(
-        "---\nid: earthscope-flat\ntitle: EarthScope (Flat / Haiku)\nversion: 0.1.0\n---\nReview"
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        agents={
+            "earthscope_flat.py": """
+            from clio_agent.sdk import Agent
+
+
+            class EarthscopeFlat(Agent):
+                id = "earthscope-flat"
+                version = "0.1.0"
+                name = "EarthScope (Flat / Haiku)"
+                role = "an EarthScope review agent"
+                plugins = Agent.plugins + ["workspace"]
+            """
+        },
     )
-    install_agent_blueprint(source=str(source), scope="global", cwd=tmp_path)
     client = TestClient(build_app(sessions_path=tmp_path / "sessions.json"))
 
     workspace_response = client.post(
@@ -155,10 +166,7 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
             "title": "Evidence review",
             "metadata": {
                 "pinned": True,
-                "active_agent_blueprint_id": "earthscope-flat",
-                "active_agent_blueprint_name": "EarthScope (Flat / Haiku)",
-                "active_agent_blueprint_version": "0.1.0",
-                "active_agent_blueprint_scope": "global",
+                "agent_ref": "clio/earthscope-flat",
             },
         },
     )
@@ -168,10 +176,9 @@ def test_v3_lifecycle_mutations_return_canonical_workspace_and_session_rows(
     assert session["pinned"] is True
     assert session["archived"] is False
     assert session["last_interaction_at"] == session["created_at"]
-    assert session["active_blueprint_id"] == "earthscope-flat"
-    assert session["active_blueprint_name"] == "EarthScope (Flat / Haiku)"
-    assert session["active_blueprint_version"] == "0.1.0"
-    assert session["active_blueprint_scope"] == "global"
+    assert session["agent_id"] == "earthscope-flat"
+    assert session["agent_ref"] == "clio/earthscope-flat"
+    assert session["agent_resolution"]
     assert "status" not in session
 
     updated_session = client.patch(

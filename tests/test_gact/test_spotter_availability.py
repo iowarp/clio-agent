@@ -6,21 +6,23 @@ ${SPOTTER_CLIO_CONFIG}``. Neither variable is set by any install, so arming was
 refused on every normal deployment ("required environment variable
 ${SPOTTER_IMPL_DIR} is unset"), and the mode pickers offered the option anyway.
 
-Both values are facts clio knows: the pack's own directory and clio's effective
-provenance configuration. clio now supplies them as ``${CLIO_BLUEPRINT_DIR}``
-and ``${CLIO_PROVENANCE_CONFIG}``; ``GET /v1/spotter/availability`` answers the
+Both values are facts clio knows: the plugin's own directory and clio's
+effective provenance configuration. The ``spotter`` plugin's ``mcp.json`` now
+names them as ``${PLUGIN_ROOT}`` (Agent Plugins 1.0.0) and the CLIO-supplied
+``${CLIO_PROVENANCE_CONFIG}``; ``GET /v1/spotter/availability`` answers the
 arming question before the click, from the same validator.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.agents.resolution import plugin_service
 from clio_agent.gact.app import build_app
 from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
@@ -28,76 +30,74 @@ from clio_agent.gact.spotter_arming import (
     validate_watcher_arming,
 )
 from clio_agent.gact.spotter_availability import (
-    UNAVAILABLE_BLUEPRINT_NOT_INSTALLED,
+    UNAVAILABLE_AGENT_NOT_INSTALLED,
     UNAVAILABLE_WATCHER_MCP_START_FAILED,
 )
 from clio_agent.gact.spotter_watcher import _live_watcher_tasks
+from tests._plugin_fixtures import custom_marketplace
 
-_BLUEPRINT_ID = "spotter-ai"
+_AGENT_REF = "clio/spotter-ai"
 
-#: The launcher shape the marketplace pack now declares: every input is clio-supplied.
-_AGENT_MD = """---
-id: spotter-ai
-version: 0.4.0
-title: SPOTTER AI
-description: Watcher fixture for the availability tests.
-root_expert: spotter_watcher
-mcp_servers:
-  spotter:
-    command: uv
-    args:
-      - run
-      - --project
-      - ${CLIO_BLUEPRINT_DIR}/impl
-      - --no-sync
-      - spotter-mcp
-      - --clio-config
-      - ${CLIO_PROVENANCE_CONFIG}
-experts:
-  - experts/spotter_watcher.md
----
-
-SPOTTER AI watcher blueprint fixture.
-"""
+#: The launcher shape the marketplace ``spotter`` plugin declares: every input
+#: is supplied by the plugin runtime or by clio.
+_ARGS = [
+    "run",
+    "--project",
+    "${PLUGIN_ROOT}/impl",
+    "spotter-mcp",
+    "--clio-config",
+    "${CLIO_PROVENANCE_CONFIG}",
+]
 
 #: The pre-fix declaration, still valid for a deployment that sets the variables.
-_LEGACY_AGENT_MD = _AGENT_MD.replace("${CLIO_BLUEPRINT_DIR}/impl", "${SPOTTER_IMPL_DIR}").replace(
-    "${CLIO_PROVENANCE_CONFIG}", "${SPOTTER_CLIO_CONFIG}"
-)
+_LEGACY_ARGS = [
+    "run",
+    "--project",
+    "${SPOTTER_IMPL_DIR}",
+    "spotter-mcp",
+    "--clio-config",
+    "${SPOTTER_CLIO_CONFIG}",
+]
 
-_WATCHER_EXPERT_MD = """---
-id: spotter_watcher
-title: SPOTTER Forensic Watcher
-description: Watches live campaign activity.
-tier: 1
-module:
-  kind: react
-tools:
-  - spotter_capabilities
----
+_WATCHER_AGENT = """
+from clio_agent.sdk import Agent
 
-You protect the parent session while it works.
+
+class SpotterAI(Agent):
+    id = "spotter-ai"
+    version = "0.4.0"
+    name = "SPOTTER AI"
+    role = "a forensic watcher that protects the parent session while it works"
+    description = "Watcher fixture for the availability tests."
+    plugins = Agent.plugins + ["spotter"]
 """
 
 
-def _install(tmp_path: Path, agent_md: str = _AGENT_MD, *, synced: bool = True) -> Path:
-    """Install the watcher blueprint (with a synced ``impl`` venv) in the test config root."""
+def _install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, args: list[str] | None = None
+) -> Path:
+    """Make the default marketplace carry the ``spotter-ai`` watcher and its plugin."""
 
-    root = tmp_path / "xdg" / "clio-agent" / "agent-blueprints" / _BLUEPRINT_ID
-    (root / "experts").mkdir(parents=True, exist_ok=True)
-    root.joinpath("AGENT.md").write_text(agent_md, encoding="utf-8")
-    root.joinpath("experts", "spotter_watcher.md").write_text(_WATCHER_EXPERT_MD, encoding="utf-8")
-    if synced:
-        venv = root / "impl" / ".venv"
-        for bindir in (venv / "Scripts", venv / "bin"):
-            bindir.mkdir(parents=True, exist_ok=True)
-            bindir.joinpath("python.exe" if os.name == "nt" else "python").write_bytes(b"")
-            suffix = ".exe" if bindir.name == "Scripts" else ""
-            bindir.joinpath(f"spotter-mcp{suffix}").write_bytes(b"")
-        for site in (venv / "Lib" / "site-packages", venv / "lib" / "python3.12" / "site-packages"):
-            site.mkdir(parents=True, exist_ok=True)
-            site.joinpath("_marker.pth").write_text("", encoding="utf-8")
-    return root
+    return custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={
+            "spotter": {
+                "servers": {
+                    "spotter": {"type": "stdio", "command": "uv", "args": list(args or _ARGS)}
+                },
+                "files": {"impl/pyproject.toml": '[project]\nname = "spotter-mcp"\n'},
+            }
+        },
+        agents={"spotter_ai.py": _WATCHER_AGENT},
+    )
+
+
+def _plugin_root(app: Any) -> Path:
+    """Where the installed ``spotter`` plugin lives (its ``${PLUGIN_ROOT}``)."""
+
+    resolution = plugin_service(app).resolve(_AGENT_REF, pin=False)
+    return Path(resolution.mcp_servers["spotter"]["root"])
 
 
 @pytest.fixture(autouse=True)
@@ -119,8 +119,10 @@ def _workspace(client: TestClient, root: Path) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def test_spotter_arms_on_a_normal_install_with_clio_supplied_inputs(tmp_path: Path) -> None:
-    _install(tmp_path)
+def test_spotter_arms_on_a_normal_install_with_clio_supplied_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         wid = _workspace(client, tmp_path / "ws")
@@ -134,22 +136,26 @@ def test_spotter_arms_on_a_normal_install_with_clio_supplied_inputs(tmp_path: Pa
         assert len(_live_watcher_tasks(app, sid)) == 1
 
 
-def test_blueprint_dir_and_provenance_config_resolve_to_real_paths(tmp_path: Path) -> None:
-    root = _install(tmp_path)
+def test_plugin_root_and_provenance_config_resolve_to_real_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         wid = _workspace(client, tmp_path / "ws")
         from clio_agent.gact.spotter_arming import _declared_watcher_servers
 
-        servers, _raw, _cwd = _declared_watcher_servers(app, _BLUEPRINT_ID, workspace_id=wid)
+        servers, _raw, _cwd = _declared_watcher_servers(app, _AGENT_REF, workspace_id=wid)
+        root = _plugin_root(app)
 
+    assert (root / "plugin.json").is_file() and (root / "impl").is_dir()
     spec = servers["spotter"]
     args = spec["args"]
     assert args[2] == f"{root}/impl"
     config_path = Path(args[-1])
     assert config_path.is_file()
     # The subprocess sees the same values in its environment.
-    assert spec["env"]["CLIO_BLUEPRINT_DIR"] == str(root)
+    assert spec["env"]["PLUGIN_ROOT"] == str(root)
     assert spec["env"]["CLIO_PROVENANCE_CONFIG"] == str(config_path)
 
     document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -166,7 +172,7 @@ def test_blueprint_dir_and_provenance_config_resolve_to_real_paths(tmp_path: Pat
 def test_disabled_provenance_refuses_arming_with_the_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _install(tmp_path)
+    _install(tmp_path, monkeypatch)
     monkeypatch.setenv("CLIO_PROVENANCE_PROVIDERS", "none")
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
@@ -239,8 +245,10 @@ def test_attention_handoff_is_explicit_and_local(
     )
 
 
-def test_unset_variable_refusal_names_the_variable_as_the_remedy(tmp_path: Path) -> None:
-    _install(tmp_path, _LEGACY_AGENT_MD)
+def test_unset_variable_refusal_names_the_variable_as_the_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, monkeypatch, _LEGACY_ARGS)
     app = build_app(sessions_path=tmp_path / "s.json")
 
     refusal = validate_watcher_arming(app, env={})
@@ -257,8 +265,10 @@ def test_unset_variable_refusal_names_the_variable_as_the_remedy(tmp_path: Path)
 # --------------------------------------------------------------------------- #
 
 
-def test_availability_is_true_when_arming_would_succeed(tmp_path: Path) -> None:
-    _install(tmp_path)
+def test_availability_is_true_when_arming_would_succeed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         wid = _workspace(client, tmp_path / "ws")
@@ -267,16 +277,19 @@ def test_availability_is_true_when_arming_would_succeed(tmp_path: Path) -> None:
     assert body["available"] is True
     assert body["reason"] == ""
     assert body["approval_mode"] == "spotter-ai"
-    assert body["agent_blueprint_id"] == _BLUEPRINT_ID
+    assert body["agent_ref"] == _AGENT_REF
 
 
-def test_availability_reports_a_missing_watcher_blueprint(tmp_path: Path) -> None:
+def test_availability_reports_a_missing_watcher_agent(tmp_path: Path) -> None:
+    """The hermetic default marketplace ships no ``spotter-ai`` agent."""
+
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         body = client.get("/v1/spotter/availability").json()
 
     assert body["available"] is False
-    assert body["reason"] == UNAVAILABLE_BLUEPRINT_NOT_INSTALLED
+    assert body["reason"] == UNAVAILABLE_AGENT_NOT_INSTALLED
+    assert body["agent_ref"] == _AGENT_REF
     assert "install" in body["remedy"]
     assert body["message"]
 
@@ -284,7 +297,7 @@ def test_availability_reports_a_missing_watcher_blueprint(tmp_path: Path) -> Non
 def test_availability_carries_the_arming_refusal_and_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _install(tmp_path)
+    _install(tmp_path, monkeypatch)
     monkeypatch.setenv("CLIO_PROVENANCE_PROVIDERS", "none")
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
@@ -297,8 +310,10 @@ def test_availability_carries_the_arming_refusal_and_remedy(
     assert body["details"]["mcp_server"] == "spotter"
 
 
-def test_availability_resolves_the_session_workspace(tmp_path: Path) -> None:
-    _install(tmp_path)
+def test_availability_resolves_the_session_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         wid = _workspace(client, tmp_path / "ws")
@@ -331,8 +346,10 @@ def _mount_outcomes():
     spotter_mount_outcome.reset()
 
 
-def test_static_pass_says_it_is_static(tmp_path: Path, _mount_outcomes) -> None:
-    _install(tmp_path)
+def test_static_pass_says_it_is_static(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mount_outcomes
+) -> None:
+    _install(tmp_path, monkeypatch)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         wid = _workspace(client, tmp_path / "ws")
@@ -343,9 +360,9 @@ def test_static_pass_says_it_is_static(tmp_path: Path, _mount_outcomes) -> None:
 
 
 def test_recorded_watcher_start_failure_is_a_typed_unavailable(
-    tmp_path: Path, _mount_outcomes
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mount_outcomes
 ) -> None:
-    _install(tmp_path)
+    _install(tmp_path, monkeypatch)
     _mount_outcomes.record_failure("spotter", "mcp_server_exited")
     _mount_outcomes.record_failure("unrelated", "mcp_server_exited")
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -363,8 +380,10 @@ def test_recorded_watcher_start_failure_is_a_typed_unavailable(
         assert body["details"]["mcp_server"] == "spotter"
 
 
-def test_a_later_successful_mount_clears_the_failure(tmp_path: Path, _mount_outcomes) -> None:
-    _install(tmp_path)
+def test_a_later_successful_mount_clears_the_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mount_outcomes
+) -> None:
+    _install(tmp_path, monkeypatch)
     _mount_outcomes.record_failure("spotter", "mcp_server_exited")
     _mount_outcomes.record_success("spotter")
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -375,9 +394,9 @@ def test_a_later_successful_mount_clears_the_failure(tmp_path: Path, _mount_outc
 
 
 def test_unrelated_namespace_failure_does_not_affect_spotter(
-    tmp_path: Path, _mount_outcomes
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mount_outcomes
 ) -> None:
-    _install(tmp_path)
+    _install(tmp_path, monkeypatch)
     _mount_outcomes.record_failure("other", "mcp_server_exited")
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:

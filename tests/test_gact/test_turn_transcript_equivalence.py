@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 
 from tests._harness import emit_live_text, install_scripted_module
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# #948 S4b: default sessions run their pinned plugin agent; route it to each
 # scenario's ``build_app(agent=...)`` host fake (the streamed scenarios install
 # their own scripted module, which streams through the LM token hooks).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
@@ -59,19 +59,7 @@ _VOLATILE_KEY_TOKENS = (
     "elapsed",
     "latency",
     "uptime",
-    # #948 S4b: a default session now runs the default-registry blueprint react
-    # ``main`` (the legacy planner that produced the original develop goldens is
-    # gone), so ``message.completed`` metadata gains the dynamic-agent
-    # ``agent_runtime`` provenance + its ``prompt_resolution`` block. Rather than
-    # drop those whole subtrees (which would let a wire regression in the
-    # provenance shape hide — the #948-S4b review finding), the goldens now COMPARE
-    # that structure and exclude ONLY the genuinely environment-specific leaf: the
-    # absolute ``definition_path`` values (per-run pytest tmp dirs). Everything else
-    # in the provenance is deterministic via the conftest default-registry fixture
-    # (blueprint id/version/scope, the ``package://`` prompt ``source_path``, the
-    # prompt checksum, commands), so it locks. The goldens were regenerated on this
-    # tree to capture the added provenance structure; a POSITIVE shape assertion
-    # lives in ``test_default_main_turn_stamps_agent_runtime_provenance`` below.
+    # Absolute per-run paths in the agent provenance (pytest tmp dirs).
     "definition_path",
 )
 
@@ -353,23 +341,13 @@ def test_multi_part_thinking_turn_matches_recorded_wire_golden(
     )
 
 
-def test_default_main_turn_stamps_agent_runtime_provenance(tmp_path: Path) -> None:
-    """POSITIVE lock: a BARE default-main turn stamps BUILTIN-main provenance.
+def test_default_turn_stamps_plugin_agent_provenance(tmp_path: Path) -> None:
+    """POSITIVE lock: a default session's turn stamps its pinned plugin agent's provenance.
 
-    The golden diff excludes the env-specific ``definition_path`` leaves, and the
-    develop goldens historically dropped the whole ``agent_runtime`` /
-    ``prompt_resolution`` subtrees — so this test is the compensating positive
-    assertion (#948 S4b review): it drives a real default-main turn and asserts the
-    persisted ``message.completed`` metadata carries the dynamic-agent provenance
-    with the right SHAPE.
-
-    Owner ruling (2026-08-05): a bare session never resolves a DISCOVERABLE
-    blueprint it did not activate — it executes the in-code builtin react main
-    (``catalog._builtin_main_agent``). The provenance therefore carries NO
-    ``agent_blueprint`` block (asserting one present would re-pin the deleted
-    implicit-default fallback), ``source == "builtin"``, and the native builtin
-    tool surface. Blueprint provenance is pinned separately below for a session
-    that EXPLICITLY activates the default blueprint.
+    The golden diff excludes environment-specific leaves, so this test asserts the
+    persisted ``message.completed`` metadata carries the agent runtime provenance:
+    the session's agent (``clio/standard`` from the test marketplace), its flow, the
+    pinned resolution digest and its plugin set.
     """
 
     app = _build(tmp_path, "provenance", _PlainAgent("plain answer"))
@@ -377,56 +355,7 @@ def test_default_main_turn_stamps_agent_runtime_provenance(tmp_path: Path) -> No
         sid = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         _complete_turn(client, sid, "hello")
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-
-    assistants = [
-        m for m in messages if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
-    ]
-    assert assistants, "no persisted assistant message"
-    meta = assistants[0].get("metadata") or {}
-
-    runtime = meta.get("agent_runtime")
-    assert isinstance(runtime, dict), "agent_runtime provenance missing from the wire"
-    assert runtime.get("kind") == "dynamic_agent"
-    assert runtime.get("agent_id") == "main"
-    assert runtime.get("execution_mode") == "blueprint_react"
-    assert isinstance(runtime.get("module"), dict) and runtime["module"].get("kind") == "react"
-    # The bare session ran the in-code builtin main: builtin source, native tool
-    # surface, and NO blueprint provenance (nothing was activated).
-    assert runtime.get("source") == "builtin"
-    assert runtime.get("tools"), "builtin main must carry its native tool surface"
-    assert runtime.get("agent_blueprint") is None, (
-        "a bare session must not stamp blueprint provenance (owner ruling 2026-08-05)"
-    )
-
-    prompt_res = meta.get("prompt_resolution")
-    assert isinstance(prompt_res, dict), "prompt_resolution provenance missing from the wire"
-    # Structural keys present (the builtin main resolves the shipped clio.chat).
-    for key in ("id", "profile", "scope", "source_path", "checksum"):
-        assert prompt_res.get(key), f"prompt_resolution.{key} missing"
-    assert prompt_res.get("id") == "clio.chat"
-
-
-def test_activated_blueprint_turn_stamps_agent_blueprint_provenance(tmp_path: Path) -> None:
-    """POSITIVE lock: an EXPLICITLY activated blueprint stamps blueprint provenance.
-
-    The activated-blueprint half of the provenance lock above: after
-    ``POST /v1/sessions/{sid}/agent-blueprint`` binds the default blueprint, the
-    turn runs its react ``main`` root and the persisted metadata carries the
-    ``agent_blueprint`` block (id/version/scope) the bare session must NOT have.
-    """
-
-    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
-
-    app = _build(tmp_path, "provenance-bp", _PlainAgent("plain answer"))
-    with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
-        activated = client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
-        )
-        assert activated.status_code == 200, activated.text
-        _complete_turn(client, sid, "hello")
-        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        pinned = client.get(f"/v1/sessions/{sid}/agent").json()["resolution"]["digest"]
 
     assistants = [
         m for m in messages if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
@@ -434,52 +363,16 @@ def test_activated_blueprint_turn_stamps_agent_blueprint_provenance(tmp_path: Pa
     assert assistants, "no persisted assistant message"
     runtime = (assistants[0].get("metadata") or {}).get("agent_runtime")
     assert isinstance(runtime, dict), "agent_runtime provenance missing from the wire"
-    assert runtime.get("agent_id") == "main"
-    assert runtime.get("execution_mode") == "blueprint_react"
-    blueprint = runtime.get("agent_blueprint")
-    assert isinstance(blueprint, dict), "agent_blueprint provenance missing"
-    assert blueprint.get("id") == DEFAULT_AGENT_BLUEPRINT_ID
-    assert blueprint.get("version") and blueprint.get("scope")
-
-
-def test_activated_blueprint_catalog_agent_id_executes_declared_root(tmp_path: Path) -> None:
-    """A session may name the selected blueprint while its root is ``main``.
-
-    The session-level catalog identity is not itself an executable AgentDef. Once
-    the same blueprint is explicitly activated, turn forwarding must translate
-    that container identity to the blueprint's declared root rather than return
-    ``unknown_or_non_executable_agent``.
-    """
-
-    from clio_agent.gact.agent_blueprints import DEFAULT_AGENT_BLUEPRINT_ID
-
-    app = _build(tmp_path, "catalog-agent-id", _PlainAgent("root answer"))
-    with TestClient(app) as client:
-        sid = client.post(
-            "/v1/sessions",
-            json={
-                "title": "selected blueprint",
-                "agent": {"id": DEFAULT_AGENT_BLUEPRINT_ID},
-            },
-        ).json()["id"]
-        activated = client.post(
-            f"/v1/sessions/{sid}/agent-blueprint",
-            json={"blueprint_id": DEFAULT_AGENT_BLUEPRINT_ID},
-        )
-        assert activated.status_code == 200, activated.text
-        _complete_turn(client, sid, "hello")
-        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-
-    assistant = next(
-        message
-        for message in messages
-        if message["role"] == "assistant" and not message.get("metadata", {}).get("live")
-    )
-    assert assistant["stop_reason"] != "error", assistant.get("error_info")
-    runtime = (assistant.get("metadata") or {}).get("agent_runtime")
-    assert isinstance(runtime, dict)
-    assert runtime["agent_id"] == "main"
-    assert runtime["agent_blueprint"]["id"] == DEFAULT_AGENT_BLUEPRINT_ID
+    assert runtime.get("kind") == "dynamic_agent"
+    assert runtime.get("agent_id") == "standard"
+    assert runtime.get("execution_mode") == "flow_react"
+    assert runtime.get("source") == "plugin"
+    assert runtime.get("tools"), "the standard agent carries its resolved tools"
+    resolution = runtime.get("agent_resolution")
+    assert isinstance(resolution, dict), "agent_resolution provenance missing"
+    assert resolution["ref"] == "clio/standard"
+    assert resolution["digest"] == pinned
+    assert "core" in resolution["plugins"] and resolution["flow"]["id"] == "react"
 
 
 # ---------------------------------------------------------------------------

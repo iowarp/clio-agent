@@ -18,7 +18,7 @@ from tests.test_gact.task_records import active_turn_fixture, record_assignment_
 from tests.test_gact.test_streaming import _wait_for_turn_settlement
 from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
+# #948 S4b: default sessions run their pinned plugin agent; route it to each
 # test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 

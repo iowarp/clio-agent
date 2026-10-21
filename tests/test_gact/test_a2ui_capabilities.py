@@ -20,20 +20,29 @@ from clio_agent.gact.a2ui_capabilities import (
     A2UICapabilitiesError,
     CatalogSelection,
     agent_capabilities,
-    blueprint_a2ui_capability_ids,
     client_capabilities,
     parse_client_capabilities,
     parse_client_data_model,
     remember_client_capabilities,
+    resolution_catalog_ids,
     select_catalog,
     session_requested_send_data_model,
     strip_renderer_metadata,
 )
 from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_catalog_id
+from clio_agent.gact.agents.resolution import plugin_service
 from clio_agent.gact.app import build_app
+from clio_agent.plugins.resolve import Delta
 from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
-from .a2ui_catalog_binding import bind_builtin_catalogs
+from .a2ui_catalog_binding import (
+    A2UI_PLUGINS,
+    MINIMAL_CATALOG_ID,
+    MINIMAL_PLUGIN,
+    bind_builtin_catalogs,
+    bind_session_plugins,
+    install_plugins,
+)
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -221,10 +230,11 @@ def test_agent_capabilities_server_wide_matches_official_shape(tmp_path: Path) -
     assert set(validated.v0_9.supportedCatalogIds) >= {BASIC_ID, WORKSPACE_ID}
 
 
-def test_agent_capabilities_session_scoped_is_the_builtin_main_declaration(
+def test_agent_capabilities_session_scoped_is_the_standard_agents_declaration(
     tmp_path: Path,
 ) -> None:
-    """v15 S8: a bare session runs the builtin main, which declares clio-workspace."""
+    """A bare session runs ``clio/standard``; only its ``core`` plugin declares a
+    catalog (``clio-workspace``)."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
@@ -352,18 +362,24 @@ def test_session_requested_send_data_model_false_with_no_surfaces(tmp_path: Path
 
 
 # --------------------------------------------------------------------------- #
-# blueprint_a2ui_capability_ids                                              #
+# resolution_catalog_ids: an agent's catalogs, straight from its resolution  #
 # --------------------------------------------------------------------------- #
 
 
-def test_blueprint_a2ui_capability_ids_is_empty_without_a_declaring_blueprint(
-    tmp_path: Path,
-) -> None:
-    """v15 S8: no blueprint (or an unresolved one) declares nothing -- no builtins."""
+def test_resolution_catalog_ids_are_the_resolved_plugins_declarations(tmp_path: Path) -> None:
+    """No agent is ever catalog-less (``core`` declares clio-workspace); a plugin
+    added to the agent appends its own catalogs after core's."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    assert blueprint_a2ui_capability_ids(app, "") == []
-    assert blueprint_a2ui_capability_ids(app, "no-such-blueprint") == []
+    service = plugin_service(app)
+    standard = service.resolve("clio/standard", pin=False)
+    assert resolution_catalog_ids(standard) == [WORKSPACE_ID]
+
+    install_plugins(app, MINIMAL_PLUGIN, "a2ui-basic")
+    extended = service.resolve(
+        "clio/standard", delta=Delta(add=("a2ui-basic", MINIMAL_PLUGIN)), pin=False
+    )
+    assert resolution_catalog_ids(extended) == [WORKSPACE_ID, BASIC_ID, MINIMAL_CATALOG_ID]
 
 
 # --------------------------------------------------------------------------- #
@@ -422,23 +438,20 @@ class _StubChildAgent:
 
 
 def test_spawn_does_not_copy_parent_renderer_capabilities(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """A child's renderer negotiation belongs to its own stable session."""
     import asyncio
 
     from tests.test_gact.task_records import record_assignment_fixture
 
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="", **_bindings: {"main"},
-    )
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=_StubChildAgent())
-    with TestClient(app):
-        parent = app.state.sessions.create(workspace_id="ws_default", title="parent")
-        record_assignment_fixture(app, parent.id)
+    with TestClient(app) as test_client:
+        # Created through the route so the parent's agent is pinned at creation.
+        parent_id = test_client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        record_assignment_fixture(app, parent_id)
         app.state.sessions.update(
-            parent.id,
+            parent_id,
             metadata_patch={
                 "a2ui_client_capabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}},
                 "a2ui_client_data_model": {"surfaces": {"private": {"value": "parent only"}}},
@@ -446,7 +459,9 @@ def test_spawn_does_not_copy_parent_renderer_capabilities(
         )
         owner = app.state.conversations
         receipt = asyncio.run_coroutine_threadsafe(
-            owner.spawn(owner.caller(parent.id), "Analyze the dataset", "main", "renderer-child"),
+            owner.spawn(
+                owner.caller(parent_id), "Analyze the dataset", "clio/standard", "renderer-child"
+            ),
             owner._loop,
         ).result(timeout=10)
         task = app.state.task_history.task_snapshot(receipt["handle"])
@@ -719,35 +734,28 @@ def test_action_route_malformed_capabilities_422(client: TestClient) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# GET /v1/agents rows carry per-blueprint a2ui_capabilities                  #
+# GET /v1/agents/resolve and /v1/sessions/{sid}/agent carry the catalogs   #
 # --------------------------------------------------------------------------- #
 
 
-def test_agent_rows_carry_a2ui_capabilities(client: TestClient) -> None:
-    resp = client.get("/v1/agents")
-    assert resp.status_code == 200
-    rows = resp.json()["agents"]
-    assert rows, "no agent rows returned"
-    for row in rows:
-        ids = row["metadata"]["a2ui_capabilities"]
-        assert isinstance(ids, list)
-        if row["metadata"].get("definition_kind") == "builtin_main":
-            assert ids == [WORKSPACE_ID]  # v15 S8: the builtin main's own declaration
-        elif not row["metadata"].get("agent_blueprint_id"):
-            assert ids == []  # no declaring unit, no catalogs
+def test_agent_resolve_route_carries_the_agents_catalogs(client: TestClient) -> None:
+    listed = client.get("/v1/agents")
+    assert listed.status_code == 200
+    assert "clio/standard" in [row["ref"] for row in listed.json()["agents"]]
+
+    resp = client.get("/v1/agents/resolve", params={"ref": "clio/standard"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["catalogs"] == [{"id": "clio-workspace", "plugin": "core", "path": ""}]
+    assert resolution_catalog_ids(SimpleNamespace(catalogs=body["catalogs"])) == [WORKSPACE_ID]
 
 
-def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> None:
-    listed = client.get("/v1/agents").json()["agents"]
-    agent_id = listed[0]["id"]
-    resp = client.get(f"/v1/agents/{agent_id}")
-    assert resp.status_code == 200
-    metadata = resp.json()["metadata"]
-    assert isinstance(metadata["a2ui_capabilities"], list)
-    if metadata.get("definition_kind") == "builtin_main":
-        assert metadata["a2ui_capabilities"] == [WORKSPACE_ID]
-    elif not metadata.get("agent_blueprint_id"):
-        assert metadata["a2ui_capabilities"] == []
+def test_session_agent_route_carries_the_sessions_catalogs(client: TestClient) -> None:
+    sid = _create_session(client)
+    resp = client.get(f"/v1/sessions/{sid}/agent")
+    assert resp.status_code == 200, resp.text
+    catalogs = resp.json()["resolution"]["catalogs"]
+    assert [row["id"] for row in catalogs] == ["clio-workspace"]
 
 
 # --------------------------------------------------------------------------- #
@@ -765,25 +773,21 @@ class _SlowChildAgent:
 
 
 @pytest.fixture
-def running_child_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[tuple[TestClient, str]]:
+def running_child_client(tmp_path: Path) -> Iterator[tuple[TestClient, str]]:
     """Keep the actual child and its owning application in one lifespan."""
     import asyncio
 
     from tests.test_gact.task_records import record_assignment_fixture
 
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
-        lambda app, pid, session_id="", **_bindings: {"main"},
-    )
     app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowChildAgent())
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
         record_assignment_fixture(app, parent)
         owner = app.state.conversations
         receipt = asyncio.run_coroutine_threadsafe(
-            owner.spawn(owner.caller(parent), "Analyze the dataset", "main", "capabilities-child"),
+            owner.spawn(
+                owner.caller(parent), "Analyze the dataset", "clio/standard", "capabilities-child"
+            ),
             owner._loop,
         ).result(timeout=10)
         yield client, receipt["handle"]
@@ -889,100 +893,81 @@ def test_steer_door_data_model_checked_against_the_childs_own_surfaces(
 
 
 # --------------------------------------------------------------------------- #
-# Pack-blueprint end to end: a PATH-activated session with a declared        #
-# catalog (S2 fixture pack) is visible everywhere a2ui_capabilities reaches  #
-# (S3 adversarial review, item 7)                                            #
+# A plugin-shipped catalog end to end: a session whose agent carries the     #
+# ``a2ui-minimal`` fixture plugin is visible everywhere a2ui_capabilities     #
+# reaches (S3 adversarial review, item 7)                                    #
 # --------------------------------------------------------------------------- #
 
-_FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
-_PACK_CATALOG_ID = "https://example.test/a2ui/catalogs/minimal"
 
-
-def _activate_minimal_pack(app: Any, sid: str) -> None:
-    app.state.sessions.update(
-        sid,
-        metadata_patch={
-            "active_agent_blueprint_id": "a2ui-minimal-pack",
-            "active_agent_blueprint_path": str(_FIXTURE_PACK),
-        },
-    )
-
-
-def test_pack_blueprint_session_capabilities_route_lists_the_pack_catalog(
-    client: TestClient,
-) -> None:
+def test_plugin_catalog_session_capabilities_route_lists_it(client: TestClient) -> None:
     sid = _create_session(client)
-    _activate_minimal_pack(client.app, sid)
+    bind_session_plugins(client.app, sid, MINIMAL_PLUGIN)
 
     resp = client.get(f"/v1/sessions/{sid}/a2ui/capabilities")
     assert resp.status_code == 200
-    assert _PACK_CATALOG_ID in resp.json()["agent"]["v0.9"]["supportedCatalogIds"]
+    assert resp.json()["agent"]["v0.9"]["supportedCatalogIds"] == [
+        WORKSPACE_ID,
+        MINIMAL_CATALOG_ID,
+    ]
 
 
-def test_pack_blueprint_select_catalog_picks_it_when_client_lists_it_first(
+def test_plugin_catalog_select_catalog_picks_it_when_client_lists_it_first(
     tmp_path: Path,
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
-    _activate_minimal_pack(app, session.id)
+    bind_session_plugins(app, session.id, MINIMAL_PLUGIN)
 
     caps = parse_client_capabilities(
-        {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [_PACK_CATALOG_ID, BASIC_ID]}}}
+        {
+            "a2uiClientCapabilities": {
+                "v0.9": {"supportedCatalogIds": [MINIMAL_CATALOG_ID, BASIC_ID]}
+            }
+        }
     )
     assert caps is not None
     remember_client_capabilities(app, session.id, caps)
 
     selection = select_catalog(app, session.id)
-    assert selection.catalog_id == _PACK_CATALOG_ID
+    assert selection.catalog_id == MINIMAL_CATALOG_ID
 
 
-def test_pack_blueprint_agent_row_for_that_session_carries_it(client: TestClient) -> None:
+def test_plugin_catalog_session_agent_route_carries_it(client: TestClient) -> None:
     sid = _create_session(client)
-    _activate_minimal_pack(client.app, sid)
+    bind_session_plugins(client.app, sid, MINIMAL_PLUGIN)
 
-    resp = client.get(f"/v1/agents?session_id={sid}")
-    assert resp.status_code == 200
-    rows = resp.json()["agents"]
-    assert rows, "the path-activated blueprint produced no agent rows"
-    assert any(
-        row["metadata"].get("agent_blueprint_id") == "a2ui-minimal-pack"
-        and _PACK_CATALOG_ID in row["metadata"]["a2ui_capabilities"]
-        for row in rows
-    ), rows
-
-
-# --------------------------------------------------------------------------- #
-# GET /v1/agent-blueprints/{id} detail rows carry a2ui_capabilities          #
-# (S3 adversarial review, item 12 / spec item 4)                            #
-# --------------------------------------------------------------------------- #
+    resp = client.get(f"/v1/sessions/{sid}/agent")
+    assert resp.status_code == 200, resp.text
+    resolution = resp.json()["resolution"]
+    assert MINIMAL_PLUGIN in [row["id"] for row in resolution["plugins"]]
+    assert [(row["id"], row["plugin"]) for row in resolution["catalogs"]] == [
+        ("clio-workspace", "core"),
+        ("minimal", MINIMAL_PLUGIN),
+    ]
+    assert resolution_catalog_ids(SimpleNamespace(catalogs=resolution["catalogs"])) == [
+        WORKSPACE_ID,
+        MINIMAL_CATALOG_ID,
+    ]
 
 
-def test_agent_blueprint_detail_route_carries_a2ui_capabilities(
-    client: TestClient, tmp_path: Path
-) -> None:
-    import shutil
-
-    marketplace = tmp_path / "marketplace"
-    shutil.copytree(_FIXTURE_PACK, marketplace / "a2ui-minimal-pack")
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-
-    wid = client.post(
-        "/v1/workspaces",
-        json={
-            "name": "Workspace",
-            "root_path": str(workspace),
-            "storage_root": str(workspace / ".clio"),
-        },
-    ).json()["id"]
+def test_installed_plugin_route_carries_its_catalogs(client: TestClient) -> None:
     installed = client.post(
-        "/v1/agent-blueprints/install",
-        json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
+        "/v1/plugins/marketplaces",
+        json={"source": str(A2UI_PLUGINS / MINIMAL_PLUGIN), "name": MINIMAL_PLUGIN},
     )
     assert installed.status_code == 201, installed.text
 
-    detail = client.get("/v1/agent-blueprints/a2ui-minimal-pack", params={"workspace_id": wid})
-    assert detail.status_code == 200, detail.text
-    # v15 S8: exactly what the blueprint declares (the fixture lists only its
-    # own catalog), never the builtins implicitly.
-    assert detail.json()["a2ui_capabilities"] == [_PACK_CATALOG_ID]
+    plugins = client.get("/v1/plugins")
+    assert plugins.status_code == 200, plugins.text
+    [row] = [row for row in plugins.json()["plugins"] if row["id"] == MINIMAL_PLUGIN]
+    # Exactly what the plugin ships (one catalog), never the builtins implicitly.
+    assert row["catalogs"] == ["minimal"]
+
+    resolved = client.get(
+        "/v1/agents/resolve", params={"ref": "clio/standard", "add": MINIMAL_PLUGIN}
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolution_catalog_ids(SimpleNamespace(catalogs=resolved.json()["catalogs"])) == [
+        WORKSPACE_ID,
+        MINIMAL_CATALOG_ID,
+    ]
