@@ -105,7 +105,8 @@ def _pin_from_source(source: Any, entry: dict[str, Any]) -> GitPin | None:
 
 def read_claude_marketplace(root: Path, name_hint: str = "") -> MarketplaceContents:
     data = json.loads((root / CLAUDE_INDEX).read_text(encoding="utf-8"))
-    name = str(data.get("name") or name_hint or root.name)
+    # The install name (the store's key, e.g. a federation pin's name) wins over the index's own.
+    name = str(name_hint or data.get("name") or root.name)
     contents = MarketplaceContents(
         name=name,
         format="claude-code",
@@ -241,7 +242,7 @@ def read_native_marketplace(
     index: dict[str, Any] = {}
     if (root / NATIVE_INDEX).is_file():
         index = json.loads((root / NATIVE_INDEX).read_text(encoding="utf-8"))
-    name = str(index.get("name") or name_hint or root.name)
+    name = str(name_hint or index.get("name") or root.name)
     contents = MarketplaceContents(
         name=name, format="agent-plugins", description=str(index.get("description") or "")
     )

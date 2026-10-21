@@ -303,7 +303,12 @@ class PluginStore:
                 continue
             snapshot = self._snapshot(market, path)
             if (snapshot / "plugin.json").is_file():
-                records.append(load_plugin(snapshot, marketplace=market, trusted=trusted))
+                try:
+                    records.append(load_plugin(snapshot, marketplace=market, trusted=trusted))
+                except PluginLoadError as exc:
+                    diagnostics.append(
+                        Diagnostic("error", "plugin_load_failed", str(exc), pin.name)
+                    )
             else:
                 records.append(import_claude_plugin(snapshot, entry=pin.entry, marketplace=market))
         return records, diagnostics

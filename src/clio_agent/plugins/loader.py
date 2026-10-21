@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
+from clio_agent.plugins.library import is_library_manifest, library_skills
 from clio_agent.plugins.manifest import (
     NAMESPACE,
     ManifestError,
@@ -445,11 +446,18 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
     try:
         manifest, diagnostics = read_manifest(root)
         plugin = manifest["name"]
-        ext = clio_extension(manifest, plugin)
+        raw = dict((manifest.get("extensions") or {}).get(NAMESPACE) or {})
+        library = raw if is_library_manifest(raw) else None
+        ext = {} if library is not None else clio_extension(manifest, plugin)
     except ManifestError as exc:
         raise PluginLoadError(str(exc)) from exc
     exec_digest, text_digest = tree_digests(root)
     skills, skill_diags = _skills(root, plugin)
+    if library is not None:
+        mapped, library_diags = library_skills(root, plugin, library)
+        known = {skill.id for skill in skills}
+        skills += [skill for skill in mapped if skill.id not in known]
+        skill_diags += library_diags
     servers, server_diags = read_mcp_config(root, plugin)
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
