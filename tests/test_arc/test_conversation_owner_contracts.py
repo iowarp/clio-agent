@@ -42,6 +42,7 @@ from clio_agent.gact.spawn_context import CreatePreparedChild
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_history import TaskHistory
 from clio_agent.gact.turn_runner import TurnRunner
+from clio_agent.plugins.service import PluginService
 from clio_agent.tools.task_client import TaskSubmission, restore_native_call
 
 
@@ -113,6 +114,8 @@ async def create_environment(
     app, root = await asyncio.to_thread(records)
     app.state.arc, app.state.bus, app.state.messages = arc, EventBus(), {}
     app.state.questions = QuestionCommands(app.state.task_history)
+    # A turn resolves its session's plugin agent (the hermetic default marketplace).
+    app.state.plugin_service = PluginService()
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus, trace_backend=NoopSemanticTraceBackend()
     )
@@ -140,7 +143,9 @@ async def create_environment(
                 workspace_id="workspace",
                 parent_session_id=parent,
                 agent={"id": agent},
-                metadata={**(scope or {}), **initial_metadata},
+                # As spawn_context.prepare_child_session records it: the spawn's target
+                # survives the child's own agent pin.
+                metadata={**(scope or {}), **initial_metadata, "spawn_target": agent},
                 approval_profile=approval_profile or "",
                 creation_id=creation_id,
                 creation_digest=creation_digest,

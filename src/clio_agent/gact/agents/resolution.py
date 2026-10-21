@@ -391,6 +391,8 @@ def session_server_set(app: Any, session_id: str) -> str:
         resolution = session_resolution(app, session_id)
     except SessionAgentUnavailable:
         return ""
+    if not resolution.mcp_servers:
+        return ""
     supplied = supplied_server_values(
         app,
         resolution.mcp_servers,
