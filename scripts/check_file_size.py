@@ -174,35 +174,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
-    # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
-    # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
-    # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
-    # flight calls in LenientChatAdapter.__call__ and .acall, and _clio_context_window
-    # / _clio_model stamps in create_chat_adapter (mirrors the guided-path stamp).
-    # Together these surface a context overflow on the non-guided path as a typed,
-    # self-explaining "prompt≈N tokens > context M" error before the server sees the
-    # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
-    # further decomposed per #714/#767.
-    # (lm/adapters.py's entry retired: P5's _reasoning_model_capability deletion
-    # (the qwen-name heuristic; callers now read config.is_reasoning directly)
-    # dropped it to 782 lines -- back under the flat 800 cap, no baseline entry
-    # needed.)
-    # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
-    # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
-    # validation only knew builtins + pack mcp_servers namespaces, so an expert
-    # declaring a serve-mounted relay tool (remote_*, relay_observe/relay_wait) was
-    # disabled as "unknown tool reference" and took its whole root down by
-    # hierarchy. The ratchet was not bumped in that commit; recorded here as
-    # pre-existing CI-blocking debt this change closes (P5 adversarial review [A]).
-    # Ratchet down (PR #1255 review): the uninstall-tombstone bookkeeping moved to
-    # its owner module gact/agent_blueprint_refresh.py.
-    # PR #1278 re-land: -1 net. default_agent_blueprint_id() went to its owner
-    # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
-    # reached through the PEP 562 shim; only the one-line lazy import in
-    # default_registry_metadata landed here, offset by two comment trims.
-    # The release's path-helper extraction and develop's A2UI/floor validation
-    # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 888,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -546,10 +517,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
     "src/clio_agent/gact/routes/artifacts.py": 903,  # Shared artifact hashing helper reused
-    # #948 S4: +10 for round-tripping the module: declaration in the overlay
-    # export (an exported react parent re-loaded as predict and failed the new
-    # hierarchy validation).
-    "src/clio_agent/gact/routes/agents.py": 931,
     # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
