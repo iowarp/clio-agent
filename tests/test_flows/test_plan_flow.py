@@ -142,3 +142,56 @@ def test_plan_editor_tools_build_and_only_propose() -> None:
     assert proposed["proposed"] is True and proposed["run"] == "flowrun_x"
     assert proposed["after"] == ["draft"]
     assert cancel.func(node_id="polish")["cancel"] is True
+
+
+def test_a_cancelled_plan_ends_cancelled_not_stalled(flow_app: TestClient) -> None:
+    """Cancelling the plan run cancels its running node: the node and its dependents
+    read cancelled and the run ends cancelled, never as a failed node's stall."""
+    import time
+
+    from clio_agent.agent import cancellation_requested
+    from clio_agent.gact.agents.clio_react import _turn_cancelled
+    from tests.test_flows.conftest import default_program
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if "HOLD" in question and "left branch" not in question:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if cancellation_requested():
+                    raise _turn_cancelled()
+                time.sleep(0.02)
+        return default_program(question=question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = program
+    sid = new_session(flow_app, "clio/planner")
+    post(flow_app, sid, "HOLD the survey")
+    history = flow_app.app.state.task_history
+
+    def plan_handle() -> str | None:
+        owner = history.latest_assignment(sid)
+        checkpoint = owner and history.workflow_checkpoint(owner.handle)
+        if checkpoint is None:
+            return None
+        outer = history.read_content(checkpoint.content)
+        rows = [r for r in (outer.get("calls") or {}).values() if r["kind"] == "flow"]
+        return rows[0]["handle"] if rows and rows[0].get("handle") else None
+
+    handle = wait_until(plan_handle, timeout=60)
+
+    def survey_started() -> bool:
+        view = flow_app.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
+        nodes = (view.get("view") or {}).get("nodes") or []
+        return any(row["id"] == "survey" and row.get("handle") for row in nodes)
+
+    wait_until(survey_started, timeout=60)
+    response = flow_app.post(f"/v1/sessions/{sid}/tasks/cancel", json={"tasks": handle})
+    assert response.status_code == 200 and response.json()["errors"] == [], response.text
+
+    def settled() -> dict[str, Any] | None:
+        view = flow_app.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
+        return view if view.get("status") not in {None, "running"} else None
+
+    view = wait_until(settled, timeout=60)
+    assert view["status"] == "cancelled", view["events"][0]
+    nodes = {row["id"]: row["status"] for row in view["view"]["nodes"]}
+    assert set(nodes.values()) == {"cancelled"}, nodes

@@ -22,7 +22,7 @@ import json
 import re
 from typing import Any
 
-from clio_agent.flows.outcomes import FlowCheckpointLimit, FlowOutcome, FlowStall
+from clio_agent.flows.outcomes import CallCancelled, FlowCheckpointLimit, FlowOutcome, FlowStall
 from clio_agent.sdk import Flow, Node, Plan, PlanError
 
 _EDIT_TOOLS = ("plan_add_node", "plan_cancel_node")
@@ -93,6 +93,7 @@ class _PlanRun:
         self.status: dict[str, str] = dict.fromkeys(self.nodes, "pending")
         self.results: dict[str, Any] = {}
         self.errors: dict[str, dict[str, Any]] = {}
+        self.cancelled: list[CallCancelled] = []
         self.added = 0
         self.rounds = 0
         self.handles: dict[str, str] = {}
@@ -191,6 +192,8 @@ class _PlanRun:
                 await self._settle(node_id, future)
         failed = [n for n, s in self.status.items() if s == "failed"]
         await self._publish()
+        if self.cancelled and not failed:
+            raise self.cancelled[0]
         if failed:
             node_id = failed[0]
             raise FlowStall(
@@ -244,6 +247,17 @@ class _PlanRun:
             result = future.result()
         except FlowCheckpointLimit:
             raise  # The run cannot record more work: it ends, it does not fail a node.
+        except CallCancelled as outcome:
+            # A cancelled task is not a failure an editor could repair: the node is
+            # cancelled, its dependents are skipped, and the run ends cancelled.
+            self.status[node_id] = "cancelled"
+            self.handles[node_id] = outcome.handle
+            self.cancelled.append(outcome)
+            await self.ctx.record_event(
+                {"event": "node_cancelled", "node": node_id, "handle": outcome.handle}
+            )
+            await self._publish()
+            return
         except FlowOutcome as outcome:
             self.status[node_id] = "failed"
             self.handles[node_id] = outcome.handle

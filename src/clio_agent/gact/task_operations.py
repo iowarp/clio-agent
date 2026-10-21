@@ -337,6 +337,8 @@ class TaskOperations:
             changed, loop = asyncio.Event(), asyncio.get_running_loop()
             # An agent's wait ends when its own conversation is stopped (the waited
             # tasks keep running): Stop retires the turn only once this call returns.
+            # A cancellation is different: it cascades to the waited members, and the
+            # caller (a flow above all) keeps waiting to observe them settle.
             own = (
                 None
                 if caller.human_action
@@ -375,13 +377,22 @@ class TaskOperations:
                 remove()
 
     def _stopping(self, handle: str) -> bool:
-        """Whether the calling assignment was stopped or cancelled."""
+        """Whether the calling assignment was stopped (not cancelled) or has ended.
+
+        A cancellation unwinds through ``stopping`` too, before its request is recorded.
+        """
         current = self.history.task_snapshot(handle)
-        return current is not None and (
-            current.activity == "stopping"
-            or current.cancellation_requested_at is not None
-            or current.terminal_at is not None
+        if current is None:
+            return False
+        if current.terminal_at is not None:
+            return True
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        cancelling = (
+            conversations.cancelling(current)
+            if conversations is not None
+            else current.cancellation_requested_at is not None
         )
+        return current.activity == "stopping" and not cancelling
 
     def _canonical_observed(self, caller: TaskCaller, handles: tuple[str, ...]) -> tuple[str, ...]:
         """Authorize aliases before registering for canonical owner observations."""

@@ -34,6 +34,7 @@ from typing import Any
 from clio_agent.flows.journal import FlowJournal, digest
 from clio_agent.flows.outcomes import (
     STATUS_OUTCOMES,
+    CallCancelled,
     CallFailed,
     CallRefused,
     FlowCheckpointLimit,
@@ -554,6 +555,8 @@ class FlowContext:
             return await self._wait(handle, call.invocation, kind=call.kind, name=call.name)
 
     async def _accept(self, call: FlowCall) -> str:
+        from clio_agent.gact.conversations import AdmissionClosed  # noqa: PLC0415
+
         row = self.journal.call(call.invocation)
         if row is not None and row.get("handle"):
             return str(row["handle"])
@@ -606,6 +609,11 @@ class FlowContext:
                 session_metadata=session_metadata,
                 parent_handle=self.root_handle,
             )
+        except AdmissionClosed as exc:
+            if exc.stopping:
+                # The run is being cancelled: the call is cancelled with it.
+                raise CallCancelled(str(exc), target=call.name, status="cancelled") from exc
+            raise CallRefused(str(exc), target=call.name) from exc
         except ValueError as exc:
             raise CallRefused(str(exc), target=call.name) from exc
         if not accepted.get("accepted", False):
@@ -768,7 +776,9 @@ class FlowContext:
             value = await self.flow.forward(self.task, self)
         except FlowOutcome as outcome:
             if self._opened:
-                await self.journal.finish(outcome.reason, outcome.to_dict())
+                # A cancellation is how the run ended, not a fault in it.
+                status = "cancelled" if isinstance(outcome, CallCancelled) else outcome.reason
+                await self.journal.finish(status, outcome.to_dict())
             raise
         if self._opened:
             await self.journal.finish("completed", _plain(value))

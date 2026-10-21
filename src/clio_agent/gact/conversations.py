@@ -52,6 +52,14 @@ class _InferenceGroup:
     users: int = 0
 
 
+class AdmissionClosed(ValueError):
+    """A new descendant was refused because its lineage is stopping or out of time."""
+
+    def __init__(self, message: str, *, stopping: bool) -> None:
+        super().__init__(message)
+        self.stopping = stopping
+
+
 RunSegment = Callable[[ConversationSegment], Awaitable[ConversationOutcome]]
 CancelWork = Callable[[TaskSnapshot], Awaitable[dict[str, Any]]]
 ExecutionGate = Callable[[str], str | None]
@@ -493,6 +501,10 @@ class Conversations:
                 self.recovery.defer, "conversation-progress:" + source.content_id, confirm
             )
 
+    def cancelling(self, task: TaskSnapshot) -> bool:
+        """Whether ``task`` is being cancelled, including before the request is recorded."""
+        return task.cancellation_requested_at is not None or task.handle in self._control_holds
+
     def require_admission(self, task: TaskSnapshot) -> None:
         """Close descendant admission before any cancellation cascade starts."""
         seen: set[str] = set()
@@ -505,12 +517,15 @@ class Conversations:
                 if details.execution_deadline and datetime.now(
                     timezone.utc
                 ) >= datetime.fromisoformat(details.execution_deadline):
-                    raise ValueError("Assignment execution deadline exceeded; admission is closed")
+                    raise AdmissionClosed(
+                        "Assignment execution deadline exceeded; admission is closed",
+                        stopping=False,
+                    )
             latest = self.history.latest_assignment(task.owner.session_id)
             if latest is not None and (
                 latest.cancellation_requested_at is not None or latest.handle in self._control_holds
             ):
-                raise ValueError("Session descendant admission is closed")
+                raise AdmissionClosed("Session descendant admission is closed", stopping=True)
             native = getattr(self.app.state, "native_tools", None)
             if (
                 task.cancellation_requested_at is not None
@@ -518,7 +533,7 @@ class Conversations:
                 or native is not None
                 and native.admission_closed(task.handle)
             ):
-                raise ValueError("Assignment subtree admission is closed")
+                raise AdmissionClosed("Assignment subtree admission is closed", stopping=True)
             if task.owner.parent_handle is None:
                 return
             parent = self.history.task_snapshot(task.owner.parent_handle)
