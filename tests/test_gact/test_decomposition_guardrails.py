@@ -194,7 +194,11 @@ from clio_agent.gact.app import build_app
 # Shared Tasks and compatibility routes contributed two pairs above the common
 # 403-route base. Develop independently adds Endpoint edit PATCH and uncaptured
 # metadata browse POST in routes/storage_ndp_endpoints.py; retain both additions.
-EXPECTED_ROUTE_METHOD_PAIRS = 408  # Plus develop's shared SSH profile inventory route.
+# 408 -> 382 (plugins, Agent SDK and flows; docs/design/sdk/removal-manifest.md): the
+# agent-blueprint, expert-pack, user-agent CRUD and blueprint update/source routes are
+# deleted, replaced by routes/plugins.py (plugins, marketplaces, agents, user agents,
+# the session's pinned agent) and the task flow run view.
+EXPECTED_ROUTE_METHOD_PAIRS = 382
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

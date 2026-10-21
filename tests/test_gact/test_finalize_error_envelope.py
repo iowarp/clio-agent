@@ -127,7 +127,7 @@ def test_finalize_survives_a_prologue_that_skipped_context_file_provenance(
     ``context_file_provenance``.
     """
 
-    from clio_agent.gact.agents.resolution import _active_workflow_state_schema
+    from clio_agent.gact.agents.resolution import session_workflow_state_schema
     from clio_agent.gact.tool_observer import _open_turn_transcript
     from clio_agent.gact.turn_finalize import finalize_turn
     from clio_agent.gact.turn_state import new_turn_state
@@ -151,7 +151,7 @@ def test_finalize_survives_a_prologue_that_skipped_context_file_provenance(
     # BEFORE the try block that calls prepare_turn_off_loop -- so this state
     # is otherwise fully turn-shaped, only missing the ONE prologue-only
     # assignment under test.
-    state.workflow_schema = _active_workflow_state_schema(app, sid)
+    state.workflow_schema = session_workflow_state_schema(app, sid)
     state.transcript = _open_turn_transcript(app, sid, state.turn_id)
     # Production receives this token from an admitted runner segment. This unit
     # case supplies that input without launching a competing model segment.
@@ -195,7 +195,7 @@ def _new_prologue_shaped_state(
     ``prologue_phase`` stays ``"not_started"``. Shared by the #1339 round-5 /
     L1 tests below (the guard, and the crash it prevents)."""
 
-    from clio_agent.gact.agents.resolution import _active_workflow_state_schema
+    from clio_agent.gact.agents.resolution import session_workflow_state_schema
     from clio_agent.gact.tool_observer import _open_turn_transcript
     from clio_agent.gact.turn_state import new_turn_state
     from clio_agent.gact.types import Message, Part
@@ -212,7 +212,7 @@ def _new_prologue_shaped_state(
     )
     sess = app.state.sessions.get(sid)
     state = new_turn_state(app, sid, "hello", user_msg, "main", sess=sess, bus=app.state.bus)
-    state.workflow_schema = _active_workflow_state_schema(app, sid)
+    state.workflow_schema = session_workflow_state_schema(app, sid)
     state.transcript = _open_turn_transcript(app, sid, state.turn_id)
     # These are prologue/finalize unit inputs, not a request to admit another turn.
     state.turn_cancel_event = threading.Event()
