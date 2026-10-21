@@ -346,6 +346,7 @@ def _hook_dict(hook: Any) -> dict[str, Any]:
         "args": list(hook.args),
         "tools": hook.tools,
         "timeout_ms": hook.timeout_ms,
+        "dialect": hook.dialect,
         "before": list(hook.before),
         "after": list(hook.after),
         "fail_closed": hook.fail_closed,

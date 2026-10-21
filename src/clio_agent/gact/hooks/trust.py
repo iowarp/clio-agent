@@ -88,7 +88,7 @@ def _resolved_material(entry: HookEntry) -> list[bytes]:
 
     material: list[bytes] = []
     run = entry.run
-    if run.type != "command":
+    if run.type not in ("command", "claude-code"):
         return material
     candidates = [run.command, *run.args]
     for candidate in candidates:

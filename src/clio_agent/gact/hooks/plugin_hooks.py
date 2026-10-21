@@ -29,9 +29,8 @@ def _entry(row: dict[str, Any]) -> HookEntry:
             type="python", command=str(row["root"]), args=(str(row["module"]), str(row["attr"]))
         )
     else:
-        run = HookRun(
-            type="command", command=str(row["command"]), args=tuple(row.get("args") or ())
-        )
+        dialect = "claude-code" if row.get("dialect") == "claude-code" else "command"
+        run = HookRun(type=dialect, command=str(row["command"]), args=tuple(row.get("args") or ()))
     return HookEntry(
         id=str(row["id"]),
         on=frozenset({str(row["event"])}),
