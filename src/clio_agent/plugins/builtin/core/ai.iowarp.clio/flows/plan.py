@@ -22,7 +22,7 @@ import json
 import re
 from typing import Any
 
-from clio_agent.flows.outcomes import FlowOutcome, FlowStall
+from clio_agent.flows.outcomes import FlowCheckpointLimit, FlowOutcome, FlowStall
 from clio_agent.sdk import Flow, Node, Plan, PlanError
 
 _EDIT_TOOLS = ("plan_add_node", "plan_cancel_node")
@@ -242,6 +242,8 @@ class _PlanRun:
         node = self.nodes[node_id]
         try:
             result = future.result()
+        except FlowCheckpointLimit:
+            raise  # The run cannot record more work: it ends, it does not fail a node.
         except FlowOutcome as outcome:
             self.status[node_id] = "failed"
             self.handles[node_id] = outcome.handle

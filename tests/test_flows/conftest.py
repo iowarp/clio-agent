@@ -108,6 +108,18 @@ class EditedPlan(Flow):
         return {"answer": result.answer, "plan": result.outputs.get("plan")}
 
 
+class Nester(Flow):
+    id = "nester"
+    max_depth = 1
+
+    async def forward(self, task, ctx):
+        try:
+            result = await ctx.call("nester", "deeper")
+        except Exception as exc:
+            return f"{type(exc).__name__}:{getattr(exc, 'reason', '')}:{ctx.depth}"
+        return "child:" + result.answer
+
+
 class Greedy(Flow):
     id = "greedy"
     max_model_calls = 2
@@ -155,6 +167,7 @@ Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
 Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
 Planner = _agent("planner", "planrunner")
+Nesterer = _agent("nesterer", "nester")
 
 
 class Orchestrator(Agent):

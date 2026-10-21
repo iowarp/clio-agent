@@ -36,6 +36,7 @@ from clio_agent.flows.outcomes import (
     STATUS_OUTCOMES,
     CallFailed,
     CallRefused,
+    FlowCheckpointLimit,
     FlowLimitExceeded,
     FlowOutcome,
     FlowTargetUnknown,
@@ -317,6 +318,8 @@ class FlowContext:
             async with gate:
                 try:
                     return await item
+                except FlowCheckpointLimit:
+                    raise  # The run cannot record more work: it ends (D3).
                 except FlowOutcome as outcome:
                     return outcome
 
@@ -349,6 +352,8 @@ class FlowContext:
             async with gate:
                 try:
                     value = await item
+                except FlowCheckpointLimit:
+                    raise
                 except FlowOutcome as outcome:
                     outcome.details["index"] = position
                     return outcome

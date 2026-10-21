@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_flows.conftest import (
@@ -105,3 +106,23 @@ def test_ask_waits_on_a_question_task(flow_app: TestClient) -> None:
         )
     )
     assert text_of(message) == "done: approved work"
+
+
+def test_depth_limit_refuses_a_flow_nested_too_deep(flow_app: TestClient) -> None:
+    sid = new_session(flow_app, "clio/nesterer")
+    post(flow_app, sid, "go")
+    # The root (depth 0) may start its flow at depth 1; that run may not start depth 2.
+    assert text_of(_answer(flow_app, sid)) == "child:FlowLimitExceeded:flow_limit_exceeded:1"
+
+
+def test_checkpoint_cap_ends_the_run_with_a_typed_outcome(
+    flow_app: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("clio_agent.flows.journal.MAX_ENTRIES", 2)
+    sid = new_session(flow_app, "clio/fanouter")
+    post(flow_app, sid, "the survey")
+    message = _answer(flow_app, sid)
+    error = message.get("error_info") or {}
+    assert error.get("error") == "flow_checkpoint_limit", message
+    run = _checkpoint(flow_app, sid)
+    assert run["entries"] == 2 and run["status"] == "flow_checkpoint_limit"
