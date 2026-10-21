@@ -321,12 +321,12 @@ class ClioAgent(dspy.Module):
                 always passes ``""`` — see ``__init__``).
         """
 
-        # Workspace-scoped blueprints live under ``<workspace>/.clio``. Discovery
-        # must therefore use the same cwd as the per-workspace gateway; using the
-        # server process cwd silently found no blueprint, minted a toolless fleet,
-        # and rejected every declared child before inference.
+        # Workspace-scoped blueprints and mcp.yaml live under the workspace root, so
+        # both reads use the per-workspace gateway's cwd (#1300). The server process
+        # cwd silently found no blueprint, minted a toolless fleet, and dropped
+        # workspace-declared servers that GET /v1/mcp/handshake still reported.
         pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
-        specs = load_agent_mcp_servers(pack_servers=pack_servers)
+        specs = load_agent_mcp_servers(cwd=cwd, pack_servers=pack_servers)
         # #1113: wire the receive-loop elicitation handler onto every declared-server
         # backend so a mid-tool-call elicitation reaches the HITL surface. The hook is
         # app-agnostic (it resolves its invocation from the correlation record the tool
