@@ -201,16 +201,19 @@ def default_program(question: str = "", **_: Any) -> Any:
     if "FAIL" in question:
         raise RuntimeError("scripted failure")
     if "plan_add_node" in question:
-        # The critic edits the running plan (as a real editor's tool call would record).
-        return dspy.Prediction(
-            answer="critique: add a polish step",
-            tools_called=[
-                {
-                    "tool": "plan_add_node",
-                    "args": {"node_id": "polish", "target": "self", "input": "polish the draft"},
-                }
-            ],
+        # The critic edits the running plan. Like a real ReAct run, the prediction
+        # carries no tool trace: the call reaches the turn through the tool observer.
+        from clio_agent.gact import context
+
+        app = context.active_app()
+        app.state.tool_call_ledger.setdefault(context.active_session_id(), []).append(
+            {
+                "name": "plan_add_node",
+                "args": {"node_id": "polish", "target": "self", "input": "polish $draft"},
+                "ok": True,
+            }
         )
+        return dspy.Prediction(answer="critique: add a polish step")
     return dspy.Prediction(answer=f"done: {question.splitlines()[0][:60]}")
 
 

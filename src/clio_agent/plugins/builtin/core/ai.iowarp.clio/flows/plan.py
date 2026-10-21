@@ -18,6 +18,8 @@ caller.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from typing import Any
 
 from clio_agent.flows.outcomes import FlowOutcome, FlowStall
@@ -26,18 +28,39 @@ from clio_agent.sdk import Flow, Node, Plan, PlanError
 _EDIT_TOOLS = ("plan_add_node", "plan_cancel_node")
 
 
+_REFERENCE = re.compile(r"\$([A-Za-z0-9_][A-Za-z0-9_.-]*)")
+
+
 def _substitute(value: Any, task: Any, results: dict[str, Any]) -> Any:
+    """Replace ``$task`` and ``$<node>`` references: a whole-string reference keeps the
+    value itself; a reference inside text becomes the text of that value."""
+
     if isinstance(value, str):
-        if value == "$task":
-            return task
-        if value.startswith("$") and value[1:] in results:
-            return results[value[1:]]
-        return value
+
+        def resolve(name: str) -> Any:
+            if name == "task":
+                return task
+            result = results[name]
+            return getattr(result, "answer", result)
+
+        def known(name: str) -> bool:
+            return name == "task" or name in results
+
+        whole = _REFERENCE.fullmatch(value)
+        if whole and known(whole.group(1)):
+            return resolve(whole.group(1))
+        return _REFERENCE.sub(
+            lambda m: _text(resolve(m.group(1))) if known(m.group(1)) else m.group(0), value
+        )
     if isinstance(value, dict):
         return {k: _substitute(v, task, results) for k, v in value.items()}
     if isinstance(value, list):
         return [_substitute(v, task, results) for v in value]
     return value
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
 
 
 class PlanFlow(Flow):

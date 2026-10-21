@@ -58,7 +58,7 @@ def test_editor_adds_a_node_that_runs(flow_app: TestClient) -> None:
     assert [e["node"] for e in added] == ["polish"]
     statuses = {n["id"]: n["status"] for n in run["result"]["plan"]["nodes"]}
     assert statuses == {"draft": "completed", "critique": "completed", "polish": "completed"}
-    assert "polish the draft" in text_of(message)
+    assert "done: polish done: " in text_of(message)
 
 
 def test_approval_question_gates_an_added_node(flow_app: TestClient) -> None:
@@ -103,7 +103,7 @@ def test_approval_question_gates_an_added_node(flow_app: TestClient) -> None:
     )
     assert answered.status_code in (200, 202), answered.text
     message = _done(flow_app, sid)
-    assert "polish the draft" in text_of(message), message.get("error_info")
+    assert "done: polish done: " in text_of(message), message.get("error_info")
     run = _plan_run(flow_app, sid)
     assert [e["node"] for e in run["events"].values() if e["event"] == "node_added"] == ["polish"]
     final = flow_app.get(f"/v1/sessions/{sid}/tasks/{plan_handle}/flow").json()

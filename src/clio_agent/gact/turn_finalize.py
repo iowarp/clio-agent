@@ -92,7 +92,7 @@ def finalize_turn(
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced, by grounding it against the session's REGISTERED
     # artifacts (the designation truth: ids + content hashes, include_children reach),
-    # scoped to the pack schema's declared deliverable extensions. Applied once on
+    # scoped to the plugin schema's declared deliverable extensions. Applied once on
     # the assembled answer, never on child rows (S7 #973 — re-sourced from registry).
     if state.answer_text and state.expert_handoffs:
         state.answer_text = ground_answer_artifacts(
@@ -778,6 +778,12 @@ def turn_outputs(state: Any) -> dict[str, Any]:
     outputs = (
         _prediction_summary(state.pred) if state.pred is not None else {"answer": state.answer_text}
     )
+    if state.tools_called:
+        # The turn's merged tool calls (the prediction's trace plus every call the
+        # tool observer saw): a plan reads an editor's proposals from them.
+        from clio_agent.tools.mcp_runtime import wire_value  # noqa: PLC0415
+
+        outputs["tools_called"] = wire_value(list(state.tools_called), mode="gact_runtime")
     workflow_state = state.assistant_metadata.get("workflow_state")
     if isinstance(workflow_state, Mapping) and workflow_state:
         outputs["workflow_state"] = dict(workflow_state)
