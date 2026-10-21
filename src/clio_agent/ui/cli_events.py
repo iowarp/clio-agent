@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING, Any
 from rich.markup import escape
 from rich.panel import Panel
 
-from clio_agent.client import ClioSDKError, MessageCompleted, PermissionRequested, SessionStatusChanged
+from clio_agent.client import (
+    ClioSDKError,
+    MessageCompleted,
+    PermissionRequested,
+    SessionStatusChanged,
+)
 
 if TYPE_CHECKING:
     from clio_agent.ui.cli import ClioAgentCLI

@@ -100,6 +100,8 @@ def test_ask_waits_on_a_question_task(flow_app: TestClient) -> None:
     )
     assert answered.status_code in (200, 202), answered.text
     message = wait_until(
-        lambda: next((m for m in assistant_messages(flow_app, sid) if "approved" in text_of(m)), None)
+        lambda: next(
+            (m for m in assistant_messages(flow_app, sid) if "approved" in text_of(m)), None
+        )
     )
     assert text_of(message) == "done: approved work"

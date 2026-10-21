@@ -565,11 +565,11 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
     this module closes. It passes post-fix because only "handoff" still
     short-circuits, and no auto-attached tool declares "handoff"."""
 
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
     from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
 
     from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
     from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 
     # This wire-evidence test executes non-read tools without a human responder.
     # Authorize them through the real session policy, not a mocked permission gate.
@@ -1113,6 +1113,7 @@ def test_title_sanitization_strips_controls_and_clamps() -> None:
 def test_no_registered_native_title_contains_a_paren() -> None:
     """Sweep real native, shared-task, Question and skill declarations."""
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+
     from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
     from clio_agent.gact.task_declarations import (
         build_ask_user_tool,

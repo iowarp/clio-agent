@@ -355,5 +355,3 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(
         assert attempts > A2UI_CATALOG_REASON_RING_MAXLEN
         assert len(undeclared) == A2UI_CATALOG_REASON_RING_MAXLEN
         assert len(reasons) <= A2UI_CATALOG_REASON_RING_MAXLEN
-
-

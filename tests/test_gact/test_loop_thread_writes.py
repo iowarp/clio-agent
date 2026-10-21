@@ -221,5 +221,3 @@ def test_pre_model_stop_preserves_confirmed_user_input_off_loop(
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert any(row["id"] == identity for row in messages)
     assert _write_hits() == []
-
-

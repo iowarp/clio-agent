@@ -191,9 +191,7 @@ class _NativeInputHostAgentModule(_HostAgentModule):
         )
 
 
-def host_agent_module(
-    base_agent: Any, agent_def: Any, resolution: Any = None
-) -> _HostAgentModule:
+def host_agent_module(base_agent: Any, agent_def: Any, resolution: Any = None) -> _HostAgentModule:
     """Build the delegating module for ``base_agent``.
 
     The module declares ``images``/``files`` exactly when the host's ``forward``

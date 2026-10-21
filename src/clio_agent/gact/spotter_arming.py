@@ -537,13 +537,13 @@ def _provenance_refusal(
     certain start-up failure, not a guess.
     """
 
-    from clio_agent.plugins.servers import (  # noqa: PLC0415
-        PROVENANCE_CONFIG_VAR,
-        references_variable,
-    )
     from clio_agent.gact.provenance.handoff import (  # noqa: PLC0415
         PROBLEM_WORKSPACE_UNRESOLVED,
         build_provenance_handoff,
+    )
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        PROVENANCE_CONFIG_VAR,
+        references_variable,
     )
 
     for name, declaration in raw_declarations.items():

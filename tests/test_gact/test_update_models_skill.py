@@ -50,6 +50,7 @@ def test_refresh_provider_models_tool_exists_on_a_tier1_main_session() -> None:
     (#1211 review R6) on a tier-1 MAIN session (no parent_id) -- never a
     dangling reference."""
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+
     from clio_agent.gact.types import AgentDef
 
     agent_def = AgentDef(id="main", source="expert_pack", title="Main", metadata={})
@@ -64,6 +65,7 @@ def test_refresh_provider_models_tool_absent_on_a_spawned_child() -> None:
     auto-attached to every spawned Tier-2/3 child by default -- only to the
     tier-1 main session that declares no parent_id."""
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools
+
     from clio_agent.gact.types import AgentDef
 
     child_def = AgentDef(

@@ -715,5 +715,3 @@ class TestCaptureReasoning:
         monkeypatch.setenv("CLIO_CAPTURE_REASONING", "1")
         _write_user_config(monkeypatch, tmp_path, "runtime:\n  capture_reasoning: false\n")
         assert _capture_reasoning_enabled() is False
-
-

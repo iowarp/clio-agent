@@ -21,7 +21,7 @@ from clio_agent.gact.app import build_app
 from tests._harness import _commit_test_model_input
 from tests._plugin_fixtures import custom_marketplace
 
-FLOWS = '''
+FLOWS = """
 from clio_agent.sdk import Flow
 
 
@@ -116,9 +116,9 @@ class Greedy(Flow):
         for i in range(3):
             await ctx.call("self", f"call {i}")
         return "unreachable"
-'''
+"""
 
-SUBAGENTS = '''
+SUBAGENTS = """
 from clio_agent.sdk import Subagent
 
 critic = Subagent(
@@ -127,9 +127,9 @@ critic = Subagent(
     plugins=["flowtest"],
     description="Reviews a draft plan step",
 )
-'''
+"""
 
-AGENTS = '''
+AGENTS = """
 from clio_agent.sdk import Agent, Flow
 
 
@@ -165,7 +165,7 @@ class Orchestrator(Agent):
 
 
 Editor = _agent("editor", "editedplan")
-'''
+"""
 
 
 class FakeHost:
@@ -263,17 +263,23 @@ def flow_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestCli
 
 
 def new_session(client: TestClient, agent_ref: str) -> str:
-    response = client.post("/v1/sessions", json={"title": agent_ref, "metadata": {"agent_ref": agent_ref}})
+    response = client.post(
+        "/v1/sessions", json={"title": agent_ref, "metadata": {"agent_ref": agent_ref}}
+    )
     assert response.status_code in (200, 201), response.text
     return response.json()["id"]
 
 
 def post(client: TestClient, sid: str, text: str) -> None:
-    ack = client.post(f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]})
+    ack = client.post(
+        f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]}
+    )
     assert ack.status_code == 202, ack.text
 
 
-def wait_until(predicate: Callable[[], Any], *, timeout: float = 60.0, interval: float = 0.05) -> Any:
+def wait_until(
+    predicate: Callable[[], Any], *, timeout: float = 60.0, interval: float = 0.05
+) -> Any:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = predicate()

@@ -206,5 +206,3 @@ def test_the_unresolved_path_hint_names_the_download_recovery() -> None:
     hint = _DEFAULT_HINTS["a2ui_url_unresolved"]
     assert "shell" in hint
     assert "link" in hint
-
-

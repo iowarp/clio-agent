@@ -56,9 +56,11 @@ def _python_files() -> list[Path]:
 
 def _imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    package = ".".join(path.relative_to(ROOT / "src").with_suffix("").parts[:-1]) if (
-        ROOT / "src"
-    ) in path.parents else ""
+    package = (
+        ".".join(path.relative_to(ROOT / "src").with_suffix("").parts[:-1])
+        if (ROOT / "src") in path.parents
+        else ""
+    )
     found: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

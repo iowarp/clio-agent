@@ -29,13 +29,13 @@ from typing import Any, Callable
 import pytest
 from rich.console import Console
 
-from clio_agent.gact.app import build_app
 from clio_agent.client import (
     ClioClient,
     ClioConnectionError,
     SessionStatusChanged,
     UserQuestion,
 )
+from clio_agent.gact.app import build_app
 from clio_agent.ui.cli import ClioAgentCLI, run_query
 from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 

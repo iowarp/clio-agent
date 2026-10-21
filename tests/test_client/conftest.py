@@ -25,8 +25,8 @@ from typing import Any
 import httpx
 import pytest
 
-from clio_agent.gact.app import build_app
 from clio_agent.client import ClioClient
+from clio_agent.gact.app import build_app
 
 _DONE = object()
 

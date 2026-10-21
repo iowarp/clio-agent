@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.app import build_app
 from clio_agent.client import ClioClient
+from clio_agent.gact.app import build_app
 from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
 

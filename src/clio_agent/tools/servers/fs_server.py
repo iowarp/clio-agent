@@ -136,7 +136,9 @@ def glob(
     path: str = ".",
     access_reason: Annotated[
         str,
-        Field(description="Explain why this folder is needed when it is outside permitted folders."),
+        Field(
+            description="Explain why this folder is needed when it is outside permitted folders."
+        ),
     ] = "",
 ) -> dict[str, Any]:
     """Find files under ``path`` whose path matches a glob ``pattern``.
@@ -170,7 +172,9 @@ def grep(
     ignore_case: bool = False,
     access_reason: Annotated[
         str,
-        Field(description="Explain why this folder is needed when it is outside permitted folders."),
+        Field(
+            description="Explain why this folder is needed when it is outside permitted folders."
+        ),
     ] = "",
 ) -> dict[str, Any]:
     """Search file contents under ``path`` for a regular expression.

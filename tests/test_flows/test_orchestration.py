@@ -30,9 +30,7 @@ def _orchestrator(client: TestClient, member_gate: threading.Event | None = None
         if "Answer independently" in question and member_gate is not None:
             member_gate.wait(timeout=30)
         if question.startswith("convene the council") and not started:
-            started.update(
-                asyncio.run(start_flow("council", question, {"synthesizer": "self"}))
-            )
+            started.update(asyncio.run(start_flow("council", question, {"synthesizer": "self"})))
             return dspy.Prediction(answer=f"started {started['handle']}")
         return default_program(question=question, **kwargs)
 
