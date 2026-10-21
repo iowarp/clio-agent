@@ -27,18 +27,16 @@ def resolve_active_base_agent_tool_executor(
         workspace_root = str(getattr(workspace, "root_path", "") or "")
         if workspace_root:
             assert app is not None
-            from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-                _runtime_active_agent_blueprint_id,
-            )
+            from clio_agent.gact.agents.resolution import session_server_set  # noqa: PLC0415
             from clio_agent.tools.execution import (  # noqa: PLC0415
-                tool_blueprint_context,
+                tool_server_set_context,
                 tool_workspace_context,
             )
 
-            blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+            server_set = session_server_set(app, session_id)
             with (
                 tool_workspace_context(workspace_root),
-                tool_blueprint_context(blueprint_id),
+                tool_server_set_context(server_set),
             ):
                 executor = resolver()
         else:

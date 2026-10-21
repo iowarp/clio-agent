@@ -21,7 +21,7 @@ from clio_agent.gact.runtime.memory_search import (
 )
 from clio_agent.gact.side_sessions import is_read_only_side_session
 
-SEARCH_BLUEPRINT = "clio-search"
+SEARCH_AGENT = "clio/clio-search"
 FILE_PREFIX_BYTES = 512 * 1024
 CONTENT_BUDGET_BYTES = 8 * 1024 * 1024
 FILE_WALK_LIMIT = 5000

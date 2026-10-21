@@ -488,14 +488,14 @@ def load_mcp_servers(
     *,
     home: Path | None = None,
     cwd: Path | None = None,
-    pack_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
+    plugin_servers: Mapping[str, Mapping[str, Any]] = (),  # type: ignore[assignment]
     env: Mapping[str, str] | None = None,
 ) -> dict[str, MCPServerSpec]:
     """Discover + merge declared MCP servers across all scopes.
 
     Precedence (highest wins, merged whole by name): workspace
-    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > pack
-    frontmatter (``pack_servers`` = ``{pack_id: {name: declaration}}``). Built-in
+    ``<cwd>/.clio/mcp.yaml`` > user ``<config>/clio-agent/mcp.yaml`` > the
+    session's plugin servers (``plugin_servers`` = ``{plugin_id: {name: declaration}}``). Built-in
     ``fs``/``shell`` are provided by core, not part of this map.
     """
     home = home or Path.home()
@@ -506,9 +506,9 @@ def load_mcp_servers(
         _UNREADABLE_MCP_YAML.clear()
 
     # lowest precedence first
-    for pack_id, servers in dict(pack_servers).items():
+    for plugin_id, servers in dict(plugin_servers).items():
         if isinstance(servers, Mapping):
-            merged.update(specs_from_mapping(servers, source=f"pack:{pack_id}", env=env))
+            merged.update(specs_from_mapping(servers, source=f"plugin:{plugin_id}", env=env))
     from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
 
     user_mcp = paths.user_config_dir_for(home, lookup) / "mcp.yaml"

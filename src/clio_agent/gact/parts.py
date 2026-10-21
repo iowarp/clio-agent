@@ -76,8 +76,7 @@ class CapabilityFlags(DocumentCapabilityFields):
     x_clio_stream_fallback_reasons: dict[str, dict[str, Any]] = Field(default_factory=dict)
     x_clio_direct_delete_permissions: bool = False
     x_clio_prompt_registry: bool = False
-    x_clio_expert_packs: bool = False
-    x_clio_agent_blueprints: bool = False
+    x_clio_agent_plugins: bool = False
     x_clio_user_questions: bool = False
     x_clio_interactions: bool = False
     x_clio_retry_attempts: bool = False

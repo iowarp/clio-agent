@@ -577,8 +577,15 @@ def build_task_compatibility_tools(requested: list[str]) -> list[Any]:
     ]
 
 
-def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -> list[Any]:
-    """Spawn through the same conversation owner; no agent-only wait/cancel catalogs."""
+def build_spawn_runtime_tools(
+    base_agent: Any, agent_def: Any, *, resolution: Any = None, **options: Any
+) -> list[Any]:
+    """Spawn through the same conversation owner; no agent-only wait/cancel catalogs.
+
+    The ``delegation`` plugin claims these tools. ``agent`` names one of the
+    agent's defined subagents (listed in the description) or an installed agent
+    started as a general subagent.
+    """
     fanout = getattr(agent_def, "fanout", {}) or {}
     limits = fanout.get("limits", {})
     concurrency = limits.get("concurrency")
@@ -600,18 +607,16 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
         task: str,
         placement: str | None,
         input_task_ids: list[str] | None,
-        blueprint_id: str | None,
         strategy: dict[str, Any] | None,
         invocation: str,
     ) -> dict[str, Any]:
         local_placement(placement)
         app, caller = _runtime()
-        from clio_agent.gact.agents.blueprint_commission import resolve_commission_target
         from clio_agent.gact.assignment_evidence import select_assignment_evidence
 
-        target, scope, _, _ = await app.state.task_history.io.run(
-            resolve_commission_target, app, caller.session_id, agent, blueprint_id
-        )
+        target = str(agent or "").strip()
+        if not target:
+            raise ValueError("agent must name a subagent or an installed agent")
         pins = await app.state.task_history.io.run(
             select_assignment_evidence, app.state.task_history, caller, input_task_ids
         )
@@ -621,7 +626,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
             target,
             invocation,
             inference_concurrency=concurrency,
-            target_scope=scope,
             strategy=strategy,
             launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
         )
@@ -632,7 +636,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
         task: str = "",
         placement: str | None = None,
         input_task_ids: list[str] | None = None,
-        blueprint_id: str | None = None,
         strategy: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await prepare_and_spawn(
@@ -640,7 +643,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
             task,
             placement,
             input_task_ids,
-            blueprint_id,
             strategy,
             TASK_CALL.get().invocation_id or uuid4().hex,
         )
@@ -663,7 +665,6 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
                         assignment["task"],
                         placement,
                         assignment.get("input_task_ids"),
-                        assignment.get("blueprint_id"),
                         assignment.get("strategy"),
                         invocation + ":" + str(index),
                     )
@@ -676,6 +677,14 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
                 outcomes.append({"index": index, "error": str(error)})
         return {"spawned": outcomes, "outcomes": outcomes}
 
+    subagents = list(getattr(resolution, "subagents", None) or [])
+    targets = (
+        "A defined subagent: "
+        + "; ".join(f"{row['id']} ({row['description'] or 'no description'})" for row in subagents)
+        + ". Or an installed agent such as clio/standard, started with only the task."
+        if subagents
+        else "An installed agent such as clio/standard, started with only the task."
+    )
     strategy_schema = {
         "anyOf": [
             {
@@ -699,9 +708,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
             spawn_agent_task,
             "spawn_agent_task",
             {
-                "agent": {"type": "string", "default": ""},
+                "agent": {"type": "string", "description": targets},
                 "task": {"type": "string"},
-                "blueprint_id": _STRING,
                 "placement": _STRING,
                 "input_task_ids": {
                     "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
@@ -724,9 +732,8 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
                     "items": {
                         "type": "object",
                         "properties": {
-                            "agent": {"type": "string"},
+                            "agent": {"type": "string", "description": targets},
                             "task": {"type": "string"},
-                            "blueprint_id": _STRING,
                             "input_task_ids": {
                                 "anyOf": [
                                     {"type": "array", "items": {"type": "string"}},
@@ -744,23 +751,4 @@ def build_spawn_runtime_tools(base_agent: Any, agent_def: Any, **options: Any) -
             "Accept several child assignments and return their Subagent handles with independent errors. Native inference budgets apply only to model calls. Use shared observation or waiting across the returned handles.",
         )
     )
-    from clio_agent.gact.workflows import parse_workflow, run_declared_workflow
-
-    if parse_workflow(agent_def) is not None:
-
-        async def run_workflow(request: str = "") -> dict[str, Any]:
-            app, caller = _runtime()
-            value = await run_declared_workflow(
-                app, caller, agent_def, request, TASK_CALL.get().invocation_id or uuid4().hex
-            )
-            return await app.state.task_history.io.run(_collected, app, caller, value)
-
-        tools.append(
-            _tool(
-                run_workflow,
-                "run_workflow",
-                {"request": {"type": "string", "default": ""}},
-                "Run this agent's declared workflow using ordinary child tasks and shared waits. Stop ends the wait and leaves accepted children running. Calling again with the same request continues unfinished steps without replaying them.",
-            )
-        )
     return tools

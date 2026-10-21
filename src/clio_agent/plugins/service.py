@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,13 +136,56 @@ class PluginService:
     """Installed plugins and agents, resolution and pinned session resolutions."""
 
     def __init__(
-        self, store: PluginStore | None = None, *, native_tools: frozenset[str] | None = None
+        self,
+        store: PluginStore | None = None,
+        *,
+        native_tools: frozenset[str] | None = None,
+        default_marketplace: bool | None = None,
     ) -> None:
+        """``default_marketplace`` installs the shipped marketplace on first use.
+
+        It defaults to on for the user's own store and off for an explicit one.
+        """
+
         self.store = store or PluginStore(plugin_store_root())
         self._native_tools = native_tools
+        self._install_default = store is None if default_marketplace is None else default_marketplace
+        self._ready_lock = threading.Lock()
+        self._ready = False
+        self.ready_error: dict[str, Any] | None = None
+
+    def ready(self) -> None:
+        """Install or refresh the default marketplace once (idempotent, thread-safe).
+
+        A failure is recorded on ``ready_error`` with a typed reason and logged;
+        agents from other marketplaces stay usable.
+        """
+
+        if self._ready or not self._install_default:
+            return
+        with self._ready_lock:
+            if self._ready:
+                return
+            try:
+                self.ensure_default_marketplace()
+                self.ready_error = None
+            except Exception as exc:  # noqa: BLE001 - recorded as a typed reason below
+                self.ready_error = {
+                    "reason": "default_marketplace_unavailable",
+                    "source": default_marketplace_source(),
+                    "message": str(exc),
+                }
+                logger.error(
+                    "default marketplace install failed reason=default_marketplace_unavailable "
+                    "source=%s error=%r",
+                    default_marketplace_source(),
+                    exc,
+                )
+            self._ready = True
 
     # ---------------------------------------------------------------- catalog
     def catalog(self, extra: list[PluginRecord] | None = None) -> Catalog:
+        self.ready()
         records = self.store.records()
         if extra:
             replaced = {(r.marketplace, r.id) for r in extra}
@@ -177,6 +221,7 @@ class PluginService:
 
     # ----------------------------------------------------------------- agents
     def agents(self) -> list[AgentEntry]:
+        self.ready()
         specs = self.store.agent_specs()
         out = [AgentEntry(ref, ref.split("/", 1)[0], spec) for ref, spec in sorted(specs.items())]
         for ref, user_agent in sorted(self.store.user_agents().items()):
@@ -190,6 +235,7 @@ class PluginService:
     def lookup(self, ref: str) -> AgentEntry:
         """Find an agent by ``market/id``, ``id`` or ``user/id``, honoring ``@range``."""
 
+        self.ready()
         text = str(ref or "").strip() or DEFAULT_AGENT
         name, _, version_range = text.partition("@")
         if name.startswith(f"{USER_MARKETPLACE}/"):

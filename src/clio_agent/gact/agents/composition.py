@@ -1,21 +1,9 @@
-"""Prompt composition / dynamic-context rendering for the GACT server (#714).
+"""Per-session runtime context appended to the composed main prompt.
 
-This module owns the prompt-side helpers carved out of ``clio_agent.gact.app``:
-applying the prompt registry to a resolved ``AgentDef`` and rendering the
-CLIO-owned dynamic context exposed to prompt templates (the enabled-agent tree,
-declared tools/commands, provider summary, the orchestrator-identity briefing for
-experts that have children, and the active-workspace grounding block).
-
-These are pure rendering queries over ``app.state`` + the on-disk catalog (no DSPy,
-no state mutation). They take the ``FastAPI`` app as an explicit parameter and
-import only the shared runtime base + gact leaves -- never ``gact.app`` -- so the
-dependency graph stays acyclic.
-
-Composition co-depends with :mod:`~clio_agent.gact.agents.resolution`: resolution
-applies the prompt registry while rendering rows, and the orchestrator briefing
-here needs resolution's child-row lookup. The cycle is broken by reaching back
-into ``resolution`` through the package module namespace at call time (resolution,
-in turn, imports the concrete helpers from this module at load).
+The composed prompt itself comes from the agent's plugins
+(:mod:`clio_agent.plugins.compose`). What this module adds is runtime state the
+plugins cannot know: the session's bound workspace and its write roots. It is
+labelled as runtime context in the prompt view, not attributed to a plugin.
 """
 
 from __future__ import annotations
@@ -25,369 +13,17 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.response_formatting import RESPONSE_FORMATTING_GUIDANCE
-from clio_agent.gact.catalog import (
-    _builtin_agents,
-    _builtin_tools,
-    _load_command_files_from_disk,
-)
-from clio_agent.gact.expert_packs import load_expert_packs, validate_expert_hierarchy
-from clio_agent.gact.runtime.app_state import per_app_dict
-from clio_agent.gact.types import AgentDef
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.prompts import PromptRegistry
-
-
-def _agent_prompt_request(agent_def: "AgentDef") -> tuple[str, str]:
-    """Return prompt id/profile requested by an agent definition."""
-
-    metadata = agent_def.metadata if isinstance(agent_def.metadata, Mapping) else {}
-    params = agent_def.parameters if isinstance(agent_def.parameters, Mapping) else {}
-    prompt_id = str(
-        getattr(agent_def, "prompt_id", "")
-        or metadata.get("prompt_id")
-        or metadata.get("prompt")
-        or params.get("prompt_id")
-        or params.get("prompt")
-        or ""
-    ).strip()
-    prompt_profile = str(
-        getattr(agent_def, "prompt_profile", "")
-        or metadata.get("prompt_profile")
-        or metadata.get("profile")
-        or params.get("prompt_profile")
-        or params.get("profile")
-        or ""
-    ).strip()
-    return prompt_id, prompt_profile
-
-
-def _prompt_resolution_metadata(resolved: Any, *, requested_profile: str = "") -> dict[str, Any]:
-    return {
-        k: v
-        for k, v in {
-            "id": getattr(resolved, "id", ""),
-            "profile": getattr(resolved, "profile", ""),
-            "requested_profile": requested_profile,
-            "scope": getattr(resolved, "scope", ""),
-            "source_path": getattr(resolved, "source_path", ""),
-            "provider": getattr(resolved, "provider", ""),
-            "model": getattr(resolved, "model", ""),
-            "checksum": getattr(resolved, "checksum", ""),
-            "fallback_profile": getattr(resolved, "fallback_profile", ""),
-            "validation_errors": list(getattr(resolved, "validation_errors", []) or []),
-        }.items()
-        if v not in ("", [], None)
-    }
-
-
-def _agent_rows_prompt_render_context(rows: list["AgentDef"]) -> dict[str, str]:
-    """Render an agent tree for prompt placeholders without loading more rows."""
-
-    enabled_agents = [agent for agent in rows if getattr(agent, "enabled", True)]
-    by_parent: dict[str, list["AgentDef"]] = {}
-    for agent in enabled_agents:
-        by_parent.setdefault(agent.parent_id or "", []).append(agent)
-
-    def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
-        lines: list[str] = []
-        for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
-            indent = "  " * depth
-            detail = f" - {agent.description}" if agent.description else ""
-            lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
-            lines.extend(render_tree(agent.id, depth + 1))
-        return lines
-
-    return {
-        "agents.available_tree": "\n".join(render_tree()) or "(no enabled experts)",
-        "agents.available_flat": "\n".join(
-            f"- {agent.id}: {agent.title}"
-            for agent in sorted(enabled_agents, key=lambda row: row.id)
-        )
-        or "(no enabled experts)",
-    }
-
-
-def _apply_prompt_registry_to_agent(
-    app: "FastAPI",
-    agent_def: "AgentDef",
-    *,
-    prompt_registry: "PromptRegistry | None" = None,
-    render_context: dict[str, str] | None = None,
-) -> "AgentDef":
-    """Resolve an agent's prompt registry reference into runtime prompt text."""
-
-    prompt_id, prompt_profile = _agent_prompt_request(agent_def)
-    if not prompt_id:
-        return agent_def
-    registry = prompt_registry or getattr(app.state, "prompt_registry", None)
-    if registry is None:
-        return agent_def
-    resolved = (
-        registry.render(prompt_id, profile=prompt_profile, context=render_context)
-        if render_context is not None
-        else registry.resolve(prompt_id, profile=prompt_profile)
-    )
-    metadata = dict(agent_def.metadata)
-    if resolved is None:
-        metadata["prompt_resolution"] = {
-            "id": prompt_id,
-            "requested_profile": prompt_profile,
-            "status": "missing",
-        }
-        return agent_def.model_copy(update={"metadata": metadata})
-    resolution = _prompt_resolution_metadata(resolved, requested_profile=prompt_profile)
-    resolution["status"] = "resolved" if resolved.text.strip() else "invalid"
-    metadata["prompt_resolution"] = resolution
-    updates: dict[str, Any] = {"metadata": metadata}
-    if resolved.text.strip():
-        agent_body = agent_def.system_prompt.strip()
-        if agent_body:
-            resolution["composed_with_agent_body"] = True
-            updates["system_prompt"] = "\n\n".join(
-                (
-                    resolved.text.strip(),
-                    "Agent-specific instructions from this definition:",
-                    agent_body,
-                )
-            )
-        else:
-            updates["system_prompt"] = resolved.text
-    if resolved.provider:
-        updates["default_provider"] = resolved.provider
-    if resolved.model:
-        updates["default_model"] = resolved.model
-    return agent_def.model_copy(update=updates)
-
-
-def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
-    """Build the CLIO-owned dynamic context exposed to prompt templates."""
-
-    from clio_agent.gact.agents import resolution as _resolution  # noqa: PLC0415
-
-    try:
-        agents = validate_expert_hierarchy(
-            _resolution._merge_agent_def_rows(
-                _builtin_agents()
-                + [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-                + load_expert_packs()
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - disk/registry read; fall back to builtins
-        trace.event(
-            "PROMPT-CTX",
-            "agent-tree build failed (%s); falling back to builtin agents",
-            exc,
-        )
-        agents = _builtin_agents()
-    enabled_agents = [agent for agent in agents if getattr(agent, "enabled", True)]
-    by_parent: dict[str, list["AgentDef"]] = {}
-    for agent in enabled_agents:
-        by_parent.setdefault(agent.parent_id or "", []).append(agent)
-
-    def render_tree(parent_id: str = "", depth: int = 0) -> list[str]:
-        lines: list[str] = []
-        for agent in sorted(by_parent.get(parent_id, []), key=lambda row: (row.tier, row.id)):
-            indent = "  " * depth
-            detail = f" - {agent.description}" if agent.description else ""
-            lines.append(f"{indent}- {agent.id}: {agent.title}{detail}")
-            lines.extend(render_tree(agent.id, depth + 1))
-        return lines
-
-    flat_agents = [
-        f"- {agent.id}: {agent.title}" for agent in sorted(enabled_agents, key=lambda row: row.id)
-    ]
-    tools = [f"- {tool.id}: {tool.description}" for tool in _builtin_tools()]
-    commands: list[str] = []
-    try:
-        for row in _load_command_files_from_disk():
-            if row.get("enabled") and row.get("agent_invocable"):
-                commands.append(f"- {row.get('id')}: {row.get('description') or row.get('title')}")
-    except Exception as exc:  # noqa: BLE001 - disk read; render no commands on failure
-        trace.event("PROMPT-CTX", "command-file scan failed (%s); rendering no commands", exc)
-        commands = []
-    provider = getattr(app.state, "lm_config", None)
-    provider_summary = "{}"
-    if provider is not None:
-        # ``app.state.lm_config`` is a plain dict (set by ``PUT /v1/providers/lm``),
-        # not a dataclass, so ``asdict`` raised EVERY turn ("asdict() should be
-        # called on dataclass instances") and silently degraded to repr. Serialize
-        # by shape at the root: a Mapping goes straight through ``json.dumps``, a
-        # genuine dataclass through ``asdict`` first. The typed fallback stays for
-        # a genuinely unserializable input (a non-mapping, non-dataclass object, or
-        # a mapping carrying a non-JSON value).
-        try:
-            if is_dataclass(provider) and not isinstance(provider, type):
-                payload: Any = asdict(provider)
-            elif isinstance(provider, Mapping):
-                payload = dict(provider)
-            else:
-                raise TypeError(
-                    f"provider summary is neither a dataclass nor a mapping: "
-                    f"{type(provider).__name__}"
-                )
-            provider_summary = json.dumps(payload, sort_keys=True)
-        except Exception as exc:  # noqa: BLE001 - genuinely bad input; stringify
-            trace.event("PROMPT-CTX", "provider summary serialize failed (%s); using repr", exc)
-            provider_summary = str(provider)
-    return {
-        "agents.available_tree": "\n".join(render_tree()) or "(no enabled experts)",
-        "agents.available_flat": "\n".join(flat_agents) or "(no enabled experts)",
-        "tools.available": "\n".join(tools) or "(no declared tools)",
-        "commands.agent_invocable": "\n".join(commands) or "(no agent-invocable commands)",
-        "memory.policy_summary": "Session-local by default; same-workspace/global reads require explicit policy or user intent.",
-        "permissions.policy_summary": "Permission-controlled actions must use CLIO policy gates and visible provenance.",
-        "provider.current": provider_summary,
-        "session.active_pack": "(no active expert pack)",
-    }
-
-
-def _runtime_dynamic_agent_children_context(
-    app: "FastAPI | None",
-    agent_def: "AgentDef",
-    *,
-    session_id: str = "",
-) -> str:
-    """Render the child-capability briefing for an expert that has children.
-
-    The default policy preserves the established evidence-orchestrator contract for
-    existing blueprints. ``delegation_policy: adaptive`` instead treats children as
-    optional specialist capabilities: the expert's own prompt or an on-demand skill
-    decides whether consultation adds value. This keeps runtime capability discovery
-    separate from task policy and avoids turning every ordinary exchange into
-    orchestration work.
-    """
-
-    from clio_agent.gact.agents import resolution as _resolution  # noqa: PLC0415
-
-    _aid = getattr(agent_def, "id", "")
-    rows: list[AgentDef] = []
-    if agent_def.source == "expert_pack" and session_id and app is not None:
-        rows = _resolution._runtime_child_agent_rows(app, _aid, session_id=session_id)
-    if not rows:
-        # Session-less rebuild (the build the model often actually runs): reuse the
-        # briefing rendered on a context-bearing build of THIS app so the grounding
-        # never drops. Keyed on the passed app's ``app.state`` (per_app_dict) — an
-        # app-less rebuild resolves the live turn's app, else a structured empty; it
-        # NEVER inherits a sibling app's cached briefing.
-        return per_app_dict("orchestrator_briefing", app=app).get(_aid, "")
-    delegation_policy = str(agent_def.metadata.get("delegation_policy") or "").strip().lower()
-    if delegation_policy in {"adaptive", "optional", "skill-driven"}:
-        lines = [
-            "## Available specialist consultations",
-            "",
-            "You can answer directly from your declared role and capabilities. The child "
-            "experts below are optional consultations, not a workflow you must run. Use "
-            "one only when its distinct expertise or tool-grounded evidence would "
-            "materially improve the scientist-facing result. Follow a declared "
-            "coordination skill when the work genuinely needs decomposition, parallelism, "
-            "or child lifecycle management.",
-            "",
-            "Do not claim a tool observation, measured value, file result, or external "
-            "source unless it was supplied by the user or returned by the capability that "
-            "owns it.",
-            "",
-            "Available child experts:",
-        ]
-        for row in sorted(rows, key=lambda item: (item.tier, item.id)):
-            detail = (row.description or row.title or "").strip()
-            cap_bits: list[str] = []
-            if row.tools:
-                cap_bits.append("tools: " + ", ".join(row.tools))
-            cap_text = f" [{'; '.join(cap_bits)}]" if cap_bits else ""
-            lines.append(f"- `{row.id}`: {detail}{cap_text}")
-        briefing = "\n".join(lines)
-        if _aid:
-            per_app_dict("orchestrator_briefing", app=app)[_aid] = briefing
-        return briefing
-    if agent_def.tools:
-        declared_tools = ", ".join(f"`{name}`" for name in sorted(set(agent_def.tools)))
-        heading = "## You are an ORCHESTRATOR — coordinate your declared children and tools"
-        role = (
-            "Delegate specialist work to the declared children below. "
-            f"Your blueprint declares these tools: {declared_tools}. "
-            "The runtime may also provide shared task controls. "
-            "Use only tools exposed in your current runtime tool catalog, within your role "
-            "and permissions, including independent work while children run; "
-            "this briefing grants no additional capability or access."
-        )
-        evidence_rule = (
-            "Every claim must be backed by evidence returned by a tool in that catalog or a child, "
-            "or supplied by the user. Never invent an observation, file result or outcome."
-        )
-    else:
-        heading = "## You are an ORCHESTRATOR — route work to your children; do not do it yourself"
-        role = (
-            "You have child experts who hold the domain tools and produce GROUNDED evidence. "
-            "You have no domain tools of your own. Use shared task controls to coordinate, "
-            "observe and collect accepted work; delegate domain work to the children below. "
-            "Do not invent coordinates, dataset/resource IDs, file results or measured values."
-        )
-        evidence_rule = (
-            "Every domain claim must be backed by a child's returned evidence; NEVER invent "
-            "domain observations from prior knowledge. Read task status from shared task "
-            "controls. If you have spawned no children yet, you have no evidence yet for "
-            "a domain result unless the user supplied it — do not fabricate an answer."
-        )
-    lines = [
-        heading,
-        "",
-        role,
-        "",
-        "Your child experts (delegate to these — you may route to no one else):",
-    ]
-    for row in sorted(rows, key=lambda item: (item.tier, item.id)):
-        detail = (row.description or row.title or "").strip()
-        legacy_cap_bits: list[str] = []
-        if row.tools:
-            legacy_cap_bits.append("tools: " + ", ".join(row.tools))
-        cap_text = f" [{'; '.join(legacy_cap_bits)}]" if legacy_cap_bits else ""
-        lines.append(f"- `{row.id}`: {detail}{cap_text}")
-    lines.append("")
-    lines.append(
-        "Routing: delegate by CALLING your spawn tools. `spawn_agent_task(agent, task)` "
-        "spawns ONE declared child as a real child turn and returns its durable `handle` "
-        "IMMEDIATELY — the child runs untied to this turn; the call does not block. "
-        "So spawn EVERY independent child right away (use `spawn_agents_parallel` to fan "
-        "out a batch in one call) instead of serializing spawn→wait→spawn→wait; only "
-        "chain a hop that genuinely DEPENDS on a prior child's returned evidence. Call "
-        "`wait_tasks([handle, ...])` as one committed wait when your next step "
-        "depends on all of them; Wait returns the requested children's output into your "
-        "context once they are terminal, so do not fetch that output again and do "
-        "not repeatedly poll or narrate that they are still running. "
-        "`observe_tasks(tasks, cursor=...)` reads "
-        "a child's progress INCREMENTALLY without consuming it — use it to act on "
-        "intermediate evidence (a typed state landing, a stage completing) while the child "
-        "keeps running; omit the initial cursor and pass back the returned `cursor` to "
-        "read only what is new. Without a pattern it returns the current snapshot immediately; "
-        "with a `pattern` (regex), the single call stays open until specific evidence appears "
-        "(e.g. a resolved id) or a requested child becomes terminal. "
-        "Continue independent work while children run. CLIO queues each child's result "
-        "before your next safe model iteration, after the current tool call or batch finishes. "
-        "Live user feedback enters at the same iteration boundary. If you are idle, "
-        "completion automatically starts a continuation turn, including after conversation Stop, "
-        "without another human message. Finish requested independent actions before yielding; "
-        "then acknowledge outstanding handles and finish without waiting when no current step "
-        "needs their results. Keeping this turn open is not required to receive completion. "
-        "Read the returned typed evidence (in the returned workflow_state) "
-        "and let it decide the next hop, then write your final `answer`. " + evidence_rule
-    )
-    briefing = "\n".join(lines)
-    if _aid:
-        per_app_dict("orchestrator_briefing", app=app)[_aid] = briefing
-    return briefing
-
 
 def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -> str:
-    """Surface workspace scope and supported response syntax to an expert.
+    """Surface the session's workspace scope to the agent.
 
-    Workspace facts tell the expert where generated artifacts belong. Shared
-    renderer syntax remains available even when the workspace is unresolved.
-    Neither changes permissions or forces paths: file_policy validates access.
+    Workspace facts tell the agent where generated artifacts belong. They change
+    no permissions and force no paths: the file policy validates access.
     """
 
     if app is None:
@@ -396,7 +32,7 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
 
     root = _resolution._runtime_workspace_catalog_cwd(app, session_id=session_id)
     if root is None:
-        return RESPONSE_FORMATTING_GUIDANCE
+        return ""
     try:
         from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
 
@@ -411,8 +47,45 @@ def _runtime_active_workspace_context(app: "FastAPI", *, session_id: str = "") -
             "active workspace root using absolute paths so they stay with the "
             "session. Read inputs from wherever the user points you."
         ),
-        RESPONSE_FORMATTING_GUIDANCE,
     ]
     if allowed_roots:
         lines.append("Writes are only permitted under: " + ", ".join(allowed_roots) + ".")
     return "\n".join(lines)
+
+
+def _provider_summary(provider: Any) -> str:
+    if provider is None:
+        return "{}"
+    # ``app.state.lm_config`` is a plain dict (set by ``PUT /v1/providers/lm``);
+    # a genuinely unserializable input is stringified with a trace reason.
+    try:
+        if is_dataclass(provider) and not isinstance(provider, type):
+            payload: Any = asdict(provider)
+        elif isinstance(provider, Mapping):
+            payload = dict(provider)
+        else:
+            raise TypeError(
+                f"provider summary is neither a dataclass nor a mapping: {type(provider).__name__}"
+            )
+        return json.dumps(payload, sort_keys=True)
+    except Exception as exc:  # noqa: BLE001 - genuinely bad input; stringify
+        trace.event("PROMPT-CTX", "provider summary serialize failed (%s); using repr", exc)
+        return str(provider)
+
+
+def _prompt_render_context(app: "FastAPI") -> dict[str, str]:
+    """The CLIO-owned dynamic context exposed to prompt templates.
+
+    Session-scoped keys (the session's agent, its subagents and the commands
+    it may invoke) are added by the request-scoped builder in ``gact.app``.
+    """
+
+    from clio_agent.gact.catalog import _builtin_tools  # noqa: PLC0415
+
+    tools = [f"- {tool.id}: {tool.description}" for tool in _builtin_tools()]
+    return {
+        "tools.available": "\n".join(tools) or "(no declared tools)",
+        "memory.policy_summary": "Session-local by default; same-workspace/global reads require explicit policy or user intent.",
+        "permissions.policy_summary": "Permission-controlled actions must use CLIO policy gates and visible provenance.",
+        "provider.current": _provider_summary(getattr(app.state, "lm_config", None)),
+    }

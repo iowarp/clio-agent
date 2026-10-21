@@ -93,10 +93,18 @@ class HookDispatcher:
         return list(self._entries)
 
     def matching(self, event: str, envelope: HookEnvelope) -> list[HookEntry]:
-        """Return the enabled hooks that run for ``event`` given ``envelope``."""
+        """Return the enabled hooks that run for ``event`` given ``envelope``.
+
+        The session's plugin hooks run first, in their resolved order (child to
+        parent, then ``before``/``after``), then the configured ``hooks.json``
+        entries.
+        """
+
+        from clio_agent.gact.hooks.plugin_hooks import plugin_hook_entries  # noqa: PLC0415
 
         with self._lock:
             entries = list(self._entries)
+        entries = [*plugin_hook_entries(envelope.session_id), *entries]
         return [entry for entry in entries if entry.runs_for(event, envelope)]
 
     def has_hooks_for(self, event: str) -> bool:
@@ -108,8 +116,12 @@ class HookDispatcher:
         ``BeforeModel``/``AfterModel`` hook actually exists.
         """
 
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+        from clio_agent.gact.hooks.plugin_hooks import plugin_hook_entries  # noqa: PLC0415
+
         with self._lock:
             entries = list(self._entries)
+        entries += plugin_hook_entries(_ctx.active_session_id() or "")
         return any(entry.enabled and entry.is_trusted and event in entry.on for entry in entries)
 
     def dispatch(

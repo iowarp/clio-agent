@@ -319,8 +319,11 @@ def default_adapters() -> dict[str, HookAdapter]:
     them fails with a typed infra error rather than silently doing nothing.
     """
 
+    from clio_agent.gact.hooks.plugin_hooks import PythonHookAdapter  # noqa: PLC0415
+
     return {
         "command": SubprocessAdapter(),
+        "python": PythonHookAdapter(),
         "http": _NotImplementedAdapter("http"),
         "prompt": _NotImplementedAdapter("prompt"),
     }

@@ -45,7 +45,7 @@ class _ProjectionCache:
     are the ORDERED tuples of part ids already folded into ``surfaces``; a
     cache is reusable only when the CURRENT causally-ordered part sequence
     is a pure EXTENSION of these (verified by tuple slice equality) AND
-    ``registry_generation``/``blueprint_identity`` still match. Anything
+    ``registry_generation``/``agent_identity`` still match. Anything
     else — a part removed, reordered, a late-arriving part whose stamp
     sorts before the cached high-water mark, a pack install/uninstall, or
     the session switching its active blueprint — is NOT a pure extension
@@ -61,7 +61,7 @@ class _ProjectionCache:
     folded_a2ui_ids: tuple[str, ...]
     folded_action_ids: tuple[str, ...]
     registry_generation: int
-    blueprint_identity: tuple[str, str]
+    agent_identity: str
 
 
 @dataclass(frozen=True)
@@ -250,27 +250,20 @@ class A2UIStore:
         stamped.sort(key=lambda row: (row[0], row[1]))
         return [row[2] for row in stamped]
 
-    def _blueprint_identity(self, session_id: str) -> tuple[str, str]:
-        """This session's OWN active-blueprint identity: ``(path, id)``.
+    def _agent_identity(self, session_id: str) -> str:
+        """This session's OWN pinned resolution digest.
 
-        Cache-key component (S8, issue #1374 item B): a session switching
-        its active blueprint changes what its producible/resolvable catalog
-        set is WITHOUT touching a single message or bumping
-        ``CatalogRegistry.generation`` (no pack was installed/uninstalled) --
-        so an already-cached projection must be treated as invalidated when
-        this identity changes, exactly like a registry generation bump.
+        Cache-key component (S8, issue #1374 item B): a session whose agent
+        changes (a plugin added or removed) changes what its producible
+        catalog set is WITHOUT touching a message or bumping
+        ``CatalogRegistry.generation`` -- so an already-cached projection must
+        be treated as invalidated when this identity changes, exactly like a
+        registry generation bump.
         """
 
-        from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-            _runtime_active_agent_blueprint_id,
-            _runtime_active_agent_blueprint_path,
-        )
-
-        path = _runtime_active_agent_blueprint_path(self._app, session_id)
-        return (
-            str(path) if path is not None else "",
-            _runtime_active_agent_blueprint_id(self._app, session_id),
-        )
+        sess = self._app.state.sessions.get(session_id)
+        metadata = getattr(sess, "metadata", None) if sess is not None else None
+        return str((metadata or {}).get("agent_resolution") or "")
 
     def _project(
         self, session_id: str
@@ -291,7 +284,7 @@ class A2UIStore:
 
             registry = getattr(self._app.state, "a2ui_catalogs", None)
             registry_generation = registry.generation if registry is not None else 0
-            blueprint_identity = self._blueprint_identity(session_id)
+            agent_identity = self._agent_identity(session_id)
 
             a2ui_parts = self._parts(session_id, part_type="a2ui")
             action_parts = self._action_parts(session_id)
@@ -302,7 +295,7 @@ class A2UIStore:
             reusable = (
                 cache is not None
                 and cache.registry_generation == registry_generation
-                and cache.blueprint_identity == blueprint_identity
+                and cache.agent_identity == agent_identity
                 and a2ui_ids[: len(cache.folded_a2ui_ids)] == cache.folded_a2ui_ids
                 and action_ids[: len(cache.folded_action_ids)] == cache.folded_action_ids
             )
@@ -395,7 +388,7 @@ class A2UIStore:
                 folded_a2ui_ids=a2ui_ids,
                 folded_action_ids=action_ids,
                 registry_generation=registry_generation,
-                blueprint_identity=blueprint_identity,
+                agent_identity=agent_identity,
             )
             return surfaces, [*degradations, *action_degradations]
 

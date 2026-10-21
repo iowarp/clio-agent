@@ -12,7 +12,6 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.resolution import _runtime_active_agent_blueprint_id
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
@@ -557,7 +556,9 @@ def publish_finalized_turn(
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
             assistant_msg_id=assistant_msg.id,
             assistant_payload=assistant_msg.model_dump(exclude_none=True),
-            blueprint_id=_runtime_active_agent_blueprint_id(state.app, state.sid),
+            agent_ref=str(state.dynamic_agent_used.metadata.get('agent_ref') or '')
+            if state.dynamic_agent_used is not None
+            else '',
             completion=ConversationOutcome(
                 outputs=_prediction_summary(state.pred)
                 if state.pred is not None

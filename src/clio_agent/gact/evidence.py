@@ -256,22 +256,15 @@ def _dynamic_agent_runtime_provenance(
         # maps to, so a per-message reasoning effort is verifiable in the trace.
         "reasoning": turn_reasoning_provenance(app, agent_def, provider_id, model_id),
     }
-    blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
-    if blueprint_id:
-        payload["agent_blueprint"] = {
-            "id": blueprint_id,
-            "version": str(agent_def.metadata.get("agent_blueprint_version") or ""),
-            "scope": str(agent_def.metadata.get("agent_blueprint_scope") or ""),
-            "definition_path": str(agent_def.metadata.get("agent_blueprint_definition_path") or ""),
+    agent_ref = str(agent_def.metadata.get("agent_ref") or "").strip()
+    if agent_ref:
+        payload["agent_resolution"] = {
+            "ref": agent_ref,
+            "kind": str(agent_def.metadata.get("agent_kind") or ""),
+            "digest": str(agent_def.metadata.get("resolution_digest") or ""),
+            "plugins": list(agent_def.metadata.get("plugins") or []),
+            "flow": dict(agent_def.metadata.get("flow") or {}),
         }
-    overlay = agent_def.metadata.get("agent_blueprint_overlay")
-    if isinstance(overlay, Mapping):
-        payload["agent_overlay"] = dict(overlay)
-        fields = (
-            set(overlay.get("fields") or []) if isinstance(overlay.get("fields"), list) else set()
-        )
-        if "system_prompt" in fields:
-            payload["prompt"]["source"] = "session_agent_overlay"
     # resolved_skills (#920): the RUNTIME-truth resolution the executing expert
     # actually had (from the per-app build cache) — source-agnostic, and the
     # only record that includes default-root workspace auto-declarations.

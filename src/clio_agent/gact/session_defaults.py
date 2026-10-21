@@ -39,7 +39,7 @@ class SessionDefaultsResponse(BaseModel):
     edit_mode: str = "diff"
     routing_mode: str = "auto"
     approval_mode: str = "ask"
-    blueprint_id: str = ""
+    agent_ref: str = ""
     degradations: list[dict[str, str]] = Field(default_factory=list)
 
 
@@ -61,7 +61,7 @@ class SessionDefaults(BaseModel):
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
     approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"] = "ask"
-    blueprint_id: str = Field(default="", max_length=512)
+    agent_ref: str = Field(default="", max_length=512)
 
 
 class UpdateSessionDefaultsRequest(BaseModel):
@@ -78,7 +78,7 @@ class UpdateSessionDefaultsRequest(BaseModel):
     edit_mode: Literal["diff", "whole", "patch"] | None = None
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] | None = None
     approval_mode: Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"] | None = None
-    blueprint_id: str | None = Field(default=None, max_length=512)
+    agent_ref: str | None = Field(default=None, max_length=512)
 
     @model_validator(mode="after")
     def validate_model_reference_pair(self) -> "UpdateSessionDefaultsRequest":

@@ -11,7 +11,7 @@ merged with the static built-in entries.
 Usage:
     >>> from clio_agent.tools.gateway import build_gateway
     >>> from clio_agent.tools.mcp_config import load_mcp_servers
-    >>> gw = build_gateway(load_mcp_servers(pack_servers=...))
+    >>> gw = build_gateway(load_mcp_servers(plugin_servers=...))
     >>> from fastmcp import Client
     >>> async with Client(gw) as client:
     ...     tools = await client.list_tools()

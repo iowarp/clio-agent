@@ -2,15 +2,14 @@
 ClioAgent - Main Agent Host
 The process-level HOST for CLIO's runtime resources. ClioAgent owns the
 provider identity (``_main_lm`` / ``_dspy_adapter``), the tool
-gateway + per-workspace executors, pack/blueprint discovery, the ARC memory
+gateway + per-workspace executors (with plugin MCP server sets), the ARC memory
 plane, and the agent registry. It also carries the small chat-synthesis surface
 that the session-compaction summarizer reuses.
 
 The Tier-1 planner loop that used to live here is DELETED (#948 S4b): CLIO no
-longer runs a deterministic ``ClioAgent.forward`` planner. The only mains are
-blueprint ReAct agents resolved per turn; a default/``main`` session that
-resolves no blueprint fails TYPED (``_NoResolvableAgent``) rather than falling
-back to a legacy planner path.
+longer runs a deterministic ``ClioAgent.forward`` planner. Every session runs
+its pinned plugin agent (``clio_agent.gact.agents.resolution``); an agent that
+does not resolve fails TYPED rather than falling back to a legacy path.
 
 Usage:
     >>> from clio_agent import ClioAgent
@@ -32,7 +31,6 @@ from clio_agent.arc import history_mode
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Conversation
 from clio_agent.arc.storage import make_arc_store
-from clio_agent.blueprint_server_resolution import discover_blueprint_servers
 from clio_agent.config import (
     LMProviderConfig,
     create_chat_adapter,
@@ -65,7 +63,7 @@ from clio_agent.tools.catalog import (
 )
 from clio_agent.tools.execution import (
     create_sync_tool_executor,
-    get_active_tool_blueprint_id,
+    get_active_tool_server_set,
     get_active_tool_workspace_root,
 )
 from clio_agent.tools.gateway import (
@@ -85,7 +83,7 @@ class ClioAgent(dspy.Module):
 
     ClioAgent is the process-level resource host. It binds the provider LM
     surface (``rebind_lms``), builds the tool gateway + per-workspace executors,
-    discovers packs/blueprints, owns the ARC memory plane and the agent
+    owns the ARC memory plane and the agent
     registry, and exposes the chat-synthesis helper used by the session-compact
     summarizer. It no longer runs a Tier-1 planner loop.
 
@@ -209,7 +207,7 @@ class ClioAgent(dspy.Module):
 
         # Shared MCP executor: one explicit sync boundary for CLI/API thread calls.
         # The tool gateway is built from the universal in-process built-ins
-        # (fs/shell) PLUS the declared MCP servers for the discovered blueprints
+        # (fs/shell) PLUS the MCP servers of the session's plugin server set
         # and user/workspace config. Declared MCPs are the only source of domain
         # tools; the catalog (ownership/visibility) is derived from the connected
         # namespaces merged with the static built-in entries.
@@ -271,25 +269,23 @@ class ClioAgent(dspy.Module):
         self._main_lm = create_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
-    def _discover_pack_servers(
-        self, blueprint_id: str = "", *, cwd: str | None = None
-    ) -> dict[str, dict[str, Any]]:
-        """Return declared MCP servers for one activated blueprint."""
+    def _discover_plugin_servers(self, server_set: str = "") -> dict[str, dict[str, Any]]:
+        """Return the MCP servers of one registered plugin server set."""
 
-        return discover_blueprint_servers(blueprint_id, cwd=cwd, verbose=self.verbose)
+        from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
+
+        return server_set_declarations(server_set)
 
     def _build_tool_gateway(
-        self, *, cwd: str | None = None, set_catalog: bool = False, blueprint_id: str = ""
+        self, *, cwd: str | None = None, set_catalog: bool = False, server_set: str = ""
     ) -> Any:
         """Build the tool gateway from built-ins + declared MCP servers.
 
-        Merges declared MCP servers across ONE activated blueprint's ``AGENT.md``
-        frontmatter (``blueprint_id`` — #1232 pt 1: never every installed
-        blueprint) and user/workspace ``mcp.yaml`` (``load_mcp_servers``),
-        proxy-mounts them next to the in-process built-ins (``build_gateway``),
-        then installs the derived tool catalog (``build_tool_catalog``) so
-        ownership/visibility for declared tools comes from connected namespaces +
-        each expert's ``tools:`` list.
+        Merges the MCP servers of ONE plugin server set (``server_set``, the
+        session's resolved plugins -- #1232 pt 1: never every installed plugin)
+        and user/workspace ``mcp.yaml`` (``load_mcp_servers``), proxy-mounts them
+        next to the in-process built-ins (``build_gateway``), then installs the
+        derived tool catalog (``build_tool_catalog``).
 
         Args:
             cwd: Working directory for stdio MCP subprocesses (per active
@@ -299,22 +295,18 @@ class ClioAgent(dspy.Module):
                 catalog from this gateway. The catalog/tool-set is identical
                 across workspaces, so only the default gateway sets it; per-
                 workspace gateways reuse the already-installed catalog.
-            blueprint_id: The ONE Agent Blueprint whose declared ``mcp_servers``
-                should mount, or ``""`` for none (the boot-time default gateway
-                always passes ``""`` — see ``__init__``).
+            server_set: The ONE plugin server set whose servers should mount,
+                or ``""`` for none (the boot-time default gateway always passes
+                ``""`` — see ``__init__``).
         """
 
-        # Workspace-scoped blueprints live under ``<workspace>/.clio``. Discovery
-        # must therefore use the same cwd as the per-workspace gateway; using the
-        # server process cwd silently found no blueprint, minted a toolless fleet,
-        # and rejected every declared child before inference.
-        pack_servers = self._discover_pack_servers(blueprint_id, cwd=cwd)
-        specs = load_agent_mcp_servers(pack_servers=pack_servers)
+        plugin_servers = self._discover_plugin_servers(server_set)
+        specs = load_agent_mcp_servers(plugin_servers=plugin_servers)
         # Product execution uses application-owned SDK clients and input binding.
         tool_gateway = build_gateway(specs, cwd=cwd)
         if not set_catalog:
             return tool_gateway
-        experts = self._discover_pack_experts()
+        experts: list[Any] = []
         try:
             # #1232 pt 2: builtins list synchronously (in-process, no I/O, always
             # fast) so "agent ready" has a real catalog immediately; declared
@@ -431,17 +423,13 @@ class ClioAgent(dspy.Module):
         stay shared). The executor is cached per root, so each workspace spawns its
         stdio MCPs at most once (lazy, on first tool use for that workspace).
 
-        The gateway also reads the active session's EXPLICITLY-activated Agent
-        Blueprint id (#1232 pt 1, ``tools.execution.get_active_tool_blueprint_id``)
-        and mounts ONLY that blueprint's declared ``mcp_servers`` — never every
-        installed blueprint's. A resolve under a blueprint the resident fleet has
-        not yet mounted MERGES that blueprint's declared namespaces into the SAME
-        executor (``tools.fleet_blueprint_merge``) instead of evicting it: two
-        sessions sharing one workspace root with different active blueprints is a
-        real, designed topology (a workload session + its standing watcher
-        child), and #1232's original close-and-rebuild-on-switch closed the
-        shared fleet out from under the other session's LIVE turn (whose DSPy
-        tools hold their executor binding for the whole turn). Eviction remains
+        The gateway also reads the active session's plugin server set
+        (``tools.execution.get_active_tool_server_set``) and mounts ONLY those
+        servers. A resolve under a server set the resident fleet has not yet
+        mounted MERGES its namespaces into the SAME executor
+        (``tools.fleet_server_merge``) instead of evicting it: two sessions
+        sharing one workspace root with different agents is a real, designed
+        topology (a workload session + its standing watcher child). Eviction remains
         only for genuinely-invalidating events (#1236 federation epoch).
         """
 
@@ -450,7 +438,7 @@ class ClioAgent(dspy.Module):
         root = canonical_workspace_root(get_active_tool_workspace_root())
         if not root:
             return self.tool_executor
-        blueprint_id = get_active_tool_blueprint_id().strip()
+        server_set = get_active_tool_server_set().strip()
         lock, executors, leases = self._workspace_state()
         with lock:
             if getattr(self, "_source_policy_changing", False):
@@ -482,20 +470,20 @@ class ClioAgent(dspy.Module):
             ):
                 # #1244: never close under a live turn; reaper drains at idle.
                 configuration_switched = False
-            # Additive blueprint semantics (#1244): an unmounted blueprint
-            # merges in below; ``blueprint_id == ""`` reuses the fleet as-is.
-            from clio_agent.tools.fleet_blueprint_merge import (  # noqa: PLC0415
-                _mounted_blueprint_ids,
-                merge_blueprint_namespaces,
+            # Additive server-set semantics (#1244): an unmounted set merges in
+            # below; ``server_set == ""`` reuses the fleet as-is.
+            from clio_agent.tools.fleet_server_merge import (  # noqa: PLC0415
+                _mounted_server_sets,
+                merge_server_set_namespaces,
                 stamp_fresh_fleet,
             )
 
-            blueprint_missing = (
+            server_set_missing = (
                 executor is not None
                 and not stale
                 and not configuration_switched
-                and bool(blueprint_id)
-                and blueprint_id not in _mounted_blueprint_ids(executor)
+                and bool(server_set)
+                and server_set not in _mounted_server_sets(executor)
             )
             if executor is None or stale or configuration_switched:
                 if configuration_switched:
@@ -519,18 +507,15 @@ class ClioAgent(dspy.Module):
                         current_epoch,
                     )
                 # First use for this root, the #933 reaper reclaimed the fleet, or
-                # the active blueprint changed — rebuild lazily (spawns nothing
+                # the configuration changed — rebuild lazily (spawns nothing
                 # until a tool call).
-                gateway = self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id)
+                gateway = self._build_tool_gateway(cwd=root, server_set=server_set)
                 preloaded = self._tool_definitions
                 # Every per-workspace gateway includes user-configured MCP
-                # services, even when no Agent Blueprint is active.  Preserve
-                # those declarations on the resident executor so root-session
+                # services as well as the plugin servers. Preserve those
+                # declarations on the resident executor so root-session
                 # services marked ``always_load`` can be mounted by the agent
-                # builder.  Previously this stamp was conditional on
-                # ``blueprint_id``; Services could report Web Search ready while
-                # a normal workspace run had no declared ``web`` namespace and
-                # therefore no executable ``web_*`` tools.
+                # builder.
                 declared_specs = dict(namespace_specs(gateway))
                 # #1237 owner ruling (2026-08-20): activation mounts NOTHING
                 # eagerly. The OLD synchronous discovery pass blocked a
@@ -569,21 +554,21 @@ class ClioAgent(dspy.Module):
                 # derived them straight off this SAME `gateway`.
                 stamp_fresh_fleet(
                     executor,
-                    blueprint_id=blueprint_id,
+                    server_set=server_set,
                     mcp_configuration_revision=current_epoch,
                     declared_specs=declared_specs,
                 )
                 executors[root] = executor
-            elif blueprint_missing:
-                # A second session's blueprint joins the SAME resident fleet:
+            elif server_set_missing:
+                # A second session's server set joins the SAME resident fleet:
                 # declared specs + lazy proxies + warm cached listings merge in
                 # (spawn-free); cold namespaces mount on demand at first need
                 # (ensure_namespace), exactly like the rebuild path's.
                 assert executor is not None
-                merge_blueprint_namespaces(
+                merge_server_set_namespaces(
                     executor,
-                    self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id),
-                    blueprint_id=blueprint_id,
+                    self._build_tool_gateway(cwd=root, server_set=server_set),
+                    server_set=server_set,
                     root=root,
                 )
             # #1230: resolve-for-use counts as activity (resolve-to-busy gap).
@@ -648,18 +633,6 @@ class ClioAgent(dspy.Module):
         if reaper is None:
             return RESTART_NO_RESIDENT
         return reaper.request_restart(root)
-
-    def _discover_pack_experts(self) -> list[Any]:
-        """Return loaded pack experts (for declared-tool visibility derivation)."""
-
-        from clio_agent.gact.agent_blueprints import load_agent_blueprints  # noqa: PLC0415
-
-        try:
-            return list(load_agent_blueprints())
-        except Exception as exc:  # noqa: BLE001 - best-effort
-            if self.verbose:
-                print(f"[ClioAgent] expert discovery failed: {exc}")
-            return []
 
     def _run_chat_agent(
         self,

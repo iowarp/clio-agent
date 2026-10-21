@@ -356,16 +356,14 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
             if uncertainty:
                 body = f"{body}\n\nUncertainty: {uncertainty}"
 
-        # Branded emitter identity: the calling session's OWN activated Agent
-        # Blueprint (e.g. "spotter-ai"), never the bare expert id -- the card
-        # header reads as the PRODUCT ("SPOTTER AI"), not an internal expert
-        # name. Falls back to the expert id only when no blueprint is activated
-        # (e.g. a bare/loose expert running without one).
+        # Branded emitter identity: the calling session's agent (e.g.
+        # "clio/spotter-ai"), so the card header reads as the product. Falls back
+        # to the calling agent id for a session without a pinned agent.
         caller_session = app.state.sessions.get(sid)
-        blueprint_id = str(
-            (getattr(caller_session, "metadata", None) or {}).get("active_agent_blueprint_id") or ""
+        agent_ref = str(
+            (getattr(caller_session, "metadata", None) or {}).get("agent_ref") or ""
         )
-        source = blueprint_id or caller_expert_id
+        source = agent_ref.rsplit("/", 1)[-1] or caller_expert_id
 
         part = action_card_part(
             source=source,

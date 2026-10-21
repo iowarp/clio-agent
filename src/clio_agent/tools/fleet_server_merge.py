@@ -1,18 +1,18 @@
-"""Additive blueprint merge into a resident workspace fleet.
+"""Additive MCP server-set merge into a resident workspace fleet.
 
-Why this exists: #1232 pt 1 mounted exactly ONE activated blueprint's declared
+Why this exists: #1232 pt 1 mounted exactly ONE activated server set's declared
 ``mcp_servers`` per workspace fleet and EVICTED (close + rebuild) the resident
-executor whenever a resolve arrived under a different active blueprint. That
-one-blueprint-at-a-time simplification assumed a workspace is provisioned per
+executor whenever a resolve arrived under a different active server set. That
+one-server-set-at-a-time simplification assumed a workspace is provisioned per
 session — but the SPOTTER topology is exactly two sessions sharing one root
-with different blueprints BY DESIGN (a workload session plus its standing
+with different server sets BY DESIGN (a workload session plus its standing
 watcher child), and the eviction closed the fleet out from under the
 workload's LIVE turn: the eviction path checked neither ``busy`` nor the #933
 turn lease, and a react turn's DSPy tools hold their executor binding for the
 whole turn, so the close poisoned every remaining call of that turn
 (``RuntimeError: SyncMCPToolExecutor is closed`` mid-campaign).
 
-The correct shape under the on-demand doctrine (#1237): a second blueprint's
+The correct shape under the on-demand doctrine (#1237): a second server set's
 declared servers MERGE into the resident fleet —
 
 * its namespace **specs** join the executor's ``_clio_namespace_specs`` stamp,
@@ -25,7 +25,7 @@ declared servers MERGE into the resident fleet —
   visible immediately.
 
 Eviction remains only for genuinely-invalidating events (the #1236 federation
-epoch). A namespace collision (two blueprints declaring the same namespace
+epoch). A namespace collision (two server sets declaring the same namespace
 with different specs) keeps the FIRST mounted spec and emits a typed
 ``workspace_fleet_namespace_spec_conflict`` reason — never a silent override.
 """
@@ -38,26 +38,26 @@ from clio_agent.runtime import trace
 from clio_agent.tools.gateway import namespace_direct_factories, namespace_proxies, namespace_specs
 
 
-def merge_blueprint_namespaces(
+def merge_server_set_namespaces(
     executor: Any,
     gateway: Any,
     *,
-    blueprint_id: str,
+    server_set: str,
     root: str,
 ) -> dict[str, Any]:
     """Merge ``gateway``'s declared namespaces into a resident ``executor``.
 
     ``gateway`` is a freshly-built (declarative, spawn-free) gateway for the
-    blueprint being merged; ``executor`` is the resident workspace fleet built
-    earlier for a different blueprint (or none). Returns a typed report::
+    server set being merged; ``executor`` is the resident workspace fleet built
+    earlier for a different server set (or none). Returns a typed report::
 
-        {"blueprint_id": ..., "merged": [...], "already": [...],
+        {"server_set": ..., "merged": [...], "already": [...],
          "conflicts": [...], "cached_tools": <int>}
 
     Args:
         executor: The resident ``SyncMCPToolExecutor`` for the workspace root.
-        gateway: A gateway built with ``blueprint_id``'s declared servers.
-        blueprint_id: The blueprint whose namespaces are being merged.
+        gateway: A gateway built with ``server_set``'s declared servers.
+        server_set: The server set whose namespaces are being merged.
         root: The workspace root (trace context only).
     """
 
@@ -75,7 +75,7 @@ def merge_blueprint_namespaces(
         inner_specs = existing_specs
         _stamp(inner, "_clio_namespace_specs", inner_specs)
     # #1281 (C1-S1): the direct-client factory registry merges the SAME way
-    # specs do -- a namespace joining a resident fleet via a second blueprint
+    # specs do -- a namespace joining a resident fleet via a second server set
     # must be routable direct the moment its capability is discovered True.
     # #1281 F14 (adversarial review): stamped ONLY on the INNER async
     # executor. Unlike _clio_namespace_specs (read off the sync wrapper by
@@ -106,10 +106,10 @@ def merge_blueprint_namespaces(
                 trace.event(
                     "TOOLS",
                     "workspace_fleet_namespace_spec_conflict root=%s namespace=%s "
-                    "blueprint=%s resolution=first_mounted_kept",
+                    "server set=%s resolution=first_mounted_kept",
                     root,
                     namespace,
-                    blueprint_id,
+                    server_set,
                 )
             continue
         existing_specs[namespace] = spec
@@ -126,26 +126,26 @@ def merge_blueprint_namespaces(
         cached_count += _merge_cached_listing(executor, namespace, spec)
         merged.append(namespace)
 
-    mounted_ids = _mounted_blueprint_ids(executor)
-    mounted_ids.add(blueprint_id)
-    _stamp(executor, "_clio_mounted_blueprint_ids", mounted_ids)
+    mounted_ids = _mounted_server_sets(executor)
+    mounted_ids.add(server_set)
+    _stamp(executor, "_clio_mounted_server_sets", mounted_ids)
     # Legacy single-id stamp: kept current for external readers; the resolve
     # path decides on the SET above.
-    _stamp(executor, "_clio_mounted_blueprint_id", blueprint_id)
+    _stamp(executor, "_clio_mounted_server_set", server_set)
 
     trace.event(
         "TOOLS",
-        "workspace_fleet_blueprint_merged root=%s blueprint=%s merged=%s "
+        "workspace_fleet_server_merged root=%s server set=%s merged=%s "
         "already=%s conflicts=%s cached_tools=%d",
         root,
-        blueprint_id,
+        server_set,
         ",".join(merged) or "<none>",
         ",".join(already) or "<none>",
         ",".join(conflicts) or "<none>",
         cached_count,
     )
     return {
-        "blueprint_id": blueprint_id,
+        "server_set": server_set,
         "merged": merged,
         "already": already,
         "conflicts": conflicts,
@@ -156,13 +156,13 @@ def merge_blueprint_namespaces(
 def stamp_fresh_fleet(
     executor: Any,
     *,
-    blueprint_id: str,
+    server_set: str,
     mcp_configuration_revision: Any,
     declared_specs: dict[str, Any],
 ) -> None:
     """Stamp a freshly-rebuilt fleet's bookkeeping (agent.py's rebuild path).
 
-    Sets the legacy single-blueprint stamp, the additive mounted-set, the
+    Sets the legacy single-server set stamp, the additive mounted-set, the
     #1236 federation epoch, and the #1237 declared-namespace map — the latter
     on BOTH the sync wrapper (``builders.py`` reads it there) and its inner
     async executor (``mcp_executor.py``'s dispatch-time gate reads it there).
@@ -176,12 +176,12 @@ def stamp_fresh_fleet(
     construction already got right, and — worse — could silently mask a
     FUTURE construction-site regression by papering over it here instead of
     surfacing it. A namespace joining a resident fleet via a LATER, additive
-    blueprint merge (no fresh construction involved) still needs its own
-    merge logic -- see :func:`merge_blueprint_namespaces`.
+    server set merge (no fresh construction involved) still needs its own
+    merge logic -- see :func:`merge_server_set_namespaces`.
     """
 
-    _stamp(executor, "_clio_mounted_blueprint_id", blueprint_id)
-    _stamp(executor, "_clio_mounted_blueprint_ids", {blueprint_id} if blueprint_id else set())
+    _stamp(executor, "_clio_mounted_server_set", server_set)
+    _stamp(executor, "_clio_mounted_server_sets", {server_set} if server_set else set())
     _stamp(executor, "_clio_mcp_configuration_revision", mcp_configuration_revision)
     _stamp(executor, "_clio_namespace_specs", declared_specs)
     inner = getattr(executor, "_async_executor", None)
@@ -189,13 +189,13 @@ def stamp_fresh_fleet(
         _stamp(inner, "_clio_namespace_specs", declared_specs)
 
 
-def _mounted_blueprint_ids(executor: Any) -> set[str]:
-    """The executor's mounted-blueprint set, upgraded from the legacy stamp."""
+def _mounted_server_sets(executor: Any) -> set[str]:
+    """The executor's mounted-server set set, upgraded from the legacy stamp."""
 
-    mounted = getattr(executor, "_clio_mounted_blueprint_ids", None)
+    mounted = getattr(executor, "_clio_mounted_server_sets", None)
     if isinstance(mounted, set):
         return mounted
-    legacy = str(getattr(executor, "_clio_mounted_blueprint_id", "") or "")
+    legacy = str(getattr(executor, "_clio_mounted_server_set", "") or "")
     return {legacy} if legacy else set()
 
 

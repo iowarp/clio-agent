@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from clio_agent.errors import ClioError
-from clio_agent.gact.agents.unresolved_blueprint import no_resolvable_error
+from clio_agent.gact.agents.resolution import SessionAgentUnavailable
 from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
@@ -35,13 +35,11 @@ from clio_agent.gact.off_loop import emit_semantic_event_async
 from clio_agent.gact.permission_delivery import publish_permission_event
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
-    _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
     _iso_from_epoch,
     _new_message_id,
-    _NoResolvableAgent,
     _session_agent_id,
     _TurnCancelled,
     _TurnTimedOut,
@@ -265,19 +263,6 @@ async def _run_turn_in_background(
     the failure live. We never re-raise; the request that started us
     is long gone.
     """
-    # #714 DANGER SET: the assistant-persist + cancellation-enricher seams are
-    # resolved through ``app`` via a *function-local* import so the ~83 ``app._X``
-    # test monkeypatches (which retarget these at call time) keep working with
-    # zero test edits. ``_EXECUTABLE_SESSION_AGENT_IDS`` is an ``app``-owned module
-    # constant kept here too (read by the except-chain). The agent-builder /
-    # blueprint-runner danger-set seams moved with the forward orchestration to
-    # ``turn_forward.py`` (#767 Phase B Slice 5), which keeps its own function-local
-    # ``app`` import. Every other former app helper is imported at module top from
-    # its true leaf owner (#714), so turn.py has ZERO top-level ``app`` imports.
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _EXECUTABLE_SESSION_AGENT_IDS,
-    )
-
     bus: EventBus = app.state.bus
     sess = app.state.sessions.get(sid)
     if sess is None:
@@ -364,13 +349,13 @@ async def _run_turn_in_background(
     # :func:`~clio_agent.gact.turn_stream.emit_chunk` is a thin adapter: semantic lm.token.delta +
     # the parent-resume suppression gate + stream_audit, then one transcript call.
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _active_workflow_state_schema,
+        session_workflow_state_schema,
     )
     from clio_agent.gact.tool_observer import _open_turn_transcript  # noqa: PLC0415
 
     # #767 Phase C: resolve the turn's pack workflow_state schema at the one turn
     # seam and carry it on ``state`` for every delegation/grounding/scrub site.
-    state.workflow_schema = _active_workflow_state_schema(state.app, state.sid)
+    state.workflow_schema = session_workflow_state_schema(state.app, state.sid)
     state.transcript = _open_turn_transcript(state.app, state.sid, state.turn_id)
     # TRICKY #1 (Phase B spec): bind the emitter over ``state`` so its LATE reads
     # of state.active_agent_id / state.invocation_agent_id see the forward seam's
@@ -474,44 +459,27 @@ async def _run_turn_in_background(
         )
         state.answer_text = partial_answer
         state.tools_called = []
-    except _BlueprintRootDisabled as exc:
-        # #948 S4: the active blueprint's declared root is disabled by validation.
-        # Typed failure carrying the exact errors — never a substitute root,
-        # never the legacy planner.
-        state.selected_agent = exc.root_id
-        state.rationale = "The active Agent Blueprint's root expert is disabled by validation."
+    except SessionAgentUnavailable as exc:
+        # The session's agent does not resolve (a plugin missing, untrusted,
+        # colliding, or the agent uninstalled). Typed, with every resolution
+        # error -- never a substitute agent.
+        state.selected_agent = exc.ref
+        state.rationale = "The session's agent could not be resolved from its plugins."
         state.error_info = ErrorInfo(
-            error="blueprint_root_disabled",
-            message=(
-                f"Active Agent Blueprint root expert {exc.root_id!r} is disabled "
-                "by validation; the turn cannot run."
-            ),
+            error="agent_unavailable",
+            message=str(exc),
             details={
-                "root_id": exc.root_id,
-                "agent_blueprint_id": exc.blueprint_id,
-                "validation_errors": exc.validation_errors,
+                "agent_ref": exc.ref,
+                "reason": exc.reason,
+                "errors": exc.errors,
                 "recovery_actions": [
-                    "update_agent_blueprint_install",
-                    "fix_blueprint_declaration",
-                    "activate_another_blueprint",
+                    "install_missing_plugin",
+                    "trust_marketplace",
+                    "remove_plugin_from_agent",
+                    "choose_another_agent",
                 ],
             },
             recoverable=True,
-        )
-        state.answer_text = ""
-        state.tools_called = []
-    except _NoResolvableAgent as exc:
-        # #948 S4b: a default/main session resolved NO executable Agent Blueprint,
-        # and the legacy Tier-1 planner that used to run here is deleted. Fail
-        # TYPED — never fall through to a legacy pathway.
-        state.selected_agent = exc.agent_id
-        state.rationale = (
-            "No Agent Blueprint resolved for this session, and the legacy planner "
-            "is removed, so the turn has nothing to execute."
-        )
-        # #1455: name the blueprint and the observed cause, never a generic blame.
-        state.error_info = await asyncio.to_thread(
-            no_resolvable_error, state.app, state.sid, exc.agent_id
         )
         state.answer_text = ""
         state.tools_called = []
@@ -539,13 +507,10 @@ async def _run_turn_in_background(
             details={
                 "agent_id": exc.agent_id,
                 "reason": exc.reason,
-                "supported_agent_ids": sorted(
-                    agent_id for agent_id in _EXECUTABLE_SESSION_AGENT_IDS if agent_id
-                ),
                 "unsupported_tools": exc.tools,
                 "mount_failures": mount_failures,
                 "recovery_actions": [
-                    "choose_builtin_agent",
+                    "choose_another_agent",
                     "remove_custom_agent_tools",
                     "retry",
                     "exit",

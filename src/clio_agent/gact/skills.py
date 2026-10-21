@@ -3,8 +3,7 @@
 Single owner of SKILL.md **discovery and typed resolution** across the three
 skill scopes, in deterministic precedence order:
 
-1. ``pack`` — ``<pack root>/skills/`` of the Agent Blueprint / expert pack the
-   declaring expert ships in;
+1. ``plugin`` — the ``skills/`` folders of the agent's resolved plugins;
 2. ``workspace`` — ``<cwd>/.claude|.codex|.agents/skills/``;
 3. ``global`` — ``~/.claude|.codex|.agents/skills/``.
 
@@ -39,27 +38,19 @@ from __future__ import annotations
 import hashlib
 import os
 import os.path
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
-SkillScope = Literal["pack", "catalog", "workspace", "global", "builtin"]
+SkillScope = Literal["plugin", "catalog", "workspace", "global"]
 SkillStatus = Literal["resolved", "missing", "ambiguous", "unreadable"]
 
-#: Precedence order for :meth:`SkillCatalog.resolve`. ``catalog`` sits right
-#: after ``pack`` so a pack-authored skill of the same id (e.g. a pack that
-#: ships its own ``skills/a2ui-catalog-earthscope/SKILL.md``) shadows the
-#: generated one, matching how a workspace skill shadows a global one.
-#: ``builtin`` is LAST (lowest precedence) so a user-authored
-#: ``pack``/``catalog``/``workspace``/``global`` skill of the same id always
-#: shadows a shipped built-in — the built-ins (e.g. ``planning``) are
-#: defaults, not overrides.
-_SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "catalog", "workspace", "global", "builtin")
-
-#: Root holding clio's shipped built-in skills (the ``planning`` entry-skill lives here).
-#: It is package-relative and independent of ``home``/``cwd``, so every catalog scan finds
-#: the built-ins regardless of where the daemon was launched.
-_BUILTIN_SKILLS_ROOT = Path(__file__).resolve().parent / "builtin_skills"
+#: Precedence order for :meth:`SkillCatalog.resolve`. ``plugin`` (the agent's
+#: resolved plugins) leads; ``catalog`` follows so a plugin-authored skill of the
+#: same id shadows a generated A2UI catalog skill; the user's own workspace and
+#: global skill folders come last.
+_SCOPE_ORDER: tuple[SkillScope, ...] = ("plugin", "catalog", "workspace", "global")
 
 
 class SkillNotDelegatableError(RuntimeError):
@@ -195,8 +186,11 @@ class SkillCatalog:
         cwd: Path | None = None,
         app: Any | None = None,
         session_id: str = "",
+        plugin_skills: Sequence[tuple[str, str]] = (),
     ) -> None:
         self._home = home or Path.home()
+        # ``(plugin id, skills folder)`` for every resolved plugin carrying skills.
+        self._plugin_skills = tuple(plugin_skills)
         self._cwd = cwd or Path(os.getcwd())
         self._root_cache: dict[str, list[SkillRef]] = {}
         self.scan_errors: list[dict[str, str]] = []
@@ -218,13 +212,13 @@ class SkillCatalog:
     # ---- discovery -----------------------------------------------------
 
     def discover(self) -> list[SkillRef]:
-        """All built-in + global + workspace + catalog skills (no id dedup).
+        """All plugin + global + workspace + catalog skills (no id dedup).
 
         Callers that need one-ref-per-id apply their own precedence;
         :meth:`resolve` is the canonical way to get "the" skill for an id.
         """
 
-        refs: list[SkillRef] = []
+        refs: list[SkillRef] = self.discover_plugins()
         for root, source, scope in _skill_search_roots(self._home, self._cwd):
             refs.extend(self._scan_root(root, scope=scope, source=source))
         refs.extend(self._catalog_refs())
@@ -281,17 +275,18 @@ class SkillCatalog:
         self._catalog_cache = discover_catalog_skill_refs(list(resolved.entries))
         return self._catalog_cache
 
-    def discover_pack(self, pack_root: Path) -> list[SkillRef]:
-        """Skills shipped by a pack/blueprint: ``<pack_root>/skills/``."""
+    def discover_plugins(self) -> list[SkillRef]:
+        """Skills shipped by the agent's resolved plugins."""
 
-        return self._scan_root(
-            Path(pack_root) / "skills", scope="pack", source=Path(pack_root).name
-        )
+        refs: list[SkillRef] = []
+        for plugin_id, folder in self._plugin_skills:
+            refs.extend(self._scan_root(Path(folder), scope="plugin", source=plugin_id))
+        return refs
 
     # ---- resolution ----------------------------------------------------
 
-    def resolve(self, skill_id: str, *, pack_root: Path | None = None) -> SkillResolution:
-        """Resolve one declared skill id with pack → workspace → global precedence.
+    def resolve(self, skill_id: str) -> SkillResolution:
+        """Resolve one declared skill id with plugin → catalog → workspace → global precedence.
 
         The walk STOPS at the first tier containing any candidate for the id —
         including an unreadable one. A corrupt higher-tier definition surfaces
@@ -304,7 +299,7 @@ class SkillCatalog:
         if not skill_id:
             return SkillResolution(skill_id, "missing", detail="empty skill id")
         for scope in _SCOPE_ORDER:
-            candidates = self._tier_candidates(scope, skill_id, pack_root=pack_root)
+            candidates = self._tier_candidates(scope, skill_id)
             if not candidates:
                 continue
             readable = [ref for ref in candidates if ref.layout != "unreadable"]
@@ -327,9 +322,7 @@ class SkillCatalog:
             skill_id, "missing", detail=f"no skill named {skill_id!r} in any scope"
         )
 
-    def resolve_declared(
-        self, skill_ids: list[str], *, pack_root: Path | None = None
-    ) -> dict[str, SkillResolution]:
+    def resolve_declared(self, skill_ids: list[str]) -> dict[str, SkillResolution]:
         """Resolve every declared id; one entry per id, order preserved."""
 
         out: dict[str, SkillResolution] = {}
@@ -337,31 +330,23 @@ class SkillCatalog:
             key = (skill_id or "").strip()
             if key in out:
                 continue
-            out[key] = self.resolve(skill_id, pack_root=pack_root)
+            out[key] = self.resolve(skill_id)
         return out
 
-    def resolve_declared_metadata(
-        self, skill_ids: list[str], *, pack_root: Path | None = None
-    ) -> dict[str, dict[str, Any]]:
+    def resolve_declared_metadata(self, skill_ids: list[str]) -> dict[str, dict[str, Any]]:
         """The ``skill_resolution`` agent-row diagnostic for declared skills."""
 
         return {
             skill_id: resolution.to_metadata()
-            for skill_id, resolution in self.resolve_declared(
-                skill_ids, pack_root=pack_root
-            ).items()
+            for skill_id, resolution in self.resolve_declared(skill_ids).items()
         }
 
     # ---- internals -----------------------------------------------------
 
-    def _tier_candidates(
-        self, scope: SkillScope, skill_id: str, *, pack_root: Path | None
-    ) -> list[SkillRef]:
+    def _tier_candidates(self, scope: SkillScope, skill_id: str) -> list[SkillRef]:
         refs: list[SkillRef] = []
-        if scope == "pack":
-            if pack_root is None:
-                return []
-            refs = self.discover_pack(pack_root)
+        if scope == "plugin":
+            refs = self.discover_plugins()
         elif scope == "catalog":
             refs = self._catalog_refs()
         else:
@@ -460,14 +445,13 @@ class SkillCatalog:
 
 
 def _skill_search_roots(home: Path, cwd: Path) -> list[tuple[Path, str, SkillScope]]:
-    """Return (root, source, scope) skill roots in scan order — built-in FIRST (lowest
-    precedence) then global, then workspace LAST so a project skill with the same id
-    overrides a global (or built-in) one for consumers that fold by id in scan order.
+    """Return (root, source, scope) the user's own skill roots in scan order — global
+    first, then workspace LAST so a project skill with the same id overrides a global
+    one for consumers that fold by id in scan order.
     Scope is EXPLICIT, never inferred from path containment (cwd==home or symlinked roots
     would misclassify)."""
 
     return [
-        (_BUILTIN_SKILLS_ROOT, "builtin", "builtin"),
         (home / ".claude" / "skills", "claude", "global"),
         (home / ".codex" / "skills", "codex", "global"),
         (home / ".agents" / "skills", "agents", "global"),

@@ -17,8 +17,6 @@ Responsibilities:
   ``optional[...]``, ``Literal[...]``, and nested ``object`` with ``fields:``).
 * :func:`_sanitize_model_name` -- make a safe Pydantic model class name.
 * :func:`_is_optional_annotation` -- detect ``Optional[X]`` / ``X | None``.
-* :func:`_blueprint_module_kind` -- the validated ``module.kind`` of a blueprint
-  AgentDef (``predict`` / ``chain_of_thought`` / ``react``).
 * :data:`_SCALAR_FIELD_TYPES` -- the DSL scalar/collection keyword -> type table.
 """
 
@@ -52,20 +50,6 @@ def _structured_output_enabled(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() not in {"false", "0", "no", "off", "disabled"}
     return value is not False
-
-
-def _blueprint_module_kind(agent_def: "AgentDef") -> str:
-    """Return the validated ``module.kind`` of a blueprint AgentDef.
-
-    One of ``predict`` / ``chain_of_thought`` / ``react`` (defaulting to
-    ``predict`` when unset). Raises ``ValueError`` on an unsupported kind -- a
-    blueprint authoring error that must fail loud, not silently degrade.
-    """
-    module = agent_def.module if isinstance(agent_def.module, Mapping) else {}
-    kind = str(module.get("kind") or "predict").strip().lower()
-    if kind not in {"predict", "chain_of_thought", "react"}:
-        raise ValueError(f"unsupported module.kind for {agent_def.id!r}: {kind}")
-    return kind
 
 
 @dataclass(frozen=True)

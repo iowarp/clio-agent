@@ -81,19 +81,19 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "(0.9.1 tolerates this; new catalogs should not)"
         ),
     },
-    "a2ui_blueprint_discovery_failed": {
+    "a2ui_plugin_discovery_failed": {
         "severity": "warning",
         "detail": (
-            "Agent Blueprint discovery raised while resolving A2UI catalogs -- that "
-            "blueprint's declared catalogs are unavailable (no builtin is added in "
-            "their place), not silently replaced by a stale list"
+            "reading the installed plugins raised while resolving A2UI catalogs -- "
+            "their catalogs are unavailable (no builtin is added in their place), "
+            "not silently replaced by a stale list"
         ),
     },
-    "a2ui_blueprint_unresolved": {
+    "a2ui_agent_unresolved": {
         "severity": "warning",
         "detail": (
-            "the session's bound active_agent_blueprint_id did not resolve to any "
-            "discovered or path-activated blueprint -- its declared catalogs are dropped"
+            "the session's agent did not resolve from its plugins -- the catalogs "
+            "its plugins declare are unavailable"
         ),
     },
     # S3 (docs/design/a2ui-compat-campaign-2026-09.md): capability negotiation

@@ -282,13 +282,11 @@ def new_turn_state(
     # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 3).
     behavior = user_msg.metadata.get("behavior") if isinstance(user_msg.metadata, dict) else None
     execution_mode = str(behavior.get("execution_mode") or "") if isinstance(behavior, dict) else ""
-    execution_blueprint_id = ""
-    if execution_mode == "deep_research":
-        from clio_agent.gact.message_contract import (  # noqa: PLC0415
-            DEEP_RESEARCH_BLUEPRINT_ID,
-        )
+    if execution_mode == "deep_research" and not turn_agent_id:
+        # A deep-research turn runs the deep-researcher agent for this turn only.
+        from clio_agent.gact.message_contract import DEEP_RESEARCH_AGENT  # noqa: PLC0415
 
-        execution_blueprint_id = DEEP_RESEARCH_BLUEPRINT_ID
+        turn_agent_id = DEEP_RESEARCH_AGENT
 
     admitted = _ctx.current_turn()
     _ctx.set_turn_identity(
@@ -296,7 +294,6 @@ def new_turn_state(
         session_id=sid,
         turn_id=turn_id,
         trace_id=trace_id,
-        execution_blueprint_id=execution_blueprint_id,
         assignment_handle=admitted.assignment_handle if admitted.session_id == sid else "",
         input_notification_id=admitted.input_notification_id if admitted.session_id == sid else "",
         context_epoch=admitted.context_epoch if admitted.session_id == sid else "",

@@ -1,4 +1,11 @@
-"""Trusted installed-blueprint target resolution; no execution or lifecycle ownership."""
+"""Resolve a child agent and prepare its session; no execution or lifecycle ownership.
+
+A child is either one of the parent agent's defined subagents (shipped by the
+parent's resolved plugins) or an installed agent started as a general subagent
+through the ``delegation`` plugin. Either way the child session pins its own
+resolution, computed here outside task locking, before the assignment is
+accepted.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +18,8 @@ from clio_agent.gact.sessions import SessionStore
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+    from clio_agent.plugins.resolve import Resolution
 
 CreatePreparedChild = Callable[[str, str, dict[str, Any], str | None], StoredSession]
 PrepareChild = Callable[[str, str, dict[str, Any] | None], CreatePreparedChild]
@@ -28,18 +37,62 @@ def _launch_context(parent: StoredSession) -> dict[str, Any]:
         "metadata": {
             key: value
             for key, value in parent.metadata.items()
-            if key.startswith(("agent_blueprint", "active_agent_blueprint_", "active_expert_pack_"))
-            or key in {"owner_human_id", "expert_pack_id", "workflow_id", "workflow_step"}
+            if key in {"owner_human_id", "workflow_id", "workflow_step", "agent_resolution"}
         },
+    }
+
+
+def resolve_child_agent(app: "FastAPI", parent_id: str, agent_id: str) -> tuple["Resolution", dict[str, Any]]:
+    """The child's resolution and the session metadata that pins it.
+
+    Raises ``ValueError`` naming why when ``agent_id`` is neither a defined
+    subagent of the parent's agent nor an installed agent.
+    """
+
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        AGENT_DELTA_KEY,
+        AGENT_REF_KEY,
+        AGENT_RESOLUTION_KEY,
+        SUBAGENT_KEY,
+        SessionAgentUnavailable,
+        plugin_service,
+        resolve_for_session,
+        session_resolution,
+    )
+    from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
+
+    parent = session_resolution(app, parent_id)
+    if any(row["id"] == agent_id for row in parent.subagents):
+        try:
+            child = plugin_service(app).resolve_subagent(parent, agent_id)
+        except ResolutionError as exc:
+            raise ValueError(f"subagent {agent_id!r} cannot resolve: {exc}") from exc
+        return child, {
+            AGENT_REF_KEY: child.agent["ref"],
+            AGENT_DELTA_KEY: {"add": [], "remove": []},
+            AGENT_RESOLUTION_KEY: child.digest,
+            SUBAGENT_KEY: agent_id,
+        }
+    try:
+        child = resolve_for_session(app, agent_id)
+    except SessionAgentUnavailable as exc:
+        defined = ", ".join(row["id"] for row in parent.subagents) or "none"
+        raise ValueError(
+            f"Requested child agent {agent_id!r} is neither a subagent of "
+            f"{parent.agent.get('ref')} (subagents: {defined}) nor a resolvable installed agent: {exc}"
+        ) from exc
+    return child, {
+        AGENT_REF_KEY: agent_id,
+        AGENT_DELTA_KEY: {"add": [], "remove": []},
+        AGENT_RESOLUTION_KEY: child.digest,
     }
 
 
 def prepare_child_session(
     app: FastAPI, parent_id: str, agent_id: str, target_scope: dict[str, Any] | None
 ) -> CreatePreparedChild:
-    """Resolve target configuration outside task locking; return finite acceptance metadata work."""
+    """Resolve the child outside task locking; return finite acceptance metadata work."""
     from clio_agent.gact.agent_task_limits import max_spawn_depth  # noqa: PLC0415
-    from clio_agent.gact.agents.resolution import _resolve_runtime_dynamic_agent  # noqa: PLC0415
 
     store: SessionStore = app.state.sessions
     parent = store.snapshot(parent_id)
@@ -47,19 +100,8 @@ def prepare_child_session(
         raise ValueError("Parent session is unavailable")
     launch = _launch_context(parent)
     digest = argument_digest(launch)
-    if target_scope is None:
-        definition = _resolve_runtime_dynamic_agent(app, agent_id, session_id=parent_id)
-        if definition is None:
-            raise ValueError("Requested child agent is unavailable")
-        title = definition.title
-    else:
-        root, expected, title = resolve_installed_blueprint_target(
-            app,
-            str(target_scope.get("active_agent_blueprint_id", "")),
-            workspace_id=parent.workspace_id,
-        )
-        if root != agent_id or expected != target_scope:
-            raise ValueError("Commission target does not match trusted installed configuration")
+    child, pin = resolve_child_agent(app, parent_id, agent_id)
+    title = str(child.agent.get("name") or child.agent["id"])
 
     def create(
         creation_id: str,
@@ -78,13 +120,13 @@ def prepare_child_session(
         limit = max_spawn_depth()
         if limit and depth > limit:
             raise ValueError("Subagent spawn depth exceeds the configured safety boundary")
-        inherited = {**launch["metadata"], **(target_scope or {}), **initial_metadata}
+        inherited = {**launch["metadata"], **(target_scope or {}), **initial_metadata, **pin}
         return store.create(
             workspace_id=parent.workspace_id,
             title=title,
             parent_session_id=parent_id,
             model=dict(parent.model),
-            agent={"id": agent_id},
+            agent={"id": child.agent["id"]},
             mode=parent.mode,
             edit_mode=parent.edit_mode,
             approval_mode="ask" if approval_profile is not None else parent.approval_mode,
@@ -98,71 +140,3 @@ def prepare_child_session(
         )
 
     return create
-
-
-def resolve_installed_blueprint_target(
-    app: "FastAPI", blueprint_id: str, *, workspace_id: str
-) -> tuple[str, dict[str, Any], str]:
-    """Resolve an installed blueprint's enabled root and activation metadata.
-
-    The same workspace-aware catalog and runtime MCP validation used for normal
-    session resolution are applied here. A cross-blueprint commission therefore
-    cannot activate a missing, disabled, invalid, or MCP-incomplete definition.
-    """
-
-    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
-        discover_agent_blueprints,
-        load_agent_blueprints,
-        validate_agent_hierarchy,
-    )
-    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _apply_agent_blueprint_mcp_descriptor_validation,
-        _apply_enabled_agent_blueprint_mcp_tools,
-        _merge_agent_def_rows,
-        _runtime_workspace_catalog_cwd,
-    )
-
-    target_id = str(blueprint_id or "").strip()
-    if not target_id:
-        raise ValueError("blueprint_id must be non-empty")
-    cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
-    definition = next(
-        (row for row in discover_agent_blueprints(cwd=cwd) if row.id == target_id),
-        None,
-    )
-    if definition is None:
-        raise ValueError(f"installed blueprint not found: {target_id!r}")
-    if not definition.enabled or definition.validation_errors:
-        raise ValueError(
-            f"installed blueprint is disabled or invalid: {target_id!r}",
-        )
-    rows = validate_agent_hierarchy(
-        _merge_agent_def_rows(load_agent_blueprints(cwd=cwd, blueprint_id=target_id)),
-        blueprint=definition,
-    )
-    rows = _apply_agent_blueprint_mcp_descriptor_validation(app, rows)
-    rows = _apply_enabled_agent_blueprint_mcp_tools(app, rows)
-    root_id = str(definition.root_expert or "").strip()
-    if not root_id:
-        root_ids = [row.id for row in rows if row.enabled and not row.parent_id]
-        root_id = root_ids[0] if len(root_ids) == 1 else ""
-    root = next((row for row in rows if row.id == root_id), None)
-    if root is None or not root.enabled:
-        raise ValueError(
-            f"installed blueprint has no enabled root expert: {target_id!r}",
-        )
-    display_name = definition.display_name or definition.title or definition.id
-    scope = {
-        "active_agent_blueprint_id": definition.id,
-        "active_agent_blueprint_name": display_name,
-        "active_agent_blueprint_version": definition.version,
-        "active_agent_blueprint_scope": definition.scope,
-        "active_agent_blueprint_definition_path": str(definition.root_path),
-        "active_agent_blueprint_path": "",
-        "active_expert_pack_id": "",
-        "active_expert_pack_name": "",
-        "active_expert_pack_version": "",
-        "active_expert_pack_path": "",
-        "expert_pack_id": "",
-    }
-    return root_id, scope, display_name

@@ -54,7 +54,7 @@ def _event_kind(event_type: str) -> str:
         return "session"
     if event_type.startswith("turn."):
         return "turn"
-    if event_type.startswith(("expert.", "agent.", "delegation.", "blueprint.delegation.")):
+    if event_type.startswith(("expert.", "agent.", "delegation.")):
         return "agent"
     if event_type.startswith(("lm.", "provider.")):
         return "llm"

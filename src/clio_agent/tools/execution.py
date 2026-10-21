@@ -65,17 +65,13 @@ _ACTIVE_TOOL_WORKSPACE_ROOT: contextvars.ContextVar[str] = contextvars.ContextVa
     "clio_active_tool_workspace_root",
     default="",
 )
-# The session's EXPLICITLY-activated Agent Blueprint id, for the SAME reason the
-# workspace root gets its own ContextVar (#1232 pt 1): ``agent.py``'s per-workspace
-# tool-gateway builder reads this to decide which blueprint's declared
-# ``mcp_servers`` (if any) mount for the active turn — never every installed
-# blueprint's servers, and never at boot (see ``ClioAgent._discover_pack_servers``).
-_ACTIVE_TOOL_BLUEPRINT_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_active_tool_blueprint_id",
-    default="",
-)
-_ACTIVE_TOOL_BLUEPRINT_PATH: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "clio_active_tool_blueprint_path",
+# The session's plugin MCP server set, for the SAME reason the workspace root
+# gets its own ContextVar (#1232 pt 1): ``agent.py``'s per-workspace tool-gateway
+# builder reads this to decide which plugin-declared MCP servers mount for the
+# active turn -- only the session's resolved plugins' servers, never at boot
+# (see :mod:`clio_agent.plugins.servers`).
+_ACTIVE_TOOL_SERVER_SET: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "clio_active_tool_server_set",
     default="",
 )
 
@@ -98,37 +94,20 @@ def get_active_tool_workspace_root() -> str:
 
 
 @contextmanager
-def tool_blueprint_context(
-    blueprint_id: str | None, blueprint_path: str | Path | None = None
-) -> Iterator[None]:
-    """Bind the session's explicitly activated Agent Blueprint identity.
+def tool_server_set_context(server_set: str | None) -> Iterator[None]:
+    """Bind the session's plugin MCP server set (``""`` mounts no plugin servers)."""
 
-    An empty/``None`` id (no blueprint activated) is the default and correct
-    state for a bare session — it makes the per-workspace tool gateway mount
-    NO pack-declared MCP servers, matching ``_runtime_active_agent_blueprint_id``'s
-    "never an implicit one" contract. The optional path keeps path-activated
-    blueprints queryable even when they are not installed in a discovery root.
-    """
-
-    id_token = _ACTIVE_TOOL_BLUEPRINT_ID.set(str(blueprint_id or ""))
-    path_token = _ACTIVE_TOOL_BLUEPRINT_PATH.set(str(blueprint_path or ""))
+    token = _ACTIVE_TOOL_SERVER_SET.set(str(server_set or ""))
     try:
         yield
     finally:
-        _ACTIVE_TOOL_BLUEPRINT_PATH.reset(path_token)
-        _ACTIVE_TOOL_BLUEPRINT_ID.reset(id_token)
+        _ACTIVE_TOOL_SERVER_SET.reset(token)
 
 
-def get_active_tool_blueprint_id() -> str:
-    """Return the active session's Agent Blueprint id, or ``""`` when none is bound."""
+def get_active_tool_server_set() -> str:
+    """Return the active session's plugin MCP server set key, or ``""``."""
 
-    return _ACTIVE_TOOL_BLUEPRINT_ID.get()
-
-
-def get_active_tool_blueprint_path() -> str:
-    """Return the explicitly activated Agent Blueprint path, when path-selected."""
-
-    return _ACTIVE_TOOL_BLUEPRINT_PATH.get()
+    return _ACTIVE_TOOL_SERVER_SET.get()
 
 
 # --------------------------------------------------------------------------- #
@@ -1061,13 +1040,13 @@ __all__ = [
     "create_async_tool_executor",
     "create_sync_tool_executor",
     "current_tool_runtime",
-    "get_active_tool_blueprint_id",
+    "get_active_tool_server_set",
     "get_active_tool_workspace_root",
     "notify_global_tool_observer",
     "notify_tool_observer",
     "recorded_tool_runtime_reasons",
     "set_tool_runtime_fallback",
     "set_tool_runtime_resolver",
-    "tool_blueprint_context",
+    "tool_server_set_context",
     "tool_workspace_context",
 ]

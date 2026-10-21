@@ -90,7 +90,7 @@ def _emit_invalid_tool_selection_event(
         summary=summary,
         actor={"agent_id": agent_def.id, "role": "expert"},
         subject={"requested_tool": requested_tool},
-        blueprint={
+        agent={
             "source": agent_def.source,
             "agent_id": agent_def.id,
             "parent_id": agent_def.parent_id,

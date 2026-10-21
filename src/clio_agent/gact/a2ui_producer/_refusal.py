@@ -105,10 +105,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "none of this agent's declared A2UI catalogs could be loaded, so it "
         "cannot create surfaces; answer in prose, do not retry"
     ),
-    "a2ui_blueprint_unresolved": (
-        "this session's agent blueprint could not be loaded, so its catalogs are "
+    "a2ui_agent_unresolved": (
+        "this session's agent could not be resolved, so its catalogs are "
         "unknown right now; answer in prose for now -- this can change once the "
-        "blueprint is repaired or re-activated"
+        "agent's plugins resolve again"
     ),
     "a2ui_preferred_catalog_not_selectable": (
         "omit catalog_id to auto-select instead, or pass one present in "
@@ -301,10 +301,10 @@ def catalog_selection_refusal(
             "this session's agent declares a2ui_catalogs, but none of them "
             "resolved to a loadable catalog"
         )
-    elif reason == "a2ui_blueprint_unresolved":
+    elif reason == "a2ui_agent_unresolved":
         detail = (
-            "this session's bound agent blueprint did not resolve to an installed or "
-            "path-activated blueprint, so its declared catalogs are unavailable"
+            "this session's agent did not resolve to an installed agent and plugin "
+            "set, so its declared catalogs are unavailable"
         )
     elif reason == "a2ui_client_capabilities_unknown":
         detail = (

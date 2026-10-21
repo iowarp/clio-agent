@@ -345,7 +345,7 @@ def dispatch_stop_at_finalize(
     cwd: str,
     assistant_msg_id: str,
     assistant_payload: Mapping[str, Any],
-    blueprint_id: str,
+    agent_ref: str,
     completion: ConversationOutcome | None = None,
 ) -> "StopLoopResult | None":
     """Fire the bounded Stop gate at the turn-finalize boundary + emit observability.
@@ -379,7 +379,7 @@ def dispatch_stop_at_finalize(
             session_id=session_id,
             turn_id=turn_id,
             cwd=cwd,
-            payload={"assistant": dict(assistant_payload), "blueprint_id": blueprint_id},
+            payload={"assistant": dict(assistant_payload), "agent_ref": agent_ref},
             completion=completion,
         )
         if result.redrive:

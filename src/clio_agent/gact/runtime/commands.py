@@ -12,7 +12,7 @@ surfaces consume it, so it lives here as the single source rather than as a
   agent-invocable command list into the render context for ``POST .../render``.
 
 Every function takes ``app`` explicitly (it reads ``app.state.sessions`` /
-``workspaces`` / ``user_agents`` and the runtime blueprint resolvers); the module
+``workspaces`` and the session's pinned plugin resolution); the module
 imports only leaf packages (catalog, agents.resolution, types, the dependency-free
 :mod:`clio_agent.optimizer.stub`, stdlib) and never loads
 :mod:`clio_agent.gact.app`.
@@ -20,14 +20,11 @@ imports only leaf packages (catalog, agents.resolution, types, the dependency-fr
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
-)
+from clio_agent.gact.agents.resolution import SessionAgentUnavailable, session_resolution
 from clio_agent.gact.catalog import (
     _load_command_files_from_disk,
     _truthy_command_field,
@@ -42,12 +39,6 @@ from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
-
-# The overlay-aware runtime agent resolver (the ``build_app`` closure that layers
-# session blueprint-overlay rows before the base resolver). It is passed in rather
-# than imported so this leaf uses the exact same resolution the route would, with
-# no behaviour drift from the un-overlaid base resolver.
-ResolveRuntimeDynamicAgent = Callable[..., "AgentDef | None"]
 
 BACKEND_COMMANDS: list[dict[str, Any]] = [
     {
@@ -250,37 +241,23 @@ def command_cwd_for_request(
     return Path(root_path).expanduser() if root_path else None
 
 
-def active_blueprint_command_roots(
+def plugin_command_roots(
     app: "FastAPI", session_id: str = ""
 ) -> list[tuple[Path, str, dict[str, Any]]]:
-    """Resolve the active Agent Blueprint's ``commands/`` root for a session."""
+    """The ``commands/`` folders of the session agent's resolved plugins."""
 
     if not session_id:
         return []
-    blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
-    blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
-    if blueprint_path is None:
-        sess = app.state.sessions.get(session_id)
-        metadata = getattr(sess, "metadata", {}) if sess is not None else {}
-        if isinstance(metadata, Mapping):
-            raw_definition = str(
-                metadata.get("active_agent_blueprint_definition_path") or ""
-            ).strip()
-            if raw_definition:
-                blueprint_path = Path(raw_definition).expanduser()
-    if not blueprint_id or blueprint_path is None:
+    try:
+        resolution = session_resolution(app, session_id)
+    except SessionAgentUnavailable:
         return []
-    blueprint_root = blueprint_path.parent if blueprint_path.is_file() else blueprint_path
+    roots: dict[str, Path] = {}
+    for row in resolution.commands:
+        roots.setdefault(str(row["plugin"]), Path(row["path"]).parent)
     return [
-        (
-            blueprint_root / "commands",
-            "agent_blueprint",
-            {
-                "agent_blueprint_id": blueprint_id,
-                "agent_blueprint_root": str(blueprint_root),
-                "command_scope": "agent_blueprint",
-            },
-        )
+        (folder, "plugin", {"plugin": plugin, "command_scope": "plugin"})
+        for plugin, folder in roots.items()
     ]
 
 
@@ -291,7 +268,7 @@ def command_context_for_request(
 
     return (
         command_cwd_for_request(app, session_id, workspace_id),
-        active_blueprint_command_roots(app, session_id),
+        plugin_command_roots(app, session_id),
     )
 
 
@@ -305,10 +282,6 @@ def user_command_rows(
     rows: dict[str, dict[str, Any]] = {}
     for command in _load_command_files_from_disk(cwd=cwd, extra_roots=extra_roots):
         rows.setdefault(command["id"], command)
-    agents = [AgentDef(**row.to_wire()) for row in app.state.user_agents.list()]
-    for agent_def in agents:
-        for command in command_defs_from_agent(agent_def):
-            rows.setdefault(command["id"], command)
     catalog = SkillCatalog(cwd=cwd)
     skill_refs: dict[str, Any] = {}
     for ref in catalog.discover():
@@ -422,22 +395,16 @@ def agent_allowed_command_ids(agent_def: AgentDef) -> set[str]:
 
 def planner_command_rows(
     app: "FastAPI",
-    resolve_runtime_dynamic_agent: ResolveRuntimeDynamicAgent,
-    agent_id: str = "",
+    agent_def: AgentDef | None = None,
     cwd: Path | None = None,
     extra_roots: list[tuple[Path, str, dict[str, Any]]] | None = None,
-    session_id: str = "",
 ) -> list[dict[str, Any]]:
     """The planner-visible, agent-invocable subset of the command table.
 
-    ``resolve_runtime_dynamic_agent`` is the overlay-aware resolver supplied by the
-    caller so the allowed-command filter matches the agent the route would resolve.
+    With ``agent_def``, only the commands that agent may invoke are visible.
     """
 
-    allowed: set[str] | None = None
-    if agent_id:
-        agent_def = resolve_runtime_dynamic_agent(agent_id, session_id=session_id)
-        allowed = agent_allowed_command_ids(agent_def) if agent_def is not None else set()
+    allowed = agent_allowed_command_ids(agent_def) if agent_def is not None else None
     rows: list[dict[str, Any]] = []
     for command in all_command_rows(app, cwd=cwd, extra_roots=extra_roots):
         command_id = str(command.get("id") or "")

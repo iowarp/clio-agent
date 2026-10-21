@@ -6,17 +6,13 @@ produce against. Nothing is implicit: the two builtins (``clio-workspace``,
 pack-local catalog. The written order is the preference order -- the first
 declared catalog a client supports is the one an unnamed surface gets.
 
-**Forward shape (agent-plugins 1.0).** Today an agent is one Agent Blueprint,
-so there is exactly one declaration *source*: the active blueprint's own
-``a2ui_catalogs``. Agent-plugins will replace blueprints, and an agent will be
-a concatenation of plugins, each declaring its own catalogs. Resolution is
-therefore written over an ORDERED SEQUENCE of sources
-(:func:`resolve_agent_catalogs`), never over "the blueprint": a plugin becomes
-one more :class:`CatalogDeclarationSource` and no consumer changes. Each
-:class:`CatalogDeclaration` is self-contained -- its name plus its origin
-(a builtin, or a directory already resolved against ITS OWN declaring unit's
-root) -- so declarations from different units can be merged without knowing
-which unit a relative path was relative to.
+**Sources are plugins.** An agent is a set of plugins, each declaring its own
+catalogs (``ai.iowarp.clio.catalogs`` naming builtins, or ``a2ui/<name>/``
+folders it ships). Resolution runs over an ORDERED SEQUENCE of sources
+(:func:`resolve_agent_catalogs`), one per plugin in resolution order. Each
+:class:`CatalogDeclaration` is self-contained -- its name plus its origin (a
+builtin, or a directory inside its own plugin) -- so declarations from
+different plugins merge without knowing which plugin a path belongs to.
 
 Merge rules (the ordered union):
 
@@ -27,28 +23,13 @@ Merge rules (the ordered union):
   ``catalogId``, is a typed conflict (``a2ui_catalog_declaration_conflict``):
   the later declaration is refused, never a silent override.
 
-Accepted frontmatter forms (``AGENT.md``):
-
-.. code-block:: yaml
-
-    # Canonical: an ordered list. A bare string names a builtin; a one-key
-    # mapping is a pack-local catalog directory relative to the pack root.
-    a2ui_catalogs:
-      - earthscope-stations: catalogs/earthscope-stations
-      - clio-workspace
-
-    # Legacy (pre-S8) mapping form: every entry is a pack-local directory,
-    # in written order. It can never name a builtin.
-    a2ui_catalogs:
-      earthscope-stations: catalogs/earthscope-stations
-
 Every consumer that decides producibility or disclosure derives from ONE
 resolution (``activation.resolve_session_catalogs``) built on this module.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -61,10 +42,9 @@ if TYPE_CHECKING:
 #: Where one declared catalog comes from.
 CatalogOrigin = Literal["builtin", "directory"]
 
-#: The kind of unit that declared a source: an Agent Blueprint, or a
-#: code-shipped agent (the builtin main, ``catalog.builtin_main_catalog_source``).
-#: ``"plugin"`` joins with agent-plugins 1.0; nothing downstream switches on it.
-DeclaringUnitKind = Literal["blueprint", "builtin_agent"]
+#: The kind of unit that declared a source: a resolved plugin, or an agent whose
+#: plugins could not be resolved (``unresolved`` source).
+DeclaringUnitKind = Literal["plugin", "agent"]
 
 
 @dataclass(frozen=True)
@@ -74,7 +54,7 @@ class CatalogDeclarationIssue:
     Attributes:
         reason: A key of the A2UI catalog reason catalog (``reasons.py``).
         name: The catalog name the issue is about (``""`` when unnamed).
-        unit_id: The declaring unit (``"blueprint:<id>"``).
+        unit_id: The declaring unit (``"plugin:<id>"``).
         detail: A human-readable, specific description.
     """
 
@@ -118,8 +98,8 @@ class CatalogDeclarationSource:
     """One declaring unit's ordered catalog declarations.
 
     Attributes:
-        unit_kind: What kind of unit declared these (today: ``"blueprint"``).
-        unit_id: A stable label for the unit (``"blueprint:<id>"``).
+        unit_kind: What kind of unit declared these (``"plugin"``).
+        unit_id: A stable label for the unit (``"plugin:<id>"``).
         declared: Whether the unit declared ``a2ui_catalogs`` at all (an
             explicit empty list is a declaration of zero catalogs).
         declarations: The parsed declarations, in written order.
@@ -127,7 +107,7 @@ class CatalogDeclarationSource:
             directory-origin entries it loads.
         parse_errors: Typed issues found while parsing the raw declaration.
         unresolved: The unit is bound but could not be loaded (a session's
-            blueprint id that resolves to nothing), so what it declares is
+            agent whose plugins do not resolve), so what it declares is
             unknown -- distinct from a unit that declares nothing.
     """
 
@@ -182,7 +162,7 @@ class ResolvedCatalogs:
         if self.entries:
             return None
         if self.unresolved:
-            return "a2ui_blueprint_unresolved"
+            return "a2ui_agent_unresolved"
         return "a2ui_no_catalogs_resolved" if self.attempted else "a2ui_no_catalogs_declared"
 
 
@@ -300,49 +280,46 @@ def parse_catalog_declarations(
     )
 
 
-def blueprint_catalog_source(blueprint: Any) -> CatalogDeclarationSource:
-    """Return one Agent Blueprint's catalog declarations as a source.
+def plugin_catalog_sources(catalogs: Sequence[Mapping[str, Any]]) -> list[CatalogDeclarationSource]:
+    """One declaration source per resolved plugin, in plugin resolution order.
 
-    The blueprint's ``metadata["a2ui_catalogs"]`` is the frontmatter value
-    verbatim (``agent_blueprints.parse_agent_blueprint_root``); relative
-    directories resolve against the blueprint root.
+    ``catalogs`` is a resolution's ``catalogs`` list: ``{"id", "plugin", "path"}``
+    rows where an empty ``path`` names a built-in catalog and a path is the
+    plugin's own ``ai.iowarp.clio/a2ui/<id>/`` folder.
     """
 
-    metadata = blueprint.metadata if isinstance(blueprint.metadata, dict) else {}
-    install = metadata.get("install")
-    install_checksum = str(install.get("checksum") or "") if isinstance(install, dict) else ""
-    return parse_catalog_declarations(
-        metadata.get("a2ui_catalogs"),
-        unit_kind="blueprint",
-        unit_id=f"blueprint:{blueprint.id}",
-        root=Path(blueprint.root),
-        install_checksum=install_checksum,
-    )
-
-
-#: Guidance shown to the user for an agent that declares no A2UI catalogs.
-MISSING_DECLARATION_GUIDANCE = (
-    "This agent predates per-agent A2UI catalogs, so it cannot create interactive "
-    "views. Update it, or add an a2ui_catalogs list (for example `- clio-workspace`) "
-    "to its AGENT.md."
-)
-
-
-def a2ui_declaration_notice(blueprint: Any) -> dict[str, str] | None:
-    """A user-visible notice for a blueprint that declares no ``a2ui_catalogs``.
-
-    Such an agent has no catalogs under the strict rule (nothing is implicit);
-    typically it is an installed snapshot the upgrade re-sync skipped (locally
-    edited, foreign source, pinned, or the re-sync failed). Returns ``None``
-    for a blueprint that declares its catalogs (even an explicit empty list).
-    """
-
-    if blueprint_catalog_source(blueprint).declared:
-        return None
-    return {
-        "reason": "a2ui_declaration_missing_after_upgrade",
-        "detail": MISSING_DECLARATION_GUIDANCE,
-    }
+    builtins = builtin_catalog_names()
+    grouped: dict[str, list[CatalogDeclaration]] = {}
+    errors: dict[str, list[CatalogDeclarationIssue]] = {}
+    for row in catalogs:
+        plugin = str(row.get("plugin") or "")
+        unit_id = f"plugin:{plugin}"
+        name = str(row.get("id") or "")
+        path = str(row.get("path") or "")
+        grouped.setdefault(plugin, [])
+        if path:
+            grouped[plugin].append(CatalogDeclaration(name=name, origin="directory", directory=Path(path)))
+        elif name in builtins:
+            grouped[plugin].append(CatalogDeclaration(name=name, origin="builtin"))
+        else:
+            errors.setdefault(plugin, []).append(
+                _issue(
+                    "a2ui_catalog_builtin_unknown",
+                    name,
+                    unit_id,
+                    f"is not a builtin catalog (builtins: {', '.join(builtins)})",
+                )
+            )
+    return [
+        CatalogDeclarationSource(
+            unit_kind="plugin",
+            unit_id=f"plugin:{plugin}",
+            declared=True,
+            declarations=tuple(declarations),
+            parse_errors=tuple(errors.get(plugin, ())),
+        )
+        for plugin, declarations in grouped.items()
+    ]
 
 
 def _load_declaration(
@@ -355,7 +332,7 @@ def _load_declaration(
         if entry is None:  # parse already refused unknown builtin names
             return None, [f"builtin catalog {declaration.name!r} is not shipped"]
         return entry, []
-    from clio_agent.gact.a2ui_catalogs.blueprint import load_catalog_directory  # noqa: PLC0415
+    from clio_agent.gact.a2ui_catalogs.plugin import load_catalog_directory  # noqa: PLC0415
 
     assert declaration.directory is not None
     return load_catalog_directory(
@@ -370,8 +347,7 @@ def resolve_agent_catalogs(
 
     Args:
         sources: The agent's declaration sources, in precedence order. Today
-            this is at most one (the active blueprint); agent-plugins add
-            more without changing any consumer.
+            one per resolved plugin.
         record: Whether to write each issue to the typed reason ledger,
             once per (unit, reason, catalog) for the process. Session callers
             leave it ``False`` and record per session instead
@@ -449,15 +425,13 @@ def resolve_agent_catalogs(
 
 
 __all__ = [
-    "MISSING_DECLARATION_GUIDANCE",
-    "a2ui_declaration_notice",
     "CatalogDeclaration",
     "CatalogDeclarationIssue",
     "CatalogDeclarationSource",
     "CatalogOrigin",
     "DeclaringUnitKind",
     "ResolvedCatalogs",
-    "blueprint_catalog_source",
+    "plugin_catalog_sources",
     "builtin_catalog_names",
     "parse_catalog_declarations",
     "resolve_agent_catalogs",

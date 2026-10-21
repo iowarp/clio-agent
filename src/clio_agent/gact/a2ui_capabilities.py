@@ -42,9 +42,9 @@ child session.
 **Selection and per-row projection live in a sibling module.** Catalog
 SELECTION (:func:`~clio_agent.gact.a2ui_capability_selection.select_catalog`,
 :class:`~clio_agent.gact.a2ui_capability_selection.CatalogSelection`) and the
-per-row/per-blueprint ``a2ui_capabilities`` projection
-(:func:`~clio_agent.gact.a2ui_capability_selection.with_a2ui_capabilities`
-and friends) are a distinct concern from parsing/remembering/door-guarding,
+per-agent catalog projection
+(:func:`~clio_agent.gact.a2ui_capability_selection.resolution_catalog_ids`)
+are a distinct concern from parsing/remembering/door-guarding,
 so they live in :mod:`clio_agent.gact.a2ui_capability_selection` (hygiene
 split, issue #1369) — re-exported here so no existing import path changes.
 """
@@ -60,10 +60,8 @@ from pydantic import ValidationError as _PydanticValidationError
 
 from clio_agent.gact.a2ui_capability_selection import (
     CatalogSelection,
-    blueprint_a2ui_capability_ids,
-    catalog_ids_for_resolved_blueprint,
+    resolution_catalog_ids,
     select_catalog,
-    with_a2ui_capabilities,
 )
 from clio_agent.gact.a2ui_catalogs.activation import session_producible_catalog_ids
 
@@ -377,8 +375,7 @@ __all__ = [
     "CatalogSelection",
     "agent_capabilities",
     "apply_client_metadata_guards",
-    "blueprint_a2ui_capability_ids",
-    "catalog_ids_for_resolved_blueprint",
+    "resolution_catalog_ids",
     "client_capabilities",
     "parse_client_capabilities",
     "parse_client_data_model",
@@ -386,5 +383,4 @@ __all__ = [
     "select_catalog",
     "session_requested_send_data_model",
     "strip_renderer_metadata",
-    "with_a2ui_capabilities",
 ]

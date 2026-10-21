@@ -1,13 +1,11 @@
-"""A2UI 0.9 catalog selection and per-row/blueprint projection (S3).
+"""A2UI 0.9 catalog selection and per-agent projection (S3).
 
 Split out of ``gact/a2ui_capabilities.py`` (docs/design/a2ui-compat-campaign-
 2026-09.md S3, issue #1369 hygiene follow-up) to keep each owner module to
 one core concern: that module owns parsing/remembering/door-guarding the
 official capability objects; this one owns the SELECTION decision --
-:func:`select_catalog` picking a catalog for a session -- and the per-row /
-per-blueprint ``a2ui_capabilities`` projection (:func:`with_a2ui_capabilities`,
-:func:`blueprint_a2ui_capability_ids`, :func:`catalog_ids_for_resolved_blueprint`)
-that ``routes/agents.py`` and ``routes/blueprints.py`` render.
+:func:`select_catalog` picking a catalog for a session -- and the per-agent
+catalog projection (:func:`resolution_catalog_ids`) the agent routes render.
 
 Public names stay importable from ``gact.a2ui_capabilities`` (re-exported
 there) so no caller's import path changes; this module only ever reaches
@@ -154,130 +152,24 @@ def select_catalog(
     )
 
 
-def blueprint_a2ui_capability_ids(
-    app: "FastAPI", agent_blueprint_id: str, *, session_id: str = ""
-) -> list[str]:
-    """Return one blueprint's resolved catalog ids, in its declared order.
+def resolution_catalog_ids(resolution: Any) -> list[str]:
+    """A resolved agent's catalog ids, in plugin and declaration order.
 
-    Resolution mirrors ``a2ui_catalogs.activation._active_blueprint`` exactly
-    (path-first, then the installed registry) rather than only consulting
-    ``registry.discovered_blueprints()`` -- a blueprint activated by PATH
-    (a marketplace pack launched on-disk, not yet copied into the installed
-    registry) would otherwise never resolve here. ``session_id``, when given,
-    is the row's OWN session scope (the caller of ``routes/agents.py``'s
-    listing already has it) -- required to reach the path-activation lookup;
-    a session-less caller (or one whose active blueprint doesn't match
-    ``agent_blueprint_id``) falls back to the installed-registry-only lookup.
-    An id that still does not resolve records the typed
-    ``a2ui_blueprint_unresolved`` reason and yields no catalogs. A row with
-    no blueprint declares nothing, so it has no catalogs (v15 S8: nothing is
-    implicit).
-    """
-
-    registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
-    if registry is None or not agent_blueprint_id:
-        return []
-    from clio_agent.gact.a2ui_catalogs.activation import _active_blueprint  # noqa: PLC0415
-
-    blueprint = None
-    if session_id:
-        candidate = _active_blueprint(app, session_id)
-        if candidate is not None and candidate.id == agent_blueprint_id:
-            blueprint = candidate
-    if blueprint is None:
-        blueprint = next(
-            (row for row in registry.discovered_blueprints() if row.id == agent_blueprint_id),
-            None,
-        )
-    if blueprint is None:
-        registry.record_session_reason(
-            session_id, "a2ui_blueprint_unresolved", blueprint_id=agent_blueprint_id
-        )
-        return []
-    return catalog_ids_for_resolved_blueprint(app, blueprint)
-
-
-def catalog_ids_for_resolved_blueprint(app: "FastAPI", blueprint: Any) -> list[str]:
-    """Return an ALREADY-RESOLVED blueprint's catalog ids, in its declared order.
-
-    For a caller that has the blueprint object in hand from its OWN
-    discovery pass (e.g. ``routes/blueprints.py``'s
-    ``GET /v1/agent-blueprints/{id}``, which resolves it via a
-    workspace-scoped ``cwd`` the registry's own cache does not share) --
-    re-deriving it through :func:`blueprint_a2ui_capability_ids`'s
-    id-based lookup would miss a workspace- or session-scoped blueprint the
-    registry's global discovery never sees, and silently under-report. The
-    same ``declarations.resolve_agent_catalogs`` resolution a session of
-    this blueprint gets.
+    The same ``declarations.resolve_agent_catalogs`` resolution a session of
+    this agent gets.
     """
 
     from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
-        blueprint_catalog_source,
+        plugin_catalog_sources,
         resolve_agent_catalogs,
     )
 
-    resolved = resolve_agent_catalogs([blueprint_catalog_source(blueprint)], record=True)
+    resolved = resolve_agent_catalogs(plugin_catalog_sources(resolution.catalogs), record=True)
     return list(resolved.catalog_ids)
-
-
-def with_a2ui_capabilities(app: "FastAPI", row: Any, session_id: str = "") -> Any:
-    """Return ``row`` (an ``AgentDef``) with ``metadata["a2ui_capabilities"]`` attached.
-
-    This row's OWN declaring blueprint's resolved catalogs (declared order) --
-    not the caller session's active blueprint, since a listing enumerates every
-    agent, most of which are not the session's current one. ``session_id`` is
-    threaded through to :func:`blueprint_a2ui_capability_ids` so a
-    PATH-activated blueprint's row resolves correctly (see there).
-    """
-
-    agent_blueprint_id = str(row.metadata.get("agent_blueprint_id") or "")
-    if not agent_blueprint_id and row.metadata.get("definition_kind") == "builtin_main":
-        # The code-shipped builtin main declares its own catalogs (v15 S8).
-        from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
-            resolve_agent_catalogs,
-        )
-        from clio_agent.gact.catalog import builtin_main_catalog_source  # noqa: PLC0415
-
-        ids = list(resolve_agent_catalogs([builtin_main_catalog_source()]).catalog_ids)
-    else:
-        ids = blueprint_a2ui_capability_ids(app, agent_blueprint_id, session_id=session_id)
-    metadata = {**row.metadata, "a2ui_capabilities": ids}
-    notice = _row_declaration_notice(app, agent_blueprint_id, session_id)
-    if notice is not None:
-        metadata["a2ui_notice"] = notice
-    return row.model_copy(update={"metadata": metadata})
-
-
-def _row_declaration_notice(
-    app: "FastAPI", agent_blueprint_id: str, session_id: str
-) -> dict[str, str] | None:
-    """The user-visible missing-declaration notice for a row's blueprint, if any."""
-
-    if not agent_blueprint_id:
-        return None
-    from clio_agent.gact.a2ui_catalogs.activation import _active_blueprint  # noqa: PLC0415
-    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
-        a2ui_declaration_notice,
-    )
-
-    registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
-    blueprint = None
-    if session_id:
-        candidate = _active_blueprint(app, session_id)
-        if candidate is not None and candidate.id == agent_blueprint_id:
-            blueprint = candidate
-    if blueprint is None and registry is not None:
-        blueprint = next(
-            (row for row in registry.discovered_blueprints() if row.id == agent_blueprint_id),
-            None,
-        )
-    return a2ui_declaration_notice(blueprint) if blueprint is not None else None
 
 
 __all__ = [
     "CatalogSelection",
-    "blueprint_a2ui_capability_ids",
-    "catalog_ids_for_resolved_blueprint",
+    "resolution_catalog_ids",
     "select_catalog",
-    "with_a2ui_capabilities",
 ]

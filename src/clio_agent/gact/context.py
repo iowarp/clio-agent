@@ -61,12 +61,6 @@ class TurnContext:
     input_notification_id: str = ""  # Human head already rendered by this segment.
     primary_agent_id: str = ""  # Executable root resolved for this turn, not its catalog id.
     tool_session_id: str = ""  # _ACTIVE_TOOL_SESSION_ID
-    # Optional Agent Blueprint selected by this message's execution mode.  This
-    # is deliberately turn-scoped: Deep Research layers its coordinator over
-    # the session's chosen base blueprint without rewriting that persistent
-    # choice.  Child sessions inherit the effective blueprint from the resolved
-    # coordinator's provenance.
-    execution_blueprint_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,7 +74,7 @@ class RuntimeContext:
     """
 
     turn: TurnContext = field(default_factory=TurnContext)
-    # ---- expert / react-loop layer (formerly the REACT_* + BLUEPRINT vars) ----
+    # ---- expert / react-loop layer (formerly the REACT_* vars) ----
     react_scope: str = ""  # _ACTIVE_REACT_SCOPE
     # The declared ``module.kind`` (predict|chain_of_thought|react) of the expert
     # owning ``react_scope``. Resolved ONCE per expert forward and threaded through
@@ -107,7 +101,7 @@ class RuntimeContext:
     step_reasoning: str = ""  # the raw reasoning channel for this step
     react_session: str = ""  # _ACTIVE_REACT_SESSION
     react_context_window: int = 0  # _ACTIVE_REACT_CONTEXT_WINDOW
-    blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
+    agent_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_AGENT_TOOL_ROWS
     visible_answer_stream: bool = True
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
     # CLIO's own additions for this turn, ``(source, text)`` in order (memory hits,
@@ -168,12 +162,6 @@ def active_trace_id() -> str:
 def active_tool_session_id() -> str:
     """``_ACTIVE_TOOL_SESSION_ID.get()``."""
     return _RUNTIME.get().turn.tool_session_id
-
-
-def active_execution_blueprint_id() -> str:
-    """Return the Agent Blueprint temporarily selected for this turn."""
-
-    return _RUNTIME.get().turn.execution_blueprint_id
 
 
 def active_react_scope() -> str:
@@ -272,9 +260,9 @@ def active_react_context_window() -> int:
     return _RUNTIME.get().react_context_window
 
 
-def active_blueprint_tool_rows() -> list[dict[str, Any]] | None:
-    """``_ACTIVE_BLUEPRINT_TOOL_ROWS.get()``."""
-    return _RUNTIME.get().blueprint_tool_rows
+def active_agent_tool_rows() -> list[dict[str, Any]] | None:
+    """``_ACTIVE_AGENT_TOOL_ROWS.get()``."""
+    return _RUNTIME.get().agent_tool_rows
 
 
 def active_visible_answer_stream() -> bool:
@@ -345,7 +333,6 @@ def set_turn_identity(
     session_id: str,
     turn_id: str,
     trace_id: str,
-    execution_blueprint_id: str = "",
     context_epoch: str = "",
     context_epoch_after: str | None = None,
     assignment_handle: str = "",
@@ -369,7 +356,6 @@ def set_turn_identity(
                 turn_id=turn_id,
                 trace_id=trace_id,
                 tool_session_id=cur.turn.tool_session_id,
-                execution_blueprint_id=execution_blueprint_id,
                 context_epoch=context_epoch,
                 context_epoch_after=context_epoch_after,
                 assignment_handle=assignment_handle,
@@ -411,17 +397,17 @@ def set_trace_id_token(trace_id: str) -> contextvars.Token[RuntimeContext]:
     return _RUNTIME.set(replace(cur, turn=replace(cur.turn, trace_id=trace_id)))
 
 
-def set_blueprint_tool_rows(
+def set_agent_tool_rows(
     rows: list[dict[str, Any]] | None,
 ) -> contextvars.Token[RuntimeContext]:
-    """Set ``blueprint_tool_rows`` (``_ACTIVE_BLUEPRINT_TOOL_ROWS.set``).
+    """Set ``agent_tool_rows`` (``_ACTIVE_AGENT_TOOL_ROWS.set``).
 
     Stores the SAME list object (no copy) so a wrapped tool's
-    ``active_blueprint_tool_rows().append(...)`` mutates the caller's list --
+    ``active_agent_tool_rows().append(...)`` mutates the caller's list --
     preserving the read-and-mutate recording behavior.
     """
     cur = _RUNTIME.get()
-    return _RUNTIME.set(replace(cur, blueprint_tool_rows=rows))
+    return _RUNTIME.set(replace(cur, agent_tool_rows=rows))
 
 
 def set_visible_answer_stream(visible: bool) -> contextvars.Token[RuntimeContext]:

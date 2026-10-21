@@ -39,10 +39,10 @@ _CLIO_KIT_REMEDIATION = (
 def discover_declared_mcp_servers(
     *, env: Mapping[str, str] | None = None
 ) -> dict[str, MCPServerSpec]:
-    """Discover the MCP servers declared across loaded packs + user/workspace config.
+    """Discover the MCP servers declared by installed plugins + user/workspace config.
 
-    Mirrors ``ClioAgent._build_tool_gateway`` / the ``/v1/mcp`` route: merge each
-    discovered blueprint's ``mcp_servers`` frontmatter (pack scope) with the
+    Mirrors ``ClioAgent._build_tool_gateway`` / the ``/v1/mcp`` route: merge every
+    installed plugin's ``mcp.json`` servers (plugin scope) with the
     user/workspace ``mcp.yaml`` scopes via
     :func:`clio_agent.tools.mcp_config.load_mcp_servers`.
 
@@ -53,15 +53,16 @@ def discover_declared_mcp_servers(
     Returns:
         A ``{name: MCPServerSpec}`` mapping of every declared server.
     """
-    from clio_agent.gact.agent_blueprints import discover_agent_blueprints
+    from clio_agent.plugins.servers import server_declarations
+    from clio_agent.plugins.service import PluginService
     from clio_agent.tools.mcp_config import load_mcp_servers
 
-    pack_servers: dict[str, dict[str, object]] = {}
-    for blueprint in discover_agent_blueprints():
-        servers = blueprint.metadata.get("mcp_servers")
-        if isinstance(servers, Mapping) and servers:
-            pack_servers[blueprint.id] = {str(k): v for k, v in servers.items()}
-    return load_mcp_servers(pack_servers=pack_servers, env=env)
+    rows = {
+        name: {"plugin": record.id, "root": record.root, "spec": spec}
+        for record in PluginService().store.records()
+        for name, spec in record.mcp_servers.items()
+    }
+    return load_mcp_servers(plugin_servers=server_declarations(rows), env=env)
 
 
 def _remediation_for(command: str) -> str:

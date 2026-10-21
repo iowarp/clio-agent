@@ -1,4 +1,4 @@
-"""Blueprint tool wrappers that preserve typed tool-call evidence."""
+"""Tool wrappers that preserve typed tool-call evidence."""
 
 from __future__ import annotations
 
@@ -16,16 +16,16 @@ if TYPE_CHECKING:
 
 def recorded_load_skill_tool(agent_def: AgentDef, skill_rt: Any) -> Any:
     """Build a causally recorded ``load_skill`` tool."""
-    return recording_blueprint_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
+    return recording_tool(_skill_runtime.build_load_skill_tool(agent_def, skill_rt))
 
 
 def recorded_spawn_skill_task_tool(agent_def: AgentDef, skill_rt: Any) -> Any:
     """Build the recorded launcher for a skill-seeded child turn."""
-    return recording_blueprint_tool(_skill_runtime.build_spawn_skill_task_tool(agent_def, skill_rt))
+    return recording_tool(_skill_runtime.build_spawn_skill_task_tool(agent_def, skill_rt))
 
 
-def recording_blueprint_tool(tool: Any) -> Any:
-    """Wrap a DSPy tool so blueprint ReAct predictions retain tool evidence."""
+def recording_tool(tool: Any) -> Any:
+    """Wrap a DSPy tool so agent ReAct predictions retain tool evidence."""
     from clio_agent.gact.agents.tool_instrumentation import rebuilt_tool  # noqa: PLC0415
     from clio_agent.gact.app import _bounded_tool_call_result  # noqa: PLC0415
 
@@ -47,7 +47,7 @@ def recording_blueprint_tool(tool: Any) -> Any:
                     "ok": False,
                     "duration_ms": (time.perf_counter() - started_at) * 1000,
                     "error": str(exc),
-                    "telemetry_source": "blueprint_react_tool_wrapper",
+                    "telemetry_source": "agent_react_tool_wrapper",
                 }
             )
 
@@ -66,7 +66,7 @@ def recording_blueprint_tool(tool: Any) -> Any:
                 "ok": tool_error is None,
                 "duration_ms": (time.perf_counter() - started_at) * 1000,
                 "result": row_result,
-                "telemetry_source": "blueprint_react_tool_wrapper",
+                "telemetry_source": "agent_react_tool_wrapper",
             }
             if tool_error is not None:
                 row["error"] = tool_error
@@ -76,7 +76,7 @@ def recording_blueprint_tool(tool: Any) -> Any:
 
         async def async_call_tool(**kwargs: Any) -> Any:
             started_at = time.perf_counter()
-            rows = _ctx.active_blueprint_tool_rows()
+            rows = _ctx.active_agent_tool_rows()
             try:
                 result = await tool.acall(**kwargs)
             except BaseException as exc:  # noqa: BLE001 - record cancellation, then propagate
@@ -91,7 +91,7 @@ def recording_blueprint_tool(tool: Any) -> Any:
 
     def call_tool(**kwargs: Any) -> Any:
         started_at = time.perf_counter()
-        rows = _ctx.active_blueprint_tool_rows()
+        rows = _ctx.active_agent_tool_rows()
         try:
             result = tool(**kwargs)
         except BaseException as exc:  # noqa: BLE001
