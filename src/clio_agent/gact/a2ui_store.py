@@ -261,9 +261,17 @@ class A2UIStore:
         registry generation bump.
         """
 
-        sess = self._app.state.sessions.get(session_id)
-        metadata = getattr(sess, "metadata", None) if sess is not None else None
-        return str((metadata or {}).get("agent_resolution") or "")
+        from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+            SessionAgentUnavailable,
+            session_resolution,
+        )
+
+        # Resolving pins a never-pinned session first, so the identity read before
+        # a session's first fold is the one every later read sees.
+        try:
+            return session_resolution(self._app, session_id).digest
+        except SessionAgentUnavailable as exc:
+            return f"unavailable:{exc.reason}"
 
     def _project(
         self, session_id: str

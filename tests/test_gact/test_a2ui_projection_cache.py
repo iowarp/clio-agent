@@ -140,17 +140,20 @@ def test_full_fold_recurs_exactly_once_after_registry_invalidation(
     assert len(full_folds) == 2
 
 
-def test_full_fold_recurs_exactly_once_after_session_blueprint_switch(
+def test_full_fold_recurs_exactly_once_after_session_agent_change(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """A session switching its OWN active blueprint changes its producible/
-    resolvable catalog set without any pack install/uninstall (no registry
+    """A session changing its OWN agent (a plugin added in the + menu) changes its
+    producible/resolvable catalog set without any install/uninstall (no registry
     generation bump) and without touching any session message -- a second,
-    independent invalidation signal. **Sabotage:** drop the
-    ``blueprint_identity`` comparison from ``_project`` -> red."""
+    independent invalidation signal. **Sabotage:** drop the ``agent_identity``
+    comparison from ``_project`` -> red."""
+
+    from clio_agent.gact.agents.resolution import pin_session_agent
+    from clio_agent.plugins.resolve import Delta
 
     app = _isolated_app(tmp_path)
-    session = app.state.sessions.create(workspace_id="ws_default", title="blueprint switch")
+    session = app.state.sessions.create(workspace_id="ws_default", title="agent change")
     sid = session.id
     full_folds = _count_full_folds(monkeypatch)
 
@@ -158,9 +161,9 @@ def test_full_fold_recurs_exactly_once_after_session_blueprint_switch(
     assert app.state.a2ui_store.get(sid, "s1") is not None
     assert len(full_folds) == 1
 
-    app.state.sessions.update(sid, metadata_patch={"active_agent_blueprint_id": "some-pack"})
+    pin_session_agent(app, sid, delta=Delta(remove=("document-runtime",)))
     assert app.state.a2ui_store.get(sid, "s1") is not None
-    assert len(full_folds) == 2, "switching the session's active blueprint must force one refold"
+    assert len(full_folds) == 2, "changing the session's agent must force one refold"
 
     assert app.state.a2ui_store.get(sid, "s1") is not None
     assert len(full_folds) == 2
