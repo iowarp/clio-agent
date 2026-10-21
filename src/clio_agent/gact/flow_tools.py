@@ -44,7 +44,7 @@ async def start_flow(
 ) -> dict[str, Any]:
     """Accept a child assignment that runs ``flow_id`` and return its handle."""
 
-    from clio_agent.flows.context import _plain, render_input  # noqa: PLC0415
+    from clio_agent.flows.values import _plain, render_input  # noqa: PLC0415
 
     app, caller = _runtime()
     available = await app.state.task_history.io.run(_flows, app, caller.session_id)
