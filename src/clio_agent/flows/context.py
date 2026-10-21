@@ -746,8 +746,28 @@ class FlowContext:
         )
         return handle
 
+    def _collect(self, handle: str) -> None:
+        """Retire the settled task's notice: the flow consumed its result.
+
+        The result reaches the model only through the flow's own return, so the
+        notice must not also wake this session (``session.mail.withdrawn`` records
+        it, as for an unsubscribed result). A notice already committed to a model
+        iteration stays as it is.
+        """
+
+        history = self.app.state.task_history
+        with history.serialized():
+            for item in history.pending_mail(self.session_id):
+                if item.handle == handle and item.kind in {"task_result", "question_answer"}:
+                    try:
+                        history.withdraw_mail(self.session_id, item.id)
+                    except (KeyError, ValueError):
+                        continue
+
     async def _wait(self, handle: str, invocation: str, *, kind: str, name: str) -> CallResult:
         waited = await self.app.state.task_operations.wait(self.caller, handle, "all")
+        if not waited.get("pending"):
+            await self.app.state.task_history.io.run(self._collect, handle)
         outcome = (waited.get("outcomes") or [{}])[0]
         if waited.get("pending"):
             await self._settle(invocation, "task_state_uncertain")

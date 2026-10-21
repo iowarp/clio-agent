@@ -82,10 +82,15 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
     if not root_handle and app is not None:
         latest = app.state.task_history.latest_assignment(session_id)
         root_handle = latest.handle if latest is not None else ""
-    marker = (
-        turn.input_notification_id
-        or hashlib.sha256(str(kwargs.get("question") or "").encode("utf-8")).hexdigest()[:24]
-    )
+    if selection.get("input") is not None or "depth" in selection:
+        # A started flow (run_flow, run_plan, ctx.call) is its whole assignment:
+        # a later turn of the same assignment resumes the same run.
+        marker = root_handle
+    else:
+        marker = (
+            turn.input_notification_id
+            or hashlib.sha256(str(kwargs.get("question") or "").encode("utf-8")).hexdigest()[:24]
+        )
     ctx = FlowContext(
         app=app,
         session_id=session_id,
