@@ -429,7 +429,7 @@ from clio_agent.gact.runtime.capabilities import (  # noqa: E402,F401
 # share one source. Imported under the legacy underscore names the render-context
 # closure already used.
 from clio_agent.gact.runtime.commands import (  # noqa: E402
-    command_cwd_for_request as _command_cwd_for_request,
+    command_context_for_request as _command_context_for_request,
 )
 from clio_agent.gact.runtime.commands import (  # noqa: E402
     planner_command_rows as _planner_command_rows,
@@ -1391,7 +1391,7 @@ def build_app(
         commands = [
             f"- {row.get('id')}: {row.get('description') or row.get('title')}"
             for row in _planner_command_rows(
-                app, agent_def, cwd=_command_cwd_for_request(app, session_id)
+                app, agent_def, *_command_context_for_request(app, session_id)
             )
         ]
         context["commands.agent_invocable"] = "\n".join(commands) or "(no agent-invocable commands)"
