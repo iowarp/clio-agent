@@ -1039,6 +1039,18 @@ def test_post_tool_use_deny_feeds_reason(tmp_path: Path) -> None:
         install_global_dispatcher(None)
 
 
+def test_post_tool_use_additional_context_reaches_the_model(tmp_path: Path) -> None:
+    """Context a PostToolUse hook adds about a call is appended to its result."""
+
+    body = "import json\nprint(json.dumps({'additionalContext': 'CHECK PASS'}))\n"
+    install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
+    try:
+        out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
+        assert out == "REAL:hi\n\n[clio: hook] CHECK PASS"
+    finally:
+        install_global_dispatcher(None)
+
+
 def test_session_start_and_end_fire_exactly_once(tmp_path: Path) -> None:
     """SessionStart fires once when a session is created; SessionEnd once when it is
     deleted (and never again on a repeat delete)."""

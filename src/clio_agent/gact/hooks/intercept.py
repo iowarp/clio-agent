@@ -118,7 +118,8 @@ def run_post_tool(
 
     Applies, in order: a hook ``updatedToolOutput`` rewrite (replaces what the model
     sees), then a hook ``deny`` reason appended as FEEDBACK (the effect already ran;
-    the deny only informs the model, it never un-runs anything). Returns the original
+    the deny only informs the model, it never un-runs anything), then any
+    ``additionalContext`` the hooks added. Returns the original
     observation unchanged when no PostToolUse hook alters it.
     """
 
@@ -144,6 +145,11 @@ def run_post_tool(
         feedback = f"[clio: hook] A PostToolUse hook objected: {outcome.reason}"
         injections.note("hook", feedback)
         result = f"{result}\n\n{feedback}" if str(result) else feedback
+    if outcome.additional_context:
+        # Context a hook adds about this call reaches the model with its result.
+        context_note = f"[clio: hook] {outcome.additional_context}"
+        injections.note("hook", context_note)
+        result = f"{result}\n\n{context_note}" if str(result) else context_note
     return result
 
 
