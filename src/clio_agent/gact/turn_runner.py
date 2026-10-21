@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.turn_revision_gate import TurnRevisionGate
 
 if TYPE_CHECKING:
@@ -327,16 +328,9 @@ class TurnRunner:
             self._request_stop(resources)
             return resources.stop
 
+    @on_owner_loop
     async def stop(self, sid: str, *, reservation: threading.Event | None = None) -> None:
         """Stop the model segment and its waiters, preserving accepted background work."""
-        loop = self._loop
-        if loop is not None and loop is not asyncio.get_running_loop():
-            # The segment's task and its futures live on the runner's loop; a cancel
-            # requested from another loop (a tool call's) stops it there.
-            await asyncio.wrap_future(
-                asyncio.run_coroutine_threadsafe(self.stop(sid, reservation=reservation), loop)
-            )
-            return
         with self._lock:
             resources = self._turns.get(sid)
             if resources is None or reservation is not None and resources.stop is not reservation:

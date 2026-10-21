@@ -34,6 +34,7 @@ from clio_agent.gact.conversation_assignments import ConversationOutcome, Conver
 from clio_agent.gact.conversation_recovery import _confirm_segment_write
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.native_work import now
+from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.session_input import input_delivery
 from clio_agent.gact.session_mail import SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
@@ -765,14 +766,15 @@ class Conversations:
 
     complete_deferred = conversation_assignments.complete_deferred
 
-    pause = conversation_controls.pause
-    resume = conversation_controls.resume
+    # A control can arrive from a tool call's short-lived loop; its jobs live on ours.
+    pause = on_owner_loop(conversation_controls.pause)
+    resume = on_owner_loop(conversation_controls.resume)
 
-    cancel = conversation_controls.cancel
+    cancel = on_owner_loop(conversation_controls.cancel)
 
     spawn = conversation_assignments.spawn
 
-    restart = conversation_controls.restart
+    restart = on_owner_loop(conversation_controls.restart)
 
     def close_admission(self) -> None:
         """Reject new model admission while existing owners retire their work."""
