@@ -17,17 +17,19 @@ that owns the concern below — do **not** add it back to `app.py`.
 | `app.py` | **Thin assembly + re-export shim.** Builds the FastAPI app (`build_app`), wires routers/middleware, exposes `main`, and re-exports the stable symbol surface (public + private test seams) so importers keep working as code moves out. No business logic. |
 | `context.py` | `TurnContext` / `ExpertContext` dataclasses and the **single runtime contextvar** that carries the active context object through a turn. |
 | `runtime/` | The turn engine and its collaborators: turn orchestration/lifecycle, delegation, streaming, context frames, and cost accounting. |
-| `agents/` | Agent runtimes and their building blocks: `react`, `blueprint_module`, `tool_user`, `prompt_user`, `signatures`, `fanout`, `repair`. |
+| `agents/` | Building and running the session's agent from its pinned plugin resolution: `resolution.py` (which agent a session runs, its `AgentDef` and server set), `builders.py` (the agent's DSPy module and tools), `clio_react.py` (the ReAct loop the `react` flow runs), `composition.py`, `skill_runtime.py`, `signatures.py`. |
 | `emit/` | Semantic event emitters — the code that publishes onto the ARC event stream / semantic-event highway. |
 | `routes/` | HTTP routing: **one `APIRouter` per resource**. Routers are imported and mounted by `app.py`; they contain no engine logic. |
 | `permissions.py` | Permission gates and policy evaluation. |
-| `catalog.py` | Agent / expert / tool catalog construction and lookup. |
-| `resolution.py` | Runtime resolution of dynamic agents, blueprints, and signatures. |
+| `catalog.py` | Built-in tool catalog construction and lookup. |
 | `lm_runtime.py` | LM runtime concerns (binding, token refresh, provider plumbing) used by the agent runtimes. |
 | `workflow_state/` | Workflow-state modelling, persistence, and projection. |
 
-Existing modules (`agent_blueprints.py`, `expert_packs.py`, `user_agents.py`,
-`messages.py`, `sessions.py`, `events.py`, `semantic_events.py`, `scheduler.py`,
+Agents, plugins and flows live outside `gact` (`clio_agent.sdk`,
+`clio_agent.plugins`, `clio_agent.flows`; see
+[`../PLUGINS_AND_FLOWS.md`](../PLUGINS_AND_FLOWS.md)); `gact` consumes them
+through `agents/resolution.py`, `routes/plugins.py` and `flow_tools.py`.
+Existing modules (`messages.py`, `sessions.py`, `events.py`, `semantic_events.py`, `scheduler.py`,
 `workspaces.py`, `workspace_scope.py`, `types.py`) keep their current
 responsibilities and are folded into the table above as their concerns settle.
 
@@ -65,7 +67,7 @@ When you add or split a module in `clio_agent.gact`:
   `scripts/check_no_class_in_function.py` (warn-only for now, then blocking).
 - **Respect import layering.** Lower layers must not import upward:
   `app.py` (assembly) → `routes/` → `runtime/` + `agents/` + `emit/` →
-  `context.py` / `catalog.py` / `resolution.py` / `permissions.py` /
+  `context.py` / `catalog.py` / `agents/resolution.py` / `permissions.py` /
   `lm_runtime.py` / `workflow_state/`. Routers depend on the engine; the engine
   does not depend on routers. Avoid cycles; if you need a symbol from a higher
   layer, the dependency probably points the wrong way.

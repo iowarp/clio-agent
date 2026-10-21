@@ -41,7 +41,7 @@ lives under [archive/](archive/README.md).
 - [tui/README.md](tui/README.md) — the gact-tui integration docs index.
 - [tui/REAL_GAPS.md](tui/REAL_GAPS.md) — the authoritative TUI gap tracker.
 - [tui/02-agent-graph.md](tui/02-agent-graph.md) — agent graph surface.
-- [tui/03-experts.md](tui/03-experts.md) — experts surface.
+- [tui/03-experts.md](tui/03-experts.md) — agents and subagents (formerly experts).
 - [tui/06-endpoints.md](tui/06-endpoints.md) — endpoint families.
 - [tui/08-semantics-and-lifecycle.md](tui/08-semantics-and-lifecycle.md) — semantics and lifecycle.
 - [tui/09-integration-plan.md](tui/09-integration-plan.md) — the integration plan.

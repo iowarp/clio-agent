@@ -190,18 +190,21 @@ You should see the assistant's reply with a populated `tokens` and
 ## Try one of these to see CLIO routing in action
 
 Each prompt below exercises a different code path. Run them through
-the TUI (or via curl) once you have the LM configured. Each should
-produce the documented behaviour — see
-[`docs/archive/CAPABILITIES_MATRIX.md`](archive/CAPABILITIES_MATRIX.md) for the full
-end-to-end verification matrix.
+the TUI (or via curl) once you have the LM configured. A new session runs
+the default `clio/standard` agent; the data prompts need the
+`clio/data-semantics` agent, whose subagents carry the HDF5, Parquet, pandas
+and plot servers (pick it when creating the session, or
+`PATCH /v1/sessions/{sid}/agent` with `{"ref": "clio/data-semantics"}`; see
+[PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md)). The model decides which
+subagent to start.
 
-| Prompt | What it exercises |
-|---|---|
-| `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | analysis expert (direct Parquet inspection) |
-| `"Inspect /tmp/clio-demo/clio_demo.h5"` | data expert (direct HDF5 inspection) |
-| `"validate parquet schema and statistics in parallel"` | analysis expert spawns 2 nanoagents (#9) — child sessions appear under the parent in the sidebar |
-| `"propose an edit to /path/to/file.py — replace string concat with f-string"` | chat path → fs.propose_edit → file_diff Part rendered inline |
-| `"hello, who are you?"` | chat agent (CLIO identity reply) |
+| Prompt | Agent | What it exercises |
+|---|---|---|
+| `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | `clio/data-semantics` | delegation to the `analysis` or `data` subagent (Parquet inspection) |
+| `"Inspect /tmp/clio-demo/clio_demo.h5"` | `clio/data-semantics` | delegation to the `hdf5` or `data` subagent (HDF5 inspection) |
+| `"validate parquet schema and statistics in parallel"` | `clio/data-semantics` | parallel child tasks (`spawn_agents_parallel`) — child sessions appear under the parent in the sidebar |
+| `"propose an edit to /path/to/file.py — replace string concat with f-string"` | `clio/standard` | `fs_propose_edit` → file_diff Part rendered inline |
+| `"hello, who are you?"` | `clio/standard` | identity reply from the composed prompt |
 
 ## Try a third-party MCP server
 

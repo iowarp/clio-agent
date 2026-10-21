@@ -14,9 +14,11 @@ explicitly request these shipped aliases for one Tasks release cycle:
 `cancel_agent_tasks` was an unfinished branch addition, not a shipped alias in
 the selected compatibility baseline. Use `cancel_tasks`.
 
-`spawn_agent_task` preserves `agent`, `task`, `placement`, `input_task_ids`,
-`blueprint_id` and `strategy`. `spawn_agents_parallel` preserves `spawns` and
-`placement`; each entry uses the same blueprint, evidence and strategy preparation
+`spawn_agent_task` takes `agent`, `task`, `placement`, `input_task_ids` and
+`strategy`; `agent` names a defined subagent of the session's agent or an
+installed agent (`marketplace/id`). The former `blueprint_id` argument is gone
+with the blueprint system. `spawn_agents_parallel` preserves `spawns` and
+`placement`; each entry uses the same agent, evidence and strategy preparation
 as a single spawn. Invalid members return independent errors. Omitted or local
 placement works. Special relay placement is explicitly rejected; configure an
 ordinary MCP server instead.
