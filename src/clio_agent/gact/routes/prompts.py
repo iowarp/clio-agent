@@ -77,9 +77,6 @@ def register_prompts_routes(app: FastAPI, deps: "GactDeps") -> None:
                 {"scope": source.scope, "root": str(source.root)} for source in registry.sources
             ],
         }
-        overlay_prompt_sources = deps.prompt_agent_overlay_for_request(session_id or "")
-        if overlay_prompt_sources:
-            payload["agent_overlay"] = overlay_prompt_sources
         return payload
 
     @app.get("/v1/prompts/{prompt_id:path}")

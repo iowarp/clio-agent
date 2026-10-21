@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.agents.runners import run_resolved_agent
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.catalog import (
     _tool_owner_for_catalog,
@@ -142,31 +143,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception:  # noqa: BLE001
                 Client = None  # type: ignore
             for sid, info in sorted(installed.items()):
-                for declared in info.get("tools") or []:
-                    if not isinstance(declared, Mapping):
-                        continue
-                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
-                    if not tool_name:
-                        continue
-                    rows.append(
-                        {
-                            "id": tool_name,
-                            "name": tool_name,
-                            "title": str(declared.get("title") or ""),
-                            "description": declared.get("description") or "",
-                            "server_id": sid,
-                            "source": "agent_blueprint_mcp_descriptor",
-                            "status": declared.get("status") or info.get("status") or "unknown",
-                            "enabled": bool(declared.get("enabled", False)),
-                            "input_schema": declared.get("input_schema") or {},
-                            "output_schema": declared.get("output_schema") or {},
-                            "owner": _tool_owner_for_catalog(tool_name),
-                            "tags": _tool_tags_for_catalog(tool_name),
-                            "visible_to": _tool_visible_to_for_catalog(tool_name),
-                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
-                            "descriptor_id": info.get("descriptor_id") or "",
-                        }
-                    )
                 spec = info.get("spec", {})
                 if Client is None:
                     continue
@@ -272,28 +248,6 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception:  # noqa: BLE001 - optional fastmcp client; None when unavailable
                 Client = None  # type: ignore
             for sid, info in installed.items():
-                for declared in info.get("tools") or []:
-                    if not isinstance(declared, Mapping):
-                        continue
-                    tool_name = str(declared.get("name") or declared.get("id") or "").strip()
-                    if tool_name == tool_id:
-                        return {
-                            "id": tool_id,
-                            "name": tool_id,
-                            "title": str(declared.get("title") or ""),
-                            "description": declared.get("description") or "",
-                            "server_id": sid,
-                            "source": "agent_blueprint_mcp_descriptor",
-                            "status": declared.get("status") or info.get("status") or "unknown",
-                            "enabled": bool(declared.get("enabled", False)),
-                            "input_schema": declared.get("input_schema") or {},
-                            "output_schema": declared.get("output_schema") or {},
-                            "owner": _tool_owner_for_catalog(tool_id),
-                            "tags": _tool_tags_for_catalog(tool_id),
-                            "visible_to": _tool_visible_to_for_catalog(tool_id),
-                            "agent_blueprint_id": info.get("agent_blueprint_id") or "",
-                            "descriptor_id": info.get("descriptor_id") or "",
-                        }
                 if Client is None:
                     break
                 try:
@@ -404,11 +358,11 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             return {
                 "commands": planner_command_rows(
                     app,
-                    deps.resolve_runtime_dynamic_agent,
-                    agent_id=agent_id or "",
+                    deps.resolve_session_agent(agent_id or "", session_id=session_id or "")
+                    if session_id
+                    else None,
                     cwd=cwd,
                     extra_roots=extra_roots,
-                    session_id=session_id or "",
                 )
             }
         return {"commands": all_command_rows(app, cwd=cwd, extra_roots=extra_roots)}
@@ -485,11 +439,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             or ""
         ).strip()
         if caller_type == "agent":
-            caller_agent = deps.resolve_runtime_dynamic_agent(
-                caller_agent_id,
-                session_id=sid,
-                workspace_id=sess.workspace_id,
-            )
+            caller_agent = deps.resolve_session_agent(caller_agent_id, session_id=sid)
             allowed_ids = agent_allowed_command_ids(caller_agent) if caller_agent else set()
             deny_reason = ""
             if command_meta.get("agent_invocable") is not True:
@@ -528,11 +478,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         if command_meta.get("source") == "user":
             agent_id = str(command_meta.get("agent_id") or "")
-            agent_def = deps.resolve_runtime_dynamic_agent(
-                agent_id,
-                session_id=sid,
-                workspace_id=sess.workspace_id,
-            )
+            agent_def = deps.resolve_session_agent(agent_id, session_id=sid)
             if agent_def is None:
                 raise HTTPException(
                     status_code=404,
@@ -591,7 +537,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             # #755: the runner is a full (blocking) DSPy agent turn that can
             # take minutes. Run it off the event loop so /health, SSE
             # heartbeats, and other sessions stay responsive, mirroring how
-            # turn.py executes blueprint runners. Copy the request context
+            # turn.py executes agent modules. Copy the request context
             # with the app contextvar bound so the runner's dynamic-agent
             # tool wrappers still resolve ``app`` inside the worker thread;
             # the synchronous response shape and audit rows are unchanged.
@@ -600,7 +546,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
             pred = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: command_turn_context.run(
-                    deps.blueprint_runner_for_agent(agent_def),
+                    run_resolved_agent,
                     app.state.agent,
                     agent_def,
                     question,

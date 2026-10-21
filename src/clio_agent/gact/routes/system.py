@@ -463,7 +463,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # BBB25 — child agents. #948 S4 retired the nanoagent subsessions +
                 # subagent.* events; the capability is now provided by the spawn
                 # substrate: children run as real agent-task sessions
-                # (session_type=agent_task) surfaced via blueprint.delegation.* events.
+                # (session_type=agent_task) surfaced via delegation.* events.
                 subagents=True,
                 session_export=True,  # #16 — /v1/sessions/{sid}/export + import
                 # #760: no /summarize or /attachments routes exist — advertising
@@ -499,8 +499,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 x_clio_stream_fallback_reasons=_stream_fallback_reason_capabilities(),
                 x_clio_direct_delete_permissions=True,
                 x_clio_prompt_registry=True,
-                x_clio_expert_packs=True,
-                x_clio_agent_blueprints=True,
+                x_clio_agent_plugins=True,
                 x_clio_user_questions=True,
                 x_clio_interactions=True,
                 x_clio_retry_attempts=True,

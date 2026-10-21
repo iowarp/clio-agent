@@ -4,11 +4,10 @@ SPEC §6.7 third-party MCP server surface the gact-tui MCP browser and the
 ``/v1/mcp/servers/{sid}/call`` dispatch path consume:
 
 * ``GET /v1/mcp/servers`` -- enumerate the bundled in-process built-ins plus any
-  third-party servers installed at runtime (and disabled agent-blueprint MCP
-  descriptors).
+  third-party servers installed at runtime.
 * ``GET /v1/mcp/handshake`` -- live readiness probe of every DECLARED MCP server
-  (workspace/user ``mcp.yaml`` + active pack frontmatter), reachability + tool
-  count per server.
+  (workspace/user ``mcp.yaml`` + the session agent's plugin servers),
+  reachability + tool count per server.
 * ``POST /v1/mcp/servers`` -- install + connect to a third-party server (stdio or
   http), record it on ``app.state.external_mcp_servers``.
 * ``POST /v1/mcp/servers/{sid}/call`` -- invoke a tool on an installed server,
@@ -43,13 +42,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact.agent_blueprints import discover_agent_blueprints, load_mcp_descriptors
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
-    _runtime_workspace_catalog_cwd,
-)
-from clio_agent.gact.blueprint_activation import blueprint_mcp_servers
+from clio_agent.gact.agents.resolution import _runtime_workspace_catalog_cwd
 from clio_agent.gact.events import Event
 from clio_agent.gact.mcp_apps import call_tool_result_to_observer
 from clio_agent.gact.off_loop import run_off_loop
@@ -188,36 +181,6 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "spec": redact_mcp_spec(info.get("spec", {})),
                 }
             )
-        try:
-            for blueprint in discover_agent_blueprints(cwd=cwd):
-                for descriptor in load_mcp_descriptors(
-                    blueprint.root,
-                    scope=blueprint.scope,
-                    blueprint_id=blueprint.id,
-                ):
-                    descriptor_server_id = f"agent_blueprint_mcp_{blueprint.id}_{descriptor['id']}"
-                    legacy_descriptor_server_id = f"agent_blueprint_mcp_{descriptor['id']}"
-                    if (
-                        descriptor_server_id in installed_ids
-                        or legacy_descriptor_server_id in installed_ids
-                    ):
-                        continue
-                    rows.append(
-                        {
-                            "id": descriptor_server_id,
-                            "name": descriptor["name"],
-                            "status": "disabled",
-                            "transport": descriptor.get("transport") or "unknown",
-                            "tools_count": 0,
-                            "tools": [],
-                            "spec": descriptor,
-                            "source": "agent_blueprint",
-                            "agent_blueprint_id": blueprint.id,
-                            "enabled": False,
-                        }
-                    )
-        except Exception:  # noqa: BLE001,S110 - row assembly best-effort; partial rows returned
-            pass
         return rows
 
     @app.get("/v1/mcp/handshake")
@@ -226,7 +189,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         Complements ``GET /v1/mcp/servers`` (a catalog of what is mounted): this
         actively connects to each declared server (workspace/user ``mcp.yaml`` +
-        active pack frontmatter) over its transport, lists its tools, and reports
+        the session agent's plugin servers) over its transport, lists its tools, and reports
         per-server reachability + tool count. That lets a client (the TUI) show
         "clio-kit up (12 tools), hdf5 **down**" instead of one aggregate gateway
         row. One unreachable/slow server never sinks the rest (probed in
@@ -241,14 +204,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
         from clio_agent.providers.handshake import handshake_mcp_servers  # noqa: PLC0415
 
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-        specs = declared_mcp_specs(
-            app,
-            cwd=cwd,
-            session_id=session_id,
-            active_blueprint_id=_runtime_active_agent_blueprint_id,
-            active_blueprint_path=_runtime_active_agent_blueprint_path,
-            load_blueprint_servers=blueprint_mcp_servers,
-        )
+        specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
         reports = await handshake_mcp_servers(list(specs.values()))
         return {"servers": [handshake_server_row(report) for report in reports]}
 
