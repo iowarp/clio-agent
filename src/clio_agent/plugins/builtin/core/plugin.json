@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "core",
+  "version": "1.0.0",
+  "description": "What every CLIO agent carries: operating guidelines, rendering, the task lifecycle, conversation runtime tools and the react and plan flows.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["core", "runtime"],
+  "extensions": {
+    "ai.iowarp.clio": {
+      "catalogs": ["clio-workspace"]
+    }
+  }
+}
