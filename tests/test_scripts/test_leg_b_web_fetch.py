@@ -51,9 +51,10 @@ def test_web_mcp_endpoint_is_a_durable_user_configuration() -> None:
 
 def test_web_testing_agent_reports_a_human_result_and_keeps_json_in_details() -> None:
     leg = _load_leg()
-    prompt = (leg.PACK_TEMPLATE_DIR / "experts" / "main.md").read_text(encoding="utf-8")
+    fragment = leg.PACK_TEMPLATE_DIR / "plugins" / "web-testing" / "ai.iowarp.clio" / "prompt"
+    prompt = (fragment / "main.md").read_text(encoding="utf-8")
 
-    assert "concise human-readable verification result" in prompt
+    assert "Write `answer` for a human, not as a JSON dump" in " ".join(prompt.split())
     assert "provider" in prompt
     assert "document identity" in prompt
     assert "conversion lifecycle" in prompt

@@ -22,7 +22,7 @@ def _load_script() -> ModuleType:
 
 
 @pytest.mark.marketplace
-def test_live_gate_inherits_model_and_uses_real_marketplace_blueprint() -> None:
+def test_live_gate_inherits_model_and_uses_real_marketplace_agent() -> None:
     """The gate must not pin a model or reference the removed experiment tree."""
     module = _load_script()
 
@@ -31,5 +31,8 @@ def test_live_gate_inherits_model_and_uses_real_marketplace_blueprint() -> None:
     destinations = {action.dest for action in parser._actions}
 
     assert "model" not in destinations
-    assert args.blueprint_path == "external/clio-agent-marketplace/earthscope-flat"
-    assert (module.REPO / args.blueprint_path / "AGENT.md").is_file()
+    assert args.agent == "clio/earthscope-flat"
+    agents = module.REPO / "external" / "clio-agent-marketplace" / "agents"
+    assert any(
+        'id = "earthscope-flat"' in path.read_text(encoding="utf-8") for path in agents.glob("*.py")
+    )
