@@ -495,6 +495,21 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
                 plugin,
             )
         )
+    workflow_state = ext.get("workflow_state")
+    if workflow_state is not None:
+        from clio_agent.gact.workflow_state.schema import WorkflowStateSchema  # noqa: PLC0415
+
+        try:
+            WorkflowStateSchema.model_validate(workflow_state)
+        except ValueError as exc:
+            diagnostics.append(
+                Diagnostic(
+                    "error",
+                    "workflow_state_invalid",
+                    f"workflow_state does not match the workflow_state schema: {exc}",
+                    plugin,
+                )
+            )
     record = PluginRecord(
         id=plugin,
         version=version,
@@ -519,7 +534,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
             [CatalogRecord(id=str(c), path="") for c in ext.get("catalogs") or ()]
             + _catalogs(clio_dir)
         ),
-        workflow_state=ext.get("workflow_state"),
+        workflow_state=workflow_state,
         diagnostics=tuple(diagnostics),
         executable_digest=exec_digest,
         text_digest=text_digest,

@@ -24,8 +24,8 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Agents, workflows and scheduling",
-        ("agents", "agent_tasks", "workflows", "goal", "scheduler", "variants", "fleet"),
-        "Child-agent concurrency, declared-workflow step liveness, goal judging and the cron "
+        ("agents", "agent_tasks", "plugins", "workflows", "goal", "scheduler", "variants", "fleet"),
+        "Installed plugins and agents, child-agent concurrency, goal judging and the cron "
         "scheduler.",
     ),
     (
@@ -123,14 +123,13 @@ KEY_NOTES: dict[str, str] = {
     "gact.tasks.storage.concurrency": (
         "Native Download/Indexing worker concurrency; positive, default 10, independent of Shell."
     ),
-    "agents.default_blueprint_id": (
-        "Installed marketplace Agent Blueprint a fresh deployment bootstraps and binds as its "
-        "default (base-agent: one react root over CLIO's native workspace tools); set it to ship a "
-        "different agent, never to define one in code."
+    "plugins.store_root": (
+        "Folder holding installed marketplaces, plugin snapshots, user agents and pinned session "
+        "resolutions; unset uses <config>/plugins. Set it for an isolated or shared store."
     ),
-    "agents.disable_default_registry_bootstrap": (
-        "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
-        "set true for an offline deployment."
+    "plugins.default_marketplace": (
+        "Source of the shipped default marketplace (a folder or git URL); unset uses the bundled "
+        "marketplace, else the pinned default URL. Point it at a mirror or an offline copy."
     ),
     "agents.react_extract.after_steps": (
         "Model steps a ReAct loop must exceed before DSPy's extract may fill the outputs it did "
@@ -409,18 +408,6 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
-    "gact.blueprint_registry.url": (
-        "Git URL of the default agent-blueprint marketplace registry; override to point at a "
-        "private/mirrored marketplace."
-    ),
-    "gact.blueprint_source.clone_timeout_s": (
-        "Seconds a temporary `git clone --depth 1` of a remote blueprint source may run before "
-        "timing out; raise for a large repo or slow link."
-    ),
-    "gact.blueprint_source.ls_remote_timeout_s": (
-        "Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check may run before "
-        "timing out; lower to keep the desktop versions panel snappy, raise for a slow link."
-    ),
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."
@@ -582,11 +569,6 @@ KEY_NOTES: dict[str, str] = {
         "(excerpt + a durable session/message reference) instead of inlined verbatim into the "
         "parent's wait_agent_tasks result; raise to inline larger child answers, lower to bound "
         "coordinator context growth sooner."
-    ),
-    "limits.agent_task_artifact_context_chars": (
-        "Character bound on registered artifact content injected into a commissioning parent "
-        "when a child blueprint returns; raise for larger reports, lower to bound resumed "
-        "parent context growth."
     ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
@@ -1126,17 +1108,13 @@ KEY_NOTES: dict[str, str] = {
         "Retention bound on the per-session SPOTTER clearance-event map; raise only for many "
         "concurrent protected sessions."
     ),
-    "spotter.watcher_blueprint_id": (
-        "Agent-Blueprint id used to build the SPOTTER standing watcher child session; change to "
-        "point spotter-ai at a custom watcher blueprint."
+    "spotter.watcher_agent": (
+        "Installed agent (marketplace/id) that runs as the SPOTTER standing watcher child "
+        "session; change to point spotter-ai at a custom watcher agent."
     ),
     "system.release_manifest_url": (
         "Release manifest the server reads to report the latest CLIO release to clients; point "
         "at a mirror or a fork's releases feed."
-    ),
-    "spotter.watcher_expert_id": (
-        "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "
-        "alongside watcher_blueprint_id for a custom expert."
     ),
     "tools.circuit_breaker.failure_limit": (
         "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
@@ -1229,9 +1207,9 @@ KEY_NOTES: dict[str, str] = {
         "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
     ),
     "tools.mcp.session_warmup": (
-        "Start a session's MCP servers (its blueprint's and any always-load service) in the "
-        "background when the session is created or a blueprint is activated, so the first "
-        "message does not wait for them; set false to start servers only when a turn needs them."
+        "Start a session's MCP servers (its plugins' and any always-load service) in the "
+        "background when the session is created or its agent changes, so the first message "
+        "does not wait for them; set false to start servers only when a turn needs them."
     ),
     "tools.mcp.spawn_diet": (
         "Enables the learned direct-interpreter spawn shortcut for clio-kit servers (skips ~90MB "

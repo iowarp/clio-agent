@@ -276,30 +276,12 @@ def _dynamic_agent_runtime_provenance(
         payload["resolved_skills"] = {
             skill_id: res.to_metadata() for skill_id, res in resolutions.items()
         }
-    if agent_def.source == "expert_pack":
+    if agent_def.source == "plugin":
         payload.update(
             {
                 "parent_id": agent_def.parent_id,
                 "skills": list(agent_def.skills),
-                # Typed per-id resolution outcome (#920): resolved/missing/
-                # ambiguous/unreadable + path/scope/checksum, from row load (S1).
-                "skill_resolution": dict(agent_def.metadata.get("skill_resolution") or {}),
                 "commands": list(agent_def.commands),
-                "pack": {
-                    "id": str(agent_def.metadata.get("pack_id") or ""),
-                    "version": str(agent_def.metadata.get("pack_version") or ""),
-                    "scope": str(
-                        agent_def.metadata.get("pack_scope")
-                        or agent_def.metadata.get("expert_scope")
-                        or ""
-                    ),
-                    "definition_path": str(
-                        agent_def.metadata.get("definition_path")
-                        or agent_def.metadata.get("pack_definition_path")
-                        or agent_def.metadata.get("expert_path")
-                        or ""
-                    ),
-                },
             }
         )
     return payload

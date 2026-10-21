@@ -103,11 +103,11 @@ _WORKFLOW_SCHEMA_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "workflow_state_schema_absent": {
         "category": "pack_declaration",
         "recovery_actions": [
-            "declare_workflow_state_schema_in_agent_md",
+            "declare_workflow_state_in_a_plugin",
             "continue_with_generic_merge",
         ],
         "description": (
-            "The session's active Agent Blueprint declares no workflow_state schema, "
+            "No plugin of the session's agent declares a workflow_state schema, "
             "so the typed-state engine ran with the generic presence-only schema "
             "(rank 0 everywhere, no artifact grounding, no domain scrub aliases). "
             "Legitimate generic behavior, recorded so the degradation is queryable "

@@ -8,7 +8,6 @@ resolves the same way in a session.
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -86,20 +85,29 @@ class AgentEntry:
 
 
 def plugin_store_root() -> Path:
-    """``<config>/plugins``; ``CLIO_PLUGIN_STORE`` overrides it (tests, isolated runs)."""
+    """``<config>/plugins``; ``plugins.store_root`` overrides it (tests, isolated runs)."""
 
-    override = os.environ.get("CLIO_PLUGIN_STORE", "").strip()
+    from clio_agent import conf, paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    override = conf.resolve(
+        "plugins.store_root", env="CLIO_PLUGIN_STORE", default="", cast=conf.as_str
+    ).strip()
     if override:
         return Path(override).expanduser()
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
     return paths.user_config_dir() / "plugins"
 
 
 def default_marketplace_source() -> str:
     """The shipped default marketplace: the checkout's submodule, else the pinned URL."""
 
-    configured = os.environ.get("CLIO_DEFAULT_MARKETPLACE", "").strip()
+    from clio_agent import conf  # noqa: PLC0415
+
+    configured = conf.resolve(
+        "plugins.default_marketplace",
+        env="CLIO_DEFAULT_MARKETPLACE",
+        default="",
+        cast=conf.as_str,
+    ).strip()
     if configured:
         return configured
     if (_SUBMODULE / "ai.iowarp.clio" / "marketplace.json").is_file():

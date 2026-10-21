@@ -1,8 +1,9 @@
 """Resolve a child agent and prepare its session; no execution or lifecycle ownership.
 
-A child is either one of the parent agent's defined subagents (shipped by the
-parent's resolved plugins) or an installed agent started as a general subagent
-through the ``delegation`` plugin. Either way the child session pins its own
+A child is one of the parent agent's defined subagents (shipped by the parent's
+resolved plugins), an installed agent started as a general subagent through the
+``delegation`` plugin, or ``self``: the parent's own agent, which a flow run
+uses. Either way the child session pins its own
 resolution, computed here outside task locking, before the assignment is
 accepted.
 """
@@ -62,6 +63,17 @@ def resolve_child_agent(app: "FastAPI", parent_id: str, agent_id: str) -> tuple[
     from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
 
     parent = session_resolution(app, parent_id)
+    if agent_id == "self":
+        # A flow run (``run_flow``, ``run_plan``, ``ctx.call`` on a flow) runs the
+        # parent's own agent, pinned to the parent's exact resolution and delta.
+        session = app.state.sessions.get(parent_id)
+        metadata = dict(getattr(session, "metadata", None) or {})
+        pin = {
+            key: metadata[key]
+            for key in (AGENT_REF_KEY, AGENT_DELTA_KEY, SUBAGENT_KEY)
+            if key in metadata
+        }
+        return parent, {**pin, AGENT_RESOLUTION_KEY: parent.digest}
     if any(row["id"] == agent_id for row in parent.subagents):
         try:
             child = plugin_service(app).resolve_subagent(parent, agent_id)
@@ -95,12 +107,17 @@ def prepare_child_session(
     from clio_agent.gact.agent_task_limits import max_spawn_depth  # noqa: PLC0415
 
     store: SessionStore = app.state.sessions
+    if store.snapshot(parent_id) is None:
+        raise ValueError("Parent session is unavailable")
+    # Resolving first pins a never-pinned parent, so the launch snapshot below
+    # already carries that pin.
+    child, pin = resolve_child_agent(app, parent_id, agent_id)
     parent = store.snapshot(parent_id)
     if parent is None:
         raise ValueError("Parent session is unavailable")
     launch = _launch_context(parent)
     digest = argument_digest(launch)
-    child, pin = resolve_child_agent(app, parent_id, agent_id)
+    pin = {**pin, "spawn_target": agent_id}
     title = str(child.agent.get("name") or child.agent["id"])
 
     def create(

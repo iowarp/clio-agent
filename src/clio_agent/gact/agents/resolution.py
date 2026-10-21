@@ -76,7 +76,8 @@ def session_delta(app: Any, session_id: str) -> Delta:
 
 
 def default_agent_ref(app: Any) -> str:
-    defaults = getattr(getattr(app, "state", None), "session_defaults", None)
+    store = getattr(getattr(app, "state", None), "session_defaults", None)
+    defaults = store.get() if store is not None and hasattr(store, "get") else store
     value = getattr(defaults, "agent_ref", "") if defaults is not None else ""
     return str(value or DEFAULT_AGENT)
 
@@ -120,7 +121,10 @@ def prepare_session_agent(app: Any, metadata: dict[str, Any], ref: str = "") -> 
     delta = Delta()
     raw = metadata.get(AGENT_DELTA_KEY)
     if isinstance(raw, Mapping):
-        delta = Delta(tuple(str(v) for v in raw.get("add") or ()), tuple(str(v) for v in raw.get("remove") or ()))
+        delta = Delta(
+            tuple(str(v) for v in raw.get("add") or ()),
+            tuple(str(v) for v in raw.get("remove") or ()),
+        )
     resolution = resolve_for_session(app, chosen, delta)
     metadata.update(resolution_metadata(resolution, ref=chosen, delta=delta))
     return resolution
@@ -147,7 +151,7 @@ def pin_session_agent(
     applied = delta if delta is not None else session_delta(app, session_id)
     resolution = resolve_for_session(app, chosen, applied)
     patch = resolution_metadata(resolution, ref=chosen, delta=applied)
-    app.state.sessions.update(session_id, metadata=patch, agent={"id": resolution.agent["id"]})
+    app.state.sessions.update(session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]})
     return resolution
 
 
@@ -346,7 +350,10 @@ def supplied_server_values(
     server reads the problems from the file it was given.
     """
 
-    from clio_agent.plugins.servers import PROVENANCE_CONFIG_VAR, references_variable  # noqa: PLC0415
+    from clio_agent.plugins.servers import (  # noqa: PLC0415
+        PROVENANCE_CONFIG_VAR,
+        references_variable,
+    )
 
     specs = {name: row.get("spec") for name, row in mcp_servers.items()}
     if not references_variable(specs, PROVENANCE_CONFIG_VAR):

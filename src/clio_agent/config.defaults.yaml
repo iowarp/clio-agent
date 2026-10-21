@@ -269,12 +269,6 @@ providers.model_catalog_ttl_s: 86400.0
 # Per-call byte/character/time bounds and bounded-retry budgets across the
 # tool and LM paths.
 
-# CLIO_AGENT_TASK_ARTIFACT_CONTEXT_CHARS  (int)  <- src/clio_agent/gact/agent_task_artifacts.py
-# Character bound on registered artifact content injected into a
-# commissioning parent when a child blueprint returns; raise for larger
-# reports, lower to bound resumed parent context growth.
-limits.agent_task_artifact_context_chars: 64000
-
 # CLIO_AGENT_TASK_OUTPUT_DIGEST_CHARS  (int)  <- src/clio_agent/gact/agents/agent_task_output_digest.py
 # Character bound above which a completed spawned child's full output is
 # digested (excerpt + a durable session/message reference) instead of
@@ -396,7 +390,7 @@ limits.view_pdf_source_max_bytes: 536870912
 # ==========================================================================
 # Agents, workflows and scheduling
 # ==========================================================================
-# Child-agent concurrency, declared-workflow step liveness, goal judging and
+# Installed plugins and agents, child-agent concurrency, goal judging and
 # the cron scheduler.
 
 # CLIO_MAX_CONCURRENT_AGENT_TASKS  (int)  <- src/clio_agent/gact/agent_task_limits.py
@@ -410,18 +404,6 @@ agent_tasks.max_concurrent: 3
 # unlimited. Changes apply to new spawns; existing deeper descendants remain
 # visible.
 agent_tasks.max_depth: 8
-
-# CLIO_DEFAULT_AGENT_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/agent_blueprint_refresh.py
-# Installed marketplace Agent Blueprint a fresh deployment bootstraps and
-# binds as its default (base-agent: one react root over CLIO's native
-# workspace tools); set it to ship a different agent, never to define one in
-# code.
-agents.default_blueprint_id: "base-agent"
-
-# CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP  (bool)  <- src/clio_agent/gact/agent_blueprint_refresh.py
-# Disables auto-installing the default marketplace Agent-Blueprint registry
-# on first boot; set true for an offline deployment.
-agents.disable_default_registry_bootstrap: false
 
 # CLIO_REACT_EXTRACT_AFTER_STEPS  (int)  <- src/clio_agent/gact/agents/clio_react_extract.py
 # Model steps a ReAct loop must exceed before DSPy's extract may fill the
@@ -454,6 +436,18 @@ agents.react_extract.enabled: true
 # selection takes precedence, including an explicit null to inherit the
 # conversation model.
 # goal.judge_model:  # default unset; resolved in code
+
+# CLIO_DEFAULT_MARKETPLACE  (str)  <- src/clio_agent/plugins/service.py
+# Source of the shipped default marketplace (a folder or git URL); unset
+# uses the bundled marketplace, else the pinned default URL. Point it at a
+# mirror or an offline copy.
+# plugins.default_marketplace:  # default unset; resolved in code
+
+# CLIO_PLUGIN_STORE  (str)  <- src/clio_agent/plugins/service.py
+# Folder holding installed marketplaces, plugin snapshots, user agents and
+# pinned session resolutions; unset uses <config>/plugins. Set it for an
+# isolated or shared store.
+# plugins.store_root:  # default unset; resolved in code
 
 # CLIO_SCHEDULER_JITTER_WINDOW_S  (int)  <- src/clio_agent/gact/scheduler.py
 # Seconds-wide window a schedule's fire time is deterministically jittered
@@ -539,22 +533,6 @@ compaction.keep.last_turns: 0
 # Optional bearer token required on non-loopback GACT API requests; set to
 # protect a server exposed beyond localhost.
 # gact.auth.bearer_token:  # default unset; resolved in code
-
-# CLIO_BLUEPRINT_REGISTRY_URL  (str)  <- src/clio_agent/gact/agent_blueprints.py
-# Git URL of the default agent-blueprint marketplace registry; override to
-# point at a private/mirrored marketplace.
-gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.git"
-
-# CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S  (float)  <- src/clio_agent/gact/agent_blueprint_sources.py
-# Seconds a temporary `git clone --depth 1` of a remote blueprint source may
-# run before timing out; raise for a large repo or slow link.
-gact.blueprint_source.clone_timeout_s: 30.0
-
-# CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S  (float)  <- src/clio_agent/gact/blueprint_update_check.py
-# Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check
-# may run before timing out; lower to keep the desktop versions panel
-# snappy, raise for a slow link.
-gact.blueprint_source.ls_remote_timeout_s: 10.0
 
 # CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT  (int)  <- src/clio_agent/gact/context_reference_search.py
 # Rows returned per reference kind when the picker opens with no query
@@ -1341,10 +1319,10 @@ tools.mcp.probe_timeout_retries: 3
 tools.mcp.response_cache_enabled: false
 
 # CLIO_MCP_SESSION_WARMUP  (bool)  <- src/clio_agent/gact/session_warmup.py
-# Start a session's MCP servers (its blueprint's and any always-load
-# service) in the background when the session is created or a blueprint is
-# activated, so the first message does not wait for them; set false to start
-# servers only when a turn needs them.
+# Start a session's MCP servers (its plugins' and any always-load service)
+# in the background when the session is created or its agent changes, so the
+# first message does not wait for them; set false to start servers only when
+# a turn needs them.
 tools.mcp.session_warmup: true
 
 # CLIO_MCP_SPAWN_DIET  (bool)  <- src/clio_agent/tools/spawn_diet.py
@@ -1688,12 +1666,7 @@ spotter.clearance_progress_timeout_s: 180.0
 # for many concurrent protected sessions.
 spotter.max_clearance_events: 256
 
-# CLIO_SPOTTER_BLUEPRINT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
-# Agent-Blueprint id used to build the SPOTTER standing watcher child
-# session; change to point spotter-ai at a custom watcher blueprint.
-spotter.watcher_blueprint_id: "spotter-ai"
-
-# CLIO_SPOTTER_EXPERT_ID  (str)  <- src/clio_agent/gact/spotter_watcher.py
-# Expert id within the watcher blueprint SPOTTER arms as the standing
-# watcher; change alongside watcher_blueprint_id for a custom expert.
-spotter.watcher_expert_id: "spotter_watcher"
+# CLIO_SPOTTER_AGENT  (str)  <- src/clio_agent/gact/spotter_watcher.py
+# Installed agent (marketplace/id) that runs as the SPOTTER standing watcher
+# child session; change to point spotter-ai at a custom watcher agent.
+spotter.watcher_agent: "clio/spotter-ai"
