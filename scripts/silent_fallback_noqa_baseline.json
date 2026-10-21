@@ -56,7 +56,6 @@
  "gact/artifacts/wire.py": 1,
  "gact/autonomous_loop.py": 1,
  "gact/blueprint_activation.py": 3,
- "gact/builtin_skills/work-with-pdfs/scripts/prepare_pdf.py": 2,
  "gact/catalog.py": 4,
  "gact/claude_code_auth_reprobe.py": 1,
  "gact/default_registry_migration.py": 4,

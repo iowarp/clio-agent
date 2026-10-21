@@ -21,6 +21,25 @@ def _workspace() -> Path:
     return Path(raw).resolve(strict=True)
 
 
+def _session_skill_folders() -> dict[str, str]:
+    """The folders of the skills the session's plugins provide (scripts live there)."""
+
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        session_resolution,
+    )
+
+    app, session_id = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not session_id:
+        return {}
+    try:
+        resolution = session_resolution(app, session_id)
+    except SessionAgentUnavailable:
+        return {}
+    return {row["id"]: str(Path(row["path"]).parent) for row in resolution.skills}
+
+
 def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
     """Build the runtime-preparation tool with execution-host inventory."""
     from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -62,6 +81,8 @@ def build_prepare_document_runtime_tool(*, execution: bool = False) -> Any:
                 "Converters and fonts are not checked by execution discovery. "
                 "Use prepare_document_runtime for current document capabilities and fonts."
             )
+        if not execution:
+            runtime["skills"] = _session_skill_folders()
         runtime["dependency_guidance"] = (
             "Package entries report current versions and their verification method. "
             "Imported entries and successful required_imports checks verify actual imports. "

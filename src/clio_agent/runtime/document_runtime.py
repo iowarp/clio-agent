@@ -414,17 +414,6 @@ def prepare_document_runtime(
                     "python",
                 ],
                 "helper_argv": [str(python), str(STACK_ROOT / "cli.py")],
-                "skills": {
-                    name: str(
-                        Path(__file__).resolve().parents[1] / "gact" / "builtin_skills" / name
-                    )
-                    for name in (
-                        "work-with-pdfs",
-                        "work-with-word",
-                        "work-with-presentations",
-                        "work-with-spreadsheets",
-                    )
-                },
                 "capabilities": {
                     "pdf_extract_render": "ready",
                     "office_create_inspect": "ready",

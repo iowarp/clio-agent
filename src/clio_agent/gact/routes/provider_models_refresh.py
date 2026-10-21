@@ -48,8 +48,8 @@ def register_provider_models_refresh_routes(app: FastAPI, deps: "GactDeps") -> N
         (no-silent-fallback): the response's per-row ``failed_reason`` says
         exactly which providers kept their prior overlay and why, while every
         provider's fresh ``added``/``removed``/``unchanged`` model-id delta
-        rides along for the ``/update-models`` skill
-        (:mod:`clio_agent.gact.builtin_skills`) or the ``refresh_provider_models``
+        rides along for the core plugin's ``update-models`` skill or the
+        ``refresh_provider_models``
         agent tool's caller to relay verbatim — no client-side comparison logic
         needed.
         """
