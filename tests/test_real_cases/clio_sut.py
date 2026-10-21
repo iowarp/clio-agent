@@ -423,7 +423,7 @@ class ClioAgent(SUT):
                 "message_metadata"?: dict}
 
         ``agent_ref`` (``<marketplace>/<agent id>``, e.g.
-        ``clio/earthscope-single-agent``) pins that marketplace agent to the
+        ``clio/earthscope``) pins that marketplace agent to the
         session at creation (``metadata.agent_ref``); the run records
         ``agent_ref``, the session's pinned ``active_agent_ref`` (from
         ``GET /v1/sessions/{sid}/agent``) and ``agent_activated``. The default

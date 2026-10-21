@@ -1153,7 +1153,7 @@ def _coordinate_blocker_result(
         elapsed_s=1.0,
         message=message,
         provider={},
-        session_agent=_pinned("clio/earthscope-single-agent"),
+        session_agent=_pinned("clio/earthscope"),
     )
 
 
@@ -2546,7 +2546,7 @@ def test_final_blocker_answer_must_surface_failed_tool_calls() -> None:
     assert result.passed is False
 
 
-_EARTHSCOPE_REF = "clio/earthscope-single-agent"
+_EARTHSCOPE_REF = "clio/earthscope"
 _LA_COORDINATE_PROMPT = (
     "Explore EarthScope GNSS evidence for the region centered at "
     "34.05 N, 118.25 W with a 75 km radius."
@@ -2566,7 +2566,7 @@ def _earthscope_pipeline_tools(
     png: Path,
     radius_filter_input: Path | None = None,
 ) -> list[dict[str, object]]:
-    """The earthscope-single-agent station-series pipeline as recorded tool rows.
+    """The earthscope station-series pipeline as recorded tool rows.
 
     ``acquire-earthscope-gnss`` stages the raw NDP catalog, cleans it with
     ``pandas_filter_data``, ranks stations on the cleaned catalog, then searches
@@ -2627,7 +2627,7 @@ def _earthscope_result(
     registry_artifacts: list[str] | None = None,
     **case_fields: object,
 ) -> bench.DemoResult:
-    """A result pinned to the earthscope-single-agent, its typed state on the message."""
+    """A result pinned to the earthscope, its typed state on the message."""
 
     if workflow_state is not None:
         message["metadata"]["workflow_state"] = workflow_state  # type: ignore[index]
@@ -2654,8 +2654,8 @@ def _earthscope_result(
 
 
 def test_earthscope_gate_identifies_only_the_earthscope_agent() -> None:
-    assert bench._is_earthscope_agent_ref("clio/earthscope-single-agent")
-    assert bench._is_earthscope_agent_ref("other/earthscope-single-agent@^0.4")
+    assert bench._is_earthscope_agent_ref("clio/earthscope")
+    assert bench._is_earthscope_agent_ref("other/earthscope@^0.4")
     assert not bench._is_earthscope_agent_ref("clio/seismic-waveform-review")
     assert not bench._is_earthscope_agent_ref("")
 
@@ -3065,7 +3065,7 @@ def test_earthscope_cases_target_the_single_agent_and_its_skills() -> None:
     assert set(_EARTHSCOPE_CASE_IDS) <= set(bench._BENCHMARK_LANES["marketplace_agents"])
     for case_id in _EARTHSCOPE_CASE_IDS:
         case = cases[case_id]
-        assert case.agent_ref == "clio/earthscope-single-agent"
+        assert case.agent_ref == "clio/earthscope"
         assert bench._is_earthscope_agent_ref(case.agent_ref)
         # One agent loading skills: no subagent topology to expect.
         assert not case.expected_handoff_agents

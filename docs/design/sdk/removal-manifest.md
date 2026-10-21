@@ -158,3 +158,5 @@ Shared capability plugins replace the copies. `create-pdf-report` exists byte-id
 | `spotter-ai` | `SpotterAI(Agent)` | `spotter` (MCP from `impl/`) |
 | `wildfire-smoke-impact-review` | `WildfireReview(Agent)` | `wildfire` with subagents and the former `workflow:` as a `Plan` |
 | 14 `old/` agents | One class each | One plugin each. Tools that no MCP server in the repository provides were never resolvable and are not carried; `hook-smoke`'s `pre_message` becomes an SDK `@hook("prompt_submit")` |
+
+After the migration the marketplace kept only the flat agents of the two domain families: `factorio-flat` became `factorio` (agent and plugin, 0.5.0) and `earthscope-single-agent` became `earthscope` (0.5.0). The earlier Factorio agent, `earthscope-flat`, `earthscope-gnss-region` and the region depth and width variants were removed with the plugins only they used.

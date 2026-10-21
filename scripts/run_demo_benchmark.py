@@ -35,7 +35,7 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
-# What the earthscope-single-agent does for a station-discovery request: load its
+# What the EarthScope agent does for a station-discovery request: load its
 # region and acquisition skills, then stage the NDP station catalog, clean it and
 # rank stations by radius (``acquire-earthscope-gnss``).
 _EARTHSCOPE_STATION_DISCOVERY_SKILLS = ("resolve-earthscope-region", "acquire-earthscope-gnss")
@@ -135,7 +135,7 @@ def _rebase_agent_ref(ref: str, marketplace: str) -> str:
 
 
 #: The marketplace EarthScope agent whose GNSS evidence the EarthScope checks review.
-_EARTHSCOPE_AGENT_ID = "earthscope-single-agent"
+_EARTHSCOPE_AGENT_ID = "earthscope"
 #: The staged raw EarthScope station catalog and the cleaned copy the
 #: ``acquire-earthscope-gnss`` skill writes; both are station metadata, never series.
 _EARTHSCOPE_RAW_CATALOG_NAME = "earthscope_converted_data.csv"
@@ -3848,7 +3848,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss",
-            agent_ref="clio/earthscope-single-agent",
+            agent_ref="clio/earthscope",
             expected_tools=_EARTHSCOPE_NAMED_REGION_TOOLS,
             expected_skills=_EARTHSCOPE_STATION_SERIES_SKILLS,
             expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
@@ -3881,7 +3881,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "magnitudes, depths, or epicenters."
             ),
             expected=(
-                "CLIO runs the earthscope-single-agent marketplace agent, which "
+                "CLIO runs the earthscope marketplace agent, which "
                 "loads its region, acquisition, analysis and visualization skills "
                 "on demand: the place is geocoded before any station claim, the "
                 "NDP station catalog is staged and cleaned, stations are ranked by "
@@ -3900,7 +3900,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, Los Angeles mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_la",
-            agent_ref="clio/earthscope-single-agent",
+            agent_ref="clio/earthscope",
             expected_tools=_EARTHSCOPE_NAMED_REGION_TOOLS,
             expected_skills=_EARTHSCOPE_STATION_SERIES_SKILLS,
             expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
@@ -3950,7 +3950,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, coordinate mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_coord",
-            agent_ref="clio/earthscope-single-agent",
+            agent_ref="clio/earthscope",
             expected_tools=_EARTHSCOPE_STATION_DISCOVERY_TOOLS,
             forbidden_tools=("geo_geocode",),
             expected_skills=_EARTHSCOPE_STATION_DISCOVERY_SKILLS,

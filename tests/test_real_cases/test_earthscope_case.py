@@ -2,7 +2,7 @@
 
 The real EarthScope case test (supersedes the EarthScope-specific
 ``scripts/run_demo_benchmark.py`` lane): a live CLIO session pinned to the
-``clio/earthscope-single-agent`` marketplace agent must resolve the geography,
+``clio/earthscope`` marketplace agent must resolve the geography,
 acquire real EarthScope/NDP GNSS station CSV evidence, analyze it, render a PNG,
 and synthesize — judged on the *structured* trace, not on the model's prose.
 The agent is one EarthScope GNSS scientist that loads the ``earthscope-skills``
@@ -33,7 +33,7 @@ from pathlib import Path
 import pytest
 from agent_test import matcher
 
-AGENT_REF = "clio/earthscope-single-agent"
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 PROMPT = Path(CASE_DIR, "prompt.txt").read_text().strip()
 

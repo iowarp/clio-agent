@@ -1,6 +1,6 @@
 """EarthScope interactive multi-turn semantics — demo-confidence suite (#682/#687).
 
-Every scene drives the ``clio/earthscope-single-agent`` marketplace agent: one
+Every scene drives the ``clio/earthscope`` marketplace agent: one
 EarthScope GNSS scientist that loads the ``earthscope-skills`` plugin's
 procedures on demand (resolve-earthscope-region, acquire-earthscope-gnss,
 analyze-earthscope-gnss, visualize-earthscope-gnss, ...) and keeps its own typed
@@ -75,7 +75,7 @@ from typing import Any
 import httpx
 import pytest
 
-AGENT_REF = "clio/earthscope-single-agent"
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
 # --- S7 A2UI live gate: the earthscope-skills plugin's station catalog --------

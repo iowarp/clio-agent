@@ -7,8 +7,8 @@ agents from the default marketplace:
 * ``clio/standard``: what a new session runs by default; it carries the
   ``documents`` pack, whose ``pdf`` plugin brings the ``work-with-pdfs`` skill
   and ``view_pdf``, and the ``workspace`` plugin's ``view_image``.
-* ``clio/earthscope-single-agent``: a domain agent built on the science agent,
-  so the same skill reaches it through the same plugins.
+* ``clio/factorio``: a domain agent built on the science agent, so the
+  same skill reaches it through the same plugins.
 
 Each is driven with the PDF supplied two ways, with exactly the wire shapes
 gact-tui sends:
@@ -65,7 +65,7 @@ PROMPT = (
     'What does this PDF report? Quote the sentence that starts with "Finding:" '
     "exactly, and tell me what the label on the second page says."
 )
-AGENTS = ("clio/standard", "clio/earthscope-single-agent")
+AGENTS = ("clio/standard", "clio/factorio")
 DELIVERIES = ("at_reference", "attachment")
 UPLOAD_CHUNK_BYTES = 256 * 1024
 

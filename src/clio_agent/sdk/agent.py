@@ -11,8 +11,8 @@ identity; new capabilities arrive as plugins and packs::
         plugins = Agent.plugins + ["documents", "shell", "delegation"]
         requires = Requires(tool_calling=True, context_tokens=128_000)
 
-    class Manufacturing(ScienceAgent):
-        id = "manufacturing"
+    class Factorio(ScienceAgent):
+        id = "factorio"
         role = "a manufacturing and topology optimization agent"
         plugins = ScienceAgent.plugins + ["manufacturing@^1"]
 

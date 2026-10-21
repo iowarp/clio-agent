@@ -1,7 +1,7 @@
 """EarthScope generalization — one agent, many query shapes (#682).
 
 The original EarthScope case (``test_earthscope_case.py``) proves the
-``clio/earthscope-single-agent`` marketplace agent on ONE verbose query across
+``clio/earthscope`` marketplace agent on ONE verbose query across
 models. This file proves the SAME agent generalizes across distinct, SHORT,
 generic query shapes on one driver model
 (gemma4/ALCF first), judged on the *structured* trace — the tool path actually
@@ -32,7 +32,7 @@ from pathlib import Path
 import pytest
 from agent_test import matcher
 
-AGENT_REF = "clio/earthscope-single-agent"
+AGENT_REF = "clio/earthscope"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
 

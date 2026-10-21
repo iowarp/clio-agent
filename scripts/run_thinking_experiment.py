@@ -19,7 +19,7 @@ Sequencing (matches the owner spec):
   1. boot a server with the level set + stream audit on (unless ``--backend-url``),
   2. **pre-allow permissions via PUT /v1/policies FIRST**,
   3. create workspace + a session pinned to the agent (default
-     ``clio/earthscope-single-agent``, the EarthScope GNSS scientist from the
+     ``clio/earthscope``, the EarthScope GNSS scientist from the
      default ``clio`` marketplace),
   4. POST the LA one-shot question and wait for the turn to finish,
   5. run ``analyze_turn_waterfall.py`` on the capture,
@@ -33,7 +33,7 @@ Usage::
 
     uv run python scripts/run_thinking_experiment.py --level low \
         --provider claude_code --model haiku \
-        --agent clio/earthscope-single-agent \
+        --agent clio/earthscope \
         --results out/thinking_experiment.jsonl
 """
 
@@ -413,7 +413,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--provider", default="claude_code")
     p.add_argument("--model", default="haiku")
     p.add_argument("--transport", default="sdk")
-    p.add_argument("--agent", default="clio/earthscope-single-agent", help="agent ref to pin")
+    p.add_argument("--agent", default="clio/earthscope", help="agent ref to pin")
     p.add_argument(
         "--question",
         action="append",

@@ -10,7 +10,7 @@ submodule, pinned here). These end-to-end tests check what ships:
   The Slice-B goldens pin the engine against their own fixture
   (``tests/test_gact/earthscope_schema.py``), independent of any plugin.
 * **resolver returns the typed schema** — a session of the shipped
-  ``earthscope-single-agent`` agent resolves through
+  ``earthscope`` agent resolves through
   :func:`~clio_agent.gact.agents.resolution.session_workflow_state_schema` to
   the typed (non-GENERIC) engine, and records NO
   ``workflow_state_schema_absent`` fallback (the declaration is present, so the
@@ -84,7 +84,7 @@ def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
         )
     )
     metadata: dict[str, Any] = {}
-    resolution = prepare_session_agent(app, metadata, "clio/earthscope-single-agent")
+    resolution = prepare_session_agent(app, metadata, "clio/earthscope")
     assert "earthscope-skills" in [row["id"] for row in resolution.plugins]
     sid = app.state.sessions.create(workspace_id="ws_default", metadata=metadata).id
 

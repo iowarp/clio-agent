@@ -3,7 +3,7 @@
 
 Boots a GACT server with the Claude SDK transport, inherits the provider's
 selected model, pre-allows permissions, pins the marketplace EarthScope
-agent (``clio/earthscope-single-agent``) to the session, and posts a prompt where acting
+agent (``clio/earthscope``) to the session, and posts a prompt where acting
 on INTERMEDIATE evidence is naturally advantageous — WITHOUT naming any tool.
 PASS = the main observes its child (the shared ``observe_tasks`` control, or the
 ``observe_agent_tasks`` compatibility alias #1000 introduced) to surface the
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=17818)
     parser.add_argument("--transport", default="sdk")
-    parser.add_argument("--agent", default="clio/earthscope-single-agent", help="agent ref to pin")
+    parser.add_argument("--agent", default="clio/earthscope", help="agent ref to pin")
     parser.add_argument("--out", default="out/live_gate_observe_1000.json")
     parser.add_argument("--turn-timeout-s", type=float, default=900.0)
     return parser
