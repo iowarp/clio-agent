@@ -27,6 +27,11 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.gact import context
 from clio_agent.gact.agents.clio_react_record import StepRecorder
+from clio_agent.gact.agents.resolution import (
+    AGENT_RESOLUTION_KEY,
+    SUBAGENT_KEY,
+    session_resolution,
+)
 from clio_agent.gact.conversations import ConversationOutcome, Conversations, ConversationSegment
 from clio_agent.gact.core_recovery import CoreRecovery
 from clio_agent.gact.events import EventBus
@@ -116,6 +121,8 @@ async def create_environment(
     app.state.questions = QuestionCommands(app.state.task_history)
     # A turn resolves its session's plugin agent (the hermetic default marketplace).
     app.state.plugin_service = PluginService()
+    # Pin the root now, so preparing a child later only reads the pin.
+    await asyncio.to_thread(session_resolution, app, root.owner.session_id)
     app.state.semantic_event_sink = SemanticEventSink(
         bus=app.state.bus, trace_backend=NoopSemanticTraceBackend()
     )
@@ -133,6 +140,13 @@ async def create_environment(
         agent: str,
         scope: dict[str, Any] | None,
     ) -> CreatePreparedChild:
+        # Pinned like a defined subagent, so no later first use re-pins the child to
+        # the default agent and rewrites its agent id.
+        pin = {
+            AGENT_RESOLUTION_KEY: session_resolution(app, parent).digest,
+            SUBAGENT_KEY: agent,
+        }
+
         def create(
             creation_id: str,
             creation_digest: str,
@@ -145,7 +159,7 @@ async def create_environment(
                 agent={"id": agent},
                 # As spawn_context.prepare_child_session records it: the spawn's target
                 # survives the child's own agent pin.
-                metadata={**(scope or {}), **initial_metadata, "spawn_target": agent},
+                metadata={**(scope or {}), **initial_metadata, **pin, "spawn_target": agent},
                 approval_profile=approval_profile or "",
                 creation_id=creation_id,
                 creation_digest=creation_digest,
