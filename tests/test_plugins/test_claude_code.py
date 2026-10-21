@@ -73,7 +73,7 @@ def test_dependencies_on_content_become_requirements_and_hooks_map(tmp_path: Pat
     assert hook.event == "PostToolUse" and hook.kind == "command"
     assert hook.command == "python3" and hook.args == (str(root / "scripts/v.py"), "hook")
     assert hook.tools == "fs_propose_edit|fs_apply_edit_write"
-    assert hook.timeout_ms == 30000 and hook.dialect == "claude-code"
+    assert hook.timeout_ms == 30000 and record.format == "claude-code"
     assert [d.code for d in record.diagnostics] == ["hook_event_unmapped"]
     # The hook script is executable content even though it is not under hooks/.
     write(root / "scripts/v.py", "print('changed')\n")

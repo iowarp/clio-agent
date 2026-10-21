@@ -224,7 +224,6 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
                         args=tuple(argv[1:]),
                         tools=pattern,
                         timeout_ms=int(float(entry.get("timeout") or 30) * 1000),
-                        dialect="claude-code",
                     )
                 )
     return hooks, diagnostics, scripts

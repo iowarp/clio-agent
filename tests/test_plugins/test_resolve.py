@@ -153,6 +153,34 @@ def test_hooks_run_child_to_parent_and_honor_after(tmp_path: Path) -> None:
     assert resolved.hooks[0]["event"] == "PostToolUse"
 
 
+def test_a_claude_code_plugins_command_hook_resolves_in_its_dialect(tmp_path: Path) -> None:
+    import json
+
+    from clio_agent.plugins.claude_code import import_claude_plugin
+    from tests.test_plugins.helpers import write
+
+    base = tmp_path / "report"
+    write(base / ".claude-plugin" / "plugin.json", json.dumps({"name": "report"}))
+    hooks = {
+        "PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "true"}]}]
+    }
+    write(base / "hooks" / "hooks.json", json.dumps({"hooks": hooks}))
+    native = plugin(
+        tmp_path,
+        "audit",
+        files={
+            "ai.iowarp.clio/hooks/h.py": (
+                "from clio_agent.sdk import hook\n\n@hook('tool_result')\ndef a(ev):\n    return None\n"
+            )
+        },
+    )
+    catalog = _catalog(tmp_path, native)
+    catalog.records.append(import_claude_plugin(base))
+    resolved = resolve_agent(catalog, _spec("audit", "report"), marketplace="test")
+    dialects = {row["plugin"]: row["dialect"] for row in resolved.hooks}
+    assert dialects == {"report": "claude-code", "audit": ""}
+
+
 def test_hook_cycle_is_an_error(tmp_path: Path) -> None:
     hooks = (
         "from clio_agent.sdk import hook\n\n"

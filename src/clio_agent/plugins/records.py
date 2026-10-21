@@ -68,9 +68,6 @@ class HookRecord:
     before: tuple[str, ...] = ()
     after: tuple[str, ...] = ()
     fail_closed: bool = False
-    #: ``claude-code`` for a command imported from a Claude Code plugin: it reads and
-    #: answers on that wire (``gact/hooks/claude_code_hooks.py``).
-    dialect: str = ""
 
 
 @dataclass(frozen=True)
