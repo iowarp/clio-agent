@@ -1,150 +1,36 @@
-"""clio_agent.sdk — typed Python client for the GACT v1 API (#799 phase 1).
+"""The CLIO Agent SDK.
 
-Talk to a running clio backend from code: sessions, messages, SSE
-streaming with ``Last-Event-ID`` resume, workspaces, permissions, and
-health/capability probing. Pure client — importing this package never
-loads the gact server.
+Plugins hold all content. Agents hold only their flow, their identity, their
+plugin selection and their model requirements. Python is the authoring
+surface; the frozen spec produced at install is the runtime contract.
 
-Example:
-    >>> from clio_agent.sdk import ClioClient
-    >>> with ClioClient() as client:
-    ...     print(client.health().overall_status)
+See ``docs/design/sdk/agent-sdk.md`` and ``plugins-and-composition.md``.
 """
 
-from clio_agent.sdk.client import (
-    DEFAULT_BASE_URL,
-    ClioClient,
-    DocumentsAPI,
-    MessagesAPI,
-    PermissionsAPI,
-    SessionsAPI,
-    WorkspacesAPI,
-)
-from clio_agent.sdk.errors import (
-    ClioAPIError,
-    ClioConnectionError,
-    ClioSDKError,
-    ConflictError,
-    InternalServerError,
-    InvalidRequestError,
-    NotFoundError,
-    PermissionDeniedError,
-    ServiceUnavailableError,
-    UnsupportedError,
-)
-from clio_agent.sdk.events import (
-    EventStream,
-    MessageCompleted,
-    MessageCreated,
-    MessageDeleted,
-    MessagePartAdded,
-    MessagePartCompleted,
-    MessagePartDelta,
-    PermissionRequested,
-    PermissionResolved,
-    ServerConnected,
-    ServerHeartbeat,
-    SessionSnapshot,
-    SessionStatusChanged,
-    SessionUpdated,
-    StreamEvent,
-    ToolCallCompleted,
-    ToolCallStarted,
-)
-from clio_agent.sdk.types import (
-    Agent,
-    ArtifactReview,
-    Capabilities,
-    DocumentAnchor,
-    DocumentEditorSession,
-    DocumentManifest,
-    DocumentWorkingCopy,
-    ErrorInfo,
-    Health,
-    Integration,
-    LMProvider,
-    LMProviderPreset,
-    Message,
-    Metrics,
-    MetricsCost,
-    MetricsLatencyStat,
-    MetricsMessages,
-    MetricsSessions,
-    MetricsTokens,
-    Part,
-    PermissionList,
-    PermissionRequest,
-    PostMessageAck,
-    Session,
-    Tokens,
-    Tool,
-    UserQuestion,
-    UserQuestionOption,
-    Workspace,
-)
+from clio_agent.sdk.agent import Agent, AgentDefinitionError, AgentSpec
+from clio_agent.sdk.flow import Flow
+from clio_agent.sdk.hooks import HOOK_EVENTS, HookEvent, hook
+from clio_agent.sdk.model import Prefers, Requires
+from clio_agent.sdk.plugin import Pack, Plugin
+from clio_agent.sdk.subagent import PromptFile, Subagent
+from clio_agent.sdk.tools import native_tool, tool
+from clio_agent.sdk.versions import PluginRef
 
 __all__ = [
-    "DEFAULT_BASE_URL",
+    "HOOK_EVENTS",
     "Agent",
-    "ArtifactReview",
-    "Capabilities",
-    "ClioAPIError",
-    "ClioClient",
-    "ClioConnectionError",
-    "ClioSDKError",
-    "ConflictError",
-    "DocumentAnchor",
-    "DocumentEditorSession",
-    "DocumentManifest",
-    "DocumentWorkingCopy",
-    "DocumentsAPI",
-    "ErrorInfo",
-    "EventStream",
-    "Health",
-    "Integration",
-    "InternalServerError",
-    "InvalidRequestError",
-    "LMProvider",
-    "LMProviderPreset",
-    "Message",
-    "MessageCompleted",
-    "MessageCreated",
-    "MessageDeleted",
-    "MessagePartAdded",
-    "MessagePartCompleted",
-    "MessagePartDelta",
-    "MessagesAPI",
-    "Metrics",
-    "MetricsCost",
-    "MetricsLatencyStat",
-    "MetricsMessages",
-    "MetricsSessions",
-    "MetricsTokens",
-    "NotFoundError",
-    "Part",
-    "PermissionDeniedError",
-    "PermissionList",
-    "PermissionRequest",
-    "PermissionRequested",
-    "PermissionResolved",
-    "PermissionsAPI",
-    "PostMessageAck",
-    "ServerConnected",
-    "ServerHeartbeat",
-    "ServiceUnavailableError",
-    "Session",
-    "SessionSnapshot",
-    "SessionStatusChanged",
-    "SessionUpdated",
-    "SessionsAPI",
-    "StreamEvent",
-    "Tokens",
-    "Tool",
-    "ToolCallCompleted",
-    "ToolCallStarted",
-    "UnsupportedError",
-    "UserQuestion",
-    "UserQuestionOption",
-    "Workspace",
-    "WorkspacesAPI",
+    "AgentDefinitionError",
+    "AgentSpec",
+    "Flow",
+    "HookEvent",
+    "Pack",
+    "Plugin",
+    "PluginRef",
+    "Prefers",
+    "PromptFile",
+    "Requires",
+    "Subagent",
+    "hook",
+    "native_tool",
+    "tool",
 ]
