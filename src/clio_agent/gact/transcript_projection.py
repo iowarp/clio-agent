@@ -58,9 +58,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from clio_agent.arc.blob_frame import UNREADABLE_BLOB_ERRORS
 from clio_agent.arc.lane_chunking import lane_has_segments, lane_segments
 from clio_agent.arc.lane_generations import current_base, erase_lane, replace_lane
 from clio_agent.errors import ClioError
+from clio_agent.gact.messages import LedgerReadError
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     build_message_part_atoms,
@@ -300,6 +302,9 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     Preserves the store's contract precisely: ``None`` => the session has no ledger (a
     cache-miss ``KeyError`` upstream), ``[]`` => an existing-but-empty ledger,
     :class:`LedgerReadError` propagates (never cached as an empty transcript, §3.3).
+    A clio-core blob that is present but unreadable is raised as
+    :class:`LedgerReadError` too, so the resident set records ``rehydrate_failed`` and
+    the route answers ``messages_unavailable`` instead of a bare 500 (#1172).
 
     Args:
         app: The FastAPI app.
@@ -308,6 +313,15 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     Returns:
         The session's ``list[Message]``, or ``None`` when it has never been persisted.
     """
+
+    try:
+        return _materialize_ledger(app, session_id)
+    except UNREADABLE_BLOB_ERRORS as exc:
+        raise LedgerReadError(f"session {session_id} transcript is unreadable: {exc}") from exc
+
+
+def _materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message]]:
+    """The body of :func:`materialize_ledger`, before unreadable blobs are typed."""
 
     if not file_transcript_enabled(app):
         return materialize_from_atoms(app, session_id)

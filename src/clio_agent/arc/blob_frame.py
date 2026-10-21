@@ -21,7 +21,15 @@ import binascii
 
 from clio_agent.errors import ClioError
 
-__all__ = ["BlobDecodeError", "BlobFrameError", "BlobNameDecodeError", "frame", "unframe"]
+__all__ = [
+    "UNREADABLE_BLOB_ERRORS",
+    "BlobDecodeError",
+    "BlobFrameError",
+    "BlobNameDecodeError",
+    "BlobReadError",
+    "frame",
+    "unframe",
+]
 
 _SEP = b":"
 _MAX_HEADER = 20  # digits of the length; a body is far below 10**19 characters
@@ -71,6 +79,32 @@ class BlobDecodeError(ClioError):
             error_type=self.reason,
             details={"name": name},
         )
+
+
+class BlobReadError(ClioError):
+    """clio-core reports a blob present (non-zero size) but the read of it failed.
+
+    ``GetBlob`` raises a bare ``RuntimeError("GetBlob operation failed")`` here. A
+    blob the size index lists but cannot serve is a knowable state, so it is named
+    rather than escaping as an unexplained ``RuntimeError`` (#1172).
+    """
+
+    reason = "clio_core_blob_unreadable"
+
+    def __init__(self, tag: str, name: str, exc: Exception) -> None:
+        super().__init__(
+            f"clio-core blob {name!r} in tag {tag!r} is present but unreadable: {exc}",
+            error_type=self.reason,
+            details={"tag": tag, "name": name, "cause": str(exc)},
+        )
+
+
+#: The blob is there, but its stored bytes cannot be turned back into the record.
+UNREADABLE_BLOB_ERRORS: tuple[type[ClioError], ...] = (
+    BlobReadError,
+    BlobFrameError,
+    BlobDecodeError,
+)
 
 
 def frame(data: bytes) -> bytes:
