@@ -106,7 +106,7 @@ def test_config_defaults_yaml_is_flat_and_parses() -> None:
         assert not isinstance(value, dict), f"{key} must be a flat scalar, not nested"
     # Sanity: a couple of known knobs surface with the expected in-code defaults.
     assert data["arc.store"] == "cte"
-    assert data["agents.disable_default_registry_bootstrap"] is False
+    assert data["agents.react_extract.enabled"] is True
 
 
 def test_config_defaults_omits_dynamic_and_unset_knobs() -> None:
