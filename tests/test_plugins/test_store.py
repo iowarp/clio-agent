@@ -122,7 +122,11 @@ def test_user_agent_is_parent_plus_delta_and_follows_parent_version(tmp_path: Pa
     service.store.update("demo")
     assert service.resolve(entry.ref).agent["version"] == "1.1.0"
     preview = service.preview_removal(entry.ref, "doc-runtime")
-    assert sorted(row["id"] for row in preview["removes"]) == ["doc-runtime", "pdf"]
+    # pdf was the documents pack's last member (xlsx is already removed): the pack goes too.
+    assert sorted(row["id"] for row in preview["removes"]) == ["doc-runtime", "documents", "pdf"]
+    assert {"reason": "pack_empty", "because": "", "id": "documents"} in [
+        row["reason"] for row in preview["removes"]
+    ]
     assert preview["tools_removed"] == ["view_pdf"]
     write(market / "agents" / "standard.py", AGENTS.format(version="2.0.0"))
     service.store.update("demo")

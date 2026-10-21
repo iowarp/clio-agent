@@ -272,7 +272,35 @@ def _expand_remove(builder: _Builder, removals: set[str]) -> dict[str, dict[str,
                         ref, "required", plugin_id, entry.depth, wanted_by=f"plugin {plugin_id}"
                     )
                     changed = True
+    # A pack only groups its members: once none of them remains it leaves too,
+    # unless it carries content of its own.
+    for plugin_id, entry in list(builder.entries.items()):
+        record = entry.record
+        if (
+            record.kind == "pack"
+            and record.members
+            and not any(PluginRef.parse(m).id in builder.entries for m in record.members)
+            and not _has_own_content(record)
+        ):
+            removed[plugin_id] = {"id": plugin_id, "reason": "pack_empty", "because": ""}
+            builder.entries.pop(plugin_id, None)
     return removed
+
+
+def _has_own_content(record: PluginRecord) -> bool:
+    return any(
+        (
+            record.skills,
+            record.mcp_servers,
+            record.tools,
+            record.hooks,
+            record.subagents,
+            record.flows,
+            record.fragments,
+            record.commands,
+            record.catalogs,
+        )
+    )
 
 
 def _order_hooks(entries: list[Entry], builder: _Builder) -> list[dict[str, Any]]:

@@ -73,6 +73,12 @@ def test_pack_expands_and_member_removal_keeps_pack(tmp_path: Path) -> None:
     assert trimmed.plugin_ids == ["core", "documents", "pdf"]
     assert trimmed.removed == [{"id": "xlsx", "reason": "removed", "because": ""}]
     assert "sheets" not in [s["id"] for s in trimmed.skills]
+    # Once its last member leaves, the pack has nothing left to group and leaves too.
+    emptied = resolve_agent(
+        catalog, _spec("documents"), marketplace="test", delta=Delta(remove=("xlsx", "pdf"))
+    )
+    assert emptied.plugin_ids == ["core"]
+    assert {"id": "documents", "reason": "pack_empty", "because": ""} in emptied.removed
 
 
 def test_removing_required_plugin_cascades(tmp_path: Path) -> None:
