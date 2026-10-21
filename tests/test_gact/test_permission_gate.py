@@ -430,7 +430,7 @@ def test_dynamic_external_mcp_requires_permission_before_client_invocation(
     monkeypatch: pytest.MonkeyPatch,
     annotations: Any,
 ) -> None:
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
 
     class MustNotStartClient:
         constructed = False
@@ -447,7 +447,7 @@ def test_dynamic_external_mcp_requires_permission_before_client_invocation(
 
     with pytest.raises(PermissionError, match="denied by permission gate"):
         asyncio.run(
-            builders._call_enabled_external_mcp_tool(
+            external_mcp_calls._call_enabled_external_mcp_tool(
                 app,
                 "srv",
                 info,
@@ -468,7 +468,7 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
 ) -> None:
     from fastmcp import FastMCP
 
-    from clio_agent.gact.agents import builders
+    from clio_agent.gact.agents import external_mcp_calls
     from clio_agent.tools.task_call_context import TASK_CALL
 
     server = FastMCP("read-only-permission")
@@ -511,9 +511,11 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
                 {"readOnlyHint": True},
             )
             if route == "async":
-                result = client.portal.call(builders._call_enabled_external_mcp_tool, *arguments)
+                result = client.portal.call(
+                    external_mcp_calls._call_enabled_external_mcp_tool, *arguments
+                )
             else:
-                result = builders._run_external_mcp_tool_sync(*arguments)
+                result = external_mcp_calls._run_external_mcp_tool_sync(*arguments)
         assert calls == ["resource-1"]
         assert result == "lookup:ok"
         assert app.state.permissions == {}
@@ -889,12 +891,14 @@ def test_direct_delete_policy_deny_blocks_app_state_routes(tmp_path: Path) -> No
         assert resp.status_code == 403
         assert app.state.schedules.get(schedule["id"]) is not None
 
-        # Agent delete.
-        c.post("/v1/agents", json={"id": "policy_agent", "title": "Policy Agent"})
-        _put_single_policy(c, tool_name_pattern="gact.agent.delete", action="deny")
-        resp = c.delete("/v1/agents/policy_agent")
+        # User agent delete.
+        saved = c.post("/v1/agents/user", json={"id": "policy-agent", "extends": "clio/standard"})
+        assert saved.status_code == 201, saved.text
+        _put_single_policy(c, tool_name_pattern="gact.agent.user.delete", action="deny")
+        resp = c.delete("/v1/agents/user/policy-agent")
         assert resp.status_code == 403
-        assert c.get("/v1/agents/policy_agent").status_code == 200
+        listed = c.get("/v1/agents").json()["agents"]
+        assert "user/policy-agent" in {row["ref"] for row in listed}
 
         # Workspace delete.
         workspace = c.post("/v1/workspaces", json={"name": "policy ws"}).json()

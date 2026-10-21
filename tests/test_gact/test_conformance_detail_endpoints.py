@@ -13,8 +13,8 @@ from clio_agent.gact.app import build_app
 
 from .conftest import complete_turn
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake.
+# Every session runs its pinned plugin agent (the hermetic ``standard``); route its
+# module to each test's ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -54,31 +54,24 @@ def test_message_detail_returns_stored_message(tmp_path: Path) -> None:
     assert body["role"] == "assistant"
 
 
-def test_agent_detail_returns_builtin_main_agent(tmp_path: Path) -> None:
-    """A bare session with no activated Agent Blueprint resolves the
-    code-shipped react ``main`` (``catalog._builtin_main_agent``), not an
-    installed-but-never-activated default-registry snapshot.
+def test_session_agent_detail_returns_default_standard_agent(tmp_path: Path) -> None:
+    """A bare session (no agent requested) pins the default ``clio/standard`` plugin
+    agent, and the session-agent detail route returns that pinned resolution."""
 
-    36202e1c deleted the implicit-selection seam that used to silently load
-    whatever blueprint was pinned as ``DEFAULT_AGENT_BLUEPRINT_ID`` and
-    relabel its rows "builtin"/"expert_pack" with a
-    ``metadata.source_blueprint`` stamp (owner ruling 2026-08-05, commit
-    aa906022: a session never resolves a discoverable blueprint it did not
-    activate). See the twin in
-    test_agent_blueprints.py::test_builtin_agents_never_implicitly_load_an_installed_default_registry_snapshot.
-    """
+    with _client(tmp_path) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
-    client = _client(tmp_path)
-
-    resp = client.get("/v1/agents/main")
+        resp = client.get(f"/v1/sessions/{sid}/agent")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["id"] == "main"
-    assert body["source"] == "builtin"
-    assert body["metadata"]["definition_kind"] == "builtin_main"
-    assert "source_blueprint" not in body["metadata"]
-    assert body["title"]
+    assert body["session_id"] == sid
+    assert body["subagent"] is False
+    resolution = body["resolution"]
+    assert resolution["agent"]["id"] == "standard"
+    assert resolution["agent"]["ref"] == "clio/standard"
+    assert "core" in [row["id"] for row in resolution["plugins"]]
+    assert resolution["tool_names"]
 
 
 def test_mcp_server_detail_returns_listed_server(tmp_path: Path) -> None:

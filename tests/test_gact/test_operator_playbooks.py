@@ -80,8 +80,8 @@ def _write_skill(ws: Path, skill_id: str, frontmatter: str, body: str) -> None:
     )
 
 
-def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "main") -> str:
-    agent = AgentDef(id=agent_id, source="expert_pack", title="A", skills=[skill_id], metadata={})
+def _invoke(app: Any, sid: str, ws: Path, skill_id: str, *, agent_id: str = "standard") -> str:
+    agent = AgentDef(id=agent_id, source="plugin", title="A", skills=[skill_id], metadata={})
     catalog = SkillCatalog(home=ws / "no-home", cwd=ws)
     rt = SkillRuntime(resolutions=catalog.resolve_declared([skill_id]))
     tool = build_load_skill_tool(agent, rt)

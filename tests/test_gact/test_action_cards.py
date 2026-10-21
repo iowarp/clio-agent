@@ -12,27 +12,22 @@ Covers:
   spawned child calls) emits into its PARENT session with a working
   ``discuss`` handle, and returns the typed ``alert_card_no_parent`` error
   for a session with no live parent AgentTask — never a silent no-op.
-* ``raise_alert_card`` reaches BOTH real module-assembly paths
-  (``_build_blueprint_dspy_module``'s react branch AND
-  ``_build_tool_user_agent_module``) exactly like ``create_artifact`` /
-  ``load_skill`` — including for an expert that itself declares a curated
-  ``tools:`` list, since ``_dynamic_agent_tools`` returns EXACTLY the
-  requested tools and the auto-attached set is merged in SEPARATELY
-  (``gact/agents/auto_tools.py``).
+* ``raise_alert_card`` is claimed by the ``core`` plugin, so the real module
+  assembly (``build_agent_module``) gives it to every resolved agent, including a
+  defined subagent whose ``tools`` allowlist names only its own curated tools:
+  an allowlist narrows what its plugins add, never ``core``'s tools.
 """
 
 from __future__ import annotations
 
-import contextvars
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.task_types import CoordinationGrant, TaskSnapshot
-from clio_agent.gact import context as _ctx
 from clio_agent.gact.action_cards import (
     ALERT_CARD_NO_PARENT_ERROR,
     ALERT_CARD_PARENT_TRANSCRIPT_FROZEN,
@@ -41,8 +36,12 @@ from clio_agent.gact.action_cards import (
     build_raise_alert_card_tool,
     emit_action_card_part,
 )
+from clio_agent.gact.agents.builders import build_agent_module
+from clio_agent.gact.agents.resolution import resolution_agent_def
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
+from clio_agent.plugins.service import PluginService
+from tests._plugin_fixtures import custom_marketplace
 from tests.test_gact.task_records import active_turn_fixture, record_assignment_fixture
 
 _CONTRACT_ACTIONS = [
@@ -136,11 +135,11 @@ def test_emit_with_no_active_turn_creates_visible_message_part(tmp_path: Path) -
 
 
 def _record_child_assignment(
-    app: Any, *, parent_sid: str, expert_id: str = "spotter_watcher", blueprint_id: str = ""
+    app: Any, *, parent_sid: str, expert_id: str = "spotter_watcher", agent_ref: str = ""
 ) -> TaskSnapshot:
     """Seed the production delegation data, including its message-only reply grant.
 
-    The child's own blueprint identity supplies the card's branded source.
+    The child's own agent reference supplies the card's branded source.
     This passive fixture starts no child model or task driver.
     """
 
@@ -149,10 +148,8 @@ def _record_child_assignment(
         parent_session_id=parent_sid,
         agent={"id": expert_id, "mode": "subagent"},
     )
-    if blueprint_id:
-        app.state.sessions.update(
-            child.id, metadata_patch={"active_agent_blueprint_id": blueprint_id}
-        )
+    if agent_ref:
+        app.state.sessions.update(child.id, metadata_patch={"agent_ref": agent_ref})
     task = record_assignment_fixture(app, child.id, parent_sid=parent_sid)
     app.state.task_history.record_grant(
         CoordinationGrant(
@@ -182,7 +179,7 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
-        task = _record_child_assignment(app, parent_sid=parent_sid, blueprint_id="spotter-ai")
+        task = _record_child_assignment(app, parent_sid=parent_sid, agent_ref="clio/spotter-ai")
 
         tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
         result = _call_tool_as(
@@ -205,7 +202,7 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         cards = [p for m in messages for p in m["parts"] if p["type"] == "action_card"]
         assert len(cards) == 1
         card = cards[0]
-        # source is the calling session's BRANDED blueprint identity ("spotter-ai"),
+        # source is the calling session's BRANDED agent identity ("spotter-ai"),
         # never the bare expert id -- the card header must read as the product, not
         # an internal expert name. agent_id stays the expert-attribution field.
         assert card["source"] == "spotter-ai"
@@ -233,16 +230,16 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         assert not any(p["type"] == "action_card" for m in child_messages for p in m["parts"])
 
 
-def test_raise_alert_card_source_falls_back_to_expert_id_without_blueprint(
+def test_raise_alert_card_source_falls_back_to_expert_id_without_agent_ref(
     tmp_path: Path,
 ) -> None:
-    """A calling session with no activated blueprint (a bare/loose expert) falls
+    """A calling session with no agent reference (a bare/loose expert) falls
     back to the expert id for ``source`` -- never an empty branded identity."""
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         parent_sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
-        task = _record_child_assignment(app, parent_sid=parent_sid)  # no blueprint_id
+        task = _record_child_assignment(app, parent_sid=parent_sid)  # no agent_ref
 
         tool = build_raise_alert_card_tool(AgentDef(id="spotter_watcher", title="Spotter Watcher"))
         _call_tool_as(app, task.owner.session_id, tool, title="t", body="b")
@@ -407,14 +404,35 @@ def test_raise_alert_card_against_a_frozen_parent_ledger_reports_typed_drop(
 
 
 # --------------------------------------------------------------------------- #
-# 4. raise_alert_card is auto-attached on BOTH real module-assembly paths,
-#    even for an expert that declares its OWN curated ``tools:`` list.
+# 4. raise_alert_card reaches every resolved agent through ``core``, even a
+#    defined subagent whose ``tools`` allowlist names only its curated tools.
 # --------------------------------------------------------------------------- #
+
+CURATED_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class Curated(Agent):
+    id = "curated"
+    version = "1.0.0"
+    role = "an agent with a curated subagent"
+    plugins = Agent.plugins + ["workspace", "curated"]
+"""
+
+CURATED_SUBAGENT = """
+from clio_agent.sdk import Subagent
+
+reader = Subagent(
+    "reader",
+    prompt="Do curated work.",
+    plugins=["workspace"],
+    tools=["fs_read_file"],
+)
+"""
 
 
 def _patch_lm(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand-in LM wiring (mirrors test_toolset_inventory.py): these tests only
-    exercise the BUILD path, never forward()."""
+    """Stand-in LM wiring: these tests only exercise the BUILD path, never forward()."""
 
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
     monkeypatch.setattr(
@@ -431,32 +449,12 @@ def _patch_lm(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _build_under_turn_identity(
-    build_fn: Callable[[Any, AgentDef], Any],
-    base_agent: Any,
-    agent_def: AgentDef,
-    app: Any,
-    sid: str,
-) -> Any:
-    """Build a react module inside a full turn identity (mirrors
-    test_toolset_inventory.py's idiom): ``set_turn_identity`` is a bare set (no
-    token), so run it inside a copied context so the identity never leaks past
-    this call."""
-
-    def _run() -> Any:
-        _ctx.set_turn_identity(app=app, session_id=sid, turn_id="turn_t", trace_id="trace_t")
-        return build_fn(base_agent, agent_def)
-
-    return contextvars.copy_context().run(_run)
-
-
 def _tool_names(module: Any) -> set[str]:
     return {str(getattr(t, "name", "")) for t in module.tools}
 
 
 def _fs_tool_executor() -> Any:
-    """A base_agent tool_executor that resolves ``fs_read_file`` (the curated tool
-    these fixtures declare), mirroring test_toolset_inventory.py's shape."""
+    """A base_agent tool_executor that resolves ``fs_read_file`` (the curated tool)."""
 
     return SimpleNamespace(
         to_dspy_tools=lambda: [SimpleNamespace(name="fs_read_file")],
@@ -464,67 +462,33 @@ def _fs_tool_executor() -> Any:
     )
 
 
-def test_raise_alert_card_auto_attached_for_blueprint_react_expert_with_curated_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("subagent", [False, True], ids=["agent", "curated_subagent"])
+def test_raise_alert_card_reaches_every_resolved_agent_through_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subagent: bool
 ) -> None:
-    """The tier-1 (react-main-shaped) assembly path: a blueprint expert that
-    declares its OWN curated MCP tool list must STILL receive raise_alert_card —
-    it rides the SEPARATE auto-attached merge (auto_tools.py), not the curated
-    ``_dynamic_agent_tools`` result."""
+    """The root agent and a subagent with a curated ``tools`` allowlist both build
+    with their curated tool AND ``raise_alert_card``: the allowlist narrows only what
+    the subagent's plugins add, and ``core`` claims the alert tool for everyone."""
 
-    from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={"curated": {"files": {"ai.iowarp.clio/subagents/reader.py": CURATED_SUBAGENT}}},
+        agents={"curated.py": CURATED_AGENT},
+    )
+    _patch_lm(monkeypatch)
+    service = PluginService()
+    resolution = service.resolve("clio/curated", pin=False)
+    if subagent:
+        resolution = service.resolve_subagent(resolution, "reader", pin=False)
+        assert "fs_glob" not in {row["name"] for row in resolution.tools}
 
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        _patch_lm(monkeypatch)
+    module = build_agent_module(
+        SimpleNamespace(tool_executor=_fs_tool_executor()),
+        resolution_agent_def(resolution),
+        resolution,
+    )
 
-        base_agent = SimpleNamespace(tool_executor=_fs_tool_executor())
-        agent_def = AgentDef(
-            id="curated_react_expert",
-            source="expert_pack",
-            title="Curated",
-            system_prompt="Do curated work.",
-            module={"kind": "react"},
-            tools=["fs_read_file"],
-        )
-
-        module = _build_under_turn_identity(
-            _build_blueprint_dspy_module, base_agent, agent_def, app, sid
-        )
-
-        names = _tool_names(module)
-        assert "fs_read_file" in names, names  # the curated declaration still resolves
-        assert "raise_alert_card" in names, names  # auto-attached regardless
-
-
-def test_raise_alert_card_auto_attached_for_tool_user_agent_with_curated_tools(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The SECOND assembly path (``_build_tool_user_agent_module``, the one the
-    coordinator flagged): same guarantee for a tool-declaring dynamic agent."""
-
-    from clio_agent.gact.agents.builders import _build_tool_user_agent_module
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-    with TestClient(app) as client:
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        _patch_lm(monkeypatch)
-
-        base_agent = SimpleNamespace(tool_executor=_fs_tool_executor())
-        agent_def = AgentDef(
-            id="curated_tool_user_agent",
-            source="user",
-            title="Curated Tool User",
-            system_prompt="Do curated work.",
-            module={},
-            tools=["fs_read_file"],
-        )
-
-        module = _build_under_turn_identity(
-            _build_tool_user_agent_module, base_agent, agent_def, app, sid
-        )
-
-        names = _tool_names(module)
-        assert "fs_read_file" in names, names
-        assert "raise_alert_card" in names, names
+    names = _tool_names(module)
+    assert "fs_read_file" in names, names  # the curated tool still resolves
+    assert "raise_alert_card" in names, names  # core's claim, regardless of the allowlist

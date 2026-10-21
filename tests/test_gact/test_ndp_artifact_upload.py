@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import socket
 import subprocess
 import sys
@@ -34,6 +35,9 @@ from clio_agent.gact.storage.ndp_artifact_upload import (
 from clio_agent.gact.storage.ndp_endpoint_models import EndpointConnectionInput, EndpointRequest
 from clio_agent.gact.storage.ndp_endpoints import NDPEndpointService
 from clio_agent.gact.storage.store import SourceStore
+from tests._marketplace import MARKETPLACE_ROOT
+
+REAL_CONNECTED_DATA = MARKETPLACE_ROOT / "plugins" / "connected-data"
 
 
 def _parameter(name: str, location: str, kind: str = "string") -> dict[str, Any]:
@@ -242,6 +246,7 @@ def _app(root: Path) -> Any:
     )
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "file_schema",
     [
@@ -297,7 +302,11 @@ def test_three_artifacts_form_one_dataset_with_verified_bytes(
         receipt_path = tmp_path / f"{result['id']}.json"
         receipt_path.write_text(json.dumps(result), encoding="utf-8")
         receipt_paths.extend(["--receipt", str(receipt_path)])
-    catalog = SkillCatalog(home=tmp_path / "skill-home", cwd=tmp_path)
+    catalog = SkillCatalog(
+        home=tmp_path / "skill-home",
+        cwd=tmp_path,
+        plugin_skills=[("connected-data", str(REAL_CONNECTED_DATA / "skills"))],
+    )
     skill = catalog.resolve("work-with-ndp").skill
     assert skill is not None
     prepared = subprocess.run(
@@ -551,19 +560,51 @@ def test_private_account_token_never_enters_publication_receipts(
     )
 
 
-def test_ndp_authoring_reference_is_loadable_as_a_skill_resource(tmp_path: Path) -> None:
-    """The agent discovers the procedure through the actual built-in skill catalog."""
+_NDP_AGENT = """
+from clio_agent.sdk import Agent
+
+
+class NdpAuthor(Agent):
+    id = "ndp-author"
+    version = "1.0.0"
+    role = "an agent that publishes artifacts to the National Data Platform"
+    plugins = Agent.plugins + ["connected-data"]
+"""
+
+
+@pytest.mark.marketplace
+def test_ndp_authoring_reference_is_loadable_as_a_skill_resource(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent carrying the real ``connected-data`` plugin discovers the procedure
+    through its resolved plugin skills and loads every bundled reference."""
+    from clio_agent.gact.agents.resolution import resolution_agent_def
     from clio_agent.gact.agents.skill_runtime import (
         SkillRuntime,
         build_load_skill_tool,
         effective_declared_skills,
     )
-    from clio_agent.gact.catalog import _builtin_main_agent
+    from clio_agent.plugins.service import PluginService
+    from tests._plugin_fixtures import custom_marketplace
 
-    agent = _builtin_main_agent()
-    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path)
+    marketplace = custom_marketplace(tmp_path, monkeypatch, agents={"ndp_author.py": _NDP_AGENT})
+    shutil.copytree(
+        REAL_CONNECTED_DATA,
+        marketplace / "plugins" / "connected-data",
+        ignore=shutil.ignore_patterns("__pycache__", "tests"),
+    )
+    plugin_resolution = PluginService().resolve("clio/ndp-author", pin=False)
+    assert "connected_data_ndp_upload_artifact" in plugin_resolution.tool_names
+    agent = resolution_agent_def(plugin_resolution)
+    assert "work-with-ndp" in agent.skills
+    catalog = SkillCatalog(
+        home=tmp_path / "home",
+        cwd=tmp_path,
+        plugin_skills=[tuple(row) for row in agent.metadata["skill_folders"]],
+    )
     resolution = catalog.resolve("work-with-ndp")
     assert resolution.status == "resolved" and resolution.skill is not None
+    assert resolution.skill.scope == "plugin"
     body = read_skill_body(resolution.skill)
     assert "references/catalog-authoring.md" in body
     runtime = SkillRuntime(

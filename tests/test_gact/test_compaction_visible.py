@@ -66,7 +66,7 @@ from tests._harness import install_scripted_module
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 from tests.turn_signals import post_turn_and_wait
 
-SCOPE = "main"
+SCOPE = "standard"  # the session agent: its react scope and primary agent id
 WINDOW = 1000
 SUMMARY = "SUMMARY: searched q0 and q1; hits HITS-q0, HITS-q1."
 

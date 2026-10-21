@@ -19,7 +19,6 @@ def test_turn_context_defaults():
     assert tc.turn_id == ""
     assert tc.trace_id == ""
     assert tc.tool_session_id == ""
-    assert tc.execution_blueprint_id == ""
 
 
 def test_runtime_context_defaults():
@@ -145,7 +144,6 @@ def test_set_turn_identity_bare_and_preserves_tool_session():
                 session_id="sid",
                 turn_id="tid",
                 trace_id="trid",
-                execution_blueprint_id="deep-researcher",
             )
             assert ctx.active_app() is app_obj
             assert ctx.active_session_id() == "sid"
@@ -153,7 +151,6 @@ def test_set_turn_identity_bare_and_preserves_tool_session():
             assert ctx.active_trace_id() == "trid"
             # tool_session_id is carried forward across the turn-identity set.
             assert ctx.active_tool_session_id() == "tool-sess"
-            assert ctx.active_execution_blueprint_id() == "deep-researcher"
         finally:
             # ts_token was set BEFORE the tokenless set_turn_identity; resetting it
             # restores the pre-tool-session layer (the tokenless set is discarded).
