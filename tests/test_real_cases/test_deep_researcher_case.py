@@ -1,16 +1,17 @@
-"""Deep Researcher (marketplace `deep-researcher` pack) — real case acceptance
-test.
+"""Deep Researcher (marketplace ``clio/deep-researcher`` agent) — real case
+acceptance test.
 
 This is **acceptance leg (iii)** of the MCP-client-unification campaign
 (``docs/design/mcp-client-unification-2026-08.md``, issue
 https://github.com/iowarp/clio-agent/issues/1286, umbrella #1274): does the
-marketplace ``deep-researcher`` pack — authored upstream in
-``external/clio-agent-marketplace/deep-researcher``, not by this test — run
-end-to-end on clio-agent through the unified MCP v2 client? The pack's
-``main`` coordinator dynamically fans out ``researcher`` leaves (real
+marketplace ``deep-researcher`` agent — authored upstream in
+``external/clio-agent-marketplace/agents/deep_researcher.py`` and its
+``deep-research`` plugin, not by this test — run end-to-end on clio-agent
+through the unified MCP v2 client? The agent's coordinator dynamically fans out
+the plugin's ``researcher`` subagents (real
 ``web_search``/``web_fetch`` calls against the clio-kit ``web`` MCP, a
 ``task=required`` v2 server), sends the assembled evidence through an
-independent ``critic`` leaf, and produces a cited Markdown report artifact.
+independent ``critic`` subagent, and produces a cited Markdown report artifact.
 
 Encodes the contract from ``benchmark/case14-deep-researcher-web/GOAL.md``.
 Per #1286: "RED today by construction — it IS the honest #1274 repro." This
@@ -19,21 +20,19 @@ skip cleanly with the live gate off, but the actual live run happens only at
 that gate, once C1-S2..S5 land on ``feat/mcp-client-unification``.
 
 Harness wrinkle (see ``clio_sut.py`` module docstring — it stays the shared,
-case-agnostic driver for earthscope/wildfire/case13/this case): the
-``main`` coordinator here never calls ``web_search``/``web_fetch`` itself —
+case-agnostic driver for earthscope/wildfire/this case): the
+coordinator here never calls ``web_search``/``web_fetch`` itself —
 only its ``researcher``/``critic`` children do, each on its OWN session
 (agent-driven ``spawn_agent_task``/``spawn_agents_parallel`` per C1-S1's
 capability-keyed spawn runtime, not a declared workflow). So
 ``clio_sut.ClioAgent._to_run`` — which only parses the top session's own
 ``tools_called`` — never sees those calls; this file re-fetches every direct
 child session's own messages and attributes each child's tool calls to its
-spawning expert via the child ``Session``'s own ``agent.id`` field
-(``src/clio_agent/gact/turn_spawn.py``: ``spawn_child_turn`` stamps
-``agent={"id": spec.child_expert_id, ...}`` on the minted child session — the
-same field ``tests/test_stress_benchmark/test_local_scientific_workflows.py``
-already reads children through, and case13's precedent for keeping
-case-specific evidence seams in the TEST file rather than touching the shared
-SUT).
+spawning subagent via the child ``Session``'s own ``agent.id`` field
+(``src/clio_agent/gact/spawn_context.py``: ``prepare_child_session`` stamps
+``agent={"id": <subagent id>}`` on the minted child session), keeping this
+case-specific evidence seam in the TEST file rather than touching the shared
+SUT.
 
 Run live (once the campaign's C1-S2..S5 land and the C1-S6 gate opens)::
 
@@ -52,8 +51,6 @@ from typing import Any
 import httpx
 import pytest
 
-from tests._marketplace import MARKETPLACE_ROOT
-
 # The real-cases tier depends on Jaime's `~/agent-test` pytest plugin, an
 # unpublished local checkout not installed in every environment (see
 # conftest.py's module docstring). conftest.py handles its own absence via
@@ -69,16 +66,9 @@ matcher = agent_test.matcher
 ToolCall = agent_test.ToolCall
 
 CASE_DIR = "benchmark/case14-deep-researcher-web"
-BLUEPRINT_ID = "deep-researcher"
-
-# Absolute, derived-at-runtime local path to the marketplace pack (submodule) —
-# never hardcode a drive path; this box's repo root may not be D:\. A local
-# filesystem `marketplace_source` installs with no network fetch (see
-# `clio_agent.gact.agent_blueprint_sources.refresh_agent_blueprint_source`:
-# a `source` that resolves to an existing path is installed as `source_kind:
-# "path"`, never cloned).
-REPO_ROOT = Path(__file__).resolve().parents[2]
-MARKETPLACE_SOURCE = str(MARKETPLACE_ROOT / "deep-researcher")
+# The default ``clio`` marketplace (the pinned submodule) provides this agent, so
+# the run needs no marketplace install.
+AGENT_REF = "clio/deep-researcher"
 
 # Guardrail cell (GOAL.md "Case-specific deviations"): subscription provider,
 # not the NDP-case default (argonne_metis) — per issue #1286's own leg (iii)
@@ -88,8 +78,8 @@ MARKETPLACE_SOURCE = str(MARKETPLACE_ROOT / "deep-researcher")
 GUARDRAIL_PROVIDER = "claude_code"
 GUARDRAIL_MODEL = "sonnet"
 
-# Deep research with dynamic fan-out + an independent critic pass can run long;
-# generous like case13's cluster-operator timeout. 0 would disable the hard
+# Deep research with dynamic fan-out + an independent critic pass can run long,
+# so the ceiling is generous. 0 would disable the hard
 # cap entirely (progress-watchdog governs, per clio_sut.ClioAgent._post_turn);
 # a real ceiling is kept here because a runaway coordinator spawning unbounded
 # rounds should eventually be caught by the harness, not just by max_iters.
@@ -103,8 +93,8 @@ def _load_prompt() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Child-session evidence gathering (kept in the TEST file, per case13's
-# precedent — clio_sut.py stays the shared, case-agnostic driver).
+# Child-session evidence gathering (kept in the TEST file — clio_sut.py stays
+# the shared, case-agnostic driver).
 # --------------------------------------------------------------------------- #
 def _session_tool_calls(http: httpx.Client, session_id: str) -> list[Any]:
     """One session's own ``tools_called`` — the exact extraction
@@ -141,9 +131,7 @@ def _session_tool_calls(http: httpx.Client, session_id: str) -> list[Any]:
 def _tool_call_ok(call: Any) -> bool:
     """Whether a recorded tool call actually SUCCEEDED — a task-backed
     ``web_fetch``/``web_search`` that errored proves nothing was fetched or
-    searched. Mirrors ``test_case13_cluster_operator.py``'s
-    ``_tool_call_failed`` (inverted), duplicated rather than imported so this
-    file stays self-contained."""
+    searched."""
     if getattr(call, "error", None):
         return False
     out = call.output
@@ -161,12 +149,11 @@ def _augment_with_deep_researcher_evidence(
     run: Any, gact_server: Any, run_spec: dict[str, Any]
 ) -> None:
     """Populate ``run.extra`` with this case's evidence seam: every direct
-    child session's own tool calls, grouped by which expert id spawned it
+    child session's own tool calls, grouped by which subagent id it ran
     (``researcher`` vs ``critic``, read off the child ``Session``'s own
     ``agent.id`` — see module docstring). ``Run`` is frozen but ``extra`` is a
     plain mutable dict (the documented escape hatch — ``agent_test.run.Run``),
-    so mutating it in place here is legal, same as case13's
-    ``_augment_with_case13_evidence``."""
+    so mutating it in place here is legal."""
     run.extra["run_spec"] = dict(run_spec)
     session_id = str(run.extra.get("session_id") or "")
     # Child rows come from the harness's OWN workspace-scoped listing
@@ -213,9 +200,9 @@ def web_search_succeeded(run: Any) -> bool:
 
 @matcher
 def markdown_report_artifact(run: Any) -> bool:
-    """The pack's own completion gate (``main``'s AGENT.md: ``create_artifact``
-    with the complete report, ``.md`` name, ``kind="report"``) actually
-    produced a real file. ``run.extra["artifacts"]`` is registry-sourced (S7
+    """The agent's own completion gate (the ``deep-research`` plugin's
+    ``prompt/completion.md``: ``create_artifact`` succeeded with the complete
+    report) actually produced a real ``.md`` file. ``run.extra["artifacts"]`` is registry-sourced (S7
     #973 — not a tool-output path scrape), and only lists paths that exist on
     disk (see ``clio_sut.ClioAgent._existing_paths``)."""
     return any(
@@ -226,12 +213,12 @@ def markdown_report_artifact(run: Any) -> bool:
 
 @matcher
 def critic_independent_evidence(run: Any) -> bool:
-    """The critic's OWN validity condition (its ``experts/critic.md``: "A
-    critic pass is invalid unless you independently call ``web_search`` or
-    ``web_fetch``"), checked with GENUINE per-expert attribution rather than a
-    ">=2 distinct calls" proxy: the child ``Session`` wire model's ``agent.id``
-    field (confirmed set to ``TaskSpec.child_expert_id`` by
-    ``spawn_child_turn``, ``src/clio_agent/gact/turn_spawn.py``) lets this test
+    """The critic's OWN validity condition (the ``deep-research`` plugin's
+    ``prompt/subagents/critic.md``: "A critic pass is invalid unless you
+    independently call ``web_search`` or ``web_fetch``"), checked with GENUINE
+    per-subagent attribution rather than a ">=2 distinct calls" proxy: the child
+    ``Session`` wire model's ``agent.id`` field (set to the subagent id by
+    ``prepare_child_session``, ``src/clio_agent/gact/spawn_context.py``) lets this test
     isolate exactly the ``critic`` child session(s)' own tool calls from the
     ``researcher`` leaves' calls, so this is a real attribution match, not a
     proxy count."""
@@ -252,8 +239,7 @@ def test_deep_researcher_web_synthesis(agent, gact_server, tmp_path):
 
     run_spec = {
         "task": prompt,
-        "blueprint_id": BLUEPRINT_ID,
-        "marketplace_source": MARKETPLACE_SOURCE,
+        "agent_ref": AGENT_REF,
         "case_dir": CASE_DIR,
         "run_label": "acceptance",
         # Isolated, auto-cleaned workspace root: the report artifact is
@@ -269,7 +255,7 @@ def test_deep_researcher_web_synthesis(agent, gact_server, tmp_path):
 
     # Runtime/harness invariants.
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
 
     # The coordinator actually delegated (agent-driven spawn, no forced count):
     # a run with zero children never dispatched any web research at all.
@@ -288,7 +274,7 @@ def test_deep_researcher_web_synthesis(agent, gact_server, tmp_path):
 
     # (leg iii, matcher d) the critic's own validity condition: an INDEPENDENT
     # web_search/web_fetch call, attributed to the critic child session itself
-    # (the pack's own stated requirement, not a harness-invented one).
+    # (the plugin's own stated requirement, not a harness-invented one).
     assert critic_independent_evidence(run), run.extra.get("child_tool_calls_by_expert")
 
     # Hygiene: the report lands inside the isolated workdir, never the repo —

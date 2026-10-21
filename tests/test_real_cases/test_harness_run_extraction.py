@@ -39,7 +39,7 @@ def _run_from(messages: list[dict]):
         children=[],
         active={},
         session_id="s1",
-        blueprint_id="bp1",
+        agent_ref="clio/test-agent",
     )
 
 

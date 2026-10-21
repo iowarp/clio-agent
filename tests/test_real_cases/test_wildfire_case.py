@@ -20,6 +20,9 @@ import pytest
 from agent_test import matcher
 
 CASE_DIR = "benchmark/ndp-wildfire-smoke-impact"
+# The NIFC wildfire smoke-impact review agent from the default ``clio``
+# marketplace (external/clio-agent-marketplace/agents/wildfire.py).
+AGENT_REF = "clio/wildfire-smoke-impact-review"
 # Region-parametrizable: CLIO_WILDFIRE_PROMPT selects a region-variant prompt
 # (prompt_west / prompt_southwest / prompt_southeast) to prove the case
 # generalizes across distinct regions; defaults to the nationwide prompt.
@@ -104,7 +107,7 @@ def test_wildfire_downwind_impact(agent, tmp_path):
     run = agent.run(
         {
             "task": PROMPT,
-            "blueprint_id": "wildfire-smoke-impact-review",
+            "agent_ref": AGENT_REF,
             "case_dir": CASE_DIR,
             "run_label": _RUN_LABEL,
             # Isolated, auto-cleaned workspace root (see clio_sut.invoke): the map
@@ -118,13 +121,13 @@ def test_wildfire_downwind_impact(agent, tmp_path):
 
     # Runtime/harness invariants.
     assert run.error is None, run.error
-    assert run.extra["blueprint_activated"], run.extra.get("active_agent_blueprint_id")
+    assert run.extra["agent_activated"], run.extra.get("active_agent_ref")
     assert run.called("geo_query_arcgis_features"), run.tool_names
 
     # Route: acquisition (data) -> impact analysis (analysis) -> visualization,
-    # with the main itself authoring the final brief (no separate "synthesis"
-    # child exists in this pack -- wildfire-smoke-impact-review/experts/main.md:
-    # "there is no separate final-responder child").
+    # the wildfire plugin's defined subagents, with the main itself authoring the
+    # final brief (plugins/wildfire/ai.iowarp.clio/prompt/orchestration.md:
+    # "there is no separate final-responder subagent").
     for expert in ("data", "analysis", "visualization"):
         assert run.routed_to(expert), run.steps
 

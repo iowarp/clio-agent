@@ -13,12 +13,14 @@ experiment compares across levels (SDK default vs medium vs low):
 and appends one row to a JSONL results file. The orchestrator invokes this once
 per ``--level`` (off/low/medium/high, plus the unset SDK default via
 ``--level default``); the human then fills the ``passed`` verdict per level from
-the honest-answer / correct-delegation / no-fabrication check.
+the honest-answer / grounded-tool-path / no-fabrication check.
 
 Sequencing (matches the owner spec):
   1. boot a server with the level set + stream audit on (unless ``--backend-url``),
   2. **pre-allow permissions via PUT /v1/policies FIRST**,
-  3. create workspace + a session pinned to the agent,
+  3. create workspace + a session pinned to the agent (default
+     ``clio/earthscope-single-agent``, the EarthScope GNSS scientist from the
+     default ``clio`` marketplace),
   4. POST the LA one-shot question and wait for the turn to finish,
   5. run ``analyze_turn_waterfall.py`` on the capture,
   6. append the results row.
@@ -31,7 +33,7 @@ Usage::
 
     uv run python scripts/run_thinking_experiment.py --level low \
         --provider claude_code --model haiku \
-        --agent clio/earthscope-gnss-region \
+        --agent clio/earthscope-single-agent \
         --results out/thinking_experiment.jsonl
 """
 
@@ -54,7 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # demo benchmark's LA mutation case) — full pipeline, staged CSV, PNG artifact.
 # Override with --question for other cases. NOTE: an earlier default here asked a
 # US-wide metadata-aggregation question that was never part of the agent's
-# verified capability surface (no routing row computes tabular metadata stats) —
+# verified capability surface (none of its procedures computes tabular metadata stats) —
 # it was mislabeled as the LA one-shot and never passed; see #893 campaign log.
 DEFAULT_QUESTION = (
     "Explore recent seismic or geodetic activity around the Los Angeles basin. "
@@ -411,7 +413,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--provider", default="claude_code")
     p.add_argument("--model", default="haiku")
     p.add_argument("--transport", default="sdk")
-    p.add_argument("--agent", default="clio/earthscope-gnss-region", help="agent ref to pin")
+    p.add_argument("--agent", default="clio/earthscope-single-agent", help="agent ref to pin")
     p.add_argument(
         "--question",
         action="append",

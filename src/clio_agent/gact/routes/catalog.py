@@ -8,8 +8,10 @@ plus the slash-command dispatch path:
 * ``GET /v1/tools`` + ``GET /v1/tools/{tool_id}`` -- the unified live tool catalog:
   every tool the bundled in-process gateway and the installed third-party MCP
   servers expose, flattened with owner/tags/visibility metadata.
-* ``GET /v1/commands`` (#14) -- the backend slash-command catalog (built-ins +
-  user/skill/agent-blueprint command files), optionally filtered to the
+* ``GET /v1/commands`` (#14) -- the backend slash-command catalog (built-ins,
+  user command files, the ``commands/`` folders of the session agent's
+  resolved plugins and skill-declared commands; see
+  :mod:`clio_agent.gact.runtime.commands`), optionally filtered to the
   planner-visible, agent-invocable subset.
 * ``POST /v1/sessions/{sid}/commands/{cmd}`` -- dispatch one command: run a
   user/agent command's target agent, or apply a built-in side effect

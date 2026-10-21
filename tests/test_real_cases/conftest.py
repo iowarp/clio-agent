@@ -1,8 +1,8 @@
-"""Real-cases tier: live, end-to-end CLIO blueprint case tests.
+"""Real-cases tier: live, end-to-end CLIO agent case tests.
 
 This tier sits a level above unit and integration. A real case runs an actual
-CLIO session through a marketplace Agent Blueprint against a live provider, then
-asserts on the normalized trace. These tests are slow and hit external services,
+CLIO session pinned to a marketplace agent (by its ``<marketplace>/<id>`` ref)
+against a live provider, then asserts on the normalized trace. These tests are slow and hit external services,
 so they are skipped unless ``CLIO_RUN_LIVE=1`` is set.
 
 Provider/model are not hardcoded: the SUT discovers cells from the live provider
@@ -238,11 +238,12 @@ def gact_server(request: pytest.FixtureRequest) -> Generator[GactServer, None, N
     # — the live server has to run like real CLIO (production runtime), not a unit
     # test. Strip each:
     #   - XDG_CONFIG_HOME: points the server at a throwaway tmp config root, so it
-    #     can't see the user's installed blueprint -> assignment 404s "agent
-    #     blueprint not found" (TRAP 1/5).
+    #     can't see the user's installed plugins and marketplaces -> the session's
+    #     agent ref fails to resolve (TRAP 1/5).
     #   - CLIO_USER_DIR: the same throwaway root via the override platformdirs
     #     honors on EVERY OS (tests/conftest.py sets BOTH; on Windows XDG alone is
-    #     a no-op, so stripping only XDG still 404s the blueprint — same trap).
+    #     a no-op, so stripping only XDG still loses the installed agents — same
+    #     trap).
     #   - CLIO_LM_MODEL: a unit-test default model; the bind PUT sets the real one.
     # The CLIO_RUNTIME_STATE_DIR / CLIO_ARC_STORE_CONFIG / CLIO_SERVER_CONF /
     # CLIO_CORE_PORT / USER quintet from tests/_cte_isolation stays INHERITED on
