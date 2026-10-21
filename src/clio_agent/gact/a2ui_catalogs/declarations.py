@@ -298,7 +298,9 @@ def plugin_catalog_sources(catalogs: Sequence[Mapping[str, Any]]) -> list[Catalo
         path = str(row.get("path") or "")
         grouped.setdefault(plugin, [])
         if path:
-            grouped[plugin].append(CatalogDeclaration(name=name, origin="directory", directory=Path(path)))
+            grouped[plugin].append(
+                CatalogDeclaration(name=name, origin="directory", directory=Path(path))
+            )
         elif name in builtins:
             grouped[plugin].append(CatalogDeclaration(name=name, origin="builtin"))
         else:

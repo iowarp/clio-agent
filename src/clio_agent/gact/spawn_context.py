@@ -43,7 +43,9 @@ def _launch_context(parent: StoredSession) -> dict[str, Any]:
     }
 
 
-def resolve_child_agent(app: "FastAPI", parent_id: str, agent_id: str) -> tuple["Resolution", dict[str, Any]]:
+def resolve_child_agent(
+    app: "FastAPI", parent_id: str, agent_id: str
+) -> tuple["Resolution", dict[str, Any]]:
     """The child's resolution and the session metadata that pins it.
 
     Raises ``ValueError`` naming why when ``agent_id`` is neither a defined

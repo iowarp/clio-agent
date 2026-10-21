@@ -107,9 +107,7 @@ _ACTIVE_GACT_APP = _CompatVar(_ctx.active_app, _ctx.set_app)
 _ACTIVE_GACT_SESSION_ID = _CompatVar(_ctx.active_session_id, _ctx.set_session_id)
 _ACTIVE_GACT_TURN_ID = _CompatVar(_ctx.active_turn_id, _ctx.set_turn_id_token)
 _ACTIVE_GACT_TRACE_ID = _CompatVar(_ctx.active_trace_id, _ctx.set_trace_id_token)
-_ACTIVE_AGENT_TOOL_ROWS = _CompatVar(
-    _ctx.active_agent_tool_rows, _ctx.set_agent_tool_rows
-)
+_ACTIVE_AGENT_TOOL_ROWS = _CompatVar(_ctx.active_agent_tool_rows, _ctx.set_agent_tool_rows)
 
 # The resolve-once expert caches (declared child ids for the spawn-tool routing
 # surface; the orchestrator-identity briefing) no longer live here as process-global dicts

@@ -173,7 +173,6 @@ class _ResolveSessionAgent(Protocol):
     def __call__(self, agent_id: str, *, session_id: str) -> "AgentDef | None": ...
 
 
-
 class _StartBackgroundUserTurn(Protocol):
     """Callable seam staging + driving a user turn off the request thread.
 

@@ -700,7 +700,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mcp_cache_prune_task = asyncio.create_task(server_boot.prune_orphans_and_cache(app))
     # Install or refresh the shipped default marketplace off the loop; a turn that
     # resolves before it finishes waits on the same lock (PluginService.ready).
-    app.state.plugin_sync_task = asyncio.create_task(asyncio.to_thread(app.state.plugin_service.ready))
+    app.state.plugin_sync_task = asyncio.create_task(
+        asyncio.to_thread(app.state.plugin_service.ready)
+    )
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:

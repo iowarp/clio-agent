@@ -555,9 +555,9 @@ def publish_finalized_turn(
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
             assistant_msg_id=assistant_msg.id,
             assistant_payload=assistant_msg.model_dump(exclude_none=True),
-            agent_ref=str(state.dynamic_agent_used.metadata.get('agent_ref') or '')
+            agent_ref=str(state.dynamic_agent_used.metadata.get("agent_ref") or "")
             if state.dynamic_agent_used is not None
-            else '',
+            else "",
             completion=ConversationOutcome(
                 outputs=turn_outputs(state),
                 context=getattr(state.pred, "clio_context_boundary", None),

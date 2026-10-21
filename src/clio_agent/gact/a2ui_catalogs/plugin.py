@@ -111,8 +111,6 @@ def load_catalog_directory(
     return entry, []
 
 
-
-
 def load_plugin_catalog(name: str, path: str) -> tuple[CatalogEntry | None, str]:
     """Load one catalog a plugin declared. Returns ``(entry, error)``."""
 

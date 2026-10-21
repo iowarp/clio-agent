@@ -424,9 +424,7 @@ def _refusal_for_declaration(
 
     from clio_agent.tools.mcp_config import spec_from_declaration  # noqa: PLC0415
 
-    spec = spec_from_declaration(
-        name, declaration, source=f"plugin-agent:{agent_ref}", env=env
-    )
+    spec = spec_from_declaration(name, declaration, source=f"plugin-agent:{agent_ref}", env=env)
     if spec.validation_errors:
         variable = _unset_variable(spec.validation_errors)
         return WatcherArmingRefusal(

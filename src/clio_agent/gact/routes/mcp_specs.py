@@ -18,7 +18,9 @@ from clio_agent.tools.mcp_inventory_snapshot import WorkspaceMcpSnapshot, worksp
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
 
 
-def declared_mcp_specs(app: Any, cwd: Path | None = None, *, session_id: str = "") -> dict[str, Any]:
+def declared_mcp_specs(
+    app: Any, cwd: Path | None = None, *, session_id: str = ""
+) -> dict[str, Any]:
     """Return MCP specs declared for the selected session and workspace.
 
     The session agent's plugin servers, then user and workspace ``mcp.yaml``.
@@ -27,7 +29,9 @@ def declared_mcp_specs(app: Any, cwd: Path | None = None, *, session_id: str = "
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
 
-    plugin_servers = server_set_declarations(session_server_set(app, session_id)) if session_id else {}
+    plugin_servers = (
+        server_set_declarations(session_server_set(app, session_id)) if session_id else {}
+    )
     return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
 

@@ -52,7 +52,9 @@ def _error(status: int, code: str, message: str, **details: Any) -> HTTPExceptio
 
 def _translate(exc: Exception) -> HTTPException:
     if isinstance(exc, StoreError):
-        status = 404 if exc.code.endswith("not_installed") or exc.code.endswith("not_found") else 422
+        status = (
+            404 if exc.code.endswith("not_installed") or exc.code.endswith("not_found") else 422
+        )
         return _error(status, exc.code, str(exc))
     if isinstance(exc, AgentNotFound):
         return _error(404, exc.reason, str(exc), ref=exc.ref)

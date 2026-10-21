@@ -360,9 +360,7 @@ def build_raise_alert_card_tool(agent_def: Any) -> Any:
         # "clio/spotter-ai"), so the card header reads as the product. Falls back
         # to the calling agent id for a session without a pinned agent.
         caller_session = app.state.sessions.get(sid)
-        agent_ref = str(
-            (getattr(caller_session, "metadata", None) or {}).get("agent_ref") or ""
-        )
+        agent_ref = str((getattr(caller_session, "metadata", None) or {}).get("agent_ref") or "")
         source = agent_ref.rsplit("/", 1)[-1] or caller_expert_id
 
         part = action_card_part(
