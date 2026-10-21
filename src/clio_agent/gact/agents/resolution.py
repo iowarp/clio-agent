@@ -219,6 +219,8 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
         structured_outputs=structured,
         tools=[row["name"] for row in resolution.tools],
         skills=[row["id"] for row in resolution.skills],
+        # An agent may invoke exactly the commands its plugins ship.
+        commands=[row["id"] for row in resolution.commands],
         parameters=parameters,
         metadata=metadata,
         tier=2 if agent.get("kind") == "subagent" else 1,

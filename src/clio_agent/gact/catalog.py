@@ -70,12 +70,13 @@ def _load_command_files_from_disk(
             enabled = _truthy_command_field(meta.get("enabled"), status == "available")
             if status != "available":
                 enabled = False
+            # Empty names the session's agent; otherwise one of its defined subagents.
             agent_id = str(
                 meta.get("agent")
                 or meta.get("agent_id")
                 or meta.get("target_agent")
                 or meta.get("target-agent")
-                or "main"
+                or ""
             ).strip()
             command = {
                 "id": command_id,
@@ -224,7 +225,7 @@ def _builtin_tools() -> list[Tool]:
 
     This is a product catalog, not a session-effective inventory: it includes
     the workspace gateway, universal react tools, and root coordination tools.
-    Blueprint/session additions remain visible through the effective-toolset
+    Plugin/session additions remain visible through the effective-toolset
     endpoint and are deliberately not guessed here.
     """
 

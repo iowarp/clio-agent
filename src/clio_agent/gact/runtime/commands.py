@@ -252,6 +252,12 @@ def plugin_command_roots(
         resolution = session_resolution(app, session_id)
     except SessionAgentUnavailable:
         return []
+    return resolution_command_roots(resolution)
+
+
+def resolution_command_roots(resolution: Any) -> list[tuple[Path, str, dict[str, Any]]]:
+    """The ``commands/`` folders of a resolution's plugins, as command discovery roots."""
+
     roots: dict[str, Path] = {}
     for row in resolution.commands:
         roots.setdefault(str(row["plugin"]), Path(row["path"]).parent)

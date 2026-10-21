@@ -344,6 +344,22 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         return row
 
+    def _agent_resolution(agent_ref: str) -> Any:
+        """``agent_ref``'s resolution, for a planner listing that names no session."""
+
+        from clio_agent.gact.agents.resolution import plugin_service
+        from clio_agent.plugins.service import AgentNotFound
+
+        try:
+            return plugin_service(app).resolve(agent_ref, pin=False)
+        except AgentNotFound as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
+                ).model_dump(exclude_none=True),
+            ) from exc
+
     @app.get("/v1/commands")
     def list_commands(
         agent_id: Optional[str] = None,
@@ -355,15 +371,20 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         cwd, extra_roots = command_context_for_request(app, session_id or "", workspace_id or "")
         if planner:
+            # The planner sees the commands one agent may invoke: the session's agent
+            # (or its subagent ``agent_id``), or, without a session, agent ``agent_id``.
+            agent_def = None
+            if session_id:
+                agent_def = deps.resolve_session_agent(agent_id or "", session_id=session_id)
+            elif agent_id:
+                from clio_agent.gact.agents.resolution import resolution_agent_def
+                from clio_agent.gact.runtime.commands import resolution_command_roots
+
+                resolution = _agent_resolution(agent_id)
+                agent_def = resolution_agent_def(resolution)
+                extra_roots = resolution_command_roots(resolution)
             return {
-                "commands": planner_command_rows(
-                    app,
-                    deps.resolve_session_agent(agent_id or "", session_id=session_id or "")
-                    if session_id
-                    else None,
-                    cwd=cwd,
-                    extra_roots=extra_roots,
-                )
+                "commands": planner_command_rows(app, agent_def, cwd=cwd, extra_roots=extra_roots)
             }
         return {"commands": all_command_rows(app, cwd=cwd, extra_roots=extra_roots)}
 
@@ -491,6 +512,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
+            agent_id = agent_def.id
             args = request_body.get("args")
             if args is None:
                 args = request_body.get("arguments")

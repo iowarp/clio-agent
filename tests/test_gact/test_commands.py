@@ -12,9 +12,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests._plugin_fixtures import custom_marketplace
 
-# #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake.
+# Default sessions run their plugin agent; route it to each test's
+# ``build_app(agent=...)`` host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -28,6 +29,84 @@ class _Pred:
 class _Agent:
     def forward(self, *args, **kwargs):
         return _Pred()
+
+
+COMMAND_AGENTS = """
+from clio_agent.sdk import Agent
+
+
+class Reviewer(Agent):
+    id = "reviewer"
+    version = "1.0.0"
+    role = "a code reviewer"
+    plugins = Agent.plugins + ["workspace", "review"]
+
+
+class Caller(Agent):
+    id = "caller"
+    version = "1.0.0"
+    role = "an agent that calls commands"
+    plugins = Agent.plugins + ["workspace", "summaries"]
+"""
+
+#: Command dispatch runs the resolved agent through this seam.
+RUNNER = "clio_agent.gact.routes.catalog.run_resolved_agent"
+
+
+def _command(name: str, body: str, **meta: Any) -> str:
+    lines = ["---", f"name: {name}"]
+    for key, value in meta.items():
+        key = key.replace("_", "-") if key in {"agent_invocable"} else key
+        if isinstance(value, list):
+            lines.append(f"{key}:")
+            lines.extend(f"- {item}" for item in value)
+        else:
+            lines.append(f"{key}: {value}")
+    return "\n".join([*lines, "---", body, ""])
+
+
+def _command_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plugins that ship commands (``review``, ``summaries``) and agents that carry them."""
+
+    summaries = {
+        "ai.iowarp.clio/commands/summarize.md": _command(
+            "summarize",
+            "Summarize {{args.path}}.",
+            description="Summarize a dataset",
+            agent_invocable="true",
+            arguments=["path"],
+        ),
+        "ai.iowarp.clio/commands/user_only.md": _command(
+            "user-only", "User only.", agent_invocable="false"
+        ),
+        "ai.iowarp.clio/commands/future.md": _command(
+            "future",
+            "Later.",
+            status="unavailable",
+            enabled="false",
+            error="not_implemented",
+            disabled_reason="not ready yet",
+        ),
+    }
+    review = {
+        "ai.iowarp.clio/commands/review.md": _command(
+            "review", "Review this: {{input}}", description="Review the supplied change"
+        )
+    }
+    custom_marketplace(
+        tmp_path,
+        monkeypatch,
+        plugins={"review": {"files": review}, "summaries": {"files": summaries}},
+        agents={"command_agents.py": COMMAND_AGENTS},
+    )
+
+
+def _session(client: TestClient, agent_ref: str) -> str:
+    response = client.post(
+        "/v1/sessions", json={"title": "t", "metadata": {"agent_ref": agent_ref}}
+    )
+    assert response.status_code in (200, 201), response.text
+    return response.json()["id"]
 
 
 @pytest.fixture()
@@ -170,48 +249,28 @@ def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
     assert "misses=" in text
 
 
-def test_user_agent_command_listed_and_dispatches_to_agent(
+def test_plugin_command_listed_and_dispatches_to_its_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         calls.append((agent_def.id, question, session_id))
         return _Pred(answer="REVIEW_OK", selected_expert=agent_def.id)
 
-    def fail_tool_agent(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("prompt-only user command should not use tool runner")
-
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_tool_user_agent", fail_tool_agent)
+    _command_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(RUNNER, fake_runner)
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    c.post(
-        "/v1/agents",
-        json={
-            "id": "reviewer",
-            "title": "Reviewer",
-            "description": "Review code changes",
-            "system_prompt": "Review carefully.",
-            "metadata": {
-                "commands": [
-                    {
-                        "id": "/review",
-                        "description": "Review the supplied change",
-                        "prompt_template": "Review this: {{input}}",
-                    }
-                ]
-            },
-        },
-    )
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _session(c, "clio/reviewer")
 
-    listed = c.get("/v1/commands").json()["commands"]
+    listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
     review = next(command for command in listed if command["id"] == "/review")
     assert review["source"] == "user"
-    assert review["agent_id"] == "reviewer"
+    assert review["command_scope"] == "plugin" and review["plugin"] == "review"
     assert review["status"] == "available"
+    # Without a session, no agent's plugins are in scope.
+    assert "/review" not in {row["id"] for row in c.get("/v1/commands").json()["commands"]}
 
     resp = c.post(f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}).json()
 
@@ -229,7 +288,7 @@ def test_dispatch_user_command_does_not_block_event_loop(
 ) -> None:
     """iowarp/clio-agent#755: a slow command turn must not freeze the server.
 
-    The blueprint runner is a blocking DSPy run that can take minutes. If it
+    The agent runner is a blocking DSPy run that can take minutes. If it
     executes on the event-loop thread, every other request (health, SSE, other
     sessions) stalls until the command finishes. Hold the fake runner on a
     threading.Event and prove ``GET /v1/health`` completes while the command
@@ -240,37 +299,20 @@ def test_dispatch_user_command_does_not_block_event_loop(
     started = threading.Event()
     release = threading.Event()
 
-    def slow_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def slow_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent, question, session_id
         started.set()
         assert release.wait(timeout=30), "test never released the slow command runner"
         return _Pred(answer="SLOW_OK", selected_expert=agent_def.id)
 
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", slow_prompt_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", slow_prompt_agent)
+    _command_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(RUNNER, slow_runner)
 
     # Context-managed client => one persistent portal/event loop shared by all
     # requests. A bare TestClient spins up a fresh loop per request, which
     # would mask cross-request event-loop blocking entirely.
     with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as c:
-        c.post(
-            "/v1/agents",
-            json={
-                "id": "reviewer",
-                "title": "Reviewer",
-                "system_prompt": "Review carefully.",
-                "metadata": {
-                    "commands": [
-                        {
-                            "id": "/review",
-                            "description": "Review the supplied change",
-                            "prompt_template": "Review this: {{input}}",
-                        }
-                    ]
-                },
-            },
-        )
-        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        sid = _session(c, "clio/reviewer")
 
         command_result: dict[str, Any] = {}
 
@@ -354,18 +396,17 @@ def test_skill_frontmatter_command_is_listed(
     assert "Use concise explanations." in command["prompt_template"]
 
 
-def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(
+def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         calls.append((agent_def.id, question, session_id))
         return _Pred(answer="FILE_REVIEW_OK", selected_expert=agent_def.id)
 
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
+    monkeypatch.setattr(RUNNER, fake_runner)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
     command_dir = tmp_path / ".clio" / "commands"
@@ -377,7 +418,6 @@ def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(
                 "name: review",
                 "title: Review",
                 "description: Review a supplied path",
-                "agent: main",
                 "argument-hint: <path>",
                 "arguments:",
                 "- path",
@@ -406,73 +446,34 @@ def test_workspace_command_file_is_listed_and_dispatches_to_builtin_agent(
     ).json()
 
     assert resp["result"]["text"] == "FILE_REVIEW_OK"
-    assert calls == [("main", "Review src/app.py at src/app.py with main.", sid)]
+    # No ``agent:`` field: the command runs on the session's agent.
+    assert calls == [("standard", "Review src/app.py at src/app.py with standard.", sid)]
 
 
 def test_agent_invocable_command_planner_visibility_and_allowed_call(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An agent may invoke exactly the agent-invocable commands its plugins ship."""
+
     calls: list[tuple[str, str, str]] = []
 
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
+    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         calls.append((agent_def.id, question, session_id))
         return _Pred(answer="SUMMARY_OK", selected_expert=agent_def.id)
 
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_prompt_agent)
-    monkeypatch.chdir(tmp_path)
-    command_dir = tmp_path / ".clio" / "commands"
-    command_dir.mkdir(parents=True)
-    (command_dir / "summarize.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: summarize",
-                "title: Summarize",
-                "description: Summarize a dataset",
-                "agent: main",
-                "agent-invocable: true",
-                "arguments:",
-                "- path",
-                "---",
-                "Summarize {{args.path}}.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (command_dir / "user_only.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: user-only",
-                "title: User Only",
-                "agent: main",
-                "agent-invocable: false",
-                "---",
-                "User only.",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    _command_marketplace(tmp_path, monkeypatch)
+    monkeypatch.setattr(RUNNER, fake_runner)
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    c.post(
-        "/v1/agents",
-        json={
-            "id": "caller",
-            "title": "Caller",
-            "system_prompt": "Call allowed commands.",
-            "metadata": {"commands": ["/summarize"]},
-        },
-    )
-    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+    sid = _session(c, "clio/caller")
 
-    planner = c.get("/v1/commands", params={"planner": "true", "agent_id": "caller"}).json()[
-        "commands"
-    ]
-    visible_ids = {row["id"] for row in planner}
-    assert "/summarize" in visible_ids
-    assert "/user-only" not in visible_ids
+    for params in ({"agent_id": "clio/caller"}, {"session_id": sid}):
+        planner = c.get("/v1/commands", params={"planner": "true", **params}).json()["commands"]
+        visible_ids = {row["id"] for row in planner}
+        assert "/summarize" in visible_ids
+        assert "/user-only" not in visible_ids
+    other = c.get("/v1/commands", params={"planner": "true", "agent_id": "clio/reviewer"})
+    assert "/summarize" not in {row["id"] for row in other.json()["commands"]}
 
     resp = c.post(
         f"/v1/sessions/{sid}/commands/summarize",
@@ -486,7 +487,7 @@ def test_agent_invocable_command_planner_visibility_and_allowed_call(
     assert resp["result"]["audit"]["caller_type"] == "agent"
     assert resp["result"]["audit"]["caller_agent_id"] == "caller"
     assert resp["result"]["audit"]["args"] == {"path": "data.csv"}
-    assert calls == [("main", "Summarize data.csv.", sid)]
+    assert calls == [("caller", "Summarize data.csv.", sid)]
     assert c.app.state.command_audit[-1]["status"] == "completed"
 
 
@@ -502,7 +503,6 @@ def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
             [
                 "---",
                 "name: summarize",
-                "agent: main",
                 "agent-invocable: true",
                 "---",
                 "Summarize.",
@@ -511,15 +511,12 @@ def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
         encoding="utf-8",
     )
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    c.post(
-        "/v1/agents",
-        json={"id": "caller", "title": "Caller", "system_prompt": "No commands."},
-    )
-    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+    # The session's agent ships no commands, so it may invoke none.
+    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
     resp = c.post(
         f"/v1/sessions/{sid}/commands/summarize",
-        json={"caller": {"type": "agent", "agent_id": "caller"}},
+        json={"caller": {"type": "agent", "agent_id": "standard"}},
     )
 
     assert resp.status_code == 403
@@ -528,7 +525,7 @@ def test_agent_invocable_command_denies_missing_allowlist_and_records_audit(
     assert body["details"]["audit"]["status"] == "denied"
     assert (
         c.app.state.command_audit[-1]["error"]
-        == "command /summarize is not allowed for agent caller"
+        == "command /summarize is not allowed for agent standard"
     )
 
 
@@ -536,35 +533,9 @@ def test_agent_invocable_command_invalid_args_records_audit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.chdir(tmp_path)
-    command_dir = tmp_path / ".clio" / "commands"
-    command_dir.mkdir(parents=True)
-    (command_dir / "summarize.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: summarize",
-                "agent: main",
-                "agent-invocable: true",
-                "arguments:",
-                "- path",
-                "---",
-                "Summarize {{args.path}}.",
-            ]
-        ),
-        encoding="utf-8",
-    )
+    _command_marketplace(tmp_path, monkeypatch)
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    c.post(
-        "/v1/agents",
-        json={
-            "id": "caller",
-            "title": "Caller",
-            "system_prompt": "Call allowed commands.",
-            "metadata": {"commands": ["/summarize"]},
-        },
-    )
-    sid = c.post("/v1/sessions", json={"title": "t", "agent": {"id": "caller"}}).json()["id"]
+    sid = _session(c, "clio/caller")
 
     resp = c.post(
         f"/v1/sessions/{sid}/commands/summarize",
@@ -575,187 +546,6 @@ def test_agent_invocable_command_invalid_args_records_audit(
     assert resp.json()["error"]["error"] == "invalid_arguments"
     assert c.app.state.command_audit[-1]["status"] == "failed"
     assert c.app.state.command_audit[-1]["error"] == "invalid_arguments"
-
-
-def test_expert_pack_command_allowlist_controls_planner_visibility(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".clio" / "experts").mkdir(parents=True)
-    (tmp_path / ".clio" / "commands").mkdir(parents=True)
-    (tmp_path / ".clio" / "experts" / "dataset.md").write_text(
-        """---
-id: dataset_expert
-title: Dataset Expert
-parent_id: main
-tier: 2
-commands: [summarize-dataset]
----
-Work with datasets.
-""",
-        encoding="utf-8",
-    )
-    (tmp_path / ".clio" / "commands" / "summarize-dataset.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: summarize-dataset",
-                "agent: main",
-                "agent-invocable: true",
-                "---",
-                "Summarize.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / ".clio" / "commands" / "other.md").write_text(
-        "\n".join(
-            [
-                "---",
-                "name: other",
-                "agent: main",
-                "agent-invocable: true",
-                "---",
-                "Other.",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-
-    planner = c.get(
-        "/v1/commands",
-        params={"planner": "true", "agent_id": "dataset_expert"},
-    ).json()["commands"]
-
-    assert {row["id"] for row in planner} == {"/summarize-dataset"}
-
-
-def test_agent_blueprint_packaged_command_discovery_dispatch_and_allowlist(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    # #948 S4b: an Agent Blueprint expert (``root``) now executes on the blueprint
-    # runtime, so the command-dispatch route selects ``_run_blueprint_dspy_agent``
-    # via ``_blueprint_runner_for_agent`` — not the legacy ``_run_prompt_user_agent``
-    # the retired native-expert runtime used to route it to.
-    def fake_blueprint_runner(
-        base_agent: Any,
-        agent_def: Any,
-        question: str,
-        session_id: str,
-        cancel_requested: Any | None = None,
-    ) -> Any:
-        del base_agent, cancel_requested
-        calls.append((agent_def.id, question, session_id))
-        return _Pred(answer="VALIDATION_OK", selected_expert=agent_def.id)
-
-    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
-    monkeypatch.chdir(tmp_path)
-    workspace = tmp_path / "workspace"
-    blueprint_root = workspace / ".clio" / "agent-blueprints" / "qc-agent"
-    (blueprint_root / "experts").mkdir(parents=True)
-    (blueprint_root / "commands").mkdir()
-    (blueprint_root / "AGENT.md").write_text(
-        """---
-id: qc-agent
-version: 0.1.0
-title: QC Agent
-root_expert: root
-blueprint:
-  format: agent-blueprint-v1
----
-Quality-control agent.
-""",
-        encoding="utf-8",
-    )
-    (blueprint_root / "experts" / "root.md").write_text(
-        """---
-id: root
-title: QC Root
-tier: 1
-commands:
-  - validate-dataset
----
-Coordinate dataset checks.
-""",
-        encoding="utf-8",
-    )
-    (blueprint_root / "commands" / "validate-dataset.md").write_text(
-        """---
-name: validate-dataset
-title: Validate Dataset
-description: Validate a dataset before analysis
-agent: root
-agent-invocable: true
-arguments:
-  - path
----
-Validate {{args.path}} for this QC workflow.
-""",
-        encoding="utf-8",
-    )
-
-    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as c:
-        wid = c.post(
-            "/v1/workspaces",
-            json={
-                "name": "Workspace",
-                "root_path": str(workspace),
-                "storage_root": str(workspace / ".clio"),
-            },
-        ).json()["id"]
-        sid = c.post("/v1/sessions", json={"title": "t", "workspace_id": wid}).json()["id"]
-        assert (
-            c.post(
-                f"/v1/sessions/{sid}/agent-blueprint",
-                json={"blueprint_id": "qc-agent"},
-            ).status_code
-            == 200
-        )
-
-        workspace_commands = c.get("/v1/commands", params={"workspace_id": wid}).json()["commands"]
-        assert "/validate-dataset" not in {row["id"] for row in workspace_commands}
-
-        session_commands = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
-        packaged = next(row for row in session_commands if row["id"] == "/validate-dataset")
-        assert packaged["command_source"] == "agent_blueprint"
-        assert packaged["agent_blueprint_id"] == "qc-agent"
-        assert packaged["command_scope"] == "agent_blueprint"
-        assert packaged["command_path"].endswith("commands/validate-dataset.md")
-
-        planner_commands = c.get(
-            "/v1/commands",
-            params={"session_id": sid, "planner": "true", "agent_id": "root"},
-        ).json()["commands"]
-        assert {row["id"] for row in planner_commands} == {"/validate-dataset"}
-
-        denied = c.post(
-            f"/v1/sessions/{sid}/commands/validate-dataset",
-            json={
-                "caller": {"type": "agent", "agent_id": "missing"},
-                "args": {"path": "data.csv"},
-            },
-        )
-        assert denied.status_code == 403
-        assert denied.json()["error"]["details"]["audit"]["status"] == "denied"
-
-        resp = c.post(
-            f"/v1/sessions/{sid}/commands/validate-dataset",
-            json={
-                "caller": {"type": "agent", "agent_id": "root"},
-                "args": {"path": "data.csv"},
-            },
-        ).json()
-
-        assert resp["result"]["text"] == "VALIDATION_OK"
-        assert resp["result"]["audit"]["caller_type"] == "agent"
-        assert resp["result"]["audit"]["caller_agent_id"] == "root"
-        assert resp["result"]["audit"]["command_source"] == "agent_blueprint"
-        assert calls == [("root", "Validate data.csv for this QC workflow.", sid)]
 
 
 def test_workspace_commands_do_not_leak_between_workspace_requests(tmp_path: Path) -> None:
@@ -867,29 +657,14 @@ def test_command_file_with_shell_field_is_visible_but_disabled(
     assert resp.json()["error"]["error"] == "not_supported"
 
 
-def test_disabled_user_agent_command_is_visible_but_not_runnable(tmp_path: Path) -> None:
+def test_disabled_plugin_command_is_visible_but_not_runnable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _command_marketplace(tmp_path, monkeypatch)
     c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    c.post(
-        "/v1/agents",
-        json={
-            "id": "future_agent",
-            "title": "Future Agent",
-            "metadata": {
-                "commands": [
-                    {
-                        "id": "/future",
-                        "status": "unavailable",
-                        "enabled": False,
-                        "error": "not_implemented",
-                        "disabled_reason": "not ready yet",
-                    }
-                ]
-            },
-        },
-    )
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    sid = _session(c, "clio/caller")
 
-    listed = c.get("/v1/commands").json()["commands"]
+    listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
     command = next(row for row in listed if row["id"] == "/future")
     assert command["enabled"] is False
 

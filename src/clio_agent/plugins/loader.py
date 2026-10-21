@@ -248,9 +248,12 @@ def _commands(clio_dir: Path, plugin: str) -> list[CommandRecord]:
             meta, _ = split_frontmatter(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, FrontmatterError):
             meta = None
+        meta = meta or {}
+        name = str(meta.get("slash_id") or meta.get("slash-id") or meta.get("name") or "")
         out.append(
             CommandRecord(
-                id=path.stem,
+                # The command's id, as command discovery names it (its ``name``).
+                id=name.strip().lstrip("/") or path.stem,
                 description=str((meta or {}).get("description") or ""),
                 path=str(path),
             )
