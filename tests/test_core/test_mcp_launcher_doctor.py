@@ -30,6 +30,21 @@ def test_missing_clio_kit_launcher_yields_exact_remediation():
     assert "uv tool install clio-kit==2.10.6" in finding.next_action
 
 
+def test_missing_plugin_launcher_degrades_without_failing_health():
+    """A plugin's server only runs for agents carrying that plugin: not required."""
+    from clio_agent.tools.mcp_config import specs_from_mapping
+
+    specs = specs_from_mapping({"ogc": "ogc-api-mcp --stdio"}, source="plugin:remote-sensing")
+
+    findings = probe_mcp_launchers(specs=specs, which=lambda _cmd: None)
+
+    assert [(f.name, f.state, f.required) for f in findings] == [
+        ("mcp_launcher:ogc-api-mcp", IntegrationState.DEGRADED, False)
+    ]
+    assert "plugin 'remote-sensing'" in findings[0].summary
+    assert findings[0].config_source == "plugin:remote-sensing"
+
+
 def test_present_launcher_yields_no_finding():
     """A launcher resolvable on PATH is not reported."""
     specs = _specs({"ndp": "clio-kit mcp-server ndp"})

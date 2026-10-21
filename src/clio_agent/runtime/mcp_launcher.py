@@ -142,18 +142,28 @@ def probe_mcp_launchers(
         if bundled_module_launcher(spec.command, spec.args) is not None:
             continue
         seen_commands.add(spec.command)
+        # Every installed plugin's servers are declared, but a plugin's server only
+        # runs for sessions whose agent carries that plugin: its missing launcher
+        # degrades those sessions, not the whole service. mcp.yaml servers load
+        # for every session, so theirs stays required.
+        plugin = spec.source.removeprefix("plugin:") if spec.source.startswith("plugin:") else ""
         findings.append(
             IntegrationStatus(
                 name=f"mcp_launcher:{spec.command}",
-                state=IntegrationState.UNAVAILABLE,
+                state=IntegrationState.DEGRADED if plugin else IntegrationState.UNAVAILABLE,
                 summary=(
                     f"MCP launcher {spec.command!r} is declared but not found on PATH; "
-                    "the stdio MCP server(s) using it cannot spawn."
+                    + (
+                        f"plugin {plugin!r}'s stdio MCP server(s) using it cannot spawn "
+                        "in sessions whose agent carries that plugin."
+                        if plugin
+                        else "the stdio MCP server(s) using it cannot spawn."
+                    )
                 ),
                 config_source=spec.source or "plugins+mcp.yaml",
                 next_action=_remediation_for(spec.command),
                 fallback="none",
-                required=True,
+                required=not plugin,
             )
         )
     return findings
