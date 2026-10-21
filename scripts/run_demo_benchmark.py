@@ -47,9 +47,9 @@ _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "sync_parent_return": "sync child delegation returns control to the parent",
     "failure_recovery": "failure/recovery behavior reaches downstream evidence",
     "workspace_memory_scope": "workspace/global memory scope policy is observed",
-    "marketplace_pack": "marketplace Agent Blueprint activation is observed",
+    "marketplace_agent": "the requested marketplace agent is pinned to the session",
     "command_mcp_skill_scope": "command, MCP, or skill capability scoping is observed",
-    "enabled_mcp_execution": "marketplace MCP descriptor is trusted, launched, and callable",
+    "enabled_mcp_execution": "a trusted plugin MCP server is launched and its tool is called",
 }
 _DATA_FILE_SUFFIXES = {
     ".bp",
@@ -81,8 +81,35 @@ _DATA_FILE_SUFFIXES = {
 _CANONICAL_CASES_BY_ID: dict[str, "DemoCase"] | None = None
 
 
-def _is_earthscope_gnss_blueprint_id(blueprint_id: str) -> bool:
-    return str(blueprint_id or "").startswith("earthscope-gnss-region")
+def _agent_id_of(ref: str) -> str:
+    """Return the agent id of a ``marketplace/id[@range]`` reference."""
+
+    return str(ref or "").partition("@")[0].rsplit("/", 1)[-1]
+
+
+def _agent_ref_matches(expected: str, active: str) -> bool:
+    """Return whether the pinned agent ``active`` is the agent a case asked for.
+
+    ``expected`` may carry a version range (ignored: the pin is the resolved
+    version) and may be a bare id, which matches the agent id in any marketplace.
+    """
+
+    wanted = str(expected or "").partition("@")[0]
+    if not wanted or not active:
+        return False
+    if "/" not in wanted:
+        return _agent_id_of(active) == wanted
+    return active == wanted
+
+
+def _rebase_agent_ref(ref: str, marketplace: str) -> str:
+    """Point ``ref`` at the same agent id in ``marketplace``."""
+
+    return f"{marketplace}/{str(ref).rsplit('/', 1)[-1]}" if ref else ref
+
+
+def _is_earthscope_gnss_agent_ref(ref: str) -> bool:
+    return _agent_id_of(ref).startswith("earthscope-gnss-region")
 
 
 @dataclass(frozen=True)
@@ -121,13 +148,14 @@ class DemoCase:
     turn_agent_id: str = ""
     forbidden_route_sources: tuple[str, ...] = ()
     min_artifacts: int = 0
-    agent_blueprint_id: str = ""
+    #: The marketplace agent the case session is created on (``<marketplace>/<id>``);
+    #: empty runs on the session default agent.
+    agent_ref: str = ""
     min_expert_depth: int = 0
     min_branch_count: int = 0
     semantic_proofs: tuple[str, ...] = ()
-    mcp_enable_descriptor_id: str = ""
-    mcp_call_tool: str = ""
-    mcp_call_args: dict[str, Any] = field(default_factory=dict)
+    #: A plugin MCP server of the session agent to probe before the turn.
+    mcp_probe_server: str = ""
     memory_scope_probe: bool = False
     skip_model_turn: bool = False
 
@@ -147,7 +175,8 @@ class DemoResult:
     setup_messages: list[dict[str, Any]] = field(default_factory=list)
     actions: list[dict[str, Any]] = field(default_factory=list)
     benchmark_lane: str = "default"
-    agent_blueprint: dict[str, Any] = field(default_factory=dict)
+    #: The session's pinned agent (``GET /v1/sessions/{sid}/agent``, compacted).
+    session_agent: dict[str, Any] = field(default_factory=dict)
     semantic_events: list[dict[str, Any]] = field(default_factory=list)
     #: Registry-sourced (S7 #973): the produced artifact paths from the artifact
     #: registry wire, populated at run/replay time (never a tool-output path scrape).
@@ -315,16 +344,23 @@ class DemoResult:
         return str(metadata.get("route_source") or "")
 
     @property
-    def active_agent_blueprint_id(self) -> str:
-        """Return the session Agent Blueprint active for this benchmark case."""
-        return str(self.agent_blueprint.get("active_agent_blueprint_id") or "")
+    def agent_resolution(self) -> dict[str, Any]:
+        """Return the session's pinned resolution view."""
+        resolution = self.session_agent.get("resolution")
+        return resolution if isinstance(resolution, dict) else {}
+
+    @property
+    def active_agent_ref(self) -> str:
+        """Return the ref of the agent pinned to this benchmark case's session."""
+        agent = self.agent_resolution.get("agent")
+        return str(agent.get("ref") or "") if isinstance(agent, dict) else ""
 
     @property
     def expected_evidence_text(self) -> str:
         """Return text searched for expected benchmark evidence terms."""
         chunks: list[str] = [self.text, *self.artifacts]
-        if self.agent_blueprint:
-            chunks.append(json.dumps(self.agent_blueprint, sort_keys=True, default=str))
+        if self.session_agent:
+            chunks.append(json.dumps(self.session_agent, sort_keys=True, default=str))
         if self.actions:
             chunks.append(json.dumps(self.actions, sort_keys=True, default=str))
         for tool in self.tools:
@@ -470,7 +506,7 @@ class DemoResult:
         data, but the visible answer collapsed into an artifact-only status.
         """
 
-        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
+        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
             return []
         if not {"ndp_profile_csv_resource", "ndp_plot_csv_timeseries"}.issubset(
             set(self.tool_names)
@@ -531,7 +567,7 @@ class DemoResult:
         truthful.
         """
 
-        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
+        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
             return []
         counts: dict[str, int] = {}
         for tool in self.tools:
@@ -593,7 +629,7 @@ class DemoResult:
     def _earthscope_gnss_station_region_mismatches(self) -> list[str]:
         """Return station CSV region-provenance mismatch diagnostics."""
 
-        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
+        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
             return []
         if "ndp_profile_csv_resource" not in self.tool_names:
             return []
@@ -640,7 +676,7 @@ class DemoResult:
     def _earthscope_visible_answer_has_unsupported_scan_limited_claims(self) -> bool:
         """Return whether final prose overclaims scan-limited EarthScope evidence."""
 
-        if not _is_earthscope_gnss_blueprint_id(self.case.agent_blueprint_id):
+        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
             return False
         evidence = self._normalize_evidence_match_text(self.expected_evidence_text)
         if not any(
@@ -740,11 +776,12 @@ class DemoResult:
                 if isinstance(self.case.expected_agent, str)
                 else self.case.expected_agent
             )
-            if not self.case.agent_blueprint_id and self.selected_agent not in expected_agents:
+            if not self.case.agent_ref and self.selected_agent not in expected_agents:
                 return False
-        if self.case.agent_blueprint_id:
-            if self.active_agent_blueprint_id != self.case.agent_blueprint_id:
-                return False
+        if self.case.agent_ref and not _agent_ref_matches(
+            self.case.agent_ref, self.active_agent_ref
+        ):
+            return False
         for expected_tool in self.case.expected_tools:
             if expected_tool not in self.tool_names:
                 return False
@@ -1140,8 +1177,6 @@ def _semantic_handoffs(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     completed_returns: list[tuple[str, str]] = []
     for row in events:
         event_type = str(row.get("event_type") or "")
-        if event_type.startswith("blueprint.delegation."):
-            event_type = event_type.removeprefix("blueprint.")
         if not event_type.startswith("delegation."):
             continue
         payload = _semantic_payload(row)
@@ -1665,12 +1700,10 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
             )
         elif proof == "workspace_memory_scope":
             proof_observed = _workspace_memory_scope_observed(result)
-        elif proof == "marketplace_pack":
-            proof_observed = (
-                bool(result.case.agent_blueprint_id)
-                and result.active_agent_blueprint_id == result.case.agent_blueprint_id
-                and bool(result.tool_names or result.handoff_agent_ids)
-            )
+        elif proof == "marketplace_agent":
+            proof_observed = _agent_ref_matches(
+                result.case.agent_ref, result.active_agent_ref
+            ) and bool(result.tool_names or result.handoff_agent_ids)
         elif proof == "command_mcp_skill_scope":
             proof_observed = _command_mcp_skill_scope_observed(result)
         elif proof == "enabled_mcp_execution":
@@ -1681,82 +1714,66 @@ def _case_observed_semantic_proofs(result: DemoResult) -> tuple[str, ...]:
 
 
 def _command_mcp_skill_scope_observed(result: DemoResult) -> bool:
-    """Return whether session evidence proves command/MCP/skill capability scoping."""
+    """Return whether the pinned resolution scopes a command, MCP server or skill to the agent.
 
-    blueprint_text = json.dumps(result.agent_blueprint, sort_keys=True, default=str).lower()
-    runtime_text = ""
-    metadata = result.message.get("metadata") if isinstance(result.message, Mapping) else {}
-    if isinstance(metadata, Mapping):
-        runtime_text = json.dumps(
-            metadata.get("runtime_provenance") or {},
-            sort_keys=True,
-            default=str,
-        ).lower()
-    session_text = json.dumps(
-        result.session_messages,
-        sort_keys=True,
-        default=str,
-    ).lower()
-    tool_text = json.dumps(result.tools, sort_keys=True, default=str).lower()
-    handoff_text = json.dumps(result.expert_handoffs, sort_keys=True, default=str).lower()
-    combined = "\n".join([blueprint_text, runtime_text, session_text, tool_text, handoff_text])
+    ``core`` brings commands and skills to every session, so only a capability
+    owned by another resolved plugin, with recorded provenance, proves that the
+    session's agent selection scoped it.
+    """
 
-    has_declared_surface = any(
-        marker in combined
-        for marker in (
-            "mcp_descriptors",
-            "agent_blueprint_mcp_descriptor",
-            '"commands"',
-            '"skills"',
-            '"resolved_skills"',
-            "capability_refs",
-        )
+    resolution = result.agent_resolution
+    plugins = {
+        str(row.get("id") or ""): row
+        for row in resolution.get("plugins") or []
+        if isinstance(row, Mapping)
+    }
+    servers = resolution.get("mcp_servers")
+    owners = [
+        *(
+            str(spec.get("plugin") or "")
+            for spec in (servers.values() if isinstance(servers, Mapping) else ())
+            if isinstance(spec, Mapping)
+        ),
+        *(
+            str(row.get("plugin") or "")
+            for key in ("skills", "commands")
+            for row in resolution.get(key) or []
+            if isinstance(row, Mapping)
+        ),
+    ]
+    scoped = any(
+        owner
+        and owner != "core"
+        and owner in plugins
+        and isinstance(plugins[owner].get("provenance"), Mapping)
+        and bool((plugins[owner].get("provenance") or {}).get("source"))
+        for owner in owners
     )
-    has_scope_status = any(
-        marker in combined
-        for marker in (
-            "requires explicit enablement",
-            "explicit trust",
-            '"enabled": false',
-            '"enabled": true',
-            "disabled",
-            "declared",
-            "resolved",
-        )
-    )
-    return result.passed and has_declared_surface and has_scope_status
+    return result.passed and scoped
 
 
 def _enabled_mcp_execution_observed(result: DemoResult) -> bool:
-    """Return whether actions prove enabled marketplace MCP launch and call."""
+    """Return whether a trusted plugin MCP server was launched and its tool was called.
 
-    enable_actions = [
+    The ``plugin_mcp_probe`` action proves the server is in the session's pinned
+    resolution, owned by a trusted plugin and reachable with its tools listed; a
+    successful call of one of those tools in the turn proves execution.
+    """
+
+    probes = [
         action
         for action in result.actions
-        if action.get("type") == "agent_blueprint_mcp_enable" and action.get("ok") is True
+        if action.get("type") == "plugin_mcp_probe"
+        and action.get("ok") is True
+        and action.get("trusted") is True
     ]
-    call_actions = [
-        action
-        for action in result.actions
-        if action.get("type") == "mcp_tool_call" and action.get("ok") is True
-    ]
-    if not result.passed or not enable_actions or not call_actions:
+    if not result.passed or not probes:
         return False
     ready_tools = {
-        tool
-        for action in enable_actions
-        for tool in action.get("ready_tools", [])
-        if isinstance(tool, str)
+        tool for action in probes for tool in action.get("ready_tools", []) if isinstance(tool, str)
     }
-    called_tools = {
-        str(action.get("tool") or "") for action in call_actions if str(action.get("tool") or "")
-    }
-    trusted = any(
-        isinstance(action.get("trust"), Mapping)
-        and (action.get("trust") or {}).get("trusted") is True
-        for action in enable_actions
-    )
-    return bool(ready_tools.intersection(called_tools)) and trusted
+    called_tools = {_tool_name(row) for row in result.tools if row.get("ok") is not False}
+    return bool(ready_tools.intersection(called_tools))
 
 
 def _workspace_memory_scope_observed(result: DemoResult) -> bool:
@@ -2180,59 +2197,95 @@ def _swap_provider_for_case(http: httpx.Client, case: DemoCase, timeout_s: float
         }
 
 
-def _enable_blueprint_mcp_for_case(
+def _probe_plugin_mcp_for_case(
     http: httpx.Client,
     case: DemoCase,
     *,
+    session_id: str,
     workspace_id: str,
     timeout_s: float,
 ) -> dict[str, Any]:
-    """Trust/enable an Agent Blueprint MCP descriptor for benchmark evidence."""
+    """Probe a plugin MCP server of the session's pinned agent for benchmark evidence.
+
+    Plugin MCP servers start on demand from the pinned resolution; there is no
+    enable step. This records that the server is in the session's resolution
+    (``GET /v1/sessions/{sid}/agent``), that its owning plugin is trusted
+    (``GET /v1/plugins``), and that it launches and lists its tools
+    (``GET /v1/mcp/handshake`` with the session, so the probe sees its plugin
+    servers). Tools are namespaced ``<server>_<tool>``.
+    """
 
     started = time.monotonic()
-    descriptor_id = case.mcp_enable_descriptor_id
-    if not case.agent_blueprint_id or not descriptor_id:
-        return {
-            "type": "agent_blueprint_mcp_enable",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "error": "case is missing agent_blueprint_id or mcp_enable_descriptor_id",
-        }
-    try:
-        response = http.post(
-            f"/v1/agent-blueprints/{case.agent_blueprint_id}/mcp/{descriptor_id}/enable",
-            json={"workspace_id": workspace_id, "trust": True, "probe": True},
-            timeout=timeout_s,
+    server = case.mcp_probe_server
+    row: dict[str, Any] = {
+        "type": "plugin_mcp_probe",
+        "ok": False,
+        "agent_ref": case.agent_ref,
+        "server": server,
+    }
+    if not server:
+        row.update(
+            elapsed_s=round(time.monotonic() - started, 3),
+            error="case is missing mcp_probe_server",
         )
-        payload = response.json()
-        tools = payload.get("tools") if isinstance(payload, Mapping) else []
-        ready_tools = [
-            str(tool.get("name") or tool.get("id") or "")
-            for tool in tools
-            if isinstance(tool, Mapping) and tool.get("enabled") is True
-        ]
-        return {
-            "type": "agent_blueprint_mcp_enable",
-            "ok": response.status_code == 200 and bool(ready_tools),
-            "status_code": response.status_code,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "descriptor_id": descriptor_id,
-            "server_id": payload.get("id") if isinstance(payload, Mapping) else "",
-            "status": payload.get("status") if isinstance(payload, Mapping) else "",
-            "ready_tools": ready_tools,
-            "trust": payload.get("trust") if isinstance(payload, Mapping) else {},
-            "result": payload,
-        }
+        return row
+    try:
+        agent_view = http.get(f"/v1/sessions/{session_id}/agent", timeout=timeout_s)
+        agent_view.raise_for_status()
+        resolution = agent_view.json().get("resolution") or {}
+        spec = (resolution.get("mcp_servers") or {}).get(server)
+        if not isinstance(spec, Mapping):
+            row.update(
+                elapsed_s=round(time.monotonic() - started, 3),
+                error=f"MCP server {server!r} is not in the session's pinned resolution",
+            )
+            return row
+        plugin = str(spec.get("plugin") or "")
+        marketplace = next(
+            (
+                str(entry.get("marketplace") or "")
+                for entry in resolution.get("plugins") or []
+                if isinstance(entry, Mapping) and entry.get("id") == plugin
+            ),
+            "",
+        )
+        listing = http.get("/v1/plugins", timeout=timeout_s)
+        listing.raise_for_status()
+        trusted = any(
+            isinstance(entry, Mapping)
+            and entry.get("ref") == f"{marketplace}/{plugin}"
+            and entry.get("trusted") is True
+            and entry.get("pending_trust") is not True
+            for entry in listing.json().get("plugins") or []
+        )
+        params = {"session_id": session_id}
+        if workspace_id:
+            params["workspace_id"] = workspace_id
+        handshake = http.get("/v1/mcp/handshake", params=params, timeout=timeout_s)
+        handshake.raise_for_status()
+        report = next(
+            (
+                entry
+                for entry in handshake.json().get("servers") or []
+                if isinstance(entry, Mapping) and entry.get("name") == server
+            ),
+            {},
+        )
+        ready_tools = [f"{server}_{tool}" for tool in report.get("tools") or [] if tool]
+        row.update(
+            ok=bool(trusted and report.get("reachable") is True and ready_tools),
+            elapsed_s=round(time.monotonic() - started, 3),
+            plugin=plugin,
+            marketplace=marketplace,
+            trusted=trusted,
+            reachable=report.get("reachable") is True,
+            ready_tools=ready_tools,
+            handshake=dict(report),
+        )
+        return row
     except Exception as exc:  # noqa: BLE001
-        return {
-            "type": "agent_blueprint_mcp_enable",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "agent_blueprint_id": case.agent_blueprint_id,
-            "descriptor_id": descriptor_id,
-            "error": repr(exc),
-        }
+        row.update(elapsed_s=round(time.monotonic() - started, 3), error=repr(exc))
+        return row
 
 
 def _create_benchmark_workspace(
@@ -2448,77 +2501,16 @@ def _probe_workspace_memory_scope_for_case(
         }
 
 
-def _call_enabled_mcp_for_case(
-    http: httpx.Client,
-    case: DemoCase,
-    enable_action: dict[str, Any],
-    *,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Call an enabled MCP tool through CLIO and record structured evidence."""
-
-    started = time.monotonic()
-    server_id = str(enable_action.get("server_id") or "")
-    if not server_id or not case.mcp_call_tool:
-        return {
-            "type": "mcp_tool_call",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "error": "case is missing enabled server_id or mcp_call_tool",
-        }
-    try:
-        response = http.post(
-            f"/v1/mcp/servers/{server_id}/call",
-            json={"tool": case.mcp_call_tool, "args": case.mcp_call_args},
-            timeout=timeout_s,
-        )
-        payload = response.json()
-        return {
-            "type": "mcp_tool_call",
-            "ok": response.status_code == 200 and payload.get("is_error") is not True,
-            "status_code": response.status_code,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "server_id": server_id,
-            "tool": case.mcp_call_tool,
-            "args": case.mcp_call_args,
-            "result": payload,
-        }
-    except Exception as exc:  # noqa: BLE001
-        return {
-            "type": "mcp_tool_call",
-            "ok": False,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "server_id": server_id,
-            "tool": case.mcp_call_tool,
-            "args": case.mcp_call_args,
-            "error": repr(exc),
-        }
-
-
-def _action_only_message(case: DemoCase, actions: list[dict[str, Any]]) -> dict[str, Any]:
+def _action_only_message(case: DemoCase) -> dict[str, Any]:
     """Return a benchmark-only message for cases proven by setup actions."""
 
-    tool_calls: list[dict[str, Any]] = []
-    for action in actions:
-        if action.get("type") != "mcp_tool_call" or not action.get("tool"):
-            continue
-        tool_calls.append(
-            {
-                "name": str(action.get("tool") or ""),
-                "tool": str(action.get("tool") or ""),
-                "args": action.get("args") or {},
-                "result": action.get("result") or {},
-                "ok": action.get("ok") is True,
-                "telemetry_source": "benchmark_action",
-            }
-        )
     return {
         "id": f"benchmark_action_{case.case_id}",
         "role": "assistant",
         "parts": [],
         "metadata": {
             "benchmark_action_only": True,
-            "tools_called": tool_calls,
+            "tools_called": [],
             "stream_source": "action_only",
         },
         "error_info": None,
@@ -2579,7 +2571,8 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "partial_error": result.partial_error,
         "stop_reason": result.message.get("stop_reason"),
         "provider": result.provider,
-        "agent_blueprint": result.agent_blueprint,
+        "agent_ref": result.case.agent_ref,
+        "session_agent": result.session_agent,
         "semantic_trace": result.semantic_trace_summary,
         "semantic_events": result.semantic_events,
         "stream_source": result.stream_source,
@@ -2611,6 +2604,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             expected=str(row.get("expected") or canonical_case.expected),
             why=str(row.get("why") or canonical_case.why),
             routing_mode=str(row.get("routing_mode") or canonical_case.routing_mode),
+            agent_ref=str(row.get("agent_ref") or canonical_case.agent_ref),
             min_expert_depth=int(row.get("min_expert_depth") or canonical_case.min_expert_depth),
             min_branch_count=int(row.get("min_branch_count") or canonical_case.min_branch_count),
             semantic_proofs=tuple(
@@ -2633,11 +2627,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             forbidden_route_sources=tuple(
                 str(source) for source in row.get("forbidden_route_sources", []) or []
             ),
-            agent_blueprint_id=str(
-                (row.get("agent_blueprint") or {}).get("active_agent_blueprint_id")
-                if isinstance(row.get("agent_blueprint"), dict)
-                else ""
-            ),
+            agent_ref=str(row.get("agent_ref") or ""),
             min_expert_depth=int(row.get("min_expert_depth") or 0),
             min_branch_count=int(row.get("min_branch_count") or 0),
             semantic_proofs=tuple(str(proof) for proof in row.get("semantic_proofs", []) or []),
@@ -2686,7 +2676,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
         setup_messages=setup_messages,
         actions=list(row.get("actions") or []),
         benchmark_lane=str(row.get("benchmark_lane") or "recorded"),
-        agent_blueprint=dict(row.get("agent_blueprint") or {}),
+        session_agent=dict(row.get("session_agent") or {}),
         semantic_events=list(row.get("semantic_events") or []),
         # Restore the registry-sourced artifacts recorded at live-run time (S7 #973).
         registry_artifacts=[str(p) for p in (row.get("artifacts") or []) if p],
@@ -3427,21 +3417,21 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace genomics FASTA reference review",
             category="marketplace-genomics",
             session_group="marketplace_genomics_reference",
-            agent_blueprint_id="genomics-review",
+            agent_ref="clio/genomics-review",
             expected_agent="main",
             expected_tools=("genomics_inspect_fasta",),
             expected_handoff_agents=("reference",),
             expected_terms=("chrA", "plasmidB"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "fasta", "agent-blueprint"),
+            complexity_tags=("marketplace", "genomics", "fasta", "plugin-agent"),
             prompt=(
                 f"Review this reference FASTA for collaborator handoff: {fasta}. "
                 "Summarize contigs, composition evidence, and what should be verified "
                 "before variant interpretation."
             ),
             expected=(
-                "CLIO runs the genomics-review marketplace Agent Blueprint in this "
+                "CLIO runs the genomics-review marketplace agent in this "
                 "session, routes through the root expert, and uses the reference "
                 "expert's FASTA tool."
             ),
@@ -3455,26 +3445,26 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace genomics VCF variant review",
             category="marketplace-genomics",
             session_group="marketplace_genomics_variants",
-            agent_blueprint_id="genomics-review",
+            agent_ref="clio/genomics-review",
             expected_agent="main",
             expected_tools=("genomics_summarize_vcf",),
             expected_handoff_agents=("variants",),
             expected_terms=("frameshift", "stop-gained"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "vcf", "agent-blueprint"),
+            complexity_tags=("marketplace", "genomics", "vcf", "plugin-agent"),
             prompt=(
                 f"Review this VCF for collaborator handoff: {vcf}. Summarize variant "
                 "types, likely effects, and what should be verified before analysis."
             ),
             expected=(
-                "CLIO runs the genomics-review marketplace Agent Blueprint in this "
+                "CLIO runs the genomics-review marketplace agent in this "
                 "session, routes through the root expert, and uses the variants "
                 "expert's VCF tool."
             ),
             why=(
                 "Exercises a second expert in the same marketplace agent, proving the "
-                "active blueprint changes the available hierarchy and expert surface."
+                "active agent changes the available hierarchy and subagent surface."
             ),
         ),
         DemoCase(
@@ -3482,7 +3472,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace genomics cohort QC",
             category="marketplace-genomics",
             session_group="marketplace_genomics_cohort",
-            agent_blueprint_id="genomics-review",
+            agent_ref="clio/genomics-review",
             expected_agent="main",
             expected_tools=("genomics_vcf_cohort_qc",),
             expected_handoff_agents=(
@@ -3494,14 +3484,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             expected_terms=("sample_A", "call rate", "heterozygosity", "manifest"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "cohort-qc", "agent-blueprint"),
+            complexity_tags=("marketplace", "genomics", "cohort-qc", "plugin-agent"),
             prompt=(
                 f"Review this VCF cohort for downstream QC readiness: {vcf}. "
                 "Check per-sample call rate, missingness, heterozygosity, and "
                 "whether any samples should be dropped before analysis."
             ),
             expected=(
-                "CLIO runs the genomics-review marketplace Agent Blueprint through "
+                "CLIO runs the genomics-review marketplace agent through "
                 "its cohort_qc expert, executes the per_sample_metrics -> "
                 "cohort_outliers -> manifest_reconciliation child chain, and "
                 "calls genomics_vcf_cohort_qc from the metric child."
@@ -3516,7 +3506,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace materials CIF readiness review",
             category="marketplace-materials",
             session_group="marketplace_materials",
-            agent_blueprint_id="materials-crystal-review",
+            agent_ref="clio/materials-crystal-review",
             expected_agent="main",
             expected_tools=("materials_inspect_cif",),
             expected_handoff_agents=(
@@ -3528,14 +3518,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "materials", "cif", "agent-blueprint"),
+            complexity_tags=("marketplace", "materials", "cif", "plugin-agent"),
             prompt=(
                 f"Review this CIF as a materials simulation handoff: {cif}. "
                 "Summarize formula, symmetry, occupancy or atom-site quality, and "
                 "whether the structure is ready to spend compute time on."
             ),
             expected=(
-                "CLIO runs the materials-crystal-review marketplace Agent Blueprint "
+                "CLIO runs the materials-crystal-review marketplace agent "
                 "through its root expert, inspects the CIF with crystal_structure, "
                 "and continues through symmetry_quality before final synthesis."
             ),
@@ -3549,20 +3539,20 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace geospatial GeoJSON review",
             category="marketplace-geospatial",
             session_group="marketplace_geospatial",
-            agent_blueprint_id="geospatial-field-review",
+            agent_ref="clio/geospatial-field-review",
             expected_agent="main",
             expected_tools=("geospatial_inspect_geojson",),
             expected_handoff_agents=("spatial_features",),
             expected_terms=("feature", "geometry", "bounds"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "geospatial", "geojson", "agent-blueprint"),
+            complexity_tags=("marketplace", "geospatial", "geojson", "plugin-agent"),
             prompt=(
                 f"Review this GeoJSON for field-site map readiness: {geojson}. "
                 "Summarize feature types, bounds, properties, and map-overlay risks."
             ),
             expected=(
-                "CLIO runs the geospatial-field-review marketplace Agent Blueprint "
+                "CLIO runs the geospatial-field-review marketplace agent "
                 "through its root expert and uses the spatial_features expert."
             ),
             why=(
@@ -3575,7 +3565,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace proteomics mzML readiness review",
             category="marketplace-proteomics",
             session_group="marketplace_proteomics",
-            agent_blueprint_id="proteomics-mzml-review",
+            agent_ref="clio/proteomics-mzml-review",
             expected_agent="main",
             expected_tools=("mass_spec_inspect_mzml",),
             expected_handoff_agents=(
@@ -3587,14 +3577,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "proteomics", "mzml", "agent-blueprint"),
+            complexity_tags=("marketplace", "proteomics", "mzml", "plugin-agent"),
             prompt=(
                 f"Review this mzML run for peptide-search handoff: {mzml}. "
                 "Summarize spectra, MS-level balance, m/z coverage, TIC evidence, "
                 "spectra-quality risks, and whether the run is ready for search."
             ),
             expected=(
-                "CLIO runs the proteomics-mzml-review marketplace Agent Blueprint "
+                "CLIO runs the proteomics-mzml-review marketplace agent "
                 "through its root expert, inspects mzML with mass_spec, continues "
                 "through spectra_quality, and then synthesizes peptide-search "
                 "readiness from the returned evidence."
@@ -3609,14 +3599,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace proteomics LFQ differential abundance",
             category="marketplace-proteomics",
             session_group="marketplace_proteomics_lfq",
-            agent_blueprint_id="proteomics-mzml-review",
+            agent_ref="clio/proteomics-mzml-review",
             expected_agent="main",
             expected_tools=("mass_spec_lfq_differential_abundance",),
             expected_handoff_agents=("lfq_differential",),
             expected_terms=("SPIKEUP", "selected", "median"),
             timeout_s=620.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "proteomics", "lfq", "agent-blueprint"),
+            complexity_tags=("marketplace", "proteomics", "lfq", "plugin-agent"),
             prompt=(
                 f"Review this LFQ proteinGroups matrix for differential abundance: {lfq}. "
                 f"Compare columns matching {lfq_control} against {lfq_treatment}, use "
@@ -3624,7 +3614,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 f"{lfq_expected_fc}, and tell me which proteins look most changed."
             ),
             expected=(
-                "CLIO runs the proteomics marketplace Agent Blueprint through its "
+                "CLIO runs the proteomics marketplace agent through its "
                 "lfq_differential expert and calls the LFQ differential-abundance tool."
             ),
             why=(
@@ -3637,7 +3627,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace HPC I/O regression",
             category="marketplace-hpc",
             session_group="marketplace_hpc_regression",
-            agent_blueprint_id="hpc-io-regression",
+            agent_ref="clio/hpc-io-regression",
             expected_agent="main",
             expected_tools=("hpc_compare_darshan_traces",),
             expected_handoff_agents=("trace_ingest", "regression_diff"),
@@ -3646,14 +3636,14 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "hpc", "darshan", "agent-blueprint", "tier-3"),
+            complexity_tags=("marketplace", "hpc", "darshan", "plugin-agent", "tier-3"),
             prompt=(
                 f"Compare these two HPC I/O traces before collaborator handoff: "
                 f"baseline {hpc_baseline} and candidate {hpc_candidate}. Identify "
                 "the main I/O regression, stable metrics, and likely root cause."
             ),
             expected=(
-                "CLIO runs the hpc-io-regression marketplace Agent Blueprint, parses "
+                "CLIO runs the hpc-io-regression marketplace agent, parses "
                 "both traces through its ingest path, compares them, and synthesizes "
                 "root-cause evidence."
             ),
@@ -3667,7 +3657,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace scientific format bridge integrity",
             category="marketplace-format",
             session_group="marketplace_format_bridge",
-            agent_blueprint_id="format-bridge",
+            agent_ref="clio/format-bridge",
             expected_agent="main",
             expected_tools=("format_convert_hdf5_to_parquet",),
             expected_handoff_agents=("source_inspect", "conversion_policy", "integrity"),
@@ -3676,7 +3666,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "format-bridge", "hdf5", "parquet", "agent-blueprint"),
+            complexity_tags=("marketplace", "format-bridge", "hdf5", "parquet", "plugin-agent"),
             prompt=(
                 f"Convert this scientific HDF5 table to Parquet with integrity evidence: "
                 f"{format_source}. Write the output to {format_output}. Preserve row counts, "
@@ -3684,7 +3674,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "safe for downstream visualization."
             ),
             expected=(
-                "CLIO runs the format-bridge marketplace Agent Blueprint through inspect, "
+                "CLIO runs the format-bridge marketplace agent through inspect, "
                 "conversion policy, and integrity experts, using the HDF5-to-Parquet tool."
             ),
             why=(
@@ -3697,7 +3687,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace terrain point-cloud suitability",
             category="marketplace-terrain",
             session_group="marketplace_terrain",
-            agent_blueprint_id="terrain-suitability",
+            agent_ref="clio/terrain-suitability",
             expected_agent="main",
             expected_tools=("terrain_pointcloud_read", "terrain_dem_terrain"),
             expected_handoff_agents=("terrain_derivation", "gridding", "suitability"),
@@ -3706,7 +3696,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "terrain", "point-cloud", "agent-blueprint", "tier-3"),
+            complexity_tags=("marketplace", "terrain", "point-cloud", "plugin-agent", "tier-3"),
             prompt=(
                 f"Evaluate these terrain points for site suitability: {terrain_pointcloud}. "
                 f"Grid them to {terrain_gridded}, derive terrain, and identify cells with "
@@ -3714,7 +3704,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 f"Use the ready DEM {terrain_dem} only as a comparison if needed."
             ),
             expected=(
-                "CLIO runs the terrain-suitability marketplace Agent Blueprint, routes raw "
+                "CLIO runs the terrain-suitability marketplace agent, routes raw "
                 "point-cloud input through gridding, then applies DEM terrain suitability."
             ),
             why=(
@@ -3727,7 +3717,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace seismic waveform recovery review",
             category="marketplace-seismic",
             session_group="marketplace_seismic",
-            agent_blueprint_id="seismic-waveform-review",
+            agent_ref="clio/seismic-waveform-review",
             expected_agent=("data", "analysis", "visualization", "main"),
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_tools=("sac_discover_earthscope_region_waveform",),
@@ -3737,7 +3727,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -3750,7 +3740,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "seismic",
                 "ndp",
                 "sac",
-                "agent-blueprint",
+                "plugin-agent",
                 "artifact",
             ),
             prompt=(
@@ -3762,7 +3752,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "produce a PNG plot artifact without using stale local files."
             ),
             expected=(
-                "CLIO runs the seismic-waveform-review marketplace Agent Blueprint, "
+                "CLIO runs the seismic-waveform-review marketplace agent, "
                 "surfaces NDP staging blockers, resolves the requested geography into "
                 "regional EarthScope event/station evidence, stages an observed SAC path, "
                 "and creates a verified PNG artifact."
@@ -3777,7 +3767,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss",
-            agent_blueprint_id="earthscope-gnss-region",
+            agent_ref="clio/earthscope-gnss-region",
             expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -3803,7 +3793,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -3815,7 +3805,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "artifact",
                 "typed-state",
             ),
@@ -3833,7 +3823,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "magnitudes, depths, or epicenters."
             ),
             expected=(
-                "CLIO runs the earthscope-gnss-region marketplace Agent Blueprint "
+                "CLIO runs the earthscope-gnss-region marketplace agent "
                 "through data, analysis, visualization, and synthesis domains; "
                 "geospatial resolution is explicit before NDP discovery; NDP tools "
                 "stage and profile a station CSV; visualization creates a PNG; the "
@@ -3851,7 +3841,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, Los Angeles mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_la",
-            agent_blueprint_id="earthscope-gnss-region",
+            agent_ref="clio/earthscope-gnss-region",
             expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -3877,7 +3867,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -3889,7 +3879,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "artifact",
                 "typed-state",
                 "mutation",
@@ -3908,7 +3898,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "magnitudes, depths, or epicenters."
             ),
             expected=(
-                "The same EarthScope GNSS blueprint succeeds when the requested "
+                "The same EarthScope GNSS agent succeeds when the requested "
                 "geography changes. The trace must include explicit geospatial "
                 "state for Los Angeles, live NDP discovery, staged station CSV "
                 "evidence, profile evidence, visualization, and synthesis without "
@@ -3924,7 +3914,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, coordinate mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_coord",
-            agent_blueprint_id="earthscope-gnss-region",
+            agent_ref="clio/earthscope-gnss-region",
             expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
             expected_tool_prefixes=("ndp_",),
             expected_handoff_agent_groups=(
@@ -3955,7 +3945,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
             min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -3967,7 +3957,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "typed-state",
                 "mutation",
                 "coordinates",
@@ -3998,7 +3988,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, width topology",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_topology_width",
-            agent_blueprint_id="earthscope-gnss-region-width",
+            agent_ref="clio/earthscope-gnss-region-width",
             expected_agent=("main", "visualization", "synthesis"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4024,7 +4014,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=8,
             min_branch_count=8,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "sync_parent_return",
             ),
@@ -4035,7 +4025,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "typed-state",
                 "topology",
                 "width",
@@ -4066,7 +4056,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, depth topology",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_topology_depth",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_agent=("main", "visualization", "synthesis"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4092,7 +4082,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=9,
             min_branch_count=8,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -4104,7 +4094,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "typed-state",
                 "topology",
                 "depth",
@@ -4135,7 +4125,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, depth Bay Area mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_topology_depth_bay_area",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_agent=("main", "synthesis"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4159,7 +4149,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_expert_depth=4,
             min_branch_count=3,
             semantic_proofs=(
-                "marketplace_pack",
+                "marketplace_agent",
                 "root_delegation",
                 "nested_tier3",
                 "sync_parent_return",
@@ -4171,7 +4161,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "earthscope",
                 "gnss",
                 "ndp",
-                "agent-blueprint",
+                "plugin-agent",
                 "typed-state",
                 "topology",
                 "depth",
@@ -4202,7 +4192,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace NDP current wildfire feature query",
             category="marketplace-ndp",
             session_group="marketplace_ndp_wildfire",
-            agent_blueprint_id="ndp-environmental-hazards",
+            agent_ref="clio/ndp-environmental-hazards",
             expected_agent=("main", "catalog", "geospatial", "visualization"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4217,7 +4207,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_artifacts=1,
             timeout_s=720.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "ndp", "wildfire", "arcgis", "agent-blueprint"),
+            complexity_tags=("marketplace", "ndp", "wildfire", "arcgis", "plugin-agent"),
             prompt=(
                 "Using the active NDP environmental hazards agent, build a live current-wildfire "
                 "situational snapshot for California. Search the NDP catalog for USA Current "
@@ -4227,7 +4217,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "Report source URLs, feature count, incident names/acres when available, and caveats."
             ),
             expected=(
-                "CLIO activates the NDP environmental hazards marketplace blueprint, discovers "
+                "CLIO activates the NDP environmental hazards marketplace agent, discovers "
                 "the USA Current Wildfires NDP dataset, queries the live ArcGIS FeatureServer, "
                 "and writes durable feature evidence."
             ),
@@ -4241,7 +4231,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace NDP California NWS warning feature query",
             category="marketplace-ndp",
             session_group="marketplace_ndp_warnings",
-            agent_blueprint_id="ndp-environmental-hazards",
+            agent_ref="clio/ndp-environmental-hazards",
             expected_agent=("main", "catalog", "geospatial", "visualization"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4262,7 +4252,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "weather",
                 "warnings",
                 "arcgis",
-                "agent-blueprint",
+                "plugin-agent",
             ),
             prompt=(
                 "Using the active NDP environmental hazards agent, search NDP for California "
@@ -4286,7 +4276,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace NDP CIMIS weather CSV profile and plot",
             category="marketplace-ndp",
             session_group="marketplace_ndp_cimis",
-            agent_blueprint_id="ndp-environmental-hazards",
+            agent_ref="clio/ndp-environmental-hazards",
             expected_agent=("main", "catalog", "weather_analysis", "visualization"),
             expected_tool_prefixes=("ndp_",),
             expected_tools=(
@@ -4302,7 +4292,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             min_artifacts=1,
             timeout_s=900.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "ndp", "weather", "csv", "artifact", "agent-blueprint"),
+            complexity_tags=("marketplace", "ndp", "weather", "csv", "artifact", "plugin-agent"),
             prompt=(
                 "Using the active NDP environmental hazards agent, search NDP for CIMIS "
                 "Hourly Data - Multiple Stations, inspect dataset details, stage the Fresno "
@@ -4323,67 +4313,64 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
         ),
         DemoCase(
             case_id="marketplace_mcp_calculator_scope",
-            title="Marketplace MCP descriptor scope",
+            title="Marketplace plugin MCP scope",
             category="marketplace-mcp",
             session_group="marketplace_mcp_calculator",
-            agent_blueprint_id="mcp-calculator-smoke",
+            agent_ref="clio/mcp-calculator-smoke",
             expected_agent="main",
-            expected_terms=("calculator_add", "disabled", "trust"),
+            expected_terms=("calculator_add", "mcp-calculator-smoke"),
             semantic_proofs=("command_mcp_skill_scope",),
             complexity_tags=(
                 "marketplace",
                 "mcp",
                 "capability-scope",
-                "agent-blueprint",
+                "plugin-agent",
             ),
             prompt=(
-                "Using the active calculator MCP smoke agent, verify whether the packaged "
-                "calculator capability is immediately usable. Explain the descriptor state, "
-                "what tool it would expose, and what trust or enablement step is required "
-                "before the tool can be called."
+                "Using the active calculator MCP smoke agent, explain which MCP server "
+                "your plugins bring, which tool it exposes to you, and which plugin "
+                "provides it. Do not call the tool."
             ),
             expected=(
-                "CLIO runs the mcp-calculator-smoke Agent Blueprint and surfaces that the "
-                "pack-local calculator MCP descriptor is packaged but disabled until explicit "
-                "trust/enablement, with calculator_add named as the scoped tool."
+                "CLIO runs the mcp-calculator-smoke agent, whose pinned resolution scopes "
+                "the calculator MCP server to the mcp-calculator-smoke plugin, and names "
+                "calculator_add as the tool it exposes."
             ),
             why=(
                 "Covers the semantic-regression proof for command/MCP/skill capability scoping "
-                "using marketplace blueprint metadata instead of a hardcoded tool path."
+                "using the session's pinned plugin resolution instead of a hardcoded tool path."
             ),
         ),
         DemoCase(
             case_id="marketplace_mcp_calculator_enabled_call",
-            title="Marketplace MCP enabled tool call",
+            title="Marketplace plugin MCP tool call",
             category="marketplace-mcp",
             session_group="marketplace_mcp_calculator_enabled",
-            agent_blueprint_id="mcp-calculator-smoke",
-            expected_terms=("calculator_add", "enabled", "7"),
+            agent_ref="clio/mcp-calculator-smoke",
+            expected_tools=("calculator_add",),
+            expected_terms=("7",),
             semantic_proofs=("command_mcp_skill_scope", "enabled_mcp_execution"),
-            mcp_enable_descriptor_id="calculator",
-            mcp_call_tool="calculator_add",
-            mcp_call_args={"a": 2, "b": 5},
-            expected_actions=("agent_blueprint_mcp_enable", "mcp_tool_call"),
-            skip_model_turn=True,
+            mcp_probe_server="calculator",
+            expected_actions=("plugin_mcp_probe",),
             complexity_tags=(
                 "marketplace",
                 "mcp",
                 "enabled-execution",
-                "agent-blueprint",
+                "plugin-agent",
             ),
             prompt=(
-                "Using the active calculator MCP smoke agent, report whether the packaged "
-                "calculator tool is now enabled and what result was observed for adding "
-                "2 and 5."
+                "Using the active calculator MCP smoke agent, call the calculator tool to "
+                "add 2 and 5 and report the sum it returned."
             ),
             expected=(
-                "CLIO explicitly trusts and enables the pack-local calculator MCP descriptor, "
-                "probes calculator_add as a ready tool, calls it through the MCP server endpoint, "
-                "and records a successful result before the model-facing turn."
+                "The calculator MCP server of the trusted mcp-calculator-smoke plugin is in "
+                "the session's pinned resolution and launches with calculator_add ready; the "
+                "agent calls calculator_add and reports the returned sum, 7."
             ),
             why=(
-                "Proves the marketplace pack can provide a self-contained external MCP tool "
-                "surface that CLIO can launch and call, not just advertise as metadata."
+                "Proves a marketplace plugin can provide a self-contained MCP tool surface "
+                "that CLIO launches on demand and the agent calls, not just advertises as "
+                "metadata."
             ),
         ),
         DemoCase(
@@ -4512,8 +4499,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
 
 def _session_key(case: DemoCase) -> str:
     """Return stable session bucket for a case."""
-    blueprint = case.agent_blueprint_id or "builtin"
-    return f"{case.session_group}:{case.routing_mode}:{blueprint}"
+    return f"{case.session_group}:{case.routing_mode}:{case.agent_ref or 'default'}"
 
 
 def _ensure_benchmark_workspace(http: httpx.Client, root_path: Path) -> str:
@@ -4538,18 +4524,23 @@ def _ensure_benchmark_workspace(http: httpx.Client, root_path: Path) -> str:
     return str(created.json().get("id") or "")
 
 
-def _install_marketplace_blueprints(http: httpx.Client, source: str, *, workspace_id: str) -> None:
-    """Install all Agent Blueprints from a marketplace source into workspace scope."""
-    if not source:
-        raise ValueError(
-            "marketplace benchmark cases require --marketplace-source or CLIO_MARKETPLACE_SOURCE"
-        )
-    response = http.post(
-        "/v1/agent-blueprints/install",
-        json={"source": source, "scope": "workspace", "workspace_id": workspace_id},
-        timeout=180.0,
-    )
+def _install_marketplace(http: httpx.Client, source: str, *, name: str = "") -> str:
+    """Install a marketplace (a local folder or git URL), run the trust step, return its name.
+
+    A local or git marketplace loads its Python agents and MCP servers only after
+    the trust step, and a re-install that changes executable parts is held until
+    trust runs again, so this always trusts after installing.
+    """
+
+    body = {"source": source, **({"name": name} if name else {})}
+    response = http.post("/v1/plugins/marketplaces", json=body, timeout=180.0)
     response.raise_for_status()
+    market = str(response.json().get("marketplace") or name)
+    if not market:
+        raise RuntimeError(f"marketplace install of {source!r} did not report its name")
+    trusted = http.post(f"/v1/plugins/marketplaces/{market}/trust", json={}, timeout=180.0)
+    trusted.raise_for_status()
+    return market
 
 
 def _create_sessions(
@@ -4558,33 +4549,90 @@ def _create_sessions(
     *,
     workspace_id: str = "",
 ) -> dict[str, str]:
+    """Create one session per session key, on the case's agent when it names one."""
+
     session_ids: dict[str, str] = {}
-    for key in dict.fromkeys(_session_key(case) for case in cases):
-        group, routing_mode, blueprint_id = key.rsplit(":", 2)
-        payload = {"title": f"demo {group}"}
+    for case in cases:
+        key = _session_key(case)
+        if key in session_ids:
+            continue
+        payload: dict[str, Any] = {"title": f"demo {case.session_group}"}
         if workspace_id:
             payload["workspace_id"] = workspace_id
-        if routing_mode != "auto":
-            payload["routing_mode"] = routing_mode
+        if case.routing_mode != "auto":
+            payload["routing_mode"] = case.routing_mode
+        if case.agent_ref:
+            payload["metadata"] = {"agent_ref": case.agent_ref}
         response = http.post("/v1/sessions", json=payload)
         response.raise_for_status()
-        session_id = response.json()["id"]
-        if blueprint_id != "builtin":
-            blueprint_response = http.post(
-                f"/v1/sessions/{session_id}/agent-blueprint",
-                json={"blueprint_id": blueprint_id},
-            )
-            blueprint_response.raise_for_status()
-        session_ids[key] = session_id
+        session_ids[key] = response.json()["id"]
     return session_ids
 
 
-def _session_agent_blueprint(http: httpx.Client, session_id: str) -> dict[str, Any]:
-    response = http.get(f"/v1/sessions/{session_id}/agent-blueprint")
+def _session_agent_view(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact a ``GET /v1/sessions/{sid}/agent`` body into benchmark evidence.
+
+    Keeps the pinned agent, each plugin's provenance and which plugin owns each
+    tool surface; drops the composed prompt text and install paths, which are
+    large and would leak prompt words into expected-term matching.
+    """
+
+    resolution = body.get("resolution") if isinstance(body.get("resolution"), Mapping) else {}
+    agent = resolution.get("agent") if isinstance(resolution.get("agent"), Mapping) else {}
+
+    def owned(key: str) -> list[dict[str, str]]:
+        return [
+            {"id": str(row.get("id") or ""), "plugin": str(row.get("plugin") or "")}
+            for row in resolution.get(key) or []
+            if isinstance(row, Mapping)
+        ]
+
+    servers = resolution.get("mcp_servers")
+    return {
+        "session_id": str(body.get("session_id") or ""),
+        "delta": dict(body.get("delta") or {}),
+        "subagent": bool(body.get("subagent")),
+        "resolution": {
+            "agent": {
+                key: agent.get(key)
+                for key in ("ref", "id", "name", "version", "marketplace", "flow")
+                if key in agent
+            },
+            "digest": str(resolution.get("digest") or ""),
+            "plugins": [
+                {
+                    key: row.get(key)
+                    for key in ("id", "version", "kind", "marketplace", "provenance")
+                    if key in row
+                }
+                for row in resolution.get("plugins") or []
+                if isinstance(row, Mapping)
+            ],
+            "removed": list(resolution.get("removed") or []),
+            "tool_names": [str(name) for name in resolution.get("tool_names") or []],
+            "mcp_servers": {
+                str(name): {
+                    "plugin": str(spec.get("plugin") or "") if isinstance(spec, Mapping) else ""
+                }
+                for name, spec in (servers.items() if isinstance(servers, Mapping) else ())
+            },
+            "skills": owned("skills"),
+            "commands": owned("commands"),
+            "subagents": owned("subagents"),
+            "flows": owned("flows"),
+            "diagnostics": list(resolution.get("diagnostics") or []),
+        },
+    }
+
+
+def _session_agent(http: httpx.Client, session_id: str) -> dict[str, Any]:
+    """Return the session's pinned agent as compact evidence (an ``error`` row on failure)."""
+
+    response = http.get(f"/v1/sessions/{session_id}/agent")
     if response.status_code >= 400:
         return {"error": response.text}
     body = response.json()
-    return body if isinstance(body, dict) else {}
+    return _session_agent_view(body) if isinstance(body, dict) else {}
 
 
 _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
@@ -4695,9 +4743,16 @@ def run_benchmark(
     lane: str = "real_orchestrator",
     case_ids: tuple[str, ...] = (),
     marketplace_source: str = "",
+    marketplace_name: str = "",
     watch_events: bool = False,
 ) -> int:
-    """Run demo cases and write JSONL plus a markdown report."""
+    """Run demo cases and write JSONL plus a markdown report.
+
+    Agent cases run on the marketplace agent their ``agent_ref`` names, from the
+    default ``clio`` marketplace. ``marketplace_source`` (a local folder or git
+    URL) installs and trusts another marketplace first, optionally under
+    ``marketplace_name``, and rebases every agent case onto it.
+    """
     manifest = create_benchmark_data(data_dir)
     cases = _make_cases(manifest)
     cases, missing = _select_cases(cases, lane=lane, case_ids=case_ids)
@@ -4715,14 +4770,16 @@ def run_benchmark(
         health = http.get("/v1/health")
         health.raise_for_status()
         workspace_id = ""
-        if any(case.agent_blueprint_id or case.memory_scope_probe for case in cases):
+        if any(case.agent_ref or case.memory_scope_probe for case in cases):
             workspace_id = _ensure_benchmark_workspace(http, Path.cwd())
-        if any(case.agent_blueprint_id for case in cases):
-            _install_marketplace_blueprints(
-                http,
-                marketplace_source,
-                workspace_id=workspace_id,
-            )
+        if marketplace_source and any(case.agent_ref for case in cases):
+            market = _install_marketplace(http, marketplace_source, name=marketplace_name)
+            cases = [
+                replace(case, agent_ref=_rebase_agent_ref(case.agent_ref, market))
+                if case.agent_ref
+                else case
+                for case in cases
+            ]
         session_ids = _create_sessions(http, cases, workspace_id=workspace_id)
         with output_jsonl.open("w", encoding="utf-8") as log:
             for index, case in enumerate(cases, start=1):
@@ -4760,35 +4817,22 @@ def run_benchmark(
                         f"model={action.get('model') or '-'} elapsed={action.get('elapsed_s')}s",
                         flush=True,
                     )
-                if case.mcp_enable_descriptor_id:
-                    action = _enable_blueprint_mcp_for_case(
+                if case.mcp_probe_server:
+                    action = _probe_plugin_mcp_for_case(
                         http,
                         case,
+                        session_id=session_id,
                         workspace_id=workspace_id,
                         timeout_s=case.timeout_s,
                     )
                     actions.append(action)
                     print(
-                        f"  MCP enable {'ok' if action.get('ok') else 'failed'} "
-                        f"descriptor={case.mcp_enable_descriptor_id} "
-                        f"status={action.get('status') or '-'} "
+                        f"  plugin MCP probe {'ok' if action.get('ok') else 'failed'} "
+                        f"server={case.mcp_probe_server} "
+                        f"tools={','.join(action.get('ready_tools') or []) or '-'} "
                         f"elapsed={action.get('elapsed_s')}s",
                         flush=True,
                     )
-                    if case.mcp_call_tool:
-                        call_action = _call_enabled_mcp_for_case(
-                            http,
-                            case,
-                            action,
-                            timeout_s=case.timeout_s,
-                        )
-                        actions.append(call_action)
-                        print(
-                            f"  MCP call {'ok' if call_action.get('ok') else 'failed'} "
-                            f"tool={case.mcp_call_tool} "
-                            f"elapsed={call_action.get('elapsed_s')}s",
-                            flush=True,
-                        )
                 if case.memory_scope_probe:
                     action = _probe_workspace_memory_scope_for_case(
                         http,
@@ -4807,7 +4851,7 @@ def run_benchmark(
                 provider = _provider(http)
                 started = time.monotonic()
                 if case.skip_model_turn:
-                    message = _action_only_message(case, actions)
+                    message = _action_only_message(case)
                 else:
                     with _LiveEventWatch(base_url, session_id, enabled=watch_events):
                         message = _post_turn(
@@ -4838,7 +4882,7 @@ def run_benchmark(
                     child for child in after_children if child.get("id") not in before_children
                 ]
                 session_messages = _chronological_session_messages(http, session_id)
-                agent_blueprint = _session_agent_blueprint(http, session_id)
+                session_agent = _session_agent(http, session_id)
                 child_session_messages = {
                     str(child["id"]): _chronological_session_messages(http, str(child["id"]))
                     for child in new_children
@@ -4856,7 +4900,7 @@ def run_benchmark(
                     setup_messages=setup_messages,
                     actions=actions,
                     benchmark_lane=lane,
-                    agent_blueprint=agent_blueprint,
+                    session_agent=session_agent,
                     semantic_events=semantic_events,
                     registry_artifacts=_registry_artifact_paths(http, session_id),
                 )
@@ -5180,21 +5224,21 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
 
     if lane == "marketplace_agents":
         active = {
-            result.active_agent_blueprint_id
+            result.active_agent_ref
             for result in results
-            if result.active_agent_blueprint_id
+            if result.case.agent_ref and result.active_agent_ref
         }
-        missing_blueprint = [
+        missing_agent = [
             result.case.case_id
             for result in results
-            if result.case.agent_blueprint_id
-            and result.active_agent_blueprint_id != result.case.agent_blueprint_id
+            if result.case.agent_ref
+            and not _agent_ref_matches(result.case.agent_ref, result.active_agent_ref)
         ]
         tool_backed = [result for result in results if result.tool_names]
         missing_root_orchestration = [
             result
             for result in results
-            if result.case.agent_blueprint_id
+            if result.case.agent_ref
             and result.case.expected_handoff_agents
             and (
                 result.case.expected_handoff_agents[0] not in result.handoff_agent_ids
@@ -5207,27 +5251,27 @@ def _provider_lane_audit(results: list[DemoResult], lane: str) -> list[dict[str,
         shallow_hierarchy = [
             result
             for result in results
-            if result.case.agent_blueprint_id
+            if result.case.agent_ref
             and result.passed
             and not _meets_complex_hierarchy_threshold(result)
         ]
         return [
             {
-                "criterion": "all marketplace cases prove the requested active Agent Blueprint",
-                "observed": len(results) - len(missing_blueprint),
+                "criterion": "all marketplace cases prove the requested active agent",
+                "observed": len(results) - len(missing_agent),
                 "required": len(results),
-                "passed": not missing_blueprint,
-                "details": missing_blueprint,
+                "passed": not missing_agent,
+                "details": missing_agent,
             },
             {
-                "criterion": "at least five distinct marketplace Agent Blueprints",
+                "criterion": "at least five distinct marketplace agents",
                 "observed": len(active),
                 "required": 5,
                 "passed": len(active) >= 5,
                 "details": sorted(active),
             },
             {
-                "criterion": "all marketplace cases call at least one blueprint expert tool",
+                "criterion": "all marketplace cases call at least one agent plugin tool",
                 "observed": len(tool_backed),
                 "required": len(results),
                 "passed": len(tool_backed) == len(results),
@@ -5511,11 +5555,11 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             ),
         ]
     )
-    active_blueprints = sorted(
-        {result.active_agent_blueprint_id for result in results if result.active_agent_blueprint_id}
+    active_agents = sorted(
+        {result.active_agent_ref for result in results if result.active_agent_ref}
     )
-    if active_blueprints:
-        lines.append(f"- Active Agent Blueprints: {', '.join(active_blueprints)}")
+    if active_agents:
+        lines.append(f"- Active agents: {', '.join(active_agents)}")
     if tool_result_review_gaps:
         lines.extend(
             [
@@ -5589,7 +5633,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
             "",
             "## All Cases",
             "",
-            "| Case | Category | Blueprint | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
+            "| Case | Category | Agent ref | Mode | Source | Outcome | Agent | Handoffs | Tools | Children | Elapsed |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
@@ -5603,7 +5647,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 [
                     result.case.case_id,
                     result.case.category,
-                    result.active_agent_blueprint_id or "-",
+                    result.active_agent_ref or "-",
                     result.case.routing_mode,
                     str(route_source),
                     result.outcome,
@@ -5658,7 +5702,7 @@ def _render_report(results: list[DemoResult], output_jsonl: Path) -> str:
                 f"Routing mode: `{result.case.routing_mode}`",
                 f"Status: {result.outcome}",
                 f"Selected agent: `{result.selected_agent or '-'}`",
-                f"Active Agent Blueprint: `{result.active_agent_blueprint_id or '-'}`",
+                f"Active agent: `{result.active_agent_ref or '-'}`",
                 f"Provider/model: {_provider_model_summary(result.provider)}",
                 f"Provider settings: {_provider_settings_summary(result.provider)}",
                 f"Route graph: {_route_graph_summary(result)}",
@@ -5920,7 +5964,16 @@ def main() -> None:
     parser.add_argument(
         "--marketplace-source",
         default=os.environ.get("CLIO_MARKETPLACE_SOURCE", ""),
-        help="Path or git URL for marketplace Agent Blueprints used by marketplace lanes.",
+        help=(
+            "Local folder or git URL of a native marketplace to install and trust before "
+            "the run. Agent cases then run on the same agent ids from that marketplace "
+            "instead of the default clio marketplace."
+        ),
+    )
+    parser.add_argument(
+        "--marketplace-name",
+        default="",
+        help="Install --marketplace-source under this marketplace name (default: its own).",
     )
     parser.add_argument(
         "--watch-events",
@@ -5966,6 +6019,7 @@ def main() -> None:
             lane=args.lane,
             case_ids=tuple(args.case),
             marketplace_source=args.marketplace_source,
+            marketplace_name=args.marketplace_name,
             watch_events=args.watch_events,
         )
     )

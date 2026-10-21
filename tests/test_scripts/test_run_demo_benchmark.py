@@ -37,6 +37,13 @@ def _message(
     }
 
 
+def _pinned(ref: str, **resolution: object) -> dict[str, object]:
+    """A compact ``GET /v1/sessions/{sid}/agent`` view pinning agent ``ref``."""
+
+    agent_id = ref.rsplit("/", 1)[-1]
+    return {"resolution": {"agent": {"ref": ref, "id": agent_id}, **resolution}}
+
+
 def _result(case_id: str, *, passed: bool = True) -> bench.DemoResult:
     expects_error = case_id == "missing_hdf5_error"
     expects_cancelled = case_id == "claude_cancellation_surface"
@@ -447,7 +454,7 @@ def test_live_event_watch_starts_before_turn_and_stops_after(monkeypatch) -> Non
     )
     monkeypatch.setattr(bench, "_children", lambda _http, _session_id: [])
     monkeypatch.setattr(bench, "_provider", lambda _http: {})
-    monkeypatch.setattr(bench, "_session_agent_blueprint", lambda _http, _session_id: {})
+    monkeypatch.setattr(bench, "_session_agent", lambda _http, _session_id: {})
     monkeypatch.setattr(bench, "_chronological_session_messages", lambda _http, _session_id: [])
     monkeypatch.setattr(
         bench,
@@ -672,7 +679,7 @@ def test_route_graph_summary_preserves_sync_delegation_returns() -> None:
 
 
 def test_semantic_completed_delegation_rehydrates_parent_resume() -> None:
-    message = _message(route_source="agent_blueprint")
+    message = _message(route_source="dspy")
     result = bench.DemoResult(
         case=bench.DemoCase(
             case_id="marketplace_hpc_io_regression",
@@ -682,23 +689,23 @@ def test_semantic_completed_delegation_rehydrates_parent_resume() -> None:
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="hpc-io-regression",
+            agent_ref="clio/hpc-io-regression",
             expected_handoff_agents=("baseline_ingest",),
         ),
         session_id="sess_test",
         elapsed_s=1.0,
         message=message,
         provider={},
-        agent_blueprint={"active_agent_blueprint_id": "hpc-io-regression"},
+        session_agent=_pinned("clio/hpc-io-regression"),
         semantic_events=[
             {
-                "event_type": "blueprint.delegation.started",
+                "event_type": "delegation.started",
                 "actor": {"agent_id": "trace_ingest"},
                 "subject": {"agent_id": "baseline_ingest"},
                 "payload": {},
             },
             {
-                "event_type": "blueprint.delegation.completed",
+                "event_type": "delegation.completed",
                 "actor": {"agent_id": "baseline_ingest"},
                 "subject": {"agent_id": "trace_ingest"},
                 "payload": {},
@@ -883,7 +890,7 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="seismic-waveform-review",
+            agent_ref="clio/seismic-waveform-review",
             expected_agent=("data", "analysis", "visualization", "main"),
             expected_tool_prefixes=("ndp_", "sac_"),
             expected_tools=("sac_plot_traces",),
@@ -895,7 +902,7 @@ def test_nested_expert_handoffs_count_for_case_expectations(tmp_path: Path) -> N
         elapsed_s=1.0,
         message=message,
         provider={},
-        agent_blueprint={"active_agent_blueprint_id": "seismic-waveform-review"},
+        session_agent=_pinned("clio/seismic-waveform-review"),
         registry_artifacts=[str(png)],
     )
 
@@ -1145,7 +1152,7 @@ def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
         elapsed_s=1.0,
         message=message,
         provider={},
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region"},
+        session_agent=_pinned("clio/earthscope-gnss-region"),
     )
 
     assert "analysis" not in result.handoff_agent_ids
@@ -1829,23 +1836,53 @@ def test_command_mcp_skill_scope_requires_structured_capability_evidence() -> No
         case=case,
         session_id="sess_mcp",
         elapsed_s=1.0,
-        message=_message(text="calculator_add is disabled until explicit trust"),
+        message=_message(text="calculator_add comes from the mcp-calculator-smoke plugin"),
         provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
-        agent_blueprint={
-            "active_agent_blueprint_id": "mcp-calculator-smoke",
-            "mcp_descriptors": [
+        session_agent=_pinned(
+            "clio/mcp-calculator-smoke",
+            plugins=[
+                {"id": "core", "provenance": {"source": "core", "via": "core"}},
                 {
-                    "id": "calculator",
-                    "enabled": False,
-                    "tools": ["calculator_add"],
-                    "trust": {"policy": "explicit"},
-                }
+                    "id": "mcp-calculator-smoke",
+                    "provenance": {"source": "agent", "via": "mcp-calculator-smoke"},
+                },
             ],
-        },
+            mcp_servers={"calculator": {"plugin": "mcp-calculator-smoke"}},
+            skills=[{"id": "planning", "plugin": "core"}],
+        ),
     )
 
     assert bench._case_observed_semantic_proofs(result) == ("command_mcp_skill_scope",)
+
+
+def test_command_mcp_skill_scope_ignores_core_only_capabilities() -> None:
+    case = bench.DemoCase(
+        case_id="mcp_scope",
+        title="mcp scope",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="semantic",
+        semantic_proofs=("command_mcp_skill_scope",),
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_mcp",
+        elapsed_s=1.0,
+        message=_message(text="ok"),
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
+        benchmark_lane="semantic_regression",
+        session_agent=_pinned(
+            "clio/standard",
+            plugins=[{"id": "core", "provenance": {"source": "core", "via": "core"}}],
+            skills=[{"id": "planning", "plugin": "core"}],
+            commands=[{"id": "plan", "plugin": "core"}],
+        ),
+    )
+
+    assert bench._case_observed_semantic_proofs(result) == ()
 
 
 def test_command_mcp_skill_scope_ignores_unstructured_model_words() -> None:
@@ -1871,41 +1908,69 @@ def test_command_mcp_skill_scope_ignores_unstructured_model_words() -> None:
     assert bench._case_observed_semantic_proofs(result) == ()
 
 
-def test_enabled_mcp_execution_requires_enable_and_call_actions() -> None:
-    case = bench.DemoCase(
-        case_id="mcp_enabled",
-        title="mcp enabled",
-        category="test",
-        prompt="prompt",
-        why="why",
-        expected="expected",
-        session_group="semantic",
-        semantic_proofs=("enabled_mcp_execution",),
-    )
-    result = bench.DemoResult(
-        case=case,
+def _mcp_execution_result(
+    *, tools: list[dict[str, object]], probe: dict[str, object]
+) -> bench.DemoResult:
+    return bench.DemoResult(
+        case=bench.DemoCase(
+            case_id="mcp_enabled",
+            title="mcp enabled",
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group="semantic",
+            semantic_proofs=("enabled_mcp_execution",),
+        ),
         session_id="sess_mcp",
         elapsed_s=1.0,
-        message=_message(text="calculator_add ready"),
+        message=_message(text="the sum is 7", tools=tools),
         provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
-        actions=[
-            {
-                "type": "agent_blueprint_mcp_enable",
-                "ok": True,
-                "ready_tools": ["calculator_add"],
-                "trust": {"trusted": True, "source": "request"},
-            },
-            {
-                "type": "mcp_tool_call",
-                "ok": True,
-                "tool": "calculator_add",
-                "result": {"content": [{"type": "text", "text": '{"sum":7.0}'}]},
-            },
-        ],
+        actions=[probe],
     )
 
+
+_CALCULATOR_PROBE = {
+    "type": "plugin_mcp_probe",
+    "ok": True,
+    "server": "calculator",
+    "plugin": "mcp-calculator-smoke",
+    "trusted": True,
+    "reachable": True,
+    "ready_tools": ["calculator_add"],
+}
+
+
+def test_enabled_mcp_execution_requires_probe_and_tool_call() -> None:
+    called = [{"name": "calculator_add", "ok": True, "result": {"sum": 7.0}}]
+
+    result = _mcp_execution_result(tools=called, probe=_CALCULATOR_PROBE)
+
     assert bench._case_observed_semantic_proofs(result) == ("enabled_mcp_execution",)
+
+
+def test_enabled_mcp_execution_rejects_untrusted_or_uncalled_server() -> None:
+    called = [{"name": "calculator_add", "ok": True}]
+    untrusted = {**_CALCULATOR_PROBE, "trusted": False}
+    failed_call = [{"name": "calculator_add", "ok": False}]
+
+    assert (
+        bench._case_observed_semantic_proofs(_mcp_execution_result(tools=called, probe=untrusted))
+        == ()
+    )
+    assert (
+        bench._case_observed_semantic_proofs(
+            _mcp_execution_result(tools=[], probe=_CALCULATOR_PROBE)
+        )
+        == ()
+    )
+    assert (
+        bench._case_observed_semantic_proofs(
+            _mcp_execution_result(tools=failed_call, probe=_CALCULATOR_PROBE)
+        )
+        == ()
+    )
 
 
 def test_workspace_memory_scope_requires_structured_policy_actions() -> None:
@@ -2054,7 +2119,7 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
             why="why",
             expected="expected",
             session_group="marketplace",
-            agent_blueprint_id="genomics-review",
+            agent_ref="clio/genomics-review",
             expected_agent="main",
             expected_tools=("genomics_inspect_fasta",),
             expected_handoff_agents=("reference",),
@@ -2064,7 +2129,7 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
         message=message,
         provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="marketplace_agents",
-        agent_blueprint={"active_agent_blueprint_id": "genomics-review"},
+        session_agent=_pinned("clio/genomics-review"),
     )
 
     audit = bench._provider_lane_audit([result], "marketplace_agents")
@@ -2082,7 +2147,7 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
     ]
 
 
-def test_marketplace_blueprint_case_allows_live_wrapper_agent_with_root_sync_return() -> None:
+def test_marketplace_agent_case_allows_live_wrapper_agent_with_root_sync_return() -> None:
     message = _message(
         text="chrA and plasmidB reference review complete",
         route_source="live_tool_observer",
@@ -2111,7 +2176,7 @@ def test_marketplace_blueprint_case_allows_live_wrapper_agent_with_root_sync_ret
             why="why",
             expected="expected",
             session_group="marketplace",
-            agent_blueprint_id="genomics-review",
+            agent_ref="clio/genomics-review",
             expected_agent="main",
             expected_tools=("genomics_inspect_fasta",),
             expected_handoff_agents=("reference",),
@@ -2122,7 +2187,7 @@ def test_marketplace_blueprint_case_allows_live_wrapper_agent_with_root_sync_ret
         message=message,
         provider={"provider": "argonne", "model": "gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_agents",
-        agent_blueprint={"active_agent_blueprint_id": "genomics-review"},
+        session_agent=_pinned("clio/genomics-review"),
     )
 
     assert result.passed is True
@@ -2459,7 +2524,7 @@ def test_earthscope_region_visible_answer_fails_scan_limited_overclaims(tmp_path
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region",
+            agent_ref="clio/earthscope-gnss-region",
             expected_tools=("ndp_profile_csv_resource", "ndp_plot_csv_timeseries"),
             expected_terms=("MTA1",),
             min_artifacts=1,
@@ -2469,7 +2534,7 @@ def test_earthscope_region_visible_answer_fails_scan_limited_overclaims(tmp_path
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region"},
+        session_agent=_pinned("clio/earthscope-gnss-region"),
     )
 
     assert result.passed is False
@@ -2514,7 +2579,7 @@ def test_earthscope_region_station_csv_must_match_requested_radius(tmp_path: Pat
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2530,7 +2595,7 @@ def test_earthscope_region_station_csv_must_match_requested_radius(tmp_path: Pat
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
         registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
@@ -2574,7 +2639,7 @@ def test_earthscope_region_station_filter_must_use_metadata_catalog(tmp_path: Pa
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2590,7 +2655,7 @@ def test_earthscope_region_station_filter_must_use_metadata_catalog(tmp_path: Pa
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
     )
 
     assert result.passed is False
@@ -2651,7 +2716,7 @@ def test_earthscope_positive_run_requires_scientific_final_brief(tmp_path: Path)
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2666,7 +2731,7 @@ def test_earthscope_positive_run_requires_scientific_final_brief(tmp_path: Path)
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
     )
 
     assert result.passed is False
@@ -2734,7 +2799,7 @@ def test_earthscope_positive_scientific_final_brief_passes(tmp_path: Path) -> No
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2750,7 +2815,7 @@ def test_earthscope_positive_scientific_final_brief_passes(tmp_path: Path) -> No
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
         registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
@@ -2795,14 +2860,14 @@ def test_earthscope_metadata_blocker_fails_repeated_station_search_cycle() -> No
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
         ),
         session_id="sess_earthscope_repeated_station_search",
         elapsed_s=1.0,
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
     )
 
     assert result.passed is False
@@ -2836,7 +2901,7 @@ def test_earthscope_region_station_csv_requires_metadata_catalog(tmp_path: Path)
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2851,7 +2916,7 @@ def test_earthscope_region_station_csv_requires_metadata_catalog(tmp_path: Path)
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
         registry_artifacts=[str(station_csv), str(png)],
     )
 
@@ -2910,7 +2975,7 @@ def test_earthscope_region_verifier_uses_metadata_data_file_for_station_csv(
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2926,7 +2991,7 @@ def test_earthscope_region_verifier_uses_metadata_data_file_for_station_csv(
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
         # The staged metadata catalog is an INPUT (data_file), not a produced
         # deliverable — the registry-sourced artifacts carry only the station CSV
         # + plot; the catalog is reached via data_files (its filepath arg).
@@ -2974,7 +3039,7 @@ def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> N
             why="why",
             expected="expected",
             session_group="test",
-            agent_blueprint_id="earthscope-gnss-region-depth",
+            agent_ref="clio/earthscope-gnss-region-depth",
             expected_tools=(
                 "ndp_search_datasets",
                 "ndp_stage_resource",
@@ -2990,7 +3055,7 @@ def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> N
         message=message,
         provider={"provider": "argonne", "model": "openai/gpt-oss-120b", "api_base": ""},
         benchmark_lane="marketplace_earthscope",
-        agent_blueprint={"active_agent_blueprint_id": "earthscope-gnss-region-depth"},
+        session_agent=_pinned("clio/earthscope-gnss-region-depth"),
         registry_artifacts=[str(catalog), str(station_csv), str(png)],
     )
 
@@ -3038,22 +3103,22 @@ def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> N
     )
 
 
-def test_earthscope_topology_cases_use_distinct_blueprint_variants() -> None:
+def test_earthscope_topology_cases_use_distinct_agent_variants() -> None:
     cases = {
         case.case_id: case for case in bench._make_cases(bench._canonical_benchmark_manifest())
     }
 
     assert (
-        cases["marketplace_earthscope_gnss_region_coordinate_mutation"].agent_blueprint_id
-        == "earthscope-gnss-region"
+        cases["marketplace_earthscope_gnss_region_coordinate_mutation"].agent_ref
+        == "clio/earthscope-gnss-region"
     )
     assert (
-        cases["marketplace_earthscope_gnss_region_width_topology"].agent_blueprint_id
-        == "earthscope-gnss-region-width"
+        cases["marketplace_earthscope_gnss_region_width_topology"].agent_ref
+        == "clio/earthscope-gnss-region-width"
     )
     assert (
-        cases["marketplace_earthscope_gnss_region_depth_topology"].agent_blueprint_id
-        == "earthscope-gnss-region-depth"
+        cases["marketplace_earthscope_gnss_region_depth_topology"].agent_ref
+        == "clio/earthscope-gnss-region-depth"
     )
     assert (
         "marketplace_earthscope_gnss_region_width_topology"
@@ -3070,7 +3135,7 @@ def test_earthscope_topology_cases_use_distinct_blueprint_variants() -> None:
 def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
     def marketplace_result(
         case_id: str,
-        blueprint_id: str,
+        agent_ref: str,
         handoffs: list[dict[str, object]],
         *,
         tools: list[str],
@@ -3091,7 +3156,7 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
                 why="why",
                 expected="expected",
                 session_group="marketplace",
-                agent_blueprint_id=blueprint_id,
+                agent_ref=agent_ref,
                 expected_agent="main",
                 expected_tools=(tools[0],),
                 expected_handoff_agents=tuple(
@@ -3103,7 +3168,7 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
             message=message,
             provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
             benchmark_lane="marketplace_agents",
-            agent_blueprint={"active_agent_blueprint_id": blueprint_id},
+            session_agent=_pinned(agent_ref),
         )
 
     def sync_rows(parent: str, child: str) -> list[dict[str, object]]:
@@ -3124,14 +3189,14 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
 
     shallow = marketplace_result(
         "marketplace_shallow",
-        "shallow-pack",
+        "local/shallow-agent",
         [{"agent_id": "main", "stage": "planner_dispatch"}, *sync_rows("main", "reference")],
         tools=["genomics_inspect_fasta"],
     )
     complex_cases = [
         marketplace_result(
             f"marketplace_complex_{index}",
-            f"complex-pack-{index}",
+            f"local/complex-agent-{index}",
             [
                 {"agent_id": "main", "stage": "planner_dispatch"},
                 *sync_rows("main", "data"),
@@ -3162,42 +3227,42 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
 
 
 def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_path: Path) -> None:
-    blueprints = [
+    agents = [
         (
             "marketplace_genomics_reference_review",
-            "genomics-review",
+            "clio/genomics-review",
             "reference",
             "genomics_inspect_fasta",
         ),
         (
             "marketplace_materials_crystal_review",
-            "materials-crystal-review",
+            "clio/materials-crystal-review",
             "crystal_structure",
             "materials_inspect_cif",
         ),
         (
             "marketplace_geospatial_field_review",
-            "geospatial-field-review",
+            "clio/geospatial-field-review",
             "spatial_features",
             "geospatial_inspect_geojson",
         ),
         (
             "marketplace_proteomics_mzml_review",
-            "proteomics-mzml-review",
+            "clio/proteomics-mzml-review",
             "mass_spec",
             "mass_spec_inspect_mzml",
         ),
         (
             "marketplace_seismic_waveform_review",
-            "seismic-waveform-review",
+            "clio/seismic-waveform-review",
             "data",
             "sac_plot_traces",
         ),
     ]
     rows: list[dict[str, object]] = []
-    for case_id, blueprint_id, child_agent, tool_name in blueprints:
+    for case_id, agent_ref, child_agent, tool_name in agents:
         message = _message(
-            text=f"{blueprint_id} completed",
+            text=f"{agent_ref} completed",
             route_source="user_agent",
             tools=[{"name": tool_name}],
         )
@@ -3230,7 +3295,7 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
                 why="why",
                 expected="expected",
                 session_group="marketplace",
-                agent_blueprint_id=blueprint_id,
+                agent_ref=agent_ref,
                 expected_agent="main",
                 expected_tools=(tool_name,),
                 expected_handoff_agents=(child_agent,),
@@ -3240,7 +3305,7 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
             message=message,
             provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
             benchmark_lane="marketplace_agents",
-            agent_blueprint={"active_agent_blueprint_id": blueprint_id},
+            session_agent=_pinned(agent_ref),
         )
         rows.append(bench._case_row(result))
 
@@ -3261,7 +3326,7 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
 
     assert len(combined.read_text(encoding="utf-8").splitlines()) == 5
     report_text = report.read_text(encoding="utf-8")
-    assert "at least five distinct marketplace Agent Blueprints | 5 | 5 | pass" in report_text
+    assert "at least five distinct marketplace agents | 5 | 5 | pass" in report_text
     assert "seismic-waveform-review" in report_text
     assert "genomics-review" in report_text
 
@@ -3355,3 +3420,356 @@ def test_registry_artifact_paths_unknown_session_is_empty(tmp_path: Path) -> Non
         assert bench._registry_artifact_paths(client, "sess_missing") == []
     finally:
         client.__exit__(None, None, None)
+
+
+# --------------------------------------------------------------------------- #
+# Plugin agents: agent refs, marketplace install + trust, session pinning and the
+# plugin MCP probe, against a recording fake of the plugin routes.
+# --------------------------------------------------------------------------- #
+class _FakePluginResponse:
+    def __init__(self, payload: object, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = bench.json.dumps(payload)
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self) -> object:
+        return self._payload
+
+
+class _FakePluginHttp:
+    """Answers the plugin, session-agent and MCP handshake routes; records requests."""
+
+    def __init__(self, *, trusted: bool = True, tools: tuple[str, ...] = ("add",)) -> None:
+        self.requests: list[tuple[str, str, object]] = []
+        self.trusted = trusted
+        self.tools = tools
+        self.sessions = 0
+
+    def post(self, path: str, json: object = None, **_kwargs: object) -> _FakePluginResponse:
+        self.requests.append(("POST", path, json))
+        if path == "/v1/plugins/marketplaces":
+            return _FakePluginResponse(
+                {"marketplace": (json or {}).get("name") or "dev", "agents": ["genomics-review"]},
+                201,
+            )
+        if path.endswith("/trust"):
+            return _FakePluginResponse({"marketplace": path.split("/")[-2], "trusted": True})
+        if path == "/v1/sessions":
+            self.sessions += 1
+            return _FakePluginResponse({"id": f"sess_{self.sessions}"}, 201)
+        raise AssertionError(path)
+
+    def get(self, path: str, params: object = None, **_kwargs: object) -> _FakePluginResponse:
+        self.requests.append(("GET", path, params))
+        if path.endswith("/agent"):
+            return _FakePluginResponse(
+                {
+                    "session_id": path.split("/")[3],
+                    "delta": {"add": [], "remove": []},
+                    "subagent": False,
+                    "resolution": {
+                        "agent": {
+                            "ref": "clio/mcp-calculator-smoke",
+                            "id": "mcp-calculator-smoke",
+                            "role": "a smoke agent",
+                        },
+                        "digest": "abc",
+                        "plugins": [
+                            {
+                                "id": "mcp-calculator-smoke",
+                                "marketplace": "clio",
+                                "root": "/store/snapshots/clio/mcp-calculator-smoke",
+                                "provenance": {"source": "agent", "via": "mcp-calculator-smoke"},
+                            }
+                        ],
+                        "tool_names": ["ask_user", "calculator_"],
+                        "mcp_servers": {
+                            "calculator": {
+                                "plugin": "mcp-calculator-smoke",
+                                "root": "/store/snapshots/clio/mcp-calculator-smoke",
+                                "spec": {"command": "uv"},
+                            }
+                        },
+                        "skills": [{"id": "planning", "plugin": "core", "path": "/x"}],
+                        "prompt": {"text": "You are a smoke agent. frameshift stop-gained"},
+                    },
+                }
+            )
+        if path == "/v1/plugins":
+            return _FakePluginResponse(
+                {
+                    "plugins": [
+                        {
+                            "ref": "clio/mcp-calculator-smoke",
+                            "trusted": self.trusted,
+                            "pending_trust": False,
+                        }
+                    ]
+                }
+            )
+        if path == "/v1/mcp/handshake":
+            return _FakePluginResponse(
+                {"servers": [{"name": "calculator", "reachable": True, "tools": list(self.tools)}]}
+            )
+        raise AssertionError(path)
+
+
+def test_agent_ref_matches_pinned_agent() -> None:
+    assert bench._agent_ref_matches("clio/genomics-review", "clio/genomics-review")
+    assert bench._agent_ref_matches("clio/genomics-review@^0.1", "clio/genomics-review")
+    assert bench._agent_ref_matches("genomics-review", "dev/genomics-review")
+    assert not bench._agent_ref_matches("clio/genomics-review", "dev/genomics-review")
+    assert not bench._agent_ref_matches("clio/genomics-review", "")
+    assert not bench._agent_ref_matches("", "clio/standard")
+    assert bench._rebase_agent_ref("clio/genomics-review", "dev") == "dev/genomics-review"
+
+
+def test_agent_case_passes_only_on_the_pinned_agent() -> None:
+    case = bench.DemoCase(
+        case_id="agent_case",
+        title="agent",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="agent",
+        agent_ref="clio/genomics-review",
+    )
+
+    def result(session_agent: dict[str, object]) -> bench.DemoResult:
+        return bench.DemoResult(
+            case=case,
+            session_id="sess_agent",
+            elapsed_s=1.0,
+            message=_message(text="ok"),
+            provider={},
+            session_agent=session_agent,
+        )
+
+    assert result(_pinned("clio/genomics-review")).passed is True
+    assert result(_pinned("clio/standard")).passed is False
+    assert result({"error": "agent_resolution_failed"}).passed is False
+
+
+def test_create_sessions_pins_each_case_agent_at_creation() -> None:
+    def case(case_id: str, group: str, agent_ref: str = "") -> bench.DemoCase:
+        return bench.DemoCase(
+            case_id=case_id,
+            title=case_id,
+            category="test",
+            prompt="prompt",
+            why="why",
+            expected="expected",
+            session_group=group,
+            agent_ref=agent_ref,
+        )
+
+    cases = [
+        case("a", "genomics", "clio/genomics-review"),
+        case("b", "genomics", "clio/genomics-review"),
+        case("c", "plain"),
+    ]
+    http = _FakePluginHttp()
+
+    session_ids = bench._create_sessions(http, cases, workspace_id="ws_1")
+
+    assert session_ids == {
+        "genomics:auto:clio/genomics-review": "sess_1",
+        "plain:auto:default": "sess_2",
+    }
+    bodies = [body for method, path, body in http.requests if path == "/v1/sessions"]
+    assert bodies == [
+        {
+            "title": "demo genomics",
+            "workspace_id": "ws_1",
+            "metadata": {"agent_ref": "clio/genomics-review"},
+        },
+        {"title": "demo plain", "workspace_id": "ws_1"},
+    ]
+
+
+def test_install_marketplace_installs_then_trusts() -> None:
+    http = _FakePluginHttp()
+
+    name = bench._install_marketplace(http, "/src/marketplace", name="dev")
+
+    assert name == "dev"
+    assert [(method, path) for method, path, _body in http.requests] == [
+        ("POST", "/v1/plugins/marketplaces"),
+        ("POST", "/v1/plugins/marketplaces/dev/trust"),
+    ]
+    assert http.requests[0][2] == {"source": "/src/marketplace", "name": "dev"}
+
+
+def test_session_agent_view_keeps_provenance_and_drops_prompt_and_paths() -> None:
+    view = bench._session_agent(_FakePluginHttp(), "sess_1")
+
+    resolution = view["resolution"]
+    assert resolution["agent"]["ref"] == "clio/mcp-calculator-smoke"
+    assert resolution["mcp_servers"] == {"calculator": {"plugin": "mcp-calculator-smoke"}}
+    assert resolution["plugins"] == [
+        {
+            "id": "mcp-calculator-smoke",
+            "marketplace": "clio",
+            "provenance": {"source": "agent", "via": "mcp-calculator-smoke"},
+        }
+    ]
+    assert resolution["skills"] == [{"id": "planning", "plugin": "core"}]
+    text = bench.json.dumps(view)
+    assert "frameshift" not in text
+    assert "/store/snapshots" not in text
+
+
+def test_probe_plugin_mcp_records_trusted_reachable_server_tools() -> None:
+    case = bench._canonical_cases_by_id()["marketplace_mcp_calculator_enabled_call"]
+    http = _FakePluginHttp()
+
+    action = bench._probe_plugin_mcp_for_case(
+        http, case, session_id="sess_1", workspace_id="ws_1", timeout_s=5.0
+    )
+
+    assert action["ok"] is True
+    assert action["trusted"] is True
+    assert action["plugin"] == "mcp-calculator-smoke"
+    assert action["ready_tools"] == ["calculator_add"]
+    assert ("GET", "/v1/mcp/handshake", {"session_id": "sess_1", "workspace_id": "ws_1"}) in (
+        http.requests
+    )
+
+
+def test_probe_plugin_mcp_fails_for_untrusted_plugin_or_missing_server() -> None:
+    case = bench._canonical_cases_by_id()["marketplace_mcp_calculator_enabled_call"]
+
+    untrusted = bench._probe_plugin_mcp_for_case(
+        _FakePluginHttp(trusted=False), case, session_id="s", workspace_id="", timeout_s=5.0
+    )
+    missing = bench._probe_plugin_mcp_for_case(
+        _FakePluginHttp(),
+        bench.replace(case, mcp_probe_server="other"),
+        session_id="s",
+        workspace_id="",
+        timeout_s=5.0,
+    )
+
+    assert untrusted["ok"] is False
+    assert untrusted["trusted"] is False
+    assert missing["ok"] is False
+    assert "not in the session's pinned resolution" in missing["error"]
+
+
+def test_marketplace_mcp_cases_use_the_calculator_plugin_agent() -> None:
+    cases = bench._canonical_cases_by_id()
+    scope = cases["marketplace_mcp_calculator_scope"]
+    call = cases["marketplace_mcp_calculator_enabled_call"]
+
+    assert scope.agent_ref == call.agent_ref == "clio/mcp-calculator-smoke"
+    assert call.mcp_probe_server == "calculator"
+    assert call.expected_tools == ("calculator_add",)
+    assert call.expected_actions == ("plugin_mcp_probe",)
+    assert call.skip_model_turn is False
+
+
+def test_case_row_round_trips_agent_ref_and_session_agent() -> None:
+    case = bench.replace(
+        bench._canonical_cases_by_id()["marketplace_genomics_reference_review"],
+        agent_ref="dev/genomics-review",
+    )
+    result = bench.DemoResult(
+        case=case,
+        session_id="sess_1",
+        elapsed_s=1.0,
+        message=_message(text="ok"),
+        provider={},
+        session_agent=_pinned("dev/genomics-review"),
+    )
+
+    restored = bench._result_from_case_row(bench._case_row(result))
+
+    assert restored.case.agent_ref == "dev/genomics-review"
+    assert restored.active_agent_ref == "dev/genomics-review"
+
+
+def test_run_benchmark_installs_marketplace_source_and_rebases_agent_cases(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class FakeClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+        def get(self, path: str, **_kwargs: object) -> _FakePluginResponse:
+            if path == "/v1/health":
+                return _FakePluginResponse({})
+            if path.endswith("/artifacts"):
+                return _FakePluginResponse({"artifacts": [], "count": 0, "next_cursor": None})
+            raise AssertionError(path)
+
+    agent_case = bench.DemoCase(
+        case_id="agent_case",
+        title="agent",
+        category="test",
+        prompt="prompt",
+        why="why",
+        expected="expected",
+        session_group="agent",
+        agent_ref="clio/genomics-review",
+    )
+    plain_case = bench.replace(agent_case, case_id="plain_case", agent_ref="")
+    installed: list[tuple[str, str]] = []
+    created: list[list[str]] = []
+
+    def fake_install(_http, source: str, *, name: str = "") -> str:
+        installed.append((source, name))
+        return "dev"
+
+    def fake_create_sessions(_http, cases, *, workspace_id: str = ""):
+        created.append([case.agent_ref for case in cases])
+        return {bench._session_key(case): f"sess_{case.case_id}" for case in cases}
+
+    monkeypatch.setattr(bench.httpx, "Client", FakeClient)
+    monkeypatch.setattr(bench, "create_benchmark_data", lambda _data_dir: {})
+    monkeypatch.setattr(bench, "_make_cases", lambda _manifest: [agent_case, plain_case])
+    monkeypatch.setattr(bench, "_ensure_benchmark_workspace", lambda _http, _root: "ws_1")
+    monkeypatch.setattr(bench, "_install_marketplace", fake_install)
+    monkeypatch.setattr(bench, "_create_sessions", fake_create_sessions)
+    monkeypatch.setattr(bench, "_children", lambda _http, _session_id: [])
+    monkeypatch.setattr(bench, "_provider", lambda _http: {})
+    monkeypatch.setattr(
+        bench,
+        "_session_agent",
+        lambda _http, session_id: _pinned(
+            "dev/genomics-review" if session_id == "sess_agent_case" else "clio/standard"
+        ),
+    )
+    monkeypatch.setattr(bench, "_chronological_session_messages", lambda _http, _sid: [])
+    monkeypatch.setattr(bench, "_semantic_events_for_completed_message", lambda *_a, **_k: [])
+    monkeypatch.setattr(bench, "_post_turn", lambda *_args, **_kwargs: _message(text="ok"))
+
+    code = bench.run_benchmark(
+        "http://example.test",
+        tmp_path / "data",
+        tmp_path / "out.jsonl",
+        tmp_path / "report.md",
+        lane="all",
+        marketplace_source="/src/marketplace",
+        marketplace_name="dev",
+    )
+
+    assert code == 0
+    assert installed == [("/src/marketplace", "dev")]
+    assert created == [["dev/genomics-review", ""]]
+    rows = [
+        bench.json.loads(line)
+        for line in (tmp_path / "out.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["agent_ref"] for row in rows] == ["dev/genomics-review", ""]
+    assert all(row["passed"] for row in rows)
