@@ -78,21 +78,17 @@ def _translate(exc: Exception) -> HTTPException:
 async def _compact_for_change(app: FastAPI, sid: str) -> dict[str, Any]:
     """Compact now so a plugin change joins the prompt (``apply: "compact"``).
 
-    A compaction that runs settles the prompt basis itself. One with nothing to
-    fold (a typed skip) leaves no cached history worth keeping, so the change
-    applies at once. One that fails leaves the change held as a note until the
-    next compaction, and its typed error is returned.
+    Compaction settles the prompt basis itself, including a manual one with
+    nothing to fold (a typed skip). One that fails leaves the change held as a
+    note until the next compaction, and its typed error is returned.
     """
 
     from clio_agent.gact.compaction import CompactionError, compact_session_context  # noqa: PLC0415
 
     try:
-        result = await _call(compact_session_context, app, sid, trigger="manual")
+        return await _call(compact_session_context, app, sid, trigger="manual")
     except CompactionError as exc:
         return {"compacted": False, "error": exc.envelope()}
-    if not result.get("compacted"):
-        await _call(prompt_basis.settle_basis, app, sid)
-    return result
 
 
 async def _call(fn: Any, *args: Any, **kwargs: Any) -> Any:
