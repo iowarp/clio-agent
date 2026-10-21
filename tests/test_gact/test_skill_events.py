@@ -186,7 +186,7 @@ def test_runtime_provenance_carries_skill_resolution(pack: Path, tmp_path: Path)
     assert payload["skill_resolution"]["ghost"]["status"] == "missing"
 
 
-def test_load_skill_call_is_recorded_on_the_blueprint_tool_rows(pack: Path) -> None:
+def test_load_skill_call_is_recorded_on_the_agent_tool_rows(pack: Path) -> None:
     """The auto-attached load_skill is wrapped like a declared tool: calling it
     lands a row on the active blueprint tool rows — the stream that becomes
     tool_call/tool_result transcript parts — so a skill load is visible in the
@@ -203,7 +203,7 @@ def test_load_skill_call_is_recorded_on_the_blueprint_tool_rows(pack: Path) -> N
     rows: list[dict[str, Any]] = []
 
     def _call_with_rows() -> str:
-        _ctx.set_blueprint_tool_rows(rows)
+        _ctx.set_agent_tool_rows(rows)
         return tool.func(skill_id="rubric")
 
     out = contextvars.copy_context().run(_call_with_rows)
@@ -213,7 +213,7 @@ def test_load_skill_call_is_recorded_on_the_blueprint_tool_rows(pack: Path) -> N
     assert row["name"] == "load_skill"
     assert row["ok"] is True
     assert row["args"] == {"skill_id": "rubric"}
-    assert row["telemetry_source"] == "blueprint_react_tool_wrapper"
+    assert row["telemetry_source"] == "agent_react_tool_wrapper"
 
 
 def test_failed_load_skill_call_is_recorded_as_an_error_row(pack: Path) -> None:
@@ -229,7 +229,7 @@ def test_failed_load_skill_call_is_recorded_as_an_error_row(pack: Path) -> None:
     rows: list[dict[str, Any]] = []
 
     def _call_with_rows() -> None:
-        _ctx.set_blueprint_tool_rows(rows)
+        _ctx.set_agent_tool_rows(rows)
         with pytest.raises(ValueError, match="unknown skill"):
             tool.func(skill_id="nope")
 

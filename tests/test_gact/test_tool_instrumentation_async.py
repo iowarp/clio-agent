@@ -118,7 +118,7 @@ def test_recorded_async_native_failure_keeps_blueprint_evidence(
     )
     (tool,) = instrument_tools([tool])
     rows: list[dict[str, Any]] = []
-    token = context.set_blueprint_tool_rows(rows)
+    token = context.set_agent_tool_rows(rows)
     try:
         with pytest.raises(error_type, match="source interrupted"):
             asyncio.run(tool.acall(query="campaign"))
@@ -128,7 +128,7 @@ def test_recorded_async_native_failure_keeps_blueprint_evidence(
     assert rows[0]["ok"] is False
     assert rows[0]["args"] == {"query": "campaign"}
     assert rows[0]["error"] == "source interrupted"
-    assert rows[0]["telemetry_source"] == "blueprint_react_tool_wrapper"
+    assert rows[0]["telemetry_source"] == "agent_react_tool_wrapper"
 
 
 def test_clio_react_executes_recorded_and_instrumented_async_native_tool() -> None:
@@ -156,7 +156,7 @@ def test_clio_react_executes_recorded_and_instrumented_async_native_tool() -> No
         [calls(("async_source", {"query": "campaign review"})), Reply(text="Located it.")]
     )
     rows: list[dict[str, Any]] = []
-    token = context.set_blueprint_tool_rows(rows)
+    token = context.set_agent_tool_rows(rows)
     try:
         with dspy.context(lm=lm):
             result = ClioReAct("question -> answer", tools=[tool])(question="Find the document")
