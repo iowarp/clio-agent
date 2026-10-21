@@ -63,7 +63,14 @@ No production code changes in this phase.
 2. Add the plugin loader:
    - Read `plugin.json` against the Agent Plugins 1.0.0 schema, plus the `ai.iowarp.clio` extension.
    - Read the folder conventions: `skills/`, `mcp.json`, and `ai.iowarp.clio/` with `plugin.py`, `tools/`, `hooks/`, `subagents/`, `commands/`, `flows/`, `prompt/` and `a2ui/`.
-   - Add one importer that brings Claude Code plugin layouts into the same internal record.
+   - Add one importer that brings Claude Code plugin layouts and marketplaces into the same internal record. clio-kit `main` is the main real-world example: 72 plugins in `.claude-plugin/marketplace.json`, each with `.claude-plugin/plugin.json` and some of `.mcp.json`, `skills/`, `hooks/hooks.json` and `agents/*.md`. It gets no special treatment. The importer maps that layout as follows:
+     - A plugin whose only content is `dependencies` (such as `clio-hpc` or `clio-skills`) becomes a pack, so its members stay individually removable. `dependencies` on a plugin with content of its own become hard requirements.
+     - `.mcp.json` entries become the plugin's MCP servers, started lazily.
+     - `skills/` stays portable as is.
+     - `hooks/hooks.json` events map onto CLIO hook events. An event with no CLIO equivalent is reported with a typed reason, never dropped silently. Other clients' hook files, such as `codex.json` or `opencode.js`, are ignored.
+     - `agents/*.md` become defined subagents of that plugin. Claude Code tool names map to CLIO tools, and an unmappable tool is a typed import error. A `model:` pin becomes a model preference, not a requirement.
+     - `federated-marketplaces.json` entries pinned by commit are followed as git sources and go through the trust step.
+     - Client-specific index files outside the Claude Code format, such as `.clio-kit/catalogue.json`, are not read.
 3. Trust:
    - pip-installed plugins are trusted.
    - Git and external marketplaces need an explicit trust step.
@@ -131,6 +138,8 @@ Run these live scenarios against `bash scripts/cloud/stack.sh start`, which defa
 | L5 | Restart the server mid-plan | The run resumes on the same handles, and `query_tasks` shows no duplicate tasks |
 | L6 | Stop during a flow, then `cancel_tasks` on it | Stop leaves the flow running; cancel settles its subtree |
 | L7 | `clio-agent plugin check` on a broken plugin | A missing prompt file, a tool collision and a hook cycle each fail with a clear message |
+| L8 | Install clio-kit `main` as a marketplace through the importer, including its federated clio-coder marketplace after the trust step | `clio-agent plugin check` passes for every imported plugin, or reports a typed reason per plugin. An agent with `clio-hdf5` added calls an HDF5 tool that runs `clio-kit mcp-server hdf5`. `clio-dataset-report`'s hook fires. A `clio-agents` subagent runs with mapped tools. |
+| L9 | Compose a user agent in the + menu: start from the standard agent, add the `clio-hpc` pack and `clio-hdf5`, remove `xlsx` from the documents pack, and save | The saved agent is stored as parent plus delta. A new session shows `clio-hpc`'s members, no xlsx tools, and fragments attributed to their plugins. Removing `clio-slurm` removes only it, since it is a pack member. Removing a hard requirement shows and applies the cascade. Bumping the standard agent's version reaches the saved agent's next session. |
 
 The cloud session cannot qualify the Tauri desktop, Windows-only paths, or SSH to HPC systems. Mark those rows blocked, not passed. Nothing else may be marked blocked: a failing scenario is fixed, not deferred.
 
@@ -140,7 +149,7 @@ The change is done when all of these hold, each shown in the session transcript,
 
 1. Every phase is implemented and every module in the removal manifest is gone, with the guard test passing.
 2. The focused tests for every touched area pass, and `ruff check` and `ruff format --check` are clean on the touched paths.
-3. Live scenarios L1 to L7 pass against a freshly restarted stack. For each one the transcript shows the commands, the task handles, and the screenshots that were read.
+3. Live scenarios L1 to L9 pass against a freshly restarted stack. For each one the transcript shows the commands, the task handles, and the screenshots that were read.
 4. The acceptance ledger has every row passed, apart from the platform rows named above as blocked.
 5. The branches are pushed in clio-agent, gact-tui and clio-agent-marketplace. The clio-agent submodule pins point at the pushed commits, and the draft PRs are updated with a summary and the evidence.
 6. A final report in the transcript lists each ledger row with its status and evidence.
