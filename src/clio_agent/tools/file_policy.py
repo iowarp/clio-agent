@@ -294,6 +294,40 @@ class FileAccessPolicy:
             )
         return resolved
 
+    def validate_search_root(self, filepath: str, *, field: str = "path") -> Path:
+        """Validate a folder (or one file) a read-only search starts from."""
+        raw_path = _coerce_path(filepath, field=field)
+        self._check_connected_storage(raw_path, field=field)
+        if not self.allow_symlinks and _has_symlink(raw_path):
+            raise self._error(
+                code="symlink_denied",
+                message=f"Symlinks are not allowed by file policy: {raw_path}",
+                field=field,
+                path=str(raw_path),
+                next_action="Use a real path or set CLIO_ALLOW_SYMLINKS=true.",
+            )
+        try:
+            resolved = raw_path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise self._error(
+                code="file_not_found",
+                message=f"Path does not exist: {raw_path}",
+                field=field,
+                path=str(raw_path),
+                next_action="Provide an existing folder inside an allowed root.",
+            ) from exc
+        if not self.allows_source_read(resolved):
+            self._ensure_allowed(resolved, field=field)
+        if not (resolved.is_dir() or resolved.is_file()):
+            raise self._error(
+                code="not_a_folder",
+                message=f"Path is neither a folder nor a regular file: {resolved}",
+                field=field,
+                path=str(resolved),
+                next_action="Provide a folder or a regular file.",
+            )
+        return resolved
+
     def allows_source_read(self, path: Path) -> bool:
         """Recognize approved workspace copies without adding writable territory.
 
@@ -396,6 +430,11 @@ class FileAccessPolicy:
 def validate_read_path(filepath: str, *, field: str = "filepath") -> Path:
     """Validate a read path with policy loaded from the environment."""
     return FileAccessPolicy.from_env().validate_read(filepath, field=field)
+
+
+def validate_search_root(filepath: str, *, field: str = "path") -> Path:
+    """Validate a search root (folder or file) with policy loaded from the environment."""
+    return FileAccessPolicy.from_env().validate_search_root(filepath, field=field)
 
 
 def validate_write_path(

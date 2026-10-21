@@ -563,8 +563,10 @@ def _finish(
                     f"{agent['id']} allows tool {name!r}, but none of its plugins provides it",
                     agent["id"],
                 )
+        # The allowlist narrows what the subagent's plugins add; core's tools (task
+        # controls, questions, skills) stay, since core is never removable (D11).
         allowed = set(tool_allowlist)
-        tools = [row for row in tools if row["name"] in allowed]
+        tools = [row for row in tools if row["name"] in allowed or row.get("plugin") == "core"]
     flows = collected["flows"]
     if flow_id not in {row["id"] for row in flows}:
         builder.error(

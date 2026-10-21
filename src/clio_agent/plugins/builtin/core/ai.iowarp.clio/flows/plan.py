@@ -94,14 +94,24 @@ class _PlanRun:
         ]
 
     def _input(self, node: Node) -> Any:
+        """A node's input: its own, or the task plus its instructions and dependencies' results."""
+
         if node.input is not None:
             return _substitute(node.input, self.task, self.results)
-        if not node.after:
+        if not node.after and not node.description:
             return self.task
-        return {
-            "task": self.task,
-            "inputs": {dep: getattr(self.results.get(dep), "answer", "") for dep in node.after},
-        }
+        payload: dict[str, Any] = {"task": self.task}
+        if node.description:
+            payload["instructions"] = node.description
+        if node.after:
+            payload["inputs"] = {dep: self._dependency(dep) for dep in node.after}
+        return payload
+
+    def _dependency(self, node_id: str) -> Any:
+        result = self.results.get(node_id)
+        answer = getattr(result, "answer", "")
+        state = getattr(result, "workflow_state", {}) if result is not None else {}
+        return {"answer": answer, "workflow_state": state} if state else answer
 
     def summary(self) -> dict[str, Any]:
         return {

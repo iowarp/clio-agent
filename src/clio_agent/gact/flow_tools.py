@@ -39,7 +39,9 @@ def _flows(app: Any, session_id: str) -> list[dict[str, Any]]:
     return list(session_resolution(app, session_id).flows)
 
 
-async def start_flow(flow_id: str, flow_input: Any, options: dict[str, Any] | None) -> dict[str, Any]:
+async def start_flow(
+    flow_id: str, flow_input: Any, options: dict[str, Any] | None
+) -> dict[str, Any]:
     """Accept a child assignment that runs ``flow_id`` and return its handle."""
 
     from clio_agent.flows.context import _plain, render_input  # noqa: PLC0415
@@ -75,7 +77,9 @@ async def start_flow(flow_id: str, flow_input: Any, options: dict[str, Any] | No
 
 def build_run_flow_tool() -> Any:
     async def run_flow(
-        flow: str, input: Any = None, options: dict[str, Any] | None = None  # noqa: A002
+        flow: str,
+        input: Any = None,
+        options: dict[str, Any] | None = None,  # noqa: A002
     ) -> dict[str, Any]:
         return await start_flow(str(flow or "").strip(), input, options)
 

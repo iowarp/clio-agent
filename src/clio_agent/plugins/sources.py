@@ -9,6 +9,7 @@ into the same commit (federated ``git-subdir`` entries) share one checkout.
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -19,12 +20,17 @@ class SourceError(RuntimeError):
     """A source could not be fetched. The message names the source and the cause."""
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class FetchedSource:
     path: Path
     url: str
     commit: str
     local: bool
+    #: Why ``commit`` is empty for a local source (typed, never silent).
+    commit_reason: str = ""
 
 
 def normalize_git_url(value: str) -> str:
@@ -68,9 +74,27 @@ def fetch(source: str, *, cache: Path, ref: str = "", commit: str = "") -> Fetch
         if (path / ".git").exists():
             try:
                 head = _git(["rev-parse", "HEAD"], cwd=path, timeout=30)
-            except SourceError:
-                head = ""
-        return FetchedSource(path=path, url=str(path), commit=head, local=True)
+            except SourceError as exc:
+                # A local folder installs without a commit; say why it has none.
+                logger.warning(
+                    "plugin source commit unknown reason=local_git_head_unreadable path=%s error=%s",
+                    path,
+                    exc,
+                )
+                return FetchedSource(
+                    path=path,
+                    url=str(path),
+                    commit="",
+                    local=True,
+                    commit_reason="local_git_head_unreadable",
+                )
+        return FetchedSource(
+            path=path,
+            url=str(path),
+            commit=head,
+            local=True,
+            commit_reason="" if head else "local_folder_not_git",
+        )
     url = normalize_git_url(source) if not is_local(source) else str(Path(source).resolve())
     key = hashlib.sha256(f"{url}\0{commit or ref}".encode()).hexdigest()[:20]
     target = cache / key

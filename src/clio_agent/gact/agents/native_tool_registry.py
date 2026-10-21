@@ -299,12 +299,15 @@ def build_native_tools(
     supports_vision: bool = False,
     supports_pdf: bool = False,
     a2ui_catalogs: bool = True,
+    describe_all: bool = False,
 ) -> tuple[dict[str, Any], list[str], dict[str, str]]:
     """Build the claimed built-in tools.
 
     Returns ``(available, gateway_requested, withheld)``: tools built here, the
     names the MCP gateway provides, and claimed names withheld with a reason.
     Names in :data:`AGENT_RUNTIME_TOOLS` are left to the agent module.
+    ``describe_all`` builds the NDP tools without a connected source, for the
+    product catalog that documents them (never for an agent's toolset).
     """
 
     wanted = {str(name) for name in requested} & NATIVE_TOOL_NAMES
@@ -342,7 +345,7 @@ def build_native_tools(
         )
         from clio_agent.gact.storage.ndp_tools import build_ndp_discovery_tools  # noqa: PLC0415
 
-        if session_ndp_tools_enabled():
+        if describe_all or session_ndp_tools_enabled():
             available.update(
                 _pick([*build_ndp_discovery_tools(), *build_ndp_endpoint_tools()], wanted)
             )

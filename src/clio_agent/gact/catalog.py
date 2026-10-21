@@ -185,6 +185,7 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
         {},
         supports_vision=True,
         supports_pdf=True,
+        describe_all=True,
     )
     for tool in native_tools.values():
         _record_declaration(seen, tool)

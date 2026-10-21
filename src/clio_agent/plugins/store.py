@@ -252,6 +252,7 @@ class PluginStore:
                 "url": fetched.url,
                 "ref": ref,
                 "commit": fetched.commit,
+                "commit_reason": fetched.commit_reason,
                 "pinned": bool(commit),
                 "snapshot": str(snapshot),
                 "format": probe.format,

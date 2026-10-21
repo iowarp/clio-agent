@@ -43,8 +43,11 @@ from clio_agent.tools.builtin_annotations import (
 )
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import (
+    FileAccessPolicy,
+    FilePolicyError,
     validate_non_empty_string,
     validate_read_path,
+    validate_search_root,
     validate_write_path,
 )
 from clio_agent.tools.fs_write import write_text_with_policy
@@ -144,7 +147,7 @@ def glob(
     """
 
     validate_non_empty_string(pattern, field="pattern")
-    root = Path(validate_read_path(path or ".", field="path"))
+    root = Path(validate_search_root(path or ".", field="path"))
     if not root.is_dir():
         raise ValueError(f"path is not a folder: {root}")
     found: list[str] = []
@@ -183,7 +186,8 @@ def grep(
         regex = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as exc:
         raise ValueError(f"invalid regular expression: {exc}") from exc
-    root = Path(validate_read_path(path or ".", field="path"))
+    root = Path(validate_search_root(path or ".", field="path"))
+    policy = FileAccessPolicy.from_env()
     files = [root] if root.is_file() else list(_walk_files(root))
     matches: list[dict[str, Any]] = []
     skipped = 0
@@ -196,8 +200,8 @@ def grep(
             if file.stat().st_size > _MAX_GREP_FILE_BYTES:
                 skipped += 1
                 continue
-            data = file.read_bytes()
-        except OSError:
+            data = policy.validate_read(str(file), field="path").read_bytes()
+        except (OSError, FilePolicyError):
             skipped += 1
             continue
         if b"\0" in data[:8192]:

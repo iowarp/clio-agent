@@ -58,7 +58,8 @@ class Council(Flow):
         ]
         views = await ctx.gather(calls, limit=len(calls))
         labelled = [
-            f"{view or member}: {result.answer}" for (member, view), result in zip(pairs, views, strict=True)
+            f"{view or member}: {result.answer}"
+            for (member, view), result in zip(pairs, views, strict=True)
         ]
         handles = [result.handle for result in views]
         if self.synthesizer:

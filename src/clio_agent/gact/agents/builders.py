@@ -204,6 +204,12 @@ def _agent_tools(
                 tools=[*gateway_names, *namespaces],
                 mount_failures={"workspace_fleet": mount_failure_reason(exc)},
             ) from exc
+        if tool_executor is None or not hasattr(tool_executor, "to_dspy_tools"):
+            raise _UnsupportedSessionAgent(
+                agent_def.id,
+                reason="custom_agent_tool_executor_unavailable",
+                tools=[*gateway_names, *namespaces],
+            )
         picked, mount_failures = _gateway_and_namespace_tools(
             tool_executor, gateway_names, namespaces
         )

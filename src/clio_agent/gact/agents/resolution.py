@@ -151,7 +151,9 @@ def pin_session_agent(
     applied = delta if delta is not None else session_delta(app, session_id)
     resolution = resolve_for_session(app, chosen, applied)
     patch = resolution_metadata(resolution, ref=chosen, delta=applied)
-    app.state.sessions.update(session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]})
+    app.state.sessions.update(
+        session_id, metadata_patch=patch, agent={"id": resolution.agent["id"]}
+    )
     return resolution
 
 

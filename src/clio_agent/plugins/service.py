@@ -157,7 +157,9 @@ class PluginService:
 
         self.store = store or PluginStore(plugin_store_root())
         self._native_tools = native_tools
-        self._install_default = store is None if default_marketplace is None else default_marketplace
+        self._install_default = (
+            store is None if default_marketplace is None else default_marketplace
+        )
         self._ready_lock = threading.Lock()
         self._ready = False
         self.ready_error: dict[str, Any] | None = None
@@ -377,10 +379,10 @@ class PluginService:
             remove=tuple(remove),
             description=description,
         )
+        # Refuse a delta that does not resolve before anything is stored.
+        self.resolve(extends, delta=Delta(tuple(add), tuple(remove)), pin=False)
         self.store.save_user_agent(user_agent)
-        entry = self.lookup(f"{USER_MARKETPLACE}/{agent_id}")
-        self.resolve(entry.ref, pin=False)
-        return entry
+        return self.lookup(f"{USER_MARKETPLACE}/{agent_id}")
 
 
 def resolution_error_payload(exc: ResolutionError) -> dict[str, Any]:

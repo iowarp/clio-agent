@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 import re
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -84,7 +84,9 @@ def server_declarations(
                 for key, value in (spec.get("env") or {}).items()
             }
             env.update({"PLUGIN_ROOT": root, "PLUGIN_DATA": data})
-            env.update({key: value for key, value in values.items() if references_variable(spec, key)})
+            env.update(
+                {key: value for key, value in values.items() if references_variable(spec, key)}
+            )
             out.setdefault(str(row["plugin"]), {})[name] = {
                 "command": str(spec["command"]).replace("./", root.rstrip("/") + "/", 1)
                 if str(spec["command"]).startswith("./")
