@@ -47,7 +47,6 @@ from clio_agent.plugins.records import (
     SubagentRecord,
     ToolRecord,
 )
-from clio_agent.sdk.flow import Flow
 from clio_agent.sdk.hooks import HOOK_EVENTS, HookSpec
 from clio_agent.sdk.plugin import declaration_of
 from clio_agent.sdk.subagent import Subagent
@@ -300,6 +299,9 @@ def _defined_here(module: types.ModuleType) -> list[tuple[str, Any]]:
 
 
 def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonParts:
+    # A Flow is a dspy.Module: loading a trusted plugin's Python parts loads the engine.
+    from clio_agent.sdk.flow import Flow  # noqa: PLC0415
+
     parts = _PythonParts()
     clio_dir = root / NAMESPACE
     if (clio_dir / "plugin.py").is_file():

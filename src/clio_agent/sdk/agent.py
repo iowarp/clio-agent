@@ -29,7 +29,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from clio_agent.sdk.flow import Flow
 from clio_agent.sdk.model import Prefers, Requires
 from clio_agent.sdk.versions import PluginRef, VersionRangeError
 
@@ -115,6 +114,9 @@ class AgentSpec:
 
 
 def _flow_selection(value: Any) -> dict[str, Any]:
+    # A Flow is a dspy.Module: imported here so reading specs never loads the engine.
+    from clio_agent.sdk.flow import Flow  # noqa: PLC0415
+
     if isinstance(value, Flow):
         return value.reference()
     if isinstance(value, type) and issubclass(value, Flow):

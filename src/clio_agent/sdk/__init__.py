@@ -8,7 +8,6 @@ See ``docs/design/sdk/agent-sdk.md`` and ``plugins-and-composition.md``.
 """
 
 from clio_agent.sdk.agent import Agent, AgentDefinitionError, AgentSpec
-from clio_agent.sdk.flow import Flow
 from clio_agent.sdk.hooks import HOOK_EVENTS, HookEvent, hook
 from clio_agent.sdk.model import Prefers, Requires
 from clio_agent.sdk.plan import Node, Plan, PlanError
@@ -38,3 +37,13 @@ __all__ = [
     "native_tool",
     "tool",
 ]
+
+
+def __getattr__(name: str) -> object:
+    # ``Flow`` is a ``dspy.Module``; it is imported on first use so that loading
+    # plugin records and specs (the server's import path) does not load the engine.
+    if name == "Flow":
+        from clio_agent.sdk.flow import Flow  # noqa: PLC0415
+
+        return Flow
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
