@@ -53,7 +53,7 @@ def test_editor_adds_a_node_that_runs(flow_app: TestClient) -> None:
     message = _done(flow_app, sid)
     assert message.get("error_info") is None, message.get("error_info")
     run = _plan_run(flow_app, sid)
-    events = [e for e in run["events"].values()]
+    events = list(run["events"].values())
     added = [e for e in events if e["event"] == "node_added"]
     assert [e["node"] for e in added] == ["polish"]
     statuses = {n["id"]: n["status"] for n in run["result"]["plan"]["nodes"]}
@@ -78,14 +78,25 @@ def test_approval_question_gates_an_added_node(flow_app: TestClient) -> None:
         run = history.read_content(inner.content) if inner else {}
         asks = [r for r in run.get("calls", {}).values() if r.get("kind") == "ask"]
         proposed = [e for e in run.get("events", {}).values() if e["event"] == "node_proposed"]
-        return (asks[0]["handle"], child.owner.session_id, proposed) if asks else None
+        return (asks[0]["handle"], child.owner.session_id, proposed, child.handle) if asks else None
 
-    handle, plan_session, proposed = wait_until(question, timeout=90)
+    handle, plan_session, proposed, plan_handle = wait_until(question, timeout=90)
     assert proposed and proposed[0]["node"] == "polish"
     snapshot = history.task_snapshot(handle)
     assert snapshot.kind == "Question" and snapshot.terminal_at is None
     run = _plan_run(flow_app, sid)
     assert not any(e["event"] == "node_added" for e in run["events"].values())
+    # The run view draws the live plan: the proposal awaits approval behind its Question.
+    live = flow_app.get(f"/v1/sessions/{sid}/tasks/{plan_handle}/flow")
+    assert live.status_code == 200, live.text
+    view = live.json()
+    assert view["flow"] == "plan" and view["status"] == "running"
+    assert [row["id"] for row in view["view"]["awaiting_approval"]] == ["polish"]
+    assert [row["handle"] for row in view["questions"]] == [handle]
+    nodes = {row["id"]: row for row in view["view"]["nodes"]}
+    assert set(nodes) == {"draft", "critique"}
+    assert nodes["draft"]["status"] == "completed" and nodes["draft"]["task_status"] == "completed"
+    assert nodes["draft"]["handle"].startswith("task_")
     answered = flow_app.post(
         f"/v1/sessions/{plan_session}/questions/{handle}/answer",
         json={"answer": "yes", "selected_options": ["yes"]},
@@ -95,3 +106,25 @@ def test_approval_question_gates_an_added_node(flow_app: TestClient) -> None:
     assert "polish the draft" in text_of(message), message.get("error_info")
     run = _plan_run(flow_app, sid)
     assert [e["node"] for e in run["events"].values() if e["event"] == "node_added"] == ["polish"]
+    final = flow_app.get(f"/v1/sessions/{sid}/tasks/{plan_handle}/flow").json()
+    assert final["status"] == "completed" and final["questions"] == []
+    assert final["view"]["awaiting_approval"] == []
+    polish = next(row for row in final["view"]["nodes"] if row["id"] == "polish")
+    assert polish["status"] == "completed" and polish["task_status"] == "completed"
+
+
+def test_failed_node_is_a_typed_stall_in_the_run_view(flow_app: TestClient) -> None:
+    sid = new_session(flow_app, "clio/planner")
+    post(flow_app, sid, "FAIL the survey")
+    message = _done(flow_app, sid)
+    history = flow_app.app.state.task_history
+    owner = history.latest_assignment(sid)
+    outer = history.read_content(history.workflow_checkpoint(owner.handle).content)
+    plan_handle = next(r["handle"] for r in outer["calls"].values() if r["kind"] == "flow")
+    view = flow_app.get(f"/v1/sessions/{sid}/tasks/{plan_handle}/flow").json()
+    assert view["status"] == "flow_stall", view
+    assert view["outcome"]["stall"] == "node_failed" and view["outcome"]["step"] == "survey"
+    nodes = {row["id"]: row["status"] for row in view["view"]["nodes"]}
+    assert nodes["survey"] == "failed"
+    assert {nodes[n] for n in ("left", "right", "merge")} == {"cancelled"}
+    assert message.get("error_info"), message

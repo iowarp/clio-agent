@@ -130,6 +130,14 @@ class FlowJournal:
         self.content["events"][key] = event
         await self.save()
 
+    async def publish(self, view: dict[str, Any]) -> None:
+        """Replace the run's live view; it is overwritten, so it is not an entry."""
+
+        if self.content.get("view") == view:
+            return
+        self.content["view"] = view
+        await self.save()
+
     async def finish(self, status: str, result: Any = None) -> None:
         self.content["status"] = status
         self.content["result"] = result if _jsonable(result) else repr(result)

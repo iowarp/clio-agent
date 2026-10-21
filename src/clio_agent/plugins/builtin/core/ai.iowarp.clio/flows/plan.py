@@ -73,6 +73,8 @@ class _PlanRun:
         self.added = 0
         self.rounds = 0
         self.handles: dict[str, str] = {}
+        self.invocations: dict[str, str] = {}
+        self.awaiting: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------ helpers
     def _ready(self) -> list[Node]:
@@ -127,13 +129,34 @@ class _PlanRun:
             "rounds": self.rounds,
         }
 
+    async def _publish(self) -> None:
+        """Publish the live plan: nodes with status, and proposals awaiting approval."""
+
+        summary = self.summary()
+        for row in summary["nodes"]:
+            row["invocation"] = self.invocations.get(row["id"], "")
+        await self.ctx.publish(
+            {
+                "kind": "plan",
+                **summary,
+                "awaiting_approval": list(self.awaiting.values()),
+                "editors": sorted(self.editors),
+                "max_added": self.max_added,
+                "max_rounds": self.max_rounds,
+                "approve_edits": self.approve,
+            }
+        )
+
     # -------------------------------------------------------------- run
     async def execute(self) -> dict[str, Any]:
         running: dict[asyncio.Future[Any], str] = {}
+        await self._publish()
         while True:
-            for node_id in self._blocked():
-                self.status[node_id] = "cancelled"
-                await self.ctx.record_event({"event": "node_skipped", "node": node_id})
+            while blocked := self._blocked():
+                # A skipped node blocks its own dependents in turn.
+                for node_id in blocked:
+                    self.status[node_id] = "cancelled"
+                    await self.ctx.record_event({"event": "node_skipped", "node": node_id})
             for node in self._ready():
                 self.status[node.id] = "running"
                 running[asyncio.ensure_future(self._run_node(node))] = node.id
@@ -144,6 +167,7 @@ class _PlanRun:
                 node_id = running.pop(future)
                 await self._settle(node_id, future)
         failed = [n for n, s in self.status.items() if s == "failed"]
+        await self._publish()
         if failed:
             node_id = failed[0]
             raise FlowStall(
@@ -187,6 +211,8 @@ class _PlanRun:
         call = self.ctx.call(node.target, payload, key=f"node:{node.id}")
         if node.target in self.editors:
             call.editor = {"run": self.ctx.run_id, "node": node.id}
+        self.invocations[node.id] = call.invocation
+        await self._publish()
         return await call
 
     async def _settle(self, node_id: str, future: asyncio.Future[Any]) -> None:
@@ -200,6 +226,7 @@ class _PlanRun:
             await self.ctx.record_event(
                 {"event": "node_failed", "node": node_id, **outcome.to_dict()}
             )
+            await self._publish()
             await self._offer_stall(node_id, outcome)
             return
         self.status[node_id] = "completed"
@@ -211,6 +238,7 @@ class _PlanRun:
         )
         if node.target in self.editors:
             await self._apply_edits(node_id, result)
+        await self._publish()
 
     async def _offer_stall(self, node_id: str, outcome: FlowOutcome) -> None:
         """Offer a failed node to the editors, who may add a repair node."""
@@ -304,6 +332,14 @@ class _PlanRun:
             return False
         await self.ctx.record_event(event)
         if self.approve:
+            self.awaiting[node_id] = {
+                "id": node_id,
+                "target": target,
+                "after": after,
+                "by": origin,
+                "reason": str(args.get("reason") or ""),
+            }
+            await self._publish()
             approved = await self.ctx.ask(
                 f"Add plan node {node_id!r} ({target}) after {', '.join(after) or 'the start'}, "
                 f"proposed by {origin}?",
@@ -311,6 +347,7 @@ class _PlanRun:
                 reason=str(args.get("reason") or ""),
                 key=f"approve:{origin}:{index}:{node_id}",
             )
+            self.awaiting.pop(node_id, None)
             if not approved:
                 await self.ctx.record_event(
                     {**event, "event": "node_rejected", "reason": "not_approved"}
@@ -344,4 +381,5 @@ class _PlanRun:
             return False
         self.status[node_id] = "cancelled"
         await self.ctx.record_event({"event": "node_cancelled", "node": node_id, "by": origin})
+        await self._publish()
         return True

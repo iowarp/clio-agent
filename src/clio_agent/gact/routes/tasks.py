@@ -232,6 +232,23 @@ def register_task_routes(app: FastAPI) -> None:
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
 
+    @app.get("/v1/sessions/{sid}/tasks/{handle}/flow")
+    async def flow(sid: str, handle: str) -> dict[str, Any]:
+        """The flow run checkpointed under this task: the live plan, calls, events, outcome."""
+        from clio_agent.flows.run_view import flow_run
+
+        def read() -> dict[str, Any] | None:
+            task = TaskAccess(app.state.task_history, caller(sid)).require(handle, "read")
+            return flow_run(app.state.task_history, task.handle)
+
+        try:
+            run = await app.state.task_history.io.run(read)
+        except ValueError as error:
+            raise HTTPException(404, str(error)) from error
+        if run is None:
+            raise HTTPException(404, f"No flow run is recorded under {handle}")
+        return run
+
     @app.get("/v1/sessions/{sid}/tasks/mailbox")
     async def mailbox(sid: str) -> dict[str, Any]:
         selected = await app.state.task_history.io.run(caller, sid)
