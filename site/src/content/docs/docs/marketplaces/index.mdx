@@ -1,56 +1,59 @@
 ---
-title: Choose a specialist agent
-description: Find an agent for your workflow, inspect what it can use, and choose it for a conversation.
+title: Plugin marketplaces
+description: Where agents and plugins come from, what the shipped clio marketplace holds, and how Claude Code marketplaces fit in.
 ---
 
-import WidgetRecording from '../../../../components/WidgetRecording.astro';
-import GuideScreenshot from '../../../../components/GuideScreenshot.astro';
+import { Aside } from '@astrojs/starlight/components';
 
-A specialist agent brings instructions and tools for a particular workflow.
-In CLIO, its saved configuration is called a **blueprint**. A **marketplace**
-is a collection of blueprints, and an **installed copy** is the version available
-to start a conversation on the connected CLIO service.
+A **marketplace** is a collection of plugins, and often of agents built from them. It is a folder or a git repository. Installing one makes its plugins available in the + menu of every conversation, and its agents available in the **Agent** list when you start one. See [Agents and plugins](/docs/agents-and-plugins/) for how agents use plugins.
 
-Open **Settings → Marketplaces & blueprints**. Use **Installed** to find an agent you can use; use **Marketplaces** to browse and manage the collections it comes from.
+Open Settings and choose **Plugins & marketplaces**. The page lists the installed marketplaces and, below them, every installed plugin and pack.
 
-<WidgetRecording name="clio-guide-marketplace-browse" title="Find an agent and inspect its instructions" caption="Filter the installed list, open Details directly, and read the blueprint's overview and instructions." formatLabel="Screenshot walkthrough" timingNote="Actual UI states with reading pauses." />
+## The shipped marketplaces
 
-## Find an installed blueprint
+Two sources are always present:
 
-Search by name or description. Use the status filter to focus on entries needing attention, and sort by name or recent installation. Blueprints are grouped by their marketplace. A marketplace filter appears when there is more than one group.
+- The `core` and `orchestration` plugins are part of CLIO itself. They do not appear as a marketplace you manage.
+- The `clio` marketplace is installed on first use and trusted, marked **Shipped**. It holds the standard agent, the shared plugins, and domain agents such as `earthscope`, `factorio`, `deep-researcher`, and `wildfire-smoke-impact-review`.
 
-Click the blueprint name or **Details**. The three tabs answer different questions:
+If the `clio` marketplace cannot be installed, for example when its source cannot be reached, the page says so. Other marketplaces keep working.
 
-| Tab | What to look for |
+## What a marketplace row shows
+
+Each marketplace shows its name, its source, and its format: **Agent Plugins format** for CLIO's own layout, or **Claude Code format** for an imported Claude Code marketplace. A git source also shows the commit that is installed. Status badges tell you whether it is **Trusted** or **Not trusted**, and how many problems were found when loading it; **Details** lists them.
+
+The installed plugin list groups plugins by marketplace. Each row shows the version, what the plugin contributes (tools, skills, servers, subagents, flows, hooks, commands, prompt fragments), the members a pack brings, and the plugins it needs. Badges mark a **Pack**, a plugin that is **Not trusted**, an **Update waits for trust**, and plugins **Imported** from a Claude Code marketplace. Use **Filter plugins** to search by name, description, marketplace, or pack member.
+
+Installed agents are listed separately, under Settings, **Agents**.
+
+## Trust and executable parts
+
+Plugins can contain text, such as skills and prompt fragments, and executable parts: MCP server commands, Python tools, and hooks. Executable parts run on the machine that runs CLIO.
+
+Until you trust a marketplace you added, CLIO loads only the text parts of its plugins, and does not load its agents. Its plugins appear in the + menu but cannot be added. The trust step records the executable parts as they are now. If a later update changes them, the new version waits for the trust step again and the version you trusted stays in use. An update that changes only text applies to the next conversation.
+
+[Add and manage marketplaces](/docs/marketplaces/manage/) covers the trust step.
+
+## Claude Code marketplaces
+
+CLIO installs Claude Code plugin marketplaces as they are, without converting them first. It reads `.claude-plugin/marketplace.json` and each plugin's folder:
+
+| In the Claude Code plugin | In CLIO |
 |---|---|
-| **Overview** | What the agent does, its status, version, workspace access, connected services, and requirements. |
-| **Instructions** | The blueprint's readable instructions and documentation. |
-| **Installation** | Where the installed copy came from and the recorded installation details. |
+| `.mcp.json` | The plugin's MCP servers, started when first used. |
+| `skills/` | Skills, unchanged. |
+| `agents/*.md` | Defined subagents of the plugin. Claude Code tool names are mapped to CLIO tools; a subagent that names a tool CLIO cannot map is skipped and reported. |
+| `commands/*.md` | Slash commands. |
+| `hooks/hooks.json` | Command hooks, mapped to CLIO hook events. An event with no CLIO equivalent is reported, not silently dropped. |
+| Dependencies only, no content | A pack, so you can remove its members one at a time. |
+| Dependencies and content of its own | Hard requirements. |
 
-Installing a blueprint does not start a conversation. Choose it when creating a session; it then supplies the agent configuration for that session. See [Start and steer a conversation](/docs/sessions/).
+A Claude Code marketplace brings plugins, not agents. Add its plugins to a conversation with the + menu, then choose **Save as agent** to keep that combination.
 
-## Choose a blueprint for a conversation
+A Claude Code marketplace can name other marketplaces in `.claude-plugin/federated-marketplaces.json`, each pinned to a commit. CLIO installs each one as a marketplace of its own, shown with a **Via** badge naming the marketplace that listed it. Each needs its own trust step. For example, the [clio-kit](https://github.com/iowarp/clio-kit) marketplace lists the `iowarp-clio-coder` marketplace, so installing clio-kit installs both.
 
-1. Inspect its **Overview**, requirements and connected services.
-2. If it is only available in a marketplace, install the copy you want to use.
-3. Create a conversation and choose it under **Agent blueprint**.
-4. Select a configured model, add the relevant files and describe the task.
+<Aside type="caution">
+Trust only a marketplace whose source you know. Trusting it lets its plugins start servers, run commands, and run hooks on the CLIO service. Normal [permissions](/docs/permissions/) still apply to what the agent does with them.
+</Aside>
 
-Installing a blueprint does not supply credentials or access to a lab service.
-Use the general-purpose agent for an ordinary file question when you do not need
-a specialist. [Install and update blueprints](/docs/marketplaces/manage/) covers
-the installation controls.
-
-## Workspace view is about access
-
-**Shared across workspaces** shows shared installations and marketplaces. **Workspace: …** includes those shared entries plus entries added only to that workspace. A workspace named “default” is simply a workspace, not another default marketplace.
-
-The **All marketplaces** filter, when present, answers a different question: which collection the installed blueprints came from. It does not change their workspace access.
-
-<GuideScreenshot name="guide-marketplace-scope" alt="Research Notes is installed for Source walkthrough with a Workspace only label" caption="This example is available only in Source walkthrough. Shared blueprints are also available when viewing that workspace." />
-
-## Available is not the same as installed
-
-Expand **Browse blueprints** on a marketplace. **Available** is the version found in the collection; **Installed** is the copy currently installed. Seeing a newer available version does not mean it has already replaced your copy.
-
-Continue with [Add, reload, and remove](/docs/marketplaces/manage/) for installation and update workflows. To create your own collection, see [Writing agent blueprints](/docs/blueprints/).
+Continue with [Add and manage marketplaces](/docs/marketplaces/manage/) to add, trust, update, or remove one.

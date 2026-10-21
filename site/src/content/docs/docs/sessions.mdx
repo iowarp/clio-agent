@@ -34,7 +34,7 @@ and save a short report linking the tables behind your findings.
 
 1. Choose the plus button at the top of the sidebar, labeled "Create or import", then choose **New session**.
 
-2. Give the session a name, choose its workspace, and choose an **Agent blueprint**. The default, "Standard agent", is a general-purpose agent with file and shell tools. A blueprint adds domain experts, tools, and instructions to the session.
+2. Give the session a name, choose its workspace, and choose an **Agent**. **Default agent** uses your new session defaults, which start with CLIO's standard agent: a general-purpose agent with workspace files, a shell, the web, and documents. A specialist agent adds plugins with domain tools, skills, and instructions.
 
 3. Choose **Create session**, then type your question in the composer.
 
@@ -42,7 +42,7 @@ and save a short report linking the tables behind your findings.
 
 To register a folder as a workspace, choose **New workspace** from the same menu. The same menu also imports a session and opens archived sessions.
 
-The agent blueprint is part of the session, so you can run different kinds of work side by side by starting sessions with different blueprints. To change what new sessions start with, open Settings and choose **New session defaults**. See [Choose a specialist agent](/docs/marketplaces/) when you need domain-specific tools or instructions.
+The agent is part of the session, so you can run different kinds of work side by side by starting sessions with different agents. To change what new sessions start with, open Settings and choose **New session defaults**. See [Agents and plugins](/docs/agents-and-plugins/) to choose a specialist agent or to add and remove plugins in a conversation.
 
 ## The composer controls
 
@@ -99,7 +99,7 @@ and [the workspace views](/docs/workspace-panels/).
 
 ## Follow a run
 
-While the agent works, the transcript shows its steps as they happen: tool calls with their arguments and results, and the expert agents it has called on. Open the observability panel with the panel button at the top right of the session. It has four tabs:
+While the agent works, the transcript shows its steps as they happen: tool calls with their arguments and results, and the subagents it has called on. Open the observability panel with the panel button at the top right of the session. It has four tabs:
 
 - Evidence: files read, changed files, and artifacts.
 - Timeline: every step in order.

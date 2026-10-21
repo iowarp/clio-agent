@@ -1,6 +1,6 @@
-# Files, sources, and marketplace guides
+# Files and sources guides
 
-These five short videos are **screenshot walkthroughs**, explicitly labelled in
+These three short videos are **screenshot walkthroughs**, explicitly labelled in
 the player and in the encoded image. They contain real application states with
 reading holds and intentional cuts. They do not simulate clicks, typing, loading,
 or agent responses. The existing widget interaction recordings remain unchanged.
@@ -39,14 +39,10 @@ dedicated browser tab at 1280 × 720, device scale 1. Keep original JPEG bytes.
 5. Type @brief, select the result, and open its chip in the canvas. Capture each
    completed state. The new-conversation page must actually open that reference.
 6. Capture Sources management and the removal explanation; cancel the removal.
-7. In marketplace settings, filter installed entries and open Details/Instructions.
-8. Add the example Research examples collection to the demo workspace. Check Ready,
-   its installed count, and the workspace-only installed row. Change the fixture
-   from 1.0.0 to 1.0.1, Reload, then confirm the installed version changed.
 
-The archive contains both marketplace fixture versions. No messages were sent
+No messages were sent
 to an agent and no cloud source originals were modified for these walkthroughs.
-The example marketplace/workspace remain available in the qualification preview
+The example workspace remains available in the qualification preview
 for reshoots; their IDs are recorded in the archive's capture context.
 
 ## Review and rejection notes
@@ -62,3 +58,7 @@ Review every encoded shot/cut, captions, and the complete player playback both
 embedded and fullscreen. Check mobile overflow, image enlargement, captions and
 internal links separately from application regression tests. Never infer an
 installation succeeded from a catalog's Available version alone.
+
+The two marketplace walkthroughs this timeline also held showed the Agent
+Blueprint screens; they were retired with blueprints and the marketplace pages
+no longer embed recordings.

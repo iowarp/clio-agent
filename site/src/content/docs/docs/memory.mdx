@@ -126,8 +126,9 @@ In this workspace, find the earlier conversation about Fernhill becoming empty.
 Show the matching message and the interval it describes before reusing the finding.
 ```
 
-The main agent has three memory tools. A specialist needs the corresponding
-tool in its blueprint before it can use it.
+The three memory tools come from the `memory` plugin. An agent can use them only
+when it carries that plugin. The standard agent does not, so first add `memory`
+to the conversation with the [+ menu](/docs/agents-and-plugins/#add-or-remove-plugins).
 
 | Tool | What it actually returns |
 | --- | --- |

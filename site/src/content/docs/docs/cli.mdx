@@ -83,6 +83,12 @@ On macOS and Linux, the `clio` command checks PyPI for a newer `clio-agent` at m
 | `clio-agent doctor` | Runs deeper checks than `clio doctor`: file access policy, model provider, memory store, tool gateway, and API. Add `--json` for machine-readable output. |
 | `clio-agent sandbox status` and `clio-agent sandbox setup` | The same sandbox commands as `clio`. |
 | `clio-agent --version` | Prints the installed version. |
+| `clio-agent plugin install SOURCE` | Adds a plugin marketplace from a git URL or a local folder. Options: `--ref`, `--commit`, and `--name` to install it under another name. |
+| `clio-agent plugin trust NAME` | Trusts a marketplace's executable parts (tools, hooks, servers), so its agents and plugins can run. |
+| `clio-agent plugin update NAME` and `clio-agent plugin uninstall NAME` | Updates or removes a marketplace. An update that changes executable parts waits for `trust` again. |
+| `clio-agent plugin list` and `clio-agent plugin agents` | Lists marketplaces with their plugins, or the installed agents including the ones you saved. |
+| `clio-agent plugin resolve AGENT` | Shows what an agent is made of. `--add` and `--remove` try plugin changes; `--prompt` prints its composed prompt. |
+| `clio-agent plugin check PATH` | Checks a plugin folder or marketplace before you install it, with a typed reason for each problem. `--installed NAME` checks an installed marketplace. |
 
 <Aside type="note">
 `clio-agent serve` listens on port 8100 unless you pass `--port`. The `clio` command passes port 17800 for you.

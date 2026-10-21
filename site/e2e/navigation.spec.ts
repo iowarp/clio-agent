@@ -63,7 +63,7 @@ test('worked examples share one docs entry point and old tutorial bookmarks stil
   for (const [oldRoute, newRoute] of [
     ['/tutorials/', '/docs/examples/'],
     ['/tutorials/guides/first-analysis/', '/docs/examples/ground-motion/'],
-    ['/tutorials/guides/install-a-blueprint/', '/docs/marketplaces/#choose-a-blueprint-for-a-conversation'],
+    ['/tutorials/guides/install-a-blueprint/', '/docs/agents-and-plugins/#pick-an-agent-for-a-conversation'],
   ]) {
     await page.goto(oldRoute);
     await expect(page).toHaveURL(new RegExp(`${newRoute}$`));
