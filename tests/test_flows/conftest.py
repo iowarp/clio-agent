@@ -75,6 +75,39 @@ class Stepper(Flow):
         return value.upper()
 
 
+PLAN = {
+    "nodes": [
+        {"id": "survey", "target": "self", "input": "$task"},
+        {"id": "left", "target": "self", "after": ["survey"], "description": "left branch"},
+        {"id": "right", "target": "self", "after": ["survey"], "description": "right branch"},
+        {"id": "merge", "target": "self", "after": ["left", "right"]},
+    ]
+}
+
+
+class PlanRunner(Flow):
+    id = "planrunner"
+
+    async def forward(self, task, ctx):
+        result = await ctx.call("plan", {"plan": PLAN, "task": task})
+        return {"answer": result.answer, "plan": result.outputs.get("plan")}
+
+
+class EditedPlan(Flow):
+    id = "editedplan"
+
+    async def forward(self, task, ctx):
+        spec = {
+            "plan": {"nodes": [{"id": "draft", "target": "self"}, {"id": "critique", "target": "critic", "after": ["draft"]}]},
+            "task": task,
+            "editors": ["critic"],
+            "max_added": 1,
+            "approve_edits": "approve" in task,
+        }
+        result = await ctx.call("plan", spec)
+        return {"answer": result.answer, "plan": result.outputs.get("plan")}
+
+
 class Greedy(Flow):
     id = "greedy"
     max_model_calls = 2
@@ -83,6 +116,17 @@ class Greedy(Flow):
         for i in range(3):
             await ctx.call("self", f"call {i}")
         return "unreachable"
+'''
+
+SUBAGENTS = '''
+from clio_agent.sdk import Subagent
+
+critic = Subagent(
+    "critic",
+    prompt="Review the draft and propose any missing step.",
+    plugins=["flowtest"],
+    description="Reviews a draft plan step",
+)
 '''
 
 AGENTS = '''
@@ -110,6 +154,17 @@ Stricter = _agent("stricter", "strict")
 Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
 Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
+Planner = _agent("planner", "planrunner")
+
+
+class Orchestrator(Agent):
+    id = "orchestrator"
+    version = "1.0.0"
+    role = "a flow test agent that starts flows"
+    plugins = Agent.plugins + ["workspace", "delegation", "orchestration", "flowtest"]
+
+
+Editor = _agent("editor", "editedplan")
 '''
 
 
@@ -137,6 +192,7 @@ class ScriptedFlowModule:
         return dspy.Prediction(
             answer=str(getattr(prediction, "answer", "")),
             workflow_state=getattr(prediction, "workflow_state", ""),
+            tools_called=list(getattr(prediction, "tools_called", None) or []),
             selected_expert=self.agent_def.id,
         )
 
@@ -144,6 +200,17 @@ class ScriptedFlowModule:
 def default_program(question: str = "", **_: Any) -> Any:
     if "FAIL" in question:
         raise RuntimeError("scripted failure")
+    if "plan_add_node" in question:
+        # The critic edits the running plan (as a real editor's tool call would record).
+        return dspy.Prediction(
+            answer="critique: add a polish step",
+            tools_called=[
+                {
+                    "tool": "plan_add_node",
+                    "args": {"node_id": "polish", "target": "self", "input": "polish the draft"},
+                }
+            ],
+        )
     return dspy.Prediction(answer=f"done: {question.splitlines()[0][:60]}")
 
 
@@ -154,7 +221,10 @@ def flow_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestCli
         monkeypatch,
         plugins={
             "flowtest": {
-                "files": {"ai.iowarp.clio/flows/test_flows.py": FLOWS},
+                "files": {
+                    "ai.iowarp.clio/flows/test_flows.py": FLOWS,
+                    "ai.iowarp.clio/subagents/critic.py": SUBAGENTS,
+                },
                 "ext": {"requires": ["delegation"]},
             }
         },
@@ -175,12 +245,19 @@ def flow_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestCli
             kwargs["question"] = assignment.description
         return program["run"](**kwargs)
 
+    modules: dict[str, ScriptedFlowModule] = {}
+
     def build(base_agent: Any, agent_def: Any, resolution: Any = None) -> ScriptedFlowModule:
-        return ScriptedFlowModule(agent_def, resolution, scripted)
+        from clio_agent.gact import context
+
+        module = ScriptedFlowModule(agent_def, resolution, scripted)
+        modules[context.active_session_id()] = module
+        return module
 
     monkeypatch.setattr(builders, "build_agent_module", build)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeHost())
     app.state.flow_program = program
+    app.state.flow_modules = modules
     with TestClient(app) as client:
         yield client
 
