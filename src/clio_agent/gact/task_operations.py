@@ -59,14 +59,17 @@ def _timeout(value: float | None) -> float | None:
 
 
 def _wait_value(
-    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool
+    outcomes: list[dict[str, Any]], pending: list[str], *, timed_out: bool, interrupted: str = ""
 ) -> CollectedTaskResult:
     """Carry each disclosed wait outcome's permission to recipient-input commitment."""
     rows = [row for row in outcomes if row.get("handle") and not row.get("error")]
     reads = {row["handle"] for row in rows if row.get("pending") is False}
     observations = {row["handle"] for row in rows} | set(pending)
+    value: dict[str, Any] = {"outcomes": outcomes, "pending": pending, "timed_out": timed_out}
+    if interrupted:
+        value["interrupted"] = interrupted
     return CollectedTaskResult(
-        {"outcomes": outcomes, "pending": pending, "timed_out": timed_out},
+        value,
         (),
         tuple(sorted(reads)),
         observe_handles=tuple(sorted(observations - reads)),
@@ -332,15 +335,27 @@ class TaskOperations:
             )
             deadline = None if timeout is None else asyncio.get_running_loop().time() + timeout
             changed, loop = asyncio.Event(), asyncio.get_running_loop()
+            # An agent's wait ends when its own conversation is stopped (the waited
+            # tasks keep running): Stop retires the turn only once this call returns.
+            own = (
+                None
+                if caller.human_action
+                else await self.history.io.run(self.history.latest_assignment, caller.session_id)
+            )
 
             def wake(_revision: int) -> None:
                 loop.call_soon_threadsafe(changed.set)
 
-            remove = self.history.listen(wake, handles=handles, recipient_session=caller.session_id)
+            watched = handles + ((own.handle,) if own is not None else ())
+            remove = self.history.listen(wake, handles=watched, recipient_session=caller.session_id)
             try:
                 while True:
                     changed.clear()
                     outcomes, pending = await self.history.io.run(self._outcomes, caller, handles)
+                    if own is not None and await self.history.io.run(self._stopping, own.handle):
+                        return _wait_value(
+                            outcomes, pending, timed_out=False, interrupted="stopped"
+                        )
                     uncertain = any(
                         item.get("status") == "task_state_uncertain" for item in outcomes
                     )
@@ -358,6 +373,15 @@ class TaskOperations:
                         return _wait_value(outcomes, pending, timed_out=True)
             finally:
                 remove()
+
+    def _stopping(self, handle: str) -> bool:
+        """Whether the calling assignment was stopped or cancelled."""
+        current = self.history.task_snapshot(handle)
+        return current is not None and (
+            current.activity == "stopping"
+            or current.cancellation_requested_at is not None
+            or current.terminal_at is not None
+        )
 
     def _canonical_observed(self, caller: TaskCaller, handles: tuple[str, ...]) -> tuple[str, ...]:
         """Authorize aliases before registering for canonical owner observations."""
