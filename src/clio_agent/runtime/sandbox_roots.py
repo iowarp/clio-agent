@@ -12,6 +12,7 @@ confinement never false-positives on a legitimate ``uv``/``npm`` cache write.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import Any, Literal, Optional
 Profile = Literal["fleet", "shell"]
 PROFILE_FLEET: Profile = "fleet"
 PROFILE_SHELL: Profile = "shell"
+
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -61,12 +64,33 @@ def register_write_root_grant(workspace_root: str, granted: str) -> Path:
         resolved = resolved.resolve(strict=False)
     except OSError:
         pass
+    _create_granted_root(resolved)
     with _GRANTS_LOCK:
         current = list(_GRANTED_WRITE_ROOTS.get(key, ()))
         if resolved not in current:
             current.append(resolved)
         _GRANTED_WRITE_ROOTS[key] = tuple(current)
     return resolved
+
+
+def _create_granted_root(path: Path) -> None:
+    """Create a granted root that does not exist yet.
+
+    A fence rules only on existing paths (Landlock opens each root), so a grant of a
+    directory a tool has yet to create would widen nothing. The caller reports a root
+    that is still absent (``grant_root_missing``).
+    """
+    if path.exists():
+        return
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "root grant directory not created reason=grant_root_missing path=%s error=%s: %s",
+            path,
+            type(exc).__name__,
+            exc,
+        )
 
 
 def granted_write_roots(workspace_root: Optional[str]) -> tuple[Path, ...]:

@@ -430,6 +430,32 @@ def test_apply_root_grant_restart_failure_does_not_over_claim(tmp_path, monkeypa
     assert res["restart_deferred"] is False
 
 
+def test_granting_an_absent_directory_creates_it(tmp_path, monkeypatch) -> None:
+    """A fence rules only on existing paths, so a grant of a directory a tool has yet
+    to create (an MCP server's state dir) creates it; one that cannot be created is
+    reported ``grant_root_missing`` instead of claiming a grant that widens nothing."""
+    from clio_agent.runtime import sandbox
+
+    monkeypatch.setattr(
+        sandbox, "current_state", lambda: _fake_state(True, sandbox.MECHANISM_CODEX)
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    root = tmp_path / "proj"
+    root.mkdir()
+    ws = app.state.workspaces.create(name="p", root_path=str(root))
+
+    state = tmp_path / "home" / ".tool_state"
+    res = grants.apply_root_grant(app, ws.id, str(state), emit=False)
+    assert state.is_dir()
+    assert res["granted"] is True and res["reason"] == grants.REASON_GRANT_LIVE
+
+    blocker = tmp_path / "a_file"
+    blocker.write_text("not a directory")
+    res = grants.apply_root_grant(app, ws.id, str(blocker / "state"), emit=False)
+    assert res["granted"] is False
+    assert res["reason"] == grants.REASON_GRANT_ROOT_MISSING
+
+
 def test_grant_endpoint_requires_a_grantable_field(tmp_path) -> None:
     c = TestClient(build_app(sessions_path=tmp_path / "s.json"))
     ws = c.get("/v1/workspaces").json()["workspaces"][0]

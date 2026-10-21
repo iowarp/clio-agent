@@ -76,6 +76,7 @@ REASON_GRANT_RECORDED_NO_FENCE = "grant_recorded_no_active_fence"  # floor: advi
 #: A restart-WIRING failure (the request itself raised): a resident child may keep stale territory,
 #: so surface it honestly instead of collapsing to ``grant_applied_live`` (#1033).
 REASON_GRANT_RESTART_FAILED = "grant_restart_failed"
+REASON_GRANT_ROOT_MISSING = "grant_root_missing"  # absent, not creatable: no fence rules on it
 
 #: Deny-mode flag key on the workspace ``config`` (opt-in per workspace; config/state, not env).
 DENY_MODE_CONFIG_KEY = "network_deny_mode"
@@ -394,9 +395,9 @@ def apply_root_grant(
         # compile-time territory, so restart it (drain-aware) and fold the real outcome.
         restart_outcome = _request_fleet_restart(app, workspace_root, widened=widened)
         reason = _fold_restart_into_reason(base_reason, restart_outcome)
-    else:
-        # Advisory floor: no fence enforces, so no resident child to restart.
+    else:  # Advisory floor: no fence enforces, so no resident child to restart.
         reason = base_reason
+    reason = reason if resolved.exists() else REASON_GRANT_ROOT_MISSING
     if emit:
         emit_boundary_granted(
             app,
@@ -409,7 +410,7 @@ def apply_root_grant(
             reason=reason,
         )
     return {
-        "granted": True,
+        "granted": reason != REASON_GRANT_ROOT_MISSING,
         "pattern": pattern,
         "reason": reason,
         "restart_deferred": reason == REASON_GRANT_DEFERRED_BUSY,
