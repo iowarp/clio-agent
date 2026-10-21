@@ -329,6 +329,14 @@ class TurnRunner:
 
     async def stop(self, sid: str, *, reservation: threading.Event | None = None) -> None:
         """Stop the model segment and its waiters, preserving accepted background work."""
+        loop = self._loop
+        if loop is not None and loop is not asyncio.get_running_loop():
+            # The segment's task and its futures live on the runner's loop; a cancel
+            # requested from another loop (a tool call's) stops it there.
+            await asyncio.wrap_future(
+                asyncio.run_coroutine_threadsafe(self.stop(sid, reservation=reservation), loop)
+            )
+            return
         with self._lock:
             resources = self._turns.get(sid)
             if resources is None or reservation is not None and resources.stop is not reservation:

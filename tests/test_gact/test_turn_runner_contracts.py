@@ -131,3 +131,50 @@ async def test_stop_holds_ownership_through_actual_thread_teardown(
         if stop is not None:
             await asyncio.wait_for(stop, 2)
         await asyncio.wait_for(runner.drain(), 2)
+
+
+@pytest.mark.asyncio
+async def test_stop_requested_from_another_event_loop_stops_on_the_runners_loop() -> None:
+    """A subtree cancel runs on a tool call's loop; the segment's task lives on the
+    runner's. Stop must cross over instead of awaiting a future of another loop."""
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    requested = True
+
+    def work() -> None:
+        loop.call_soon_threadsafe(entered.set)
+        release.wait(5)
+
+    async def segment() -> None:
+        await runner.run_sync("primary", work)
+
+    async def admit(_sid: str) -> tuple[str, Coroutine[Any, Any, Any]] | None:
+        nonlocal requested
+        if not requested:
+            return None
+        requested = False
+        return "turn", segment()
+
+    runner = TurnRunner(SimpleNamespace(state=SimpleNamespace()), admit)
+    runner.bind_loop(loop)
+    errors: list[BaseException] = []
+
+    def stop_from_another_loop() -> None:
+        try:
+            asyncio.run(runner.stop("primary"))
+        except BaseException as error:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(error)
+
+    try:
+        runner.signal("primary")
+        await asyncio.wait_for(entered.wait(), 2)
+        other = Thread(target=stop_from_another_loop)
+        other.start()
+        await asyncio.sleep(0.05)
+        release.set()
+        await asyncio.wait_for(asyncio.to_thread(other.join, 5), 6)
+        assert errors == []
+        assert not runner.busy("primary")
+    finally:
+        release.set()
+        await asyncio.wait_for(runner.drain(), 2)
