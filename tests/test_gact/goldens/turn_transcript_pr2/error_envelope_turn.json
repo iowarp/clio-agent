@@ -47,7 +47,7 @@
       "payload": {
         "message_id": "<msg#4>",
         "part": {
-          "agent_id": "main",
+          "agent_id": "standard",
           "id": "<part#5>",
           "metadata": {
             "signature_field_name": "answer",
@@ -132,7 +132,7 @@
   ],
   "persisted_assistant_parts": [
     {
-      "agent_id": "main",
+      "agent_id": "standard",
       "id": "<part#5>",
       "metadata": {
         "signature_field_name": "answer",
