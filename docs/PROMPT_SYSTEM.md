@@ -3,6 +3,14 @@
 Tracking issue: https://github.com/iowarp/clio-agent/issues/326
 Related: [Hierarchical user-defined experts](archive/HIERARCHICAL_EXPERTS.md)
 
+> **Agent prompts are not part of this system.** An agent's main prompt, and
+> each defined subagent's, is composed from the prompt fragments of its
+> resolved plugins in five fixed sections (identity, guidelines, rendering,
+> capabilities, domain) and attributed to the plugin that owns each fragment;
+> see [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md#prompt-fragments). This
+> document covers the remaining non-agent prompts (`prompts.py`, prompt packs,
+> compaction).
+
 ## Purpose
 
 CLIO needs a first-class prompt system. Prompts should not be scattered across
@@ -212,8 +220,7 @@ why.
 
 ## Prompt Resolution
 
-Prompt resolution should follow the same general shape as expert-pack
-resolution:
+Prompt resolution should follow a layered scope order:
 
 ```text
 builtin -> global -> workspace -> session
@@ -537,5 +544,5 @@ prompt provenance be available to future tuning and memory systems.
 - Whether prompt variables should use a template language or a constrained
   renderer only.
 - How prompt tuning/promotions should move from ARC evidence into prompt files.
-- Whether prompt packs should be distributed with the same mechanism as expert
-  packs or as a separate package type.
+- Whether prompt packs should be distributed as plugins or as a separate
+  package type.

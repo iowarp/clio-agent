@@ -21,11 +21,11 @@ Required top-level fields:
 - `span_id`, `parent_span_id`: timeline/tree rendering ids.
 - `status`: `running`, `completed`, `failed`, `blocked`, `pending`, or similar.
 - `summary`: short user-safe description.
-- `actor`: caller/producer, for example expert id, hook name, or tool name.
+- `actor`: caller/producer, for example agent or subagent id, hook name, or tool name.
 - `subject`: target object, for example message id, command id, or artifact id
   (a designated artifact is referenced by its registry `artifact_id` + `sha256`,
   not a hand-composed path string).
-- `blueprint`: active Agent Blueprint/pack provenance when known.
+- `agent`: provenance of the producing agent (its resolved plugin agent) when known.
 - `provider`: provider/model/config provenance when relevant.
 - `payload`: event-specific structured details.
 - `live_observed`: true when emitted at the runtime boundary instead of rebuilt

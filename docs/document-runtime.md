@@ -81,7 +81,7 @@ A model must actually
 receive the relevant PDF or page pixels before claiming visual review. Text-only
 models retain extraction and authoring; their review limitation is explicit.
 The existing Docling PDF helper remains available for richer optional structured
-conversion and existing blueprints; the prepared local fallback needs no Docling
+conversion and the plugins that use it; the prepared local fallback needs no Docling
 model download.
 
 Final Office deliverables use `create_artifact(path=..., kind="report")`.

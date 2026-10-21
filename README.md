@@ -12,7 +12,7 @@
 
 ---
 
-> ⚠️ **Beta.** CLIO is under active development — interfaces, blueprints, and on-disk
+> ⚠️ **Beta.** CLIO is under active development — interfaces, plugins, and on-disk
 > formats may change between releases. Pin a version for reproducibility.
 
 ## What is CLIO Agent?
@@ -120,7 +120,7 @@ starting points:
 - **[Setup & install](docs/SETUP.md)** — release install, source build, smoke test
 - **[Architecture](docs/CLIO_AGENT_ARCHITECTURE.md)** — the three-tier design, ARC memory, and tool gateway
 - **[Contributing](docs/CONTRIBUTOR_QUICKSTART.md)** — dev environment, quality checks, and where code goes
-- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[experts](docs/DSPY_BLUEPRINT_EXPERT_RUNTIME.md)** — extend the agent
+- **[Adding tools](docs/MCP_TOOL_INTEGRATION.md)** / **[plugins, agents and flows](docs/PLUGINS_AND_FLOWS.md)** — extend the agent
 - **[Providers](docs/providers/)** — configure an LM backend
 - **[Roadmap](docs/design/roadmap.md)** — what's next
 

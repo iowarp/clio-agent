@@ -8,7 +8,7 @@ How CLIO Agent integrates scientific tool servers using FastMCP and DSPy.
 
 ## Gateway Architecture
 
-All MCP servers are composed into a single gateway using FastMCP `mount()`. Experts connect to the gateway, not individual servers.
+All MCP servers are composed into a single gateway using FastMCP `mount()`. Agents connect to the gateway, not individual servers.
 
 ```python
 from fastmcp import FastMCP
@@ -35,6 +35,18 @@ def list_capabilities() -> dict:
     # Used by main agent for dynamic tool discovery
     ...
 ```
+
+## Plugin MCP Servers
+
+Agents get their MCP servers from the plugins they resolve. A plugin declares
+its servers in `mcp.json` (Agent Plugins 1.0.0); a Claude Code plugin's
+`.mcp.json` is imported the same way. The resolved servers of a session are
+mounted as one server set in the workspace fleet, so sessions with the same
+servers share the mounted namespaces. Each server's tools are namespaced by the
+server name. Stdio servers start in the session workspace, with
+`${PLUGIN_ROOT}` and `${PLUGIN_DATA}` expanded and set in their environment.
+Two resolved plugins declaring the same server name is a resolution error. See
+[PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md#mcp-servers).
 
 ## Fleet Lifecycle (memory-bounded, #930)
 
@@ -73,7 +85,7 @@ MCP tools are bridged to DSPy agents natively using `dspy.Tool.from_mcp_tool()`:
 from fastmcp import Client
 import dspy
 
-async def create_expert_with_tools(gateway):
+async def create_agent_with_tools(gateway):
     async with Client(gateway) as client:
         # Get MCP tool definitions
         mcp_tools = await client.list_tools()
@@ -81,13 +93,13 @@ async def create_expert_with_tools(gateway):
         # Convert to DSPy tools (native bridge, no custom code)
         dspy_tools = [dspy.Tool.from_mcp_tool(t) for t in mcp_tools]
 
-        # Create a blueprint ReAct module with the blueprint's compiled signature.
-        expert = dspy.ReAct(
-            compiled_blueprint_signature,
+        # Create a ReAct module over the bridged tools.
+        agent = dspy.ReAct(
+            "question -> answer",
             tools=dspy_tools,
             max_iters=5
         )
-        return expert
+        return agent
 ```
 
 This replaces the 789-line `mcp_connector.py` (custom async/sync bridge, thread pool, event loop management) with ~5 lines of native DSPy/FastMCP code.
@@ -197,7 +209,7 @@ def create_hdf5_server() -> FastMCP:
 
 From industry research (OpenAI data agent, Anthropic's agent guide, Google ADK):
 
-### 1. Max 5-7 Tools Per Expert
+### 1. Max 5-7 Tools Per Agent
 
 Too many tools confuse the LM. Instead of exposing every operation:
 
@@ -405,6 +417,6 @@ gateway.mount("/hdf5", {"command": "uvx", "args": ["iowarp-mcps", "hdf5"]})
 ## Related Documentation
 
 - [CLIO_AGENT_ARCHITECTURE.md](CLIO_AGENT_ARCHITECTURE.md) - System architecture
-- [DSPY_BLUEPRINT_EXPERT_RUNTIME.md](DSPY_BLUEPRINT_EXPERT_RUNTIME.md) - Expert agent patterns
+- [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md) - Plugins, `mcp.json` servers, agents and flows
 - [ai-docs/FASTMCP/](../ai-docs/FASTMCP/) - FastMCP reference material
 - [ai-docs/DSPY/06_ADVANCED_PATTERNS.md](../ai-docs/DSPY/06_ADVANCED_PATTERNS.md) - DSPy tool integration

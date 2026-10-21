@@ -28,6 +28,17 @@ precedence, from three scopes:
 user+project discovery. A malformed entry is dropped with a diagnostic naming its
 `id`; the rest of the file still loads.
 
+### Plugin hooks
+
+A session's resolved plugins contribute hooks too: SDK `@hook` functions in a
+plugin's `ai.iowarp.clio/hooks/*.py`, which run in process, and the commands of
+an imported Claude Code plugin's `hooks/hooks.json`, which use the subprocess
+contract below. They come from the session's pinned resolution, ordered child to
+parent and by `before`/`after`, and the dispatcher runs them ahead of the
+`hooks.json` entries above. Their scope label is `plugin:<plugin id>` and their
+trust comes from the plugin's marketplace trust step rather than a content
+fingerprint. See [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md#hooks).
+
 ### Config knobs (file → env → default)
 
 | config key                 | env                             | meaning                                                        |

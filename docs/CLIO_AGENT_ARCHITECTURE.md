@@ -9,7 +9,7 @@ date: "2026-02-09"
 
 # CLIO Agent Architecture
 
-CLIO Agent is a **self-improving autonomous agent for scientific data management** that orchestrates specialized expert agents and nanoagents, maintains persistent memory (ARC), learns from experience (Optimizer Layer), integrates external agents via A2A protocol, and serves as the Intelligence Layer (CEI) within IOWarp's 3-tier architecture.
+CLIO Agent is a **self-improving autonomous agent for scientific data management** that runs agents composed from plugins (with defined and general subagents and orchestration flows), maintains persistent memory (ARC), learns from experience (Optimizer Layer), integrates external agents via A2A protocol, and serves as the Intelligence Layer (CEI) within IOWarp's 3-tier architecture.
 
 ## Core Philosophy
 
@@ -24,7 +24,7 @@ CLIO Agent is NOT:
 
 CLIO Agent IS:
 - ✅ A self-improving autonomous data management agent specialized in scientific workflows
-- ✅ A 3-tier orchestration system (main agent → experts → nanoagents)
+- ✅ An orchestration system of plugin-composed agents, subagents and flows on a durable task layer
 - ✅ A native memory system (ARC) with O(log N) retrieval and local-first persistence
 - ✅ An optimizer layer with offline tuning support and future online learning
 - ✅ An agent registry coordinator for native experts and future external integration
@@ -107,53 +107,35 @@ CLIO Agent IS:
           └───────────────────────────────────────────┘
 ```
 
-### 3-Tier Agent Hierarchy (Detail)
+### Agents, subagents and flows (Detail)
+
+Every session runs one agent resolved from plugins: a flow, an identity and a
+set of plugins pinned at session start. Plugins hold all content (tools, MCP
+servers, skills, hooks, defined subagents, flows, prompt fragments, A2UI
+catalogs). The full reference is [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md).
 
 ```
-TIER 1: CLIO (Main Agent)
-┌────────────────────────────────────────┐
-│  Responsibilities:                     │
-│  • Parse user queries                  │
-│  • Extract required capabilities       │
-│  • Query Agent Registry                │
-│  • Route to native OR external agents  │
-│  • Manage conversation context         │
-│  • Assemble final responses            │
-└─────────────────┬──────────────────────┘
-                  │
-      ┌───────────┼───────────┐
-      ▼           ▼           ▼
-┌────────────┬──────────┬─────────────┐
-│            │          │             │
-▼            ▼          ▼             ▼
-
-TIER 2: Agent Blueprint Experts (Persistent Specialists)
-┌────────────────┬────────────────┬────────────────┐
-│ Data semantics │ HPC/workflow    │ User registry  │
-│ blueprint      │ blueprints      │ blueprints     │
-│                │                │                │
-│ Capabilities   │ Capabilities   │ Capabilities   │
-│ • HDF5         │ • SLURM        │ • Custom       │
-│ • ADIOS        │ • MPI          │ • Pack tools   │
-│ • Parquet      │ • Darshan      │ • MCP servers  │
-└───────┬────────┴───────┬────────┴────────────────┘
-       │                │
-       └────────────────┘
-                │
-        ┌───────┴────────┐
-        ▼                ▼
-
-TIER 3: Nanoagents (Ephemeral Workers)
-┌──────────────────────────────────────┐
-│  • Spawned by Tier 2 experts         │
-│  • Short-lived, task-specific        │
-│  • Examples:                         │
-│    - "Analyze this HDF5 chunk"       │
-│    - "Convert this ADIOS timestep"   │
-│    - "Optimize compression params"   │
-│  • Auto-terminated after completion  │
-└──────────────────────────────────────┘
+SESSION AGENT (e.g. clio/standard)
+┌──────────────────────────────────────────────┐
+│  Flow: react (default, from core), plan,     │
+│        council, arena, or a plugin's own     │
+│  Prompt: composed from plugin fragments      │
+│  Tools/servers/skills: from resolved plugins │
+└───────────────────┬──────────────────────────┘
+                    │ spawn tools, ctx.call, run_flow / run_plan
+        ┌───────────┴─────────────┐
+        ▼                         ▼
+DEFINED SUBAGENTS                GENERAL SUBAGENTS
+(shipped in the plugin they      (the delegation plugin: an agent
+ belong to; own prompt and        started with only a task prompt)
+ plugin set)
+        │                         │
+        └──── child sessions on the task layer: durable handles,
+              wait / cancel / Stop, mailbox delivery ────┘
 ```
+
+The model decides what to start; spawn depth is bounded only by a runaway
+backstop, not by a fixed tier count.
 
 ---
 
@@ -164,7 +146,7 @@ TIER 3: Nanoagents (Ephemeral Workers)
 **Purpose**: Central registry for agent discovery, capability matching, and routing.
 
 **Key Functions**:
-- **Registration**: Registry-loaded Agent Blueprints and user agents register their capabilities
+- **Registration**: The session's resolved agent and its defined subagents (from plugins) register their capabilities
 - **Discovery**: Query available agents by capability (e.g., "HDF5 optimization")
 - **Compilation**: Translate external agents (LangChain, CrewAI, AutoGen) into CLIO Agent-compatible instances
 - **Routing**: Match user queries to appropriate agents based on declared capabilities
@@ -176,8 +158,8 @@ Agent Entry:
   - tier: 2 (expert) or 3 (nanoagent)
   - capabilities: ["HDF5", "ADIOS", "Parquet", "compression", "chunking"]
   - tools: ["hdf5_analyze", "hdf5_optimize", "adios_convert"]
-  - source: "agent_blueprint" | "user_agent" | "custom"  (skills are not agents; see the skill-semantics design)
-  - definition_path: registry or workspace blueprint path
+  - source: "plugin"  (skills are not agents; see the skill-semantics design)
+  - agent_ref: the resolved agent (`clio/standard`, `user/<id>`, ...)
 ```
 
 **Routing Algorithm**:
@@ -694,7 +676,7 @@ import dspy
 async with Client(gateway) as client:
     mcp_tools = await client.list_tools()
     dspy_tools = [dspy.Tool.from_mcp_tool(t) for t in mcp_tools]
-    expert = dspy.ReAct(compiled_blueprint_signature, tools=dspy_tools)
+    agent = dspy.ReAct("question -> answer", tools=dspy_tools)
 ```
 
 ### 6. Expert Agents (ReAct Pattern - Tier 2)
@@ -926,7 +908,7 @@ lm = setup_lm(provider="custom", endpoint="http://my-model:8000")
 
 ### Current State (Apr 2026)
 - [x] Main agent orchestration (Tier 1) with conversation management and deterministic local-tool shortcuts for explicit file paths
-- [x] Native DataExpert, AnalysisExpert, and VisualizationExpert runtime paths retired; baseline domain behavior loads from registry Agent Blueprints
+- [x] Native DataExpert, AnalysisExpert, and VisualizationExpert runtime paths retired; domain behavior comes from marketplace plugins and Python agent classes ([PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md))
 - [x] Real local HDF5 and Parquet FastMCP servers plus CSV inspection and matplotlib visualization tools
 - [x] FastMCP gateway with stable namespaced tool names and namespace/prefix compatibility
 - [x] ARC Memory Layer: cache, index, LSM metrics, context compiler, local persistence, dataset profiles, and procedural memory
