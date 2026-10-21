@@ -157,30 +157,36 @@ def pin_session_agent(
     return resolution
 
 
+def pinned_resolution(app: Any, digest: str, ref: str = "") -> Resolution:
+    """The stored resolution with ``digest`` (cached per app)."""
+
+    cache = per_app_dict("pinned_resolutions", app=app)
+    cached = cache.get(digest)
+    if cached is not None:
+        return cached
+    pinned = plugin_service(app).pinned(digest)
+    if pinned is None:
+        raise SessionAgentUnavailable(
+            ref,
+            "agent_resolution_missing",
+            [
+                {
+                    "code": "agent_resolution_missing",
+                    "message": f"pinned resolution {digest} is not stored",
+                }
+            ],
+        )
+    cache[digest] = pinned
+    return pinned
+
+
 def session_resolution(app: Any, session_id: str) -> Resolution:
     """The resolution pinned to ``session_id``; pins one at first use."""
 
     metadata = _session_metadata(app, session_id)
     digest = str(metadata.get(AGENT_RESOLUTION_KEY) or "")
     if digest:
-        cache = per_app_dict("pinned_resolutions", app=app)
-        cached = cache.get(digest)
-        if cached is not None:
-            return cached
-        pinned = plugin_service(app).pinned(digest)
-        if pinned is None:
-            raise SessionAgentUnavailable(
-                str(metadata.get(AGENT_REF_KEY) or ""),
-                "agent_resolution_missing",
-                [
-                    {
-                        "code": "agent_resolution_missing",
-                        "message": f"pinned resolution {digest} is not stored",
-                    }
-                ],
-            )
-        cache[digest] = pinned
-        return pinned
+        return pinned_resolution(app, digest, str(metadata.get(AGENT_REF_KEY) or ""))
     return pin_session_agent(app, session_id)
 
 
@@ -387,18 +393,18 @@ def session_server_set(app: Any, session_id: str) -> str:
 
     if app is None or not session_id:
         return ""
+    from clio_agent.gact.agents.prompt_basis import mounted_servers  # noqa: PLC0415
+
     try:
-        resolution = session_resolution(app, session_id)
+        servers = mounted_servers(app, session_id, session_resolution(app, session_id))
     except SessionAgentUnavailable:
         return ""
-    if not resolution.mcp_servers:
+    if not servers:
         return ""
     supplied = supplied_server_values(
-        app,
-        resolution.mcp_servers,
-        workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id),
+        app, servers, workspace_root=_runtime_workspace_catalog_cwd(app, session_id=session_id)
     )
-    return register_server_set(resolution.mcp_servers, supplied)
+    return register_server_set(servers, supplied)
 
 
 def agent_server_set(app: Any, ref: str) -> str:

@@ -192,8 +192,16 @@ def skill_runtime_for_agent(
         return SkillRuntime()
     resolutions = catalog.resolve_declared(declared)
     runtime = SkillRuntime(resolutions=resolutions)
-    runtime.prompt_block = skills_prompt_block(runtime)
-    runtime.bodies_block = skill_bodies_context(runtime)
+    # After a plugin change applied as a note, the prompt keeps listing the skills
+    # the model's cached prompt has (``prompt_skills``); the added ones still load.
+    shown = agent_def.metadata.get("prompt_skills")
+    listed = (
+        runtime
+        if shown is None
+        else SkillRuntime(resolutions={k: v for k, v in resolutions.items() if k in set(shown)})
+    )
+    runtime.prompt_block = skills_prompt_block(listed)
+    runtime.bodies_block = skill_bodies_context(listed)
     if aid:
         per_app_dict("skill_runtime_cache", app=app)[aid] = runtime
     for skill_id, res in resolutions.items():

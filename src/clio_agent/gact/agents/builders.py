@@ -30,6 +30,7 @@ from clio_agent.gact.agents.native_tool_registry import (
     build_native_tools,
     declared_native_capabilities,
 )
+from clio_agent.gact.agents.prompt_basis import unlisted_tool_names
 from clio_agent.gact.agents.resolution import session_workflow_state_schema
 from clio_agent.gact.agents.tool_executor_resolution import (
     resolve_active_base_agent_tool_executor,
@@ -604,6 +605,11 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
             object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
+            object.__setattr__(
+                self.program,
+                "_clio_unlisted",
+                unlisted_tool_names(agent_def.metadata, getattr(self.program, "tools", {})),
+            )
             # A spawn-requested BestOfN / Refine strategy wraps the program.
             strategy = _module_variants.session_strategy()
             if strategy is not None:

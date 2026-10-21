@@ -21,8 +21,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact import session_warmup
+from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
     AGENT_DELTA_KEY,
+    AGENT_RESOLUTION_KEY,
     SUBAGENT_KEY,
     SessionAgentUnavailable,
     pin_session_agent,
@@ -71,6 +73,26 @@ def _translate(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError):
         return _error(422, "invalid_request", str(exc))
     raise exc
+
+
+async def _compact_for_change(app: FastAPI, sid: str) -> dict[str, Any]:
+    """Compact now so a plugin change joins the prompt (``apply: "compact"``).
+
+    A compaction that runs settles the prompt basis itself. One with nothing to
+    fold (a typed skip) leaves no cached history worth keeping, so the change
+    applies at once. One that fails leaves the change held as a note until the
+    next compaction, and its typed error is returned.
+    """
+
+    from clio_agent.gact.compaction import CompactionError, compact_session_context  # noqa: PLC0415
+
+    try:
+        result = await _call(compact_session_context, app, sid, trigger="manual")
+    except CompactionError as exc:
+        return {"compacted": False, "error": exc.envelope()}
+    if not result.get("compacted"):
+        await _call(prompt_basis.settle_basis, app, sid)
+    return result
 
 
 async def _call(fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -313,25 +335,39 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             "delta": session_delta(app, sid).to_dict(),
             "subagent": bool(metadata.get(SUBAGENT_KEY)),
             "resolution": resolution_view(resolution),
+            "prompt_basis": await _call(prompt_basis.basis_view, app, sid, resolution),
         }
 
     @app.patch("/v1/sessions/{sid}/agent")
     async def patch_session_agent(sid: str, request: Request) -> dict[str, Any]:
         """Change the session's agent or its live delta, then pin the new resolution.
 
-        ``{"ref": ..., "add": [...], "remove": [...]}``. ``add``/``remove``
-        replace the session's delta (the + menu sends the whole delta).
+        ``{"ref": ..., "add": [...], "remove": [...], "apply": ...}``. ``add``/``remove``
+        replace the session's delta (the + menu sends the whole delta). ``apply``
+        says how the change reaches the model (:mod:`~clio_agent.gact.agents.
+        prompt_basis`): ``now`` (default), ``compact`` or ``note``.
         """
 
-        _session_or_404(sid)
+        sess = _session_or_404(sid)
         body = await json_body(request, route="PATCH /v1/sessions/{sid}/agent")
+        apply = str(body.get("apply") or "now")
+        if apply not in prompt_basis.APPLY_MODES:
+            raise _error(422, "invalid_request", f"apply must be one of {prompt_basis.APPLY_MODES}")
         ref = str(body.get("ref") or "").strip() or None
         delta = (
             await _call(_delta_from, body)
             if "add" in body or "remove" in body
             else session_delta(app, sid)
         )
+        previous = str((sess.metadata or {}).get(AGENT_RESOLUTION_KEY) or "")
         resolution = await _call(pin_session_agent, app, sid, ref=ref, delta=delta)
+        compaction: dict[str, Any] | None = None
+        if apply == "now":
+            await _call(prompt_basis.settle_basis, app, sid)
+        else:
+            await _call(prompt_basis.hold_basis, app, sid, previous)
+        if apply == "compact":
+            compaction = await _compact_for_change(app, sid)
         # The new agent may bring plugin servers: prepare them before its next turn.
         session_warmup.start_session_warmup(app, sid, trigger="agent_changed")
         sess = app.state.sessions.get(sid)
@@ -341,4 +377,6 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             "delta": dict(metadata.get(AGENT_DELTA_KEY) or {}),
             "subagent": False,
             "resolution": resolution_view(resolution),
+            "prompt_basis": await _call(prompt_basis.basis_view, app, sid, resolution),
+            **({"compaction": compaction} if compaction is not None else {}),
         }

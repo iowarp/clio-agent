@@ -169,6 +169,7 @@ def try_module(agent: Any, *, rubric: str = "") -> Any:
         )
     module = ClioReAct(signature, tools=tools, max_iters=agent.max_iters)
     module._clio_expert_id = getattr(agent, "_clio_expert_id", "")
+    module._clio_unlisted = getattr(agent, "_clio_unlisted", frozenset())
     return module
 
 

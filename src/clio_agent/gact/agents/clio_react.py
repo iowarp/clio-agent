@@ -165,6 +165,9 @@ class ClioReAct(dspy.Module):
         # read it and set a per-rollout copy; unset, the context's LM is used.
         self.lm: Any = None
         self._clio_expert_id: str = ""
+        # Tools that run but stay out of the request's tool list (a plugin change
+        # held as a note: :mod:`clio_agent.gact.agents.prompt_basis`).
+        self._clio_unlisted: frozenset[str] = frozenset()
         user_tools = [t if isinstance(t, dspy.Tool) else dspy.Tool(t) for t in tools]
         self.tools: dict[str, dspy.Tool] = {}
         for tool in user_tools:
@@ -319,7 +322,10 @@ class _Loop:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
-        self.tools = tuple(_function_tool(t) for t in agent.tools.values())
+        unlisted = getattr(agent, "_clio_unlisted", frozenset())
+        self.tools = tuple(
+            _function_tool(t) for t in agent.tools.values() if t.name not in unlisted
+        )
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.arc, self.session, self.scope = record.arc_scope()

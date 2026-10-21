@@ -18,6 +18,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact import session_warmup
+from clio_agent.gact.agents.prompt_basis import (
+    turn_agent_def,
+    unlisted_tool_names,
+    with_tool_introductions,
+)
 from clio_agent.gact.agents.resolution import (
     apply_session_tool_allowlist,
     resolution_agent_def,
@@ -157,9 +162,13 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             else session_resolution(state.app, state.sid)
         ),
     )
-    dynamic_agent = apply_session_tool_allowlist(
-        state.app, resolution_agent_def(resolution), session_id=state.sid
-    )
+    if state.turn_agent_id:
+        turn_def, build_resolution = resolution_agent_def(resolution), resolution
+    else:
+        turn_def, build_resolution = await _run_turn_setup_off_loop(
+            state, lambda: turn_agent_def(state.app, state.sid, resolution)
+        )
+    dynamic_agent = apply_session_tool_allowlist(state.app, turn_def, session_id=state.sid)
     state.active_agent_id = dynamic_agent.id
     _ctx.set_primary_agent_id(state.active_agent_id)
     routing_mode = getattr(state.sess, "routing_mode", "auto") or "auto"
@@ -220,9 +229,16 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     try:
 
         def build_module() -> Any:
-            return build_agent_module(state.app.state.agent, dynamic_agent, resolution)
+            return build_agent_module(state.app.state.agent, dynamic_agent, build_resolution)
 
         module = await _run_turn_setup_off_loop(state, build_module)
+        built = list(getattr(module, "tools", None) or ())
+        unlisted = unlisted_tool_names(dynamic_agent.metadata, (t.name for t in built))
+        if unlisted:
+            # The note introduces the added tools the request's tool list leaves out.
+            state.injections = with_tool_introductions(
+                state.injections, [t for t in built if t.name in unlisted]
+            )
     except Exception:
         await emit_semantic_event_async(
             state.app,

@@ -310,6 +310,10 @@ def compact_session_context(
     if not plans:
         return _skip(sid, SKIP_NOTHING_NEW)
     done = [_compact_scope(app, sid, plan, trigger, focus, open_turn) for plan in plans]
+    from clio_agent.gact.agents.prompt_basis import settle_basis  # noqa: PLC0415
+
+    # The cache restarts here anyway: plugin changes held as a note join the prompt.
+    settle_basis(app, sid)
     return {"session_id": sid, "compacted": True, "compactions": done}
 
 
