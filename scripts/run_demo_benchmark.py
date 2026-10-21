@@ -35,11 +35,37 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
+# What the earthscope-single-agent does for a station-discovery request: load its
+# region and acquisition skills, then stage the NDP station catalog, clean it and
+# rank stations by radius (``acquire-earthscope-gnss``).
+_EARTHSCOPE_STATION_DISCOVERY_SKILLS = ("resolve-earthscope-region", "acquire-earthscope-gnss")
+_EARTHSCOPE_STATION_DISCOVERY_TOOLS = (
+    "load_skill",
+    "ndp_search_datasets",
+    "ndp_stage_resource",
+    "pandas_filter_data",
+    "geo_filter_points_by_radius",
+)
+# A named place is geocoded first; a station-series request then profiles the staged
+# station CSV and plots the PNG the prompt asks for.
+_EARTHSCOPE_STATION_SERIES_SKILLS = (
+    *_EARTHSCOPE_STATION_DISCOVERY_SKILLS,
+    "analyze-earthscope-gnss",
+    "visualize-earthscope-gnss",
+)
+_EARTHSCOPE_NAMED_REGION_TOOLS = (
+    *_EARTHSCOPE_STATION_DISCOVERY_TOOLS,
+    "geo_geocode",
+    "pandas_profile_csv",
+    "plot_plot_timeseries",
+)
 # The path-string artifact scraper (``_artifact_paths`` + its regex/validators) was
 # DELETED in S7 (#973, item 5): produced artifacts are re-sourced from the artifact
 # registry wire (``GET /v1/sessions/{sid}/artifacts``) so every benchmark run
 # live-tests the artifact contract instead of guessing paths out of tool prose.
 _VISUAL_ARTIFACT_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".pdf", ".html"}
+#: Tools that render a PNG plot a case's visible answer must cite.
+_PNG_PLOT_TOOLS = frozenset({"ndp_plot_csv_timeseries", "plot_plot_timeseries"})
 _SEMANTIC_REGRESSION_REQUIRED_PROOFS = {
     "no_shortcuts": "no deterministic or keyword-forced route sources",
     "root_delegation": "root Agent delegates through declared experts",
@@ -108,8 +134,19 @@ def _rebase_agent_ref(ref: str, marketplace: str) -> str:
     return f"{marketplace}/{str(ref).rsplit('/', 1)[-1]}" if ref else ref
 
 
-def _is_earthscope_gnss_agent_ref(ref: str) -> bool:
-    return _agent_id_of(ref).startswith("earthscope-gnss-region")
+#: The marketplace EarthScope agent whose GNSS evidence the EarthScope checks review.
+_EARTHSCOPE_AGENT_ID = "earthscope-single-agent"
+#: The staged raw EarthScope station catalog and the cleaned copy the
+#: ``acquire-earthscope-gnss`` skill writes; both are station metadata, never series.
+_EARTHSCOPE_RAW_CATALOG_NAME = "earthscope_converted_data.csv"
+_EARTHSCOPE_CLEAN_CATALOG_NAME = "earthscope_stations_clean.csv"
+_EARTHSCOPE_CATALOG_NAMES = frozenset(
+    {_EARTHSCOPE_RAW_CATALOG_NAME, _EARTHSCOPE_CLEAN_CATALOG_NAME}
+)
+
+
+def _is_earthscope_agent_ref(ref: str) -> bool:
+    return _agent_id_of(ref) == _EARTHSCOPE_AGENT_ID
 
 
 @dataclass(frozen=True)
@@ -127,6 +164,10 @@ class DemoCase:
     expected_agent: str | tuple[str, ...] = ""
     expected_tool_prefixes: tuple[str, ...] = ()
     expected_tools: tuple[str, ...] = ()
+    #: Tools whose call fails the case (e.g. geocoding explicit coordinates).
+    forbidden_tools: tuple[str, ...] = ()
+    #: Skill ids the session agent must load during the turn.
+    expected_skills: tuple[str, ...] = ()
     expected_handoff_agents: tuple[str, ...] = ()
     expected_terms: tuple[str, ...] = ()
     expected_tool_prefix_groups: tuple[tuple[str, ...], ...] = ()
@@ -270,6 +311,39 @@ class DemoResult:
         return len(self.expert_handoffs)
 
     @property
+    def loaded_skill_ids(self) -> list[str]:
+        """Return the skill ids loaded in this turn, in first-load order.
+
+        ``skill.loaded`` semantic events are the runtime's record of a completed
+        load; a successful ``load_skill`` tool row names the same id when the
+        semantic-event replay was unavailable.
+        """
+        candidates: list[str] = []
+        for event in self.semantic_events:
+            if str(event.get("event_type") or "") != "skill.loaded":
+                continue
+            candidates.append(
+                str(
+                    _semantic_payload(event).get("skill_id")
+                    or _semantic_subject(event).get("skill_id")
+                    or ""
+                )
+            )
+        for row in self.tools:
+            if _tool_name(row) != "load_skill" or row.get("ok") is False:
+                continue
+            args = row.get("args") or row.get("arguments") or {}
+            if isinstance(args, Mapping) and isinstance(args.get("kwargs"), Mapping):
+                args = args["kwargs"]
+            if isinstance(args, Mapping):
+                candidates.append(str(args.get("skill_id") or ""))
+        ids: list[str] = []
+        for skill_id in candidates:
+            if skill_id and skill_id not in ids:
+                ids.append(skill_id)
+        return ids
+
+    @property
     def visible_event_count(self) -> int:
         """Return visible evidence events useful for stress scoring."""
         return len(self.tools) + len(self.expert_handoffs) + len(self.child_sessions)
@@ -356,9 +430,17 @@ class DemoResult:
         return str(agent.get("ref") or "") if isinstance(agent, dict) else ""
 
     @property
+    def workflow_state(self) -> dict[str, Any]:
+        """Return the typed ``workflow_state`` the turn produced (assistant metadata)."""
+        state = (self.message.get("metadata") or {}).get("workflow_state")
+        return state if isinstance(state, dict) else {}
+
+    @property
     def expected_evidence_text(self) -> str:
         """Return text searched for expected benchmark evidence terms."""
         chunks: list[str] = [self.text, *self.artifacts]
+        if self.workflow_state:
+            chunks.append(json.dumps(self.workflow_state, sort_keys=True, default=str))
         if self.session_agent:
             chunks.append(json.dumps(self.session_agent, sort_keys=True, default=str))
         if self.actions:
@@ -416,7 +498,7 @@ class DemoResult:
     ) -> bool:
         """Return whether an artifact-producing case cites an artifact to the user."""
 
-        if "ndp_plot_csv_timeseries" not in self.case.expected_tools:
+        if not _PNG_PLOT_TOOLS.intersection(self.case.expected_tools):
             return True
         visible = self._normalize_evidence_match_text(self.observed_excerpt_text)
         for row in verified_artifacts:
@@ -502,15 +584,14 @@ class DemoResult:
         """Return missing final-brief elements for successful EarthScope GNSS runs.
 
         This is not the benchmark acceptance bar by itself; it encodes a trace
-        review failure mode where the pipeline really acquired/profiled/plotted
-        data, but the visible answer collapsed into an artifact-only status.
+        review failure mode where the pipeline really acquired and profiled a
+        station series, but the visible answer collapsed into an artifact-only
+        status.
         """
 
-        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
+        if not _is_earthscope_agent_ref(self.case.agent_ref):
             return []
-        if not {"ndp_profile_csv_resource", "ndp_plot_csv_timeseries"}.issubset(
-            set(self.tool_names)
-        ):
+        if "pandas_profile_csv" not in self.tool_names:
             return []
         raw_evidence = self.expected_evidence_text
         evidence = self._normalize_evidence_match_text(raw_evidence)
@@ -558,45 +639,26 @@ class DemoResult:
         return gaps
 
     def _earthscope_repeated_station_resource_searches(self) -> list[str]:
-        """Return repeated EarthScope station-resource searches from trace rows.
+        """Return station ids whose station-series search repeated in the trace.
 
-        A metadata-only blocker is scientifically valid when nearby stations exist
-        but NDP has no concrete station CSV resource for the ranked set. Repeating
-        the same ranked station-resource searches is not valid trace behavior; it
-        indicates the agent lost typed workflow state even if the final answer is
-        truthful.
+        ``acquire-earthscope-gnss`` walks the ranked station ids once each with
+        ``ndp_search_datasets(dataset_title=<station id>)``. A metadata-only
+        blocker is scientifically valid when nearby stations exist but NDP has no
+        concrete station CSV resource for the ranked set; repeating the same
+        station's search is not valid trace behavior, it indicates the agent lost
+        typed workflow state even if the final answer is truthful.
         """
 
-        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
+        if not _is_earthscope_agent_ref(self.case.agent_ref):
             return []
         counts: dict[str, int] = {}
         for tool in self.tools:
             if _tool_name(tool) != "ndp_search_datasets":
                 continue
             args = tool.get("args") if isinstance(tool.get("args"), dict) else {}
-            result = tool.get("result") if isinstance(tool.get("result"), dict) else {}
-            coverage = result.get("search_coverage") if isinstance(result, dict) else {}
-            if not isinstance(coverage, dict):
-                coverage = {}
-            resource_format = str(
-                coverage.get("resource_format") or args.get("resource_format") or ""
-            ).strip()
-            if resource_format.upper() != "CSV":
-                continue
-            station_search = coverage.get("station_resource_search") is True
-            station = (
-                str(
-                    coverage.get("station_code")
-                    or coverage.get("resource_name")
-                    or args.get("resource_name")
-                    or ""
-                )
-                .strip()
-                .upper()
-            )
-            if not station or not station_search:
-                continue
-            counts[station] = counts.get(station, 0) + 1
+            station = str(args.get("dataset_title") or "").strip().upper()
+            if station:
+                counts[station] = counts.get(station, 0) + 1
         return [station for station, count in sorted(counts.items()) if count > 1]
 
     def _user_visible_answer_omits_tool_failures(self) -> bool:
@@ -629,21 +691,17 @@ class DemoResult:
     def _earthscope_gnss_station_region_mismatches(self) -> list[str]:
         """Return station CSV region-provenance mismatch diagnostics."""
 
-        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
+        if not _is_earthscope_agent_ref(self.case.agent_ref):
             return []
-        if "ndp_profile_csv_resource" not in self.tool_names:
+        if "pandas_profile_csv" not in self.tool_names:
             return []
         region = _extract_lat_lon_radius_km(self.case.prompt)
         if region is None:
             return []
         station_csvs = _earthscope_station_csv_artifacts(self.artifact_evidence)
-        invalid_filter_paths = _earthscope_invalid_station_catalog_filter_paths(self.tools)
-        if invalid_filter_paths:
-            return [
-                f"{Path(path).name}: station catalog filter was applied to a station "
-                "time-series CSV instead of EarthScope station metadata"
-                for path in invalid_filter_paths
-            ]
+        invalid_filters = _earthscope_invalid_station_radius_filters(self.tools)
+        if invalid_filters:
+            return invalid_filters
         station_catalog = _earthscope_station_catalog_rows(
             [*self.artifacts, *self.data_files],
         )
@@ -676,7 +734,7 @@ class DemoResult:
     def _earthscope_visible_answer_has_unsupported_scan_limited_claims(self) -> bool:
         """Return whether final prose overclaims scan-limited EarthScope evidence."""
 
-        if not _is_earthscope_gnss_agent_ref(self.case.agent_ref):
+        if not _is_earthscope_agent_ref(self.case.agent_ref):
             return False
         evidence = self._normalize_evidence_match_text(self.expected_evidence_text)
         if not any(
@@ -785,6 +843,11 @@ class DemoResult:
         for expected_tool in self.case.expected_tools:
             if expected_tool not in self.tool_names:
                 return False
+        if any(tool in self.tool_names for tool in self.case.forbidden_tools):
+            return False
+        loaded_skills = self.loaded_skill_ids
+        if any(skill not in loaded_skills for skill in self.case.expected_skills):
+            return False
         if not self._matches_any_group(
             tuple(self.handoff_agent_ids),
             self.case.expected_handoff_agents,
@@ -1415,12 +1478,17 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _earthscope_station_catalog_rows(artifacts: list[str]) -> dict[str, tuple[float, float]]:
-    """Return station -> lat/lon rows from a staged EarthScope station catalog."""
+    """Return station -> lat/lon rows from a staged or cleaned EarthScope station catalog.
+
+    The catalog's leading columns are ``Site``, ``Latitude`` and ``(deg)`` (the
+    longitude); they are read by position because the raw header repeats unit
+    labels, and the unit-label rows fail the numeric parse.
+    """
 
     rows: dict[str, tuple[float, float]] = {}
     for raw_path in artifacts:
         path = Path(_clean_path_candidate(raw_path))
-        if path.name != "earthscope_converted_data.csv" or not path.exists():
+        if path.name not in _EARTHSCOPE_CATALOG_NAMES or not path.exists():
             continue
         with path.open(newline="", encoding="utf-8-sig") as handle:
             reader = csv.reader(handle)
@@ -1444,30 +1512,40 @@ def _earthscope_station_csv_artifacts(artifact_evidence: list[dict[str, Any]]) -
         name = Path(path).name
         if not row.get("exists") or Path(path).suffix.lower() != ".csv":
             continue
-        if name == "earthscope_converted_data.csv":
+        if name in _EARTHSCOPE_CATALOG_NAMES:
             continue
         if _station_id_from_earthscope_csv_path(path):
             paths.append(path)
     return paths
 
 
-def _earthscope_invalid_station_catalog_filter_paths(tools: list[dict[str, Any]]) -> list[str]:
-    """Return station time-series paths incorrectly passed to catalog filtering."""
+def _earthscope_invalid_station_radius_filters(tools: list[dict[str, Any]]) -> list[str]:
+    """Return diagnostics for station radius filters run on the wrong input.
+
+    ``acquire-earthscope-gnss`` filters stations by radius on the cleaned
+    station catalog only: the raw staged catalog's repeated unit-label header
+    misreads longitude, and a station time-series CSV is not station metadata.
+    """
 
     invalid: list[str] = []
     for tool in tools:
-        if str(tool.get("name") or "") != "ndp_filter_earthscope_station_catalog":
+        if _tool_name(tool) != "geo_filter_points_by_radius":
             continue
         args = tool.get("args") or tool.get("arguments") or {}
         if not isinstance(args, dict):
             continue
-        filepath = str(args.get("filepath") or "")
-        if not filepath:
+        data_path = str(args.get("data_path") or "")
+        name = Path(data_path).name
+        if name == _EARTHSCOPE_RAW_CATALOG_NAME:
+            source = "the raw staged station catalog"
+        elif _station_id_from_earthscope_csv_path(data_path):
+            source = "a station time-series CSV"
+        else:
             continue
-        if Path(filepath).name == "earthscope_converted_data.csv":
-            continue
-        if _station_id_from_earthscope_csv_path(filepath):
-            invalid.append(filepath)
+        invalid.append(
+            f"{name}: station radius filter was applied to {source} instead of the "
+            "cleaned EarthScope station metadata catalog"
+        )
     return invalid
 
 
@@ -2539,6 +2617,8 @@ def _case_row(result: DemoResult) -> dict[str, Any]:
         "expert_handoffs": result.expert_handoffs,
         "handoff_agent_ids": result.handoff_agent_ids,
         "handoff_event_count": result.handoff_event_count,
+        "loaded_skill_ids": result.loaded_skill_ids,
+        "workflow_state": result.workflow_state,
         "visible_event_count": result.visible_event_count,
         "child_sessions": result.child_sessions,
         "session_log": {
@@ -2649,6 +2729,7 @@ def _result_from_case_row(row: dict[str, Any]) -> DemoResult:
             "expert_handoffs": row.get("expert_handoffs") or [],
             "stream_source": row.get("stream_source") or "",
             "stream_fallback": row.get("stream_fallback") or {},
+            "workflow_state": row.get("workflow_state") or {},
         },
         "error_info": row.get("error_info"),
         "stop_reason": row.get("stop_reason"),
@@ -3767,37 +3848,13 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss",
-            agent_ref="clio/earthscope-gnss-region",
-            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_profile_csv_resource",
-                "ndp_plot_csv_timeseries",
-            ),
-            expected_handoff_agents=(
-                "data",
-                "geospatial",
-                "ndp_dataset_discovery",
-                "ndp_resource_resolver",
-                "analysis",
-                "gnss_timeseries_analysis",
-                "visualization",
-                "synthesis",
-            ),
+            agent_ref="clio/earthscope-single-agent",
+            expected_tools=_EARTHSCOPE_NAMED_REGION_TOOLS,
+            expected_skills=_EARTHSCOPE_STATION_SERIES_SKILLS,
             expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
             min_artifacts=1,
-            min_tool_calls=4,
-            min_handoff_events=6,
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-            ),
+            min_tool_calls=len(_EARTHSCOPE_NAMED_REGION_TOOLS),
+            semantic_proofs=("marketplace_agent",),
             timeout_s=1200.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -3806,6 +3863,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "gnss",
                 "ndp",
                 "plugin-agent",
+                "skills",
                 "artifact",
                 "typed-state",
             ),
@@ -3823,16 +3881,17 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "magnitudes, depths, or epicenters."
             ),
             expected=(
-                "CLIO runs the earthscope-gnss-region marketplace agent "
-                "through data, analysis, visualization, and synthesis domains; "
-                "geospatial resolution is explicit before NDP discovery; NDP tools "
-                "stage and profile a station CSV; visualization creates a PNG; the "
-                "final answer cites source URL, local artifacts, station evidence, "
-                "and limitations."
+                "CLIO runs the earthscope-single-agent marketplace agent, which "
+                "loads its region, acquisition, analysis and visualization skills "
+                "on demand: the place is geocoded before any station claim, the "
+                "NDP station catalog is staged and cleaned, stations are ranked by "
+                "radius, a ranked station's CSV is staged and profiled, a PNG is "
+                "plotted from it, and the final answer cites the source URL, local "
+                "artifacts, station evidence, and limitations."
             ),
             why=(
-                "Replaces the SAC-first EarthScope demo with the corrected "
-                "geography-driven NDP/EarthScope GNSS workflow and tests typed "
+                "Replaces the SAC-first EarthScope demo with the geography-driven "
+                "NDP/EarthScope GNSS workflow and tests skill-driven typed "
                 "workflow-state continuation rather than benchmark string routing."
             ),
         ),
@@ -3841,37 +3900,13 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, Los Angeles mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_la",
-            agent_ref="clio/earthscope-gnss-region",
-            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_profile_csv_resource",
-                "ndp_plot_csv_timeseries",
-            ),
-            expected_handoff_agents=(
-                "data",
-                "geospatial",
-                "ndp_dataset_discovery",
-                "ndp_resource_resolver",
-                "analysis",
-                "gnss_timeseries_analysis",
-                "visualization",
-                "synthesis",
-            ),
+            agent_ref="clio/earthscope-single-agent",
+            expected_tools=_EARTHSCOPE_NAMED_REGION_TOOLS,
+            expected_skills=_EARTHSCOPE_STATION_SERIES_SKILLS,
             expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
             min_artifacts=1,
-            min_tool_calls=4,
-            min_handoff_events=6,
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-            ),
+            min_tool_calls=len(_EARTHSCOPE_NAMED_REGION_TOOLS),
+            semantic_proofs=("marketplace_agent",),
             timeout_s=1200.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -3880,6 +3915,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "gnss",
                 "ndp",
                 "plugin-agent",
+                "skills",
                 "artifact",
                 "typed-state",
                 "mutation",
@@ -3898,11 +3934,11 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "magnitudes, depths, or epicenters."
             ),
             expected=(
-                "The same EarthScope GNSS agent succeeds when the requested "
-                "geography changes. The trace must include explicit geospatial "
-                "state for Los Angeles, live NDP discovery, staged station CSV "
-                "evidence, profile evidence, visualization, and synthesis without "
-                "depending on San Diego/P475 strings."
+                "The same EarthScope agent succeeds when the requested geography "
+                "changes. The trace must geocode Los Angeles, rank stations from "
+                "the cleaned NDP station catalog, and carry staged station CSV "
+                "evidence, profile evidence and a PNG through the same loaded "
+                "skills without depending on San Diego/P475 strings."
             ),
             why=(
                 "Prevents a benchmark-specific pass by changing the city while "
@@ -3914,42 +3950,16 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace EarthScope GNSS region review, coordinate mutation",
             category="marketplace-earthscope",
             session_group="marketplace_earthscope_gnss_mutation_coord",
-            agent_ref="clio/earthscope-gnss-region",
-            expected_agent=("data", "analysis", "visualization", "synthesis", "main"),
-            expected_tool_prefixes=("ndp_",),
-            expected_handoff_agent_groups=(
-                (
-                    "data",
-                    "geospatial",
-                    "ndp_dataset_discovery",
-                    "earthscope_station_catalog",
-                    "ndp_resource_resolver",
-                    "analysis",
-                    "synthesis",
-                ),
-                (
-                    "data",
-                    "geospatial",
-                    "ndp_dataset_discovery",
-                    "earthscope_station_catalog",
-                    "ndp_resource_resolver",
-                    "synthesis",
-                ),
-            ),
+            agent_ref="clio/earthscope-single-agent",
+            expected_tools=_EARTHSCOPE_STATION_DISCOVERY_TOOLS,
+            forbidden_tools=("geo_geocode",),
+            expected_skills=_EARTHSCOPE_STATION_DISCOVERY_SKILLS,
             expected_term_groups=(
                 ("EarthScope", "GNSS", "analysis_ready", "true"),
                 ("EarthScope", "GNSS", "blocker"),
             ),
-            min_tool_calls=2,
-            min_handoff_events=5,
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-            ),
+            min_tool_calls=len(_EARTHSCOPE_STATION_DISCOVERY_TOOLS),
+            semantic_proofs=("marketplace_agent",),
             timeout_s=1200.0,
             forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
             complexity_tags=(
@@ -3958,6 +3968,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "gnss",
                 "ndp",
                 "plugin-agent",
+                "skills",
                 "typed-state",
                 "mutation",
                 "coordinates",
@@ -3972,219 +3983,16 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "catalog/acquisition blocker without inventing resources."
             ),
             expected=(
-                "The geospatial expert preserves explicit coordinate/radius input "
-                "as typed state. The data and analysis branches either complete "
-                "with staged GNSS CSV evidence and a PNG or return a structured "
-                "metadata/acquisition blocker, without falling back to a fixed "
-                "city, station, or filename."
+                "The region skill preserves the explicit coordinate/radius input "
+                "verbatim as typed geospatial state, without geocoding. Station "
+                "discovery ranks the cleaned NDP station catalog within that "
+                "radius and either stages and profiles a ranked station's GNSS CSV "
+                "with a PNG or reports a structured metadata/acquisition blocker, "
+                "without falling back to a fixed city, station, or filename."
             ),
             why=(
                 "Tests coordinate-first spatial semantics and the bounded blocker "
                 "path for mutable geography inputs."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_earthscope_gnss_region_width_topology",
-            title="Marketplace EarthScope GNSS region review, width topology",
-            category="marketplace-earthscope",
-            session_group="marketplace_earthscope_gnss_topology_width",
-            agent_ref="clio/earthscope-gnss-region-width",
-            expected_agent=("main", "visualization", "synthesis"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_profile_csv_resource",
-                "ndp_plot_csv_timeseries",
-            ),
-            expected_handoff_agents=(
-                "geospatial",
-                "ndp_dataset_discovery",
-                "earthscope_station_catalog",
-                "ndp_resource_resolver",
-                "gnss_timeseries_analysis",
-                "station_network_analysis",
-                "visualization",
-                "synthesis",
-            ),
-            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
-            min_artifacts=1,
-            min_tool_calls=4,
-            min_handoff_events=8,
-            min_expert_depth=8,
-            min_branch_count=8,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "sync_parent_return",
-            ),
-            timeout_s=1200.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=(
-                "marketplace",
-                "earthscope",
-                "gnss",
-                "ndp",
-                "plugin-agent",
-                "typed-state",
-                "topology",
-                "width",
-            ),
-            prompt=(
-                "Explore EarthScope GNSS evidence for the region centered at "
-                "34.05 N, 118.25 W with a 75 km radius. Use the explicit "
-                "coordinates as the geography, search NDP/EarthScope for station "
-                "or station time-series evidence in that region, stage and "
-                "profile a concrete station CSV if available, produce a PNG if "
-                "analysis-ready data is staged, and otherwise synthesize the "
-                "catalog/acquisition blocker without inventing resources."
-            ),
-            expected=(
-                "The width topology exposes geospatial, discovery, station "
-                "catalog, resource resolution, analysis, visualization, and "
-                "synthesis as direct root children while preserving typed "
-                "workflow-state routing and live NDP evidence."
-            ),
-            why=(
-                "Tests whether a broad orchestrator can coordinate independent "
-                "specialist branches without falling back to fixed city, station, "
-                "or resource-string routing."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_earthscope_gnss_region_depth_topology",
-            title="Marketplace EarthScope GNSS region review, depth topology",
-            category="marketplace-earthscope",
-            session_group="marketplace_earthscope_gnss_topology_depth",
-            agent_ref="clio/earthscope-gnss-region-depth",
-            expected_agent=("main", "visualization", "synthesis"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_profile_csv_resource",
-                "ndp_plot_csv_timeseries",
-            ),
-            expected_handoff_agents=(
-                "geospatial",
-                "ndp_dataset_discovery",
-                "earthscope_station_catalog",
-                "ndp_resource_resolver",
-                "gnss_timeseries_analysis",
-                "station_network_analysis",
-                "visualization",
-                "synthesis",
-            ),
-            expected_terms=("EarthScope", "GNSS", ".csv", ".png"),
-            min_artifacts=1,
-            min_tool_calls=4,
-            min_handoff_events=8,
-            min_expert_depth=9,
-            min_branch_count=8,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-            ),
-            timeout_s=1200.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=(
-                "marketplace",
-                "earthscope",
-                "gnss",
-                "ndp",
-                "plugin-agent",
-                "typed-state",
-                "topology",
-                "depth",
-            ),
-            prompt=(
-                "Explore EarthScope GNSS evidence for the region centered at "
-                "34.05 N, 118.25 W with a 75 km radius. Use the explicit "
-                "coordinates as the geography, search NDP/EarthScope for station "
-                "or station time-series evidence in that region, stage and "
-                "profile a concrete station CSV if available, produce a PNG if "
-                "analysis-ready data is staged, and otherwise synthesize the "
-                "catalog/acquisition blocker without inventing resources."
-            ),
-            expected=(
-                "The depth topology preserves typed evidence through the chain "
-                "main -> geospatial -> discovery -> station catalog -> resource "
-                "resolver -> GNSS profile -> station network -> "
-                "visualization -> synthesis."
-            ),
-            why=(
-                "Tests whether a long hierarchy can carry structured state and "
-                "artifact evidence without being held together by fixed prompt "
-                "strings or resource names."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_earthscope_gnss_region_depth_bay_area_mutation",
-            title="Marketplace EarthScope GNSS region review, depth Bay Area mutation",
-            category="marketplace-earthscope",
-            session_group="marketplace_earthscope_gnss_topology_depth_bay_area",
-            agent_ref="clio/earthscope-gnss-region-depth",
-            expected_agent=("main", "synthesis"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_filter_earthscope_station_catalog",
-            ),
-            expected_handoff_agents=(
-                "geospatial",
-                "ndp_dataset_discovery",
-                "earthscope_station_catalog",
-                "ndp_resource_resolver",
-            ),
-            expected_term_groups=(
-                ("EarthScope", "GNSS", "blocker"),
-                ("EarthScope", "GNSS", "metadata_only"),
-                ("EarthScope", "GNSS", "analysis_ready", "true", ".png"),
-            ),
-            min_tool_calls=4,
-            min_handoff_events=4,
-            min_expert_depth=4,
-            min_branch_count=3,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-            ),
-            timeout_s=1200.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=(
-                "marketplace",
-                "earthscope",
-                "gnss",
-                "ndp",
-                "plugin-agent",
-                "typed-state",
-                "topology",
-                "depth",
-                "mutation",
-            ),
-            prompt=(
-                "Explore EarthScope GNSS evidence for the region centered at "
-                "37.77 N, 122.42 W with a 75 km radius. Use the explicit "
-                "coordinates as the geography, search NDP/EarthScope for station "
-                "or station time-series evidence in that region, stage and "
-                "profile a concrete station CSV if available, produce a PNG if "
-                "analysis-ready data is staged, and otherwise synthesize the "
-                "catalog/acquisition blocker without inventing resources."
-            ),
-            expected=(
-                "The depth topology handles a changed coordinate/radius target "
-                "without relying on the Los Angeles r30 station/resource. It "
-                "must either stage and analyze a current Bay Area station CSV or "
-                "return a grounded acquisition blocker from live NDP evidence."
-            ),
-            why=(
-                "Tests mutable geography/resource semantics for the strict depth "
-                "chain after the Los Angeles coordinate/radius r30 acceptance."
             ),
         ),
         DemoCase(
@@ -4664,9 +4472,6 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_earthscope_gnss_region_review",
         "marketplace_earthscope_gnss_region_los_angeles_mutation",
         "marketplace_earthscope_gnss_region_coordinate_mutation",
-        "marketplace_earthscope_gnss_region_width_topology",
-        "marketplace_earthscope_gnss_region_depth_topology",
-        "marketplace_earthscope_gnss_region_depth_bay_area_mutation",
         "marketplace_ndp_current_wildfire_features",
         "marketplace_ndp_california_warnings_features",
         "marketplace_ndp_cimis_weather_profile_plot",
@@ -4675,9 +4480,6 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "marketplace_earthscope_gnss_region_review",
         "marketplace_earthscope_gnss_region_los_angeles_mutation",
         "marketplace_earthscope_gnss_region_coordinate_mutation",
-        "marketplace_earthscope_gnss_region_width_topology",
-        "marketplace_earthscope_gnss_region_depth_topology",
-        "marketplace_earthscope_gnss_region_depth_bay_area_mutation",
     ),
     "semantic_regression": (
         "reasoning_cross_file_triage_nanoagents",
