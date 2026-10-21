@@ -51,7 +51,6 @@
  "gact/claude_code_auth_reprobe.py": 1,
  "gact/diagnostics.py": 5,
  "gact/evidence.py": 1,
- "gact/frontmatter.py": 2,
  "gact/goal.py": 3,
  "gact/hooks/adapters.py": 1,
  "gact/hooks/audit.py": 2,

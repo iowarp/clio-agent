@@ -164,7 +164,9 @@ def resolution_catalog_ids(resolution: Any) -> list[str]:
         resolve_agent_catalogs,
     )
 
-    resolved = resolve_agent_catalogs(plugin_catalog_sources(resolution.catalogs, resolution.plugins), record=True)
+    resolved = resolve_agent_catalogs(
+        plugin_catalog_sources(resolution.catalogs, resolution.plugins), record=True
+    )
     return list(resolved.catalog_ids)
 
 
