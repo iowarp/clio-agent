@@ -15,6 +15,8 @@ _APPLY_EDIT_WRITE_ANNOTATIONS: dict[str, Any] = {
 #: mapping the decorators declare — one declaration, two consumers.
 FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     "fs_read_file": _READ_FILE_ANNOTATIONS,
+    "fs_glob": _READ_FILE_ANNOTATIONS,
+    "fs_grep": _READ_FILE_ANNOTATIONS,
     "fs_propose_edit": _PROPOSE_EDIT_ANNOTATIONS,
     "fs_apply_edit_write": _APPLY_EDIT_WRITE_ANNOTATIONS,
 }

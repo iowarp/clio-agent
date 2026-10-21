@@ -18,6 +18,8 @@ _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "fs_apply_edit_write": ("filepath",),
     "fs_propose_edit": ("filepath",),
     "fs_read_file": ("filepath",),
+    "fs_glob": ("pattern", "path"),
+    "fs_grep": ("pattern", "path", "glob"),
     "web_search": ("query", "count"),
     "web_fetch": ("target", "to_file"),
     "workspace_resource_inspect": ("resource_id",),
