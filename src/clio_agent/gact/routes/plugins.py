@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact import session_warmup
 from clio_agent.gact.agents.resolution import (
     AGENT_DELTA_KEY,
     SUBAGENT_KEY,
@@ -331,6 +332,8 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
             else session_delta(app, sid)
         )
         resolution = await _call(pin_session_agent, app, sid, ref=ref, delta=delta)
+        # The new agent may bring plugin servers: prepare them before its next turn.
+        session_warmup.start_session_warmup(app, sid, trigger="agent_changed")
         sess = app.state.sessions.get(sid)
         metadata = sess.metadata if sess is not None and isinstance(sess.metadata, Mapping) else {}
         return {
