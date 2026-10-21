@@ -232,6 +232,7 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
                 },
                 "reason": {"type": "string", "default": ""},
             },
+            presentation="text",
         ),
         native_tool(
             plan_cancel_node,
@@ -240,5 +241,6 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
             title="Propose cancelling a plan node",
             desc="Propose cancelling a plan node that has not started yet.",
             args={"node_id": {"type": "string"}, "reason": {"type": "string", "default": ""}},
+            presentation="text",
         ),
     ]

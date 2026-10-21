@@ -128,3 +128,17 @@ def test_failed_node_is_a_typed_stall_in_the_run_view(flow_app: TestClient) -> N
     assert nodes["survey"] == "failed"
     assert {nodes[n] for n in ("left", "right", "merge")} == {"cancelled"}
     assert message.get("error_info"), message
+
+
+def test_plan_editor_tools_build_and_only_propose() -> None:
+    """The editor tools an editor's call is granted construct and return proposals."""
+
+    from clio_agent.gact.flow_tools import PLAN_EDITOR_TOOLS, build_plan_editor_tools
+
+    tools = build_plan_editor_tools({"run": "flowrun_x", "node": "review"})
+    assert [tool.name for tool in tools] == list(PLAN_EDITOR_TOOLS)
+    add, cancel = tools
+    proposed = add.func(node_id="polish", target="self", after=["draft"])
+    assert proposed["proposed"] is True and proposed["run"] == "flowrun_x"
+    assert proposed["after"] == ["draft"]
+    assert cancel.func(node_id="polish")["cancel"] is True
