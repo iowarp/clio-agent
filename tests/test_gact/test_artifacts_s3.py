@@ -748,57 +748,6 @@ def test_create_artifact_tool_accepts_used_without_touching_promotion(tmp_path):
     assert result["artifacts"][0]["accepted"] is True
 
 
-SKILL_BODY = "PROCEDURE_BODY_MARKER"
-
-
-@pytest.fixture
-def skill_pack(tmp_path: Path) -> Path:
-    """A pack root shipping one resolvable skill (for the with-skills assertion)."""
-    skill_dir = tmp_path / "pack" / "skills" / "quality-rubric"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: quality-rubric\ndescription: Judge data quality\n---\n\n{SKILL_BODY}\n",
-        encoding="utf-8",
-    )
-    return tmp_path / "pack"
-
-
-def _react_agent(
-    pack: Path,
-    *,
-    skills: list[str],
-    source: str = "expert_pack",
-    module: dict[str, Any] | None = None,
-) -> Any:
-    from clio_agent.gact.types import AgentDef
-
-    return AgentDef(
-        id="analyst",
-        source=source,
-        title="Analyst",
-        system_prompt="Analyze things.",
-        skills=list(skills),
-        module=module if module is not None else {"kind": "react"},
-        metadata={"pack_definition_path": str(pack / "AGENT.md")},
-    )
-
-
-def _patch_lm(monkeypatch: Any) -> None:
-    monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object(), raising=True)
-    monkeypatch.setattr(
-        "clio_agent.config.create_chat_adapter", lambda config: object(), raising=True
-    )
-    monkeypatch.setattr(
-        "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
-        lambda base_agent, agent_def: SimpleNamespace(
-            materialize=lambda cred=None: SimpleNamespace(
-                provider="openai", model="m", temperature=0.0
-            )
-        ),
-        raising=True,
-    )
-
-
 def _tool_names(module: Any) -> set[str]:
     return {str(getattr(t, "name", "")) for t in module.tools}
 
