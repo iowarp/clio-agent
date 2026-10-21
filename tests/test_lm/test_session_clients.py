@@ -304,7 +304,7 @@ def test_non_session_clients_keep_operation_lifetime(
     asyncio.run(_closed(state))
 
 
-@pytest.mark.parametrize("kind", ["prompt", "blueprint", "tools"])
+@pytest.mark.parametrize("kind", ["react", "predict"])
 def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
     endpoint: tuple[str, dict[str, Any]],
     tmp_path: Path,
@@ -314,7 +314,8 @@ def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
 ) -> None:
     from clio_agent.gact.agents import builders, skill_runtime
     from clio_agent.gact.agents.clio_react import ClioReAct
-    from clio_agent.gact.types import AgentDef
+    from clio_agent.gact.agents.resolution import resolution_agent_def
+    from clio_agent.plugins.service import PluginService
     from clio_agent.providers.credentials import CredentialResolver
     from clio_agent.providers.lm_spec import LMSpec
     from clio_agent.providers.resolver import ResolvedLMSpec
@@ -360,10 +361,8 @@ def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
     monkeypatch.setattr(CredentialResolver, "resolve", resolve)
     monkeypatch.setattr("clio_agent.config.create_lm", factory)
     monkeypatch.setattr(builders, "_dynamic_agent_lm_config", lambda *args: spec)
-    monkeypatch.setattr(builders, "_dynamic_agent_tools", lambda *args, **kwargs: [])
-    monkeypatch.setattr(
-        builders, "_runtime_dynamic_agent_children_context", lambda *args, **kwargs: ""
-    )
+    monkeypatch.setattr(builders, "_agent_tools", lambda *args, **kwargs: [])
+    monkeypatch.setattr(builders, "build_spawn_runtime_tools", lambda *args, **kwargs: [])
     monkeypatch.setattr(builders, "_runtime_active_workspace_context", lambda *args, **kwargs: "")
     monkeypatch.setattr(
         skill_runtime,
@@ -371,20 +370,16 @@ def test_rebuilt_registered_agents_reuse_clients_and_refresh_credentials(
         lambda *args, **kwargs: skill_runtime.SkillRuntime(),
     )
     monkeypatch.setattr(ClioReAct, "forward", program)
-    build = {
-        "prompt": builders._build_prompt_user_agent_module,
-        "blueprint": builders._build_blueprint_dspy_module,
-        "tools": builders._build_tool_user_agent_module,
-    }[kind]
-    agent = AgentDef(
-        id="registered", source="expert_pack", title="Registered", module={"kind": "predict"}
-    )
+    # A resolved plugin agent (the hermetic default marketplace's standard agent).
+    app.state.plugin_service = PluginService()
+    resolution = app.state.plugin_service.resolve("clio/standard", pin=False)
+    agent = resolution_agent_def(resolution).model_copy(update={"module": {"kind": kind}})
     try:
         with bound(app, sid):
             for index in range(3):
                 if index == 2:
                     token = "test-token-2"
-                module = build(SimpleNamespace(), agent)
+                module = builders.build_agent_module(SimpleNamespace(), agent, resolution)
                 result = module(question="work", session_id=sid)
                 assert result.answer == "local response"
         assert len(resolutions) == 6  # every fresh module build AND every forward
