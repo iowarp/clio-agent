@@ -30,14 +30,14 @@ import pytest
 from rich.console import Console
 
 from clio_agent.gact.app import build_app
-from clio_agent.sdk import (
+from clio_agent.client import (
     ClioClient,
     ClioConnectionError,
     SessionStatusChanged,
     UserQuestion,
 )
 from clio_agent.ui.cli import ClioAgentCLI, run_query
-from tests.test_sdk.conftest import StreamingASGITransport, StubAgent, _fresh_arc
+from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host/stub fake.
@@ -147,7 +147,7 @@ class AskThenAnswerAgent:
 
 
 class _FakeStream:
-    """Minimal stand-in for :class:`~clio_agent.sdk.EventStream`."""
+    """Minimal stand-in for :class:`~clio_agent.client.EventStream`."""
 
     def __init__(self, events: list[Any], *, last_event_id: int = 1) -> None:
         self._events = events

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from clio_agent.sdk import (
+from clio_agent.client import (
     Agent,
     ClioClient,
     LMProvider,

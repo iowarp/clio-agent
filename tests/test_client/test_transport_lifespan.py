@@ -12,7 +12,7 @@ import asyncio
 import threading
 from typing import Any
 
-from tests.test_sdk.conftest import StreamingASGITransport
+from tests.test_client.conftest import StreamingASGITransport
 
 
 def test_closing_the_transport_drains_a_running_turn(app: Any) -> None:

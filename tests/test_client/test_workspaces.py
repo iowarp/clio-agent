@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from clio_agent.sdk import ClioClient, NotFoundError, Workspace
+from clio_agent.client import ClioClient, NotFoundError, Workspace
 
 
 def test_workspace_round_trip(client: ClioClient, tmp_path) -> None:

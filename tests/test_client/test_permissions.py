@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from clio_agent.sdk import ClioClient, NotFoundError
-from tests.test_sdk.conftest import StreamingASGITransport, StubAgent, _fresh_arc
+from clio_agent.client import ClioClient, NotFoundError
+from tests.test_client.conftest import StreamingASGITransport, StubAgent, _fresh_arc
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host/stub fake.

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from clio_agent.sdk import PostMessageAck
+from clio_agent.client import PostMessageAck
 
 
 @pytest.mark.parametrize("fields", [{}, {"task_handle": None}, {"task_handle": "run_accepted"}])

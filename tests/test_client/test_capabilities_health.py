@@ -7,7 +7,7 @@ via ``supports()`` before touching optional endpoints.
 
 from __future__ import annotations
 
-from clio_agent.sdk import ClioClient, Health
+from clio_agent.client import ClioClient, Health
 
 
 def test_capabilities_typed_and_probeable(client: ClioClient) -> None:

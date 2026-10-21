@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.sdk import (
+from clio_agent.client import (
     ClioAPIError,
     ClioClient,
     InvalidRequestError,
@@ -24,7 +24,7 @@ from clio_agent.sdk import (
     PermissionDeniedError,
     ServiceUnavailableError,
 )
-from tests.test_sdk.conftest import StreamingASGITransport, _fresh_arc
+from tests.test_client.conftest import StreamingASGITransport, _fresh_arc
 
 
 def test_unknown_session_maps_to_not_found_despite_legacy_tag(client: ClioClient) -> None:
@@ -123,7 +123,7 @@ def test_unknown_taxonomy_tag_falls_back_to_status(client: ClioClient) -> None:
 
     import httpx
 
-    from clio_agent.sdk.errors import error_from_response
+    from clio_agent.client.errors import error_from_response
 
     response = httpx.Response(
         404,
@@ -147,7 +147,7 @@ def test_v01_code_key_is_tolerated() -> None:
 
     import httpx
 
-    from clio_agent.sdk.errors import error_from_response
+    from clio_agent.client.errors import error_from_response
 
     response = httpx.Response(
         409,
@@ -156,6 +156,6 @@ def test_v01_code_key_is_tolerated() -> None:
     )
     err = error_from_response(response)
     assert err.error == "conflict"
-    from clio_agent.sdk import ConflictError
+    from clio_agent.client import ConflictError
 
     assert isinstance(err, ConflictError)

@@ -26,7 +26,7 @@ import httpx
 import pytest
 
 from clio_agent.gact.app import build_app
-from clio_agent.sdk import ClioClient
+from clio_agent.client import ClioClient
 
 _DONE = object()
 

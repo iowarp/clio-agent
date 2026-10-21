@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
-from clio_agent.sdk import (
+from clio_agent.client import (
     ClioClient,
     ClioConnectionError,
     Message,
@@ -26,7 +26,7 @@ from clio_agent.sdk import (
     SessionStatusChanged,
     StreamEvent,
 )
-from tests.test_sdk.conftest import StreamingASGITransport, StubAgent
+from tests.test_client.conftest import StreamingASGITransport, StubAgent
 from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
@@ -231,7 +231,7 @@ def test_graceful_reconnect_resumes_without_duplicates(
         _wait_for_settled_turn(client, sess.id, ack.message_id)
 
         seen: list[StreamEvent] = []
-        with caplog.at_level(logging.WARNING, logger="clio_agent.sdk"):
+        with caplog.at_level(logging.WARNING, logger="clio_agent.client"):
             with client.sessions.events(
                 sess.id, reconnect_attempts=2, reconnect_wait_s=0.0
             ) as stream:

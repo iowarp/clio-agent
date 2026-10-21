@@ -691,7 +691,7 @@ def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
 def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
     """The client SDK's ``Part`` declares the injection and notice fields (no extras)."""
     from clio_agent.gact.summarization_record import failure_notice_part, summarization_part
-    from clio_agent.sdk.types import Part as SdkPart
+    from clio_agent.client.types import Part as SdkPart
 
     record = summarization_part(
         "S", trigger="auto", compaction_id="cmp_1", derived_from=["a"], compacted_message_ids=[]
