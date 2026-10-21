@@ -111,14 +111,17 @@ def prepare_child_session(
     store: SessionStore = app.state.sessions
     if store.snapshot(parent_id) is None:
         raise ValueError("Parent session is unavailable")
-    # Resolving first pins a never-pinned parent, so the launch snapshot below
-    # already carries that pin.
-    child, pin = resolve_child_agent(app, parent_id, agent_id)
+    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
+
+    # Pin a never-pinned parent before the launch snapshot, so the snapshot carries
+    # the pin; a change during child discovery then fails the digest check below.
+    session_resolution(app, parent_id)
     parent = store.snapshot(parent_id)
     if parent is None:
         raise ValueError("Parent session is unavailable")
     launch = _launch_context(parent)
     digest = argument_digest(launch)
+    child, pin = resolve_child_agent(app, parent_id, agent_id)
     pin = {**pin, "spawn_target": agent_id}
     title = str(child.agent.get("name") or child.agent["id"])
 

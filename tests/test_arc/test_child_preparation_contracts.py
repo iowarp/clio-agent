@@ -6,6 +6,7 @@ import asyncio
 import threading
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,9 +17,14 @@ from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.spawn_context import prepare_child_session
 from clio_agent.gact.task_access import TaskCaller
 from clio_agent.gact.task_operations import TaskOperations
-from clio_agent.gact.types import AgentDef
 from tests.test_arc.test_conversation_owner_contracts import create_environment
 from tests.test_arc.test_task_replacement_contracts import forbid_cancel
+
+
+def _resolved(agent: str, name: str) -> tuple[Any, dict[str, Any]]:
+    """A child resolution as ``spawn_context.resolve_child_agent`` returns it."""
+
+    return SimpleNamespace(agent={"id": agent, "name": name}), {"agent_ref": f"clio/{agent}"}
 
 
 @pytest.mark.asyncio
@@ -31,13 +37,13 @@ async def test_held_target_discovery_preserves_shared_controls_and_rechecks_admi
     entered, release = threading.Event(), threading.Event()
     calls: list[str] = []
 
-    def resolve(_app: Any, agent: str, **_kwargs: Any) -> AgentDef:
+    def resolve(_app: Any, _parent: str, agent: str) -> tuple[Any, dict[str, Any]]:
         calls.append(agent)
         entered.set()
         assert release.wait(10), "Test did not release its owned target preparation"
-        return AgentDef(id=agent, title="Prepared worker")
+        return _resolved(agent, "Prepared worker")
 
-    monkeypatch.setattr("clio_agent.gact.agents.resolution._resolve_runtime_dynamic_agent", resolve)
+    monkeypatch.setattr("clio_agent.gact.spawn_context.resolve_child_agent", resolve)
     owner.prepare_child = partial(prepare_child_session, app)
     submission = asyncio.create_task(
         owner.spawn(caller, "Original assignment", "worker", "held-target")
@@ -78,9 +84,7 @@ async def test_held_target_discovery_preserves_shared_controls_and_rechecks_admi
             def unavailable(*_args: Any, **_kwargs: Any) -> Any:
                 pytest.fail("An accepted identity must not rediscover or retarget its agent")
 
-            monkeypatch.setattr(
-                "clio_agent.gact.agents.resolution._resolve_runtime_dynamic_agent", unavailable
-            )
+            monkeypatch.setattr("clio_agent.gact.spawn_context.resolve_child_agent", unavailable)
             assert (
                 await owner.spawn(caller, "Original assignment", "worker", "held-target")
                 == accepted
@@ -111,16 +115,16 @@ async def test_identical_preparations_accept_one_child_without_executing_discove
     release, entered = threading.Event(), threading.Event()
     lock, count = threading.Lock(), 0
 
-    def resolve(_app: Any, agent: str, **_kwargs: Any) -> AgentDef:
+    def resolve(_app: Any, _parent: str, agent: str) -> tuple[Any, dict[str, Any]]:
         nonlocal count
         with lock:
             count += 1
             if count == 2:
                 entered.set()
         assert release.wait(10), "Test did not release both preparation owners"
-        return AgentDef(id=agent, title="One child")
+        return _resolved(agent, "One child")
 
-    monkeypatch.setattr("clio_agent.gact.agents.resolution._resolve_runtime_dynamic_agent", resolve)
+    monkeypatch.setattr("clio_agent.gact.spawn_context.resolve_child_agent", resolve)
     owner.prepare_child = partial(prepare_child_session, app)
     submissions = [
         asyncio.create_task(owner.spawn(caller, "Same work", "worker", "same")) for _ in range(2)
