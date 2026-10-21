@@ -220,7 +220,7 @@ def test_stop_delivers_sent_feedback_in_order_and_keeps_future_queue_paused(
         # A separate turn per message is not the queue's delivery boundary.
         delivered_text = "\n".join(agent.model_inputs[1])
         assert delivered_text.index(feedback[0]) < delivered_text.index(feedback[1])
-        proofs = app.state.task_history.context_inputs(sid, "main")
+        proofs = app.state.task_history.context_inputs(sid, "standard")
         [batch] = [proof for proof in proofs.values() if set(ids) <= set(proof.notification_ids)]
         assert [identity for identity in batch.notification_ids if identity in ids] == ids
         rows = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]

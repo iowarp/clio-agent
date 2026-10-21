@@ -435,7 +435,7 @@ def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
         json={
             "workspace_id": "ws_default",
             "title": "my session",
-            "agent": {"id": "code_reviewer", "mode": "review"},
+            "agent": {"id": "clio/standard"},
             "model": {
                 "provider_id": "lm_studio",
                 "model_id": "qwopus3.5-9b-v3",
@@ -449,7 +449,8 @@ def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
     assert body["title"] == "my session"
     assert body["status"] == "idle"
     assert body["message_count"] == 0
-    assert body["agent"] == {"id": "code_reviewer", "mode": "review"}
+    # ``agent.id`` names an installed agent ref; the session records its agent id.
+    assert body["agent"]["id"] == "standard"
     assert body["model"] == {
         "provider_id": "lm_studio",
         "model_id": "qwopus3.5-9b-v3",
