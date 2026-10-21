@@ -61,7 +61,7 @@ The shipped `clio` marketplace is trusted when it is installed.
 Open the marketplace's actions menu and choose **Update**. CLIO fetches the source again and reloads its plugins and agents. A marketplace installed with a pinned commit stays on that commit.
 
 - A plugin whose update changes only text, such as skills or prompt fragments, is used from the next conversation.
-- A plugin whose update changes executable parts waits. The installed plugin list marks it **Update waits for trust**, and the version you trusted stays in use. To accept it, run the trust step again with `clio-agent plugin trust <name>`.
+- A plugin whose update changes executable parts waits. The installed plugin list marks it **Update waits for trust**, and the version you trusted stays in use. To accept it, select **Trust update** on that plugin or its marketplace, or run `clio-agent plugin trust <name>`.
 
 Conversations that are already running keep the plugins they started with.
 
