@@ -83,7 +83,7 @@ jobs:
         with:
           version: "latest"
       - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers --extra claude-code
-      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
+      - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/mcp_mem_attribution.py
       # Formatting is checked, never rewritten by CI: drift fails the job and the
       # author runs `uv run ruff format src/ tests/ scripts/` locally.
       - name: ruff format (check only)
