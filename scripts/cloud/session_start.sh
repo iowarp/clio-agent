@@ -36,7 +36,7 @@ python_env() {
   local stamp="$STATE/uv.sha256"
   if ! stamp_ok "$stamp"; then
     rm -f "$stamp"
-    if uv sync --extra dev >>"$LOG" 2>&1; then
+    if uv sync --extra dev --extra claude-code >>"$LOG" 2>&1; then
       stamp_write "$stamp" pyproject.toml uv.lock scripts/cloud/session_start.sh
     else
       echo "session_start: uv sync failed (see $LOG)" >&2
