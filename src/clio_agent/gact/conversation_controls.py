@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from collections.abc import Callable
@@ -28,6 +29,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _on_owner_loop(control: Any) -> Any:
+    """Run a control on the owner's loop: the jobs it retains must outlive the caller's.
+
+    A model's control tool can reach the owner from a short-lived loop (an executor
+    thread's ``asyncio.run``). A job created there dies when that loop closes, so a
+    cancellation would stay ``cancelling`` forever.
+    """
+
+    @functools.wraps(control)
+    async def run(self: Conversations, *args: Any, **kwargs: Any) -> Any:
+        loop = self._loop
+        if loop is None or loop is asyncio.get_running_loop():
+            return await control(self, *args, **kwargs)
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(control(self, *args, **kwargs), loop)
+        )
+
+    return run
+
+
+@_on_owner_loop
 async def pause(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
     """Hold model execution and context; accepted workloads continue."""
     token = uuid4().hex
@@ -132,6 +154,7 @@ async def pause(self: Conversations, caller: TaskCaller, handle: str) -> dict[st
     return {"handle": handle, "pause_requested": True, "recording": "unconfirmed"}
 
 
+@_on_owner_loop
 async def resume(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
     """Release the model hold without replaying accepted operations."""
     current = await self.history.io.run(TaskAccess(self.history, caller).require, handle, "control")
@@ -250,6 +273,7 @@ def _members_at_request(
     )
 
 
+@_on_owner_loop
 async def cancel(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
     """Close admission and acknowledge cancellation before awaiting actual subtree settlement."""
     with self.history.read_view():
@@ -307,6 +331,7 @@ async def cancel(self: Conversations, caller: TaskCaller, handle: str) -> dict[s
     return {"handle": handle, "cancellation_requested": True, "recording": "unconfirmed"}
 
 
+@_on_owner_loop
 async def restart(self: Conversations, caller: TaskCaller, handle: str) -> dict[str, Any]:
     """Request a linked assignment after known cancellation/worker settlement."""
     current = await self.history.io.run(TaskAccess(self.history, caller).require, handle, "control")

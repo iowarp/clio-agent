@@ -341,3 +341,39 @@ async def test_an_agent_wait_ends_when_its_conversation_is_stopped(
     finally:
         await owner.shutdown()
         await owner.recovery.drain()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_from_a_short_lived_loop_still_settles(
+    arc: ARCMemory,
+    tmp_path: Path,
+) -> None:
+    """A model's cancel_tasks can run on an executor thread's own asyncio.run loop. The
+    cancellation job must run on the owner's loop, or it dies with that loop and the
+    task stays 'cancelling' forever."""
+    import threading
+
+    app, owner, root = await create_environment(arc, tmp_path)
+    owner.execution_gate = lambda _sid: "human-review"
+    owner.start()
+    try:
+        caller = TaskCaller(root.owner.session_id, "human")
+        child = await owner.spawn(caller, "Queued assignment", "writer", "queued-child")
+        replies: list[dict[str, Any]] = []
+
+        def cancel_from_another_loop() -> None:
+            replies.append(asyncio.run(owner.cancel(caller, child["handle"])))
+
+        thread = threading.Thread(target=cancel_from_another_loop)
+        thread.start()
+        await asyncio.to_thread(thread.join, 10)
+        assert replies and replies[0]["cancellation_requested"] is True
+
+        operations = TaskOperations(
+            owner.history, lambda task, actor: owner.cancel(actor, task.handle)
+        )
+        settled = await asyncio.wait_for(operations.wait(caller, child["handle"]), 10)
+        assert settled["outcomes"][0]["status"] == "cancelled"
+    finally:
+        await owner.shutdown()
+        await owner.recovery.drain()

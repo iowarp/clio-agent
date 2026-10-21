@@ -147,3 +147,43 @@ def test_cancelling_a_started_flow_settles_its_subtree(flow_app: TestClient) -> 
     for member in members:
         wait_until(lambda m=member: _snapshot(flow_app, m).status in terminal, timeout=60)
         assert _snapshot(flow_app, member).status == "cancelled"
+
+
+def test_cancelling_a_flow_whose_members_stop_cooperatively_settles_its_subtree(
+    flow_app: TestClient,
+) -> None:
+    """Live members stop mid-model-call: they raise the typed turn cancellation and the
+    flow then sees failed calls. The whole subtree must still settle cancelled."""
+    import time
+
+    from clio_agent.agent import cancellation_requested
+    from clio_agent.gact.agents.clio_react import _turn_cancelled
+    from clio_agent.gact.flow_tools import start_flow
+
+    started: dict[str, Any] = {}
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if "Answer independently" in question:
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if cancellation_requested():
+                    raise _turn_cancelled()
+                time.sleep(0.02)
+        if question.startswith("convene the council") and not started:
+            started.update(asyncio.run(start_flow("council", question, {"synthesizer": "self"})))
+            return dspy.Prediction(answer=f"started {started['handle']}")
+        return default_program(question=question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = program
+    sid = new_session(flow_app, "clio/orchestrator")
+    post(flow_app, sid, "convene the council on the outage")
+    wait_until(lambda: started.get("handle"))
+    handle = started["handle"]
+    members = wait_until(lambda: _member_handles(flow_app, handle), timeout=60)
+    response = flow_app.post(f"/v1/sessions/{sid}/tasks/cancel", json={"tasks": handle})
+    assert response.status_code == 200 and response.json()["errors"] == []
+
+    wait_until(lambda: _snapshot(flow_app, handle).status == "cancelled", timeout=60)
+    for member in members:
+        wait_until(lambda m=member: _snapshot(flow_app, m).terminal_at is not None, timeout=60)
+        assert _snapshot(flow_app, member).status == "cancelled"
