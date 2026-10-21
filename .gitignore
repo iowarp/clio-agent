@@ -198,3 +198,6 @@ src/clio_agent/providers/handshake/sources/data/model_limits.mismatches.jsonl
 /.clio-agent/
 /flowcept_buffer.jsonl
 /site/*.log
+
+# Claude Code cloud session runtime state
+.cloud-run/
