@@ -141,74 +141,9 @@ def test_share_expiry(client: TestClient) -> None:
     assert resp.status_code == 410
 
 
-# ---- #23: skills_extraction ----------------------------------------------
-
-
-def test_extract_agent_from_sessions(client: TestClient) -> None:
-    """Seed two sessions with tools_called metadata; extract pulls
-    the most-common tool names into a new agent."""
-
-    sid1 = client.post("/v1/sessions", json={"title": "s1"}).json()["id"]
-    sid2 = client.post("/v1/sessions", json={"title": "s2"}).json()["id"]
-
-    # Inject messages directly via the in-memory log so we don't
-    # need to drive a fake agent through POST /messages here.
-    from clio_agent.gact.types import Message, Part
-
-    state = cast(FastAPI, client.app).state
-    for sid, tools in [
-        (sid1, ["hdf5_list_datasets", "hdf5_analyze_file"]),
-        (sid2, ["hdf5_list_datasets", "parquet_analyze_schema"]),
-    ]:
-        state.messages.setdefault(sid, []).append(
-            Message(
-                id="msg_user_x",
-                session_id=sid,
-                role="user",
-                created_at="2026-04-25T00:00:00Z",
-                updated_at="2026-04-25T00:00:00Z",
-                parts=[Part(id="part_x", type="text", text=f"analyze {sid}")],
-            )
-        )
-        state.messages[sid].append(
-            Message(
-                id=f"msg_asst_{sid}",
-                session_id=sid,
-                role="assistant",
-                created_at="2026-04-25T00:00:00Z",
-                updated_at="2026-04-25T00:00:00Z",
-                parts=[Part(id="part_y", type="text", text="done")],
-                metadata={"tools_called": [{"name": t} for t in tools]},
-            )
-        )
-
-    resp = client.post(
-        "/v1/agents/extract",
-        json={"session_ids": [sid1, sid2], "agent_id": "extracted_one"},
-    )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["id"] == "extracted_one"
-    assert body["source"] == "user"
-    # hdf5_list_datasets appears twice -> top of the list.
-    assert body["tools"][0] == "hdf5_list_datasets"
-
-
-def test_extract_refuses_builtin_id(client: TestClient) -> None:
-    sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
-    resp = client.post(
-        "/v1/agents/extract",
-        json={"session_ids": [sid], "agent_id": "data"},
-    )
-    assert resp.status_code == 409
-
-
-def test_extract_requires_inputs(client: TestClient) -> None:
-    resp = client.post("/v1/agents/extract", json={})
-    assert resp.status_code == 422
-
-
 def test_capabilities_advertised(client: TestClient) -> None:
     body = client.get("/v1/capabilities").json()
-    for flag in ("scheduled_sessions", "session_sharing", "skills_extraction"):
+    for flag in ("scheduled_sessions", "session_sharing"):
         assert body["capabilities"][flag] is True
+    # Extraction wrote a flattened agent; agents are composed from plugins now.
+    assert body["capabilities"]["skills_extraction"] is False

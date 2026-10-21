@@ -31,8 +31,10 @@ def _plugins(client: TestClient, ref: str) -> list[str]:
 
 
 def test_capability_advertised(client: TestClient) -> None:
-    body = client.get("/v1/capabilities").json()
-    assert body["capabilities"]["agent_write"] is True
+    capabilities = client.get("/v1/capabilities").json()["capabilities"]
+    # No GACT agent-write routes: user agents are saved through the plugin routes.
+    assert capabilities["agent_write"] is False
+    assert capabilities["x_clio_agent_plugins"] is True
 
 
 def test_post_user_agent_then_list(client: TestClient) -> None:

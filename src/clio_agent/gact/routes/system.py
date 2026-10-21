@@ -479,11 +479,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 session_tasks=True,  # #18 — per-session todo CRUD
                 plan_mode=True,  # session.mode=plan blocks destructive tools
                 edit_modes=True,  # session.edit_mode toggles diff/whole/patch
-                agent_write=True,  # #19 — POST/PUT/DELETE /v1/agents
+                # The GACT agent-write routes (POST/PUT/DELETE /v1/agents/{id}) and
+                # agent extraction are gone with blueprints: user agents are a parent
+                # plus a delta, advertised by x_clio_agent_plugins (/v1/agents/user).
+                agent_write=False,
                 hooks=True,  # #20 — pre/post_tool + pre/post_message hooks
                 scheduled_sessions=True,  # #21 — cron schedules
                 session_sharing=True,  # #22 — share tokens
-                skills_extraction=True,  # #23 — POST /v1/agents/extract
+                skills_extraction=False,
                 # v0.2 additions — advertised when the scaffold
                 # actually emits them. Turned on piecewise as the
                 # follow-on items land.
