@@ -330,3 +330,38 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
     assert "Other entries" in answer
     run = _run(flow_app, handle)
     assert sum(1 for row in run["calls"].values() if row["kind"] == "agent") == 3
+
+
+def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
+    flow_app: TestClient,
+) -> None:
+    """Late input leaves pass-on assignments after the run; a restart named on the
+    flow's own handle still resumes the run, keeping its finished nodes."""
+
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _plan_starter(flow_app, {"measure"})
+    post(flow_app, sid, "run the plan")
+    handle = wait_until(lambda: started.get("handle"))
+    wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    before = _node_handles(flow_app, handle)
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    history = flow_app.app.state.task_history
+    post(flow_app, plan_session, "a late note")
+    passed_on = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle
+        and latest.terminal_at is not None
+        and latest
+    )
+
+    response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+    assert response.status_code == 200, response.text
+    restarted = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle
+        not in {handle, passed_on.handle}
+        and latest
+    )
+    wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, restarted.handle).status == "completed"
+    after = _node_handles(flow_app, restarted.handle)
+    assert after["gather"] == before["gather"] and after["measure"] != before["measure"]
+    assert started["attempts"] == {"gather": 1, "measure": 2, "report": 1}

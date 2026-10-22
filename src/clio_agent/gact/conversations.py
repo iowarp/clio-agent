@@ -33,6 +33,7 @@ from clio_agent.gact.agent_task_limits import max_inference_concurrency
 from clio_agent.gact.conversation_assignments import ConversationOutcome, ConversationSegment
 from clio_agent.gact.conversation_recovery import _confirm_segment_write
 from clio_agent.gact.core_recovery import CoreRecovery
+from clio_agent.gact.flow_restart import to_latest_flow_assignment
 from clio_agent.gact.native_work import now
 from clio_agent.gact.owner_loop import on_owner_loop
 from clio_agent.gact.session_input import input_delivery
@@ -771,7 +772,7 @@ class Conversations:
 
     spawn = conversation_assignments.spawn
 
-    restart = on_owner_loop(conversation_controls.restart)
+    restart = on_owner_loop(to_latest_flow_assignment(conversation_controls.restart))
 
     def close_admission(self) -> None:
         """Reject new model admission while existing owners retire their work."""

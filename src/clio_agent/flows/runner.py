@@ -118,8 +118,8 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         marker = root_handle
         invocation, predecessor = _lineage(app, root_handle)
         if predecessor and invocation.startswith("restart:"):
-            # A restart continues the run it replaces: finished work is kept.
-            resume_from = (predecessor, f"flow:{flow_id}:{predecessor}")
+            # A restart continues the last run that recorded work: finished work is kept.
+            resume_from = _last_run(app, flow_id, predecessor)
         elif predecessor:
             trigger = app.state.task_history.mail_item(session_id, turn.input_notification_id)
             written = trigger is not None and trigger.kind in {"human", "peer", "delegation"}
@@ -160,6 +160,23 @@ def _lineage(app: Any, handle: str) -> tuple[str, str]:
         else AssignmentDetails()
     )
     return str(task.invocation_id or ""), str(details.predecessor or "")
+
+
+def _last_run(app: Any, flow_id: str, handle: str) -> tuple[str, str] | None:
+    """The latest run of ``flow_id`` at or before ``handle`` in its assignment chain.
+
+    Assignments that only passed later input on recorded no run; they are skipped.
+    """
+
+    history = app.state.task_history
+    seen: set[str] = set()
+    while handle and handle not in seen:
+        seen.add(handle)
+        invocation = f"flow:{flow_id}:{handle}"
+        if history.workflow_checkpoint(handle, invocation) is not None:
+            return handle, invocation
+        handle = _lineage(app, handle)[1]
+    return None
 
 
 def _after_the_run(flow_id: str, ended: str, session_id: str, message: str) -> Any:
