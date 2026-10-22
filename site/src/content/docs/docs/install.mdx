@@ -59,6 +59,10 @@ Then follow [Your first analysis](/docs/examples/check-a-dataset/).
 
 ## Update an existing installation
 
+<Aside type="caution" title="This release needs a full reinstall">
+This release replaces agent blueprints with plugins and does not carry over data from earlier releases: saved sessions, blueprint agents, settings, and installed marketplaces. Before installing it, uninstall the earlier release with `clio uninstall --purge` and delete the folders listed under [What stays behind](/docs/uninstall/#what-stays-behind), including each workspace's `.clio` folder. Then install as on a new machine. Export any conversation you want to keep first; see [Exports](/docs/exports/).
+</Aside>
+
 Open **Settings → Desktop → App updates**. **Enable beta updates** allows
 published beta releases for Desktop and the Agent. Changing the switch does not
 itself install an update or downgrade the app. Older Desktop builds may need a

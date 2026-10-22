@@ -4,6 +4,9 @@ description: Add capabilities from a trusted tool server, with technical setup f
 ---
 
 import { Aside, FileTree, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import saved from '../../../assets/captures/docs-mcp-saved.png';
 
 Agents act through tools. CLIO has a small set of built-in tools, and everything else comes from MCP servers. MCP, the Model Context Protocol, is an open standard for giving AI applications tools, data, and reusable prompts. Any server that speaks it can be connected to CLIO.
 
@@ -30,11 +33,35 @@ Whether a tool needs your approval depends on the [permissions](/docs/permission
 
 3. Give the service a name, then choose a **Connection type**: **Remote service** takes a service address, and **Local command** takes an executable, its arguments, and optional environment variables.
 
-4. Choose **Connect MCP** to confirm. CLIO checks the service before making its tools available to agents.
+4. Leave **Available in every conversation** checked to give its tools to every conversation's agent. Clear it to give them only to a conversation that asks for that service.
+
+5. Choose **Connect MCP** to confirm. CLIO saves the service, checks it, and says whether it answered.
 
 </Steps>
 
-The list shows the connected services with their tools, resources, and prompts. Each service can be reconnected or disconnected.
+A saved service stays across restarts. **Your MCP services** lists each one with the command or address it uses and whether every conversation gets it. **Remove** takes it away from new conversations; one that is using it keeps it until its turn ends.
+
+<Capture client:visible image={await captureImage(saved)}
+  alt="Settings, MCP tools: the built-in Workspace files and Local commands services, and under Your MCP services, colab-mcp run by uvx from its GitHub repository, available in every conversation"
+  caption="A saved service shows what it runs. This one is Google's Colab MCP server, started with uvx straight from its repository."
+/>
+
+A server that `uvx` or `npx` downloads and builds on its first start can take a minute to answer the first time. CLIO waits for it and, if it still has not answered, saves it and says the launcher may still be preparing it, so you can check again shortly.
+
+## Add a server from a terminal
+
+`clio-agent mcp` manages the same saved services, on the machine that runs CLIO. Everything after `--` is the server's own command line:
+
+```sh
+clio-agent mcp add colab -- uvx git+https://github.com/googlecolab/colab-mcp
+clio-agent mcp add catalog --url https://tools.example.org/mcp
+clio-agent mcp add lab-data --env LAB_STATE=/data/lab -- uvx lab-data-mcp serve
+clio-agent mcp check colab
+clio-agent mcp list
+clio-agent mcp remove colab
+```
+
+`check` starts the server and lists its tools. `--only-when-asked` saves a service without giving it to every conversation.
 
 ## Add a server in mcp.yaml
 

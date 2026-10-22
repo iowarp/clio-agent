@@ -43,7 +43,7 @@ CLIO installs Claude Code plugin marketplaces as they are, without converting th
 | `.mcp.json` | The plugin's MCP servers, started when first used. |
 | `skills/` | Skills, unchanged. |
 | `agents/*.md` | Defined subagents of the plugin. Claude Code tool names are mapped to CLIO tools; a subagent that names a tool CLIO cannot map is skipped and reported. |
-| `commands/*.md` | Slash commands. |
+| `commands/*.md` | Slash commands. A command runs as a turn of the conversation. `${CLAUDE_PLUGIN_ROOT}` in a command or subagent names the installed plugin's folder, and a line `@<file>` naming a file in the plugin brings that file's text in. Agents may read, never write, installed plugin files. |
 | `hooks/hooks.json` | Command hooks, mapped to CLIO hook events. An event with no CLIO equivalent is reported, not silently dropped. |
 | Dependencies only, no content | A pack, so you can remove its members one at a time. |
 | Dependencies and content of its own | Hard requirements. |

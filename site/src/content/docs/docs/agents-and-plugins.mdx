@@ -4,13 +4,16 @@ description: Choose the agent for a conversation, add or remove its plugins, sav
 ---
 
 import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import agentPanel from '../../../assets/captures/docs-agent-plugins.png';
 
 Every conversation runs one agent. An agent is a name, a role, and a set of plugins. The plugins bring everything the agent can use: tools, tool servers, skills it loads when a task calls for them, subagents it can hand work to, slash commands, interactive views, and the guidance in its prompt. The agent itself holds no content; it only chooses plugins.
 
 You can change the plugins of a single conversation, keep the result as your own agent, and see exactly which plugin wrote each part of the prompt.
 
-<Aside type="note" title="Upgrading from an earlier release">
-Earlier releases defined agents as blueprints: folders with an `AGENT.md` file and expert files. CLIO no longer reads them. The agents that shipped that way are now agents in the `clio` marketplace, for example `earthscope` and `factorio`.
+<Aside type="caution" title="Upgrading from an earlier release">
+Earlier releases defined agents as blueprints: folders with an `AGENT.md` file and expert files. This release replaces them with plugins and does not migrate earlier data, so it needs a full reinstall; see [Update an existing installation](/docs/install/#update-an-existing-installation). The agents that shipped as blueprints are now agents in the `clio` marketplace, for example `earthscope` and `factorio`.
 </Aside>
 
 ## What an agent is
@@ -102,6 +105,11 @@ On **Plugins**, each plugin has a badge that says why it is there:
 | **Added by you** | You added it to this conversation. |
 
 Pack members are listed under their pack.
+
+<Capture client:visible image={await captureImage(agentPanel)}
+  alt="The Agent panel beside a conversation: CLIO, clio/standard 1.0.0, with Add plugin, Switch agent, Save as agent and Undo changes, the note that the conversation adds wtf-p/wtfp, and the Plugins tab listing core, workspace, shell, web and the documents pack with its members"
+  caption="The Agent panel for a conversation that added the wtfp plugin. Each plugin's badge says why it is there."
+/>
 
 ## Add or remove plugins
 

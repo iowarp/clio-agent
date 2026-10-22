@@ -4,6 +4,10 @@ description: Add a marketplace from a folder or a git repository, trust it, upda
 ---
 
 import { Aside, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../../components/overview/Capture';
+import { captureImage } from '../../../../lib/captures';
+import marketplaces from '../../../../assets/captures/docs-plugins-marketplaces.png';
+import command from '../../../../assets/captures/docs-plugin-command.png';
 
 Start in Settings, **Plugins & marketplaces**. [Plugin marketplaces](/docs/marketplaces/) explains what the page shows and what trust means.
 
@@ -22,6 +26,11 @@ A marketplace is installed for the whole CLIO service: every workspace and every
 4. Choose **Install**. CLIO fetches the source, reads every plugin and agent, and reports how many it found.
 
 </Steps>
+
+<Capture client:visible image={await captureImage(marketplaces)}
+  alt="Settings, Plugins and marketplaces: the shipped clio marketplace, clio-kit, iowarp-clio-coder via clio-kit, and wtf-p from GitHub, each trusted, with its source and installed commit"
+  caption="Installed marketplaces with their source, format and installed commit. iowarp-clio-coder arrived through clio-kit's federation list."
+/>
 
 A marketplace you add is not trusted yet. Until you run the trust step, its plugins load without their executable parts and its agents are not available.
 
@@ -55,6 +64,29 @@ clio-agent plugin trust clio-kit
 ```
 
 The shipped `clio` marketplace is trusted when it is installed.
+
+## Example: WTF-P from GitHub
+
+[WTF-P](https://github.com/akougkas/wtf-p) ships academic research and writing workflows as a Claude Code marketplace. To use it:
+
+<Steps>
+
+1. Install it: **Install marketplace** with the source `https://github.com/akougkas/wtf-p`, or from a terminal, `clio-agent plugin install akougkas/wtf-p`.
+
+2. Trust it: choose **Trust** on its row, or run `clio-agent plugin trust wtf-p`. Its plugin brings hooks that run Node.js, so it needs the trust step.
+
+3. In a conversation, open the + menu and add **wtfp**. Its slash commands, skills, and eleven subagents arrive with it.
+
+4. Type one of its commands, such as `/new-paper`, followed by what you want to write.
+
+</Steps>
+
+<Capture client:visible image={await captureImage(command)}
+  alt="The answer to /new-paper: the skill loaded, no existing WTF-P project was found, and seven interview questions for the author follow"
+  caption="/new-paper runs as a turn of the conversation. The command's own files load with it, and the interview begins."
+/>
+
+A command you type runs as a turn of the conversation, like a message you send: it streams, can ask you questions, and can be stopped.
 
 ## Update a marketplace
 

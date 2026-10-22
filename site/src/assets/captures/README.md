@@ -154,3 +154,24 @@ flow were reviewed at 390px. The final media comes from the production build,
 with untouched originals and checks archived at
 `D:/Libraries/Videos/clio_recordings/2026-10-13-knowledge-source-actions/`.
 Authenticated remote Sync was not exercised. No personal vault data appears.
+
+## Plugins, flows, hooks and MCP services — 22 October 2026
+
+Light-mode browser captures at 1440 x 900, one device pixel per CSS pixel, of
+the development UI against a live CLIO backend in a cloud session, using the
+`claude_code` provider with `claude-haiku-5-5`. Every conversation is a real
+model run; none is painted or composited.
+
+| File | What it shows |
+| --- | --- |
+| `docs-flow-council.png` | A completed `council` run (three members, one synthesis). |
+| `docs-flow-workflow.png` | A completed workflow whose critic editor added `verify_stripe_default`. |
+| `docs-agent-plugins.png` | The Agent panel of a conversation that added `wtf-p/wtfp`. |
+| `docs-plugins-marketplaces.png` | Installed marketplaces, including `wtf-p` from GitHub. |
+| `docs-plugin-command.png` | WTF-P's `/new-paper` running as a turn and starting its interview. |
+| `docs-answer-hook.png` | An `Answer` hook's revision, note and passed check under an answer. |
+| `docs-mcp-saved.png` | Settings, MCP tools, with `colab-mcp` saved under Your MCP services. |
+
+Reproduce with `bash scripts/cloud/stack.sh start` and
+`node scripts/cloud/ui_check.mjs --steps <file>`, setting `localStorage.theme`
+to `light` before each page loads.

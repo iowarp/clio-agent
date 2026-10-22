@@ -4,6 +4,9 @@ description: Run your own checks at key points in a CLIO session, such as before
 ---
 
 import { Aside, FileTree } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import answerHook from '../../../assets/captures/docs-answer-hook.png';
 
 A hook runs your own code at a defined point in a session: before a tool runs, before a prompt is accepted, before a request goes to the model, and at other boundaries. Use hooks for checks that fixed permission rules cannot express, such as scanning tool input for secrets or logging every shell command to a file.
 
@@ -135,6 +138,11 @@ print(json.dumps({
     "check": {"passed": cited, "text": "Cites a source." if cited else "No source is cited."},
 }))
 ```
+
+<Capture client:visible image={await captureImage(answerHook)}
+  alt="An answer revised by the answer-review.review hook, with Show the original answer, a note that reads Read 57 words, and a passed check that reads Cites a source"
+  caption="The revision replaces the answer under the line that names the hook and its reason. The original is one click away, and the hook's note and check sit under the answer."
+/>
 
 The answer may already have streamed to you by the time the hook runs, so an `Answer` hook never gates it and never changes it silently: a revision is shown as a revision, and the original stays in the transcript. A plugin can define the same hook in Python with `@hook("answer")`, returning `note`, `check` and `answer`.
 

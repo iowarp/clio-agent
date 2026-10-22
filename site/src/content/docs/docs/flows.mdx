@@ -4,6 +4,10 @@ description: Run several agents on one question as a council, an arena, or a wor
 ---
 
 import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+import Capture from '../../../components/overview/Capture';
+import { captureImage } from '../../../lib/captures';
+import council from '../../../assets/captures/docs-flow-council.png';
+import workflow from '../../../assets/captures/docs-flow-workflow.png';
 
 A flow decides how an agent's work is organized. In an ordinary conversation the agent runs the default flow: it answers, calls tools, and chooses its next step from what it sees. Other flows coordinate several agent runs, for example several independent answers followed by one synthesis.
 
@@ -58,6 +62,16 @@ A flow appears as a card in the conversation, with its name, its state, and a co
 - steps that run at the same time are drawn side by side, labeled with how many run in parallel;
 - a flow that runs inside another is drawn as a box with its name;
 - each step's color shows its state, and the legend under the diagram names the states in words.
+
+<Capture client:visible image={await captureImage(council)}
+  alt="A completed council run: three members in parallel, then the synthesis, with the synthesized recommendation under the diagram"
+  caption="A council run: three members answered independently, then one synthesis. The card stays in the conversation after the run ends."
+/>
+
+<Capture client:visible image={await captureImage(workflow)}
+  alt="A completed workflow run with the steps draft, review and verify_stripe_default, where the last step was added by the critic"
+  caption="A workflow with a critic editor. The critic added verify_stripe_default after reviewing the draft."
+/>
 
 Select a step to see who runs it, what it waits on, its instructions, and its answer. A step an editor added says **Added** and shows who added it and why. **Open** opens the step's own conversation.
 
