@@ -40,6 +40,7 @@ from filelock import FileLock
 
 from clio_agent.plugins.claude_code import import_claude_plugin
 from clio_agent.plugins.loader import PluginLoadError, load_plugin, tree_digests
+from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
     GitPin,
     MarketplaceContents,
@@ -244,7 +245,14 @@ class PluginStore:
         """
 
         try:
-            fetched = fetch(source, cache=self.root / "sources", ref=ref, commit=commit)
+            # A federated child's source is named by its parent's marketplace file.
+            fetched = fetch(
+                source,
+                cache=self.root / "sources",
+                ref=ref,
+                commit=commit,
+                declared=bool(parent),
+            )
         except SourceError as exc:
             raise StoreError("source_unavailable", str(exc)) from exc
         probe = self._read(fetched.path, trusted=False, name=name)
@@ -297,14 +305,16 @@ class PluginStore:
         diagnostics: list[Diagnostic] = []
         for pin in pins:
             try:
-                fetched = fetch(pin.url, cache=self.root / "sources", commit=pin.commit)
+                fetched = fetch(
+                    pin.url, cache=self.root / "sources", commit=pin.commit, declared=True
+                )
             except SourceError as exc:
                 diagnostics.append(
                     Diagnostic("error", "plugin_source_unavailable", str(exc), pin.name)
                 )
                 continue
             path = (fetched.path / pin.path).resolve() if pin.path else fetched.path
-            if not path.is_dir():
+            if not within(fetched.path, path) or not path.is_dir():
                 diagnostics.append(
                     Diagnostic(
                         "error",
