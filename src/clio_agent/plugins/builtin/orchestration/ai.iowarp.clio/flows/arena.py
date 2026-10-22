@@ -48,7 +48,7 @@ class Arena(Flow):
 
     async def forward(self, task: Any, ctx: Any) -> Any:
         text = task if isinstance(task, str) else json.dumps(task, sort_keys=True)
-        entries = await ctx.gather([ctx.call(c, text) for c in self.contestants], limit=3)
+        entries = await ctx.gather([ctx.call(c, text) for c in self.contestants])
         numbered = [f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1)]
         verdict = await ctx.step(self._verdict, text, numbered)
         winner = verdict["winner"]

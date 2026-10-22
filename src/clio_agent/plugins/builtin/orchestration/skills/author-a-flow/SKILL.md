@@ -32,6 +32,8 @@ A flow plugin is two files:
 - `ai.iowarp.clio/flows/<name>.py`:
 
   ```python
+  import itertools
+
   from clio_agent.sdk import Flow
 
 
@@ -46,13 +48,14 @@ A flow plugin is two files:
                     terminal("judge"));"""
       sides = ("for", "against")
       judge = "self"
-      max_rounds = 4
+      max_rounds = None  # open: the judge decides when it is done
 
       async def forward(self, task, ctx):
           sides = [s if isinstance(s, dict) else {"label": s, "agent": "self"} for s in self.sides]
           said: dict[str, list[str]] = {s["label"]: [] for s in sides}
           verdict = None
-          for round_ in range(1, int(self.max_rounds) + 1):
+          rounds = range(1, self.max_rounds + 1) if self.max_rounds else itertools.count(1)
+          for round_ in rounds:
               heard = "\n\n".join(f"[{k}] {v[-1]}" for k, v in said.items() if v)
               calls = [
                   ctx.call(s["agent"], f"{task}\n\nArgue: {s['label']}. Round {round_}.\n\n{heard}")
@@ -78,7 +81,9 @@ A flow plugin is two files:
   `options`): how many sides, members or rounds, and which agent plays each part
   (`self`, an installed agent, another flow). Name every option in `description`.
 - Decide what happens next from results (the judge's verdict above), not from a fixed
-  count, when the pattern calls for it; keep a bound (`max_rounds`).
+  count, when the pattern calls for it. Leave sizes and bounds open by default: the
+  caller may set them, and Clio's own limits (subagent depth and concurrency in the
+  person's settings) and the person's Stop and cancel bound every run.
 - `shape` draws the steps for the person as a railroad (`sequence`, `choice` for
   parallel parts, `oneOrMore` for a repeat, `optional`, `terminal`). Keep it
   short and faithful to `forward`: it is what the person reads before trusting it.

@@ -95,6 +95,14 @@ KEY_NOTES: dict[str, str] = {
         "Maximum nesting level for new subagents (first child is level 1); 0 means unlimited. "
         "Changes apply to new spawns; existing deeper descendants remain visible."
     ),
+    "workflows.max_added_steps": (
+        "Ceiling on steps a workflow's editors may add to one run; 0 means unlimited. A "
+        "workflow may ask for fewer."
+    ),
+    "workflows.max_edit_rounds": (
+        "Ceiling on editing rounds in one workflow run; 0 means unlimited. A workflow may ask "
+        "for fewer."
+    ),
     "gact.mailbox.max_pending_messages": (
         "Undelivered peer-message ceiling per session; 0 means unlimited. Task results and human "
         "input are exempt, and delivered history is retained."

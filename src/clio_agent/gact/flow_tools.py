@@ -40,27 +40,39 @@ def _flows(app: Any, session_id: str) -> list[dict[str, Any]]:
     return list(session_resolution(app, session_id).flows)
 
 
+async def permit_flow(
+    app: Any, caller: Any, flow_id: str, flow_input: Any, options: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Ask the person to run ``flow_id`` when its plugin is not trusted in its installed
+    version; ``None`` when it may start (or no installed plugin declares it), else the
+    refusal. Allowed, the plugin is trusted and added to this conversation."""
+
+    from clio_agent.flows.values import _plain  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+    from clio_agent.gact.plugin_authoring import permit_untrusted_flow  # noqa: PLC0415
+
+    available = await app.state.task_history.io.run(_flows, app, caller.session_id)
+    row = next((row for row in available if row["id"] == flow_id), None)
+    waiting = {r.id for r in await asyncio.to_thread(plugin_service(app).store.pending)}
+    if row is not None and row["plugin"] not in waiting:
+        return None
+    call = {"input": _plain(flow_input), "options": _plain(options or {})}
+    permit = await permit_untrusted_flow(app, caller.session_id, flow_id, call)
+    return permit if permit is not None and not permit.get("trusted") else None
+
+
 async def start_flow(
     flow_id: str, flow_input: Any, options: dict[str, Any] | None
 ) -> dict[str, Any]:
     """Accept a child assignment that runs ``flow_id`` and return its handle."""
 
     from clio_agent.flows.values import _plain, render_input  # noqa: PLC0415
-    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
-    from clio_agent.gact.plugin_authoring import permit_untrusted_flow  # noqa: PLC0415
 
     app, caller = _runtime()
+    refused = await permit_flow(app, caller, flow_id, flow_input, options)
+    if refused is not None:
+        return refused
     available = await app.state.task_history.io.run(_flows, app, caller.session_id)
-    row = next((row for row in available if row["id"] == flow_id), None)
-    waiting = {r.id for r in await asyncio.to_thread(plugin_service(app).store.pending)}
-    if row is None or row["plugin"] in waiting:
-        # Not trusted in its installed version: running it asks the person first.
-        call = {"input": _plain(flow_input), "options": _plain(options or {})}
-        permit = await permit_untrusted_flow(app, caller.session_id, flow_id, call)
-        if permit is not None and not permit.get("trusted"):
-            return permit
-        if permit is not None:
-            available = await app.state.task_history.io.run(_flows, app, caller.session_id)
     if not any(row["id"] == flow_id for row in available):
         names = ", ".join(sorted(row["id"] for row in available)) or "none"
         return {
@@ -143,8 +155,8 @@ def build_run_plan_tool() -> Any:
         plan: dict[str, Any],
         task: str = "",
         editors: list[str] | None = None,
-        max_added: int = 6,
-        max_rounds: int = 3,
+        max_added: int | None = None,
+        max_rounds: int | None = None,
         allowed_targets: list[str] | None = None,
         approve_edits: bool = False,
     ) -> dict[str, Any]:
@@ -154,8 +166,17 @@ def build_run_plan_tool() -> Any:
             normalized = Plan.from_dict(plan).to_dict()
         except PlanError as exc:
             return {"accepted": False, "reason": "plan_invalid", "error": str(exc)}
-        if max_added < 0 or max_rounds < 0:
+        if any(bound is not None and bound < 0 for bound in (max_added, max_rounds)):
             return {"accepted": False, "reason": "plan_invalid", "error": "bounds must be >= 0"}
+        # Each step that runs a flow from a plugin not trusted yet is asked about now, in
+        # this conversation, before any step runs: a running plan's agent is fixed.
+        app, caller = _runtime()
+        for node in normalized["nodes"]:
+            refused = await permit_flow(
+                app, caller, node["target"], node.get("input"), node.get("options")
+            )
+            if refused is not None:
+                return {**refused, "step": node["id"]}
         flow_input = {
             "plan": normalized,
             "task": task,
@@ -193,7 +214,7 @@ def build_run_plan_tool() -> Any:
             "Start a plan (nodes with targets, inputs and dependencies) as owned work and return "
             "its task handle at acceptance. Each node starts as soon as the nodes it waits on "
             "finish. Named editors may add or cancel nodes while it runs, within max_added and "
-            "max_rounds; approve_edits asks the user before each added node runs."
+            "max_rounds when set; approve_edits asks the user before each added node runs."
         ),
         args={
             "plan": {
@@ -206,8 +227,16 @@ def build_run_plan_tool() -> Any:
                 "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
                 "default": None,
             },
-            "max_added": {"type": "integer", "minimum": 0, "default": 6},
-            "max_rounds": {"type": "integer", "minimum": 0, "default": 3},
+            "max_added": {
+                "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
+                "default": None,
+                "description": "Most nodes the editors may add; unset leaves it open.",
+            },
+            "max_rounds": {
+                "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
+                "default": None,
+                "description": "Most editing rounds; unset leaves it open.",
+            },
             "allowed_targets": {
                 "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
                 "default": None,

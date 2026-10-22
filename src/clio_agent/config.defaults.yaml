@@ -481,6 +481,16 @@ scheduler.min_interval_s: 60
 # so it bounds the cost.
 variants.max_n: 8
 
+# CLIO_WORKFLOW_MAX_ADDED_STEPS  (int)  <- src/clio_agent/flows/limits.py
+# Ceiling on steps a workflow's editors may add to one run; 0 means
+# unlimited. A workflow may ask for fewer.
+workflows.max_added_steps: 0
+
+# CLIO_WORKFLOW_MAX_EDIT_ROUNDS  (int)  <- src/clio_agent/flows/limits.py
+# Ceiling on editing rounds in one workflow run; 0 means unlimited. A
+# workflow may ask for fewer.
+workflows.max_edit_rounds: 0
+
 # ==========================================================================
 # GACT server
 # ==========================================================================

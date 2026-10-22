@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_flows.conftest import default_program, post, wait_until
@@ -41,7 +42,7 @@ def _files(version: str = "0.1.0") -> dict[str, str]:
 def _script(client: TestClient) -> dict[str, Any]:
     """Script the conversation's model: make the plugin, or run its flow, on request."""
 
-    from clio_agent.gact.flow_tools import start_flow
+    from clio_agent.gact.flow_tools import build_run_plan_tool, start_flow
     from clio_agent.gact.plugin_authoring import make_plugin
 
     done: dict[str, Any] = {}
@@ -53,6 +54,10 @@ def _script(client: TestClient) -> dict[str, Any]:
             version = question.split()[-1]
             done[f"made {version}"] = asyncio.run(make_plugin("tally", _files(version)))
             return dspy.Prediction(answer="made")
+        if question.startswith("plan tally"):
+            plan = {"nodes": [{"id": "count", "target": "tally"}]}
+            done[question] = asyncio.run(build_run_plan_tool().func(plan=plan, task="votes"))
+            return dspy.Prediction(answer="started")
         if question.startswith("run tally"):
             done[question] = asyncio.run(start_flow("tally", "count", None))
             return dspy.Prediction(answer="started")
@@ -224,3 +229,48 @@ def test_a_new_version_asks_again_before_it_runs(flow_app: TestClient) -> None:
     assert row["tool_call"]["input"]["version"] == "0.2.0"
     flow_app.post(f"/v1/permissions/{row['id']}", json={"action": "allow"})
     assert wait_until(lambda: done.get("run tally again"), timeout=60)["accepted"]
+
+
+def test_a_plan_step_that_runs_an_untrusted_flow_asks_before_the_plan_starts(
+    flow_app: TestClient,
+) -> None:
+    done = _script(flow_app)
+    sid = _session(flow_app, "ask")
+    _made(flow_app, sid, done, "0.1.0")
+    post(flow_app, sid, "plan tally")
+    row = _permission(flow_app)
+    assert row["tool_call"]["input"]["flow"] == "tally"
+    flow_app.post(f"/v1/permissions/{row['id']}", json={"action": "allow"})
+    started = wait_until(lambda: done.get("plan tally"), timeout=60)
+    assert started["accepted"] and started["flow"] == "plan", started
+    assert _market(flow_app)["trust_reason"] == "allowed_to_run"
+
+
+def test_denying_a_plan_steps_flow_refuses_the_plan_naming_the_step(
+    flow_app: TestClient,
+) -> None:
+    done = _script(flow_app)
+    sid = _session(flow_app, "ask")
+    _made(flow_app, sid, done, "0.1.0")
+    post(flow_app, sid, "plan tally")
+    flow_app.post(f"/v1/permissions/{_permission(flow_app)['id']}", json={"action": "deny"})
+    refused = wait_until(lambda: done.get("plan tally"), timeout=60)
+    assert refused["accepted"] is False and refused["reason"] == "flow_not_trusted"
+    assert refused["step"] == "count"
+
+
+def test_a_running_flow_that_calls_an_untrusted_flow_gets_a_typed_refusal(
+    flow_app: TestClient,
+) -> None:
+    """A running flow's agent is fixed, so it cannot ask; it says why, not "unknown"."""
+
+    from clio_agent.flows.outcomes import FlowNotTrusted
+    from clio_agent.gact.plugin_authoring import refuse_untrusted_flow
+
+    done = _script(flow_app)
+    sid = _session(flow_app, "ask")
+    _made(flow_app, sid, done, "0.1.0")
+    with pytest.raises(FlowNotTrusted) as raised:
+        refuse_untrusted_flow(flow_app.app, "tally")
+    assert raised.value.to_dict()["plugin"] == "tally"
+    refuse_untrusted_flow(flow_app.app, "nothing-declares-this")

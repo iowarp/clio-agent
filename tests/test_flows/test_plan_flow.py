@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.test_flows.conftest import assistant_messages, new_session, post, text_of, wait_until
@@ -45,6 +46,37 @@ def test_plan_nodes_run_after_their_dependencies(flow_app: TestClient) -> None:
     assert '"survey"' in left.description
     events = [e["event"] for e in run["events"].values()]
     assert events.count("node_completed") == 4
+    # Nothing bounded the plan's growth, so it ran unbounded, as recorded.
+    bounds = [row["result"] for row in run["steps"].values() if row["name"] == "_bounds"]
+    assert bounds == [{"max_added": None, "max_rounds": None}]
+
+
+def test_the_persons_ceiling_caps_a_plans_growth(
+    flow_app: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan asks for one added node and leaves rounds open: a ceiling above the plan's
+    own leaves the plan's, and the rounds ceiling bounds the open rounds."""
+
+    monkeypatch.setenv("CLIO_WORKFLOW_MAX_ADDED_STEPS", "5")
+    monkeypatch.setenv("CLIO_WORKFLOW_MAX_EDIT_ROUNDS", "1")
+    sid = new_session(flow_app, "clio/editor")
+    post(flow_app, sid, "write a note")
+    _done(flow_app, sid)
+    run = _plan_run(flow_app, sid)
+    bounds = [row["result"] for row in run["steps"].values() if row["name"] == "_bounds"]
+    assert bounds == [{"max_added": 1, "max_rounds": 1}]
+
+
+@pytest.mark.parametrize(
+    ("asked", "ceiling", "bound"),
+    [(None, 0, None), (4, 0, 4), (None, 3, 3), (4, 3, 3), (2, 3, 2), (0, 0, 0)],
+)
+def test_the_tighter_of_the_callers_bound_and_the_ceiling_wins(
+    asked: int | None, ceiling: int, bound: int | None
+) -> None:
+    from clio_agent.flows.limits import effective
+
+    assert effective(asked, ceiling) == bound
 
 
 def test_editor_adds_a_node_that_runs(flow_app: TestClient) -> None:

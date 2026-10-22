@@ -21,6 +21,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from clio_agent.flows.outcomes import FlowNotTrusted
 from clio_agent.gact import session_warmup
 from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
@@ -66,6 +67,21 @@ def untrusted_flow(store: Any, flow_id: str) -> dict[str, Any] | None:
             "review_url": f"/v1/plugins/{market}/review",
         }
     return None
+
+
+def refuse_untrusted_flow(app: Any, flow_id: str) -> None:
+    """Raise :class:`FlowNotTrusted` when ``flow_id`` is declared by an installed plugin
+    that is not trusted: a running flow cannot ask (its agent is fixed), so it is asked
+    about when a flow or workflow is started."""
+
+    found = untrusted_flow(plugin_service(app).store, flow_id)
+    if found is not None:
+        raise FlowNotTrusted(
+            f"flow {flow_id!r} is from the {found['plugin']} plugin, not trusted yet; "
+            "run_flow, or starting the workflow again, asks the person",
+            target=flow_id,
+            plugin=found["plugin"],
+        )
 
 
 def installed_changed(app: Any) -> None:

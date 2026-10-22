@@ -61,6 +61,13 @@ class FlowTargetUnknown(FlowOutcome):
     reason = "flow_target_unknown"
 
 
+class FlowNotTrusted(FlowOutcome):
+    """``ctx.call`` named a flow whose plugin is installed but not trusted. A running
+    flow's agent is fixed, so the person is asked when a flow or workflow is started."""
+
+    reason = "flow_not_trusted"
+
+
 class FlowLimitExceeded(FlowOutcome):
     """A flow limit (depth, model calls, budget) refused the next call."""
 

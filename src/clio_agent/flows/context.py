@@ -235,6 +235,10 @@ class FlowContext:
             except AgentNotFound as exc:
                 raise FlowTargetUnknown(f"agent {name!r} is not installed", target=name) from exc
             return "agent", name, None
+        if self.app is not None:
+            from clio_agent.gact.plugin_authoring import refuse_untrusted_flow  # noqa: PLC0415
+
+            refuse_untrusted_flow(self.app, name)  # an installed, untrusted flow: typed refusal
         raise FlowTargetUnknown(
             f"{name!r} is not a subagent, flow, tool or installed agent this agent can reach",
             target=name,

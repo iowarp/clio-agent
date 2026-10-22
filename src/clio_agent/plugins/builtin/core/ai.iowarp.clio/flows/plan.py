@@ -7,8 +7,10 @@ Input (from ``run_plan`` or ``ctx.call("plan", {...})``)::
 
 A node whose target is a named editor runs with ``plan_add_node`` and
 ``plan_cancel_node``; its proposals are read from its own settled result, so a
-replay applies exactly the same edits. Growth is bounded by ``max_added`` nodes,
-``max_rounds`` editing rounds and ``allowed_targets``. With ``approve_edits`` each
+replay applies exactly the same edits. Growth is unbounded unless the caller sets
+``max_added`` nodes or ``max_rounds`` editing rounds, or the person's settings cap them
+(the tighter wins; the bounds in force are recorded when the run starts), plus
+``allowed_targets``. With ``approve_edits`` each
 proposal waits on a Question; a proposed node is recorded as pending until then.
 A failed node is first offered to the editors as a typed stall (they may add a
 repair node within the same bounds); if nobody edits, the stall returns to the
@@ -22,6 +24,7 @@ import json
 import re
 from typing import Any
 
+from clio_agent.flows import limits
 from clio_agent.flows.outcomes import (
     CallCancelled,
     FlowCheckpointLimit,
@@ -65,6 +68,19 @@ def _substitute(value: Any, task: Any, results: dict[str, Any]) -> Any:
     return value
 
 
+def _bounds(asked_added: int | None, asked_rounds: int | None) -> dict[str, int | None]:
+    """The growth bounds in force: the caller's, capped by the person's settings."""
+
+    return {
+        "max_added": limits.effective(asked_added, limits.max_added_steps()),
+        "max_rounds": limits.effective(asked_rounds, limits.max_edit_rounds()),
+    }
+
+
+def _bound(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
 def _text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
 
@@ -73,7 +89,6 @@ class PlanFlow(Flow):
     """Run a plan; editors may grow it within bounds, with optional approval."""
 
     id = "plan"
-    max_concurrency = 4
 
     async def forward(self, task: Any, ctx: Any) -> Any:
         spec = task if isinstance(task, dict) else {"plan": task}
@@ -91,8 +106,9 @@ class _PlanRun:
         self.task = spec.get("task", "")
         self.nodes: dict[str, Node] = {node.id: node for node in plan.nodes}
         self.editors = {str(e) for e in spec.get("editors") or ()}
-        self.max_added = int(spec.get("max_added", 6))
-        self.max_rounds = int(spec.get("max_rounds", 3))
+        self.asked = (_bound(spec.get("max_added")), _bound(spec.get("max_rounds")))
+        self.max_added: int | None = None
+        self.max_rounds: int | None = None
         allowed = spec.get("allowed_targets")
         self.allowed = {str(t) for t in allowed} if allowed is not None else None
         self.approve = bool(spec.get("approve_edits", False))
@@ -159,6 +175,9 @@ class _PlanRun:
             "rounds": self.rounds,
         }
 
+    def _rounds_spent(self) -> bool:
+        return self.max_rounds is not None and self.rounds >= self.max_rounds
+
     async def _publish(self) -> None:
         """Publish the live plan: nodes with status, and proposals awaiting approval."""
 
@@ -180,6 +199,8 @@ class _PlanRun:
     # -------------------------------------------------------------- run
     async def execute(self) -> dict[str, Any]:
         running: dict[asyncio.Future[Any], str] = {}
+        bounds = await self.ctx.step(_bounds, *self.asked)
+        self.max_added, self.max_rounds = bounds["max_added"], bounds["max_rounds"]
         await self._publish()
         while True:
             while blocked := self._blocked():
@@ -247,8 +268,12 @@ class _PlanRun:
                 "editing": (
                     "You are an editor of this running plan. Only a plan_add_node or "
                     "plan_cancel_node call changes it; a step you describe in your answer "
-                    f"is not added. At most {self.max_added - self.added} more nodes may "
-                    "be added."
+                    "is not added."
+                    + (
+                        f" At most {self.max_added - self.added} more nodes may be added."
+                        if self.max_added is not None
+                        else ""
+                    )
                 ),
             }
         # A flow node's options select its configuration (an arena's contestants, ...).
@@ -307,10 +332,10 @@ class _PlanRun:
     async def _offer_stall(self, node_id: str, outcome: FlowOutcome) -> None:
         """Offer a failed node to the editors, who may add a repair node."""
 
-        if not self.editors or self.rounds >= self.max_rounds:
+        if not self.editors or self._rounds_spent():
             return
         for editor in sorted(self.editors):
-            if self.rounds >= self.max_rounds:
+            if self._rounds_spent():
                 return
             stall = {
                 "stall": "node_failed",
@@ -378,7 +403,7 @@ class _PlanRun:
             after = [a for a in after if a != repairing]
         options = args.get("options") or None
         reason = ""
-        if self.added >= self.max_added:
+        if self.max_added is not None and self.added >= self.max_added:
             reason = "max_added_reached"
         elif self.allowed is not None and target not in self.allowed:
             reason = "target_not_allowed"
