@@ -188,7 +188,7 @@ def review(folder: Path) -> dict[str, Any]:
         except SyntaxError:
             unreadable.append(relative)
             continue
-        flows.extend(_flows(tree))
+        flows.extend({**row, "file": relative} for row in _flows(tree))
         reach |= _reach(tree)
     return {
         "name": str(manifest.get("name") or folder.name),

@@ -253,6 +253,9 @@ def default_program(question: str = "", **_: Any) -> Any:
 
 @pytest.fixture
 def flow_app(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    # The default workspace is the working directory: flows that record files there
+    # (the arena's votes) write into the test's folder, not the checkout.
+    monkeypatch.chdir(tmp_path)
     custom_marketplace(
         tmp_path,
         monkeypatch,

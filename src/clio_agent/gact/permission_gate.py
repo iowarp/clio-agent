@@ -625,6 +625,10 @@ def _make_permission_gate(app: "FastAPI"):
             args=args,
             mode=mode,
         )
+        # A decision only a person makes (trusting code before it runs): it asks even under
+        # bypass or ai-review, and an allow policy does not stand in for it. A deny still wins.
+        if context and context.get("always_ask") and policy_action != "deny":
+            policy_action = "ask"
         if policy_action == "deny":
             _record_resolved_permission(
                 app,

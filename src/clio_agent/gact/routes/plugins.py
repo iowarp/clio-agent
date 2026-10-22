@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
-from clio_agent.gact import session_warmup
+from clio_agent.gact import plugin_authoring, session_warmup
 from clio_agent.gact.agents import prompt_basis
 from clio_agent.gact.agents.resolution import (
     AGENT_DELTA_KEY,
@@ -153,10 +153,7 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the plugin, agent and session-agent routes."""
 
     def installed_changed() -> None:
-        # Installed plugins ship A2UI catalogs: the next lookup re-reads the set.
-        registry = getattr(app.state, "a2ui_catalogs", None)
-        if registry is not None:
-            registry.invalidate()
+        plugin_authoring.installed_changed(app)
 
     # ----------------------------------------------------------- plugins
     @app.get("/v1/plugins")
@@ -223,6 +220,15 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         summary = await _call(plugin_service(app).store.trust, name)
         installed_changed()
         return summary
+
+    @app.get("/v1/plugins/{name}/review")
+    async def review_plugin(name: str) -> dict[str, Any]:
+        """What a person reads before trusting ``name``: read from its installed files."""
+
+        entry = plugin_service(app).store.marketplaces().get(name)
+        if entry is None:
+            raise _error(404, "plugin_not_installed", f"{name!r} is not installed")
+        return await _call(plugin_authoring.installed_review, app, name)
 
     @app.post("/v1/plugins/marketplaces/{name}/update")
     async def update_marketplace(name: str) -> dict[str, Any]:

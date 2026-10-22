@@ -94,11 +94,16 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
             "waiting_for_input": "waiting_user",
         }.get(activity, activity or status)
     )
+    agent_task = task["kind"] in {"Session", "Subagent"}
+    child = app.state.sessions.get(owner["session_id"]) if agent_task else None
+    flow = ((getattr(child, "metadata", None) or {}).get("agent_flow") or {}) if child else {}
     return {
         **task,
         "id": task["handle"],
         "handle_id": task["handle"],
         "task_kind": task["kind"],
+        # A child conversation that runs a flow: the UI opens its run view, not a chat.
+        "flow": {"id": str(flow["id"])} if flow.get("id") else None,
         "kind": "agent"
         if task["kind"] in {"Session", "Subagent"}
         else "question"

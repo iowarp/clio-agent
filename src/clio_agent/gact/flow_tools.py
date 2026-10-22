@@ -16,6 +16,7 @@ plan's bounds, with approval when the plan asks for it.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import uuid4
 
@@ -45,9 +46,21 @@ async def start_flow(
     """Accept a child assignment that runs ``flow_id`` and return its handle."""
 
     from clio_agent.flows.values import _plain, render_input  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
+    from clio_agent.gact.plugin_authoring import permit_untrusted_flow  # noqa: PLC0415
 
     app, caller = _runtime()
     available = await app.state.task_history.io.run(_flows, app, caller.session_id)
+    row = next((row for row in available if row["id"] == flow_id), None)
+    waiting = {r.id for r in await asyncio.to_thread(plugin_service(app).store.pending)}
+    if row is None or row["plugin"] in waiting:
+        # Not trusted in its installed version: running it asks the person first.
+        call = {"input": _plain(flow_input), "options": _plain(options or {})}
+        permit = await permit_untrusted_flow(app, caller.session_id, flow_id, call)
+        if permit is not None and not permit.get("trusted"):
+            return permit
+        if permit is not None:
+            available = await app.state.task_history.io.run(_flows, app, caller.session_id)
     if not any(row["id"] == flow_id for row in available):
         names = ", ".join(sorted(row["id"] for row in available)) or "none"
         return {

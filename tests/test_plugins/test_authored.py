@@ -85,6 +85,7 @@ def test_the_review_reads_flows_and_shape_without_importing_the_code(tmp_path: P
             "description": "Asks each voter, then counts. Options: voters.",
             "shape": 'railroad-beta\ntally = sequence(oneOrMore(terminal("voter")), '
             'terminal("count"));',
+            "file": "ai.iowarp.clio/flows/tally.py",
         }
     ]
     # Only asking agents through ctx: nothing reached directly.

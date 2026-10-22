@@ -330,6 +330,9 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
     assert "Other entries" in answer
     run = _run(flow_app, handle)
     assert sum(1 for row in run["calls"].values() if row["kind"] == "agent") == 3
+    # The conversation's task list marks the run as a flow, so its view opens, not a chat.
+    rows = flow_app.get(f"/v1/sessions/{sid}/async-processes").json()["processes"]
+    assert next(row for row in rows if row["handle"] == handle)["flow"] == {"id": "arena"}
 
 
 def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
