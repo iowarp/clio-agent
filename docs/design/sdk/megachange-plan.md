@@ -101,8 +101,8 @@ No production code changes in this phase.
    - Surface `task_state_uncertain` and the other terminal outcomes as typed exceptions.
 3. Limits: enforce depth, concurrency, total model calls and budget in `ctx`, on top of the existing inference capacity.
 4. Agents select a flow by id. `react` is the default.
-5. Ship the `plan` flow in `core`, with `Plan`, `Node`, editors (`plan_add_node`, `plan_cancel_node`), growth bounds, and approval through a Question task.
-6. Ship an `orchestration` plugin with `run_plan` and `run_flow`, both of which return a handle at acceptance, plus `council` and `arena` flows.
+5. Ship the `workflow` flow in `core`, with `Workflow`, `Step`, editors (`workflow_add_step`, `workflow_cancel_step`), growth bounds the caller or the person sets, and approval through a Question task. (Named `plan` until Phase 5, when it was renamed so it is not mistaken for Plan mode.)
+6. Ship an `orchestration` plugin with `run_workflow` and `run_flow`, both of which return a handle at acceptance, plus `council` and `arena` flows.
 7. Delete the declared-workflow runner, the `workflow:` parsing and `run_workflow`. Move spawn-order merging and typed stalls into `ctx.gather` and the plan flow.
 
 ## Phase 4: UI in gact-tui

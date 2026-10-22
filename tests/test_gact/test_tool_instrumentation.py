@@ -1065,14 +1065,14 @@ def test_orchestration_flow_tools_keep_a_tool_row_around_their_child_operations(
     from clio_agent.gact.agents.native_tool_registry import build_native_tools
 
     built, _gateway, _withheld = build_native_tools(
-        SimpleNamespace(id="tester"), ["run_flow", "run_plan"], {}
+        SimpleNamespace(id="tester"), ["run_flow", "run_workflow"], {}
     )
     instrument_tools(list(built.values()))
-    assert set(built) == {"run_flow", "run_plan"}
+    assert set(built) == {"run_flow", "run_workflow"}
     assert declared_tool_representation("run_flow") == "row"
     assert declared_tool_title("run_flow") == "Run flow"
-    assert declared_tool_representation("run_plan") == "row"
-    assert declared_tool_title("run_plan") == "Run plan"
+    assert declared_tool_representation("run_workflow") == "row"
+    assert declared_tool_title("run_workflow") == "Run workflow"
 
 
 def test_invalid_representation_is_a_typed_error() -> None:

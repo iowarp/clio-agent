@@ -79,7 +79,7 @@ The `gact.agents.task_guidance` and `gact.agents.github_shell_guidance` rows are
 | `gact/skills.py` | `pack` and `builtin` scopes, `_BUILTIN_SKILLS_ROOT` | `plugin` scope over the resolved plugins' `skills/` |
 | `gact/builtin_skills/` | All twelve skills | Moved into the plugin that owns each (see below) |
 | `gact/agents/skill_runtime.py` | `agent_pack_root`, default-root auto-declared skills | Skills come only from resolved plugins |
-| `gact/task_declarations.py` | `run_workflow` declaration | `run_flow` and `run_plan` in the `orchestration` plugin |
+| `gact/task_declarations.py` | `run_workflow` declaration | `run_flow` and `run_workflow` (workflows as data) in the `orchestration` plugin |
 | `gact/agents/module_variants.py` | `wrap_module_variant`, `with_session_strategy` (declared `module.variant`) | Removed with the blueprint `module:` field. `strategy_module` stays for model-requested spawn strategies |
 | `gact/turn_state.py` | `DEEP_RESEARCH_BLUEPRINT_ID` overlay | Deep research selects the `deep-researcher` agent by id |
 | `prompt_packs/builtin/runtime/` | `clio.runtime.tasks`, `clio.runtime.github_shell`, `clio.runtime.tool_user_agent`, `clio.runtime.prompt_user_agent`, and agent prompts `clio.chat`, `clio.orchestrator`, `clio.main.planner` | Fragments in `core` and `shell`; agent identity comes from `Agent.role` |
@@ -90,7 +90,7 @@ The `gact.agents.task_guidance` and `gact.agents.github_shell_guidance` rows are
 | --- | --- | --- |
 | `src/clio_agent/gact/workflows.py` (`parse_workflow`, `run_declared_workflow`, `repair_workflow_reference`, `workflow_validation_errors`) | `gact.conversation_recovery`, `gact.expert_packs`, `gact.task_declarations` | Flows (`clio_agent/flows/`) and the `plan` flow. Typed stalls move into `ctx.gather` and the plan flow; `conversation_recovery` repairs flow checkpoint references |
 | `workflow:` block parsing in expert files | `gact.expert_packs` | None. The one shipped `workflow:` (wildfire `main`) becomes a `Plan` in the wildfire plugin |
-| `run_workflow` tool in `build_spawn_runtime_tools` | `gact.agents.builders`, `gact.catalog` | `run_plan`, `run_flow` |
+| `run_workflow` tool in `build_spawn_runtime_tools` | `gact.agents.builders`, `gact.catalog` | `run_workflow` (workflows as data) and `run_flow` in the `orchestration` plugin |
 | `merge_run_workflow_states` in `gact/workflow_state/merge.py` | none (unused) | Spawn-order merge with conflict reports inside `ctx.gather` |
 | `gact/agents/spawn_runtime_declarations.py` | n/a | Did not exist at `2c100d5`; nothing to remove |
 
@@ -132,7 +132,7 @@ Shared capability plugins replace the copies. `create-pdf-report` exists byte-id
 | Plugin | Contents | Requires |
 | --- | --- | --- |
 | `core` (ships in clio-agent) | Operating guidelines, rendering section from the UI catalog, `clio.runtime.tasks` fragment, task controls, `ask_user`, `react` and `plan` flows, `planning` and `update-models` skills, `clio-workspace` A2UI catalog | none |
-| `orchestration` (ships in clio-agent) | `run_plan`, `run_flow`, `council` and `arena` flows | `delegation` |
+| `orchestration` (ships in clio-agent) | `run_workflow`, `run_flow`, `council` and `arena` flows | `delegation` |
 | `workspace` | `fs_read_file`, `fs_propose_edit`, `fs_apply_edit_write`, `view_image`; grounding fragment | none |
 | `shell` | `shell_bash`, `prepare_execution_runtime`; `shell.prefer-gh` fragment | none |
 | `web` | `mcp.json`: `web: clio-kit mcp-server web` | none |

@@ -497,13 +497,13 @@ def _emit_agent_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException
         pass
 
 
-def _plan_editor() -> dict[str, Any] | None:
-    """The active session's ``plan_editor`` grant: set while it edits a running plan."""
+def _workflow_editor() -> dict[str, Any] | None:
+    """The active session's ``workflow_editor`` grant: set while it edits a running workflow."""
 
     app = _ctx.active_app()
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session = sessions.get(_ctx.active_session_id()) if sessions is not None else None
-    editor = (getattr(session, "metadata", None) or {}).get("plan_editor")
+    editor = (getattr(session, "metadata", None) or {}).get("workflow_editor")
     return dict(editor) if isinstance(editor, Mapping) else None
 
 
@@ -581,13 +581,13 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                     draft_tool = build_draft_alternatives_tool()
                     toolset_inventory.register_tool_sources(sources, [draft_tool], "native")
                     tools.append(draft_tool)
-                editor = _plan_editor()
+                editor = _workflow_editor()
                 if editor is not None:
                     from clio_agent.gact.flow_tools import (  # noqa: PLC0415
-                        build_plan_editor_tools,
+                        build_workflow_editor_tools,
                     )
 
-                    editor_tools = build_plan_editor_tools(editor)
+                    editor_tools = build_workflow_editor_tools(editor)
                     toolset_inventory.register_tool_sources(sources, editor_tools, "native")
                     tools.extend(editor_tools)
                 from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415

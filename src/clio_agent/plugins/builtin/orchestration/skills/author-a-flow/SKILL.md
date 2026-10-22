@@ -6,7 +6,7 @@ description: Write a reusable flow (a new orchestration pattern such as a debate
 
 # Write and deploy a new flow
 
-A plan (`run_plan`) covers work whose steps you can list as data. A shipped flow
+A workflow (`run_workflow`) covers work whose steps you can list as data. A shipped flow
 (`run_flow`: council, arena) covers its own pattern. Write a new flow when the
 pattern is reusable and needs its own logic: deciding the next call from earlier
 results, looping until a check passes, or a structure the existing flows lack.

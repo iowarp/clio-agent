@@ -100,7 +100,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     )
     from clio_agent.gact.flow_tools import (  # noqa: PLC0415
         build_run_flow_tool,
-        build_run_plan_tool,
+        build_run_workflow_tool,
     )
     from clio_agent.gact.goal import build_goal_status_tool  # noqa: PLC0415
     from clio_agent.gact.goal_control import (  # noqa: PLC0415
@@ -180,7 +180,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "connected_data_open": build_connected_data_open_tool,
         "connected_data_write": build_connected_data_write_tool,
         "run_flow": build_run_flow_tool,
-        "run_plan": build_run_plan_tool,
+        "run_workflow": build_run_workflow_tool,
         "make_plugin": build_make_plugin_tool,
     }
 
@@ -218,7 +218,7 @@ _SINGLE_NAMES = frozenset(
         "connected_data_open",
         "connected_data_write",
         "run_flow",
-        "run_plan",
+        "run_workflow",
         "make_plugin",
         *_A2UI_PRODUCERS,
     }

@@ -149,7 +149,7 @@ An HPC job is a `ctx.call` on a task-capable MCP tool, now that relay is an ordi
 
 Three rules follow. Predictor calls inside `forward()` may run again after a crash, because CLIO promises recoverable input delivery, not exactly-once model effects. Flow code must be deterministic given its results, with no clock, randomness or I/O outside `ctx`, and the plugin validator flags direct calls. The session pin fixes the code version, which replay requires.
 
-**A running flow is owned work.** A flow runs under its owning assignment, the way a declared workflow does now. When the model starts one through `run_flow` or `run_plan`, it gets a handle at acceptance and can keep working, and the result arrives through the mailbox. Stop ends the model's wait and leaves the flow and its children running. `cancel_tasks` on the flow cancels its subtree.
+**A running flow is owned work.** A flow runs under its owning assignment, the way a declared workflow does now. When the model starts one through `run_flow` or `run_workflow`, it gets a handle at acceptance and can keep working, and the result arrives through the mailbox. Stop ends the model's wait and leaves the flow and its children running. `cancel_tasks` on the flow cancels its subtree.
 
 **Limits are first-class.** Depth, concurrency, total model calls and budget are set on the flow and enforced by `ctx`, on top of the existing per-depth inference capacity and fan-out budgets, since model-driven orchestration is where runtime and cost become unbounded.
 
@@ -229,34 +229,34 @@ class Decompose(Flow):
 
 The goal is not only that plugin authors can write workflows, but that CLIO composes its own while it works. That needs two forms, because some structure is known when the work starts and some is only discovered while it runs.
 
-**Plans are workflows as data.** A plan is a set of nodes, each naming a target (subagent, agent, peer or tool), its input and the nodes it waits on. The `plan` flow from `core` runs it: every node whose dependencies are met starts as a task, and each node starts as soon as its own inputs finish, with no superstep barrier. A plan can come from a plugin, from the user, or from the agent itself, which composes one and starts it through a `run_plan` tool that returns a handle. Today's linear workflow is a plan where each node waits on the one before.
+**Workflows as data.** A workflow is a set of steps, each naming a target (subagent, agent, peer or tool), its input and the steps it waits on. The `workflow` flow from `core` runs it: every step whose dependencies are met starts as a task, and each step starts as soon as its own inputs finish, with no superstep barrier. A workflow can come from a plugin, from the user, or from the agent itself, which composes one and starts it through a `run_workflow` tool that returns a handle. (It is not Plan mode, which is planning before execution.) A linear workflow is one where each step waits on the one before.
 
 ```python
-plan = Plan(nodes=[
-    Node("survey", "literature-search", input="$task"),
-    Node("design", "setup-tosca", after=["survey"]),
-    Node("run", "slurm.run_case", after=["design"]),
-    Node("review", "process-reviewer", after=["run"]),
+workflow = Workflow(steps=[
+    Step("survey", "literature-search", input="$task"),
+    Step("design", "setup-tosca", after=["survey"]),
+    Step("run", "slurm.run_case", after=["design"]),
+    Step("review", "process-reviewer", after=["run"]),
 ])
-result = await ctx.call("plan", {
-    "plan": plan,
-    "editors": ["process-reviewer"],   # who may change the plan while it runs
-    "max_added": 6, "approve_edits": True,
+result = await ctx.call("workflow", {
+    "workflow": workflow,
+    "editors": ["process-reviewer"],   # who may change the workflow while it runs
+    "approve_edits": True,
 })
 ```
 
-**Plans can change while they run.** A plan names its editors, such as a critic. An editor gets `plan_add_node` and `plan_cancel_node` tools during its own call, so a reviewer that finds a gap can insert a new phase that waits on its own node. Four rules keep this safe:
+**Workflows can change while they run.** A workflow names its editors, such as a critic. An editor gets `workflow_add_step` and `workflow_cancel_step` tools during its own call, so a reviewer that finds a gap can insert a new phase that waits on its own step. Four rules keep this safe:
 
-- Every edit is checkpointed like any other call, so replay rebuilds the same plan and re-attaches to nodes that already started.
-- Growth is bounded: the plan sets the most nodes that may be added, the most rounds of editing, and which targets may be inserted. Without that, a critic that always finds one more gap never terminates.
-- An edit can require approval through a Question task. The UI draws the live plan from task history, and a proposed node shows as pending until approved.
-- A failed node first goes to the editors as a typed stall, and they may add a repair node within the same bounds. If nobody edits, the stall returns to the caller.
+- Every edit is checkpointed like any other call, so replay rebuilds the same workflow and re-attaches to steps that already started.
+- Growth is open by default, so the model can express the pattern it needs. The caller may bound it (`max_added_steps`, `max_edit_rounds`, `allowed_targets`), the person may cap it in Settings (Workflows), and the tighter bound wins; the bounds in force are recorded when the run starts. Beyond that, Clio's own limits (subagent depth and concurrency) and the person's Stop and cancel end a critic that always finds one more gap.
+- An edit can require approval through a Question task. The UI draws the live workflow from task history, and a proposed step shows as pending until approved.
+- A failed step first goes to the editors as a typed stall, and they may add a repair step within the same bounds. If nobody edits, the stall returns to the caller.
 
-**Scripts are workflows as code.** When the structure depends on results in ways a plan cannot express, such as loops over intermediate data, the agent writes a flow instead and runs it through `run_code`. The script gets the same primitives as functions inside the sandbox, which is the programmatic tool calling path. Its calls get invocation ids like any flow's, and each records that the model wrote the code that issued it.
+**Scripts are workflows as code.** When the structure depends on results in ways a workflow cannot express, such as loops over intermediate data, the agent writes a flow instead and runs it through `run_code`. The script gets the same primitives as functions inside the sandbox, which is the programmatic tool calling path. Its calls get invocation ids like any flow's, and each records that the model wrote the code that issued it.
 
-**Which form when.** A plan is inspectable and editable before it starts, replays exactly, and can be shown to a human for approval, so it is the default for anything with jobs, cost or external side effects. A script is the escape hatch for data-dependent control flow. Both are capabilities: `run_plan`, `run_flow` and `run_code` come from an orchestration plugin, so an agent without it delegates only through the spawn tools.
+**Which form when.** A workflow is inspectable and editable before it starts, replays exactly, and can be shown to a human for approval, so it is the default for anything with jobs, cost or external side effects. A script is the escape hatch for data-dependent control flow. Both are capabilities: `run_workflow`, `run_flow` and `run_code` come from an orchestration plugin, so an agent without it delegates only through the spawn tools.
 
-**Keeping what worked.** A plan that succeeded can be saved to the user's personal plugin as a named plan and reused like a shipped one; it is data, so it goes through the same lesson gates as prompts and skills. A script promoted to a reusable flow is code, so it takes the explicit trust step any git-installed flow takes, and the self-optimization cycle never edits it.
+**Keeping what worked.** A workflow that succeeded can be saved to the user's personal plugin as a named workflow and reused like a shipped one; it is data, so it goes through the same lesson gates as prompts and skills. A script promoted to a reusable flow is code, so it takes the explicit trust step any git-installed flow takes, and the self-optimization cycle never edits it.
 
 ## Open questions
 
@@ -265,9 +265,9 @@ result = await ctx.call("plan", {
 - **Checkpoint size.** A long campaign with many calls needs a cap on one run's checkpoint and a continue-as-new style rollover, the way Temporal caps history at 51,200 events.
 - **Replaying model-written code.** Invocation ids make identical calls re-attach, but a model that writes different code on replay makes different calls. Whether `rlm` and `code` flows should resume or restart is open.
 - **Context passed to subagents.** Most SDKs pass only a prompt and return only a final message; Cognition argues for sharing full traces. `spawn` already accepts pinned evidence references (`input_task_refs`), and the default for `ctx.call` needs a decision.
-- **Visual authoring.** Plans are already a declarative form, so the UI can draw a plan before it runs and let a user edit nodes. Whether users should also author flows visually is open.
-- **Plan or script by default.** Whether the agent should be steered toward plans and reach for `run_code` only when a plan cannot express the control flow, and whether that guidance lives in a skill or in the tool descriptions, is open.
-- **Edits from outside the plan.** Only named editors may change a running plan. Whether the user or the parent agent may also add or cancel nodes mid-run is open.
+- **Visual authoring.** Workflows are already a declarative form, so the UI can draw a workflow before it runs and let a user edit steps. Whether users should also author flows visually is open.
+- **Workflow or script by default.** Whether the agent should be steered toward workflows and reach for `run_code` only when a workflow cannot express the control flow, and whether that guidance lives in a skill or in the tool descriptions, is open.
+- **Edits from outside the workflow.** Only named editors may change a running workflow. Whether the user or the parent agent may also add or cancel steps mid-run is open.
 
 ## Sources
 

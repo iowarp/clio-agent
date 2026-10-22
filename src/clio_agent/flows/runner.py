@@ -50,7 +50,7 @@ def load_flow(resolution: Any, flow_id: str, options: dict[str, Any] | None = No
 def flow_selection(app: Any, session_id: str, agent_def: Any) -> dict[str, Any]:
     """The flow this session's turn runs: a started flow's override, else the agent's.
 
-    A flow started through ``run_flow``/``run_plan`` or ``ctx.call`` runs in a
+    A flow started through ``run_flow``/``run_workflow`` or ``ctx.call`` runs in a
     child session whose metadata carries ``agent_flow`` (id, options, input,
     depth); every other session runs its agent's selected flow.
     """
@@ -67,7 +67,7 @@ def accept_flow_input(module: Any, question: str, session_id: str) -> None:
     """Confirm this turn's input for a flow other than ``react``, before it runs.
 
     The agent's ReAct program confirms the turn's staged input with its first model
-    request. Any other flow (a started council or plan, or an agent whose own flow is
+    request. Any other flow (a started council or workflow, or an agent whose own flow is
     not ``react``) makes no request in this session, so its input is confirmed here;
     unconfirmed, the assignment keeps eligible mail, yields instead of completing,
     and is admitted again at every turn end.
@@ -113,7 +113,7 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         root_handle = latest.handle if latest is not None else ""
     resume_from: list[tuple[str, str]] = []
     if selection.get("input") is not None or "depth" in selection:
-        # A started flow (run_flow, run_plan, ctx.call) is its whole assignment:
+        # A started flow (run_flow, run_workflow, ctx.call) is its whole assignment:
         # a later turn of the same assignment resumes the same run.
         marker = root_handle
         invocation, predecessor = _lineage(app, root_handle)

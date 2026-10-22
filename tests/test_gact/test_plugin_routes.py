@@ -175,7 +175,7 @@ def test_resolve_preview_applies_add_and_remove(client: TestClient) -> None:
     )
     assert added.status_code == 200, added.text
     assert [row["id"] for row in added.json()["plugins"]] == [*STANDARD_PLUGINS, "orchestration"]
-    assert {"run_plan", "run_flow"} <= set(added.json()["tool_names"])
+    assert {"run_workflow", "run_flow"} <= set(added.json()["tool_names"])
 
     # Additions apply before removals: a plugin both added and removed stays out.
     both = client.get(

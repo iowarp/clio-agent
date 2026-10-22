@@ -75,8 +75,8 @@ class Stepper(Flow):
         return value.upper()
 
 
-PLAN = {
-    "nodes": [
+WORKFLOW = {
+    "steps": [
         {"id": "survey", "target": "self", "input": "$task"},
         {"id": "left", "target": "self", "after": ["survey"], "description": "left branch"},
         {"id": "right", "target": "self", "after": ["survey"], "description": "right branch"},
@@ -85,27 +85,27 @@ PLAN = {
 }
 
 
-class PlanRunner(Flow):
-    id = "planrunner"
+class WorkflowRunner(Flow):
+    id = "workflowrunner"
 
     async def forward(self, task, ctx):
-        result = await ctx.call("plan", {"plan": PLAN, "task": task})
-        return {"answer": result.answer, "plan": result.outputs.get("plan")}
+        result = await ctx.call("workflow", {"workflow": WORKFLOW, "task": task})
+        return {"answer": result.answer, "workflow": result.outputs.get("workflow")}
 
 
-class EditedPlan(Flow):
-    id = "editedplan"
+class EditedWorkflow(Flow):
+    id = "editedworkflow"
 
     async def forward(self, task, ctx):
         spec = {
-            "plan": {"nodes": [{"id": "draft", "target": "self"}, {"id": "critique", "target": "critic", "after": ["draft"]}]},
+            "workflow": {"steps": [{"id": "draft", "target": "self"}, {"id": "critique", "target": "critic", "after": ["draft"]}]},
             "task": task,
             "editors": ["critic"],
-            "max_added": 1,
+            "max_added_steps": 1,
             "approve_edits": "approve" in task,
         }
-        result = await ctx.call("plan", spec)
-        return {"answer": result.answer, "plan": result.outputs.get("plan")}
+        result = await ctx.call("workflow", spec)
+        return {"answer": result.answer, "workflow": result.outputs.get("workflow")}
 
 
 class Nester(Flow):
@@ -137,7 +137,7 @@ critic = Subagent(
     "critic",
     prompt="Review the draft and propose any missing step.",
     plugins=["flowtest"],
-    description="Reviews a draft plan step",
+    description="Reviews a draft workflow step",
 )
 """
 
@@ -166,7 +166,7 @@ Stricter = _agent("stricter", "strict")
 Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
 Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
-Planner = _agent("planner", "planrunner")
+Planner = _agent("planner", "workflowrunner")
 Nesterer = _agent("nesterer", "nester")
 
 
@@ -177,7 +177,7 @@ class Orchestrator(Agent):
     plugins = Agent.plugins + ["workspace", "delegation", "orchestration", "flowtest"]
 
 
-Editor = _agent("editor", "editedplan")
+Editor = _agent("editor", "editedworkflow")
 """
 
 
@@ -228,18 +228,18 @@ class ScriptedFlowModule:
 def default_program(question: str = "", **_: Any) -> Any:
     if "FAIL" in question:
         raise RuntimeError("scripted failure")
-    if "plan_add_node" in question:
-        # The critic edits the running plan. Like a real ReAct run, the prediction
+    if "workflow_add_step" in question:
+        # The critic edits the running workflow. Like a real ReAct run, the prediction
         # carries no tool trace: the call reaches the turn through the tool observer.
         from clio_agent.gact import context
 
         app = context.active_app()
         app.state.tool_call_ledger.setdefault(context.active_session_id(), []).append(
             {
-                "name": "plan_add_node",
+                "name": "workflow_add_step",
                 # Like the live reviewer, it names the step it builds on, not itself.
                 "args": {
-                    "node_id": "polish",
+                    "step_id": "polish",
                     "target": "self",
                     "input": "polish $draft",
                     "after": ["draft"],

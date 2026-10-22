@@ -1,17 +1,17 @@
-"""Model-facing tools that start flows and edit running plans.
+"""Model-facing tools that start flows and edit running workflows.
 
-``run_flow`` and ``run_plan`` come from the ``orchestration`` plugin. Each starts
+``run_flow`` and ``run_workflow`` come from the ``orchestration`` plugin. Each starts
 the flow as owned work: a child assignment of this agent (pinned to this
 session's exact resolution) whose turn runs the flow, so the call returns the
 child's handle at acceptance. The model keeps working; the result arrives
 through the mailbox; Stop ends only the model's wait; ``cancel_tasks`` on the
 handle cancels the flow and its subtree.
 
-``plan_add_node`` and ``plan_cancel_node`` are not claimable by a plugin: the
-``plan`` flow grants them to an editor for the duration of its own call (the
-child session carries ``plan_editor``). They only propose; the plan flow reads
+``workflow_add_step`` and ``workflow_cancel_step`` are not claimable by a plugin: the
+``workflow`` flow grants them to an editor for the duration of its own call (the
+child session carries ``workflow_editor``). They only propose; the workflow flow reads
 the proposals from the editor's settled result and applies them within the
-plan's bounds, with approval when the plan asks for it.
+workflow's bounds, with approval when the workflow asks for it.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.tools.task_call_context import TASK_CALL
 
-PLAN_EDITOR_TOOLS = ("plan_add_node", "plan_cancel_node")
+WORKFLOW_EDITOR_TOOLS = ("workflow_add_step", "workflow_cancel_step")
 
 
 def _runtime() -> tuple[Any, Any]:
@@ -118,7 +118,7 @@ def _run_flow_description() -> str:
     listed = [
         f"- {row['id']}: {row['description']}"
         for row in rows
-        if row["id"] not in {"react", "plan"} and row.get("description")
+        if row["id"] not in {"react", "workflow"} and row.get("description")
     ]
     return base + ("\nFlows:\n" + "\n".join(listed) if listed else "")
 
@@ -150,45 +150,45 @@ def build_run_flow_tool() -> Any:
     )
 
 
-def build_run_plan_tool() -> Any:
-    async def run_plan(
-        plan: dict[str, Any],
+def build_run_workflow_tool() -> Any:
+    async def run_workflow(
+        workflow: dict[str, Any],
         task: str = "",
         editors: list[str] | None = None,
-        max_added: int | None = None,
-        max_rounds: int | None = None,
+        max_added_steps: int | None = None,
+        max_edit_rounds: int | None = None,
         allowed_targets: list[str] | None = None,
         approve_edits: bool = False,
     ) -> dict[str, Any]:
-        from clio_agent.sdk.plan import Plan, PlanError  # noqa: PLC0415
+        from clio_agent.sdk.workflow import Workflow, WorkflowError  # noqa: PLC0415
 
         try:
-            normalized = Plan.from_dict(plan).to_dict()
-        except PlanError as exc:
-            return {"accepted": False, "reason": "plan_invalid", "error": str(exc)}
-        if any(bound is not None and bound < 0 for bound in (max_added, max_rounds)):
-            return {"accepted": False, "reason": "plan_invalid", "error": "bounds must be >= 0"}
+            normalized = Workflow.from_dict(workflow).to_dict()
+        except WorkflowError as exc:
+            return {"accepted": False, "reason": "workflow_invalid", "error": str(exc)}
+        if any(bound is not None and bound < 0 for bound in (max_added_steps, max_edit_rounds)):
+            return {"accepted": False, "reason": "workflow_invalid", "error": "bounds must be >= 0"}
         # Each step that runs a flow from a plugin not trusted yet is asked about now, in
-        # this conversation, before any step runs: a running plan's agent is fixed.
+        # this conversation, before any step runs: a running workflow's agent is fixed.
         app, caller = _runtime()
-        for node in normalized["nodes"]:
+        for step in normalized["steps"]:
             refused = await permit_flow(
-                app, caller, node["target"], node.get("input"), node.get("options")
+                app, caller, step["target"], step.get("input"), step.get("options")
             )
             if refused is not None:
-                return {**refused, "step": node["id"]}
+                return {**refused, "step": step["id"]}
         flow_input = {
-            "plan": normalized,
+            "workflow": normalized,
             "task": task,
             "editors": list(editors or []),
-            "max_added": max_added,
-            "max_rounds": max_rounds,
+            "max_added_steps": max_added_steps,
+            "max_edit_rounds": max_edit_rounds,
             "allowed_targets": allowed_targets,
             "approve_edits": approve_edits,
         }
-        return await start_flow("plan", flow_input, None)
+        return await start_flow("workflow", flow_input, None)
 
-    node_schema = {
+    step_schema = {
         "type": "object",
         "properties": {
             "id": {"type": "string"},
@@ -196,7 +196,7 @@ def build_run_plan_tool() -> Any:
                 "type": "string",
                 "description": "A subagent, an installed agent (marketplace/id), a flow or a tool.",
             },
-            "input": {"description": "Text or an object; $task and $<node> refer to inputs."},
+            "input": {"description": "Text or an object; $task and $<step> refer to inputs."},
             "after": {"type": "array", "items": {"type": "string"}},
             "options": {
                 "type": "object",
@@ -206,33 +206,33 @@ def build_run_plan_tool() -> Any:
         "required": ["id", "target"],
     }
     return native_tool(
-        run_plan,
-        name="run_plan",
+        run_workflow,
+        name="run_workflow",
         domain="tasks",
-        title="Run plan",
+        title="Run workflow",
         desc=(
-            "Start a plan (nodes with targets, inputs and dependencies) as owned work and return "
-            "its task handle at acceptance. Each node starts as soon as the nodes it waits on "
-            "finish. Named editors may add or cancel nodes while it runs, within max_added and "
-            "max_rounds when set; approve_edits asks the user before each added node runs."
+            "Start a workflow (steps with targets, inputs and dependencies) as owned work and return "
+            "its task handle at acceptance. Each step starts as soon as the steps it waits on "
+            "finish. Named editors may add or cancel steps while it runs, within max_added_steps and "
+            "max_edit_rounds when set; approve_edits asks the user before each added step runs."
         ),
         args={
-            "plan": {
+            "workflow": {
                 "type": "object",
-                "properties": {"nodes": {"type": "array", "items": node_schema}},
-                "required": ["nodes"],
+                "properties": {"steps": {"type": "array", "items": step_schema}},
+                "required": ["steps"],
             },
             "task": {"type": "string", "default": ""},
             "editors": {
                 "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
                 "default": None,
             },
-            "max_added": {
+            "max_added_steps": {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
                 "default": None,
-                "description": "Most nodes the editors may add; unset leaves it open.",
+                "description": "Most steps the editors may add; unset leaves it open.",
             },
-            "max_rounds": {
+            "max_edit_rounds": {
                 "anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}],
                 "default": None,
                 "description": "Most editing rounds; unset leaves it open.",
@@ -247,51 +247,51 @@ def build_run_plan_tool() -> Any:
     )
 
 
-def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
-    """The editor tools for a plan editor's call (``editor`` = its ``plan_editor`` metadata)."""
+def build_workflow_editor_tools(editor: dict[str, Any]) -> list[Any]:
+    """The editor tools for a workflow editor's call (``editor`` = its ``workflow_editor`` metadata)."""
 
     run_id = str(editor.get("run") or "")
 
-    def plan_add_node(
-        node_id: str,
+    def workflow_add_step(
+        step_id: str,
         target: str,
         input: Any = None,  # noqa: A002
         after: list[str] | None = None,
         reason: str = "",
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not str(node_id).strip() or not str(target).strip():
-            raise ValueError("plan_add_node needs node_id and target")
+        if not str(step_id).strip() or not str(target).strip():
+            raise ValueError("workflow_add_step needs step_id and target")
         return {
             "proposed": True,
             "run": run_id,
-            "node_id": node_id,
+            "step_id": step_id,
             "target": target,
             "after": list(after or []),
             **({"options": dict(options)} if options else {}),
-            "note": "The plan applies this after your call, within its bounds and approvals.",
+            "note": "The workflow applies this after your call, within its bounds and approvals.",
         }
 
-    def plan_cancel_node(node_id: str, reason: str = "") -> dict[str, Any]:
-        if not str(node_id).strip():
-            raise ValueError("plan_cancel_node needs node_id")
-        return {"proposed": True, "run": run_id, "node_id": node_id, "cancel": True}
+    def workflow_cancel_step(step_id: str, reason: str = "") -> dict[str, Any]:
+        if not str(step_id).strip():
+            raise ValueError("workflow_cancel_step needs step_id")
+        return {"proposed": True, "run": run_id, "step_id": step_id, "cancel": True}
 
     return [
         native_tool(
-            plan_add_node,
-            name="plan_add_node",
+            workflow_add_step,
+            name="workflow_add_step",
             domain="tasks",
-            title="Propose plan node",
+            title="Propose workflow step",
             desc=(
-                "Propose a new node for the running plan you are editing: a target, its input "
-                "and the nodes it waits on (by default your own node). The plan applies it after "
+                "Propose a new step for the running workflow you are editing: a target, its input "
+                "and the steps it waits on (by default your own step). The workflow applies it after "
                 "your call, within its growth bounds and approvals."
             ),
             args={
-                "node_id": {"type": "string"},
+                "step_id": {"type": "string"},
                 "target": {"type": "string"},
-                "input": {"description": "Text or an object; $task and $<node> refer to inputs."},
+                "input": {"description": "Text or an object; $task and $<step> refer to inputs."},
                 "after": {
                     "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
                     "default": None,
@@ -303,15 +303,15 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
                     "description": "For a flow target: its options, e.g. arena contestants.",
                 },
             },
-            presentation="fields:node_id,target,note",
+            presentation="fields:step_id,target,note",
         ),
         native_tool(
-            plan_cancel_node,
-            name="plan_cancel_node",
+            workflow_cancel_step,
+            name="workflow_cancel_step",
             domain="tasks",
-            title="Propose cancelling a plan node",
-            desc="Propose cancelling a plan node that has not started yet.",
-            args={"node_id": {"type": "string"}, "reason": {"type": "string", "default": ""}},
-            presentation="fields:node_id,cancel",
+            title="Propose cancelling a workflow step",
+            desc="Propose cancelling a workflow step that has not started yet.",
+            args={"step_id": {"type": "string"}, "reason": {"type": "string", "default": ""}},
+            presentation="fields:step_id,cancel",
         ),
     ]

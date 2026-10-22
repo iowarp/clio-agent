@@ -1,8 +1,8 @@
 """What a flow run shows: its checkpoint in task history, projected for the run view.
 
 A flow run is the checkpoint under its owning assignment (D1). The projection
-joins the flow's published view (the ``plan`` flow publishes its nodes, and the
-proposals awaiting approval) with the run's recorded calls, so each node carries
+joins the flow's published view (the ``workflow`` flow publishes its steps, and the
+proposals awaiting approval) with the run's recorded calls, so each step carries
 its task handle and that task's status, and lists the run's events and open
 questions. A run that ended on a typed outcome carries it as ``outcome``.
 """
@@ -26,8 +26,8 @@ def flow_run(history: Any, handle: str) -> dict[str, Any] | None:
         return None
     calls = dict(content.get("calls") or {})
     view = content.get("view")
-    if isinstance(view, dict) and isinstance(view.get("nodes"), list):
-        view = {**view, "nodes": [_node(row, calls) for row in view["nodes"]]}
+    if isinstance(view, dict) and isinstance(view.get("steps"), list):
+        view = {**view, "steps": [_step(row, calls) for row in view["steps"]]}
     status = str(content.get("status") or "running")
     result = content.get("result")
     return {
@@ -59,7 +59,7 @@ def flow_run(history: Any, handle: str) -> dict[str, Any] | None:
     }
 
 
-def _node(row: dict[str, Any], calls: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _step(row: dict[str, Any], calls: dict[str, dict[str, Any]]) -> dict[str, Any]:
     call = calls.get(str(row.get("invocation") or "")) or {}
     return {
         **row,

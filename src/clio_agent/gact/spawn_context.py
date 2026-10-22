@@ -66,7 +66,7 @@ def resolve_child_agent(
 
     parent = session_resolution(app, parent_id)
     if agent_id == "self":
-        # A flow run (``run_flow``, ``run_plan``, ``ctx.call`` on a flow) runs the
+        # A flow run (``run_flow``, ``run_workflow``, ``ctx.call`` on a flow) runs the
         # parent's own agent, pinned to the parent's exact resolution and delta.
         session = app.state.sessions.get(parent_id)
         metadata = dict(getattr(session, "metadata", None) or {})

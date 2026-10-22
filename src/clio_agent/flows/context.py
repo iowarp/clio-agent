@@ -71,7 +71,7 @@ class FlowCall:
         self.invocation = invocation
         self.evidence = list(evidence or [])
         self.index = -1
-        #: Set by the plan flow for an editor's call: the child gets the plan editor tools.
+        #: Set by the workflow flow for an editor's call: the child gets the editor tools.
         self.editor: dict[str, Any] | None = None
         self._task: asyncio.Future[CallResult] | None = None
 
@@ -267,7 +267,7 @@ class FlowContext:
         ``evidence`` pins earlier task handles as the child's input evidence
         (``input_task_refs``); nothing else from this flow is passed implicitly.
         ``key`` replaces the call site in the invocation id when the caller
-        starts calls in an order replay may not repeat (the plan flow keys each
+        starts calls in an order replay may not repeat (the workflow flow keys each
         node's call by node id); keys must be unique within the run.
         """
 
@@ -496,7 +496,7 @@ class FlowContext:
         return await asyncio.to_thread(context.run, lambda: program(**kwargs))
 
     async def publish(self, view: dict[str, Any]) -> None:
-        """Replace the run's live view, which the flow run view draws (the plan's nodes).
+        """Replace the run's live view, which the flow run view draws (the workflow's steps).
 
         The view lives in the run's checkpoint and is overwritten on each publish,
         so it never counts toward the checkpoint limit and replays converge on it.
@@ -506,7 +506,7 @@ class FlowContext:
         await self.journal.publish(_plain(view))
 
     async def record_event(self, event: dict[str, Any]) -> None:
-        """Record a run event (a plan edit, a stall) in the checkpoint, once.
+        """Record a run event (a workflow edit, a stall) in the checkpoint, once.
 
         Events are keyed like calls, so a replay that re-runs ``forward`` does
         not record them twice.
@@ -580,7 +580,7 @@ class FlowContext:
                 }
             }
         if call.editor is not None:
-            session_metadata = {**(session_metadata or {}), "plan_editor": dict(call.editor)}
+            session_metadata = {**(session_metadata or {}), "workflow_editor": dict(call.editor)}
         elif call.name == "self":
             # ``self`` is this agent as a worker: its own resolution on the
             # ``react`` flow, not its selected flow, so a flow's helpers never

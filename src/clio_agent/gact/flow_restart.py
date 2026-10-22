@@ -1,6 +1,6 @@
 """Restarting a started flow restarts its run, whichever of its handles is named.
 
-A flow started through ``run_flow``/``run_plan``/``ctx.call`` runs in its own
+A flow started through ``run_flow``/``run_workflow``/``ctx.call`` runs in its own
 session. Input that reaches that session after the run ended opens a later
 assignment there which only passes the input on (``flows.runner``), so the
 handle a person or agent sees for the flow is soon not the session's latest.

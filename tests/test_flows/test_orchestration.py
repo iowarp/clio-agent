@@ -191,15 +191,15 @@ def test_cancelling_a_flow_whose_members_stop_cooperatively_settles_its_subtree(
 
 
 def _plan_starter(client: TestClient, fail_once: set[str]) -> dict[str, Any]:
-    """Script the orchestrator to start a three-node plan; nodes in ``fail_once`` fail
+    """Script the orchestrator to start a three-step workflow; steps in ``fail_once`` fail
     on their first attempt only."""
 
     from clio_agent.gact.flow_tools import start_flow
 
     started: dict[str, Any] = {}
     attempts: dict[str, int] = {}
-    plan = {
-        "nodes": [
+    workflow = {
+        "steps": [
             {"id": "gather", "target": "self", "input": "STEP gather"},
             {"id": "measure", "target": "self", "input": "STEP measure", "after": ["gather"]},
             {"id": "report", "target": "self", "input": "STEP report", "after": ["measure"]},
@@ -213,8 +213,10 @@ def _plan_starter(client: TestClient, fail_once: set[str]) -> dict[str, Any]:
             if step in fail_once and attempts[step] == 1:
                 raise RuntimeError(f"{step} failed on its first attempt")
             return dspy.Prediction(answer=f"{step} done")
-        if question.startswith("run the plan") and not started:
-            started.update(asyncio.run(start_flow("plan", {"plan": plan, "task": "t"}, None)))
+        if question.startswith("run the workflow") and not started:
+            started.update(
+                asyncio.run(start_flow("workflow", {"workflow": workflow, "task": "t"}, None))
+            )
             started["attempts"] = attempts
             return dspy.Prediction(answer=f"started {started['handle']}")
         return default_program(question=question, **kwargs)
@@ -226,13 +228,13 @@ def _plan_starter(client: TestClient, fail_once: set[str]) -> dict[str, Any]:
 def _node_handles(client: TestClient, handle: str) -> dict[str, str]:
     sid = _snapshot(client, handle).owner.session_id
     view = client.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
-    return {row["id"]: row.get("handle", "") for row in (view.get("view") or {}).get("nodes", [])}
+    return {row["id"]: row.get("handle", "") for row in (view.get("view") or {}).get("steps", [])}
 
 
 def test_a_restarted_plan_keeps_finished_nodes_and_reruns_the_rest(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/orchestrator")
     started = _plan_starter(flow_app, {"measure"})
-    post(flow_app, sid, "run the plan")
+    post(flow_app, sid, "run the workflow")
     handle = wait_until(lambda: started.get("handle"))
     wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
     assert _snapshot(flow_app, handle).status == "failed"
@@ -248,7 +250,7 @@ def test_a_restarted_plan_keeps_finished_nodes_and_reruns_the_rest(flow_app: Tes
     wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
     assert _snapshot(flow_app, restarted.handle).status == "completed"
     after = _node_handles(flow_app, restarted.handle)
-    # The finished node is the same task; only the failed one and its dependent ran again.
+    # The finished step is the same task; only the failed one and its dependent ran again.
     assert after["gather"] == before["gather"]
     assert after["measure"] != before["measure"] and after["report"]
     assert started["attempts"] == {"gather": 1, "measure": 2, "report": 1}
@@ -257,7 +259,7 @@ def test_a_restarted_plan_keeps_finished_nodes_and_reruns_the_rest(flow_app: Tes
 def test_a_message_after_the_run_ended_does_not_run_the_flow_again(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/orchestrator")
     started = _plan_starter(flow_app, set())
-    post(flow_app, sid, "run the plan")
+    post(flow_app, sid, "run the workflow")
     handle = wait_until(lambda: started.get("handle"))
     wait_until(lambda: _snapshot(flow_app, handle).status == "completed", timeout=60)
     plan_session = _snapshot(flow_app, handle).owner.session_id
@@ -282,7 +284,7 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
 
     rows = [
         {"id": "react", "description": "default"},
-        {"id": "plan", "description": "plans"},
+        {"id": "workflow", "description": "workflows"},
         {"id": "arena", "description": "Several contestants attempt the same task."},
         {"id": "council", "description": "Several members answer the same question."},
     ]
@@ -291,7 +293,7 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
     desc = flow_tools.build_run_flow_tool().desc
     assert "- arena: Several contestants attempt the same task." in desc
     assert "- council: Several members answer the same question." in desc
-    assert "- react:" not in desc and "- plan:" not in desc
+    assert "- react:" not in desc and "- workflow:" not in desc
 
 
 def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClient) -> None:
@@ -339,11 +341,11 @@ def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
     flow_app: TestClient,
 ) -> None:
     """Late input leaves pass-on assignments after the run; a restart named on the
-    flow's own handle still resumes the run, keeping its finished nodes."""
+    flow's own handle still resumes the run, keeping its finished steps."""
 
     sid = new_session(flow_app, "clio/orchestrator")
     started = _plan_starter(flow_app, {"measure"})
-    post(flow_app, sid, "run the plan")
+    post(flow_app, sid, "run the workflow")
     handle = wait_until(lambda: started.get("handle"))
     wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
     before = _node_handles(flow_app, handle)
@@ -373,7 +375,7 @@ def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
 def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/orchestrator")
     started = _plan_starter(flow_app, {"measure", "report"})
-    post(flow_app, sid, "run the plan")
+    post(flow_app, sid, "run the workflow")
     handle = wait_until(lambda: started.get("handle"))
     plan_session = _snapshot(flow_app, handle).owner.session_id
     history = flow_app.app.state.task_history
@@ -396,15 +398,15 @@ def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) 
 
 
 def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClient) -> None:
-    """A model-written plan composes flows: one node is an arena of two contestants."""
+    """A model-written workflow composes flows: one step is an arena of two contestants."""
 
     from dspy.utils.dummies import DummyLM
 
     from clio_agent.gact.flow_tools import start_flow
 
     started: dict[str, Any] = {}
-    plan = {
-        "nodes": [
+    workflow = {
+        "steps": [
             {"id": "facts", "target": "self", "input": "STEP facts"},
             {
                 "id": "titles",
@@ -424,8 +426,10 @@ def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClie
             return dspy.Prediction(answer=f"title {entries['n']}")
         if question.startswith("STEP"):
             return dspy.Prediction(answer="ok")
-        if question.startswith("run the plan") and not started:
-            started.update(asyncio.run(start_flow("plan", {"plan": plan, "task": "t"}, None)))
+        if question.startswith("run the workflow") and not started:
+            started.update(
+                asyncio.run(start_flow("workflow", {"workflow": workflow, "task": "t"}, None))
+            )
             return dspy.Prediction(answer=f"started {started['handle']}")
         return default_program(question=question, **kwargs)
 
@@ -433,16 +437,16 @@ def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClie
     dspy.configure(lm=DummyLM([{"reasoning": "r", "winner": "1", "rationale": "Shorter."}]))
     try:
         sid = new_session(flow_app, "clio/orchestrator")
-        post(flow_app, sid, "run the plan")
+        post(flow_app, sid, "run the workflow")
         handle = wait_until(lambda: started.get("handle"))
         wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
     finally:
         dspy.configure(lm=None)
-    assert entries["n"] == 2  # the arena ran with the plan's two contestants
+    assert entries["n"] == 2  # the arena ran with the workflow's two contestants
     view = flow_app.get(
         f"/v1/sessions/{_snapshot(flow_app, handle).owner.session_id}/tasks/{handle}/flow"
     ).json()
-    nodes = {row["id"]: row for row in view["view"]["nodes"]}
-    assert nodes["titles"]["status"] == "completed"
-    assert nodes["titles"]["options"] == {"contestants": ["self", "self"]}
-    assert nodes["bad"]["status"] == "failed"
+    steps = {row["id"]: row for row in view["view"]["steps"]}
+    assert steps["titles"]["status"] == "completed"
+    assert steps["titles"]["options"] == {"contestants": ["self", "self"]}
+    assert steps["bad"]["status"] == "failed"
