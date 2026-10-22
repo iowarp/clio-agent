@@ -88,7 +88,7 @@ The `gact.agents.task_guidance` and `gact.agents.github_shell_guidance` rows are
 
 | Module or symbol | Production callers at `2c100d5` | Replacement |
 | --- | --- | --- |
-| `src/clio_agent/gact/workflows.py` (`parse_workflow`, `run_declared_workflow`, `repair_workflow_reference`, `workflow_validation_errors`) | `gact.conversation_recovery`, `gact.expert_packs`, `gact.task_declarations` | Flows (`clio_agent/flows/`) and the `plan` flow. Typed stalls move into `ctx.gather` and the plan flow; `conversation_recovery` repairs flow checkpoint references |
+| `src/clio_agent/gact/workflows.py` (`parse_workflow`, `run_declared_workflow`, `repair_workflow_reference`, `workflow_validation_errors`) | `gact.conversation_recovery`, `gact.expert_packs`, `gact.task_declarations` | Flows (`clio_agent/flows/`) and the `workflow` flow (named `plan` until the rename). Typed stalls move into `ctx.gather` and the workflow flow; `conversation_recovery` repairs flow checkpoint references |
 | `workflow:` block parsing in expert files | `gact.expert_packs` | None. The one shipped `workflow:` (wildfire `main`) becomes a `Plan` in the wildfire plugin |
 | `run_workflow` tool in `build_spawn_runtime_tools` | `gact.agents.builders`, `gact.catalog` | `run_workflow` (workflows as data) and `run_flow` in the `orchestration` plugin |
 | `merge_run_workflow_states` in `gact/workflow_state/merge.py` | none (unused) | Spawn-order merge with conflict reports inside `ctx.gather` |
