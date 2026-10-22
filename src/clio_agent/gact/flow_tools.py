@@ -45,17 +45,38 @@ async def permit_flow(
 ) -> dict[str, Any] | None:
     """Ask the person to run ``flow_id`` when its plugin is not trusted in its installed
     version; ``None`` when it may start (or no installed plugin declares it), else the
-    refusal. Allowed, the plugin is trusted and added to this conversation."""
+    refusal. Allowed, the plugin is trusted and added to this conversation. A flow of a
+    trusted plugin this agent lacks is added to the conversation without a question."""
 
     from clio_agent.flows.values import _plain  # noqa: PLC0415
-    from clio_agent.gact.agents.resolution import plugin_service  # noqa: PLC0415
-    from clio_agent.gact.plugin_authoring import permit_untrusted_flow  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        plugin_service,
+    )
+    from clio_agent.gact.plugin_authoring import (  # noqa: PLC0415
+        add_to_conversation,
+        outside_flows,
+        permit_untrusted_flow,
+    )
 
+    store = plugin_service(app).store
     available = await app.state.task_history.io.run(_flows, app, caller.session_id)
     row = next((row for row in available if row["id"] == flow_id), None)
-    waiting = {r.id for r in await asyncio.to_thread(plugin_service(app).store.pending)}
+    waiting = {r.id for r in await asyncio.to_thread(store.pending)}
     if row is not None and row["plugin"] not in waiting:
         return None
+    if row is None:
+        resolved = {r["id"] for r in available}
+        rows = await asyncio.to_thread(outside_flows, store, resolved)
+        outside = next((r for r in rows if r["flow"] == flow_id), None)
+        if outside is not None:
+            try:
+                await asyncio.to_thread(
+                    add_to_conversation, app, caller.session_id, [outside["ref"]]
+                )
+            except SessionAgentUnavailable as exc:
+                return {"accepted": False, "reason": "flow_not_added", "error": str(exc)}
+            return None
     call = {"input": _plain(flow_input), "options": _plain(options or {})}
     permit = await permit_untrusted_flow(app, caller.session_id, flow_id, call)
     return permit if permit is not None and not permit.get("trusted") else None
@@ -108,7 +129,7 @@ def _run_flow_description() -> str:
         SessionAgentUnavailable,
         plugin_service,
     )
-    from clio_agent.gact.plugin_authoring import untrusted_flows  # noqa: PLC0415
+    from clio_agent.gact.plugin_authoring import outside_flows, untrusted_flows  # noqa: PLC0415
 
     base = (
         "Start one of this agent's flows as owned work and return its task handle at "
@@ -126,9 +147,19 @@ def _run_flow_description() -> str:
         if row["id"] not in {"react", "workflow"} and row.get("description")
     ]
     described = base + ("\nFlows:\n" + "\n".join(listed) if listed else "")
+    store = plugin_service(app).store
+    outside = [
+        f"- {row['flow']}: {row['description']} (the {row['plugin']} plugin)"
+        for row in outside_flows(store, {row["id"] for row in rows})
+    ]
+    if outside:
+        described += (
+            "\nInstalled and trusted, not in this agent yet; running one (here or as a "
+            "workflow step) adds its plugin to this conversation:\n" + "\n".join(outside)
+        )
     waiting = [
         f"- {row['flow']}: {row['description']} (the {row['plugin']} plugin, by {row['author']})"
-        for row in untrusted_flows(plugin_service(app).store)
+        for row in untrusted_flows(store)
     ]
     if waiting:
         described += (

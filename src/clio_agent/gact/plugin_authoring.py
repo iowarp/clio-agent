@@ -34,7 +34,7 @@ from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.plugins import authored
 from clio_agent.plugins.check import check
 from clio_agent.plugins.resolve import Delta
-from clio_agent.plugins.store import StoreError
+from clio_agent.plugins.store import BUILTIN_MARKETPLACE, StoreError
 
 
 def _authored_by_clio(store: Any, market: str, snapshot: Path) -> bool:
@@ -116,15 +116,9 @@ def installed_review(app: Any, name: str) -> dict[str, Any]:
     }
 
 
-def trust_and_add(app: Any, market: str, session_id: str, *, reason: str) -> list[str]:
-    """Trust ``market`` and add its plugins to ``session_id``'s agent; returns their refs."""
+def add_to_conversation(app: Any, session_id: str, refs: list[str]) -> list[str]:
+    """Add the plugins ``refs`` to ``session_id``'s agent; returns the refs it added."""
 
-    store = plugin_service(app).store
-    store.trust(market, reason=reason)
-    installed_changed(app)
-    refs = sorted(
-        f"{row.marketplace}/{row.id}" for row in store.records() if row.marketplace == market
-    )
     delta = session_delta(app, session_id)
     added = [ref for ref in refs if ref not in delta.add]
     pin_session_agent(
@@ -134,7 +128,38 @@ def trust_and_add(app: Any, market: str, session_id: str, *, reason: str) -> lis
     )
     prompt_basis.settle_basis(app, session_id)
     session_warmup.start_session_warmup(app, session_id, trigger="agent_changed")
+    return added
+
+
+def trust_and_add(app: Any, market: str, session_id: str, *, reason: str) -> list[str]:
+    """Trust ``market`` and add its plugins to ``session_id``'s agent; returns their refs."""
+
+    store = plugin_service(app).store
+    store.trust(market, reason=reason)
+    installed_changed(app)
+    refs = sorted(
+        f"{row.marketplace}/{row.id}" for row in store.records() if row.marketplace == market
+    )
+    add_to_conversation(app, session_id, refs)
     return refs
+
+
+def outside_flows(store: Any, resolved: set[str]) -> list[dict[str, Any]]:
+    """Flows that trusted installed plugins declare and this agent does not resolve: running
+    one adds its plugin (``ref``) to the conversation, with no question, as it is trusted."""
+
+    rows: list[dict[str, Any]] = []
+    for record in store.records():
+        if not record.flows or not store.trusted(record):
+            continue
+        builtin = record.marketplace == BUILTIN_MARKETPLACE
+        ref = record.id if builtin else f"{record.marketplace}/{record.id}"
+        rows.extend(
+            {"flow": flow.id, "description": flow.description, "plugin": record.id, "ref": ref}
+            for flow in record.flows
+            if flow.id not in resolved
+        )
+    return rows
 
 
 def _ask_to_run(

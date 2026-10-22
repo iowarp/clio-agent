@@ -296,3 +296,29 @@ def test_the_model_is_told_which_installed_flows_are_not_trusted_yet(
     described = wait_until(lambda: done.get("describe run_flow"), timeout=60)
     assert "Installed but not trusted yet" in described
     assert "- tally: Counts votes. (the tally plugin, by Clio)" in described
+
+
+def test_a_trusted_flow_outside_this_agent_is_added_and_runs_without_asking(
+    flow_app: TestClient,
+) -> None:
+    """Trusted in one conversation, the flow runs in another: its plugin joins that
+    conversation's agent, with no second question."""
+
+    done = _script(flow_app)
+    first = _session(flow_app, "ask")
+    _made(flow_app, first, done, "0.1.0")
+    post(flow_app, first, "run tally")
+    flow_app.post(f"/v1/permissions/{_permission(flow_app)['id']}", json={"action": "allow"})
+    assert wait_until(lambda: done.get("run tally"), timeout=60)["accepted"]
+    second = _session(flow_app, "ask")
+    assert "tally/tally" not in _delta(flow_app, second)
+    post(flow_app, second, "run tally here")
+    started = wait_until(lambda: done.get("run tally here"), timeout=60)
+    assert started["accepted"], started
+    assert "tally/tally" in _delta(flow_app, second)
+    pending = [
+        row
+        for row in flow_app.get("/v1/permissions").json()["permissions"]
+        if row["tool_call"]["tool_name"] == "run_flow" and row["status"] == "pending"
+    ]
+    assert pending == []

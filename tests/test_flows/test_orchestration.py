@@ -304,12 +304,18 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
     untrusted = {"flow": "tally", "description": "Counts votes.", "plugin": "lab", "author": "lab"}
     monkeypatch.setattr(resolution, "plugin_service", lambda app: SimpleNamespace(store=None))
     monkeypatch.setattr(plugin_authoring, "untrusted_flows", lambda store: [untrusted])
+    outside = {"flow": "two-takes", "description": "Two takes.", "plugin": "two-takes"}
+    monkeypatch.setattr(plugin_authoring, "outside_flows", lambda store, resolved: [outside])
     desc = flow_tools.build_run_flow_tool().desc
     assert "- arena: Several contestants attempt the same task." in desc
     assert "- council: Several members answer the same question." in desc
     assert "- react:" not in desc and "- workflow:" not in desc
     # An installed flow not trusted yet is named too, so the model can ask to run it.
     assert "not trusted yet" in desc and "- tally: Counts votes. (the lab plugin, by lab)" in desc
+    # A trusted flow this agent lacks is named too: running it adds its plugin.
+    assert (
+        "not in this agent yet" in desc and "- two-takes: Two takes. (the two-takes plugin)" in desc
+    )
 
 
 def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClient) -> None:
