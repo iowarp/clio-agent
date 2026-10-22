@@ -329,7 +329,13 @@ def import_claude_plugin(
             dependencies.append(str(PluginRef.parse(str(name))))
         except VersionRangeError as exc:
             diagnostics.append(Diagnostic("error", "dependency_invalid", str(exc), plugin))
-    skills, skill_diags = _skills(root, plugin)
+    # A marketplace entry (or the plugin's manifest) may name exactly which skill
+    # folders this plugin brings; several plugins can then share one source folder.
+    listed = entry.get("skills", manifest.get("skills"))
+    if isinstance(listed, str):
+        listed = [listed]
+    only = [str(item) for item in listed] if isinstance(listed, list) else None
+    skills, skill_diags = _skills(root, plugin, only)
     servers, server_diags = _servers(root, plugin)
     hooks, hook_diags, scripts = _hooks(root, plugin)
     subagents, subagent_diags = _subagents(root, plugin)

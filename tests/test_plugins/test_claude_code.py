@@ -150,3 +150,42 @@ def test_marketplace_sources_and_federation(tmp_path: Path) -> None:
         ("coder", "https://github.com/o/coder.git", "def456")
     ]
     assert [d.code for d in contents.diagnostics] == ["plugin_source_unpinned"]
+
+
+def test_a_marketplace_entry_names_exactly_the_skills_its_plugin_brings(tmp_path: Path) -> None:
+    """anthropics/skills: several plugins share one folder, each listing its skills."""
+
+    from clio_agent.plugins.store import PluginStore
+
+    root = tmp_path / "skills-market"
+    for name, description in (("xlsx", "Spreadsheets."), ("pdf", "PDFs."), ("long", "x" * 1100)):
+        write(
+            root / "skills" / name / "SKILL.md",
+            f"---\nname: {name}\ndescription: {description}\n---\nBody.\n",
+        )
+    entries = [
+        {
+            "name": "document-skills",
+            "source": "./",
+            "strict": False,
+            "skills": ["./skills/xlsx", "./skills/pdf"],
+        },
+        {
+            "name": "long-skill",
+            "source": "./",
+            "strict": False,
+            "skills": ["./skills/long", "./skills/gone"],
+        },
+    ]
+    write(
+        root / ".claude-plugin" / "marketplace.json", json.dumps({"name": "m", "plugins": entries})
+    )
+    store = PluginStore(tmp_path / "store")
+    store.install(str(root))
+    by_id = {r.id: r for r in store.records() if r.marketplace == "m"}
+    assert [s.id for s in by_id["document-skills"].skills] == ["xlsx", "pdf"]
+    assert [s.id for s in by_id["long-skill"].skills] == ["long"]
+    assert {d.code for d in by_id["long-skill"].diagnostics} == {
+        "skill_description_long",
+        "skill_missing",
+    }

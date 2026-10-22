@@ -20,7 +20,7 @@ import re
 import sys
 import traceback
 import types
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -189,15 +189,37 @@ def _python_files(clio_dir: Path, folder: str) -> list[Path]:
     return sorted(path for path in base.glob("*.py") if path.name != "__init__.py")
 
 
-def _skills(root: Path, plugin: str) -> tuple[list[SkillRecord], list[Diagnostic]]:
-    skills_dir = root / "skills"
-    if not skills_dir.exists():
-        return [], []
-    if not skills_dir.is_dir() or not within(root, skills_dir):
-        return [], [Diagnostic("error", "skills_invalid", "skills is not a directory", plugin)]
+def _skills(
+    root: Path, plugin: str, only: Sequence[str] | None = None
+) -> tuple[list[SkillRecord], list[Diagnostic]]:
+    """The plugin's skills: every folder under ``skills/``, or exactly the folders
+    ``only`` names (a Claude Code marketplace entry's ``skills`` list)."""
+
     out: list[SkillRecord] = []
     diagnostics: list[Diagnostic] = []
-    for child in sorted(skills_dir.iterdir()):
+    if only is not None:
+        children = []
+        for relative in only:
+            child = (root / relative).resolve()
+            if not within(root, child) or not (child / "SKILL.md").is_file():
+                diagnostics.append(
+                    Diagnostic(
+                        "warning",
+                        "skill_missing",
+                        f"listed skill {relative!r} is not a skill folder",
+                        plugin,
+                    )
+                )
+                continue
+            children.append(child)
+    else:
+        skills_dir = root / "skills"
+        if not skills_dir.exists():
+            return [], []
+        if not skills_dir.is_dir() or not within(root, skills_dir):
+            return [], [Diagnostic("error", "skills_invalid", "skills is not a directory", plugin)]
+        children = sorted(skills_dir.iterdir())
+    for child in children:
         skill_file = child / "SKILL.md"
         if not child.is_dir() or not skill_file.is_file():
             continue
@@ -223,13 +245,24 @@ def _skills(root: Path, plugin: str) -> tuple[list[SkillRecord], list[Diagnostic
             problem = f"name {name!r} does not match its directory {child.name!r}"
         elif len(name) > 64 or not _SKILL_NAME_RE.match(name):
             problem = f"name {name!r} must be lowercase letters, digits and single hyphens"
-        elif not description or len(description) > 1024:
-            problem = "description must be 1-1024 characters"
+        elif not description:
+            problem = "SKILL.md has no description"
         if problem:
             diagnostics.append(
                 Diagnostic("warning", "skill_invalid", f"skill {child.name}: {problem}", plugin)
             )
             continue
+        if len(description) > 1024:
+            # Over the Agent Skills limit, but the skill itself is fine: keep it, say so.
+            diagnostics.append(
+                Diagnostic(
+                    "warning",
+                    "skill_description_long",
+                    f"skill {child.name}: description is {len(description)} characters, "
+                    "over the 1024 the Agent Skills format allows",
+                    plugin,
+                )
+            )
         out.append(SkillRecord(id=name, description=description, path=str(skill_file)))
     return out, diagnostics
 
