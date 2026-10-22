@@ -135,7 +135,11 @@ def _proxy_for_spec(
     from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
 
     base_backend = make_mcp_client(
-        transport, handlers=handlers, capabilities=capabilities, client_cls=ProxyClient
+        transport,
+        handlers=handlers,
+        capabilities=capabilities,
+        client_cls=ProxyClient,
+        list_changed_namespace=spec.name,
     )
 
     def _client_factory() -> Any:

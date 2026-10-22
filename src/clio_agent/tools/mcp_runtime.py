@@ -385,6 +385,7 @@ def make_mcp_client(
     capabilities: MCPClientCapabilities | None = None,
     client_cls: Callable[..., Any] | None = None,
     server_id: str = "",
+    list_changed_namespace: str = "",
 ) -> Any:
     """Construct an execution-path FastMCP client with CLIO identity + the handler slot.
 
@@ -450,6 +451,10 @@ def make_mcp_client(
             front leg is comparatively low-value -- see that module's
             docstring for why a PROXIED backend's real era is only ever
             observable at the seam that dials it, not at the front).
+        list_changed_namespace: The namespace a ``notifications/tools/list_changed``
+            on this client is recorded under, for a client that must not be
+            era-instrumented itself (the gateway proxy's never-entered base backend,
+            whose clones share its message handler). Defaults to ``server_id``.
     Extensions (#1115, #1283): every client built here declares the FULL generic MCP
     extension registry (:func:`clio_agent.tools.mcp_extension_registry.
     extensions_declaration`) — tasks (SEP-2663, so a task-serving backend may run a
@@ -553,10 +558,11 @@ def make_mcp_client(
     message_handler: Callable[[Any], Any] | None = (
         MessageMultiplexer(handlers.message) if handlers is not None and handlers.message else None
     )
-    if server_id:
+    listen_namespace = server_id or list_changed_namespace
+    if listen_namespace:
         from clio_agent.tools.mcp_listen import combined_message_handler  # noqa: PLC0415
 
-        message_handler = combined_message_handler(server_id, message_handler)
+        message_handler = combined_message_handler(listen_namespace, message_handler)
     if message_handler is not None:
         kwargs["message_handler"] = message_handler
 

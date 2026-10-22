@@ -19,6 +19,11 @@ from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.composition import _runtime_active_workspace_context
+from clio_agent.gact.agents.live_tool_refresh import (
+    LiveToolScope,
+    live_tool_refresher,
+    refresh_executor_tools,
+)
 from clio_agent.gact.agents.lm_resolution import (
     _default_profile_spec as _default_profile_spec,
 )
@@ -183,8 +188,13 @@ def _agent_tools(
     *,
     supports_vision: bool,
     supports_pdf: bool,
+    live: LiveToolScope | None = None,
 ) -> list[Any]:
-    """Every tool the resolved agent's plugins provide, built for this turn."""
+    """Every tool the resolved agent's plugins provide, built for this turn.
+
+    ``live`` receives the executor and the namespaces taken whole, for the agent's
+    mid-turn tool refresh (:mod:`clio_agent.gact.agents.live_tool_refresh`).
+    """
 
     claimed = [row["name"] for row in resolution.tools if row["kind"] == "native"]
     allowed = set(agent_def.tools)
@@ -217,11 +227,15 @@ def _agent_tools(
                 reason="custom_agent_tool_executor_unavailable",
                 tools=[*gateway_names, *namespaces],
             )
+        refresh_executor_tools(tool_executor)  # a server's tools/list_changed since last turn
         picked, mount_failures = _gateway_and_namespace_tools(
             tool_executor, gateway_names, namespaces
         )
+        whole = set(namespaces) - set(mount_failures)
         if not agent_def.parent_id:
-            attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
+            whole |= attach_always_load_tools(tool_executor, picked, mount_failures, list(picked))
+        if live is not None:
+            live.executor, live.namespaces = tool_executor, whole
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in picked:
             prefix, sep, bare = name.partition("_")
@@ -540,6 +554,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )
+            live = LiveToolScope()
             if self.kind == "react":
                 sources = cast(dict[str, str], {})
                 tools = _agent_tools(
@@ -548,6 +563,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                     resolution,
                     sources,
                     **declared_native_capabilities(self.config),
+                    live=live,
                 )
                 claimed = {row["name"] for row in resolution.tools if row["kind"] == "native"}
                 if claimed & {"spawn_agent_task", "spawn_agents_parallel"}:
@@ -605,6 +621,7 @@ def build_agent_module(base_agent: Any, agent_def: "AgentDef", resolution: "Reso
                 # An agent stripped to zero tools (tool_allowlist == []) answers directly.
                 self.program = ClioReAct(self.signature, tools=[])
             object.__setattr__(self.program, "_clio_expert_id", agent_def.id)
+            object.__setattr__(self.program, "_clio_tool_refresh", live_tool_refresher(live))
             object.__setattr__(
                 self.program,
                 "_clio_unlisted",

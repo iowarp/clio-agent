@@ -322,10 +322,7 @@ class _Loop:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
-        unlisted: frozenset[str] = getattr(agent, "_clio_unlisted", frozenset())
-        self.tools = tuple(
-            _function_tool(t) for t in agent.tools.values() if t.name not in unlisted
-        )
+        self.tools = self._listed_tools()
         self.config = _with_cache_key(config_from_lm_kwargs(sendable_lm_kwargs(self.lm)), self.lm)
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.arc, self.session, self.scope = record.arc_scope()
@@ -393,6 +390,20 @@ class _Loop:
             if continue_token is not None:
                 _CONTINUING.reset(continue_token)
 
+    def _listed_tools(self) -> tuple[FunctionTool, ...]:
+        unlisted: frozenset[str] = getattr(self.agent, "_clio_unlisted", frozenset())
+        return tuple(_function_tool(t) for t in self.agent.tools.values() if t.name not in unlisted)
+
+    def _refresh_tools(self) -> None:
+        """Offer the tools a connected MCP server added or removed (``tools/list_changed``).
+
+        :mod:`clio_agent.gact.agents.live_tool_refresh` owns the refresh; a call this
+        step that unlocked tools makes them callable at the next step.
+        """
+        refresh = getattr(self.agent, "_clio_tool_refresh", None)
+        if refresh is not None and refresh(self.agent.tools):
+            self.tools = self._listed_tools()
+
     def _tool_use_note(self) -> list[tuple[str, str]]:
         """Tell an agent with tools, once, that one step may call several at once."""
         return [("tool_use", TOOL_USE_NOTE)] if set(self.agent.tools) - {"submit"} else []
@@ -415,6 +426,7 @@ class _Loop:
 
         _raise_if_cancelled()
         self._arrivals()
+        self._refresh_tools()
         maybe_autocompact(self.autocompact)
         attempt = 0
 
