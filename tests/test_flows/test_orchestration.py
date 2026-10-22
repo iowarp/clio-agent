@@ -311,7 +311,7 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
     assert "- council: Several members answer the same question." in desc
     assert "- react:" not in desc and "- workflow:" not in desc
     # An installed flow not trusted yet is named too, so the model can ask to run it.
-    assert "not trusted yet" in desc and "- tally: Counts votes. (the lab plugin, by lab)" in desc
+    assert "not trusted yet" in desc and "- tally (the lab plugin, by lab)" in desc
     # A trusted flow this agent lacks is named too: running it adds its plugin.
     assert (
         "not in this agent yet" in desc and "- two-takes: Two takes. (the two-takes plugin)" in desc

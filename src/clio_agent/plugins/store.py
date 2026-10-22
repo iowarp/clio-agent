@@ -470,12 +470,16 @@ class PluginStore:
             state["agents"][f"{market}/{spec.id}"] = spec.to_dict()
         return [spec.id for spec in specs]
 
-    def trust(self, market: str, *, reason: str = "explicit_trust_step") -> dict[str, Any]:
+    def trust(
+        self, market: str, *, reason: str = "explicit_trust_step", snapshot: str = ""
+    ) -> dict[str, Any]:
         """The explicit trust step: trust the marketplace's current executable parts.
 
         ``reason`` records who trusted it: the person in Settings or the CLI
         (``explicit_trust_step``), or a plugin Clio wrote, approved in its
         conversation or under bypass (:mod:`clio_agent.plugins.authored`).
+        ``snapshot``, when given, is the content that was reviewed: a marketplace
+        whose installed content changed since is refused, never trusted unseen.
         """
 
         with self.lock:
@@ -485,10 +489,15 @@ class PluginStore:
                 raise StoreError(
                     "marketplace_not_installed", f"marketplace {market!r} is not installed"
                 )
-            snapshot = Path(entry["snapshot"])
+            if snapshot and entry["snapshot"] != snapshot:
+                raise StoreError(
+                    "trust_content_changed",
+                    f"marketplace {market!r} changed after it was reviewed; review it again",
+                )
+            current = Path(entry["snapshot"])
             entry["trusted"] = True
             entry["trust_reason"] = reason
-            summary = self._apply(state, market, snapshot, entry, approve=True)
+            summary = self._apply(state, market, current, entry, approve=True)
             entry["trusted_at"] = _now()
             self._write_state(state)
         summary.pop("federated_pins", None)

@@ -199,6 +199,39 @@ def test_under_bypass_a_flow_clio_wrote_runs_on_the_record(flow_app: TestClient)
     assert audit["tool_call"]["input"]["authored_by_clio"] is True
 
 
+def test_another_conversations_bypass_does_not_run_a_flow_clio_wrote_elsewhere(
+    flow_app: TestClient,
+) -> None:
+    done = _script(flow_app)
+    author = _session(flow_app, "ask")
+    _made(flow_app, author, done, "0.1.0")
+    other = _session(flow_app, "bypass")
+    post(flow_app, other, "run tally")
+    row = _permission(flow_app)
+    assert row["status"] == "pending" and row["tool_call"]["input"]["authored_by_clio"] is True
+    assert "snapshot" not in row["tool_call"]["input"]
+    flow_app.post(f"/v1/permissions/{row['id']}", json={"action": "deny"})
+    assert wait_until(lambda: done.get("run tally"), timeout=60)["accepted"] is False
+    assert not _market(flow_app)["trusted"]
+
+
+def test_content_that_changed_after_review_is_not_trusted(flow_app: TestClient) -> None:
+    from clio_agent.plugins.store import StoreError
+
+    done = _script(flow_app)
+    sid = _session(flow_app, "ask")
+    _made(flow_app, sid, done, "0.1.0")
+    store = flow_app.app.state.plugin_service.store
+    reviewed = _market(flow_app)["snapshot"]
+    _idle(flow_app, sid)
+    post(flow_app, sid, "make version 0.2.0")
+    assert wait_until(lambda: done.get("made 0.2.0"), timeout=60)["installed"]
+    with pytest.raises(StoreError) as refused:
+        store.trust("tally", snapshot=reviewed)
+    assert refused.value.code == "trust_content_changed"
+    assert not _market(flow_app)["trusted"]
+
+
 def test_a_third_party_flow_is_asked_about_even_under_bypass(
     flow_app: TestClient, tmp_path: Path
 ) -> None:
@@ -313,7 +346,9 @@ def test_the_model_is_told_which_installed_flows_are_not_trusted_yet(
     post(flow_app, sid, "describe run_flow")
     described = wait_until(lambda: done.get("describe run_flow"), timeout=60)
     assert "Installed but not trusted yet" in described
-    assert "- tally: Counts votes. (the tally plugin, by Clio)" in described
+    # The unreviewed description stays out; the id and who wrote it reach the model.
+    assert "- tally (the tally plugin, by Clio)" in described
+    assert "Counts votes." not in described.split("asks the person first")[-1]
 
 
 def test_a_trusted_flow_outside_this_agent_is_added_and_runs_without_asking(

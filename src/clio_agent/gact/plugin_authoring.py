@@ -37,11 +37,14 @@ from clio_agent.plugins.resolve import Delta
 from clio_agent.plugins.store import BUILTIN_MARKETPLACE, StoreError
 
 
-def _authored_by_clio(store: Any, market: str, snapshot: Path) -> bool:
-    """Whether the installed files are exactly the ones Clio wrote as ``market``."""
+def _authored_by_clio(store: Any, market: str, snapshot: Path) -> str:
+    """The session in which Clio wrote ``market``, when the installed files are exactly
+    the ones it wrote; otherwise empty."""
 
     record = authored.authorship(store.root, market)
-    return record is not None and record["digest"] == authored.folder_digest(snapshot)
+    if record is None or record["digest"] != authored.folder_digest(snapshot):
+        return ""
+    return str(record.get("session_id") or "")
 
 
 def untrusted_flows(store: Any) -> list[dict[str, Any]]:
@@ -55,14 +58,17 @@ def untrusted_flows(store: Any) -> list[dict[str, Any]]:
             continue
         snapshot = Path(entry["snapshot"])
         review = authored.review(snapshot)
-        by_clio = _authored_by_clio(store, market, snapshot) if review["flows"] else False
+        session = _authored_by_clio(store, market, snapshot) if review["flows"] else ""
+        by_clio = bool(session)
         rows.extend(
             {
                 "flow": flow["id"],
                 "description": flow["description"],
                 "plugin": market,
                 "version": review["version"],
+                "snapshot": str(snapshot),
                 "authored_by_clio": by_clio,
+                "authored_in_session": session,
                 "author": "Clio" if by_clio else market,
                 "file": flow["file"],
                 "review_url": f"/v1/plugins/{market}/review",
@@ -112,7 +118,7 @@ def installed_review(app: Any, name: str) -> dict[str, Any]:
     snapshot = Path(store.marketplaces()[name]["snapshot"])
     return {
         **authored.review(snapshot),
-        "authored_by_clio": _authored_by_clio(store, name, snapshot),
+        "authored_by_clio": bool(_authored_by_clio(store, name, snapshot)),
     }
 
 
@@ -131,11 +137,17 @@ def add_to_conversation(app: Any, session_id: str, refs: list[str]) -> list[str]
     return added
 
 
-def trust_and_add(app: Any, market: str, session_id: str, *, reason: str) -> list[str]:
-    """Trust ``market`` and add its plugins to ``session_id``'s agent; returns their refs."""
+def trust_and_add(
+    app: Any, market: str, session_id: str, *, reason: str, snapshot: str = ""
+) -> list[str]:
+    """Trust ``market`` and add its plugins to ``session_id``'s agent; returns their refs.
+
+    ``snapshot`` is the content the person was asked about: if the plugin changed
+    since (rewritten or updated while the question was open), nothing is trusted.
+    """
 
     store = plugin_service(app).store
-    store.trust(market, reason=reason)
+    store.trust(market, reason=reason, snapshot=snapshot)
     installed_changed(app)
     refs = sorted(
         f"{row.marketplace}/{row.id}" for row in store.records() if row.marketplace == market
@@ -169,18 +181,28 @@ def _ask_to_run(
 
     session = app.state.sessions.get(session_id)
     bypass = getattr(session, "approval_mode", "") == "bypass"
+    here = _authored_here(found, session_id)
     who = "Clio" if found["authored_by_clio"] else f"the {found['plugin']} plugin"
     gate = app.state.make_permission_gate()
     return gate(
         "run_flow",
-        {"flow": flow_id, **found, **call},
+        {
+            "flow": flow_id,
+            **{k: v for k, v in found.items() if k not in ("snapshot", "authored_in_session")},
+            **call,
+        },
         {
             "kind": "native",
             "summary": f"Run the {flow_id} flow, written by {who}, which is not trusted yet",
-            # Only a flow Clio wrote may follow the approval mode (bypass runs it).
-            "always_ask": not (found["authored_by_clio"] and bypass),
+            # Only a flow Clio wrote in THIS conversation may follow its approval
+            # mode (bypass runs it): another conversation's bypass is not this one's.
+            "always_ask": not (here and bypass),
         },
     )
+
+
+def _authored_here(found: dict[str, Any], session_id: str) -> bool:
+    return bool(found["authored_by_clio"]) and found.get("authored_in_session") == session_id
 
 
 async def permit_untrusted_flow(
@@ -207,12 +229,17 @@ async def permit_untrusted_flow(
     session = app.state.sessions.get(session_id)
     reason = (
         "authored_bypass"
-        if found["authored_by_clio"] and getattr(session, "approval_mode", "") == "bypass"
+        if _authored_here(found, session_id) and getattr(session, "approval_mode", "") == "bypass"
         else "allowed_to_run"
     )
     try:
         added = await asyncio.to_thread(
-            trust_and_add, app, found["plugin"], session_id, reason=reason
+            trust_and_add,
+            app,
+            found["plugin"],
+            session_id,
+            reason=reason,
+            snapshot=found["snapshot"],
         )
     except (StoreError, SessionAgentUnavailable) as exc:
         return {"accepted": False, "reason": "flow_not_added", "error": str(exc)}

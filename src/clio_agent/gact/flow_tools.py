@@ -157,8 +157,10 @@ def _run_flow_description() -> str:
             "\nInstalled and trusted, not in this agent yet; running one (here or as a "
             "workflow step) adds its plugin to this conversation:\n" + "\n".join(outside)
         )
+    # An untrusted plugin's own description is text no one has reviewed: only its
+    # flow id and who wrote it reach the model (in every conversation).
     waiting = [
-        f"- {row['flow']}: {row['description']} (the {row['plugin']} plugin, by {row['author']})"
+        f"- {row['flow']} (the {row['plugin']} plugin, by {row['author']})"
         for row in untrusted_flows(store)
     ]
     if waiting:
