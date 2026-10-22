@@ -44,29 +44,42 @@ def _authored_by_clio(store: Any, market: str, snapshot: Path) -> bool:
     return record is not None and record["digest"] == authored.folder_digest(snapshot)
 
 
-def untrusted_flow(store: Any, flow_id: str) -> dict[str, Any] | None:
-    """The installed plugin that declares ``flow_id`` and is not trusted in its installed
-    version (never trusted, or an update waits for trust), read from its files."""
+def untrusted_flows(store: Any) -> list[dict[str, Any]]:
+    """Every flow an installed plugin declares that is not trusted in its installed version
+    (never trusted, or an update waits for trust), read from its files."""
 
     waiting = {row.marketplace for row in store.pending()}
+    rows: list[dict[str, Any]] = []
     for market, entry in sorted(store.marketplaces().items()):
         if entry.get("trusted") and market not in waiting:
             continue
         snapshot = Path(entry["snapshot"])
         review = authored.review(snapshot)
-        flow = next((row for row in review["flows"] if row["id"] == flow_id), None)
-        if flow is None:
-            continue
-        by_clio = _authored_by_clio(store, market, snapshot)
-        return {
-            "plugin": market,
-            "version": review["version"],
-            "authored_by_clio": by_clio,
-            "author": "Clio" if by_clio else market,
-            "file": flow["file"],
-            "review_url": f"/v1/plugins/{market}/review",
-        }
-    return None
+        by_clio = _authored_by_clio(store, market, snapshot) if review["flows"] else False
+        rows.extend(
+            {
+                "flow": flow["id"],
+                "description": flow["description"],
+                "plugin": market,
+                "version": review["version"],
+                "authored_by_clio": by_clio,
+                "author": "Clio" if by_clio else market,
+                "file": flow["file"],
+                "review_url": f"/v1/plugins/{market}/review",
+            }
+            for flow in review["flows"]
+        )
+    return rows
+
+
+def untrusted_flow(store: Any, flow_id: str) -> dict[str, Any] | None:
+    """The first untrusted installed plugin that declares ``flow_id``: who wrote it and
+    where to read it, as the run permission presents it."""
+
+    found = next((row for row in untrusted_flows(store) if row["flow"] == flow_id), None)
+    if found is None:
+        return None
+    return {k: v for k, v in found.items() if k not in {"flow", "description"}}
 
 
 def refuse_untrusted_flow(app: Any, flow_id: str) -> None:

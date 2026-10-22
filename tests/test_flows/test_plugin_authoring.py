@@ -60,6 +60,11 @@ def _script(client: TestClient) -> dict[str, Any]:
                 build_run_workflow_tool().func(workflow=workflow, task="votes")
             )
             return dspy.Prediction(answer="started")
+        if question.startswith("describe run_flow"):
+            from clio_agent.gact.flow_tools import _run_flow_description
+
+            done[question] = _run_flow_description()
+            return dspy.Prediction(answer="described")
         if question.startswith("run tally"):
             done[question] = asyncio.run(start_flow("tally", "count", None))
             return dspy.Prediction(answer="started")
@@ -276,3 +281,18 @@ def test_a_running_flow_that_calls_an_untrusted_flow_gets_a_typed_refusal(
         refuse_untrusted_flow(flow_app.app, "tally")
     assert raised.value.to_dict()["plugin"] == "tally"
     refuse_untrusted_flow(flow_app.app, "nothing-declares-this")
+
+
+def test_the_model_is_told_which_installed_flows_are_not_trusted_yet(
+    flow_app: TestClient,
+) -> None:
+    """Without this the model cannot see an untrusted flow, so it never asks to run it."""
+
+    done = _script(flow_app)
+    sid = _session(flow_app, "ask")
+    _made(flow_app, sid, done, "0.1.0")
+    _idle(flow_app, sid)
+    post(flow_app, sid, "describe run_flow")
+    described = wait_until(lambda: done.get("describe run_flow"), timeout=60)
+    assert "Installed but not trusted yet" in described
+    assert "- tally: Counts votes. (the tally plugin, by Clio)" in described

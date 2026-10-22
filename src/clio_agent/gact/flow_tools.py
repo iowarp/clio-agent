@@ -101,9 +101,14 @@ async def start_flow(
 
 
 def _run_flow_description() -> str:
-    """``run_flow``'s description, listing the flows this session's agent resolves."""
+    """``run_flow``'s description: the flows this session's agent resolves, and the flows
+    installed plugins declare that are not trusted yet (running one asks the person)."""
 
-    from clio_agent.gact.agents.resolution import SessionAgentUnavailable  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        SessionAgentUnavailable,
+        plugin_service,
+    )
+    from clio_agent.gact.plugin_authoring import untrusted_flows  # noqa: PLC0415
 
     base = (
         "Start one of this agent's flows as owned work and return its task handle at "
@@ -120,7 +125,17 @@ def _run_flow_description() -> str:
         for row in rows
         if row["id"] not in {"react", "workflow"} and row.get("description")
     ]
-    return base + ("\nFlows:\n" + "\n".join(listed) if listed else "")
+    described = base + ("\nFlows:\n" + "\n".join(listed) if listed else "")
+    waiting = [
+        f"- {row['flow']}: {row['description']} (the {row['plugin']} plugin, by {row['author']})"
+        for row in untrusted_flows(plugin_service(app).store)
+    ]
+    if waiting:
+        described += (
+            "\nInstalled but not trusted yet; running one (here or as a workflow step) asks "
+            "the person first:\n" + "\n".join(waiting)
+        )
+    return described
 
 
 def build_run_flow_tool() -> Any:
@@ -214,7 +229,9 @@ def build_run_workflow_tool() -> Any:
             "Start a workflow (steps with targets, inputs and dependencies) as owned work and return "
             "its task handle at acceptance. Each step starts as soon as the steps it waits on "
             "finish. Named editors may add or cancel steps while it runs, within max_added_steps and "
-            "max_edit_rounds when set; approve_edits asks the user before each added step runs."
+            "max_edit_rounds when set; approve_edits asks the user before each added step runs. "
+            "A step may run a flow that is installed but not trusted yet (run_flow lists them): "
+            "starting the workflow asks the person about it first."
         ),
         args={
             "workflow": {
