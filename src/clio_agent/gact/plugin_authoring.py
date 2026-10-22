@@ -224,11 +224,21 @@ async def make_plugin(name: str, files: dict[str, str]) -> dict[str, Any]:
 
     app, caller = _runtime()
     store = plugin_service(app).store
+    existing = store.marketplaces().get(name)
+    own = str((authored.authored_root(store.root) / name).resolve())
+    if existing is not None and existing.get("url") != own:
+        # The name belongs to a marketplace Clio did not write (and carries its trust).
+        return {
+            "installed": False,
+            "reason": "marketplace_name_taken",
+            "error": f"{name!r} is already installed from {existing.get('url')}; pick another name",
+        }
     try:
         folder = await asyncio.to_thread(authored.write, store.root, name, files, caller.session_id)
     except authored.AuthoredError as exc:
         return {"installed": False, "reason": exc.reason, "error": str(exc)}
-    report = await asyncio.to_thread(check, folder, service=plugin_service(app))
+    # Not trusted yet: checked without importing the Python Clio just wrote.
+    report = await asyncio.to_thread(check, folder, service=plugin_service(app), trusted=False)
     if not report.ok:
         return {"installed": False, "reason": "check_failed", "check": report.to_dict()}
     try:

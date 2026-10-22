@@ -52,7 +52,10 @@ def authored_root(store_root: Path) -> Path:
 
 def _relative(path: str) -> PurePosixPath:
     relative = PurePosixPath(path)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+    # Checked as POSIX but written with the native path: a backslash, a drive or a
+    # stream (``:``) would climb out of the folder on Windows.
+    native_escape = "\\" in path or ":" in path
+    if native_escape or relative.is_absolute() or not relative.parts or ".." in relative.parts:
         raise AuthoredError("path_outside_plugin", f"{path!r} is not a path inside the plugin")
     return relative
 

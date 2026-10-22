@@ -44,6 +44,7 @@ from clio_agent.plugins.manifest import within
 from clio_agent.plugins.marketplace import (
     GitPin,
     MarketplaceContents,
+    load_agent_specs,
     read_claude_marketplace,
     read_marketplace,
 )
@@ -55,6 +56,8 @@ from clio_agent.sdk.versions import PluginRef, valid_plugin_id
 BUILTIN_ROOT = Path(__file__).resolve().parent / "builtin"
 BUILTIN_MARKETPLACE = "clio-builtin"
 USER_MARKETPLACE = "user"
+#: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).
+AGENTS_DIGEST = "@agents"
 STATE_VERSION = 1
 
 
@@ -267,6 +270,18 @@ class PluginStore:
         with self.lock:
             state = self.read_state()
             previous = state["marketplaces"].get(market) or {}
+            if (
+                previous
+                and not default
+                and (previous.get("url") != fetched.url or previous.get("parent", "") != parent)
+            ):
+                # A name is the marketplace's identity and carries its trust: another
+                # source (or another federating parent) never takes it over.
+                raise StoreError(
+                    "marketplace_name_taken",
+                    f"a marketplace named {market!r} is already installed from "
+                    f"{previous.get('url')}; remove it before installing {fetched.url}",
+                )
             entry: dict[str, Any] = {
                 "id": market,
                 "source": source,
@@ -294,12 +309,19 @@ class PluginStore:
             summary = self._apply(state, market, snapshot, entry)
             self._write_state(state)
         for pin in summary.pop("federated_pins", []):
-            federated = self.install(pin.url, commit=pin.commit, name=pin.name, parent=market)
+            try:
+                federated = self.install(pin.url, commit=pin.commit, name=pin.name, parent=market)
+            except StoreError as exc:
+                # One unreachable or refused child never undoes its parent's install.
+                summary["diagnostics"].append(
+                    Diagnostic("error", f"federated_{exc.code}", str(exc), pin.name).to_dict()
+                )
+                continue
             summary.setdefault("federated", []).append(federated)
         return summary
 
     def _git_plugins(
-        self, pins: list[GitPin], market: str, trusted: bool
+        self, pins: list[GitPin], market: str
     ) -> tuple[list[PluginRecord], list[Diagnostic]]:
         records: list[PluginRecord] = []
         diagnostics: list[Diagnostic] = []
@@ -327,7 +349,7 @@ class PluginStore:
             snapshot = self._snapshot(market, path)
             if (snapshot / "plugin.json").is_file():
                 try:
-                    records.append(load_plugin(snapshot, marketplace=market, trusted=trusted))
+                    records.append(load_plugin(snapshot, marketplace=market, trusted=False))
                 except PluginLoadError as exc:
                     diagnostics.append(
                         Diagnostic("error", "plugin_load_failed", str(exc), pin.name)
@@ -337,39 +359,60 @@ class PluginStore:
         return records, diagnostics
 
     def _apply(
-        self, state: dict[str, Any], market: str, snapshot: Path, entry: dict[str, Any]
+        self,
+        state: dict[str, Any],
+        market: str,
+        snapshot: Path,
+        entry: dict[str, Any],
+        *,
+        approve: bool = False,
     ) -> dict[str, Any]:
+        """Apply ``snapshot`` as ``market``'s content.
+
+        Everything is read first without importing any Python. Only then do the
+        executable digests decide what may run: a trusted marketplace's plugin
+        (and its ``agents/`` folder) is imported when its digest is the one that was
+        trusted, or when ``approve`` (the trust step, or the shipped default) trusts
+        the content as it is now. Changed or new executable content is held for the
+        trust step without having run.
+        """
+
         trusted = bool(entry["trusted"])
+        approve = trusted and (approve or bool(entry.get("default")))
+        digests: dict[str, str] = entry["trusted_digests"]
+        if approve:
+            digests.clear()
         if entry["format"] == "claude-code":
             contents = read_claude_marketplace(snapshot, market)
         else:
-            contents = self._read(snapshot, trusted=trusted, name=market)
-        git_records, git_diags = self._git_plugins(contents.git_plugins, market, trusted)
-        records = [*contents.plugins, *git_records]
+            contents = self._read(snapshot, trusted=False, name=market)
+        git_records, git_diags = self._git_plugins(contents.git_plugins, market)
         diagnostics = [*contents.diagnostics, *git_diags]
-        for key in [k for k in state["plugins"] if k.split("/", 1)[0] == market]:
-            if key.split("/", 1)[1] not in {record.id for record in records}:
-                del state["plugins"][key]
-        for key in [k for k in state["pending"] if k.split("/", 1)[0] == market]:
-            del state["pending"][key]
-        applied: list[str] = []
+        records: list[PluginRecord] = []
         held: list[str] = []
-        for record in records:
-            key = f"{market}/{record.id}"
-            trusted_digest = entry["trusted_digests"].get(record.id)
-            if entry.get("default"):
-                entry["trusted_digests"][record.id] = record.executable_digest
-            elif trusted and trusted_digest and trusted_digest != record.executable_digest:
-                # Executable parts changed since trust: hold the update, keep the old record.
-                state["pending"][key] = record.to_dict()
+        for record in [*contents.plugins, *git_records]:
+            if approve:
+                digests[record.id] = record.executable_digest
+            known = digests.get(record.id)
+            if trusted and known == record.executable_digest:
+                record = self._load_trusted(record, market, diagnostics)
+            elif trusted:
                 held.append(record.id)
-                continue
-            state["plugins"][key] = record.to_dict()
-            applied.append(record.id)
-        for key in [k for k in state["agents"] if k.split("/", 1)[0] == market]:
-            del state["agents"][key]
-        for spec in contents.agents:
-            state["agents"][f"{market}/{spec.id}"] = spec.to_dict()
+                if known:
+                    # Executable parts changed since trust: hold the update, keep the old record.
+                    state["pending"][f"{market}/{record.id}"] = record.to_dict()
+                    continue
+            records.append(record)
+        for key in [k for k in state["plugins"] if k.split("/", 1)[0] == market]:
+            if key.split("/", 1)[1] not in {record.id for record in records} | set(held):
+                del state["plugins"][key]
+        held_now = {f"{market}/{rid}" for rid in held}
+        for key in [k for k in state["pending"] if k.split("/", 1)[0] == market]:
+            if key not in held_now:
+                del state["pending"][key]
+        for record in records:
+            state["plugins"][f"{market}/{record.id}"] = record.to_dict()
+        agents = self._agents(state, market, snapshot, entry, approve, diagnostics)
         entry["diagnostics"] = [row.to_dict() for row in diagnostics]
         entry["federated"] = [
             {"name": pin.name, "url": pin.url, "commit": pin.commit} for pin in contents.federated
@@ -378,12 +421,54 @@ class PluginStore:
             "marketplace": market,
             "format": entry["format"],
             "trusted": trusted,
-            "plugins": applied,
-            "pending_trust": held,
-            "agents": [spec.id for spec in contents.agents],
+            "plugins": [record.id for record in records if record.id not in held],
+            "pending_trust": held + (["agents"] if agents is None else []),
+            "agents": agents or [],
             "diagnostics": [row.to_dict() for row in diagnostics],
             "federated_pins": list(contents.federated),
         }
+
+    @staticmethod
+    def _load_trusted(
+        record: PluginRecord, market: str, diagnostics: list[Diagnostic]
+    ) -> PluginRecord:
+        if record.format != "agent-plugins" or not record.python_pending:
+            return record
+        try:
+            return load_plugin(Path(record.root), marketplace=market, trusted=True)
+        except PluginLoadError as exc:
+            diagnostics.append(Diagnostic("error", "plugin_invalid", str(exc), record.id))
+            return record
+
+    @staticmethod
+    def _agents(
+        state: dict[str, Any],
+        market: str,
+        snapshot: Path,
+        entry: dict[str, Any],
+        approve: bool,
+        diagnostics: list[Diagnostic],
+    ) -> list[str] | None:
+        """Import the marketplace's ``agents/`` when trusted as it is. ``None`` = held."""
+
+        folder = snapshot / "agents"
+        digest = tree_digests(folder)[0] if folder.is_dir() else ""
+        digests: dict[str, str] = entry["trusted_digests"]
+        if approve and digest:
+            digests[AGENTS_DIGEST] = digest
+        keys = [k for k in state["agents"] if k.split("/", 1)[0] == market]
+        if digest and entry["trusted"] and digests.get(AGENTS_DIGEST) != digest:
+            return None  # changed since trust: the trusted agents stay until the trust step
+        for key in keys:
+            del state["agents"][key]
+        if not digest or not entry["trusted"] or entry["format"] == "claude-code":
+            return []
+        diagnostics[:] = [d for d in diagnostics if d.code != "marketplace_untrusted"]
+        specs, agent_diags = load_agent_specs(snapshot, market)
+        diagnostics.extend(agent_diags)
+        for spec in specs:
+            state["agents"][f"{market}/{spec.id}"] = spec.to_dict()
+        return [spec.id for spec in specs]
 
     def trust(self, market: str, *, reason: str = "explicit_trust_step") -> dict[str, Any]:
         """The explicit trust step: trust the marketplace's current executable parts.
@@ -403,15 +488,7 @@ class PluginStore:
             snapshot = Path(entry["snapshot"])
             entry["trusted"] = True
             entry["trust_reason"] = reason
-            for key, row in list(state["pending"].items()):
-                if key.split("/", 1)[0] == market:
-                    state["plugins"][key] = row
-                    del state["pending"][key]
-            entry["trusted_digests"] = {}
-            summary = self._apply(state, market, snapshot, entry)
-            for key, row in state["plugins"].items():
-                if key.split("/", 1)[0] == market:
-                    entry["trusted_digests"][row["id"]] = row["executable_digest"]
+            summary = self._apply(state, market, snapshot, entry, approve=True)
             entry["trusted_at"] = _now()
             self._write_state(state)
         summary.pop("federated_pins", None)

@@ -107,10 +107,32 @@ def _resolve(
     return [Diagnostic(**row) for row in resolution.diagnostics]
 
 
+def _syntax(root: Path) -> list[Diagnostic]:
+    """Compile (never run) every Python file of a folder checked without trust."""
+
+    found: list[Diagnostic] = []
+    for path in sorted(root.rglob("*.py")):
+        try:
+            compile(path.read_text(encoding="utf-8"), str(path), "exec", dont_inherit=True)
+        except (SyntaxError, UnicodeDecodeError, ValueError) as exc:
+            relative = path.relative_to(root).as_posix()
+            found.append(Diagnostic("error", "python_syntax", f"{relative}: {exc}", root.name))
+    return found
+
+
 def check(
-    path: Path | None = None, *, installed: str = "", service: PluginService | None = None
+    path: Path | None = None,
+    *,
+    installed: str = "",
+    service: PluginService | None = None,
+    trusted: bool = True,
 ) -> CheckReport:
-    """Check a folder (``path``) or an installed marketplace (``installed``)."""
+    """Check a folder (``path``) or an installed marketplace (``installed``).
+
+    ``trusted=False`` checks a folder no one has trusted yet (a plugin Clio just
+    wrote): its Python is compiled for syntax but never imported, so its classes are
+    checked after the trust step instead.
+    """
 
     service = service or PluginService()
     if installed:
@@ -150,11 +172,13 @@ def check(
         assert path is not None
         report = CheckReport(source=str(path))
         try:
-            contents = read_marketplace(path.resolve(), trusted=True)
+            contents = read_marketplace(path.resolve(), trusted=trusted)
         except (PluginLoadError, OSError, json.JSONDecodeError) as exc:
             report.diagnostics.append(Diagnostic("error", "plugin_invalid", str(exc), path.name))
             return report
         report.diagnostics.extend(contents.diagnostics)
+        if not trusted:
+            report.diagnostics.extend(_syntax(path.resolve()))
         if contents.git_plugins or contents.federated:
             report.diagnostics.append(
                 Diagnostic(

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.plugins import sources, store as store_module
+from clio_agent.plugins import sources
+from clio_agent.plugins import store as store_module
 from clio_agent.plugins.sources import FetchedSource, SourceError, fetch
 from clio_agent.plugins.store import PluginStore
 from tests.test_plugins.helpers import plugin, write
@@ -55,9 +56,10 @@ def test_a_federated_marketplace_cannot_name_a_folder_on_this_machine(tmp_path: 
     fed = {"name": "child", "source": {"source": "git", "url": str(local), "commit": "a" * 40}}
     market = _claude_market(tmp_path / "market", [], federated=[fed])
     store = PluginStore(tmp_path / "store")
-    with pytest.raises(store_module.StoreError, match="https, ssh or git URL"):
-        store.install(str(market))
-    assert "child" not in store.marketplaces()
+    summary = store.install(str(market))
+    assert [d["code"] for d in summary["diagnostics"]] == ["federated_source_unavailable"]
+    assert "https, ssh or git URL" in summary["diagnostics"][0]["message"]
+    assert "child" not in store.marketplaces() and "m" in store.marketplaces()
 
 
 def test_a_git_plugin_path_cannot_climb_out_of_its_checkout(

@@ -57,6 +57,13 @@ _SKILL_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$")
 _PYTHON_DIRS = ("tools", "hooks", "subagents", "flows")
 #: Files whose change needs the trust step again (design: executable parts).
 _EXECUTABLE_GLOBS = ("mcp.json", ".mcp.json", "hooks/hooks.json", f"{NAMESPACE}/**/*.py")
+#: Files that only describe or instruct: a change to them applies without the trust
+#: step. Every other file counts as executable, since an MCP server or hook command
+#: can run any file in the package through ``${PLUGIN_ROOT}``.
+_TEXT_SUFFIXES = frozenset(
+    {".md", ".markdown", ".txt", ".rst", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+)
+_TEXT_FILES = frozenset({"plugin.json", ".claude-plugin/plugin.json", "LICENSE", "LICENSE.txt"})
 
 
 class PluginLoadError(ValueError):
@@ -80,18 +87,24 @@ def import_module_typed(name: str, label: str) -> types.ModuleType:
 def tree_digests(
     root: Path, executable_globs: Iterable[str] = _EXECUTABLE_GLOBS
 ) -> tuple[str, str]:
-    """Return ``(executable_digest, text_digest)`` over the package files."""
+    """Return ``(executable_digest, text_digest)`` over the package files.
 
-    executable: set[Path] = set()
+    A file is text when its suffix or name says it only describes (``_TEXT_SUFFIXES``,
+    ``_TEXT_FILES``) and no ``executable_globs`` pattern names it; everything else,
+    including a server binary or a helper script, is executable.
+    """
+
+    named: set[Path] = set()
     for pattern in executable_globs:
-        executable.update(path for path in root.glob(pattern) if path.is_file())
+        named.update(path for path in root.glob(pattern) if path.is_file())
     exec_hash = hashlib.sha256()
     text_hash = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
         relative = path.relative_to(root).as_posix()
         if relative.startswith(".git/") or "__pycache__" in relative:
             continue
-        target = exec_hash if path in executable else text_hash
+        text = path.suffix.lower() in _TEXT_SUFFIXES or relative in _TEXT_FILES
+        target = exec_hash if path in named or not text else text_hash
         target.update(relative.encode("utf-8") + b"\0")
         target.update(hashlib.sha256(path.read_bytes()).digest())
     return exec_hash.hexdigest(), text_hash.hexdigest()
