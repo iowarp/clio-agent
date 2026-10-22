@@ -64,8 +64,16 @@ class Arena(Flow):
             await ctx.step(ctx.workspace.append, "arena/votes.jsonl", vote)
         else:
             await ctx.record_event({"event": "votes_not_recorded", "reason": "no_workspace"})
+        others = "\n\n".join(
+            f"[{i}] {entry.answer}" for i, entry in enumerate(entries) if i != winner
+        )
+        # The caller reads the answer: it carries the verdict, not only the winning text.
+        answer = (
+            f"{entries[winner].answer}\n\nJudge's choice: entry [{winner}] of {len(entries)}. "
+            f"{verdict['rationale']}\n\nOther entries:\n\n{others}"
+        )
         return {
-            "answer": entries[winner].answer,
+            "answer": answer,
             "winner": winner,
             "rationale": verdict["rationale"],
             "entries": handles,

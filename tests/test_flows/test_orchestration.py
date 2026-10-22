@@ -292,3 +292,41 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
     assert "- arena: Several contestants attempt the same task." in desc
     assert "- council: Several members answer the same question." in desc
     assert "- react:" not in desc and "- plan:" not in desc
+
+
+def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClient) -> None:
+    """Three contestants answer; the judge's choice, rationale and the other entries reach
+    the caller in the answer, and the votes are recorded in the run."""
+
+    from dspy.utils.dummies import DummyLM
+
+    from clio_agent.gact.flow_tools import start_flow
+
+    started: dict[str, Any] = {}
+    count = {"n": 0}
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if question.startswith("ENTRY"):
+            count["n"] += 1
+            return dspy.Prediction(answer=f"entry {count['n']}")
+        if question.startswith("hold an arena") and not started:
+            started.update(asyncio.run(start_flow("arena", "ENTRY please", None)))
+            return dspy.Prediction(answer=f"started {started['handle']}")
+        return default_program(question=question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = program
+    judge = DummyLM([{"reasoning": "r", "winner": "1", "rationale": "The second is clearest."}])
+    dspy.configure(lm=judge)
+    try:
+        sid = new_session(flow_app, "clio/orchestrator")
+        post(flow_app, sid, "hold an arena")
+        handle = wait_until(lambda: started.get("handle"))
+        wait_until(lambda: _snapshot(flow_app, handle).status == "completed", timeout=60)
+    finally:
+        dspy.configure(lm=None)
+    history = flow_app.app.state.task_history
+    answer = json.dumps(history.read_content(_snapshot(flow_app, handle).result))
+    assert "Judge's choice: entry [1] of 3" in answer and "The second is clearest." in answer
+    assert "Other entries" in answer
+    run = _run(flow_app, handle)
+    assert sum(1 for row in run["calls"].values() if row["kind"] == "agent") == 3
