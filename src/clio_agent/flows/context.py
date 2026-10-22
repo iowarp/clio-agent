@@ -381,12 +381,13 @@ class FlowContext:
         options: list[str] | None = None,
         reason: str = "",
         key: str = "",
+        details: dict[str, Any] | None = None,
     ) -> Any:
         """Ask the human through a Question task and resume on the answer.
 
         ``schema=bool`` asks a yes/no choice and returns a bool; ``options``
         asks a choice and returns the chosen option; otherwise the free-text
-        answer is returned.
+        answer is returned. ``details`` rides on the Question for the UI to show.
         """
 
         await self._ensure_open()
@@ -400,7 +401,7 @@ class FlowContext:
         row = self.journal.call(invocation)
         if row is None:
             handle = await self.app.state.task_history.io.run(
-                self._post_question, invocation, question, choices, reason
+                self._post_question, invocation, question, choices, reason, details
             )
             await self.journal.record_call(
                 invocation,
@@ -417,7 +418,7 @@ class FlowContext:
         return answer
 
     def _post_question(
-        self, invocation: str, question: str, choices: list[str], reason: str
+        self, invocation: str, question: str, choices: list[str], reason: str, details: Any
     ) -> str:
         import hashlib  # noqa: PLC0415
 
@@ -446,6 +447,7 @@ class FlowContext:
                     "metadata": {
                         "flow_run": self.journal.run_id,
                         **({"reason": reason} if reason else {}),
+                        **({"details": _plain(details)} if details else {}),
                     },
                 }
             )

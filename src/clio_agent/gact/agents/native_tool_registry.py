@@ -114,6 +114,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_memory_summary_tool,
     )
     from clio_agent.gact.plan_mode import build_plan_exit_tool  # noqa: PLC0415
+    from clio_agent.gact.plugin_authoring import build_make_plugin_tool  # noqa: PLC0415
     from clio_agent.gact.recall_context_tool import build_recall_context_tool  # noqa: PLC0415
     from clio_agent.gact.search_assistant import (  # noqa: PLC0415
         build_clio_search_read_tool,
@@ -180,6 +181,7 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "connected_data_write": build_connected_data_write_tool,
         "run_flow": build_run_flow_tool,
         "run_plan": build_run_plan_tool,
+        "make_plugin": build_make_plugin_tool,
     }
 
 
@@ -217,6 +219,7 @@ _SINGLE_NAMES = frozenset(
         "connected_data_write",
         "run_flow",
         "run_plan",
+        "make_plugin",
         *_A2UI_PRODUCERS,
     }
 )

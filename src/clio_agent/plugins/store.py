@@ -362,8 +362,13 @@ class PluginStore:
             "federated_pins": list(contents.federated),
         }
 
-    def trust(self, market: str) -> dict[str, Any]:
-        """The explicit trust step: trust the marketplace's current executable parts."""
+    def trust(self, market: str, *, reason: str = "explicit_trust_step") -> dict[str, Any]:
+        """The explicit trust step: trust the marketplace's current executable parts.
+
+        ``reason`` records who trusted it: the person in Settings or the CLI
+        (``explicit_trust_step``), or a plugin Clio wrote, approved in its
+        conversation or under bypass (:mod:`clio_agent.plugins.authored`).
+        """
 
         with self.lock:
             state = self.read_state()
@@ -374,7 +379,7 @@ class PluginStore:
                 )
             snapshot = Path(entry["snapshot"])
             entry["trusted"] = True
-            entry["trust_reason"] = entry.get("trust_reason") or "explicit_trust_step"
+            entry["trust_reason"] = reason
             for key, row in list(state["pending"].items()):
                 if key.split("/", 1)[0] == market:
                     state["plugins"][key] = row

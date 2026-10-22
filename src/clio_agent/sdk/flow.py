@@ -36,6 +36,10 @@ class Flow(dspy.Module):
 
     id: ClassVar[str] = ""
     description: ClassVar[str] = ""
+    #: The flow's steps as its author draws them, a Pele ``railroad-beta`` grammar
+    #: (``sequence``, ``choice``, ``oneOrMore``, ``terminal``...). The request to trust
+    #: a plugin Clio wrote shows it; it describes the code, it is not checked against it.
+    shape: ClassVar[str] = ""
     #: Limits enforced by ``ctx`` on top of the runtime's inference capacity.
     #: Zero means "no flow-level limit" for that dimension.
     max_depth: ClassVar[int] = 4
