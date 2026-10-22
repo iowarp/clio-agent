@@ -12,6 +12,7 @@ the file-size ratchet and both handlers share one implementation of the guarante
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -19,20 +20,55 @@ from fastapi import HTTPException
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
+def _reject_control_characters(root_path: str) -> None:
+    """Refuse a root containing a control character with a typed 422.
+
+    A newline or tab in a root is almost always client-side escape mangling, and
+    POSIX will happily create the mangled directory. Every later consumer (MCP
+    fleet cwd, artifact writes) then fails with an error that does not mention
+    the root (#1193).
+    """
+
+    for index, char in enumerate(root_path):
+        if unicodedata.category(char) == "Cc":
+            code_point = f"U+{ord(char):04X}"
+            raise HTTPException(
+                status_code=422,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="invalid_request",
+                        message=(
+                            f"workspace root contains control character {code_point} "
+                            f"at index {index}"
+                        ),
+                        details={
+                            "root_path": root_path,
+                            "character": code_point,
+                            "index": index,
+                        },
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            )
+
+
 def materialize_workspace_root(root_path: str) -> None:
-    """Create ``root_path`` on disk, refusing an unmakeable root with a typed 400.
+    """Create ``root_path`` on disk, refusing an unusable root with a typed error.
 
     Args:
         root_path: The filesystem root the workspace pins. An empty value is a
             no-op -- a workspace may legitimately pin nothing.
 
     Raises:
-        HTTPException: 400 ``invalid_request`` carrying the offending ``root_path``
-            and the OS ``reason`` when the directory cannot be created.
+        HTTPException: 422 ``invalid_request`` naming the code point and index
+            when ``root_path`` contains a control character; 400
+            ``invalid_request`` carrying the offending ``root_path`` and the OS
+            ``reason`` when the directory cannot be created.
     """
 
     if not root_path:
         return
+    _reject_control_characters(root_path)
     try:
         Path(root_path).expanduser().mkdir(parents=True, exist_ok=True)
     except OSError as exc:

@@ -676,3 +676,44 @@ def test_default_workspace_setting_never_repoints_an_existing_ws_default(
     assert restarted.get("ws_default").root_path == str(Path.cwd())
     assert not elsewhere.exists()
     assert "reason=already_seeded" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("character", "code_point"), [("\n", "U+000A"), ("\t", "U+0009"), ("\x00", "U+0000")]
+)
+def test_create_workspace_rejects_control_character_root(
+    tmp_path: Path, character: str, code_point: str
+) -> None:
+    """#1193: a control character in the root is a typed 422; nothing persists or is made."""
+    c = _client(tmp_path)
+    before = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+    root = f"{tmp_path / 'clio-runs'}{character}dp"
+
+    response = c.post("/v1/workspaces", json={"name": "poisoned", "root_path": root})
+
+    assert response.status_code == 422
+    envelope = response.json()["error"]
+    assert envelope["error"] == "invalid_request"
+    assert envelope["details"] == {
+        "root_path": root,
+        "character": code_point,
+        "index": len(str(tmp_path / "clio-runs")),
+    }
+    assert envelope["recoverable"] is True
+    after = {w["id"] for w in c.get("/v1/workspaces").json()["workspaces"]}
+    assert after == before
+    assert not (tmp_path / "clio-runs").exists()
+    assert [p.name for p in tmp_path.iterdir() if "clio-runs" in p.name] == []
+
+
+def test_patch_workspace_rejects_control_character_root(tmp_path: Path) -> None:
+    """#1193: PATCH refuses an embedded newline and keeps the old root."""
+    c = _client(tmp_path)
+    original = tmp_path / "original"
+    wid = c.post("/v1/workspaces", json={"name": "pinned", "root_path": str(original)}).json()["id"]
+
+    response = c.patch(f"/v1/workspaces/{wid}", json={"root_path": f"{tmp_path}/a\nb"})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["details"]["character"] == "U+000A"
+    assert c.get(f"/v1/workspaces/{wid}").json()["root_path"] == str(original)
