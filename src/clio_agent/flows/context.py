@@ -71,6 +71,7 @@ class FlowCall:
         self.invocation = invocation
         self.evidence = list(evidence or [])
         self.index = -1
+        self.together = ""  #: The first invocation of the gather this call ran in.
         #: Set by the workflow flow for an editor's call: the child gets the editor tools.
         self.editor: dict[str, Any] | None = None
         self._task: asyncio.Future[CallResult] | None = None
@@ -324,7 +325,7 @@ class FlowContext:
             raise ValueError("return_when must be all or any")
         items = [self._as_call(item) for item in calls]
         for index, item in enumerate(items):
-            item.index = index
+            item.index, item.together = index, items[0].invocation
         gate = asyncio.Semaphore(limit if limit and limit > 0 else max(1, len(items)))
 
         async def bounded(item: FlowCall) -> Any:
@@ -359,6 +360,8 @@ class FlowContext:
         """
 
         items = [self._as_call(item) for item in calls]
+        for item in items:
+            item.together = items[0].invocation
         gate = asyncio.Semaphore(limit if limit and limit > 0 else max(1, len(items)))
 
         async def bounded(position: int, item: FlowCall) -> Any:
@@ -516,7 +519,6 @@ class FlowContext:
         key = self._invocation("event", str(event.get("event", "")), event, site="events")
         await self.journal.record_event(key, _plain(event))
 
-    # ------------------------------------------------------------ execution
     def _as_call(self, item: Any) -> FlowCall:
         if isinstance(item, FlowCall):
             return item
@@ -582,9 +584,8 @@ class FlowContext:
         if call.editor is not None:
             session_metadata = {**(session_metadata or {}), "workflow_editor": dict(call.editor)}
         elif call.name == "self":
-            # ``self`` is this agent as a worker: its own resolution on the
-            # ``react`` flow, not its selected flow, so a flow's helpers never
-            # re-enter the flow. A flow recurses through ``ctx.call(<flow>)``.
+            # ``self`` is this agent as a worker on its ``react`` flow, not its selected flow,
+            # so a flow's helpers never re-enter it; a flow recurses via ``ctx.call(<flow>)``.
             session_metadata = {
                 "agent_flow": {
                     "id": "react",
@@ -635,6 +636,7 @@ class FlowContext:
                 "handle": handle,
                 "session_id": accepted.get("session_id", ""),
                 "status": "accepted",
+                **({"together": call.together} if call.together else {}),
             },
         )
         return handle

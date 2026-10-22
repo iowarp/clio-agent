@@ -45,6 +45,8 @@ def flow_run(history: Any, handle: str) -> dict[str, Any] | None:
                 "target": row.get("target", ""),
                 "handle": row.get("handle", ""),
                 "status": row.get("status", ""),
+                # Calls started together (one ``gather``) share the first one's invocation.
+                **({"together": row["together"]} if row.get("together") else {}),
             }
             for invocation, row in calls.items()
         ],

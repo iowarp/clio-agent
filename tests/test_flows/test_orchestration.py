@@ -90,6 +90,14 @@ def test_run_flow_returns_the_handle_and_council_settles_under_it(flow_app: Test
         assert _snapshot(flow_app, row["handle"]).owner.parent_handle == handle
     assert run["result"]["synthesizer"] in {row["handle"] for row in calls}
     assert len(run["result"]["members"]) == 3
+    # The members ran together in one gather, so they share the first one's invocation;
+    # the synthesizer ran on its own.
+    synthesizer = run["result"]["synthesizer"]
+    together = {row.get("together") for row in calls if row["handle"] != synthesizer}
+    assert len(together) == 1 and next(iter(together)) in run["calls"]
+    assert not next(row for row in calls if row["handle"] == synthesizer).get("together")
+    view = flow_app.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
+    assert sum(1 for row in view["calls"] if row.get("together")) == 3
 
     # The flow's result reaches the starting session through its mailbox.
     wait_until(lambda: len(assistant_messages(flow_app, sid)) >= 2, timeout=60)
@@ -290,10 +298,18 @@ def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) ->
     ]
     monkeypatch.setattr(flow_tools, "_runtime", lambda: (object(), SimpleNamespace(session_id="s")))
     monkeypatch.setattr(flow_tools, "_flows", lambda app, sid: rows)
+    from clio_agent.gact import plugin_authoring
+    from clio_agent.gact.agents import resolution
+
+    untrusted = {"flow": "tally", "description": "Counts votes.", "plugin": "lab", "author": "lab"}
+    monkeypatch.setattr(resolution, "plugin_service", lambda app: SimpleNamespace(store=None))
+    monkeypatch.setattr(plugin_authoring, "untrusted_flows", lambda store: [untrusted])
     desc = flow_tools.build_run_flow_tool().desc
     assert "- arena: Several contestants attempt the same task." in desc
     assert "- council: Several members answer the same question." in desc
     assert "- react:" not in desc and "- workflow:" not in desc
+    # An installed flow not trusted yet is named too, so the model can ask to run it.
+    assert "not trusted yet" in desc and "- tally: Counts votes. (the lab plugin, by lab)" in desc
 
 
 def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClient) -> None:
