@@ -18,8 +18,8 @@ class Verdict(dspy.Signature):
     """
 
     task: str = dspy.InputField()
-    entries: list[str] = dspy.InputField(desc="The entries, each prefixed with its [index]")
-    winner: int = dspy.OutputField(desc="The 0-based index of the best entry")
+    entries: list[str] = dspy.InputField(desc="The entries, each prefixed with its [number]")
+    winner: int = dspy.OutputField(desc="The number of the best entry, counting from 1")
     rationale: str = dspy.OutputField()
 
 
@@ -49,10 +49,10 @@ class Arena(Flow):
     async def forward(self, task: Any, ctx: Any) -> Any:
         text = task if isinstance(task, str) else json.dumps(task, sort_keys=True)
         entries = await ctx.gather([ctx.call(c, text) for c in self.contestants], limit=3)
-        numbered = [f"[{i}] {entry.answer}" for i, entry in enumerate(entries)]
+        numbered = [f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1)]
         verdict = await ctx.step(self._verdict, text, numbered)
         winner = verdict["winner"]
-        if not 0 <= winner < len(entries):
+        if not 1 <= winner <= len(entries):
             raise FlowStall(
                 "judge_invalid_winner",
                 f"the judge picked entry {winner}, but there are {len(entries)}",
@@ -65,11 +65,11 @@ class Arena(Flow):
         else:
             await ctx.record_event({"event": "votes_not_recorded", "reason": "no_workspace"})
         others = "\n\n".join(
-            f"[{i}] {entry.answer}" for i, entry in enumerate(entries) if i != winner
+            f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1) if n != winner
         )
         # The caller reads the answer: it carries the verdict, not only the winning text.
         answer = (
-            f"{entries[winner].answer}\n\nJudge's choice: entry [{winner}] of {len(entries)}. "
+            f"{entries[winner - 1].answer}\n\nJudge's choice: entry [{winner}] of {len(entries)}. "
             f"{verdict['rationale']}\n\nOther entries:\n\n{others}"
         )
         return {

@@ -315,7 +315,7 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
         return default_program(question=question, **kwargs)
 
     flow_app.app.state.flow_program["run"] = program
-    judge = DummyLM([{"reasoning": "r", "winner": "1", "rationale": "The second is clearest."}])
+    judge = DummyLM([{"reasoning": "r", "winner": "2", "rationale": "The second is clearest."}])
     dspy.configure(lm=judge)
     try:
         sid = new_session(flow_app, "clio/orchestrator")
@@ -326,7 +326,7 @@ def test_an_arena_returns_the_winner_with_the_judges_verdict(flow_app: TestClien
         dspy.configure(lm=None)
     history = flow_app.app.state.task_history
     answer = json.dumps(history.read_content(_snapshot(flow_app, handle).result))
-    assert "Judge's choice: entry [1] of 3" in answer and "The second is clearest." in answer
+    assert "Judge's choice: entry [2] of 3" in answer and "The second is clearest." in answer
     assert "Other entries" in answer
     run = _run(flow_app, handle)
     assert sum(1 for row in run["calls"].values() if row["kind"] == "agent") == 3
@@ -427,7 +427,7 @@ def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClie
         return default_program(question=question, **kwargs)
 
     flow_app.app.state.flow_program["run"] = program
-    dspy.configure(lm=DummyLM([{"reasoning": "r", "winner": "0", "rationale": "Shorter."}]))
+    dspy.configure(lm=DummyLM([{"reasoning": "r", "winner": "1", "rationale": "Shorter."}]))
     try:
         sid = new_session(flow_app, "clio/orchestrator")
         post(flow_app, sid, "run the plan")
