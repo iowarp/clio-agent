@@ -365,3 +365,28 @@ def test_restarting_a_flow_after_late_messages_resumes_its_last_run(
     after = _node_handles(flow_app, restarted.handle)
     assert after["gather"] == before["gather"] and after["measure"] != before["measure"]
     assert started["attempts"] == {"gather": 1, "measure": 2, "report": 1}
+
+
+def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) -> None:
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _plan_starter(flow_app, {"measure", "report"})
+    post(flow_app, sid, "run the plan")
+    handle = wait_until(lambda: started.get("handle"))
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    history = flow_app.app.state.task_history
+    seen = {handle}
+    for _ in range(2):
+        latest = wait_until(
+            lambda: (task := history.latest_assignment(plan_session)).terminal_at is not None
+            and task
+        )
+        assert latest.status == "failed"
+        response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+        assert response.status_code == 200, response.text
+        seen.add(latest.handle)
+        wait_until(lambda: history.latest_assignment(plan_session).handle not in seen)
+    final = wait_until(
+        lambda: (task := history.latest_assignment(plan_session)).terminal_at is not None and task
+    )
+    assert final.status == "completed"
+    assert started["attempts"] == {"gather": 1, "measure": 2, "report": 2}

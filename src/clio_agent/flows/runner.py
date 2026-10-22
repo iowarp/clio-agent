@@ -111,15 +111,15 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
     if not root_handle and app is not None:
         latest = app.state.task_history.latest_assignment(session_id)
         root_handle = latest.handle if latest is not None else ""
-    resume_from: tuple[str, str] | None = None
+    resume_from: list[tuple[str, str]] = []
     if selection.get("input") is not None or "depth" in selection:
         # A started flow (run_flow, run_plan, ctx.call) is its whole assignment:
         # a later turn of the same assignment resumes the same run.
         marker = root_handle
         invocation, predecessor = _lineage(app, root_handle)
         if predecessor and invocation.startswith("restart:"):
-            # A restart continues the last run that recorded work: finished work is kept.
-            resume_from = _last_run(app, flow_id, predecessor)
+            # A restart continues the runs before it: finished work is kept.
+            resume_from = _earlier_runs(app, flow_id, predecessor)
         elif predecessor:
             trigger = app.state.task_history.mail_item(session_id, turn.input_notification_id)
             written = trigger is not None and trigger.kind in {"human", "peer", "delegation"}
@@ -162,21 +162,22 @@ def _lineage(app: Any, handle: str) -> tuple[str, str]:
     return str(task.invocation_id or ""), str(details.predecessor or "")
 
 
-def _last_run(app: Any, flow_id: str, handle: str) -> tuple[str, str] | None:
-    """The latest run of ``flow_id`` at or before ``handle`` in its assignment chain.
+def _earlier_runs(app: Any, flow_id: str, handle: str) -> list[tuple[str, str]]:
+    """The runs of ``flow_id`` at or before ``handle`` in its assignment chain, oldest first.
 
     Assignments that only passed later input on recorded no run; they are skipped.
     """
 
     history = app.state.task_history
+    runs: list[tuple[str, str]] = []
     seen: set[str] = set()
     while handle and handle not in seen:
         seen.add(handle)
         invocation = f"flow:{flow_id}:{handle}"
         if history.workflow_checkpoint(handle, invocation) is not None:
-            return handle, invocation
+            runs.append((handle, invocation))
         handle = _lineage(app, handle)[1]
-    return None
+    return runs[::-1]
 
 
 def _after_the_run(flow_id: str, ended: str, session_id: str, message: str) -> Any:

@@ -77,9 +77,10 @@ class FlowJournal:
             "result": None,
         }
         self.replayed = False
-        #: ``(root_handle, run_invocation)`` of the run a restart continues: its completed
-        #: calls and steps carry over, so only what did not complete runs again.
-        self.resume_from: tuple[str, str] | None = None
+        #: ``(root_handle, run_invocation)`` of the earlier runs a restart continues,
+        #: oldest first: their completed calls and steps carry over (a later run's
+        #: record wins), so only what never completed runs again.
+        self.resume_from: list[tuple[str, str]] = []
         self._lock = asyncio.Lock()
 
     async def open(self) -> None:
@@ -99,13 +100,13 @@ class FlowJournal:
             self.replayed = True
             return
         self.content["request_digest"] = self.request_digest
-        if self.resume_from is not None:
-            previous = await self.history.io.run(self._load, *self.resume_from)
+        for root_handle, run_invocation in self.resume_from:
+            previous = await self.history.io.run(self._load, root_handle, run_invocation)
             if previous is not None:
-                self._carry_over(previous)
+                self._carry_over(previous, root_handle)
         await self.save()
 
-    def _carry_over(self, previous: dict[str, Any]) -> None:
+    def _carry_over(self, previous: dict[str, Any], root_handle: str) -> None:
         """Keep the previous run's completed work under this run's invocations."""
 
         old, new = str(previous.get("run_id") or ""), self.run_id
@@ -125,13 +126,10 @@ class FlowJournal:
         steps = {key(invocation): row for invocation, row in (previous.get("steps") or {}).items()}
         self.content["calls"].update(calls)
         self.content["steps"].update(steps)
-        self.content["entries"] = len(calls) + len(steps)
-        self.content["resumed_from"] = {
-            "run_id": old,
-            "root_handle": self.resume_from[0] if self.resume_from else "",
-            "calls": len(calls),
-            "steps": len(steps),
-        }
+        self.content["entries"] = len(self.content["calls"]) + len(self.content["steps"])
+        self.content.setdefault("resumed_from", []).append(
+            {"run_id": old, "root_handle": root_handle, "calls": len(calls), "steps": len(steps)}
+        )
 
     def _load(self, root_handle: str = "", run_invocation: str = "") -> dict[str, Any] | None:
         root_handle, run_invocation = (
