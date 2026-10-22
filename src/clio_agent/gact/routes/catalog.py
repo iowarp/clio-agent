@@ -69,6 +69,7 @@ from clio_agent.gact.types import (
     ErrorInfo,
     ListToolsResponse,
 )
+from clio_agent.gact.user_command_turn import submit_user_command
 from clio_agent.tools.mcp_config import MCPTransportError, transport_from_spec
 
 if TYPE_CHECKING:
@@ -558,6 +559,17 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 cmd_id=cmd_id,
                 agent_id=agent_id,
             )
+            if caller_type != "agent":
+                # The person typed it: it runs as a turn of the conversation.
+                return await submit_user_command(
+                    app,
+                    deps,
+                    sid,
+                    cmd_id=cmd_id,
+                    user_input=user_input,
+                    rendered=question,
+                    command_meta=dict(command_meta),
+                )
             # #755: the runner is a full (blocking) DSPy agent turn that can
             # take minutes. Run it off the event loop so /health, SSE
             # heartbeats, and other sessions stay responsive, mirroring how

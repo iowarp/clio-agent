@@ -17,6 +17,7 @@ from typing import Any, cast
 # no longer materialize as agents — only the frontmatter parser is shared here.
 from clio_agent.gact.skills import _parse_skill_frontmatter
 from clio_agent.gact.types import AgentDef, Tool, ToolDomain
+from clio_agent.plugins.command_text import expand_plugin_text
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,9 @@ def _load_command_files_from_disk(
             except Exception:  # noqa: BLE001 - unreadable skill markdown skipped
                 continue
             meta, body = _parse_skill_frontmatter(text)
+            if extra_metadata.get("command_scope") == "plugin":
+                # A plugin's command names its own files; resolve them for the model.
+                body = expand_plugin_text(body, md.parent.parent)
             command_id = _normalize_file_command_id(meta, md)
             if not command_id:
                 continue

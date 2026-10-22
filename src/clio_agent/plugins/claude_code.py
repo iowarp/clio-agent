@@ -26,6 +26,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from clio_agent.plugins.command_text import expand_plugin_text
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.loader import _skills, referenced_files, tree_digests
 from clio_agent.plugins.manifest import validate_server, within
@@ -278,7 +279,7 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
             SubagentRecord(
                 id=name,
                 description=str(meta.get("description") or ""),
-                prompt=body.strip(),
+                prompt=expand_plugin_text(body.strip(), root),
                 plugins=(plugin, *providers),
                 tools=tuple(tool_names) if raw_tools is not None else None,
                 prefers=prefers,

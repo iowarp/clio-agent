@@ -334,9 +334,14 @@ class FileAccessPolicy:
         Callers must still check credential exclusions and symlink policy. Shell
         children also require the OS fence before any command can execute.
         """
+        from clio_agent.plugins.service import plugin_store_root  # noqa: PLC0415
         from clio_agent.runtime.storage_access import materialized_read_roots  # noqa: PLC0415
 
         resolved = path.resolve(strict=False)
+        # Installed plugin content (its commands and skills name its own files) is
+        # readable, never writable: snapshots are content-addressed copies.
+        if resolved.is_relative_to((plugin_store_root() / "snapshots").resolve()):
+            return True
         return any(
             resolved.is_relative_to(approved)
             for root in self.allowed_roots

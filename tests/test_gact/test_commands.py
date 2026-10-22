@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -249,116 +250,87 @@ def test_dispatch_cache_stats_returns_arc_numbers(client: TestClient) -> None:
     assert "misses=" in text
 
 
-def test_plugin_command_listed_and_dispatches_to_its_agent(
+class _Recorder:
+    """A host agent that records what the model is asked, optionally held until released."""
+
+    def __init__(self, answer: str, hold: threading.Event | None = None) -> None:
+        self.answer = answer
+        self.hold = hold
+        self.questions: list[str] = []
+        self.started = threading.Event()
+
+    def forward(self, question: str = "", *args: Any, **kwargs: Any) -> _Pred:
+        self.questions.append(question)
+        self.started.set()
+        if self.hold is not None:
+            assert self.hold.wait(timeout=30), "the test never released the command turn"
+        return _Pred(answer=self.answer)
+
+
+def _answer(client: TestClient, sid: str) -> dict[str, Any]:
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        done = [m for m in messages if m["role"] == "assistant" and m.get("stop_reason")]
+        if done:
+            return done[0]
+        time.sleep(0.05)
+    raise AssertionError("the command turn never settled")
+
+
+def test_plugin_command_listed_and_runs_as_a_turn_of_the_conversation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        calls.append((agent_def.id, question, session_id))
-        return _Pred(answer="REVIEW_OK", selected_expert=agent_def.id)
+    """The person's command is their message; the model receives the rendered recipe."""
 
     _command_marketplace(tmp_path, monkeypatch)
-    monkeypatch.setattr(RUNNER, fake_runner)
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    sid = _session(c, "clio/reviewer")
-
-    listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
-    review = next(command for command in listed if command["id"] == "/review")
-    assert review["source"] == "user"
-    assert review["command_scope"] == "plugin" and review["plugin"] == "review"
-    assert review["status"] == "available"
-    # Without a session, no agent's plugins are in scope.
-    assert "/review" not in {row["id"] for row in c.get("/v1/commands").json()["commands"]}
-
-    resp = c.post(f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}).json()
-
-    assert resp["result"]["type"] == "agent_message"
-    assert resp["result"]["text"] == "REVIEW_OK"
-    assert calls == [("reviewer", "Review this: diff --git", sid)]
-    msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-    assert msgs[0]["metadata"]["command"] == "/review"
-    assert msgs[0]["metadata"]["agent_id"] == "reviewer"
-
-
-def test_dispatch_user_command_does_not_block_event_loop(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """iowarp/clio-agent#755: a slow command turn must not freeze the server.
-
-    The agent runner is a blocking DSPy run that can take minutes. If it
-    executes on the event-loop thread, every other request (health, SSE, other
-    sessions) stalls until the command finishes. Hold the fake runner on a
-    threading.Event and prove ``GET /v1/health`` completes while the command
-    turn is still in flight — while preserving the synchronous response shape
-    and the audit row.
-    """
-
-    started = threading.Event()
-    release = threading.Event()
-
-    def slow_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        del base_agent, question, session_id
-        started.set()
-        assert release.wait(timeout=30), "test never released the slow command runner"
-        return _Pred(answer="SLOW_OK", selected_expert=agent_def.id)
-
-    _command_marketplace(tmp_path, monkeypatch)
-    monkeypatch.setattr(RUNNER, slow_runner)
-
-    # Context-managed client => one persistent portal/event loop shared by all
-    # requests. A bare TestClient spins up a fresh loop per request, which
-    # would mask cross-request event-loop blocking entirely.
-    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as c:
+    agent = _Recorder("REVIEW_OK")
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as c:
         sid = _session(c, "clio/reviewer")
 
-        command_result: dict[str, Any] = {}
+        listed = c.get("/v1/commands", params={"session_id": sid}).json()["commands"]
+        review = next(command for command in listed if command["id"] == "/review")
+        assert review["source"] == "user"
+        assert review["command_scope"] == "plugin" and review["plugin"] == "review"
+        assert review["status"] == "available"
+        # Without a session, no agent's plugins are in scope.
+        assert "/review" not in {row["id"] for row in c.get("/v1/commands").json()["commands"]}
 
-        def _run_command() -> None:
-            command_result["resp"] = c.post(
-                f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}
-            )
+        resp = c.post(f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"}).json()
 
-        health_done = threading.Event()
-        health_result: dict[str, Any] = {}
+        assert resp.get("result", {}).get("type") == "turn", resp
+        answer = _answer(c, sid)
+        assert any(p.get("text") == "REVIEW_OK" for p in answer["parts"])
+        assert agent.questions == ["Review this: diff --git"]
+        user = next(
+            m
+            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            if m["role"] == "user"
+        )
+        assert [p["text"] for p in user["parts"] if p["type"] == "text"] == ["/review diff --git"]
 
-        def _probe_health() -> None:
-            health_result["resp"] = c.get("/v1/health")
-            health_done.set()
 
-        cmd_thread = threading.Thread(target=_run_command, daemon=True)
-        cmd_thread.start()
+def test_a_command_turn_is_accepted_at_once_while_the_agent_works(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """iowarp/clio-agent#755: a slow command never holds the request (or the server)."""
+
+    _command_marketplace(tmp_path, monkeypatch)
+    release = threading.Event()
+    agent = _Recorder("SLOW_OK", hold=release)
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as c:
+        sid = _session(c, "clio/reviewer")
         try:
-            assert started.wait(timeout=30), "command dispatch never reached the runner"
-            probe_thread = threading.Thread(target=_probe_health, daemon=True)
-            probe_thread.start()
-            health_unblocked = health_done.wait(timeout=5.0)
+            resp = c.post(f"/v1/sessions/{sid}/commands/review", json={"input": "diff --git"})
+            assert resp.status_code == 200 and resp.json()["result"]["type"] == "turn"
+            assert agent.started.wait(timeout=30), "the command turn never started"
+            assert c.get("/v1/health").status_code in {200, 503}
         finally:
             release.set()
-            cmd_thread.join(timeout=30)
-
-        assert health_unblocked, (
-            "/v1/health blocked while a command turn was running "
-            "(command dispatch froze the event loop)"
-        )
-        # #800: /v1/health is the unified doctor — it honestly reports 503 when a
-        # required runtime (e.g. the clio-core daemon) is down, which is the norm in a
-        # bare test env. The point here is that the poll COMPLETED (did not block
-        # on the running command), and returned a real doctor body.
-        health_resp = health_result["resp"]
-        assert health_resp.status_code in {200, 503}
-        assert "overall_status" in health_resp.json()
-
-        # The synchronous response contract + audit row are preserved.
-        resp = command_result["resp"]
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["result"]["type"] == "agent_message"
-        assert body["result"]["text"] == "SLOW_OK"
-        assert body["result"]["audit"]["status"] == "completed"
-        assert c.app.state.command_audit[-1]["status"] == "completed"
+        answer = _answer(c, sid)
+        assert any(p.get("text") == "SLOW_OK" for p in answer["parts"])
 
 
 def test_skill_frontmatter_command_is_listed(
@@ -400,13 +372,7 @@ def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    def fake_runner(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        calls.append((agent_def.id, question, session_id))
-        return _Pred(answer="FILE_REVIEW_OK", selected_expert=agent_def.id)
-
-    monkeypatch.setattr(RUNNER, fake_runner)
+    agent = _Recorder("FILE_REVIEW_OK")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
     command_dir = tmp_path / ".clio" / "commands"
@@ -427,27 +393,28 @@ def test_workspace_command_file_is_listed_and_dispatches_to_the_session_agent(
         ),
         encoding="utf-8",
     )
-    c = TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
-    sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
-    listed = c.get("/v1/commands").json()["commands"]
-    command = next(row for row in listed if row["id"] == "/review")
-    assert command["agent_source"] == "command_file"
-    assert command["command_source"] == "clio_workspace"
-    assert command["argument_hint"] == "<path>"
+        listed = c.get("/v1/commands").json()["commands"]
+        command = next(row for row in listed if row["id"] == "/review")
+        assert command["agent_source"] == "command_file"
+        assert command["command_source"] == "clio_workspace"
+        assert command["argument_hint"] == "<path>"
 
-    missing = c.post(f"/v1/sessions/{sid}/commands/review", json={"args": {}})
-    assert missing.status_code == 422
-    assert missing.json()["error"]["details"]["missing"] == ["path"]
+        missing = c.post(f"/v1/sessions/{sid}/commands/review", json={"args": {}})
+        assert missing.status_code == 422
+        assert missing.json()["error"]["details"]["missing"] == ["path"]
 
-    resp = c.post(
-        f"/v1/sessions/{sid}/commands/review",
-        json={"args": {"path": "src/app.py"}},
-    ).json()
+        resp = c.post(
+            f"/v1/sessions/{sid}/commands/review",
+            json={"args": {"path": "src/app.py"}},
+        ).json()
 
-    assert resp["result"]["text"] == "FILE_REVIEW_OK"
-    # No ``agent:`` field: the command runs on the session's agent.
-    assert calls == [("standard", "Review src/app.py at src/app.py with standard.", sid)]
+        assert resp["result"]["type"] == "turn"
+        _answer(c, sid)
+        # No ``agent:`` field: the command runs on the session's agent.
+        assert agent.questions == ["Review src/app.py at src/app.py with standard."]
 
 
 def test_agent_invocable_command_planner_visibility_and_allowed_call(
