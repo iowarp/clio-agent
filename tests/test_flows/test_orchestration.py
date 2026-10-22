@@ -390,3 +390,56 @@ def test_each_restart_keeps_everything_finished_before_it(flow_app: TestClient) 
     )
     assert final.status == "completed"
     assert started["attempts"] == {"gather": 1, "measure": 2, "report": 2}
+
+
+def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClient) -> None:
+    """A model-written plan composes flows: one node is an arena of two contestants."""
+
+    from dspy.utils.dummies import DummyLM
+
+    from clio_agent.gact.flow_tools import start_flow
+
+    started: dict[str, Any] = {}
+    plan = {
+        "nodes": [
+            {"id": "facts", "target": "self", "input": "STEP facts"},
+            {
+                "id": "titles",
+                "target": "arena",
+                "input": "ENTRY title",
+                "after": ["facts"],
+                "options": {"contestants": ["self", "self"]},
+            },
+            {"id": "bad", "target": "self", "input": "STEP bad", "options": {"x": 1}},
+        ]
+    }
+    entries = {"n": 0}
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if question.startswith("ENTRY"):
+            entries["n"] += 1
+            return dspy.Prediction(answer=f"title {entries['n']}")
+        if question.startswith("STEP"):
+            return dspy.Prediction(answer="ok")
+        if question.startswith("run the plan") and not started:
+            started.update(asyncio.run(start_flow("plan", {"plan": plan, "task": "t"}, None)))
+            return dspy.Prediction(answer=f"started {started['handle']}")
+        return default_program(question=question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = program
+    dspy.configure(lm=DummyLM([{"reasoning": "r", "winner": "0", "rationale": "Shorter."}]))
+    try:
+        sid = new_session(flow_app, "clio/orchestrator")
+        post(flow_app, sid, "run the plan")
+        handle = wait_until(lambda: started.get("handle"))
+        wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    finally:
+        dspy.configure(lm=None)
+    assert entries["n"] == 2  # the arena ran with the plan's two contestants
+    view = flow_app.get(
+        f"/v1/sessions/{_snapshot(flow_app, handle).owner.session_id}/tasks/{handle}/flow"
+    ).json()
+    nodes = {row["id"]: row for row in view["view"]["nodes"]}
+    assert nodes["titles"]["status"] == "completed"
+    assert nodes["titles"]["options"] == {"contestants": ["self", "self"]}
+    assert nodes["bad"]["status"] == "failed"

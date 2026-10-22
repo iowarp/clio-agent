@@ -22,7 +22,13 @@ import json
 import re
 from typing import Any
 
-from clio_agent.flows.outcomes import CallCancelled, FlowCheckpointLimit, FlowOutcome, FlowStall
+from clio_agent.flows.outcomes import (
+    CallCancelled,
+    FlowCheckpointLimit,
+    FlowOutcome,
+    FlowStall,
+    FlowTargetUnknown,
+)
 from clio_agent.sdk import Flow, Node, Plan, PlanError
 
 _EDIT_TOOLS = ("plan_add_node", "plan_cancel_node")
@@ -234,7 +240,15 @@ class _PlanRun:
                     f"at most {self.max_added - self.added} more nodes may be added."
                 ),
             }
-        call = self.ctx.call(node.target, payload, key=f"node:{node.id}")
+        # A flow node's options select its configuration (an arena's contestants, ...).
+        flows = {row["id"] for row in getattr(self.ctx.resolution, "flows", None) or ()}
+        if node.options and node.target not in flows:
+            raise FlowTargetUnknown(
+                f"node {node.id!r}: options apply to a flow target, not {node.target!r}",
+                target=node.target,
+            )
+        target = Flow(node.target, **node.options) if node.options else node.target
+        call = self.ctx.call(target, payload, key=f"node:{node.id}")
         if node.target in self.editors:
             call.editor = {"run": self.ctx.run_id, "node": node.id}
         self.invocations[node.id] = call.invocation
@@ -347,6 +361,7 @@ class _PlanRun:
             after = [base]
         if repairing and repairing in after:
             after = [a for a in after if a != repairing]
+        options = args.get("options") or None
         reason = ""
         if self.added >= self.max_added:
             reason = "max_added_reached"
@@ -356,7 +371,8 @@ class _PlanRun:
             reason = "node_exists"
         else:
             try:
-                Plan(nodes=[*self.nodes.values(), Node(node_id, target, args.get("input"), after)])
+                proposed = Node(node_id, target, args.get("input"), after, options=options)
+                Plan(nodes=[*self.nodes.values(), proposed])
             except PlanError as exc:
                 reason = f"invalid: {exc}"
         event = {
@@ -393,7 +409,7 @@ class _PlanRun:
                 )
                 return False
         self.nodes[node_id] = Node(
-            node_id, target, args.get("input"), after, str(args.get("reason") or "")
+            node_id, target, args.get("input"), after, str(args.get("reason") or ""), options
         )
         self.status[node_id] = "pending"
         self.added += 1
@@ -407,6 +423,7 @@ class _PlanRun:
                         other.input,
                         [node_id if a == repairing else a for a in other.after],
                         other.description,
+                        other.options,
                     )
             self.status[repairing] = "repaired"
         await self.ctx.record_event({**event, "event": "node_added"})

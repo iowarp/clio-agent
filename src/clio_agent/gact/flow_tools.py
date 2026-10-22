@@ -164,6 +164,10 @@ def build_run_plan_tool() -> Any:
             },
             "input": {"description": "Text or an object; $task and $<node> refer to inputs."},
             "after": {"type": "array", "items": {"type": "string"}},
+            "options": {
+                "type": "object",
+                "description": "For a flow target: its options, e.g. arena contestants.",
+            },
         },
         "required": ["id", "target"],
     }
@@ -212,6 +216,7 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
         input: Any = None,  # noqa: A002
         after: list[str] | None = None,
         reason: str = "",
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not str(node_id).strip() or not str(target).strip():
             raise ValueError("plan_add_node needs node_id and target")
@@ -221,6 +226,7 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
             "node_id": node_id,
             "target": target,
             "after": list(after or []),
+            **({"options": dict(options)} if options else {}),
             "note": "The plan applies this after your call, within its bounds and approvals.",
         }
 
@@ -249,6 +255,11 @@ def build_plan_editor_tools(editor: dict[str, Any]) -> list[Any]:
                     "default": None,
                 },
                 "reason": {"type": "string", "default": ""},
+                "options": {
+                    "anyOf": [{"type": "object"}, {"type": "null"}],
+                    "default": None,
+                    "description": "For a flow target: its options, e.g. arena contestants.",
+                },
             },
             presentation="fields:node_id,target,note",
         ),

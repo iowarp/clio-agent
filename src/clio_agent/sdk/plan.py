@@ -37,6 +37,8 @@ class Node:
     input: Any = None
     after: tuple[str, ...] = ()
     description: str = ""
+    #: Options for a flow target, e.g. an arena's ``contestants`` or a council's ``members``.
+    options: dict[str, Any] = field(default_factory=dict, hash=False)
 
     def __init__(
         self,
@@ -45,12 +47,16 @@ class Node:
         input: Any = None,  # noqa: A002
         after: list[str] | tuple[str, ...] = (),
         description: str = "",
+        options: dict[str, Any] | None = None,
     ) -> None:
+        if options is not None and not isinstance(options, dict):
+            raise PlanError(f"node {id!r}: options must be an object, got {options!r}")
         object.__setattr__(self, "id", str(id))
         object.__setattr__(self, "target", str(target))
         object.__setattr__(self, "input", input)
         object.__setattr__(self, "after", tuple(str(a) for a in after))
         object.__setattr__(self, "description", str(description))
+        object.__setattr__(self, "options", dict(options or {}))
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "target": self.target, "after": list(self.after)}
@@ -58,6 +64,8 @@ class Node:
             data["input"] = self.input
         if self.description:
             data["description"] = self.description
+        if self.options:
+            data["options"] = dict(self.options)
         return data
 
     @classmethod
@@ -70,6 +78,7 @@ class Node:
             input=data.get("input"),
             after=data.get("after") or (),
             description=data.get("description", ""),
+            options=data.get("options"),
         )
 
 
