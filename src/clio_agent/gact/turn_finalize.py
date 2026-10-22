@@ -21,6 +21,7 @@ from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
+from clio_agent.gact.hooks.answer import apply_answer_hooks
 from clio_agent.gact.part_atom_minter import (
     close_turn_minter,
     failed_finalize_identity,
@@ -209,11 +210,17 @@ def finalize_turn(
         and not stream_fallback
     ):
         stream_fallback = _stream_fallback_payload("sync_execution_path")
-    answer_channel.finish(
+    landed_answer = answer_channel.finish(
         fallback_text=str(state.answer_text or ""),
         fallback_metadata=(
             {"stream_fallback": stream_fallback} if stream_fallback and batch_turn_text else {}
         ),
+    )
+    apply_answer_hooks(
+        state,
+        answer_text=landed_answer or "",
+        answer_part_id=answer_channel.part_id or "",
+        agent_id=responder_agent_id,
     )
     for row in state.proposed_diffs:
         path = _row_value(row, "path", "") or ""

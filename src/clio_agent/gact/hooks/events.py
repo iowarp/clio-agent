@@ -55,6 +55,13 @@ USER_PROMPT_SUBMIT = "UserPromptSubmit"
 #: failure must NOT fail-closed into a re-drive (it settles done, typed-recorded).
 STOP = "Stop"
 
+#: The turn's final answer settled, before the turn is persisted and published.
+#: NOT a gate: the answer may already have streamed. A hook may OBSERVE it, attach
+#: a ``note`` or a ``check`` (shown under the answer, attributed to the hook), or
+#: return a replacement (``updatedAnswer``) that lands as a visible revision; the
+#: original stays in the transcript, marked superseded (never a silent swap).
+ANSWER = "Answer"
+
 #: A session was created. Observation / inject-context.
 SESSION_START = "SessionStart"
 
@@ -97,6 +104,7 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
         POST_TOOL_BATCH,
         USER_PROMPT_SUBMIT,
         STOP,
+        ANSWER,
         SESSION_START,
         SESSION_END,
         SUBAGENT_START,

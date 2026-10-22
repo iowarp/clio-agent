@@ -15,6 +15,7 @@ from typing import Any
 
 from clio_agent.gact.hooks.adapters import HookAdapter
 from clio_agent.gact.hooks.config import HookEntry, HookMatch, HookRun, _compile_anchored
+from clio_agent.gact.hooks.events import ANSWER
 from clio_agent.gact.hooks.wire import HookDecision, HookEnvelope, HookInfraError
 from clio_agent.runtime import trace
 
@@ -85,8 +86,9 @@ class PythonHookAdapter(HookAdapter):
 
     The function receives a :class:`clio_agent.sdk.HookEvent`. It returns
     ``None`` to allow, or a mapping with ``decision``, ``reason`` and
-    ``additional_context``; raising :class:`PermissionError` denies with its
-    message. Any other exception is a typed hook infrastructure failure.
+    ``additional_context`` (an ``answer`` hook adds ``note``, ``check`` and
+    ``answer``); raising :class:`PermissionError` denies with its message. Any
+    other exception is a typed hook infrastructure failure.
     """
 
     def invoke(
@@ -117,6 +119,9 @@ class PythonHookAdapter(HookAdapter):
             tool_input=envelope.tool_input,
             prompt=envelope.prompt,
             payload=envelope.payload,
+            answer=(envelope.payload or {}).get("answer")
+            if envelope.hook_event_name == ANSWER
+            else None,
         )
         try:
             result = function(event)
@@ -142,11 +147,15 @@ class PythonHookAdapter(HookAdapter):
                     f"hook {entry.id!r} returned unknown decision {decision!r}",
                     hook_id=entry.id,
                 )
+            check = result.get("check")
             return HookDecision(
                 decision=decision,  # type: ignore[arg-type]
                 reason=str(result.get("reason") or ""),
                 additional_context=str(result.get("additional_context") or ""),
                 hook_id=entry.id,
+                note=str(result.get("note") or ""),
+                check=check if isinstance(check, dict) else None,
+                updated_output=str(result.get("answer") or ""),
             )
         raise HookInfraError(
             "hook_crashed", f"hook {entry.id!r} returned {type(result).__name__}", hook_id=entry.id

@@ -37,6 +37,7 @@ from clio_agent.gact.hooks.audit import emit_hook_audit, should_audit
 from clio_agent.gact.hooks.config import HookEntry, discover_hook_entries
 from clio_agent.gact.hooks.events import (
     AFTER_MODEL,
+    ANSWER,
     BEFORE_MODEL,
     KNOWN_EVENTS,
     POST_TOOL_BATCH,
@@ -478,6 +479,32 @@ def dispatch_stop(
         payload=dict(payload),
     )
     return dispatcher.dispatch(STOP, envelope)
+
+
+def dispatch_answer(
+    payload: Mapping[str, Any],
+    *,
+    session_id: str = "",
+    turn_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``Answer`` hooks on the turn's settled final answer and merge them.
+
+    Not a gate: notes, checks and a replacement answer ride the outcome; an infra
+    failure is recorded on its record and never fails the turn.
+    """
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=ANSWER,
+        session_id=session_id,
+        turn_id=turn_id,
+        cwd=cwd,
+        payload=dict(payload),
+    )
+    return dispatcher.dispatch(ANSWER, envelope)
 
 
 def dispatch_semantic_event(

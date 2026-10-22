@@ -14,6 +14,15 @@ cycle.
 A hook receives a :class:`HookEvent` and returns ``None`` to allow, a mapping
 with ``decision`` (``allow``/``deny``), ``reason`` and ``additional_context``, or
 raises :class:`PermissionError` to deny with that message.
+
+An ``answer`` hook sees the turn's final answer in ``ev.answer`` and may return
+``note`` (a line shown under the answer), ``check`` (``{"passed": bool, "text":
+str}``) and ``answer`` (a replacement, shown as a revision with ``reason``)::
+
+    @hook("answer")
+    def cite_check(ev):
+        if "http" not in (ev.answer or ""):
+            return {"check": {"passed": False, "text": "No source is cited."}}
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ HOOK_EVENTS: dict[str, str] = {
     "tool_batch": "PostToolBatch",
     "prompt_submit": "UserPromptSubmit",
     "stop": "Stop",
+    "answer": "Answer",
     "session_start": "SessionStart",
     "session_end": "SessionEnd",
     "subagent_start": "SubagentStart",
@@ -51,6 +61,7 @@ class HookEvent:
     tool_input: Mapping[str, Any] | None = None
     prompt: str | None = None
     payload: Mapping[str, Any] | None = None
+    answer: str | None = None
 
 
 @dataclass(frozen=True)
