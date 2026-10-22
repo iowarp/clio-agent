@@ -383,6 +383,7 @@ def _python_parts(root: Path, plugin: str, texts: dict[str, str]) -> _PythonPart
                             module=relative,
                             attr=attr,
                             description=value.description or (value.__doc__ or "").strip(),
+                            shape=str(getattr(value, "shape", "") or ""),
                         )
                     )
     return parts

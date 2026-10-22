@@ -500,6 +500,7 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
                     "attr": flow.attr,
                     "root": record.root,
                     "description": flow.description,
+                    "shape": flow.shape,
                 }
             )
         for catalog in record.catalogs:

@@ -89,6 +89,8 @@ class FlowRecord:
     module: str
     attr: str
     description: str = ""
+    #: The railroad its author drew of what it does (``Flow.shape``), for the person.
+    shape: str = ""
 
 
 @dataclass(frozen=True)

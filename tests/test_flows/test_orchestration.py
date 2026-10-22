@@ -466,3 +466,14 @@ def test_a_plan_node_can_be_an_arena_with_its_own_contestants(flow_app: TestClie
     assert steps["titles"]["status"] == "completed"
     assert steps["titles"]["options"] == {"contestants": ["self", "self"]}
     assert steps["bad"]["status"] == "failed"
+
+
+def test_the_resolution_carries_each_flows_drawn_shape(flow_app: TestClient) -> None:
+    """The person can see what a flow does before and while it runs: its author's railroad."""
+
+    from clio_agent.gact.agents.resolution import session_resolution
+
+    sid = new_session(flow_app, "clio/orchestrator")
+    flows = {row["id"]: row for row in session_resolution(flow_app.app, sid).flows}
+    assert flows["arena"]["shape"].startswith("railroad-beta\narena = sequence(choice(")
+    assert flows["council"]["shape"].startswith("railroad-beta\ncouncil = sequence(choice(")

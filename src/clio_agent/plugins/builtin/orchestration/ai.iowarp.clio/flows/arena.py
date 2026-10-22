@@ -36,6 +36,9 @@ class Arena(Flow):
         "entries and picks one winner, with its rationale, and the votes are recorded. "
         "Options: contestants (targets; default three of this agent)."
     )
+    shape = """railroad-beta
+arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entry n")),
+                 terminal("judge"));"""
     contestants: tuple[str, ...] = ("self", "self", "self")
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:

@@ -36,6 +36,9 @@ class Council(Flow):
         "answer. Options: members (targets; default three of this agent), perspectives "
         "(one per member), synthesizer (a target; empty synthesizes inside the flow)."
     )
+    shape = """railroad-beta
+council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("member n")),
+                   terminal("synthesis"));"""
     members: tuple[str, ...] = ("self", "self", "self")
     perspectives: tuple[str, ...] = (
         "a careful domain expert",
