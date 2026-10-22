@@ -44,7 +44,11 @@ def _configuration_spec(body: dict[str, Any]) -> dict[str, Any]:
         url = body.get("url")
         if not isinstance(url, str) or not url.strip():
             raise HTTPException(status_code=422, detail="http transport requires 'url'")
-        return {"transport": "http", "url": url.strip()}
+        return {
+            "transport": "http",
+            "url": url.strip(),
+            "always_load": bool(body.get("always_load") or body.get("alwaysLoad")),
+        }
     raise HTTPException(
         status_code=422,
         detail=f"unknown transport: {transport_kind!r} (use stdio|http)",
@@ -206,9 +210,32 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
     from clio_agent.gact.mcp_user_configuration import (
         McpUserConfigurationError,
         get_user_mcp_server,
+        list_user_mcp_servers,
         remove_user_mcp_server,
         set_user_mcp_server,
     )
+
+    @app.get("/v1/mcp/configuration")
+    async def list_mcp_configuration() -> dict[str, Any]:
+        """The services the person saved, without starting them (a row's GET probes it)."""
+
+        try:
+            servers = await asyncio.to_thread(list_user_mcp_servers)
+        except McpUserConfigurationError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "servers": [
+                {
+                    "name": name,
+                    "configured": True,
+                    "scope": "user",
+                    "transport": str(spec.get("transport") or "stdio"),
+                    "always_load": bool(spec.get("always_load")),
+                    "spec": redact_mcp_spec(dict(spec)),
+                }
+                for name, spec in sorted(servers.items())
+            ]
+        }
 
     @app.get("/v1/mcp/configuration/{name}")
     async def get_mcp_configuration(name: str) -> dict[str, Any]:

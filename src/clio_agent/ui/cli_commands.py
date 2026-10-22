@@ -18,4 +18,8 @@ def handle_local_command(arguments: Sequence[str]) -> bool:
         from clio_agent.plugins.cli import run_plugin_cli
 
         raise SystemExit(run_plugin_cli(arguments[1:]))
+    if arguments[0] == "mcp":
+        from clio_agent.ui.mcp_cli import run_mcp_cli
+
+        raise SystemExit(run_mcp_cli(arguments[1:]))
     return False

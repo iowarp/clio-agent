@@ -73,6 +73,17 @@ def get_user_mcp_server(name: str) -> dict[str, Any] | None:
         return dict(declaration) if isinstance(declaration, Mapping) else None
 
 
+def list_user_mcp_servers() -> dict[str, dict[str, Any]]:
+    """Every user-level MCP declaration, by name."""
+
+    with _CONFIG_LOCK:
+        document = _read_document(user_mcp_configuration_path())
+        servers = document.get("mcp_servers", {})
+        return {
+            str(name): dict(value) for name, value in servers.items() if isinstance(value, Mapping)
+        }
+
+
 def mcp_server_arg_value(declaration: Mapping[str, Any] | None, flag: str) -> str:
     """Return the value following one exact argv flag in a saved declaration."""
 
