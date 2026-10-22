@@ -237,7 +237,13 @@ def default_program(question: str = "", **_: Any) -> Any:
         app.state.tool_call_ledger.setdefault(context.active_session_id(), []).append(
             {
                 "name": "plan_add_node",
-                "args": {"node_id": "polish", "target": "self", "input": "polish $draft"},
+                # Like the live reviewer, it names the step it builds on, not itself.
+                "args": {
+                    "node_id": "polish",
+                    "target": "self",
+                    "input": "polish $draft",
+                    "after": ["draft"],
+                },
                 "ok": True,
             }
         )

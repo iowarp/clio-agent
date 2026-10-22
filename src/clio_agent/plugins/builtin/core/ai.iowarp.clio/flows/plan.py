@@ -357,7 +357,11 @@ class _PlanRun:
         target = str(args.get("target") or "")
         after = [str(a) for a in args.get("after") or ()]
         base = origin.removeprefix("repair:")
-        if not after and base in self.nodes:
+        # A node an editor step adds exists only once that step has finished, so it follows
+        # that step (and reads its answer). A repair stands in for the failed node instead.
+        if not repairing and base in self.nodes and base not in after:
+            after.append(base)
+        elif not after and base in self.nodes:
             after = [base]
         if repairing and repairing in after:
             after = [a for a in after if a != repairing]

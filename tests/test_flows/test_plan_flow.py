@@ -56,6 +56,8 @@ def test_editor_adds_a_node_that_runs(flow_app: TestClient) -> None:
     events = list(run["events"].values())
     added = [e for e in events if e["event"] == "node_added"]
     assert [e["node"] for e in added] == ["polish"]
+    # The added node exists only once the critique that proposed it has finished.
+    assert added[0]["after"] == ["draft", "critique"]
     statuses = {n["id"]: n["status"] for n in run["result"]["plan"]["nodes"]}
     assert statuses == {"draft": "completed", "critique": "completed", "polish": "completed"}
     assert "done: polish done: " in text_of(message)
