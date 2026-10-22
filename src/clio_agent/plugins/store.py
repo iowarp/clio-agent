@@ -45,7 +45,6 @@ from clio_agent.plugins.marketplace import (
     GitPin,
     MarketplaceContents,
     load_agent_specs,
-    read_claude_marketplace,
     read_marketplace,
 )
 from clio_agent.plugins.records import Diagnostic, PluginRecord
@@ -382,10 +381,9 @@ class PluginStore:
         digests: dict[str, str] = entry["trusted_digests"]
         if approve:
             digests.clear()
-        if entry["format"] == "claude-code":
-            contents = read_claude_marketplace(snapshot, market)
-        else:
-            contents = self._read(snapshot, trusted=False, name=market)
+        # The detected layout decides how to read it: a Claude Code marketplace, a
+        # single Claude Code plugin, a folder of skills, or an Agent Plugins tree.
+        contents = self._read(snapshot, trusted=False, name=market)
         git_records, git_diags = self._git_plugins(contents.git_plugins, market)
         diagnostics = [*contents.diagnostics, *git_diags]
         records: list[PluginRecord] = []

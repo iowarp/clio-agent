@@ -72,6 +72,9 @@ def detect_format(root: Path) -> str:
         return "plugin"
     if (root / ".claude-plugin" / "plugin.json").is_file():
         return "claude-code-plugin"
+    # Skills on their own (a skills/ folder, or one skill's folder): a plugin of skills.
+    if (root / "SKILL.md").is_file() or any((root / "skills").glob("*/SKILL.md")):
+        return "skills"
     return ""
 
 
@@ -288,4 +291,10 @@ def read_marketplace(root: Path, *, trusted: bool, name_hint: str = "") -> Marke
         return MarketplaceContents(
             name=name_hint or record.id, format="claude-code", plugins=[record]
         )
+    if kind == "skills":
+        entry: dict[str, Any] = {"name": name_hint or root.name}
+        if (root / "SKILL.md").is_file():
+            entry["skills"] = ["."]
+        record = import_claude_plugin(root, entry=entry, marketplace=name_hint or root.name)
+        return MarketplaceContents(name=record.id, format="claude-code", plugins=[record])
     raise PluginLoadError(f"{root}: no marketplace or plugin found")

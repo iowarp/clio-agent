@@ -241,7 +241,9 @@ def _skills(
         problem = ""
         if not name:
             problem = "SKILL.md has no name"
-        elif name != child.name:
+        elif name != child.name and child.resolve() != root.resolve():
+            # A skill installed on its own is the plugin's root, held in a folder
+            # named by its content digest: only skills under skills/ match a folder.
             problem = f"name {name!r} does not match its directory {child.name!r}"
         elif len(name) > 64 or not _SKILL_NAME_RE.match(name):
             problem = f"name {name!r} must be lowercase letters, digits and single hyphens"

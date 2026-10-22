@@ -189,3 +189,31 @@ def test_a_marketplace_entry_names_exactly_the_skills_its_plugin_brings(tmp_path
         "skill_description_long",
         "skill_missing",
     }
+
+
+def test_a_skill_a_folder_of_skills_and_one_claude_plugin_each_install(tmp_path: Path) -> None:
+    """Not only marketplaces: what people share as skills or single plugins installs too."""
+
+    from clio_agent.plugins.store import PluginStore
+
+    write(
+        tmp_path / "one-skill" / "SKILL.md", "---\nname: one-skill\ndescription: One.\n---\nBody.\n"
+    )
+    write(
+        tmp_path / "bundle" / "skills" / "a" / "SKILL.md",
+        "---\nname: a\ndescription: A.\n---\nBody.\n",
+    )
+    write(tmp_path / "solo" / ".claude-plugin" / "plugin.json", '{"name": "solo"}')
+    write(
+        tmp_path / "solo" / "skills" / "b" / "SKILL.md",
+        "---\nname: b\ndescription: B.\n---\nBody.\n",
+    )
+    store = PluginStore(tmp_path / "store")
+    for source in ("one-skill", "bundle", "solo"):
+        store.install(str(tmp_path / source))
+    skills = {
+        r.id: [s.id for s in r.skills]
+        for r in store.records()
+        if r.marketplace in ("one-skill", "bundle", "solo")
+    }
+    assert skills == {"one-skill": ["one-skill"], "bundle": ["a"], "solo": ["b"]}
