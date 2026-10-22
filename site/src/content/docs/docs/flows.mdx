@@ -1,0 +1,101 @@
+---
+title: Flows and workflows
+description: Run several agents on one question as a council, an arena, or a workflow of steps; follow the run, steer it, and decide which flows may run.
+---
+
+import { Aside, CardGrid, LinkCard, Steps } from '@astrojs/starlight/components';
+
+A flow decides how an agent's work is organized. In an ordinary conversation the agent runs the default flow: it answers, calls tools, and chooses its next step from what it sees. Other flows coordinate several agent runs, for example several independent answers followed by one synthesis.
+
+A flow you start runs as background work. The agent gets its handle at once and keeps working, and the result reaches the conversation when the flow finishes. You can follow the run, open any of its steps, and cancel it.
+
+## Flows that ship with CLIO
+
+| Flow | What it does |
+|---|---|
+| `council` | Several members answer the same question independently, then one synthesis says where they agree and resolves where they differ. |
+| `arena` | Several contestants attempt the same task, then a judge compares the attempts and picks one, with its reasons. |
+| `workflow` | Runs the steps you or the agent lay out. Each step starts as soon as the steps it waits on have finished, so independent steps run side by side. |
+
+`council` and `arena` come with the `orchestration` plugin, which the standard agent carries. `workflow` is part of every agent. Plugins can bring more flows.
+
+## Ask for a flow
+
+Ask in your own words, and name the flow when you want a particular one:
+
+```text
+Run the council flow on this question and give me its synthesized answer:
+should a small lab store 2 TB of microscopy images as HDF5 or Zarr?
+```
+
+The agent is told which flows it can start. That includes flows from installed plugins this agent does not carry yet. Running one of those adds its plugin to the conversation; if the plugin is not trusted yet, CLIO asks you first (see [Flows from plugins you have not trusted](#flows-from-plugins-you-have-not-trusted)).
+
+## Workflows
+
+A workflow is a list of steps. Each step has an id, the agent or flow that runs it, its instructions, and the steps it waits on. A step's instructions can include the answer of a step it waits on. Describe the work and the agent builds the steps:
+
+```text
+Draft four bullet points on what limits HDF5 write throughput on a parallel
+file system, then have the critic review the draft. Let the critic add one
+step if a claim needs checking, and ask me before any added step runs.
+```
+
+A workflow can name **editors**, usually a critic. An editor may propose new steps, or cancel steps that have not started. When the workflow asks for approval, each proposed step reaches you as a question in the conversation, for example "Add workflow step 'verify_lustre_stripe_default' (researcher) after draft, review, proposed by review?". A step that was added waits on the step that proposed it.
+
+How far a workflow may grow has no built-in limit. The agent may set one when it starts the workflow. To cap every workflow, open Settings, choose **Execution & history**, and set the **Workflows** limits:
+
+| Setting | What it caps |
+|---|---|
+| **Steps editors may add** | Steps the editors may add to one run. |
+| **Editing rounds** | Rounds of edits in one run. |
+
+Zero means unlimited. When both you and the agent set a limit, the smaller one applies. The limits in force are recorded when the run starts.
+
+## Follow a run
+
+A flow appears as a card in the conversation, with its name, its state, and a count of its steps. The diagram reads left to right:
+
+- steps that run at the same time are drawn side by side, labeled with how many run in parallel;
+- a flow that runs inside another is drawn as a box with its name;
+- each step's color shows its state, and the legend under the diagram names the states in words.
+
+Select a step to see who runs it, what it waits on, its instructions, and its answer. A step an editor added says **Added** and shows who added it and why. **Open** opens the step's own conversation.
+
+The card also has **Full screen**, a button that opens the run in the side panel, and **Show the workflow** or **Show what the agent asked**. A flow's name, where it appears in a step, opens what the flow is: its plugin, its description, and the diagram its author drew.
+
+## Stop and cancel
+
+**Stop** ends the agent's current turn. A flow it started keeps running, because it is background work. To end the flow, ask the agent to cancel it:
+
+```text
+Cancel the running workflow and tell me what was cancelled.
+```
+
+Cancelling a flow cancels its running steps. Steps that had not started are skipped. The card shows the run as cancelled, with the cancelled step one click away.
+
+When CLIO restarts while a flow runs, the flow continues where it was. Finished steps are not run again, and steps that were running continue under the same handles.
+
+## Flows from plugins you have not trusted
+
+Running a flow from a plugin you have not trusted asks you first. The request appears in the conversation as **Running flow** followed by the flow's name, with who wrote the plugin and the file that defines the flow. Choose the file to review the plugin before you decide.
+
+- **Trust and run** trusts the plugin in its installed version, adds it to the conversation, and starts the flow.
+- **Deny** refuses. The flow does not run and the plugin stays untrusted.
+
+A workflow asks about each step's untrusted flow before any step starts. A new version of a plugin whose code changed asks again.
+
+Under **Bypass checks**, a flow that CLIO wrote itself, with its files unchanged, runs without asking, and the run is recorded. A flow from anyone else asks in every approval mode.
+
+## Have CLIO write a flow
+
+CLIO can write a flow for a pattern you describe, such as two takes on a question with a moderator. It writes a plugin into its own folder, checks it, and installs it untrusted. The first run asks you, as above. The plugin appears in Settings under **Plugins & marketplaces**, where you can review, update, or remove it.
+
+<Aside type="note">
+A flow runs with the agent's limits for background work: how many subagents may run at once and how deeply they may nest. Those limits are in Settings under **Execution & history**, in **Subagents**.
+</Aside>
+
+<CardGrid>
+  <LinkCard title="Agents and plugins" href="/docs/agents-and-plugins/" description="Which plugins an agent carries, and how to add or remove them." />
+  <LinkCard title="Background work" href="/docs/tasks/" description="Follow, wait for, and cancel the work a conversation starts." />
+  <LinkCard title="Answer a question" href="/docs/questions/" description="How questions from the agent and its flows reach you." />
+</CardGrid>

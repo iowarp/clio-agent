@@ -44,7 +44,7 @@ The default agent, shown as **CLIO**, is `clio/standard`. Its plugins:
 | `visuals` | Interactive analysis, dashboards, diagrams, and visual review in the side panel. |
 | `connected-data` | Connected research data sources, the National Data Platform, and knowledge stores. |
 | `delegation` | General subagents started with a task prompt. |
-| `orchestration` | Multi-step plans and flows, such as several independent answers followed by one synthesis. |
+| `orchestration` | Workflows and flows, such as several independent answers followed by one synthesis. See [Flows and workflows](/docs/flows/). |
 
 ## Plugins and packs
 
@@ -87,7 +87,7 @@ Remove every other plugin and the agent can still answer, ask you questions, and
 
 To change the agent new sessions start with, open Settings, choose **New session defaults**, and set **Agent**.
 
-The conversation's plugin set is fixed when it starts. An update to the agent or one of its plugins reaches your next conversation, not the one that is running. To work with a different agent, start a new conversation.
+The agent is fixed when the conversation starts. An update to the agent or one of its plugins reaches your next conversation, not the one that is running. You can still add or remove plugins in a running conversation, as described below. To work with a different agent, start a new conversation.
 
 Next to the conversation's title, choose the agent's name to open the **Agent** panel. It shows the agent's name, reference, version, and role, and two tabs: **Plugins** and **Prompt**.
 
@@ -109,13 +109,26 @@ Pack members are listed under their pack.
 
 A plugin cannot be chosen when it is already active, when its marketplace has not been trusted, or when it has errors. See [Plugin marketplaces](/docs/marketplaces/) for the trust step.
 
-To remove a plugin, choose the remove button on its row in the **Plugins** tab. Before anything changes, CLIO shows what else leaves and which tools are no longer available. For example, removing `document-runtime` also removes every document plugin, since each requires it. The confirm button names the plugin, or the number of plugins when others leave too. The **Keep** button cancels.
+To remove a plugin, choose the remove button on its row in the **Plugins** tab. Before anything changes, CLIO shows what else leaves and which tools are no longer available. For example, removing `document-runtime` also removes every document plugin, since each requires it. **No** cancels.
 
 - Removing a pack member removes only that member. The rest of the pack stays.
 - Removing a pack removes the members it brought.
 - `core` has no remove button.
 
-Changes apply to this conversation only, from the next turn. The agent's name in the title shows how many changes you made. In the panel, **Removed in this conversation** lists what you removed, with **Add back**, and what left with it. **Undo changes** restores the agent as it started.
+Changes apply to this conversation only. The agent's name in the title shows how many changes you made.
+
+### How a change reaches the agent
+
+In a conversation with no messages yet, an added plugin applies at once, and a removal asks only **Yes** or **No**: nothing has been sent to the model, so the change applies from the first call.
+
+Once the conversation has messages, every change asks first. Changing plugins changes the agent's prompt, so the model can no longer reuse its cached copy, and the next call may cost more. Choose how the change goes in:
+
+| Choice | What happens |
+|---|---|
+| **Yes** | The change applies from the next call, with the new prompt. |
+| **Yes, after compaction** | CLIO compacts the conversation now, and the change goes in with the compacted conversation. Compacting calls the model and can take a few seconds. |
+| **Yes, as an injection** | The agent is told about the change now, and its prompt changes at the next compaction. Until then, added tools can be used but are announced rather than listed, and removed plugins stay visible to the agent. |
+| **No** | Nothing changes. | In the panel, **Removed in this conversation** lists what you removed, with **Add back**, and what left with it. **Undo changes** restores the agent as it started.
 
 A conversation started for a defined subagent cannot be changed. Its plugins come from the subagent's definition.
 
