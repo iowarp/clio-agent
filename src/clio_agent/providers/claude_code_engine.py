@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import threading
 import uuid
@@ -89,6 +90,9 @@ from clio_agent.providers.claude_code_stream_events import (
 from clio_agent.providers.stateful_common import stateful_reset_payload
 
 __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
+
+
+logger = logging.getLogger(__name__)
 
 
 def _capacity() -> int:
@@ -404,6 +408,17 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
+        if dropped := self._splitter.dropped_invoke_markup:
+            # The model also wrote its calls as invoke markup in its prose; only the fenced
+            # block runs, so the markup was not shown. On the record, never silent.
+            logger.info(
+                "provider reply text dropped invoke markup reason=invoke_markup_in_text "
+                "model=%s call_id=%s fragments=%d fenced_calls=%d",
+                self.model,
+                call_id,
+                dropped,
+                len(split.calls),
+            )
         for index, call in enumerate(split.calls):
             out.append(
                 StreamDeltaEvent(

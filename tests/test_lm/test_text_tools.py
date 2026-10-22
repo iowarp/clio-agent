@@ -552,3 +552,30 @@ def test_the_stream_holds_a_partial_fence_until_it_resolves() -> None:
     assert splitter.push("a ``") == "a "
     assert splitter.push("x") == "``x"
     assert splitter.push(" done") == " done"
+
+
+def test_the_stream_does_not_show_a_call_also_written_as_invoke_markup() -> None:
+    """Only the fenced block runs; the same call written as invoke markup in the prose
+    is a duplicate the person should not read as text, wherever the chunks break."""
+
+    reply = (
+        "I'll inspect the data first.\n\n"
+        '<invoke name="shell_bash"> <parameter name="command">ls</parameter> </invoke>\n\n'
+        "Then I'll report.\n\n"
+        '```tool_calls\n[{"name": "shell_bash", "arguments": {"command": "ls"}}]\n```'
+    )
+    for size in (1, 3, 7, len(reply)):
+        splitter = StreamSplitter()
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert shown == "I'll inspect the data first.\n\n\n\nThen I'll report.", size
+        assert "<" not in shown
+        assert splitter.dropped_invoke_markup == 1
+
+
+def test_the_stream_holds_an_unfinished_invoke_and_keeps_ordinary_angle_brackets() -> None:
+    splitter = StreamSplitter()
+    assert splitter.push("a < b and ") == "a < b and "
+    assert splitter.push("<inv") == ""
+    assert splitter.push('oke name="x">') == ""
+    assert splitter.push("</invoke> done") == " done"
+    assert splitter.dropped_invoke_markup == 1

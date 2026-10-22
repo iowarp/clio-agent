@@ -359,18 +359,45 @@ def _call(call: Any, call_id: str) -> ToolCallPart:
     return ToolCallPart(id=call_id, name=name, input=arguments)
 
 
+#: A call written as the model's native invoke markup in its prose. Only the fenced block
+#: is ever executed, so the markup is a duplicate the person should not read as text.
+_INVOKE_MARKUP = re.compile(
+    r"""(?:<function_calls>\s*)?<invoke\s+name=(["'])[^"']*\1\s*>.*?</invoke>"""
+    r"""(?:\s*</function_calls>)?""",
+    re.DOTALL,
+)
+_INVOKE_OPENER = re.compile(r"""<function_calls>|<invoke\s+name=""")
+_INVOKE_OPENERS = ("<function_calls>", "<invoke name=")
+
+
+def _without_invoke_markup(text: str) -> tuple[str, int]:
+    """``text`` without complete invoke fragments, cut before an unfinished one (or a tail
+    that could start one); returns the text and how many fragments were removed."""
+
+    cleaned, removed = _INVOKE_MARKUP.subn("", text)
+    if opener := _INVOKE_OPENER.search(cleaned):
+        return cleaned[: opener.start()], removed
+    for n in range(min(max(map(len, _INVOKE_OPENERS)) - 1, len(cleaned)), 0, -1):
+        if any(o.startswith(cleaned[-n:]) for o in _INVOKE_OPENERS):
+            return cleaned[:-n], removed
+    return cleaned, removed
+
+
 class StreamSplitter:
     """Stream a reply's visible text live, holding back the tool-call block.
 
     ``push(chunk)`` returns the text that is safe to show now: everything before the
     fence, minus a tail that could still be the start of the fence. Once the fence is
     seen nothing more streams (the block is parsed at the end by :func:`split_reply`).
+    A call the model also wrote as invoke markup in its prose is not shown: only the
+    fenced block runs. ``dropped_invoke_markup`` counts those fragments, for the audit.
     """
 
     def __init__(self) -> None:
         self._buffer = ""
         self._shown = 0
         self._stopped = False
+        self.dropped_invoke_markup = 0
 
     def push(self, chunk: str) -> str:
         """Add ``chunk``; return the newly showable text (possibly empty)."""
@@ -383,6 +410,7 @@ class StreamSplitter:
             safe = self._buffer[:fence_at]
         else:
             safe = self._buffer[: len(self._buffer) - _partial_fence_len(self._buffer)]
+        safe, self.dropped_invoke_markup = _without_invoke_markup(safe)
         # Trailing newlines wait for what follows: before the fence they are not text.
         safe = safe.rstrip("\n")
         out = safe[self._shown :]
