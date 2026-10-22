@@ -563,6 +563,7 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         executable_digest=exec_digest,
         text_digest=text_digest,
         keywords=tuple(manifest.get("keywords") or ()),
+        python_pending=has_python and not trusted,
     )
     if kind == "pack":
         content = [

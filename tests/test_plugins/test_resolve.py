@@ -280,3 +280,22 @@ def test_user_delta_add_then_remove(tmp_path: Path) -> None:
     )
     assert next(r for r in resolved.plugins if r["id"] == "pdf")["provenance"]["source"] == "user"
     assert Delta(add=("pdf",)).then(Delta(remove=("pdf",))) == Delta((), ("pdf",))
+
+
+def test_an_untrusted_plugin_with_python_is_refused_not_added_empty(tmp_path: Path) -> None:
+    """Its Python is not imported before trust, so its flows are unknown; it must still
+    count as executable and be refused, rather than resolve as a plugin with nothing in it."""
+
+    flow = (
+        "from clio_agent.sdk import Flow\n\n"
+        "class Debate(Flow):\n    id = 'debate'\n\n"
+        "    async def forward(self, task, ctx):\n        return 'x'\n"
+    )
+    root = plugin(tmp_path, "debate", files={"ai.iowarp.clio/flows/debate.py": flow})
+    record = load_plugin(root, marketplace="local", trusted=False)
+    assert record.python_pending and record.has_executable_parts and not record.flows
+    catalog = _catalog(tmp_path, root, trusted=False)
+    catalog.records[-1] = record
+    with pytest.raises(ResolutionError) as excinfo:
+        resolve_agent(catalog, _spec("debate"), marketplace="test")
+    assert "plugin_untrusted" in str(excinfo.value)

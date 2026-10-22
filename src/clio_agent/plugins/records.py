@@ -150,6 +150,8 @@ class PluginRecord:
     executable_digest: str = ""
     text_digest: str = ""
     keywords: tuple[str, ...] = ()
+    #: Python parts present but not imported, because the plugin is not trusted yet.
+    python_pending: bool = False
 
     @property
     def errors(self) -> list[Diagnostic]:
@@ -162,7 +164,9 @@ class PluginRecord:
     @property
     def has_executable_parts(self) -> bool:
         # Native packages declare tools, subagents and flows in imported Python.
-        python = self.format == "agent-plugins" and bool(self.tools or self.subagents)
+        python = self.format == "agent-plugins" and bool(
+            self.tools or self.subagents or self.python_pending
+        )
         return bool(self.mcp_servers or self.hooks or self.flows or python)
 
     def tool_names(self) -> list[str]:
@@ -211,4 +215,5 @@ class PluginRecord:
             executable_digest=data.get("executable_digest") or "",
             text_digest=data.get("text_digest") or "",
             keywords=tuple(data.get("keywords") or ()),
+            python_pending=bool(data.get("python_pending")),
         )
