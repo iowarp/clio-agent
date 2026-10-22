@@ -121,7 +121,10 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
             # A restart continues the run it replaces: finished work is kept.
             resume_from = (predecessor, f"flow:{flow_id}:{predecessor}")
         elif predecessor:
-            return _after_the_run(flow_id, predecessor, str(kwargs.get("question") or ""))
+            trigger = app.state.task_history.mail_item(session_id, turn.input_notification_id)
+            written = trigger is not None and trigger.kind in {"human", "peer", "delegation"}
+            message = str(kwargs.get("question") or "") if written else ""
+            return _after_the_run(flow_id, predecessor, session_id, message)
     else:
         marker = (
             turn.input_notification_id
@@ -159,19 +162,20 @@ def _lineage(app: Any, handle: str) -> tuple[str, str]:
     return str(task.invocation_id or ""), str(details.predecessor or "")
 
 
-def _after_the_run(flow_id: str, ended: str, message: str) -> Any:
-    """A message reaching a started flow's session after its run ended.
+def _after_the_run(flow_id: str, ended: str, session_id: str, message: str) -> Any:
+    """Input reaching a started flow's session after its run ended.
 
-    The flow does not run again (that would repeat its work); the message is the
-    assignment's result, so it reaches the agent that started the flow.
+    The flow does not run again (that would repeat its work). The assignment's
+    result says so, and carries a written message on, so it reaches the agent that
+    started the flow; task outcomes stay recorded in the flow's conversation.
     """
 
     import dspy  # noqa: PLC0415
 
-    return dspy.Prediction(
-        answer=(
-            f"The {flow_id} run in this conversation already ended (assignment {ended}), so "
-            "it does not run again. This arrived afterwards and is passed on as received:\n\n"
-            + message
-        )
+    answer = (
+        f"The {flow_id} run in conversation {session_id} already ended (assignment {ended}), "
+        "so it does not run again. Task outcomes that arrive later stay recorded there."
     )
+    if message:
+        answer += "\n\nThis message arrived afterwards and is passed on as written:\n\n" + message
+    return dspy.Prediction(answer=answer)
