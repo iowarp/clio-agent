@@ -183,3 +183,35 @@ def test_plugin_check_reports_each_broken_part(tmp_path: Path) -> None:
     assert "prompt file ai.iowarp.clio/prompt/gone.md does not exist" in text
     assert "tool 'ask_user' is exposed by both core and collider" in text
     assert "hook ordering has a cycle among cycler.a, cycler.b" in text
+
+
+def test_concurrent_installs_of_the_same_content_share_one_snapshot(tmp_path: Path) -> None:
+    """Two installs of the same source at once (two apps on one store) each stage their own
+    copy; the first names the content-addressed snapshot and the other keeps it."""
+
+    import threading
+
+    from clio_agent.plugins.store import _copy_tree
+
+    source = tmp_path / "src"
+    for index in range(200):
+        (source / f"d{index % 10}").mkdir(parents=True, exist_ok=True)
+        (source / f"d{index % 10}" / f"f{index}.txt").write_text("x" * 2000)
+    target = tmp_path / "snapshots" / "m" / "digest"
+    target.parent.mkdir(parents=True)
+    errors: list[BaseException] = []
+
+    def copy() -> None:
+        try:
+            _copy_tree(source, target)
+        except BaseException as exc:  # noqa: BLE001 - collected and asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=copy) for _ in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert sorted(p.name for p in target.parent.iterdir()) == ["digest"]
+    assert len(list(target.rglob("*.txt"))) == 200

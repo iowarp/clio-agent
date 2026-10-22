@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,17 +103,29 @@ def _now() -> str:
 
 
 def _copy_tree(source: Path, target: Path) -> None:
+    """Copy ``source`` to the content-addressed ``target``, once, however many install it.
+
+    Each copy stages in its own folder, so concurrent installs of the same content never
+    share one; the first to finish names it, and the others find it there and drop theirs.
+    """
+
     if target.exists():
         return
-    staging = target.with_name(target.name + ".partial")
-    shutil.rmtree(staging, ignore_errors=True)
+    staging = target.with_name(f"{target.name}.partial-{uuid.uuid4().hex[:12]}")
     shutil.copytree(
         source,
         staging,
         symlinks=False,
         ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc", ".venv", "node_modules"),
     )
-    staging.rename(target)
+    try:
+        staging.rename(target)
+    except OSError:
+        if not target.is_dir():
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        # Another install of the same content finished first: its copy is identical.
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def builtin_records() -> list[PluginRecord]:
