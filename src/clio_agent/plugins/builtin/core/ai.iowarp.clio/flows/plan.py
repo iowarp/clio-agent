@@ -245,8 +245,10 @@ class _PlanRun:
                 "assignment": payload,
                 "plan": self.summary(),
                 "editing": (
-                    "You may propose plan changes with plan_add_node and plan_cancel_node; "
-                    f"at most {self.max_added - self.added} more nodes may be added."
+                    "You are an editor of this running plan. Only a plan_add_node or "
+                    "plan_cancel_node call changes it; a step you describe in your answer "
+                    f"is not added. At most {self.max_added - self.added} more nodes may "
+                    "be added."
                 ),
             }
         # A flow node's options select its configuration (an arena's contestants, ...).
