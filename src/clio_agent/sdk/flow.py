@@ -40,10 +40,11 @@ class Flow(dspy.Module):
     #: (``sequence``, ``choice``, ``oneOrMore``, ``terminal``...). The request to trust
     #: a plugin Clio wrote shows it; it describes the code, it is not checked against it.
     shape: ClassVar[str] = ""
-    #: Limits enforced by ``ctx`` on top of the runtime's inference capacity.
-    #: Zero means "no flow-level limit" for that dimension.
-    max_depth: ClassVar[int] = 4
-    max_concurrency: ClassVar[int] = 4
+    #: Limits a flow may declare, enforced by ``ctx`` on top of Clio's own bounds (the
+    #: subagent depth and concurrency settings, the checkpoint cap, Stop and cancel).
+    #: Zero, the default, means "no flow-level limit" for that dimension.
+    max_depth: ClassVar[int] = 0
+    max_concurrency: ClassVar[int] = 0
     max_model_calls: ClassVar[int] = 0
     budget_tokens: ClassVar[int] = 0
 

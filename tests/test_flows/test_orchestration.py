@@ -483,3 +483,21 @@ def test_the_resolution_carries_each_flows_drawn_shape(flow_app: TestClient) -> 
     flows = {row["id"]: row for row in session_resolution(flow_app.app, sid).flows}
     assert flows["arena"]["shape"].startswith("railroad-beta\narena = sequence(choice(")
     assert flows["council"]["shape"].startswith("railroad-beta\ncouncil = sequence(choice(")
+
+
+def test_built_in_flows_leave_depth_and_parallelism_to_clio() -> None:
+    """No flow-level cap by default: the subagent depth and concurrency settings govern."""
+
+    import importlib.util
+    from pathlib import Path
+
+    from clio_agent.plugins.store import builtin_records
+
+    for record in builtin_records():
+        for flow in record.flows:
+            path = Path(record.root) / "ai.iowarp.clio" / flow.module
+            spec = importlib.util.spec_from_file_location(f"_flow_{flow.id}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            limits = getattr(module, flow.attr)().limits()
+            assert limits["max_concurrency"] == 0 and limits["max_depth"] == 0, (flow.id, limits)

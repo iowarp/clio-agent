@@ -299,3 +299,39 @@ def test_an_untrusted_plugin_with_python_is_refused_not_added_empty(tmp_path: Pa
     with pytest.raises(ResolutionError) as excinfo:
         resolve_agent(catalog, _spec("debate"), marketplace="test")
     assert "plugin_untrusted" in str(excinfo.value)
+
+
+def test_a_subagent_may_allow_only_tools_its_plugins_provide(tmp_path: Path) -> None:
+    """D11: a subagent's tool allowlist narrows what its plugins add; a name none of them
+    provides is a typed error, and core's tools stay."""
+
+    from clio_agent.plugins.resolve import resolve_subagent
+
+    pdf = plugin(tmp_path, "pdf", files={"ai.iowarp.clio/tools/t.py": tools_module("view_pdf")})
+
+    def team(tools: str) -> Path:
+        return plugin(
+            tmp_path / tools.replace("'", "").replace(",", "_").replace(" ", ""),
+            "team",
+            files={
+                "ai.iowarp.clio/subagents/s.py": (
+                    "from clio_agent.sdk import Subagent\n\n"
+                    f"checker = Subagent('checker', prompt='Check it.', plugins=['pdf'], tools=[{tools}])\n"
+                )
+            },
+        )
+
+    good = team("'view_pdf'")
+    catalog = _catalog(tmp_path, pdf, good)
+    parent = resolve_agent(catalog, _spec("team"), marketplace="test")
+    child = resolve_subagent(catalog, parent, "checker")
+    names = {row["name"] for row in child.tools}
+    assert "view_pdf" in names and any(row.get("plugin") == "core" for row in child.tools)
+
+    bad = team("'view_pdf', 'fs_write_file'")
+    catalog = _catalog(tmp_path, pdf, bad)
+    parent = resolve_agent(catalog, _spec("team"), marketplace="test")
+    with pytest.raises(ResolutionError) as caught:
+        resolve_subagent(catalog, parent, "checker")
+    assert caught.value.diagnostics[0].code == "subagent_tool_unavailable"
+    assert "'fs_write_file'" in str(caught.value)
