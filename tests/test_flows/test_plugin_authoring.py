@@ -117,6 +117,22 @@ def _idle(client: TestClient, sid: str) -> None:
     wait_until(lambda: client.get(f"/v1/sessions/{sid}").json()["status"] == "idle", timeout=60)
 
 
+def _result_read(client: TestClient, sid: str, handle: str) -> None:
+    """Wait until a started flow's result has reached the conversation and been read: a
+    message written while that result is arriving joins the same turn."""
+
+    def delivered() -> bool:
+        rows = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        return any(
+            part.get("type") == "injection" and handle in str(part.get("text", ""))
+            for row in rows
+            for part in row["parts"]
+        )
+
+    wait_until(delivered, timeout=60)
+    _idle(client, sid)
+
+
 def _made(client: TestClient, sid: str, done: dict[str, Any], version: str) -> dict[str, Any]:
     _idle(client, sid)
     post(client, sid, f"make version {version}")
@@ -228,7 +244,9 @@ def test_a_new_version_asks_again_before_it_runs(flow_app: TestClient) -> None:
     _made(flow_app, sid, done, "0.1.0")
     post(flow_app, sid, "run tally")
     flow_app.post(f"/v1/permissions/{_permission(flow_app)['id']}", json={"action": "allow"})
-    assert wait_until(lambda: done.get("run tally"), timeout=60)["accepted"]
+    started = wait_until(lambda: done.get("run tally"), timeout=60)
+    assert started["accepted"], started
+    _result_read(flow_app, sid, started["handle"])
     _made(flow_app, sid, done, "0.2.0")
     _idle(flow_app, sid)
     post(flow_app, sid, "run tally again")
