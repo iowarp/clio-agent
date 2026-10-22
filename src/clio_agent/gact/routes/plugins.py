@@ -258,8 +258,13 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not path and not installed:
             raise _error(422, "invalid_request", "path or installed is required")
         service = plugin_service(app)
+        # A folder named over HTTP is no one's trust decision: never import its Python.
         report = await _call(
-            check, Path(path).expanduser() if path else None, installed=installed, service=service
+            check,
+            Path(path).expanduser() if path else None,
+            installed=installed,
+            service=service,
+            trusted=False,
         )
         return {**report.to_dict(), "ok": report.ok, "text": report.render()}
 

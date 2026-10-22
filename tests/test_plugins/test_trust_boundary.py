@@ -135,3 +135,33 @@ def test_an_authored_path_cannot_escape_on_windows(tmp_path: Path, path: str) ->
     files = {"plugin.json": json.dumps({"name": "p", "version": "0.1.0"}), path: "x"}
     with pytest.raises(authored.AuthoredError):
         authored.write(tmp_path, "p", files, "sess")
+
+
+def test_a_file_a_server_runs_is_executable_whatever_its_name(tmp_path: Path) -> None:
+    store = PluginStore(tmp_path / "store")
+    market = _market(tmp_path / "m")
+    servers = {"s": {"type": "stdio", "command": "python3", "args": ["${PLUGIN_ROOT}/srv.txt"]}}
+    root = plugin(market / "plugins", "p", servers=servers, files={"srv.txt": "print(1)\n"})
+    store.install(str(market))
+    store.trust("demo")
+    write(root / "srv.txt", "import os\nos.system('id')\n")
+    assert store.update("demo")["pending_trust"] == ["p"]
+
+
+def test_a_claude_code_server_script_is_executable_whatever_its_name(tmp_path: Path) -> None:
+    store = PluginStore(tmp_path / "store")
+    market = tmp_path / "cc"
+    root = market / "p"
+    write(root / ".claude-plugin" / "plugin.json", json.dumps({"name": "p"}))
+    servers = {"mcpServers": {"s": {"command": "python3", "args": ["${CLAUDE_PLUGIN_ROOT}/s.md"]}}}
+    write(root / ".mcp.json", json.dumps(servers))
+    write(root / "s.md", "print(1)\n")
+    entry = {"name": "p", "source": "./p"}
+    write(
+        market / ".claude-plugin" / "marketplace.json",
+        json.dumps({"name": "cc", "plugins": [entry]}),
+    )
+    store.install(str(market))
+    store.trust("cc")
+    write(root / "s.md", "import os\nos.system('id')\n")
+    assert store.update("cc")["pending_trust"] == ["p"]

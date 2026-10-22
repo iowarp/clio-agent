@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
-from clio_agent.plugins.loader import _skills, tree_digests
+from clio_agent.plugins.loader import _skills, referenced_files, tree_digests
 from clio_agent.plugins.manifest import validate_server, within
 from clio_agent.plugins.records import (
     CommandRecord,
@@ -335,7 +335,8 @@ def import_claude_plugin(
     commands = _commands(root)
     diagnostics += skill_diags + server_diags + hook_diags + subagent_diags
     executable = list(_EXECUTABLE_GLOBS) + [p.relative_to(root).as_posix() for p in scripts]
-    exec_digest, text_digest = tree_digests(root, executable)
+    referenced = referenced_files(root, servers)
+    exec_digest, text_digest = tree_digests(root, executable, referenced=referenced)
     has_content = bool(skills or servers or hooks or subagents or commands)
     is_pack = bool(dependencies) and not has_content
     return PluginRecord(

@@ -20,7 +20,7 @@ import re
 import sys
 import traceback
 import types
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -84,19 +84,54 @@ def import_module_typed(name: str, label: str) -> types.ModuleType:
         raise PluginImportError(f"{label}: {detail}") from exc
 
 
+_ROOT_TOKENS = ("${PLUGIN_ROOT}", "${CLAUDE_PLUGIN_ROOT}")
+
+
+def referenced_files(root: Path, servers: Mapping[str, Mapping[str, Any]]) -> set[Path]:
+    """Files under ``root`` that an MCP server's command, args, env or cwd names.
+
+    Such a file runs whatever its name, so it is executable for the digest; a named
+    folder makes every file under it executable.
+    """
+
+    texts: list[str] = []
+    for entry in servers.values():
+        texts += [str(entry.get("command") or ""), str(entry.get("cwd") or "")]
+        texts += [str(arg) for arg in entry.get("args") or ()]
+        texts += [str(value) for value in (entry.get("env") or {}).values()]
+    found: set[Path] = set()
+    for text in texts:
+        for token in _ROOT_TOKENS:
+            text = text.replace(token, str(root))
+        for piece in re.split(r"[\s=:,;]+", text):
+            if not piece:
+                continue
+            candidate = Path(piece) if Path(piece).is_absolute() else root / piece
+            if not within(root, candidate):
+                continue
+            if candidate.is_file():
+                found.add(candidate.resolve())
+            elif candidate.is_dir() and candidate.resolve() != root.resolve():
+                found.update(p.resolve() for p in candidate.rglob("*") if p.is_file())
+    return found
+
+
 def tree_digests(
-    root: Path, executable_globs: Iterable[str] = _EXECUTABLE_GLOBS
+    root: Path,
+    executable_globs: Iterable[str] = _EXECUTABLE_GLOBS,
+    referenced: Iterable[Path] = (),
 ) -> tuple[str, str]:
     """Return ``(executable_digest, text_digest)`` over the package files.
 
     A file is text when its suffix or name says it only describes (``_TEXT_SUFFIXES``,
-    ``_TEXT_FILES``) and no ``executable_globs`` pattern names it; everything else,
-    including a server binary or a helper script, is executable.
+    ``_TEXT_FILES``) and neither an ``executable_globs`` pattern nor ``referenced``
+    (:func:`referenced_files`, a hook's argv) names it; everything else, including a
+    server binary or a helper script, is executable.
     """
 
-    named: set[Path] = set()
+    named: set[Path] = {Path(path).resolve() for path in referenced}
     for pattern in executable_globs:
-        named.update(path for path in root.glob(pattern) if path.is_file())
+        named.update(path.resolve() for path in root.glob(pattern) if path.is_file())
     exec_hash = hashlib.sha256()
     text_hash = hashlib.sha256()
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
@@ -104,7 +139,7 @@ def tree_digests(
         if relative.startswith(".git/") or "__pycache__" in relative:
             continue
         text = path.suffix.lower() in _TEXT_SUFFIXES or relative in _TEXT_FILES
-        target = exec_hash if path in named or not text else text_hash
+        target = exec_hash if path.resolve() in named or not text else text_hash
         target.update(relative.encode("utf-8") + b"\0")
         target.update(hashlib.sha256(path.read_bytes()).digest())
     return exec_hash.hexdigest(), text_hash.hexdigest()
@@ -467,14 +502,14 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
         ext = {} if library is not None else clio_extension(manifest, plugin)
     except ManifestError as exc:
         raise PluginLoadError(str(exc)) from exc
-    exec_digest, text_digest = tree_digests(root)
+    servers, server_diags = read_mcp_config(root, plugin)
+    exec_digest, text_digest = tree_digests(root, referenced=referenced_files(root, servers))
     skills, skill_diags = _skills(root, plugin)
     if library is not None:
         mapped, library_diags = library_skills(root, plugin, library)
         known = {skill.id for skill in skills}
         skills += [skill for skill in mapped if skill.id not in known]
         skill_diags += library_diags
-    servers, server_diags = read_mcp_config(root, plugin)
     clio_dir = root / NAMESPACE
     fragments, texts, fragment_diags = _fragments_and_texts(clio_dir, plugin)
     diagnostics += skill_diags + server_diags + fragment_diags
