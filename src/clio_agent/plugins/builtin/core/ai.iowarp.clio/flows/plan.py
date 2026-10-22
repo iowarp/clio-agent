@@ -215,7 +215,16 @@ class _PlanRun:
             if self.status[node_id] == "completed"
             and not any(node_id in other.after for other in self.nodes.values())
         ]
-        answer = "\n\n".join(getattr(self.results[s], "answer", "") for s in sinks).strip()
+
+        # The caller reads the answer: the final steps first, then every earlier step's
+        # answer, each under its node id, so nothing the plan found is left out.
+        def section(node_id: str) -> str:
+            return f"[{node_id}]\n{str(getattr(self.results[node_id], 'answer', '')).strip()}"
+
+        earlier = [n for n in self.nodes if n in self.results and n not in sinks]
+        answer = "\n\n".join(section(n) for n in sinks)
+        if earlier:
+            answer += "\n\nEarlier steps:\n\n" + "\n\n".join(section(n) for n in earlier)
         return {
             "answer": answer,
             "status": "completed",

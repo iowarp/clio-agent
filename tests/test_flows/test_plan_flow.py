@@ -60,6 +60,10 @@ def test_editor_adds_a_node_that_runs(flow_app: TestClient) -> None:
     assert added[0]["after"] == ["draft", "critique"]
     statuses = {n["id"]: n["status"] for n in run["result"]["plan"]["nodes"]}
     assert statuses == {"draft": "completed", "critique": "completed", "polish": "completed"}
+    # The caller reads every step: the final one first, then the earlier ones, labelled.
+    answer = run["result"]["answer"]
+    assert answer.startswith("[polish]\n") and "\n\nEarlier steps:\n\n[draft]\n" in answer
+    assert "[critique]\n" in answer
     assert "done: polish done: " in text_of(message)
 
 
