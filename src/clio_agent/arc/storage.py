@@ -31,7 +31,7 @@ from clio_agent.arc import clio_core_daemon_version as daemon_version
 # Daemon port-resolution + socket-liveness helpers live in the liveness owner
 # module (#892); blob writes ride the bounded rc=13-class retry module (#893).
 from clio_agent.arc.batch_put import BatchPutError, PutRecord
-from clio_agent.arc.blob_frame import BlobNameDecodeError, frame, read_framed_blob
+from clio_agent.arc.blob_frame import BlobNameDecodeError, read_framed_blob, stored_body
 from clio_agent.arc.clio_core_async_ops import (
     TagIds,
     store_delete,
@@ -613,8 +613,8 @@ class ClioCoreStore:
     ) -> None:
         # Bound each async RPC individually, with the GIL released while awaiting it.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes; framed with
-        # its length because a shorter put can leave the old tail (``blob_frame``).
-        payload = frame(data)
+        # its length and padded to a size class so a growing record adds few blocks.
+        payload = stored_body(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
@@ -640,7 +640,7 @@ class ClioCoreStore:
         blobs: list[tuple[str, bytes]] = []
         stale: list[str] = []
         for record in records:
-            payload = frame(record.data)
+            payload = stored_body(record.data)
             if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
                 stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
             blobs.append((record.name, payload))
