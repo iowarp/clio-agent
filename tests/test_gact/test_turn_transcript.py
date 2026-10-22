@@ -382,6 +382,19 @@ def test_field_stream_streamed_then_finish_ignores_fallback(monkeypatch: Any) ->
     assert len(publisher.of_type("message.part.added")) == 1
 
 
+def test_field_stream_settled_after_its_part_closed_names_that_part() -> None:
+    """The turn's channel settles at finalize, after the streamed answer part closed:
+    it still returns that text and names the part (an Answer hook annotates it)."""
+
+    transcript, _ = make_transcript()
+    transcript.field_stream("main", "answer").append("streamed answer")
+    transcript.close_open_text()
+    stream = transcript.field_stream("main", "answer")
+    assert stream.part_id is None
+    assert stream.finish(fallback_text="batch copy") == "streamed answer"
+    assert stream.part_id == transcript.snapshot()[0].id
+
+
 def test_field_stream_no_deltas_lands_one_batch_burst() -> None:
     transcript, publisher = make_transcript()
     stream = transcript.field_stream("main", "answer")

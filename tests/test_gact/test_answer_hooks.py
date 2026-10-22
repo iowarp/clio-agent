@@ -20,6 +20,7 @@ from clio_agent.gact.hooks.config import HookEntry, HookMatch, HookRun
 from clio_agent.gact.hooks.events import ANSWER
 from clio_agent.gact.hooks.plugin_hooks import PythonHookAdapter
 from clio_agent.gact.hooks.wire import HookEnvelope
+from clio_agent.gact.protocol.v3.message import part_to_v3_block
 from clio_agent.sdk import HOOK_EVENTS
 from tests.test_gact._hook_fixtures import make_command_dispatcher
 
@@ -87,6 +88,8 @@ def test_a_replacement_lands_as_a_visible_revision_and_the_original_stays(
         "added the source",
     )
     assert notice["metadata"] == {"hook": "test-hook", "revises": original["id"]}
+    # The client's block keeps both, so it can fold the original behind the notice.
+    assert part_to_v3_block(notice)["metadata"] == notice["metadata"]
     assert original["text"] == "The mean is 289.91 K."
     assert revision["text"] == "The mean is 289.91 K (from data.csv)."
     assert revision["metadata"]["revises"] == original["id"]
