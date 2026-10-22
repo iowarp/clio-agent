@@ -126,8 +126,9 @@ class TurnTranscript:
     def append_text_delta(self, agent_id: str, field: str, chunk: str) -> None:
         """Streamed text/thinking delta. Opens a new part (type='thinking' for
         provider_thinking:* fields, else 'text') when (agent_id, field) changes,
-        closing the prior part; publishes message.part.added on open and
-        message.part.delta per chunk (+ the normalized twin, §4)."""
+        closing the prior part; publishes message.part.added on the part's first
+        non-whitespace chunk and message.part.delta per chunk (+ the normalized
+        twin, §4)."""
     def close_open_text(self) -> None:
         """Close the open streamed part: clean the full buffer once (text parts only),
         DROP the part if empty after clean (emits nothing — and reload cannot disagree,
@@ -208,9 +209,9 @@ loop (turn.py:3296-3376) is deleted whole.
 | # | Ledger transition | Wire events |
 |---|---|---|
 | 1 | `ensure_message` (first append of the turn) | `message.created` (empty `parts`, `turn_id`) — exactly once regardless of which producer arrives first. Today two mint sites (turn.py:956-981; tool_observer.py:104-132) coordinate through a shared dict. |
-| 2 | `append_text_delta` with `(agent, field)` change | `close_open_text` on the prior part, then `message.part.added` {part.to_wire(), stream_source: "live", signature_field_name} for the fresh part (today: turn.py:985-1029). |
-| 3 | `append_text_delta` chunk | `message.part.delta` {part_id, delta.text_append, signature_field_name, stream_source: "live"} **plus** the normalized twin from the same call site: `turn.trace.delta` for `provider_thinking:*` fields, `turn.text.delta` otherwise (today double-published from turn.py:1032-1096; the #232 single-vocabulary decision becomes a publisher flag, not a code hunt). |
-| 4 | `close_open_text` | `message.part.completed` {part_id, final_text: cleaned-whole-buffer, stream_source: "live"}. Empty-after-clean parts are removed from the ledger and emit nothing (today's `dropped_empty_streamed_part`, turn.py:808-825 — but reload can no longer disagree). |
+| 2 | `append_text_delta` with `(agent, field)` change | `close_open_text` on the prior part, then opens the fresh part. Its `message.part.added` {part.to_wire(), stream_source: "live", signature_field_name} goes out on the part's first non-whitespace chunk, not on open: leading whitespace is held, so a part that never gets content is never announced (gact-tui#368). |
+| 3 | `append_text_delta` chunk | `message.part.delta` {part_id, delta.text_append, signature_field_name, stream_source: "live"}; the first one after the announcement carries the held whitespace too, so the deltas still concatenate to the stored text **plus** the normalized twin from the same call site: `turn.trace.delta` for `provider_thinking:*` fields, `turn.text.delta` otherwise (today double-published from turn.py:1032-1096; the #232 single-vocabulary decision becomes a publisher flag, not a code hunt). |
+| 4 | `close_open_text` | `message.part.completed` {part_id, final_text: cleaned-whole-buffer, stream_source: "live"}. Whitespace-only parts are removed from the ledger and emit nothing; since row 2 never announced them, neither a live client nor a reload sees them (gact-tui#368). The drop is logged and audited as `transcript.dropped_empty_part` (`transcript_drops.py`). |
 | 5 | `append_part` (tool_call / tool_result) | `message.part.added`. The tool observer still separately emits `tool.call.started/completed` + `turn.action.added` — telemetry channel, unchanged. A later `annotate(part_id, ...)` patches persisted metadata (replaces the finalize enrichment mutation, turn.py:2760-2781). |
 | 6 | `append_part` (expert_handoff / routing_decision) | `message.part.added` exactly once. There is no finalize rebuild-from-rows, so `live_handoff_sigs` / `live_routing_agents` have nothing to suppress; `expert_handoffs` rows remain message **metadata** only. |
 | 7 | `FieldStream.finish` on the batch path | `message.part.added` {stream_source: "batch", stream_fallback} + `message.part.completed` {final_text, stream_source: "batch"} — the same shape today's finalize loop emits at turn.py:3331-3363, now via the one API. |
@@ -219,7 +220,9 @@ loop (turn.py:3296-3376) is deleted whole.
 **Fold invariant** (enforced by the property test, §8): folding the published
 `message.created + part.added + part.delta + part.completed` stream reconstructs exactly the
 `Message.parts` that `_append_session_message` persists (turn.py:3433) — field-for-field:
-id, sequence, type, agent_id, text/final_text, stream_source.
+id, sequence, type, agent_id, text/final_text, stream_source. Every announced text or
+thinking part also completes: an announced part with no `part.completed` is a divergence
+a live client would keep, and the fold rejects it (gact-tui#368).
 
 ## 5. Parent echoes: tag, don't suppress (grafted from the op-log design)
 
