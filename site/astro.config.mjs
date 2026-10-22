@@ -51,6 +51,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Start here', slug: 'docs' },
 						{ label: 'Install and open CLIO', slug: 'docs/install' },
+						{ label: 'Remote deployment with CLIO', slug: 'tutorials/guides/remote-deployment' },
 						{ label: 'Choose a model', slug: 'docs/connect-a-model' },
 						{ label: 'Your first analysis', slug: 'docs/examples/check-a-dataset' },
 						{ label: 'Your workspace', slug: 'docs/workspace-panels' },
