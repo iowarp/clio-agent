@@ -122,7 +122,7 @@ def run_plugin_cli(arguments: Sequence[str]) -> int:
             )
             text = "\n".join(
                 f"{r['name']} ({'trusted' if r['trusted'] else 'NOT TRUSTED'}) {r['source']}\n  "
-                + ", ".join(r["plugins"])
+                + ", ".join(str(plugin) for plugin in r["plugins"] or ())
                 for r in rows
             )
             _print(rows, args.json, text)

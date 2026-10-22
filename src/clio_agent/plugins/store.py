@@ -259,7 +259,7 @@ class PluginStore:
         with self.lock:
             state = self.read_state()
             previous = state["marketplaces"].get(market) or {}
-            entry = {
+            entry: dict[str, Any] = {
                 "id": market,
                 "source": source,
                 "url": fetched.url,

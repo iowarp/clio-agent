@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 _Result = TypeVar("_Result")
 
 
 def on_owner_loop(
-    method: Callable[..., Awaitable[_Result]],
+    method: Callable[..., Coroutine[Any, Any, _Result]],
 ) -> Callable[..., Awaitable[_Result]]:
     """Run ``method`` on ``self._loop`` when it is called from another loop.
 

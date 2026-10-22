@@ -340,6 +340,9 @@ warn_unused_configs = true
 disallow_untyped_defs = false  # Set to true for stricter typing
 ignore_missing_imports = true
 disable_error_code = ["import-untyped"]
+# Built-in plugins' code is loaded by path, as any installed plugin's is, not imported as
+# part of the clio_agent package; their folders repeat module names (tools/runtime.py).
+exclude = ['src/clio_agent/plugins/builtin/[^/]+/ai\.iowarp\.clio/']
 
 [tool.mutmut]
 # Mutation-testing pilot scope (#773 slice 19): the two correctness-critical

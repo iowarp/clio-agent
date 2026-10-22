@@ -174,11 +174,11 @@ def check(
         target.diagnostics.extend(record.diagnostics)
         if record.valid:
             seen = {(d.code, d.message) for d in target.diagnostics}
-            for row in _resolve(service, _probe_spec(record), market, extra):
-                if (row.code, row.message) not in seen and (
-                    row.plugin in ("", record.id) or row.severity == "error"
+            for found in _resolve(service, _probe_spec(record), market, extra):
+                if (found.code, found.message) not in seen and (
+                    found.plugin in ("", record.id) or found.severity == "error"
                 ):
-                    target.diagnostics.append(row)
+                    target.diagnostics.append(found)
         report.targets.append(target)
     for spec in specs:
         target = CheckTarget("agent", f"{market}/{spec.id}")

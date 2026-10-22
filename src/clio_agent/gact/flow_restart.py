@@ -11,10 +11,10 @@ and the flow runner resumes the last run that recorded work.
 from __future__ import annotations
 
 import functools
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from typing import Any
 
-Restart = Callable[..., Awaitable[dict[str, Any]]]
+Restart = Callable[..., Coroutine[Any, Any, dict[str, Any]]]
 
 
 def started_flow(metadata: Any) -> bool:

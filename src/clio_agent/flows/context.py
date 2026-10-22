@@ -473,7 +473,7 @@ class FlowContext:
         """Run a side effect once and record its result; a replay returns the record."""
 
         await self._ensure_open()
-        name = getattr(fn, "__qualname__", None) or getattr(fn, "__name__", repr(fn))
+        name = str(getattr(fn, "__qualname__", None) or getattr(fn, "__name__", repr(fn)))
         invocation = self._invocation(
             "step", name, {"args": _plain(args), "kwargs": _plain(kwargs)}
         )

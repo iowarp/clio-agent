@@ -22,7 +22,7 @@ import traceback
 import types
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from clio_agent.plugins.frontmatter import FrontmatterError, split_frontmatter
 from clio_agent.plugins.library import is_library_manifest, library_skills
@@ -492,7 +492,9 @@ def load_plugin(root: Path, *, marketplace: str = "", trusted: bool) -> PluginRe
                 plugin,
             )
         )
-    kind = declaration.get("kind") or ext.get("kind") or "plugin"
+    kind: Literal["plugin", "pack"] = (
+        "pack" if (declaration.get("kind") or ext.get("kind")) == "pack" else "plugin"
+    )
     if declaration and ext.get("kind") and declaration.get("kind") != ext.get("kind"):
         diagnostics.append(
             Diagnostic(

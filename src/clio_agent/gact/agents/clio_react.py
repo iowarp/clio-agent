@@ -322,7 +322,7 @@ class _Loop:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs, agent.tools)
         self.head = _head(agent.signature, self.inputs)
-        unlisted = getattr(agent, "_clio_unlisted", frozenset())
+        unlisted: frozenset[str] = getattr(agent, "_clio_unlisted", frozenset())
         self.tools = tuple(
             _function_tool(t) for t in agent.tools.values() if t.name not in unlisted
         )

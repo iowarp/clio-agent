@@ -120,7 +120,7 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         if predecessor and invocation.startswith("restart:"):
             # A restart continues the runs before it: finished work is kept.
             resume_from = _earlier_runs(app, flow_id, predecessor)
-        elif predecessor:
+        elif predecessor and app is not None:
             trigger = app.state.task_history.mail_item(session_id, turn.input_notification_id)
             written = trigger is not None and trigger.kind in {"human", "peer", "delegation"}
             message = str(kwargs.get("question") or "") if written else ""
@@ -151,7 +151,9 @@ def _lineage(app: Any, handle: str) -> tuple[str, str]:
     from clio_agent.arc.task_types import AssignmentDetails  # noqa: PLC0415
 
     history = getattr(getattr(app, "state", None), "task_history", None)
-    task = history.task_snapshot(handle) if history is not None and handle else None
+    if history is None or not handle:
+        return "", ""
+    task = history.task_snapshot(handle)
     if task is None:
         return "", ""
     details = (

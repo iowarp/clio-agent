@@ -163,8 +163,8 @@ def load_plugin_catalog(name: str, path: str) -> tuple[CatalogEntry | None, str]
             if entry.name == name or entry.catalog_id == name:
                 return entry, ""
         return None, f"no built-in A2UI catalog named {name!r}"
-    entry, errors = load_catalog_directory(Path(path), name)
-    return entry, "; ".join(errors)
+    loaded, errors = load_catalog_directory(Path(path), name)
+    return loaded, "; ".join(errors)
 
 
 def catalog_components(name: str, path: str) -> tuple[list[str], str]:

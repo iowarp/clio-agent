@@ -90,6 +90,10 @@ class SubprocessAdapter(HookAdapter):
         # kill the whole process GROUP, not just the direct child PID — start_new_session
         # (POSIX) makes the child a group leader, so a hook that forks would otherwise
         # leave orphans running past the timeout kill (a resource leak, worst on CI).
+        spawn_options: dict[str, Any] = {
+            **task_spawn_options(_no_tty_kwargs()),
+            **({"env": env} if env is not None else {}),
+        }
         try:
             proc = subprocess.Popen(  # noqa: S603 - argv is exec-form (never shell); command is operator-declared
                 argv,
@@ -97,8 +101,7 @@ class SubprocessAdapter(HookAdapter):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                **task_spawn_options(_no_tty_kwargs()),
-                **({"env": env} if env is not None else {}),
+                **spawn_options,
             )
         except FileNotFoundError as exc:
             record_hook_reason(
