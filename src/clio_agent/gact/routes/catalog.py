@@ -570,13 +570,8 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     rendered=question,
                     command_meta=dict(command_meta),
                 )
-            # #755: the runner is a full (blocking) DSPy agent turn that can
-            # take minutes. Run it off the event loop so /health, SSE
-            # heartbeats, and other sessions stay responsive, mirroring how
-            # turn.py executes agent modules. Copy the request context
-            # with the app contextvar bound so the runner's dynamic-agent
-            # tool wrappers still resolve ``app`` inside the worker thread;
-            # the synchronous response shape and audit rows are unchanged.
+            # An agent's call (#755): the blocking run stays off the event loop, with the
+            # app contextvar bound so its tool wrappers resolve ``app`` in the worker.
             with _gact_app_context(app):
                 command_turn_context = contextvars.copy_context()
             pred = await asyncio.get_running_loop().run_in_executor(
