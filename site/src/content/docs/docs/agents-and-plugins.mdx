@@ -59,6 +59,8 @@ A plugin is one capability, packaged so that any agent can carry it. It follows 
 - hooks, slash commands, and interactive views;
 - prompt fragments: short paragraphs of guidance about the capability.
 
+Skills you keep outside plugins reach every agent too: those in `~/.claude/skills`, `~/.codex/skills`, or `~/.agents/skills`, and in a workspace's `.claude/skills`, `.codex/skills`, or `.agents/skills`. When two skills share a name, a plugin's skill wins, then a workspace's, then yours.
+
 A **pack** is a plugin made only of other plugins. `documents` is a pack of `pdf`, `docx`, `xlsx`, `pptx`, `latex`, and `opendocument`. Pack membership is loose: you can remove `xlsx` and keep the rest.
 
 A plugin can also **require** another. Every document plugin requires `document-runtime`, which requires `shell`. A requirement is strict: when a required plugin leaves, the plugins that need it leave with it.
