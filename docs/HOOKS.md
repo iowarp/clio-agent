@@ -92,6 +92,7 @@ annotation reads as the most-restrictive shape).
 | `PostToolBatch`    | —            | after a turn's tool round resolves (observation)                      |
 | `UserPromptSubmit` | ✔            | prompt boundary; `deny` vetoes the turn, `defer` suspends it          |
 | `Stop`             | — (bounded)  | completion gate; `deny` re-drives one more turn, bounded by `loopLimit` + a global cap |
+| `Answer`           | —            | the settled answer, before persist (`payload.answer`); `note`, `check` `{passed,text}` and `updatedAnswer` + `reason` land as `answer_hook` notices / a visible revision (`gact/hooks/answer.py`) |
 | `SessionStart` / `SessionEnd`         | — | session lifecycle observation                          |
 | `SubagentStart` / `SubagentStop`      | — | child-turn lifecycle observation                       |
 | `PreCompact`       | —            | before a transcript is compacted (observation)                        |

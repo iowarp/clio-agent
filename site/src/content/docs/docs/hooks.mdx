@@ -95,6 +95,7 @@ CLIO runs the script with the event as JSON on standard input. Exit code 2 denie
 | `PostToolBatch` | No | After a round of tool calls finishes. |
 | `UserPromptSubmit` | Yes | When you send a message. A denial stops the turn. |
 | `Stop` | Limited | When the agent finishes. A hook can send it back for one more turn, within `loopLimit`. |
+| `Answer` | No | When the turn's answer is settled, before the turn is saved. A hook can attach a note or a check, or revise the answer. See [Review the answer](#review-the-answer). |
 | `SessionStart`, `SessionEnd` | No | At the start and end of a session. |
 | `SubagentStart`, `SubagentStop` | No | At the start and end of a child session. |
 | `PreCompact` | No | Before the transcript is compacted. |
@@ -112,6 +113,30 @@ A command hook can answer with a decision on standard output, as JSON:
 - `defer`, to wait for a person.
 
 Empty output means allow. When several hooks answer for the same event, the most restrictive answer wins, in this order: `deny`, `defer`, `ask`, `synthesize`, `modify`, `allow`. Two hooks that both modify the same call is an error, and the call is blocked.
+
+## Review the answer
+
+An `Answer` hook receives the agent's final answer and can act on it before the turn is saved. Its input carries `payload.answer` (the answer text), `payload.agent_id` and `payload.agent_ref`. It can answer with any of:
+
+| Key | Effect |
+|---|---|
+| `note` | A line shown under the answer, attributed to the hook. |
+| `check` | `{"passed": true or false, "text": "..."}`, shown under the answer as a passed or failed check. |
+| `updatedAnswer` | A revised answer. It replaces the answer in the conversation, under a line that names the hook and its `reason`. The original stays one click away. |
+| `reason` | Why the answer was revised. |
+
+```python title="/opt/hooks/cite_check.py"
+import json
+import sys
+
+answer = json.load(sys.stdin)["payload"]["answer"]
+cited = "http" in answer
+print(json.dumps({
+    "check": {"passed": cited, "text": "Cites a source." if cited else "No source is cited."},
+}))
+```
+
+The answer may already have streamed to you by the time the hook runs, so an `Answer` hook never gates it and never changes it silently: a revision is shown as a revision, and the original stays in the transcript. A plugin can define the same hook in Python with `@hook("answer")`, returning `note`, `check` and `answer`.
 
 A hook that fails is not the same as a hook that says no. A crash, timeout, or missing program is reported as a hook failure. It blocks the action only if the hook is `failClosed` and the event can deny.
 

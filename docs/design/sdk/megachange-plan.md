@@ -84,6 +84,7 @@ No production code changes in this phase.
    - the rendering section generated from the UI catalog;
    - the `clio.runtime.tasks` lifecycle fragment;
    - the `react` flow wrapping `ClioReAct`.
+7. Add the `Answer` hook event (`@hook("answer")` in the SDK, `Answer` in `hooks.json`). It fires once per turn on the settled answer, before the turn is saved. A hook may attach a note or a passed/failed check, shown under the answer and attributed to it, or return a revision. A revision lands visibly as a new answer part after a notice naming the hook and its reason; the original stays in the transcript, marked superseded. It is never a gate and never a silent swap, since the answer may already have streamed.
 
 ## Phase 2: migrate shipped agents and delete blueprints
 
@@ -139,6 +140,7 @@ Run these live scenarios against `bash scripts/cloud/stack.sh start`, which defa
 | L6 | Stop during a flow, then `cancel_tasks` on it | Stop leaves the flow running; cancel settles its subtree |
 | L7 | `clio-agent plugin check` on a broken plugin | A missing prompt file, a tool collision and a hook cycle each fail with a clear message |
 | L8 | Install clio-kit `main` as a marketplace through the importer, including its federated clio-coder marketplace after the trust step | `clio-agent plugin check` passes for every imported plugin, or reports a typed reason per plugin. An agent with `clio-hdf5` added calls an HDF5 tool that runs `clio-kit mcp-server hdf5`. `clio-dataset-report`'s hook fires. A `clio-agents` subagent runs with mapped tools. |
+| L10 | A trusted plugin with an `Answer` hook is added to a conversation, and a question is asked | The hook's note and check show under the answer, attributed to the hook; its revision replaces the answer under a "Revised by" line, with the original one click away |
 | L9 | Compose a user agent in the + menu: start from the standard agent, add the `clio-hpc` pack and `clio-hdf5`, remove `xlsx` from the documents pack, and save | The saved agent is stored as parent plus delta. A new session shows `clio-hpc`'s members, no xlsx tools, and fragments attributed to their plugins. Removing `clio-slurm` removes only it, since it is a pack member. Removing a hard requirement shows and applies the cascade. Bumping the standard agent's version reaches the saved agent's next session. |
 
 The cloud session cannot qualify the Tauri desktop, Windows-only paths, or SSH to HPC systems. Mark those rows blocked, not passed. Nothing else may be marked blocked: a failing scenario is fixed, not deferred.

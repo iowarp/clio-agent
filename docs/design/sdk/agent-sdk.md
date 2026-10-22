@@ -38,6 +38,14 @@ class Manufacturing(Plugin):
 @hook("tool_result", after="core.audit")
 def redact_paths(ev): ...
 
+# ai.iowarp.clio/hooks/cite_check.py: sees the settled answer; never a silent swap
+@hook("answer")
+def cite_check(ev):
+    cited = "http" in ev.answer
+    return {"check": {"passed": cited, "text": "Cites a source." if cited else "No source."},
+            "note": "Checked by the lab's citation policy."}
+    # or {"answer": revised, "reason": why}: a visible revision, original kept
+
 # ai.iowarp.clio/subagents/process_reviewer.py
 reviewer = Subagent("process-reviewer",
                     prompt=PromptFile("prompt/reviewer.md"),
