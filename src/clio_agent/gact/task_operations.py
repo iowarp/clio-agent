@@ -354,6 +354,12 @@ class TaskOperations:
                 while True:
                     changed.clear()
                     outcomes, pending = await self.history.io.run(self._outcomes, caller, handles)
+                    for handle in pending:
+                        # A cancellation can end unconfirmed with no further history change.
+                        if (job := self._cancellation_job(handle)) is not None:
+                            job.get_loop().call_soon_threadsafe(
+                                job.add_done_callback, lambda _job: wake(0)
+                            )
                     if own is not None and await self.history.io.run(self._stopping, own.handle):
                         return _wait_value(
                             outcomes, pending, timed_out=False, interrupted="stopped"
@@ -394,6 +400,18 @@ class TaskOperations:
         )
         return current.activity == "stopping" and not cancelling
 
+    def _cancellation_settling(self, current: TaskSnapshot) -> bool:
+        """A cancellation still being confirmed is progress, not an uncertain state.
+
+        Its job marks a member uncertain while descendants settle; the wait goes on
+        until the job confirms the cancellation or records it as unconfirmed.
+        """
+        return self._cancellation_job(current.handle) is not None
+
+    def _cancellation_job(self, handle: str) -> asyncio.Task[None] | None:
+        conversations = getattr(getattr(self.app, "state", None), "conversations", None)
+        return conversations.cancellation_job(handle) if conversations is not None else None
+
     def _canonical_observed(self, caller: TaskCaller, handles: tuple[str, ...]) -> tuple[str, ...]:
         """Authorize aliases before registering for canonical owner observations."""
         with self.history.serialized():
@@ -430,7 +448,7 @@ class TaskOperations:
                     if (
                         current.status == "task_state_uncertain"
                         or current.attention_episode is not None
-                    ):
+                    ) and not self._cancellation_settling(current):
                         checks[len(outcomes)] = (handle, "observe")
                         outcomes.append({"handle": handle, "status": "task_state_uncertain"})
                 elif "read" in access.rights(current):

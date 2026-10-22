@@ -555,7 +555,7 @@ class FlowContext:
             return await self._wait(handle, call.invocation, kind=call.kind, name=call.name)
 
     async def _accept(self, call: FlowCall) -> str:
-        from clio_agent.gact.conversations import AdmissionClosed  # noqa: PLC0415
+        from clio_agent.gact.task_access import AdmissionClosed  # noqa: PLC0415
 
         row = self.journal.call(call.invocation)
         if row is not None and row.get("handle"):

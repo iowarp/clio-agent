@@ -39,7 +39,7 @@ from clio_agent.gact.session_input import input_delivery
 from clio_agent.gact.session_mail import SessionMail, StagedInput
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.spawn_context import PrepareChild
-from clio_agent.gact.task_access import TaskAccess, TaskCaller
+from clio_agent.gact.task_access import AdmissionClosed, TaskAccess, TaskCaller
 from clio_agent.gact.task_history import TaskHistory
 
 logger = logging.getLogger(__name__)
@@ -51,14 +51,6 @@ class _InferenceGroup:
 
     semaphore: asyncio.Semaphore
     users: int = 0
-
-
-class AdmissionClosed(ValueError):
-    """A new descendant was refused because its lineage is stopping or out of time."""
-
-    def __init__(self, message: str, *, stopping: bool) -> None:
-        super().__init__(message)
-        self.stopping = stopping
 
 
 RunSegment = Callable[[ConversationSegment], Awaitable[ConversationOutcome]]
@@ -505,6 +497,11 @@ class Conversations:
     def cancelling(self, task: TaskSnapshot) -> bool:
         """Whether ``task`` is being cancelled, including before the request is recorded."""
         return task.cancellation_requested_at is not None or task.handle in self._control_holds
+
+    def cancellation_job(self, handle: str) -> asyncio.Task[None] | None:
+        """The job still confirming ``handle``'s cancellation, if one is running."""
+        job = self._controls.get(handle)
+        return job if job is not None and not job.done() else None
 
     def require_admission(self, task: TaskSnapshot) -> None:
         """Close descendant admission before any cancellation cascade starts."""

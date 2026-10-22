@@ -152,6 +152,61 @@ async def test_uncertain_legacy_status_does_not_require_an_episode_to_end_wait(
     assert history.acknowledged_notifications("owner") == frozenset()
 
 
+@pytest.mark.asyncio
+async def test_a_cancellation_still_settling_keeps_the_wait_going(arc: ARCMemory) -> None:
+    """While a member's cancellation job runs, its interim uncertain mark is progress:
+    the wait goes on until the member settles. If the job ends with the member still
+    uncertain, the wait wakes and reports it."""
+
+    from types import SimpleNamespace
+
+    history = TaskHistory(arc)
+    jobs: dict[str, asyncio.Task[None]] = {}
+    def running(handle: str) -> asyncio.Task[None] | None:
+        job = jobs.get(handle)
+        return job if job is not None and not job.done() else None
+
+    conversations = SimpleNamespace(cancellation_job=running)
+    app = SimpleNamespace(state=SimpleNamespace(conversations=conversations))
+    operations = TaskOperations(history, forbid_cancel, app=app)
+    caller = TaskCaller("owner", "human")
+
+    async def uncertain(handle: str) -> TaskSnapshot:
+        task = await asyncio.to_thread(record_task, history, handle)
+        await asyncio.to_thread(
+            history.record_snapshot,
+            task.model_copy(
+                update={
+                    "status": "task_state_uncertain",
+                    "settlement": "unknown",
+                    "attention_episode": "cancelling",
+                }
+            ),
+            observation_id=handle + "-uncertain",
+        )
+        return task
+
+    release = asyncio.Event()
+    settles = await uncertain("task_settles")
+    jobs[settles.handle] = asyncio.create_task(release.wait())
+    waiter = asyncio.create_task(operations.wait(caller, settles.handle))
+    await asyncio.sleep(0.3)
+    assert not waiter.done()
+    await asyncio.to_thread(finish, history, settles, status="cancelled")
+    result = await asyncio.wait_for(waiter, 2)
+    assert result["pending"] == [] and result["outcomes"][0]["status"] == "cancelled"
+
+    stays = await uncertain("task_stays_uncertain")
+    jobs[stays.handle] = asyncio.create_task(release.wait())
+    waiter = asyncio.create_task(operations.wait(caller, stays.handle))
+    await asyncio.sleep(0.3)
+    assert not waiter.done()
+    release.set()
+    result = await asyncio.wait_for(waiter, 2)
+    assert result["pending"] == [stays.handle]
+    assert result["outcomes"] == [{"handle": stays.handle, "status": "task_state_uncertain"}]
+
+
 def test_restore_coalesces_hints_without_losing_pending_core_mail(arc: ARCMemory) -> None:
     history = TaskHistory(arc)
     tasks = [record_task(history, "task_replay_" + str(index)) for index in range(3)]

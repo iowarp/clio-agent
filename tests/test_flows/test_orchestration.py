@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -187,3 +188,86 @@ def test_cancelling_a_flow_whose_members_stop_cooperatively_settles_its_subtree(
     for member in members:
         wait_until(lambda m=member: _snapshot(flow_app, m).terminal_at is not None, timeout=60)
         assert _snapshot(flow_app, member).status == "cancelled"
+
+
+def _plan_starter(client: TestClient, fail_once: set[str]) -> dict[str, Any]:
+    """Script the orchestrator to start a three-node plan; nodes in ``fail_once`` fail
+    on their first attempt only."""
+
+    from clio_agent.gact.flow_tools import start_flow
+
+    started: dict[str, Any] = {}
+    attempts: dict[str, int] = {}
+    plan = {
+        "nodes": [
+            {"id": "gather", "target": "self", "input": "STEP gather"},
+            {"id": "measure", "target": "self", "input": "STEP measure", "after": ["gather"]},
+            {"id": "report", "target": "self", "input": "STEP report", "after": ["measure"]},
+        ]
+    }
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if question.startswith("STEP "):
+            step = question.split()[1]
+            attempts[step] = attempts.get(step, 0) + 1
+            if step in fail_once and attempts[step] == 1:
+                raise RuntimeError(f"{step} failed on its first attempt")
+            return dspy.Prediction(answer=f"{step} done")
+        if question.startswith("run the plan") and not started:
+            started.update(asyncio.run(start_flow("plan", {"plan": plan, "task": "t"}, None)))
+            started["attempts"] = attempts
+            return dspy.Prediction(answer=f"started {started['handle']}")
+        return default_program(question=question, **kwargs)
+
+    client.app.state.flow_program["run"] = program
+    return started
+
+
+def _node_handles(client: TestClient, handle: str) -> dict[str, str]:
+    sid = _snapshot(client, handle).owner.session_id
+    view = client.get(f"/v1/sessions/{sid}/tasks/{handle}/flow").json()
+    return {row["id"]: row.get("handle", "") for row in (view.get("view") or {}).get("nodes", [])}
+
+
+def test_a_restarted_plan_keeps_finished_nodes_and_reruns_the_rest(flow_app: TestClient) -> None:
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _plan_starter(flow_app, {"measure"})
+    post(flow_app, sid, "run the plan")
+    handle = wait_until(lambda: started.get("handle"))
+    wait_until(lambda: _snapshot(flow_app, handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, handle).status == "failed"
+    before = _node_handles(flow_app, handle)
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+
+    response = flow_app.post(f"/v1/sessions/{sid}/agent-controls/{handle}/restart")
+    assert response.status_code == 200, response.text
+    history = flow_app.app.state.task_history
+    restarted = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle and latest
+    )
+    wait_until(lambda: _snapshot(flow_app, restarted.handle).terminal_at is not None, timeout=60)
+    assert _snapshot(flow_app, restarted.handle).status == "completed"
+    after = _node_handles(flow_app, restarted.handle)
+    # The finished node is the same task; only the failed one and its dependent ran again.
+    assert after["gather"] == before["gather"]
+    assert after["measure"] != before["measure"] and after["report"]
+    assert started["attempts"] == {"gather": 1, "measure": 2, "report": 1}
+
+
+def test_a_message_after_the_run_ended_does_not_run_the_flow_again(flow_app: TestClient) -> None:
+    sid = new_session(flow_app, "clio/orchestrator")
+    started = _plan_starter(flow_app, set())
+    post(flow_app, sid, "run the plan")
+    handle = wait_until(lambda: started.get("handle"))
+    wait_until(lambda: _snapshot(flow_app, handle).status == "completed", timeout=60)
+    plan_session = _snapshot(flow_app, handle).owner.session_id
+    post(flow_app, plan_session, "one more thing")
+    history = flow_app.app.state.task_history
+    later = wait_until(
+        lambda: (latest := history.latest_assignment(plan_session)).handle != handle
+        and latest.terminal_at is not None
+        and latest
+    )
+    assert started["attempts"] == {"gather": 1, "measure": 1, "report": 1}
+    result = history.read_content(later.result)
+    assert "already ended" in json.dumps(result) and "one more thing" in json.dumps(result)

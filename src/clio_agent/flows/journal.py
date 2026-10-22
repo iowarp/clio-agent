@@ -77,6 +77,9 @@ class FlowJournal:
             "result": None,
         }
         self.replayed = False
+        #: ``(root_handle, run_invocation)`` of the run a restart continues: its completed
+        #: calls and steps carry over, so only what did not complete runs again.
+        self.resume_from: tuple[str, str] | None = None
         self._lock = asyncio.Lock()
 
     async def open(self) -> None:
@@ -96,11 +99,47 @@ class FlowJournal:
             self.replayed = True
             return
         self.content["request_digest"] = self.request_digest
+        if self.resume_from is not None:
+            previous = await self.history.io.run(self._load, *self.resume_from)
+            if previous is not None:
+                self._carry_over(previous)
         await self.save()
 
-    def _load(self) -> dict[str, Any] | None:
+    def _carry_over(self, previous: dict[str, Any]) -> None:
+        """Keep the previous run's completed work under this run's invocations."""
+
+        old, new = str(previous.get("run_id") or ""), self.run_id
+        rename = {old + ":": new + ":"} if old else {}
+
+        def key(invocation: str) -> str:
+            for prefix, replacement in rename.items():
+                if invocation.startswith(prefix):
+                    return replacement + invocation[len(prefix) :]
+            return invocation
+
+        calls = {
+            key(invocation): row
+            for invocation, row in (previous.get("calls") or {}).items()
+            if row.get("status") == "completed"
+        }
+        steps = {key(invocation): row for invocation, row in (previous.get("steps") or {}).items()}
+        self.content["calls"].update(calls)
+        self.content["steps"].update(steps)
+        self.content["entries"] = len(calls) + len(steps)
+        self.content["resumed_from"] = {
+            "run_id": old,
+            "root_handle": self.resume_from[0] if self.resume_from else "",
+            "calls": len(calls),
+            "steps": len(steps),
+        }
+
+    def _load(self, root_handle: str = "", run_invocation: str = "") -> dict[str, Any] | None:
+        root_handle, run_invocation = (
+            root_handle or self.root_handle,
+            run_invocation or self.run_invocation,
+        )
         with self.history.serialized():
-            checkpoint = self.history.workflow_checkpoint(self.root_handle, self.run_invocation)
+            checkpoint = self.history.workflow_checkpoint(root_handle, run_invocation)
             if checkpoint is None:
                 return None
             value = self.history.read_content(checkpoint.content)

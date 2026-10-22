@@ -111,10 +111,17 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
     if not root_handle and app is not None:
         latest = app.state.task_history.latest_assignment(session_id)
         root_handle = latest.handle if latest is not None else ""
+    resume_from: tuple[str, str] | None = None
     if selection.get("input") is not None or "depth" in selection:
         # A started flow (run_flow, run_plan, ctx.call) is its whole assignment:
         # a later turn of the same assignment resumes the same run.
         marker = root_handle
+        invocation, predecessor = _lineage(app, root_handle)
+        if predecessor and invocation.startswith("restart:"):
+            # A restart continues the run it replaces: finished work is kept.
+            resume_from = (predecessor, f"flow:{flow_id}:{predecessor}")
+        elif predecessor:
+            return _after_the_run(flow_id, predecessor, str(kwargs.get("question") or ""))
     else:
         marker = (
             turn.input_notification_id
@@ -131,4 +138,40 @@ def run_agent_flow(module: Any, kwargs: dict[str, Any]) -> Any:
         depth=int(selection.get("depth") or 0),
         kwargs=kwargs,
     )
+    ctx.journal.resume_from = resume_from
     return asyncio.run(ctx.run())
+
+
+def _lineage(app: Any, handle: str) -> tuple[str, str]:
+    """The assignment's invocation id and the assignment it follows ("" for the first)."""
+
+    from clio_agent.arc.task_types import AssignmentDetails  # noqa: PLC0415
+
+    history = getattr(getattr(app, "state", None), "task_history", None)
+    task = history.task_snapshot(handle) if history is not None and handle else None
+    if task is None:
+        return "", ""
+    details = (
+        AssignmentDetails.model_validate(history.read_content(task.details))
+        if task.details is not None
+        else AssignmentDetails()
+    )
+    return str(task.invocation_id or ""), str(details.predecessor or "")
+
+
+def _after_the_run(flow_id: str, ended: str, message: str) -> Any:
+    """A message reaching a started flow's session after its run ended.
+
+    The flow does not run again (that would repeat its work); the message is the
+    assignment's result, so it reaches the agent that started the flow.
+    """
+
+    import dspy  # noqa: PLC0415
+
+    return dspy.Prediction(
+        answer=(
+            f"The {flow_id} run in this conversation already ended (assignment {ended}), so "
+            "it does not run again. This arrived afterwards and is passed on as received:\n\n"
+            + message
+        )
+    )
