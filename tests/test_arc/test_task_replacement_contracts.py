@@ -162,6 +162,7 @@ async def test_a_cancellation_still_settling_keeps_the_wait_going(arc: ARCMemory
 
     history = TaskHistory(arc)
     jobs: dict[str, asyncio.Task[None]] = {}
+
     def running(handle: str) -> asyncio.Task[None] | None:
         job = jobs.get(handle)
         return job if job is not None and not job.done() else None
