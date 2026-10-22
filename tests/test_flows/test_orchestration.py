@@ -271,3 +271,24 @@ def test_a_message_after_the_run_ended_does_not_run_the_flow_again(flow_app: Tes
     assert started["attempts"] == {"gather": 1, "measure": 1, "report": 1}
     result = history.read_content(later.result)
     assert "already ended" in json.dumps(result) and "one more thing" in json.dumps(result)
+
+
+def test_run_flow_describes_the_flows_this_session_resolves(monkeypatch: Any) -> None:
+    """The model sees what each of its flows does and takes, not just a name."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact import flow_tools
+
+    rows = [
+        {"id": "react", "description": "default"},
+        {"id": "plan", "description": "plans"},
+        {"id": "arena", "description": "Several contestants attempt the same task."},
+        {"id": "council", "description": "Several members answer the same question."},
+    ]
+    monkeypatch.setattr(flow_tools, "_runtime", lambda: (object(), SimpleNamespace(session_id="s")))
+    monkeypatch.setattr(flow_tools, "_flows", lambda app, sid: rows)
+    desc = flow_tools.build_run_flow_tool().desc
+    assert "- arena: Several contestants attempt the same task." in desc
+    assert "- council: Several members answer the same question." in desc
+    assert "- react:" not in desc and "- plan:" not in desc

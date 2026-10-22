@@ -31,7 +31,11 @@ class Arena(Flow):
     """
 
     id = "arena"
-    description = "Several attempts at one task, then a judged winner."
+    description = (
+        "Several contestants attempt the same task independently; a judge compares the "
+        "entries and picks one winner, with its rationale, and the votes are recorded. "
+        "Options: contestants (targets; default three of this agent)."
+    )
     contestants: tuple[str, ...] = ("self", "self", "self")
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:

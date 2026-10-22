@@ -31,7 +31,11 @@ class Council(Flow):
     """
 
     id = "council"
-    description = "Independent views from several members, then one synthesized answer."
+    description = (
+        "Several members answer the same question independently, then one synthesized "
+        "answer. Options: members (targets; default three of this agent), perspectives "
+        "(one per member), synthesizer (a target; empty synthesizes inside the flow)."
+    )
     members: tuple[str, ...] = ("self", "self", "self")
     perspectives: tuple[str, ...] = (
         "a careful domain expert",

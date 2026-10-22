@@ -75,6 +75,29 @@ async def start_flow(
     return {**accepted, "flow": flow_id}
 
 
+def _run_flow_description() -> str:
+    """``run_flow``'s description, listing the flows this session's agent resolves."""
+
+    from clio_agent.gact.agents.resolution import SessionAgentUnavailable  # noqa: PLC0415
+
+    base = (
+        "Start one of this agent's flows as owned work and return its task handle at "
+        "acceptance. Keep working; its result arrives as a task result. wait_tasks(handle) "
+        "waits for it; cancel_tasks(handle) cancels it and its subtree."
+    )
+    try:
+        app, caller = _runtime()
+        rows = _flows(app, caller.session_id)
+    except (ValueError, SessionAgentUnavailable):
+        return base  # Built outside a conversation: no session flows to list.
+    listed = [
+        f"- {row['id']}: {row['description']}"
+        for row in rows
+        if row["id"] not in {"react", "plan"} and row.get("description")
+    ]
+    return base + ("\nFlows:\n" + "\n".join(listed) if listed else "")
+
+
 def build_run_flow_tool() -> Any:
     async def run_flow(
         flow: str,
@@ -88,12 +111,7 @@ def build_run_flow_tool() -> Any:
         name="run_flow",
         domain="tasks",
         title="Run flow",
-        desc=(
-            "Start one of this agent's flows (for example council or arena) as owned work and "
-            "return its task handle at acceptance. Keep working; its result arrives as a task "
-            "result. wait_tasks(handle) waits for it; cancel_tasks(handle) cancels it and its "
-            "subtree."
-        ),
+        desc=_run_flow_description(),
         args={
             "flow": {"type": "string", "description": "The flow id."},
             "input": {"description": "The flow's task: text or a JSON object."},
