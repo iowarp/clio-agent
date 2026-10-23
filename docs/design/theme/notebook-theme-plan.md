@@ -26,7 +26,7 @@ Base: the current gact-tui branch in use for CLIO 1.0, which is the commit the c
 
 ## Design
 
-**Selector.** Settings gains a theme choice of **Light**, **Dark** and **Notebook**. Notebook follows `prefers-color-scheme` for its variant. The choice is stored with the other UI preferences and applied before first paint, so there is no flash of the wrong theme.
+**Selector.** Settings gains **Notebook** beside **System**, **Light** and **Dark**; System still follows the OS between Light and Dark (T-D4). Notebook follows `prefers-color-scheme` for its variant. The choice is stored with the other UI preferences and applied before first paint, so there is no flash of the wrong theme.
 
 **Surface tokens.**
 
@@ -66,7 +66,7 @@ Light and Dark get the same four status tokens with values from their own palett
 
 **Charts and diagrams.** The kernel's chart and the workflow railroad read the accent and status tokens for their series and node colors, so a chart in Notebook matches the study tree beside it.
 
-**Type.** Literata for the agent's voice and headings, IBM Plex Sans for the interface, IBM Plex Mono for data and code, all from Google Fonts. The style guide [notebook-style.html](notebook-style.html) shows the scale, components and the full token block, and it is the visual reference for T4.
+**Type.** Literata for the agent's voice and headings, IBM Plex Sans for the interface, IBM Plex Mono for data and code, all Google Fonts families. The app serves their files from its own bundle (the Fontsource packages), because the desktop CSP and offline installs cannot load fonts.googleapis.com (T-D3). The style guide [notebook-style.html](notebook-style.html) shows the scale, components and the full token block, and it is the visual reference for T4.
 
 ## Phase 0: inventory
 
