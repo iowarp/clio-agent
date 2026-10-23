@@ -42,6 +42,23 @@ def notify_tool_observer(
         return observer(name, dict(args), phase, error)  # type: ignore[misc, call-arg, no-any-return]
 
 
+def notify_refused_call(
+    observer: Optional[ToolObserver | LegacyToolObserver],
+    name: str,
+    args: Mapping[str, Any],
+    reason: str,
+) -> PermissionError:
+    """Record a call the permission gate or a hook refused; return the error to raise.
+
+    The refused call is part of what the agent did, so the transcript and the UI
+    show it as a failed call rather than leaving only the model's account of it.
+    """
+
+    notify_tool_observer(observer, name, args, "started", None)
+    notify_tool_observer(observer, name, args, "completed", reason)
+    return PermissionError(reason)
+
+
 def observer_progress_handler(
     observer: Optional[ToolObserver | LegacyToolObserver],
     name: str,
@@ -70,6 +87,7 @@ def observer_progress_handler(
 __all__ = [
     "LegacyToolObserver",
     "ToolObserver",
+    "notify_refused_call",
     "notify_tool_observer",
     "observer_progress_handler",
 ]

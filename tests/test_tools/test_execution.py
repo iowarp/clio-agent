@@ -1371,3 +1371,30 @@ def test_plain_deny_string_uses_generic_message():
             executor.call_tool("fake_echo", {"value": "blocked"})
     finally:
         executor.close()
+
+
+def test_a_refused_call_is_recorded_with_its_reason():
+    """The transcript shows a refused call: the observer hears it start and end with the reason."""
+    from clio_agent.gact.permission_gate import DenyDecision
+
+    seen: list[tuple[str, str, str | None]] = []
+
+    def observer(name, args, phase, error=None):
+        seen.append((name, phase, error))
+
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: FakeClient(),
+        permission_gate=lambda _name, _args: DenyDecision("write guard: refused notes/x.md"),
+        tool_observer=observer,
+    )
+    try:
+        with pytest.raises(PermissionError, match="write guard"):
+            executor.call_tool("fake_echo", {"value": "blocked"})
+    finally:
+        executor.close()
+    assert seen == [
+        ("fake_echo", "started", None),
+        ("fake_echo", "completed", "write guard: refused notes/x.md"),
+    ]
