@@ -39,4 +39,15 @@ def child_session_metadata(call: "FlowCall", depth: int, run_id: str) -> dict[st
     return metadata
 
 
-__all__ = ["child_session_metadata"]
+def child_model(app: Any, handle: str) -> str:
+    """``account/model`` the child of task ``handle`` runs on, or ``""`` when unknown."""
+
+    snapshot = app.state.task_history.task_snapshot(handle)
+    session = app.state.sessions.get(snapshot.owner.session_id) if snapshot is not None else None
+    model = dict(getattr(session, "model", None) or {})
+    if model.get("provider_id") and model.get("model_id"):
+        return f"{model['provider_id']}/{model['model_id']}"
+    return ""
+
+
+__all__ = ["child_model", "child_session_metadata"]

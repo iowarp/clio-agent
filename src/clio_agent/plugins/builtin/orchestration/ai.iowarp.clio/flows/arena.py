@@ -90,6 +90,6 @@ arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entr
             "winner": winner,
             "rationale": verdict["rationale"],
             "entries": handles,
-            # The model each entry was asked to run on ("" for its own choice or this run's).
-            **({"entry_models": models[: len(handles)]} if any(models) else {}),
+            # The model each entry ran on.
+            "entry_models": [entry.model for entry in entries],
         }

@@ -31,7 +31,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from clio_agent.flows.call_metadata import child_session_metadata
+from clio_agent.flows.call_metadata import child_model, child_session_metadata
 from clio_agent.flows.journal import FlowJournal, digest
 from clio_agent.flows.outcomes import (
     STATUS_OUTCOMES,
@@ -685,7 +685,8 @@ class FlowContext:
         value = outcome.get("result")
         if outcome.get("next_cursor"):
             value = await self.app.state.task_history.io.run(self._full_result, handle)
-        return CallResult(value, handle=handle, target=name, kind=kind)
+        model = await self.app.state.task_history.io.run(child_model, self.app, handle)
+        return CallResult(value, handle=handle, target=name, kind=kind, model=model)
 
     def _full_result(self, handle: str) -> Any:
         """A paged result's whole content (the wait already authorized reading it)."""

@@ -63,10 +63,19 @@ class CallResult(Mapping[str, Any]):
     """
 
     def __init__(
-        self, value: Any, *, handle: str = "", target: str = "", kind: str = "", index: int = -1
+        self,
+        value: Any,
+        *,
+        handle: str = "",
+        target: str = "",
+        kind: str = "",
+        index: int = -1,
+        model: str = "",
     ) -> None:
         self._value = value
         self.handle = handle
+        #: ``account/model`` the call's child ran on ("" for a tool or an unknown child).
+        self.model = model
         self.target = target
         self.kind = kind
         self.index = index
