@@ -187,5 +187,5 @@ The `docs-memory-*` images other than `docs-memory-search.png` are light-mode br
 | `docs-memory-document.png` | The preferences document: facts, source icons (person, wrench), replaced values |
 | `docs-memory-history.png` | A document's history with a diff and Restore |
 | `docs-memory-popover.png` | An answer that used a remembered preference, with its memory popover |
-| `docs-memory-notice.png` | A memory write in a conversation, expanded, with its link |
+| `docs-memory-notice.png` | A memory write in a conversation, expanded: the fact it saved and Edit in memory |
 | `docs-memory-off.png` | Memory off in the composer for a new conversation |
