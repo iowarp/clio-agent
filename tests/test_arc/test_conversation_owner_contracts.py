@@ -38,6 +38,7 @@ from clio_agent.gact.events import EventBus
 from clio_agent.gact.external_tasks import ExternalConnection, ExternalTasks
 from clio_agent.gact.native_work import now
 from clio_agent.gact.provenance_wiring import install_session_lifecycle_observer
+from clio_agent.gact.question_events import QuestionEvents
 from clio_agent.gact.question_surface import answer_question
 from clio_agent.gact.questions import QuestionCommands
 from clio_agent.gact.semantic_events import NoopSemanticTraceBackend, SemanticEventSink
@@ -119,6 +120,8 @@ async def create_environment(
     app, root = await asyncio.to_thread(records)
     app.state.arc, app.state.bus, app.state.messages = arc, EventBus(), {}
     app.state.questions = QuestionCommands(app.state.task_history)
+    # Core recovery's readiness restores question views too, as the server wires it.
+    app.state.question_events = QuestionEvents(app)
     # A turn resolves its session's plugin agent (the hermetic default marketplace).
     app.state.plugin_service = PluginService()
     # Pin the root now, so preparing a child later only reads the pin.
