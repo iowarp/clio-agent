@@ -782,6 +782,13 @@ class FlowContext:
                 status = "cancelled" if isinstance(outcome, CallCancelled) else outcome.reason
                 await self.journal.finish(status, outcome.to_dict())
             raise
+        except Exception as error:
+            # Any other error ends the run too: its record must not stay "running".
+            if self._opened:
+                await self.journal.finish(
+                    "flow_error", {"error": type(error).__name__, "message": str(error)[:2000]}
+                )
+            raise
         if self._opened:
             await self.journal.finish("completed", _plain(value))
         return _as_prediction(value)

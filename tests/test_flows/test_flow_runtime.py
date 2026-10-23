@@ -71,6 +71,18 @@ def test_step_runs_once_and_is_recorded(flow_app: TestClient) -> None:
     assert sorted(row["result"] for row in run["steps"].values()) == ["A", "B"]
 
 
+def test_a_run_that_raises_records_how_it_ended(flow_app: TestClient) -> None:
+    """Live, a council whose synthesis raised stayed "running" in its record after its task failed."""
+
+    sid = new_session(flow_app, "clio/breakerer")
+    post(flow_app, sid, "go")
+    _answer(flow_app, sid)
+    run = _checkpoint(flow_app, sid)
+    assert run["status"] == "flow_error"
+    assert run["result"]["error"] == "ValueError"
+    assert run["result"]["message"] == "could not parse the reply to first"
+
+
 def test_model_call_limit_is_typed(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/greedier")
     post(flow_app, sid, "go")
