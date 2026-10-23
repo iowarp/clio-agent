@@ -129,3 +129,22 @@ def test_model_exhausted_says_who_chose_and_what_else_can_run(
     )
     assert model_exhausted(app, "root", {"reason": "claude_code_plan_limit"})["chooser"] == "person"
     assert model_exhausted(app, "root", {"reason": "provider_auth_required"}) is None
+
+
+def test_the_account_route_refuses_bad_bodies_and_unknown_accounts(tmp_path) -> None:
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        url = "/v1/fleet/accounts/openrouter"
+        malformed = client.patch(
+            url, content=b"not json", headers={"content-type": "application/json"}
+        )
+        assert malformed.status_code == 422
+        assert client.patch(url, json={"delegation_allowed": "yes"}).status_code == 422
+        unknown = client.patch(
+            "/v1/fleet/accounts/no-such-account", json={"delegation_allowed": True}
+        )
+        assert unknown.status_code == 404

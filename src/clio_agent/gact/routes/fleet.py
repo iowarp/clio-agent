@@ -11,6 +11,7 @@ from clio_agent.gact.fleet.guard import set_delegation_allowed
 from clio_agent.gact.fleet.read import read_fleet
 from clio_agent.gact.fleet.session_check import entry_fit, session_requirements
 from clio_agent.gact.fleet.spend import tree_spend
+from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
@@ -51,8 +52,8 @@ def register_fleet_routes(app: FastAPI) -> None:
     async def fleet_account(account: str, request: Request) -> dict[str, Any]:
         """Set whether Clio may run delegated work on ``account`` without asking."""
 
-        body = await request.json()
-        allowed = body.get("delegation_allowed") if isinstance(body, dict) else None
+        body = await json_body(request, route="PATCH /v1/fleet/accounts/{account}")
+        allowed = body.get("delegation_allowed")
         if not isinstance(allowed, bool):
             raise HTTPException(
                 status_code=422,
