@@ -84,7 +84,6 @@ START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 DOMAIN_ATTR = "_clio_tool_domain"
 _RESULT_PRESENTERS: dict[str, Any] = {}
 _START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
-_PRESENTER_KEYWORD_CONTAINERS: dict[str, tuple[str, ...]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -495,6 +494,28 @@ def pop_declared_structured_content() -> dict[str, Any] | None:
     return value
 
 
+def _call_arguments(
+    func: Callable[..., Any], call_args: tuple[Any, ...], call_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """The call's own arguments: bound, defaults applied, ``**keywords`` unwrapped.
+
+    A callable that takes ``**keywords`` (the recording wrapper's
+    ``call_tool(**kwargs)`` over a plain tool, or a tool declared that way)
+    binds the whole call under the container's name. The observer reports the
+    arguments the tool was called with, so its row merges with the agent's own
+    record of the same call instead of listing it twice.
+    """
+
+    signature = inspect.signature(func)
+    bound = signature.bind(*call_args, **call_kwargs)
+    bound.apply_defaults()
+    args = dict(bound.arguments)
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            args.update(args.pop(parameter.name, {}))
+    return args
+
+
 def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable[..., Any]:
     """Route a native tool callable through the live tool observer.
 
@@ -527,9 +548,7 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
                 observe_native_call,
             )
 
-            bound = inspect.signature(func).bind(*call_args, **call_kwargs)
-            bound.apply_defaults()
-            args = dict(bound.arguments)
+            args = _call_arguments(func, call_args, call_kwargs)
             try:
                 await observe_native_call(tool_name, args, "started")
                 pop_declared_structured_content()
@@ -560,9 +579,7 @@ def observed_tool_callable(func: Callable[..., Any], tool_name: str) -> Callable
         # test monkeypatching) always sees the live seam.
         from clio_agent.tools import execution as _execution  # noqa: PLC0415
 
-        bound = inspect.signature(func).bind(*call_args, **call_kwargs)
-        bound.apply_defaults()
-        args = dict(bound.arguments)
+        args = _call_arguments(func, call_args, call_kwargs)
         _execution.notify_global_tool_observer(tool_name, args, "started")
         # Belt-and-braces: THIS call hasn't run ``func`` yet, so nothing it
         # declares exists -- any value still sitting here belongs to an
@@ -638,11 +655,6 @@ def _instrument_tool(tool: Any) -> Any:
     presenter = getattr(func, PRESENTER_ATTR, None)
     if presenter is not None:
         _RESULT_PRESENTERS[name] = presenter
-        _PRESENTER_KEYWORD_CONTAINERS[name] = tuple(
-            parameter.name
-            for parameter in inspect.signature(func).parameters.values()
-            if parameter.kind is inspect.Parameter.VAR_KEYWORD
-        )
     start_presenter = getattr(func, START_PRESENTER_ATTR, None)
     if start_presenter is not None:
         _START_PRESENTERS[name] = start_presenter
@@ -676,24 +688,13 @@ def present_native_result(
     presenter = _RESULT_PRESENTERS.get(name)
     if presenter is None:
         return None
-    args = _presentation_arguments(name, args)
+    args = copy.deepcopy(dict(args))
     if callable(presenter):
-        presented = presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
+        presented = presenter(args, copy.deepcopy(result), copy.deepcopy(structured))
         if not isinstance(presented, dict):
             raise TypeError("A native result presenter must return a mapping")
         return presented
     return native_presentation(presenter, args, result, structured)
-
-
-def _presentation_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-    """Unbind declared **keywords only for the observer's presentation copy."""
-    projected = copy.deepcopy(dict(args))
-    for container in _PRESENTER_KEYWORD_CONTAINERS.get(name, ()):
-        keywords = projected.get(container)
-        if isinstance(keywords, Mapping):
-            projected.pop(container)
-            projected.update(keywords)
-    return projected
 
 
 def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -704,9 +705,9 @@ def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] |
     if presenter is None:
         return None
     try:
-        return ToolPresentation.model_validate(
-            presenter(_presentation_arguments(name, args))
-        ).model_dump(exclude_none=True)
+        return ToolPresentation.model_validate(presenter(copy.deepcopy(dict(args)))).model_dump(
+            exclude_none=True
+        )
     except Exception:
         logger.exception("Starting native presentation failed: %s", name)
         return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
