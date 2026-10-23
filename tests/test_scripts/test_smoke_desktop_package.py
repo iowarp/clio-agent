@@ -177,7 +177,13 @@ def test_smoke_requires_survival_and_always_cleans_up_and_redacts(
     cleanup = Mock()
     monkeypatch.setattr(smoke, "stop_owned", cleanup)
 
+    real_popen = subprocess.Popen
+
     def launch(*args: object, **kwargs: object) -> Mock:
+        # Popen is patched module-wide; pass incidental calls (e.g. platform's
+        # lazy `uname -p`) through so only the desktop launch is faked.
+        if args and args[0] != [str(desktop.resolve())]:
+            return real_popen(*args, **kwargs)  # type: ignore[call-overload]
         log = kwargs["stdout"]
         log.write(b"private-test-token\n")  # type: ignore[union-attr]
         native_log.write_text("backend: private-test-token\n")
