@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from clio_agent.plugins.resolve import Resolution
 
 
-
 def fleet_entries(app: "FastAPI", *, needed: bool) -> list[FleetEntry]:
     """The fleet's entries from the provider catalog the server last read.
 

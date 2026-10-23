@@ -98,6 +98,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         build_prepare_document_tool,
         build_prepare_execution_runtime_tool,
     )
+    from clio_agent.gact.fleet.tools import (  # noqa: PLC0415
+        build_list_models_tool,
+        build_usage_tool,
+    )
     from clio_agent.gact.flow_tools import (  # noqa: PLC0415
         build_run_flow_tool,
         build_run_workflow_tool,
@@ -137,10 +141,6 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
     from clio_agent.gact.weather_tools import build_weather_forecast_tool  # noqa: PLC0415
-    from clio_agent.gact.fleet.tools import (  # noqa: PLC0415
-        build_list_models_tool,
-        build_usage_tool,
-    )
     from clio_agent.providers.model_discovery import (  # noqa: PLC0415
         build_refresh_provider_models_tool,
     )
