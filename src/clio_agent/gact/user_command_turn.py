@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact import context as gact_context
 from clio_agent.gact.hooks.dispatcher import dispatch_user_prompt_expansion
 from clio_agent.gact.message_contract import PostMessageRequest
 from clio_agent.gact.message_submission import accept_message_async
@@ -22,6 +23,16 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.routes.deps import GactDeps
+
+
+def _dispatch_expansion(app: "FastAPI", *args: Any, **kwargs: Any) -> Any:
+    """Fire the expansion hooks with ``app`` active: a session's plugin hooks are its own."""
+
+    token = gact_context.set_app(app)
+    try:
+        return dispatch_user_prompt_expansion(*args, **kwargs)
+    finally:
+        gact_context.reset(token)
 
 
 async def submit_user_command(
@@ -44,7 +55,8 @@ async def submit_user_command(
     plugin = str(command_meta.get("plugin") or "")
     bare = cmd_id.lstrip("/")
     expansion = await asyncio.to_thread(
-        dispatch_user_prompt_expansion,
+        _dispatch_expansion,
+        app,
         f"{plugin}:{bare}" if plugin else bare,
         user_input,
         rendered,
