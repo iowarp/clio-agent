@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.fleet.entries import FleetEntry, project_fleet
-from clio_agent.gact.fleet.selection import ModelChoice, ModelSelectionRefused, choose_model
+from clio_agent.gact.fleet.selection import (
+    MODEL_CHOICE_KEY,
+    ModelChoice,
+    ModelSelectionRefused,
+    choose_model,
+)
 from clio_agent.sdk.model import Requires
 
 if TYPE_CHECKING:
@@ -92,10 +97,20 @@ async def warm_model_catalog(app: "FastAPI") -> None:
     await read_catalog(app)
 
 
+def recorded_choice(app: Any, child_session_id: str) -> dict[str, Any] | None:
+    """The ``model_choice`` a child session recorded when it was created, if any."""
+
+    sessions = getattr(getattr(app, "state", None), "sessions", None)
+    session = sessions.get(child_session_id) if sessions is not None and child_session_id else None
+    choice = (getattr(session, "metadata", None) or {}).get(MODEL_CHOICE_KEY)
+    return dict(choice) if isinstance(choice, dict) else None
+
+
 __all__ = [
     "accepted_model",
     "caller_model",
     "choose_child_model",
     "fleet_entries",
+    "recorded_choice",
     "warm_model_catalog",
 ]

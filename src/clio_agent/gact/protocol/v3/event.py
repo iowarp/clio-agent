@@ -358,6 +358,11 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
         **({"summary": str(summary)} if summary else {}),
         **({"result": answer_excerpt} if answer_excerpt else {}),
     }
+    from clio_agent.gact.context import active_app
+    from clio_agent.gact.fleet.child_model import recorded_choice
+
+    if choice := recorded_choice(active_app(), str(payload.get("child_session_id") or "")):
+        projected["model_choice"] = choice
     return _Projection("subagent.upserted", projected, entity_id)
 
 

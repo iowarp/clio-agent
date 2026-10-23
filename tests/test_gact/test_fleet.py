@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -322,3 +323,40 @@ def test_a_runs_model_shares_count_the_tokens_read_and_written_not_cache_reads()
     assert usage["windows"] == [
         {"account": "a", "label": "a", "window": "5-hour", "used_percent": 40.0}
     ]
+
+
+def test_a_childs_task_row_and_live_event_carry_its_model_choice(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.events import Event
+    from clio_agent.gact.protocol.v3.event import event_to_v3
+    from clio_agent.gact.routes.tasks import agent_task_view
+    from tests.test_gact.task_records import record_assignment_fixture
+
+    choice = {
+        "asked": "claude_code/claude-haiku-5-5",
+        "ran": {"provider_id": "claude_code", "model_id": "claude-haiku-5-5"},
+        "source": "explicit",
+        "reasons": [],
+        "effort": "",
+    }
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="parent")
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="child", metadata={"model_choice": choice}
+        )
+        task = record_assignment_fixture(app, child.id, handle="task_child", parent_sid=parent.id)
+        view = agent_task_view(app, task.model_dump(mode="json"))
+        assert view["model_choice"] == choice
+        token = _ctx.set_app(app)
+        try:
+            projected = event_to_v3(
+                Event(type="agent.task.started", session_id=parent.id, payload=view),
+                session=app.state.sessions.get(parent.id),
+            )
+        finally:
+            _ctx.reset(token)
+        assert projected["payload"]["model_choice"] == choice

@@ -19,6 +19,7 @@ from clio_agent.arc.task_types import (
 )
 from clio_agent.errors import ClioError
 from clio_agent.gact.auth import configured_bearer_token, has_valid_bearer
+from clio_agent.gact.fleet.child_model import recorded_choice
 from clio_agent.gact.human_controls import intervene
 from clio_agent.gact.native_work import now
 from clio_agent.gact.off_loop import run_off_loop
@@ -142,6 +143,7 @@ def agent_task_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "updated_at": task["updated_at"],
         "run_label": task["label"],
         "error_reason": process["error_reason"],
+        "model_choice": recorded_choice(app, process["child_session_id"]),
     }
 
 
