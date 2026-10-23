@@ -38,7 +38,7 @@ def _register(server_tool: Any, owner: _Owner) -> Any:
 
 async def _call_and_list(server: FastMCP) -> tuple[dict[str, Any], dict[str, Any]]:
     async with Client(server) as client:
-        listed = {tool.name: tool.inputSchema for tool in await client.list_tools()}
+        listed = {tool.name: tool.input_schema for tool in await client.list_tools()}
         result = await client.call_tool("probe", {"text": "hi", "repeat": 2})
     return listed["probe"], dict(result.structured_content or {})
 
