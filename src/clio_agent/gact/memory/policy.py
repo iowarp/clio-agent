@@ -10,6 +10,9 @@
 * ``propose_memory_change`` exists only in the background pass's ``curator`` run.
 * A workspace session reads user scope plus its project scope, or only its project
   scope when the workspace turned **Use account memory** off.
+* Searching other conversations' text is past-session recall wherever it is offered:
+  the ``session_*`` tools and ``query_tasks`` with ``scope: authorized`` and a query
+  follow the same switches (:func:`past_session_search_reason`).
 """
 
 from __future__ import annotations
@@ -137,6 +140,22 @@ def active_policy() -> tuple[Any, Any, MemoryPolicy] | None:
     return app, session, session_policy(app, session)
 
 
+class PastSessionSearchWithheld(ValueError):
+    """A conversation may not search other conversations' text (typed reason)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"{reason}: this conversation may not search other conversations")
+
+
+def past_session_search_reason(app: Any, session_id: str) -> str:
+    """Why ``session_id`` may not search other conversations' text, or ``""``."""
+    session = app.state.sessions.get(session_id)
+    if session is None:
+        return ""
+    return session_policy(app, session).withheld(RECALL_TOOLS[0])
+
+
 def withheld_memory_tools(wanted: set[str]) -> dict[str, str]:
     """Typed reasons the active session may not have each of ``wanted``."""
     claimed = wanted & {*MEMORY_TOOLS, *RECALL_TOOLS}
@@ -160,8 +179,10 @@ __all__ = [
     "WORKSPACE_USE_ACCOUNT",
     "WRITE_TOOLS",
     "MemoryPolicy",
+    "PastSessionSearchWithheld",
     "active_policy",
     "memory_enabled",
+    "past_session_search_reason",
     "session_policy",
     "setting",
     "use_account_memory",

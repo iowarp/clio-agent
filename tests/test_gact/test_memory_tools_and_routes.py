@@ -14,10 +14,12 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.memory import tools as memory_tools
 from clio_agent.gact.memory.policy import (
     SESSION_MEMORY_OFF,
+    PastSessionSearchWithheld,
     session_policy,
     withheld_memory_tools,
 )
 from clio_agent.gact.memory.snapshot import MARKER, session_snapshot
+from clio_agent.gact.task_access import TaskCaller
 
 
 @pytest.fixture()
@@ -334,3 +336,22 @@ def test_a_scope_is_read_exactly_and_one_document_exports_alone(client: TestClie
     one = client.get("/v1/memory/export", params={"name": "user/topics/telescopes"})
     names = zipfile.ZipFile(io.BytesIO(one.content)).namelist()
     assert sorted(names) == ["manifest.json", "user/topics/telescopes.md"]
+
+
+def test_memory_off_also_stops_searching_other_conversations_through_tasks(
+    client: TestClient,
+) -> None:
+    """``query_tasks`` with a query over authorized sessions reads their transcripts:
+    the same switches as ``session_search`` apply, with the typed reason."""
+    app = client.app
+    off = _root(app, **{SESSION_MEMORY_OFF: True})
+    on = _root(app)
+    human = str(app.state.human_principal)
+    tasks = app.state.task_operations
+    with pytest.raises(PastSessionSearchWithheld) as refused:
+        tasks.query(TaskCaller(off.id, human), kind="Session", scope="authorized", query="plots")
+    assert refused.value.reason == "session_memory_off"
+    # Its own tree, a listing without text, and the person's own search are not recall.
+    tasks.query(TaskCaller(off.id, human), kind="Session", scope="tree", query="plots")
+    tasks.query(TaskCaller(off.id, human), kind="Session", scope="authorized")
+    tasks.query(TaskCaller(on.id, human), kind="Session", scope="authorized", query="plots")
