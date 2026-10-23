@@ -9,7 +9,8 @@
 //   node scripts/cloud/ui_check.mjs --label plugins --width 390 --height 844   # phone width
 //
 // --steps names a module whose default export is `async (page, shot) => {}`; call
-// `await shot("name")` to capture a screenshot at any point. Screenshots land in
+// `await shot("name")` to capture a screenshot at any point. An optional `setup(page)`
+// export runs before the first page load. Screenshots land in
 // .cloud-run/shots/<label>-<n>-<name>.png, and the script prints their paths, the
 // browser console errors and any failed requests so the agent can read the images
 // with its file reader and check the run for errors.
@@ -43,10 +44,13 @@ function chromiumPath() {
   if (!existsSync(base)) return undefined;
   const dirs = readdirSync(base).filter((d) => /^chromium-\d+$/.test(d)).sort();
   for (const d of dirs.reverse()) {
-    const exe = path.join(base, d, "chrome-linux/chrome");
-    if (existsSync(exe)) return exe;
+    for (const dir of ["chrome-linux64", "chrome-linux"]) {
+      const exe = path.join(base, d, dir, "chrome");
+      if (existsSync(exe)) return exe;
+    }
   }
-  return undefined;
+  const pinned = path.join(base, "chromium");
+  return existsSync(pinned) ? pinned : undefined;
 }
 
 const shotsDir = path.join(root, ".cloud-run/shots");
@@ -84,7 +88,11 @@ const shot = async (name) => {
   return file;
 };
 
+// A steps module may export `setup(page)`, run before the first navigation (routes, init scripts).
+const steps = stepsFile ? await import(pathToFileURL(path.resolve(stepsFile)).href) : null;
+
 try {
+  if (steps?.setup) await steps.setup(page);
   await page.goto(uiUrl, { waitUntil: "networkidle", timeout: 60000 });
 
   // First run shows the "Add an agent service" form; later runs restore the saved service.
@@ -120,10 +128,7 @@ try {
     await shot("after-send");
   }
 
-  if (stepsFile) {
-    const mod = await import(pathToFileURL(path.resolve(stepsFile)).href);
-    await mod.default(page, shot);
-  }
+  if (steps) await steps.default(page, shot);
 } catch (error) {
   consoleErrors.push(`ui_check: ${error.message.split("\n")[0]}`);
   await shot("failure").catch(() => {});
