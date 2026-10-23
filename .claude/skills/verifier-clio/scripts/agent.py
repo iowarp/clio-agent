@@ -6,7 +6,7 @@ remove them. Run with the repository's Python (``uv run --no-sync python``).
 
   agent.py ready                               wait until sessions and workspaces answer
   agent.py workspace NAME                      scratch workspace rooted in the run dir
-  agent.py session TITLE [--workspace ID] [--add PLUGIN ...] [--approval MODE]
+  agent.py session TITLE [--workspace ID] [--agent REF] [--add PLUGIN ...] [--approval MODE]
   agent.py say SID TEXT [--timeout S]          send, wait for the turn, print the turn
   agent.py command SID NAME INPUT              run a slash command as the person, print the turn
   agent.py turn SID                            print the newest assistant turn again
@@ -142,6 +142,7 @@ def main() -> None:
     s = sub.add_parser("session")
     s.add_argument("title")
     s.add_argument("--workspace", default="ws_default")
+    s.add_argument("--agent", default="")
     s.add_argument("--add", nargs="*", default=[])
     s.add_argument("--approval", default="")
     y = sub.add_parser("say")
@@ -173,7 +174,10 @@ def main() -> None:
         record("workspaces", ws["id"])
         print(ws["id"], root)
     elif a.cmd == "session":
-        sess = call("POST", "/v1/sessions", json={"workspace_id": a.workspace, "title": a.title})
+        body = {"workspace_id": a.workspace, "title": a.title}
+        if a.agent:
+            body["agent"] = {"id": a.agent}
+        sess = call("POST", "/v1/sessions", json=body)
         sid = sess["id"]
         record("sessions", sid)
         if a.add:
