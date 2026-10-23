@@ -178,3 +178,44 @@ async def test_stop_requested_from_another_event_loop_stops_on_the_runners_loop(
     finally:
         release.set()
         await asyncio.wait_for(runner.drain(), 2)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_turn_is_logged_as_cancelled_not_as_a_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from clio_agent.gact.runtime.globals import _TurnCancelled
+
+    loop = asyncio.get_running_loop()
+    outcome: list[BaseException] = []
+    settled = asyncio.Event()
+    requested = True
+
+    def work() -> None:
+        raise _TurnCancelled(SimpleNamespace(message="stopped by the person"))
+
+    async def segment() -> None:
+        try:
+            await runner.run_sync("primary", work)
+        except _TurnCancelled as error:
+            outcome.append(error)
+        finally:
+            settled.set()
+
+    async def admit(sid: str) -> tuple[str, Coroutine[Any, Any, Any]] | None:
+        nonlocal requested
+        if not requested:
+            return None
+        requested = False
+        return "turn", segment()
+
+    runner = TurnRunner(SimpleNamespace(state=SimpleNamespace()), admit)
+    runner.bind_loop(loop)
+    with caplog.at_level("INFO", logger="clio_agent.gact.turn_runner"):
+        runner.signal("primary")
+        await asyncio.wait_for(settled.wait(), 2)
+        await asyncio.wait_for(runner.drain(), 2)
+    assert outcome, "the cancellation reached the turn"
+    rows = [r for r in caplog.records if r.name == "clio_agent.gact.turn_runner"]
+    assert [r.levelname for r in rows if "session_worker" in r.getMessage()] == ["INFO"]
+    assert "session_worker_cancelled" in rows[0].getMessage()
