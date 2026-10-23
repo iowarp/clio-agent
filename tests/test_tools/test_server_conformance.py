@@ -17,9 +17,9 @@ PROTOCOL_VERSION = "2026-07-28"
 TASKS_EXTENSION = "io.modelcontextprotocol/tasks"
 
 FS_ANNOTATIONS: dict[str, dict[str, bool]] = {
+    "list_directory": {"readOnlyHint": True, "openWorldHint": False},
+    "search_text": {"readOnlyHint": True, "openWorldHint": False},
     "read_file": {"readOnlyHint": True, "openWorldHint": False},
-    "glob": {"readOnlyHint": True, "openWorldHint": False},
-    "grep": {"readOnlyHint": True, "openWorldHint": False},
     "write_file": {
         "readOnlyHint": False,
         "destructiveHint": True,

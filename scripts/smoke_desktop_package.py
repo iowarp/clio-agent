@@ -258,15 +258,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("desktop", type=Path)
     parser.add_argument("--evidence-dir", required=True, type=Path)
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=180,
+        help="Startup deadline in seconds; cold installs must include managed package setup.",
+    )
     parser.add_argument("--boot-log", type=Path, help="Native boot log for this installed app")
     parser.add_argument(
         "--agent-home", type=Path, help="Reuse this installation's managed packages"
     )
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("--timeout must be positive")
     try:
         result = smoke(
             args.desktop,
             args.evidence_dir.resolve(),
+            timeout=args.timeout,
             boot_log=args.boot_log,
             agent_home=args.agent_home,
         )

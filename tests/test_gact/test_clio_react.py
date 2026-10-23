@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any
 
+import anyio
 import dspy
 import pytest
 from dspy.lm15 import ContextLengthError, Request, ToolCallPart, ToolResultPart
@@ -364,19 +365,40 @@ def test_cancel_mid_call_closes_the_in_flight_call() -> None:
     assert time.monotonic() - started < 5
 
 
-def test_an_uncancelled_call_returns_without_waiting_on_the_watch() -> None:
+def test_an_uncancelled_call_returns_without_waiting_on_the_watch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.gact.agents import clio_react_stream_call
     from clio_agent.gact.agents.clio_react import _call_lm
+
+    # Observe the watch actually waiting, then require completion to wake it
+    # before its deadline. A wall-clock 200 ms limit also measures cold loop
+    # startup and scheduling contention from unrelated CI workers.
+    watch_started = threading.Event()
+    watch_scopes: list[anyio.CancelScope] = []
+    move_on_after = anyio.move_on_after
+
+    def observe_watch(delay: float) -> anyio.CancelScope:
+        scope = move_on_after(delay)
+        if delay == 10:
+            watch_scopes.append(scope)
+            watch_started.set()
+        return scope
+
+    monkeypatch.setattr(clio_react_stream_call, "_CANCEL_POLL_SECONDS", 10)
+    monkeypatch.setattr(clio_react_stream_call.anyio, "move_on_after", observe_watch)
 
     class _Quick:
         model = "quick"
 
         async def acall(self, request: Request) -> str:
+            assert await asyncio.to_thread(watch_started.wait, 5)
             return "done"
 
-    started = time.monotonic()
     with cancellation_checker(lambda: False):
         assert _call_lm(_Quick(), _one_message("quick")) == "done"
-    assert time.monotonic() - started < 0.2
+    assert len(watch_scopes) == 1
+    assert not watch_scopes[0].cancel_called
 
 
 def _in_session(sid: str) -> Any:

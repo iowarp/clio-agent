@@ -15,6 +15,10 @@ on:
           ref this workflow run was launched from.
         required: true
         type: string
+      rebuild_bundled:
+        description: Rebuild missing non-macOS bundled Desktop assets from the frozen tag
+        type: boolean
+        default: false
       verify_macos:
         description: Boot the existing release DMG on macOS 14, 15 and 26 before publication
         type: boolean
@@ -46,16 +50,42 @@ jobs:
   # it latest, only after check_release_completeness.py passes.
   release:
     name: create draft release
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || inputs.rebuild_bundled
     runs-on: ubuntu-latest
+    outputs:
+      desktop_matrix: ${{ steps.matrix.outputs.value }}
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REBUILD_BUNDLED: ${{ inputs.rebuild_bundled || false }}
     steps:
       - uses: actions/checkout@v4
       - name: Ensure exactly one draft release for the tag
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/github_release.py ensure --tag "$GITHUB_REF_NAME"
+        run: |
+          set -euo pipefail
+          if [ "$REBUILD_BUNDLED" = true ]; then
+            # Repair only missing assets in an existing draft. Published artifacts stay immutable.
+            gh release view "$RELEASE_TAG" --json isDraft,assets > release.json
+            jq -e '.isDraft and ([.assets[].name | contains("-bundled")] | any | not)' release.json
+          else
+            python3 scripts/github_release.py ensure --tag "$RELEASE_TAG"
+          fi
+      - name: Select Desktop build matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          if [ "$REBUILD_BUNDLED" = true ]; then
+            value=$(jq -c '.variant = ["bundled"] |
+              .target -= ["aarch64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"] |
+              . as $matrix | .include |= map(select(.target as $target | $matrix.target | index($target)))' \
+              .github/desktop-bundle-matrix.json)
+          else
+            value=$(jq -c . .github/desktop-bundle-matrix.json)
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
 
   installers:
     name: installer scripts
@@ -177,77 +207,32 @@ jobs:
 
   desktop:
     name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
-    if: github.event_name == 'push'
+    if: >-
+      !cancelled() && (github.event_name == 'push' || inputs.rebuild_bundled) &&
+      needs.release.result == 'success'
     needs: release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      REBUILD_BUNDLED: ${{ inputs.rebuild_bundled || false }}
+      BUNDLE_CHECKER: ${{ inputs.rebuild_bundled && '.release-operations/scripts/check_bundle_matches_lock.py' || 'scripts/check_bundle_matches_lock.py' }}
     strategy:
       fail-fast: false
-      matrix:
-        variant: [lite, bundled]
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-        include:
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            bundle-args: "--bundles msi,nsis"
-          # Windows on ARM: native build on GitHub's hosted windows-11-arm
-          # runner (no x64 emulation). The bundled embedded Python runtime is
-          # built on this arm64 runner, so it is the correct arch.
-          - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
-            # The hosted Windows ARM runner's Tauri bundler cannot fetch WiX or
-            # NSIS over HTTPS because cargo-tauri reports no TLS backend there.
-            # Build the native app and publish the raw executable instead.
-            bundle-args: "--no-bundle"
-          - target: aarch64-apple-darwin
-            os: macos-14
-            bundle-args: "--bundles app,dmg --target aarch64-apple-darwin"
-          # Intel macOS: GitHub is retiring the x86 `macos-13` runners, so
-          # cross-compile the x86_64 target ON an Apple-Silicon `macos-14` runner
-          # (the rust toolchain step installs the x86_64-apple-darwin target).
-          - target: x86_64-apple-darwin
-            os: macos-14
-            bundle-args: "--bundles app,dmg --target x86_64-apple-darwin"
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-            bundle-args: "--bundles deb,appimage,rpm"
-          - target: x86_64-unknown-linux-gnu
-            variant: bundled
-            bundle-args: "--bundles deb,rpm"
-          # Linux on ARM: native build on GitHub's hosted ubuntu-22.04-arm
-          # runner. Fills the real gap — Linux has no built-in x64 emulation,
-          # so an x86 .deb/.AppImage will not run on arm64 Linux.
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04-arm
-            bundle-args: "--bundles deb,appimage,rpm"
-          - target: aarch64-unknown-linux-gnu
-            variant: bundled
-            bundle-args: "--bundles deb,rpm"
-        exclude:
-          # The bundled variant embeds a host-built Python runtime, which installs
-          # clio-agent + its core dep clio-core (iowarp-core). clio-core ships
-          # platform wheels (no sdist), and upstream has NO wheel for Intel macOS
-          # (x86_64-apple-darwin) nor Windows on ARM (aarch64-pc-windows-msvc), so
-          # `uv pip install clio-agent` cannot resolve a runtime on those hosts and
-          # the bundled build would fail. Ship both as the LITE variant only until
-          # clio-core publishes wheels for them; the bundles can be regenerated then.
-          # (Tracked in the packaging-parity issue.)
-          - variant: bundled
-            target: x86_64-apple-darwin
-          - variant: bundled
-            target: aarch64-pc-windows-msvc
+      matrix: ${{ fromJSON(needs.release.outputs.desktop_matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.RELEASE_TAG }}
           submodules: recursive
+      - name: Check out release validation tooling
+        if: inputs.rebuild_bundled
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: .release-operations
       - uses: pnpm/action-setup@v4
         with:
           version: ${{ env.PNPM_VERSION }}
@@ -304,17 +289,17 @@ jobs:
         shell: bash
         # Run the check WITH the just-built bundled interpreter (guaranteed
         # present + >=3.11 for tomllib) rather than assuming a runner-ambient
-        # python; the script itself has zero third-party dependencies.
+        # python; packaging is a declared dependency of that frozen runtime.
         run: |
           external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14 \
-            scripts/check_bundle_matches_lock.py \
+            "$BUNDLE_CHECKER" --project "$GITHUB_WORKSPACE" \
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.14
       - name: Verify bundled runtime matches uv.lock (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: |
           & external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe `
-            scripts/check_bundle_matches_lock.py `
+            "$env:BUNDLE_CHECKER" --project "$env:GITHUB_WORKSPACE" `
             --python external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe
       - name: Pack embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
@@ -420,7 +405,7 @@ jobs:
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
           cfg="$RUNNER_TEMP/tauri.release.conf.json"
-          release_version="${GITHUB_REF_NAME#v}"
+          release_version="${RELEASE_TAG#v}"
           # The tauri CLI rejects multiple --config flags, so for the bundled
           # variant we deep-merge the bundled config + the CLIO branding overlay
           # into a single config (branding wins on conflicts) and pass it once.
@@ -581,7 +566,7 @@ jobs:
           set -euo pipefail
           stage="$RUNNER_TEMP/clio-desktop-stage"
           mkdir -p "$stage"
-          release_version="${GITHUB_REF_NAME#v}"
+          release_version="${RELEASE_TAG#v}"
           tauri_version="$release_version"
           if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
             tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
@@ -686,7 +671,12 @@ jobs:
           set -euo pipefail
           uploader="$PWD/scripts/upload_release_assets.sh"
           cd "$RUNNER_TEMP/clio-desktop-stage"
-          bash "$uploader" "$GITHUB_REF_NAME" ./*
+          if [ "$REBUILD_BUNDLED" = true ]; then
+            # gh refuses duplicates here; a repair must never clobber an existing asset.
+            gh release upload "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY"
+          else
+            bash "$uploader" "$RELEASE_TAG" ./*
+          fi
 
   macos-startup:
     name: macOS packaged startup · ${{ matrix.os }}

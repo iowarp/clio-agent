@@ -3,10 +3,10 @@ revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32'",
     "python_full_version >= '3.15' and sys_platform == 'emscripten'",
-    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
     "python_full_version >= '3.15' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'emscripten'",
     "python_full_version == '3.14.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'emscripten'",
@@ -747,8 +747,8 @@ requires-dist = [
     { name = "adios2", marker = "sys_platform != 'win32' and extra == 'adios'", specifier = ">=2.10.0" },
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.159" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
-    { name = "clio-kit", specifier = "==2.10.6" },
-    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=3224a7970d9271b2ff4ca9fe7bec2e227c4eea19" },
+    { name = "clio-kit", specifier = "==2.11.0" },
+    { name = "clio-schemas", specifier = "==0.6.0b15" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.4.0" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -824,25 +824,31 @@ provides-extras = ["optimizers", "adios", "argonne", "desktop", "claude-code", "
 
 [[package]]
 name = "clio-kit"
-version = "2.10.6"
+version = "2.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
+    { name = "pyyaml" },
+    { name = "tomli-w" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/99/b65e5abb4a14997c4fd0ffe50aba44da8f14216311a41cfef9c3c4e8c4fb/clio_kit-2.10.6.tar.gz", hash = "sha256:d7d9d487e590909382646c41e5bfdc9edf561a29f453fe7b7563debcfe305886", size = 12761176, upload-time = "2026-08-28T19:34:40.59Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/7d/c83326562a60d89f65cc8b5dc951a048ac727896a967db6f3aa545ce4618/clio_kit-2.11.0.tar.gz", hash = "sha256:84b9e014254217337c55d81587b0d5657da1a6ff999010e7de364620e93c8200", size = 260830, upload-time = "2026-10-08T22:28:12.149Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/c7/19f173478d89d8b18b82c34bdfee70b251bbc26429f0ed084b5a044f5a74/clio_kit-2.10.6-py3-none-any.whl", hash = "sha256:bfbdba1252de18daf4954399e8b973143a709d834109c294661d859dae30353d", size = 13024666, upload-time = "2026-08-28T19:34:37.362Z" },
+    { url = "https://files.pythonhosted.org/packages/af/1d/e2d2aeeffbcfa68fe73b9c58eeadd71578815c680cc0da998745c9a68725/clio_kit-2.11.0-py3-none-any.whl", hash = "sha256:44557c179fe6972cbb61ade733c3b01ac528009e8f7d98dee2d053bdccf4cd35", size = 291194, upload-time = "2026-10-08T22:28:10.514Z" },
 ]
 
 [[package]]
 name = "clio-schemas"
-version = "0.6.0b14"
-source = { git = "https://github.com/iowarp/clio-schemas.git?rev=3224a7970d9271b2ff4ca9fe7bec2e227c4eea19#3224a7970d9271b2ff4ca9fe7bec2e227c4eea19" }
+version = "0.6.0b15"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-types" },
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },
     { name = "referencing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/1f/916bb163b791c8aad5f4b6cc2493ce2d0402971f1a2c27def696165a0d7d/clio_schemas-0.6.0b15.tar.gz", hash = "sha256:3dd6dabb18035ab31aeb4476ccb464bfed90615ba4577d8de2af1d3bfa012603", size = 289219, upload-time = "2026-10-21T22:17:24.7Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6e/07/ee01bdc7a320af912550c22c4a5ae3c87dd4ac946c832efce2f0889f1daf/clio_schemas-0.6.0b15-py3-none-any.whl", hash = "sha256:95abe07f55e8fe78488107bae0cce433de69b48457cfaf05eeb9fb065b36f1f9", size = 234620, upload-time = "2026-10-21T22:17:23.419Z" },
 ]
 
 [[package]]
@@ -4816,6 +4822,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/36/65/7e75caea90bc73c1dd8d40438adf1a7bc26af3b8d0a6705ea190462506e1/tokenizers-0.22.1-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:a0f307d490295717726598ef6fa4f24af9d484809223bbc253b201c740a06390", size = 9681250, upload-time = "2025-09-19T09:49:21.501Z" },
     { url = "https://files.pythonhosted.org/packages/30/2c/959dddef581b46e6209da82df3b78471e96260e2bc463f89d23b1bf0e52a/tokenizers-0.22.1-cp39-abi3-win32.whl", hash = "sha256:b5120eed1442765cd90b903bb6cfef781fd8fe64e34ccaecbae4c619b7b12a82", size = 2472003, upload-time = "2025-09-19T09:49:27.089Z" },
     { url = "https://files.pythonhosted.org/packages/b3/46/e33a8c93907b631a99377ef4c5f817ab453d0b34f93529421f42ff559671/tokenizers-0.22.1-cp39-abi3-win_amd64.whl", hash = "sha256:65fd6e3fb11ca1e78a6a93602490f134d1fdeb13bcef99389d5102ea318ed138", size = 2674684, upload-time = "2025-09-19T09:49:24.953Z" },
+]
+
+[[package]]
+name = "tomli-w"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184, upload-time = "2025-01-15T12:07:24.262Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675, upload-time = "2025-01-15T12:07:22.074Z" },
 ]
 
 [[package]]

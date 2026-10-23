@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -65,22 +65,64 @@ def task_messages(app: Any, caller: TaskCaller, task: TaskSnapshot, history: str
     ]
 
 
-def matches_task_text(app: Any, caller: TaskCaller, task: TaskSnapshot, query: str) -> bool:
+def message_search_window(
+    after: str | None, before: str | None
+) -> tuple[datetime | None, datetime | None]:
+    """Validate an inclusive/exclusive message window and normalize its instants."""
+    bounds: list[datetime | None] = []
+    for name, value in (("message_after", after), ("message_before", before)):
+        if value is None:
+            bounds.append(None)
+            continue
+        try:
+            if not isinstance(value, str):
+                raise ValueError("Timestamp must be a string")
+            bounds.append(_timestamp(value).astimezone(timezone.utc))
+        except (ValueError, OverflowError) as error:
+            raise ValueError(f"{name} must be a timezone-aware ISO 8601 timestamp") from error
+    start, end = bounds
+    if start is not None and end is not None and start >= end:
+        raise ValueError("message_after must be earlier than message_before")
+    return start, end
+
+
+def matches_task_text(
+    app: Any,
+    caller: TaskCaller,
+    task: TaskSnapshot,
+    query: str | None,
+    *,
+    message_after: datetime | None = None,
+    message_before: datetime | None = None,
+) -> bool:
     """Match explicit search text only after the task's content authorization."""
     TaskAccess(app.state.task_history, caller).require(task.handle, "read")
     from clio_agent.gact.runtime.memory_search import _memory_search_terms
 
-    terms = _memory_search_terms(query)
-    if not terms:
+    terms = _memory_search_terms(query) if query is not None else []
+    if query is not None and not terms:
         raise ValueError("Task query must contain searchable text")
-    text = [task.label, task.description or ""]
+    windowed = message_after is not None or message_before is not None
+    text = [] if windowed else [task.label, task.description or ""]
     if task.kind in {"Session", "Subagent"}:
+        messages = task_messages(app, caller, task, "assignment")
+        if windowed:
+            messages = [
+                row
+                for row in messages
+                if (message_after is None or _timestamp(row.created_at) >= message_after)
+                and (message_before is None or _timestamp(row.created_at) < message_before)
+            ]
+            if not messages:
+                return False
         text.extend(
             part.text
-            for row in task_messages(app, caller, task, "assignment")
+            for row in messages
             for part in row.parts
             if part.type in {"text", "thinking", "error"}
         )
+    elif windowed:
+        return False
     haystack = "\n".join(text).casefold()
     return all(term in haystack for term in terms)
 

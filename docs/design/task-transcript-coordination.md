@@ -11,6 +11,14 @@ This change introduces no mailbox, task registry, worker or history store.
   Session/Subagent assignments, retained transcript text. Scope and permission
   filtering precede matching, counts and pagination. An intent string grants no
   rights. Results carry task handles usable by the existing controls.
+- Optional `message_after` (inclusive) and `message_before` (exclusive) select
+  retained Session/Subagent messages by their creation instant, not the assignment
+  creation/update time. Bounds require timezone-aware ISO 8601 timestamps and
+  normalize to UTC for cursor identity. Windowed text matching excludes undated
+  labels/descriptions and words from messages outside the window. Without query
+  text, the window selects readable assignments containing any retained message
+  in that interval. Without bounds, the original search and cursor contract remain
+  unchanged. Agent tools and both query HTTP routes share this implementation.
 - `observe_tasks(..., view="progress", history="assignment", limit=50,
   artifact_id=None)` keeps its current progress/wait/subscription behavior by
   default. `view="transcript"`, `"summary"` or `"artifacts"` provides bounded

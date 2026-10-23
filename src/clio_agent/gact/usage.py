@@ -234,7 +234,13 @@ def _last_prompt_usage_from_history_slice(
 
         lm = resolve_active_lm(site="usage._last_prompt_usage_from_history_slice")
         lms = [lm] if lm else []
-    snap = {id(lms[0]): start} if isinstance(start, int) and lms else (start or {})
+    snap = (
+        {id(lms[0]): start}
+        if isinstance(start, int) and lms
+        else start
+        if isinstance(start, Mapping)
+        else {}
+    )
     candidates: list[tuple[str, int, Any, dict[str, Any]]] = []
     ordinal = 0
     for lm in lms:
@@ -273,6 +279,9 @@ def _last_prompt_usage_from_history_slice(
             source = "estimated" if used_tokens > 0 else ""
     if used_tokens <= 0:
         return {}
+    from clio_agent.gact.prompt_breakdown import request_breakdown  # noqa: PLC0415
+
+    breakdown = request_breakdown(entry)
     return {
         "used_tokens": used_tokens,
         "source": source,
@@ -280,6 +289,7 @@ def _last_prompt_usage_from_history_slice(
         "cache_read_tokens": cache_read,
         "cache_write_tokens": cache_write,
         "cache_tokens_measured": cache_measured,
+        **({"prompt_breakdown": breakdown.model_dump()} if breakdown is not None else {}),
     }
 
 

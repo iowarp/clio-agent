@@ -210,7 +210,7 @@ def is_read_only(
        (:func:`clio_agent.tools.catalog.classification_tags`), spanning built-ins AND external
        MCP tools uniformly: native ``fs``/``shell`` tools carry NO gate annotation context
        (built-ins pass ``None``), so this catalog consult — fed by the fs/shell decorator
-       annotations — is what classifies e.g. ``fs_read_file`` / ``fs_grep``.
+       annotations — is what classifies e.g. ``fs_read_file`` / ``fs_search_text``.
 
     Fails closed (NOT read-only → the gate proceeds to approval): ``fs_write_file`` /
     ``fs_edit_file`` (their ``destructiveHint`` projects to the ``write`` tag), ``shell_bash`` (``openWorldHint`` →

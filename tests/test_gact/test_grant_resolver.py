@@ -135,6 +135,8 @@ def test_read_only_fast_allows_before_mode_lock(tmp_path: Path, mode: str) -> No
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
             assert gate("fs_read_file", {"filepath": "x"}) == "allow"
+            assert gate("fs_list_directory", {"path": "x"}) == "allow"
+            assert gate("fs_search_text", {"path": "x", "query": "callback"}) == "allow"
         # And no permission row was recorded for the read (it never reached the lock/prompt).
         assert app.state.permissions == {}
 
@@ -142,7 +144,7 @@ def test_read_only_fast_allows_before_mode_lock(tmp_path: Path, mode: str) -> No
 def test_is_read_only_signals() -> None:
     """The positive allowlist: catalog ``read`` tag OR a real ``readOnlyHint`` annotation."""
     assert is_read_only("tool", "fs_read_file", {}, None) is True
-    assert is_read_only("tool", "fs_grep", {}, None) is True  # tagged read
+    assert is_read_only("tool", "fs_search_text", {}, None) is True  # tagged read
     assert is_read_only("tool", "fs_write_file", {}, None) is False  # tagged write
     assert is_read_only("tool", "fs_edit_file", {}, None) is False  # tagged write
     assert is_read_only("tool", "shell_bash", {"command": "date"}, None) is False
@@ -168,7 +170,7 @@ def test_catalog_readwrite_tags_are_annotation_projections() -> None:
 
     for name, tag in (
         ("fs_read_file", "read"),
-        ("fs_grep", "read"),
+        ("fs_search_text", "read"),
         ("fs_write_file", "write"),
         ("fs_edit_file", "write"),
     ):

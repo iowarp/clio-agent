@@ -136,7 +136,7 @@ def validate_question_answer(question: Any, answer: str, metadata: dict[str, Any
             selected, text = [text], ""
         if selected and selected[0] not in options:
             errors[key] = "Select an offered option."
-        elif text and not item["allow_freeform"]:
+        elif text and not selected and not item["allow_freeform"]:
             errors[key] = "Select an offered option."
         elif not selected and not text:
             errors[key] = "An answer is required."

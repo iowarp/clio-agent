@@ -5,6 +5,9 @@ baselines. R2 intentionally changes submission to HTTP 202 plus an assignment
 handle and moves input acknowledgement to Core. Baseline changes must be
 inspected; regeneration alone is not acceptance.
 
+The repository-inspection integration adds fs_list_directory and fs_search_text
+to the recorded main-agent tool inventory; event order and assistant parts are unchanged.
+
 Producer-equivalence cases separately compare passive live views with and
 without an open TurnTranscript. Both views preserve the observed parts.
 """

@@ -262,6 +262,7 @@ def drive_load(
     out: dict[int, str],
     sids: dict[int, str],
     workspace_id: str | None = None,
+    model: dict[str, str] | None = None,
 ) -> bool:
     """Prepare every session's agent, then drive the complete concurrent acceptance load."""
 
@@ -279,7 +280,9 @@ def drive_load(
     threads = [
         threading.Thread(
             target=drive_session,
-            args=(base, sids[idx], prompt, out, idx),
+            args=(base, sids[idx], prompt, out, idx, model)
+            if model
+            else (base, sids[idx], prompt, out, idx),
             daemon=True,
         )
         for idx, (_agent, prompt) in enumerate(plan)
@@ -291,18 +294,39 @@ def drive_load(
     return True
 
 
-def drive_session(base: str, sid: str, prompt: str, out: dict[int, str], idx: int) -> None:
+def drive_session(
+    base: str,
+    sid: str,
+    prompt: str,
+    out: dict[int, str],
+    idx: int,
+    model: dict[str, str] | None = None,
+) -> None:
     """Submit a turn for an already configured session and wait for its outcome."""
 
     s = requests.Session()
     try:
+        submission: dict[str, object] = {
+            "text": prompt,
+            "behavior": {"confirmation_policy": "bypass"},
+        }
+        if model:
+            submission["model"] = model
         deadline = time.time() + 300
         while True:
-            r = s.post(f"{base}/v1/sessions/{sid}/messages", json={"text": prompt}, timeout=60)
+            r = s.post(f"{base}/v1/sessions/{sid}/messages", json=submission, timeout=60)
             if r.status_code != 503 or time.time() > deadline:
                 break
             time.sleep(10)
         r.raise_for_status()
+        acceptance = r.json()
+        message_id = acceptance.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("Acceptance did not identify the submitted turn")
+        if model and acceptance.get("effective_model") != {**model, "variant": ""}:
+            effective = acceptance.get("effective_model") or {}
+            if any(effective.get(key) != value for key, value in model.items()):
+                raise ValueError(f"Accepted model {effective!r} differs from requested {model!r}")
         deadline = time.time() + 1200
         while time.time() < deadline:
             try:
@@ -325,6 +349,27 @@ def drive_session(base: str, sid: str, prompt: str, out: dict[int, str], idx: in
                     )
                     return
                 if any(row.get("status") != "completed" for row in tasks):
+                    time.sleep(10)
+                    continue
+                messages_response = s.get(f"{base}/v1/sessions/{sid}/messages", timeout=30)
+                messages_response.raise_for_status()
+                messages = messages_response.json().get("messages", [])
+                replies = [
+                    row
+                    for row in messages
+                    if row.get("role") == "assistant" and row.get("turn_id") == message_id
+                ]
+                if any(
+                    row.get("error_info") or row.get("stop_reason") in {"error", "cancelled"}
+                    for row in replies
+                ):
+                    out[idx] = "failed_turn: the accepted turn ended with an error"
+                    return
+                if not any(
+                    part.get("type") == "text" and str(part.get("text") or "").strip()
+                    for row in replies
+                    for part in row.get("parts", [])
+                ):
                     time.sleep(10)
                     continue
             if status in {"idle", "error"}:
@@ -749,7 +794,14 @@ def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
         started = time.time()
         # Sampling already covers setup. No session's agent may change workspace
         # access after another session starts its turn.
-        if not drive_load(base, plan, out, sids, workspace_id=workspace_id):
+        if not drive_load(
+            base,
+            plan,
+            out,
+            sids,
+            workspace_id=workspace_id,
+            model={"provider_id": args.provider, "model_id": args.model},
+        ):
             return 2
         print(f"\nsessions: {json.dumps(out)}  wall: {time.time() - started:.0f}s")
         time.sleep(args.settle_s)  # let reclamation (once it exists, #933) act

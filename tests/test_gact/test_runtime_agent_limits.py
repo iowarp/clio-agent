@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import queue
 import threading
 from functools import partial
 from typing import Any
@@ -53,9 +54,10 @@ def _children(app: Any, sid: str, count: int = 4, fanout: int | None = None) -> 
 
 def _held_calls(
     app: Any, client: TestClient, children: list[str]
-) -> tuple[Any, list[threading.Event], Any]:
+) -> tuple[Any, list[threading.Event], Any, queue.Queue[int]]:
     """Run real inference admission while test events hold only model-call bodies."""
     entered = [threading.Event() for _ in children]
+    admitted: queue.Queue[int] = queue.Queue()
     releases: list[asyncio.Event] = []
     ready = threading.Event()
 
@@ -65,6 +67,7 @@ def _held_calls(
         async def call(index: int, sid: str) -> None:
             async with app.state.conversations.inference_slot(sid):
                 entered[index].set()
+                admitted.put(index)
                 await releases[index].wait()
 
         workers = [asyncio.create_task(call(index, sid)) for index, sid in enumerate(children)]
@@ -87,7 +90,7 @@ def _held_calls(
 
         client.portal.call(apply)
 
-    return future, entered, release
+    return future, entered, release, admitted
 
 
 def test_saved_unlimited_concurrency_is_used_by_inference(
@@ -96,9 +99,10 @@ def test_saved_unlimited_concurrency_is_used_by_inference(
     app, client, sid = world
     set_config("agent_tasks.max_concurrent", 0)
     children = _children(app, sid)
-    future, entered, release = _held_calls(app, client, children)
+    future, entered, release, admitted = _held_calls(app, client, children)
     try:
-        assert all(event.wait(5) for event in entered)
+        assert {admitted.get(timeout=5) for _ in children} == set(range(len(children)))
+        assert all(event.is_set() for event in entered)
     finally:
         release()
         future.result(5)
@@ -109,19 +113,22 @@ def test_live_concurrency_increase_starts_waiting_calls_and_decrease_drains(
 ) -> None:
     app, client, sid = world
     _save(client, {"agent_tasks.max_concurrent": 1})
-    future, entered, release = _held_calls(app, client, _children(app, sid))
+    future, entered, release, admitted = _held_calls(app, client, _children(app, sid))
     try:
-        assert entered[0].wait(5)
-        assert not any(event.is_set() for event in entered[1:])
+        first = admitted.get(timeout=5)
+        assert sum(event.is_set() for event in entered) == 1
         _save(client, {"agent_tasks.max_concurrent": 3})
-        assert entered[1].wait(5) and entered[2].wait(5)
-        assert not entered[3].is_set()
+        next_two = {admitted.get(timeout=5), admitted.get(timeout=5)}
+        assert len({first, *next_two}) == 3
+        assert sum(event.is_set() for event in entered) == 3
+        waiting = (set(range(len(entered))) - {first, *next_two}).pop()
         _save(client, {"agent_tasks.max_concurrent": 1})
-        release(0)
-        release(1)
-        assert not entered[3].wait(0.1)
-        release(2)
-        assert entered[3].wait(5)
+        release(first)
+        second, third = next_two
+        release(second)
+        assert not entered[waiting].wait(0.1)
+        release(third)
+        assert admitted.get(timeout=5) == waiting
     finally:
         release()
         future.result(5)
@@ -135,9 +142,14 @@ def test_unlimited_depth_capacity_preserves_parent_fanout(
 ) -> None:
     app, client, sid = world
     _save(client, {"agent_tasks.max_concurrent": 0})
-    future, entered, release = _held_calls(app, client, _children(app, sid, fanout=fanout_bound))
+    future, entered, release, admitted = _held_calls(
+        app, client, _children(app, sid, fanout=fanout_bound)
+    )
     try:
-        assert all(event.wait(5) for event in entered[:expected_running])
+        # Lineage reads run asynchronously before admission, so siblings need
+        # not enter in submission order. The contract is the capacity bound.
+        running = {admitted.get(timeout=5) for _ in range(expected_running)}
+        assert len(running) == expected_running
         assert sum(event.is_set() for event in entered) == expected_running
     finally:
         release()

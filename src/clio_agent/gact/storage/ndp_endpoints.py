@@ -23,7 +23,11 @@ from clio_agent.gact.storage.ndp_endpoint_models import (
     EndpointConnectionUpdate,
     EndpointRequest,
 )
-from clio_agent.gact.storage.ndp_endpoint_operations import operations, resolve_request
+from clio_agent.gact.storage.ndp_endpoint_operations import (
+    connection_operations,
+    operations,
+    resolve_request,
+)
 from clio_agent.gact.storage.ndp_endpoint_transport import endpoint_client
 from clio_agent.gact.storage.store import SourceStore
 
@@ -33,6 +37,9 @@ class NDPEndpointService:
 
     def __init__(self, store: SourceStore, principal: str) -> None:
         self.store, self.principal = store, principal
+        from clio_agent.gact.storage.ndp_streaming_service import NDPStreamingService
+
+        self.streaming = NDPStreamingService(store, principal)
 
     def connections(
         self, workspace_id: str, *, include_hidden: bool = False
@@ -82,6 +89,22 @@ class NDPEndpointService:
         self, workspace_id: str, choice: EndpointConnectionInput, token: str | None = None
     ) -> EndpointConnection:
         """Observe the actual API, then save the approved destination without installation."""
+        if choice.streaming_runtime is None and "streaming_runtime" not in choice.model_fields_set:
+            configured = next(
+                (
+                    row
+                    for row in self.store.list("ndp_endpoint", EndpointConnection)
+                    if row.principal == self.principal
+                    and row.streaming_runtime is not None
+                    and (row.url, row.ssh_profile, row.ssh_route, row.authentication)
+                    == (choice.url, choice.ssh_profile, choice.ssh_route, choice.authentication)
+                ),
+                None,
+            )
+            if configured is not None:
+                choice = choice.model_copy(
+                    update={"streaming_runtime": configured.streaming_runtime}
+                )
         document = self._discover(choice, token)
         previous = next(
             (
@@ -117,6 +140,10 @@ class NDPEndpointService:
         changes = update.model_dump(exclude_none=True)
         if "ssh_route" in update.model_fields_set:
             changes["ssh_route"] = update.ssh_route.model_dump() if update.ssh_route else None
+        if "streaming_runtime" in update.model_fields_set:
+            changes["streaming_runtime"] = (
+                update.streaming_runtime.model_dump() if update.streaming_runtime else None
+            )
         choice = EndpointConnectionInput.model_validate(
             {
                 **record.model_dump(include=set(EndpointConnectionInput.model_fields)),
@@ -146,7 +173,7 @@ class NDPEndpointService:
         return {
             **record.model_dump(exclude={"schema_document", "principal"}),
             "api_title": record.schema_document.get("info", {}).get("title", record.name),
-            "operations": operations(record.schema_document),
+            "operations": connection_operations(record),
         }
 
     def disconnect(self, workspace_id: str, identifier: str) -> None:
@@ -173,6 +200,7 @@ class NDPEndpointService:
     ) -> Any:
         """Read bounded catalog/station/session metadata without creating capture files."""
         allowed = {
+            "SDK streaming_v2.list",
             "GET /organization",
             "GET /search",
             "GET /resources/search",
@@ -187,6 +215,12 @@ class NDPEndpointService:
             raise ValueError("Choose a supported catalog, station or stream listing")
         record = self.get(workspace_id, identifier)
         _, url, query = resolve_request(record, request)
+        if request.operation_id == "SDK streaming_v2.list":
+            return {
+                "streams": [
+                    row.model_dump(exclude={"principal"}) for row in self.streaming.readers(record)
+                ]
+            }
         headers = {"Accept": "application/json"}
         if record.authentication == "ndp":
             if not token:
@@ -230,6 +264,8 @@ class NDPEndpointService:
         ):
             raise PermissionError("Approved Endpoint does not belong to this operation")
         operation, url, query = resolve_request(record, request)
+        if operation["method"] == "SDK":
+            return self.streaming.invoke(record, request, resources, token)
         headers = {"Accept": "application/json, text/event-stream, */*"}
         if record.authentication == "ndp":
             if not token:

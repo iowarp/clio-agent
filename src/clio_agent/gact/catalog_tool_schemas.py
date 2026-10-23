@@ -62,7 +62,7 @@ class ToolSchemaError(ValueError):
 
 
 def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
-    """Return the 4 static gateway (fs/shell) tools' underlying python callables.
+    """Return static gateway (fs/shell) tools' underlying Python callables.
 
     These have no directly-constructed ``dspy.Tool`` in
     :func:`clio_agent.gact.catalog._builtin_tool_declarations` (they run
@@ -75,19 +75,19 @@ def _gateway_tool_funcs() -> dict[str, Callable[..., Any]]:
 
     from clio_agent.tools.servers.fs_server import (  # noqa: PLC0415
         edit_file,
-        glob,
-        grep,
+        list_directory,
         read_file,
+        search_text,
         write_file,
     )
     from clio_agent.tools.servers.shell_server import bash  # noqa: PLC0415
 
     return {
+        "fs_list_directory": list_directory,
         "fs_read_file": read_file,
+        "fs_search_text": search_text,
         "fs_write_file": write_file,
         "fs_edit_file": edit_file,
-        "fs_glob": glob,
-        "fs_grep": grep,
         "shell_bash": bash,
     }
 
