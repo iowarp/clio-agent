@@ -394,6 +394,21 @@ def test_session_agent_routes_404_for_an_unknown_session(client: TestClient) -> 
         assert error["details"]["session_id"] == "sess_missing"
 
 
+def test_a_session_created_with_plugin_changes_starts_with_them(client: TestClient) -> None:
+    created = client.post(
+        "/v1/sessions",
+        json={"title": "composed", "metadata": {"agent_delta": {"remove": ["shell"]}}},
+    )
+    assert created.status_code in (200, 201), created.text
+    sid = created.json()["id"]
+    assert created.json()["metadata"]["agent_delta"] == {"add": [], "remove": ["shell"]}
+
+    body = client.get(f"/v1/sessions/{sid}/agent").json()
+    plugins = [row["id"] for row in body["resolution"]["plugins"]]
+    assert "shell" not in plugins and "document-runtime" not in plugins
+    assert body["resolution"]["digest"] == created.json()["metadata"]["agent_resolution"]
+
+
 def test_session_create_refuses_an_unresolvable_agent(client: TestClient) -> None:
     resp = client.post(
         "/v1/sessions", json={"title": "nope", "metadata": {"agent_ref": "clio/nope"}}

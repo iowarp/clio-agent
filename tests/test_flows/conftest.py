@@ -60,6 +60,18 @@ class Asker(Flow):
         return "declined"
 
 
+class Breaker(Flow):
+    id = "breaker"
+
+    async def forward(self, task, ctx):
+        await ctx.step(Breaker.parse, "first")
+        return "unreachable"
+
+    @staticmethod
+    def parse(value):
+        raise ValueError(f"could not parse the reply to {value}")
+
+
 class Stepper(Flow):
     id = "stepper"
     calls = []
@@ -165,6 +177,7 @@ Tolerater = _agent("tolerater", "tolerant")
 Stricter = _agent("stricter", "strict")
 Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
+Breakerer = _agent("breakerer", "breaker")
 Greedier = _agent("greedier", Flow("greedy", max_model_calls=2))
 Planner = _agent("planner", "workflowrunner")
 Nesterer = _agent("nesterer", "nester")

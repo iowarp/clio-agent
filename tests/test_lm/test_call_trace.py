@@ -74,6 +74,23 @@ def test_adapter_outputs_are_recorded_too() -> None:
     )
 
 
+def test_an_adapter_call_records_how_the_model_ended_and_what_it_generated(
+    emitted: list[dict[str, Any]],
+) -> None:
+    # A ChatAdapter call (messages=, list outputs) whose reply is the prompt itself:
+    # only the finish reason and output tokens tell a model that generated that text
+    # from a transport that handed the prompt back, so the record must keep them.
+    prompt = "[[ ## question ## ]]\nq\n\nRespond with the corresponding output fields."
+    lm, _ = scripted_lm([Reply(text=prompt, thinking="plan")], callbacks=[LMCallTrace()])
+    with pytest.warns(DeprecationWarning):
+        lm(messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": prompt}])
+
+    [record] = emitted
+    assert (record["content"], record["reasoning_content"]) == (prompt, "plan")
+    assert record["finish_reason"] == "stop"
+    assert record["usage"] == {"input_tokens": 10, "output_tokens": 5}
+
+
 def test_an_emit_failure_never_fails_the_call(monkeypatch: pytest.MonkeyPatch) -> None:
     def boom(record: dict[str, Any]) -> None:
         raise RuntimeError("store down")

@@ -13,6 +13,7 @@ from clio_agent.search import backend as search_backend
 from clio_agent.search.backend import (
     WEB_SEARCH_TOOL,
     ClioWebSearchBackend,
+    SearchBackendNotInstalledError,
     SearchBackendStartingError,
     SearchBackendStoppedError,
     SearchBackendUnavailableError,
@@ -248,6 +249,12 @@ def _local_settings(port: int) -> Any:
     [
         ("starting", SearchBackendStartingError, "search_backend_starting", "Wait"),
         ("stopped", SearchBackendStoppedError, "search_backend_stopped", "Start it"),
+        (
+            "not_installed",
+            SearchBackendNotInstalledError,
+            "search_backend_not_installed",
+            "Install it",
+        ),
         (None, SearchBackendUnavailableError, "search_backend_unavailable", "Infrastructure"),
     ],
 )

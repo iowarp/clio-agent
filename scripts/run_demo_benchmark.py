@@ -129,9 +129,18 @@ def _agent_ref_matches(expected: str, active: str) -> bool:
 
 
 def _rebase_agent_ref(ref: str, marketplace: str) -> str:
-    """Point ``ref`` at the same agent id in ``marketplace``."""
+    """Point ``ref`` at the same agent id in ``marketplace``; smoke-test agents stay put."""
 
-    return f"{marketplace}/{str(ref).rsplit('/', 1)[-1]}" if ref else ref
+    if not ref or str(ref).startswith(f"{_TESTING_MARKETPLACE}/"):
+        return ref
+    return f"{marketplace}/{str(ref).rsplit('/', 1)[-1]}"
+
+
+#: The smoke-test marketplace (not installed by default) and its folder.
+_TESTING_MARKETPLACE = "clio-testing"
+_TESTING_MARKETPLACE_SOURCE = (
+    Path(__file__).resolve().parents[1] / "external" / "clio-agent-marketplace" / "testing"
+)
 
 
 #: The marketplace EarthScope agent whose GNSS evidence the EarthScope checks review.
@@ -4124,7 +4133,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace plugin MCP scope",
             category="marketplace-mcp",
             session_group="marketplace_mcp_calculator",
-            agent_ref="clio/mcp-calculator-smoke",
+            agent_ref="clio-testing/mcp-calculator-smoke",
             expected_agent="main",
             expected_terms=("calculator_add", "mcp-calculator-smoke"),
             semantic_proofs=("command_mcp_skill_scope",),
@@ -4154,7 +4163,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             title="Marketplace plugin MCP tool call",
             category="marketplace-mcp",
             session_group="marketplace_mcp_calculator_enabled",
-            agent_ref="clio/mcp-calculator-smoke",
+            agent_ref="clio-testing/mcp-calculator-smoke",
             expected_tools=("calculator_add",),
             expected_terms=("7",),
             semantic_proofs=("command_mcp_skill_scope", "enabled_mcp_execution"),
@@ -4574,6 +4583,8 @@ def run_benchmark(
         workspace_id = ""
         if any(case.agent_ref or case.memory_scope_probe for case in cases):
             workspace_id = _ensure_benchmark_workspace(http, Path.cwd())
+        if any(case.agent_ref.startswith(f"{_TESTING_MARKETPLACE}/") for case in cases):
+            _install_marketplace(http, str(_TESTING_MARKETPLACE_SOURCE), name=_TESTING_MARKETPLACE)
         if marketplace_source and any(case.agent_ref for case in cases):
             market = _install_marketplace(http, marketplace_source, name=marketplace_name)
             cases = [

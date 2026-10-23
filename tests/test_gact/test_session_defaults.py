@@ -58,6 +58,8 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(
         "routing_mode": "auto",
         "approval_mode": "ask",
         "agent_ref": "",
+        # Which agent "no agent" means, so a client can show and shape it before sending.
+        "default_agent_ref": "clio/standard",
         "degradations": [],
     }
 

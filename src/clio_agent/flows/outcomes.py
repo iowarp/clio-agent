@@ -134,6 +134,20 @@ STATUS_OUTCOMES: dict[str, type[FlowOutcome]] = {
     "task_state_uncertain": TaskStateUncertain,
 }
 
+
+def run_ending(error: Exception) -> tuple[str, dict[str, Any]]:
+    """How a run that raised ``error`` ended: its record's status and result.
+
+    A typed outcome ends it by its reason (a cancellation is not a fault in it); any
+    other error is ``flow_error`` with its type and message, so the record never
+    stays "running" after its task failed.
+    """
+
+    if isinstance(error, FlowOutcome):
+        return ("cancelled" if isinstance(error, CallCancelled) else error.reason), error.to_dict()
+    return "flow_error", {"error": type(error).__name__, "message": str(error)[:2000]}
+
+
 __all__ = [
     "STATUS_OUTCOMES",
     "CallCancelled",
@@ -148,4 +162,5 @@ __all__ = [
     "FlowTargetUnknown",
     "GatherFailed",
     "TaskStateUncertain",
+    "run_ending",
 ]

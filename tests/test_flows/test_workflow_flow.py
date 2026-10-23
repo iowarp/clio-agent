@@ -314,3 +314,37 @@ def test_a_cancelled_workflow_ends_cancelled_not_stalled(flow_app: TestClient) -
     assert view["status"] == "cancelled", view["events"][0]
     steps = {row["id"]: row["status"] for row in view["view"]["steps"]}
     assert set(steps.values()) == {"cancelled"}, steps
+
+
+def _workflow_module() -> Any:
+    import importlib.util
+    from pathlib import Path
+
+    from clio_agent.plugins.store import builtin_records
+
+    record = next(r for r in builtin_records() if any(f.id == "workflow" for f in r.flows))
+    flow = next(f for f in record.flows if f.id == "workflow")
+    path = Path(record.root) / "ai.iowarp.clio" / flow.module
+    spec = importlib.util.spec_from_file_location("_flow_workflow_refs", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("Check this claim: $draft.", "Check this claim: 8 MiB.", id="full-stop"),
+        pytest.param("($draft), then $draft-", "(8 MiB), then 8 MiB-", id="punctuation"),
+        pytest.param("Compare $step-two with $task", "Compare B with T", id="dashed-id"),
+        pytest.param("Unknown $nothing. stays", "Unknown $nothing. stays", id="unknown"),
+    ],
+)
+def test_a_step_reference_ends_where_a_step_id_can(text: str, expected: str) -> None:
+    """Live, a critic got "Check this claim: $draft." with $draft unresolved: the full stop
+    was read as part of the name."""
+
+    from types import SimpleNamespace
+
+    results = {"draft": SimpleNamespace(answer="8 MiB"), "step-two": SimpleNamespace(answer="B")}
+    assert _workflow_module()._substitute(text, "T", results) == expected

@@ -50,7 +50,8 @@ _EXPLICIT_FLAGS = frozenset({"--remote-url", "--remote_url", "--address", "--pro
 _WEB_MCP_COMMANDS = frozenset({"clio-web-search-mcp", "web-mcp"})
 
 LocalEndpointResolver = Callable[[], "str | None"]
-#: Lifecycle phase of the managed local SearXNG: ``starting``, ``stopped`` or ``None``.
+#: Lifecycle phase of the managed local SearXNG: ``starting``, ``stopped``,
+#: ``not_installed`` or ``None``.
 LocalPhaseResolver = Callable[[], "str | None"]
 _LOCAL_ENDPOINT: list[LocalEndpointResolver] = []
 _LOCAL_PHASE: list[LocalPhaseResolver] = []
@@ -95,6 +96,12 @@ class SearchBackendStoppedError(SearchBackendUnavailableError):
     """The backend is installed but stopped; someone has to start it."""
 
     code = "search_backend_stopped"
+
+
+class SearchBackendNotInstalledError(SearchBackendUnavailableError):
+    """The backend's installation is missing (an install failed); someone has to install it."""
+
+    code = "search_backend_not_installed"
 
 
 def register_local_endpoint_resolver(
@@ -284,6 +291,13 @@ class LocalSearxngBackend(SearxngJsonBackend):
             return SearchBackendStartingError(
                 f"CLIO's local SearXNG at {self.base_url()} is still being installed or started.",
                 "Wait for the operation in Infrastructure > SearXNG to finish, then retry.",
+            )
+        if phase == "not_installed":
+            return SearchBackendNotInstalledError(
+                "CLIO's local SearXNG is not installed on this computer.",
+                "Install it from Infrastructure > Services > SearXNG, then retry. To search "
+                "from another machine instead, set search.backend: clio_web_search and "
+                "search.clio_web_search.url.",
             )
         if phase == "stopped":
             return SearchBackendStoppedError(

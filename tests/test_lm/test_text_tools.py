@@ -186,6 +186,49 @@ def test_orphaned_single_call_data_and_examples_remain_answers(raw: str, tools: 
     assert (split.text, split.calls) == (raw, [])
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(
+            '{"name":"colab_open","arguments":{"_clio_task_description":"open"}}\n[/tool_calls]',
+            id="closing-tag",
+        ),
+        pytest.param(
+            '[tool_calls]\n[{"name":"colab_open","arguments":{}}]\n[/tool_calls]', id="both-tags"
+        ),
+    ],
+)
+def test_a_call_in_bracket_tags_is_a_protocol_error_not_an_answer(raw: str) -> None:
+    """A live Haiku reply was one call object closed by [/tool_calls], with no fence."""
+    split = split_reply(raw, call_prefix="t", available_tools={"colab_open"})
+    [call] = split.calls
+    assert call.name == INVALID_TOOL_CALL
+    assert call.input["block"] == raw
+    assert "[tool_calls] tags are not calls" in str(call.input["error"])
+    assert not split.text
+
+
+@pytest.mark.parametrize(
+    ("raw", "tools"),
+    [
+        pytest.param('{"name":"colab_open","arguments":{}}\n[/tool_calls]', set(), id="no-tools"),
+        pytest.param(
+            '{"name":"other","arguments":{}}\n[/tool_calls]', {"colab_open"}, id="unknown"
+        ),
+        pytest.param(
+            'Write [tool_calls] then {"name":"colab_open","arguments":{}} [/tool_calls].',
+            {"colab_open"},
+            id="prose",
+        ),
+    ],
+)
+def test_bracket_tags_around_anything_but_a_whole_call_remain_answers(
+    raw: str, tools: set[str]
+) -> None:
+    split = split_reply(raw, call_prefix="t", available_tools=tools)
+    assert (split.text, split.calls) == (raw.strip(), [])
+
+
 def test_corrupted_tool_fence_is_a_protocol_error_without_submitting_work() -> None:
     """The live Haiku reply replaced its opening fence with an underscore."""
     raw = '_tool_calls\n[{"name":"spawn_agent_task","arguments":{"agent":"worker"}}]\n```'

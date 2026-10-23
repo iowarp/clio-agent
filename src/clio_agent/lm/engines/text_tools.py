@@ -89,7 +89,8 @@ TURN_REMINDER = (
     "complete fenced block: an opening line of three backticks followed by tool_calls, "
     "the JSON list on the next line, then a closing line of three backticks. Include BOTH "
     "fences; a JSON list alone or XML invoke/parameter tags are not calls. "
-    "A JSON object wrapping a tool_calls list or XML <tool_calls> tags is not a call either. "
+    "A JSON object wrapping a tool_calls list, XML <tool_calls> tags or [tool_calls] tags "
+    "are not calls either. "
     "A single JSON call object also needs the complete fenced JSON list. "
     "Underscores are not tool-call fences. "
     "Stop after the closing fence and wait for host observations; do not simulate "
@@ -222,6 +223,14 @@ def split_reply(
             return _invalid_reply(
                 "", reply.strip(), "missing opening ```tool_calls fence", call_prefix
             )
+        if _bracket_call_block(reply, available_tools):
+            return _invalid_reply(
+                "",
+                reply.strip(),
+                "[tool_calls] tags are not calls; a call needs a complete fenced "
+                "```tool_calls JSON list; no operation was submitted",
+                call_prefix,
+            )
         if _bare_call_json(reply, available_tools):
             return _invalid_reply(
                 "",
@@ -296,6 +305,24 @@ def _orphaned_call_block(reply: str, available_tools: Collection[str]) -> bool:
         body = body.removeprefix("_tool_calls\n")
     try:
         calls = json.loads(body)
+    except ValueError:
+        return False
+    return _known_call_list(calls, available_tools) or _known_call_list([calls], available_tools)
+
+
+def _bracket_call_block(reply: str, available_tools: Collection[str]) -> bool:
+    """Reject a whole declared call closed by a ``[/tool_calls]`` tag (observed live).
+
+    The reply is only the call (list or single object), optionally opened by
+    ``[tool_calls]``; anything else, including an example inside prose, stays an answer.
+    """
+    match = re.fullmatch(
+        r"\s*(?:\[tool_calls\]\s*)?(?P<body>.+?)\s*\[/tool_calls\]\s*", reply, re.DOTALL
+    )
+    if not available_tools or match is None:
+        return False
+    try:
+        calls = json.loads(match["body"])
     except ValueError:
         return False
     return _known_call_list(calls, available_tools) or _known_call_list([calls], available_tools)

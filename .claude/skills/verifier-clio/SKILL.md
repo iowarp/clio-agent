@@ -145,3 +145,11 @@ Evidence stays in the run directory; remove it once the report is delivered.
   holds; run e2e locally through a config that sets
   `launchOptions.executablePath` to `/opt/pw-browsers/chromium-*/chrome-linux/chrome`.
   Pixel baselines can differ by browser build, so CI's visual stage decides those.
+  Run it as `pnpm test:e2e --config .playwright.local.config.ts`, never `npx playwright
+  test`: `pretest:e2e` rebuilds with `CLIO_REVIEW_FIXTURES=1`, and without it every
+  `/tests/review/*.html` page falls back to the landing page and its specs fail.
+- Workflow steps and spawned children are their own sessions: a shell call inside a
+  step asks the person in that child session. Answer it (or allow it for the
+  workspace) or the step waits until the 600 s permission timeout.
+- WTF-P's write guard is armed only for the command's own turn (its `Stop` hook
+  disarms it); probe it inside the `/write-section` turn, not in a follow-up.

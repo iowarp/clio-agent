@@ -88,6 +88,39 @@ def settle_turn_transcript(state: "TurnState") -> None:
     close_turn_minter(state.app, state.sid)  # #1334: deferred persists drained, thread stopped
 
 
+def _stream_agent(state: "TurnState", agent_id: Optional[str]) -> str:
+    """The transcript label a streamed delta (or call boundary) of ``agent_id`` carries.
+
+    The generating expert (passed by the LM token tap from its react scope); falls
+    back to the turn's selected/invocation agent for the chat path. Read LATE off
+    ``state`` (TRICKY #1).
+    """
+
+    return agent_id or state.active_agent_id or state.invocation_agent_id or "main"
+
+
+async def begin_model_call(state: "TurnState", agent_id: Optional[str] = None) -> None:
+    """Close the agent's open streamed part: a new model call starts a new part.
+
+    The ledger keeps one part open per ``(agent, field)`` until another part lands, so
+    two calls of one agent with nothing between them (a tool-free reply, then the
+    next step after a message joined the running turn) would stream into ONE part.
+    Runs on the turn loop, after the previous call's deltas (scheduled by
+    :func:`~clio_agent.runtime.lm_activity.note_lm_call_start`). Only THIS agent's
+    part closes -- another agent streaming concurrently keeps its part. A settled
+    ledger rejects the op (audited): the ask_user carry keeps its open part as is.
+    """
+
+    label = _stream_agent(state, agent_id)
+    transcript = state.transcript
+    with transcript._lock:
+        if transcript._frozen:
+            transcript._audit_late_op("begin_model_call", agent_id=label)
+            return
+        if transcript._open_part is not None and transcript._open_agent == label:
+            transcript._close_open_text_locked()
+
+
 async def emit_chunk(
     state: "TurnState",
     text: str,
@@ -107,9 +140,7 @@ async def emit_chunk(
     resolve the generating agent off ``state`` on each call.
     """
 
-    # The generating expert (passed by the LM token tap from its react scope);
-    # falls back to the turn's selected/invocation agent for the chat path.
-    chunk_agent = agent_id or state.active_agent_id or state.invocation_agent_id or "main"
+    chunk_agent = _stream_agent(state, agent_id)
     stream_field = str(field_name or "answer")
     is_provider_thinking = stream_field.startswith("provider_thinking:")
     try:
@@ -214,10 +245,12 @@ def bind_live_emitter(state: "TurnState", loop: "asyncio.AbstractEventLoop") -> 
         # thought-dedup gate has a race-free source. Bound method over the turn's
         # transcript, so it is naturally turn-scoped and dies with the turn.
         # (No retry-discard hook: DSPy never re-issues a call after it streamed.)
+        # The call boundary closes the agent's open part as each model call starts.
         set_live_chunk_emitter(
             loop,
             partial(emit_chunk, state),
             state.transcript.record_streamed_field_text,
+            partial(begin_model_call, state),
         )
     except Exception:  # noqa: BLE001,S110 - live-stream wiring is best-effort
         pass
