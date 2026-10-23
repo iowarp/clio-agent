@@ -83,17 +83,32 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
         handles = [result.handle for result in views]
         # The model each member ran on, so the caller can see the mix it asked for.
         asked = {"member_models": [result.model for result in views]}
+        # The caller reads the answer, so it also says who answered on which model.
+        who = [
+            _on(view or member, result.model)
+            for (member, view), result in zip(pairs, views, strict=True)
+        ]
         if self.synthesizer or self.synthesizer_model:
             final = await ctx.call(
                 self.synthesizer or "self",
                 {"question": text, "views": labelled},
                 model=self.synthesizer_model,
             )
+            who.append(_on("synthesis", final.model))
             return {
-                "answer": final.answer,
+                "answer": f"{final.answer}\n\nMembers:\n" + "\n".join(who),
                 "members": handles,
                 "synthesizer": final.handle,
                 **asked,
             }
         synthesis = await ctx.step(self._synthesis, text, labelled)
-        return {"answer": synthesis["answer"], "members": handles, **asked}
+        who.append(_on("synthesis", ""))
+        return {
+            "answer": f"{synthesis['answer']}\n\nMembers:\n" + "\n".join(who),
+            "members": handles,
+            **asked,
+        }
+
+
+def _on(name: str, model: str) -> str:
+    return f"- {name}, on {model}" if model else f"- {name}"

@@ -90,6 +90,9 @@ def test_run_flow_returns_the_handle_and_council_settles_under_it(flow_app: Test
         assert _snapshot(flow_app, row["handle"]).owner.parent_handle == handle
     assert run["result"]["synthesizer"] in {row["handle"] for row in calls}
     assert len(run["result"]["members"]) == 3
+    # The caller reads only the answer: it names each member and the synthesis.
+    attribution = run["result"]["answer"].split("\n\nMembers:\n", 1)[1].splitlines()
+    assert len(attribution) == 4 and attribution[-1].startswith("- synthesis")
     # The members ran together in one gather, so they share the first one's invocation;
     # the synthesizer ran on its own.
     synthesizer = run["result"]["synthesizer"]
