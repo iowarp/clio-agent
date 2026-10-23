@@ -1,16 +1,20 @@
-"""Spend: tokens and cost by model, summed from the transcript itself.
+"""Spend: tokens and cost by model, from the sessions' own rollups.
 
-Every assistant message already records the tokens and cost of its turn and
-the model that ran it (``metadata.agent_runtime.model``). Summing those gives
-spend by account, by model, by session and by session tree with no store of
-its own, and it covers accounts with no balance endpoint and local models
-(their "tokens served").
+Each session records its tokens and cost per ``account/model`` as its turns
+finish (``Session.usage_by_model``, written with the session's totals). Summing
+those gives spend by account, by model, by session and by session tree without
+reading a transcript, and covers accounts with no balance endpoint and local
+models (their "tokens served").
+
+A session from before the per-model rollup has only its totals; those are
+counted under the model the session was pinned to (``unknown`` when none), and
+the report says how many sessions were counted that way.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -29,17 +33,16 @@ class Spend:
     turns_without_cost: int = 0
     turns: int = 0
 
-    def add(self, tokens: Mapping[str, Any], cost: Any) -> None:
-        self.tokens_input += int(tokens.get("input") or 0)
-        self.tokens_cached += int(tokens.get("cache_read") or 0) + int(
-            tokens.get("cache_write") or 0
+    @classmethod
+    def from_row(cls, row: Mapping[str, Any]) -> "Spend":
+        return cls(
+            tokens_input=int(row.get("tokens_input") or 0),
+            tokens_cached=int(row.get("tokens_cached") or 0),
+            tokens_output=int(row.get("tokens_output") or 0),
+            cost_usd=float(row.get("cost_usd") or 0.0),
+            turns_without_cost=int(row.get("turns_without_cost") or 0),
+            turns=int(row.get("turns") or 0),
         )
-        self.tokens_output += int(tokens.get("output") or 0)
-        if isinstance(cost, int | float) and not isinstance(cost, bool):
-            self.cost_usd += float(cost)
-        else:
-            self.turns_without_cost += 1
-        self.turns += 1
 
     def merge(self, other: "Spend") -> None:
         self.tokens_input += other.tokens_input
@@ -57,45 +60,62 @@ class Spend:
         return {**asdict(self), "tokens": self.tokens, "cost_usd": round(self.cost_usd, 6)}
 
 
-def _field(message: Any, name: str) -> Any:
-    return message.get(name) if isinstance(message, Mapping) else getattr(message, name, None)
+@dataclass
+class SpendReport:
+    """Spend per model over some sessions."""
+
+    by_model: dict[str, Spend]
+    #: Sessions from before the per-model rollup, counted under their pinned model.
+    estimated_sessions: list[str] = field(default_factory=list)
 
 
-def message_model_ref(message: Any) -> str:
-    """``account/model`` of the model that produced an assistant message, or ``""``."""
+def session_spend(session: Any) -> tuple[dict[str, Spend], bool]:
+    """``(spend per model, estimated)`` for one session."""
 
-    metadata = _field(message, "metadata")
-    runtime = metadata.get("agent_runtime") if isinstance(metadata, Mapping) else None
-    model = runtime.get("model") if isinstance(runtime, Mapping) else None
-    if not isinstance(model, Mapping):
-        return ""
-    provider, model_id = str(model.get("provider_id") or ""), str(model.get("model_id") or "")
-    return f"{provider}/{model_id}" if provider and model_id else ""
+    rows = getattr(session, "usage_by_model", None) or {}
+    if rows:
+        return {ref: Spend.from_row(row) for ref, row in rows.items()}, False
+    tokens_in = int(getattr(session, "tokens_input", 0) or 0)
+    tokens_out = int(getattr(session, "tokens_output", 0) or 0)
+    if not (tokens_in or tokens_out):
+        return {}, False
+    model = dict(getattr(session, "model", None) or {})
+    ref = (
+        f"{model['provider_id']}/{model['model_id']}"
+        if model.get("provider_id") and model.get("model_id")
+        else "unknown/unknown"
+    )
+    known = bool(getattr(session, "cost_known", False))
+    return {
+        ref: Spend(
+            tokens_input=tokens_in,
+            tokens_output=tokens_out,
+            cost_usd=float(getattr(session, "cost_usd", 0.0) or 0.0) if known else 0.0,
+            turns_without_cost=0 if known else 1,
+            turns=1,
+        )
+    }, True
 
 
-def spend_by_model(messages: Iterable[Any]) -> dict[str, Spend]:
-    """Spend per ``account/model`` over ``messages`` (assistant turns only)."""
+def sum_sessions(sessions: Iterable[Any]) -> SpendReport:
+    """Spend per model over ``sessions``."""
 
     totals: dict[str, Spend] = {}
-    for message in messages:
-        if _field(message, "role") != "assistant":
-            continue
-        tokens = _field(message, "tokens")
-        if hasattr(tokens, "model_dump"):
-            tokens = tokens.model_dump()
-        if not isinstance(tokens, Mapping):
-            continue
-        ref = message_model_ref(message) or "unknown/unknown"
-        totals.setdefault(ref, Spend()).add(tokens, _field(message, "cost_usd"))
-    return totals
+    estimated: list[str] = []
+    for session in sessions:
+        per_model, guessed = session_spend(session)
+        if guessed:
+            estimated.append(str(getattr(session, "id", "")))
+        for ref, spend in per_model.items():
+            totals.setdefault(ref, Spend()).merge(spend)
+    return SpendReport(totals, estimated)
 
 
 def session_tree(app: "FastAPI", root_sid: str) -> list[str]:
     """``root_sid`` and every session spawned beneath it."""
 
-    sessions = app.state.sessions
     children: dict[str, list[str]] = {}
-    for session in sessions.list():
+    for session in app.state.sessions.list():
         if session.parent_session_id:
             children.setdefault(session.parent_session_id, []).append(session.id)
     tree, frontier = [], [root_sid]
@@ -106,72 +126,17 @@ def session_tree(app: "FastAPI", root_sid: str) -> list[str]:
     return tree
 
 
-def _session_messages(app: "FastAPI", sid: str) -> list[Any]:
-    """A session's messages, read without loading it into the resident set."""
-
-    ledgers = app.state.messages
-    resident = ledgers.get_if_resident(sid) if hasattr(ledgers, "get_if_resident") else None
-    if resident is not None:
-        return list(resident)
-    if not hasattr(ledgers, "get_if_resident"):
-        return list(ledgers.get(sid, []))
-    from clio_agent.gact.transcript_projection import materialize_ledger  # noqa: PLC0415
-
-    return list(materialize_ledger(app, sid) or [])
-
-
-def _cached_session_spend(app: "FastAPI", session: Any) -> dict[str, Spend]:
-    """Spend per model for one session, recomputed only when the session changed."""
-
-    cache: dict[str, tuple[str, dict[str, Spend]]] | None = getattr(
-        app.state, "fleet_spend_cache", None
-    )
-    if cache is None:
-        cache = app.state.fleet_spend_cache = {}
-    stamp = f"{session.updated_at}|{session.message_count}"
-    hit = cache.get(session.id)
-    if hit is not None and hit[0] == stamp:
-        return hit[1]
-    totals = spend_by_model(_session_messages(app, session.id))
-    cache[session.id] = (stamp, totals)
-    return totals
-
-
-@dataclass
-class SpendReport:
-    """Spend per model over some sessions, and the sessions that could not be read."""
-
-    by_model: dict[str, Spend]
-    unreadable_sessions: list[str]
-
-
-def _sum(app: "FastAPI", sessions: Iterable[Any]) -> SpendReport:
-    from clio_agent.gact.messages import LedgerReadError  # noqa: PLC0415
-
-    totals: dict[str, Spend] = {}
-    unreadable: list[str] = []
-    for session in sessions:
-        try:
-            per_session = _cached_session_spend(app, session)
-        except LedgerReadError:
-            unreadable.append(session.id)
-            continue
-        for ref, spend in per_session.items():
-            totals.setdefault(ref, Spend()).merge(spend)
-    return SpendReport(totals, unreadable)
-
-
 def tree_spend(app: "FastAPI", root_sid: str) -> SpendReport:
     """Spend per model over a session and everything it spawned."""
 
     tree = set(session_tree(app, root_sid))
-    return _sum(app, (s for s in app.state.sessions.list() if s.id in tree))
+    return sum_sessions(s for s in app.state.sessions.list() if s.id in tree)
 
 
 def workspace_spend(app: "FastAPI") -> SpendReport:
     """Spend per model over every session this server holds."""
 
-    return _sum(app, app.state.sessions.list())
+    return sum_sessions(app.state.sessions.list())
 
 
 def spend_by_account(by_model: Mapping[str, Spend]) -> dict[str, Spend]:
@@ -186,10 +151,10 @@ def spend_by_account(by_model: Mapping[str, Spend]) -> dict[str, Spend]:
 __all__ = [
     "Spend",
     "SpendReport",
-    "message_model_ref",
+    "session_spend",
     "session_tree",
     "spend_by_account",
-    "spend_by_model",
+    "sum_sessions",
     "tree_spend",
     "workspace_spend",
 ]

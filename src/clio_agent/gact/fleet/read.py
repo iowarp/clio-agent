@@ -58,7 +58,7 @@ class Fleet:
             "accounts": [self.account_wire(account) for account in self.accounts],
             "entries": [entry.to_dict() for entry in self.entries],
             "spend_by_model": {ref: s.to_dict() for ref, s in self.spend.by_model.items()},
-            "unreadable_sessions": self.spend.unreadable_sessions,
+            "estimated_sessions": len(self.spend.estimated_sessions),
         }
 
 

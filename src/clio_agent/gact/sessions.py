@@ -171,6 +171,9 @@ class Session:
     # produced a known cost for this session -- the wire projection serializes
     # cost_usd as null rather than an indistinguishable $0.00 (#775).
     cost_known: bool = False
+    # The same rollup per ``account/model``: ``{ref: {tokens_input, tokens_output,
+    # cost_usd, turns}}`` (the fleet's spend; docs/design/sdk/model-fleet.md).
+    usage_by_model: dict[str, dict[str, Any]] = field(default_factory=dict)
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     # mode controls what the agent can do; edit_mode controls how
     # it proposes changes when it can. Default {edit, diff}.
@@ -230,6 +233,7 @@ class Session:
         wire.pop("creation_digest", None)
         wire.pop("creation_lifecycle_confirmed", None)
         wire.pop("creation_hook_state", None)
+        wire.pop("usage_by_model", None)
         # cost_known is bookkeeping, not part of the wire contract -- it
         # decides whether cost_usd is a real number or null, never rides
         # along itself (#775: no turn ever reporting a cost must read as
@@ -585,6 +589,7 @@ class SessionStore:
         add_tokens_output: int = 0,
         add_cost_usd: Optional[float] = None,
         usage_totals: tuple[int, int, float, bool] | None = None,
+        usage_by_model: Optional[dict[str, dict[str, Any]]] = None,
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
@@ -644,6 +649,8 @@ class SessionStore:
                 sess.cost_known = True
             if usage_totals is not None:
                 sess.tokens_input, sess.tokens_output, sess.cost_usd, sess.cost_known = usage_totals
+            if usage_by_model is not None:
+                sess.usage_by_model = {ref: dict(row) for ref, row in usage_by_model.items()}
             if mode is not None and mode in {"plan", "edit", "architect"}:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:

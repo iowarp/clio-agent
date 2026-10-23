@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from clio_agent.gact.fleet.entries import project_fleet
-from clio_agent.gact.fleet.spend import spend_by_account, spend_by_model
+from clio_agent.gact.fleet.spend import spend_by_account
 from clio_agent.providers.usage import openrouter
 from clio_agent.providers.usage.capture import record_rate_limit_usage
 from clio_agent.providers.usage.readers import (
@@ -226,28 +226,68 @@ def test_openrouter_is_read_with_its_own_key_and_a_failure_keeps_the_value(
     assert snapshot.read_failure == "openrouter_key_http_503"
 
 
-def _assistant(ref: str, tokens: dict[str, int], cost: float | None) -> dict[str, Any]:
-    provider, model = ref.split("/", 1)
-    return {
-        "role": "assistant",
-        "tokens": tokens,
-        "cost_usd": cost,
-        "metadata": {"agent_runtime": {"model": {"provider_id": provider, "model_id": model}}},
-    }
+def test_spend_is_summed_per_model_from_the_session_rollups() -> None:
+    from types import SimpleNamespace
 
+    from clio_agent.gact.fleet.spend import sum_sessions
 
-def test_spend_is_summed_per_model_from_the_transcript() -> None:
-    messages = [
-        {"role": "user", "tokens": {"input": 99}},
-        _assistant("claude_code/haiku", {"input": 10, "cache_read": 100, "output": 5}, None),
-        _assistant("claude_code/haiku", {"input": 1, "output": 1}, None),
-        _assistant("openrouter/x", {"input": 3, "output": 2}, 0.25),
-    ]
-    by_model = spend_by_model(messages)
+    rolled = SimpleNamespace(
+        id="a",
+        usage_by_model={
+            "claude_code/haiku": {
+                "tokens_input": 11,
+                "tokens_cached": 100,
+                "tokens_output": 6,
+                "turns": 2,
+                "turns_without_cost": 2,
+            },
+            "openrouter/x": {"tokens_input": 3, "tokens_output": 2, "cost_usd": 0.25, "turns": 1},
+        },
+    )
+    older = SimpleNamespace(
+        id="b",
+        usage_by_model={},
+        tokens_input=40,
+        tokens_output=2,
+        cost_usd=0.0,
+        cost_known=False,
+        model={"provider_id": "claude_code", "model_id": "haiku"},
+    )
+    idle = SimpleNamespace(id="c", usage_by_model={}, tokens_input=0, tokens_output=0, model={})
+    report = sum_sessions([rolled, older, idle])
 
-    haiku = by_model["claude_code/haiku"]
-    assert (haiku.tokens_input, haiku.tokens_cached, haiku.tokens_output) == (11, 100, 6)
-    assert haiku.turns == 2 and haiku.turns_without_cost == 2
-    by_account = spend_by_account(by_model)
+    haiku = report.by_model["claude_code/haiku"]
+    assert (haiku.tokens_input, haiku.tokens_cached, haiku.tokens_output) == (51, 100, 8)
+    assert haiku.turns == 3 and haiku.turns_without_cost == 3
+    assert report.estimated_sessions == ["b"]
+    by_account = spend_by_account(report.by_model)
     assert by_account["openrouter"].cost_usd == 0.25
-    assert by_account["claude_code"].tokens == 117
+    assert by_account["claude_code"].tokens == 159
+
+
+def test_a_finished_turn_adds_to_the_session_rollup_under_its_model() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.turn_usage import model_usage_after_turn
+
+    state = SimpleNamespace(
+        turn_tokens={"input": 5, "output": 7, "cache_read": 100, "cache_write": 0},
+        turn_cost=0.5,
+        turn_cost_known=True,
+        agent_runtime={"model": {"provider_id": "openrouter", "model_id": "x/y"}},
+    )
+    session = SimpleNamespace(usage_by_model={"openrouter/x/y": {"tokens_input": 1, "turns": 1}})
+
+    rows = model_usage_after_turn(state, session)
+
+    assert rows["openrouter/x/y"] == {
+        "tokens_input": 6,
+        "tokens_cached": 100,
+        "tokens_output": 7,
+        "cost_usd": 0.5,
+        "turns": 2,
+        "turns_without_cost": 0,
+    }
+    assert session.usage_by_model == {"openrouter/x/y": {"tokens_input": 1, "turns": 1}}
+    idle = SimpleNamespace(**{**vars(state), "turn_tokens": {"input": 0, "output": 0}})
+    assert model_usage_after_turn(idle, session) == session.usage_by_model

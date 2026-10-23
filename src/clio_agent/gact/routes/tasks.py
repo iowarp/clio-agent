@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -241,17 +242,23 @@ def register_task_routes(app: FastAPI) -> None:
     async def flow(sid: str, handle: str) -> dict[str, Any]:
         """The flow run checkpointed under this task: the live plan, calls, events, outcome."""
         from clio_agent.flows.run_view import flow_run
+        from clio_agent.gact.fleet.run_usage import call_models, run_spend
 
-        def read() -> dict[str, Any] | None:
+        def read() -> tuple[str, dict[str, Any] | None]:
             task = TaskAccess(app.state.task_history, caller(sid)).require(handle, "read")
-            return flow_run(app.state.task_history, task.handle)
+            run = flow_run(app.state.task_history, task.handle)
+            if run is not None:
+                run["usage"] = {"calls": call_models(app, run["calls"])}
+            return task.owner.session_id, run
 
         try:
-            run = await app.state.task_history.io.run(read)
+            run_session, run = await app.state.task_history.io.run(read)
         except ValueError as error:
             raise HTTPException(404, str(error)) from error
         if run is None:
             raise HTTPException(404, f"No flow run is recorded under {handle}")
+        # Spend reads transcripts: off the task history's lane.
+        run["usage"].update(await asyncio.to_thread(run_spend, app, run_session))
         return run
 
     @app.get("/v1/sessions/{sid}/tasks/mailbox")

@@ -80,12 +80,19 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
             for (member, view), result in zip(pairs, views, strict=True)
         ]
         handles = [result.handle for result in views]
+        # The model each member was asked to run on ("" for its own choice or this run's).
+        asked = {"member_models": [call.model for call in calls]} if any(models) else {}
         if self.synthesizer or self.synthesizer_model:
             final = await ctx.call(
                 self.synthesizer or "self",
                 {"question": text, "views": labelled},
                 model=self.synthesizer_model,
             )
-            return {"answer": final.answer, "members": handles, "synthesizer": final.handle}
+            return {
+                "answer": final.answer,
+                "members": handles,
+                "synthesizer": final.handle,
+                **asked,
+            }
         synthesis = await ctx.step(self._synthesis, text, labelled)
-        return {"answer": synthesis["answer"], "members": handles}
+        return {"answer": synthesis["answer"], "members": handles, **asked}

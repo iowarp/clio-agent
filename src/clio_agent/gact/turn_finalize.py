@@ -47,7 +47,7 @@ from clio_agent.gact.tool_result_reconcile import reconcile_tool_result_text
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
-from clio_agent.gact.turn_usage import context_usage_metadata_patch
+from clio_agent.gact.turn_usage import context_usage_metadata_patch, model_usage_after_turn
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -417,6 +417,7 @@ def publish_finalized_turn(
             current_session.cost_usd + (state.turn_cost if state.turn_cost_known else 0.0),
             current_session.cost_known or state.turn_cost_known,
         )
+        state.publication_model_usage = model_usage_after_turn(state, current_session)
     publication_step(
         steps,
         "session_projection",
@@ -424,6 +425,7 @@ def publish_finalized_turn(
             state.sid,
             message_count=len(state.app.state.messages.get(state.sid, [])),
             usage_totals=state.publication_usage,
+            usage_by_model=state.publication_model_usage,
             metadata_patch=metadata_patch,
         ),
         retry=True,

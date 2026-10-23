@@ -6,9 +6,11 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.fleet.child_model import caller_model
 from clio_agent.gact.fleet.guard import set_delegation_allowed
 from clio_agent.gact.fleet.read import read_fleet
 from clio_agent.gact.fleet.session_check import entry_fit, session_requirements
+from clio_agent.gact.fleet.spend import tree_spend
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 
@@ -26,6 +28,18 @@ def register_fleet_routes(app: FastAPI) -> None:
         reading = await read_fleet(app, refresh=refresh)
         wire = reading.to_wire()
         found = session_requirements(app, session) if session else None
+        stored = app.state.sessions.get(session) if session else None
+        if stored is not None:
+            # The account the conversation runs on, and what it and the work it
+            # started spent per model: the readout under the chat box and a run's
+            # railroad summary.
+            wire["session"] = {
+                "id": session,
+                "model": caller_model(app, stored),
+                "spend_by_model": {
+                    ref: s.to_dict() for ref, s in tree_spend(app, session).by_model.items()
+                },
+            }
         if found is not None:
             fit = entry_fit(reading.entries, *found)
             wire["requires"] = found[0].to_dict()

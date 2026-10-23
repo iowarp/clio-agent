@@ -242,6 +242,8 @@ class TurnState:
     cancelled_turn: bool = False
     publication_steps: set[str] = field(default_factory=set)
     publication_usage: tuple[int, int, float, bool] | None = None
+    #: The session's per-model rollup after this turn (set once, so a retried flush is exact).
+    publication_model_usage: dict[str, dict[str, Any]] | None = None
     assistant_metadata: dict[str, Any] = field(default_factory=dict)
 
 
