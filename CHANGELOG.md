@@ -6,10 +6,17 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.5-beta.8] - 2026-10-20
+## [0.9.5-beta.8] - 2026-10-21
 
 ### Added
 
+- Observe, wait for and control background work through shared task handles.
+  Inspect retained results, resume interrupted assignments and exchange authorized
+  session messages, including queries over a selected observation period.
+- Use an Endpoint's installed NDP streaming_v2 runtime to capture and continue
+  authorized Kafka observations without requiring custom Endpoint stream routes.
+- Inspect the assembled context by source and prompt section, with loaded skill
+  instructions separated from their discovery descriptions.
 - Connect National Data Platform datasets, select resources, filter publishers and
   sign in with the public device flow. Connect existing Endpoints by direct URL
   or saved SSH profile; query operations and retain bounded stream captures.
@@ -23,9 +30,14 @@ TUI/HTTP surface aren't tracked here.
   Unlimited. Show model context limits and support filtering by context size.
 - Present one navigable attention tray for permissions and questions, retain draft
   answers, and submit required question bundles together.
+- Add details beside individual choices in a bundled question without losing the
+  selected options or saved answer drafts.
 
 ### Changed
 
+- Keep Session and Work in separate rails, with section order and visibility in
+  Customize. Simplify file headers and preserve temporary navigation previews.
+- Pin the published frontend, agent packs and schemas releases for this beta.
 - Keep additional permitted folders visible in Files. Track hashes and versions
   for files used or written; request approval before accessing external folders,
   update grants and continue after access is effective.
@@ -42,6 +54,8 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Use CLIO Kit 2.11.0 for valid typed statistical distribution results. Keep NDP
+  catalog browsing independent of optional MCP component installation.
 - Reuse goal work clients across iterations and close checker-owned clients on
   success, failure or cancellation. Refresh credentials without leaking pools.
 - Report waiting, reasoning and goal-judging activity; preserve steering order and

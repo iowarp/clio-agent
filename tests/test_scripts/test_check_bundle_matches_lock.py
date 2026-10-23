@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import platform
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from types import ModuleType
 from urllib.parse import unquote, urlparse
 
 import pytest
+from packaging.markers import default_environment
 from packaging.tags import cpython_tags, mac_platforms
 from packaging.utils import parse_wheel_filename
 
@@ -39,6 +41,63 @@ def _load_module() -> ModuleType:
 
 
 cbl = _load_module()
+
+
+def test_standalone_resolution_entry_point_needs_no_site_packages() -> None:
+    """The bare-interpreter CI resolution command must import without runtime dependencies."""
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", str(SCRIPT), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--resolve" in result.stdout
+
+
+@pytest.mark.parametrize("python_version", ["3.12.12", "3.13.9", "3.14.8", "3.15.0"])
+@pytest.mark.parametrize("platform", ["linux", "win32", "darwin"])
+def test_real_lock_selects_the_runtime_python_fork(python_version: str, platform: str) -> None:
+    """Python 3.14 must not be compared with the Python 3.15 beartype fork."""
+    environment = dict(default_environment())
+    environment.update(python_full_version=python_version, sys_platform=platform)
+    locked = cbl.load_lock_versions(REPO_ROOT / "uv.lock", environment)
+    expected = "0.23.1" if python_version.startswith("3.15.") else "0.22.5"
+    assert locked["beartype"] == expected
+    wrong = "0.22.5" if expected == "0.23.1" else "0.23.1"
+    assert cbl.find_drift(locked, {"beartype": expected}, {"beartype"}) == []
+    assert cbl.find_drift(locked, {"beartype": wrong}, {"beartype"}) == [
+        ("beartype", expected, wrong)
+    ]
+
+
+def test_lock_rejects_ambiguous_active_versions(tmp_path: Path) -> None:
+    """A malformed lock must fail rather than silently retaining its last entry."""
+    lock = tmp_path / "uv.lock"
+    lock.write_text(
+        '[[package]]\nname="example"\nversion="1.0"\n[[package]]\nname="example"\nversion="2.0"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="selects both 1.0 and 2.0"):
+        cbl.load_lock_versions(lock)
+
+
+def test_runtime_markers_come_from_the_requested_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real isolated interpreter supplies its own PEP 508 marker environment."""
+    monkeypatch.setattr(platform, "machine", lambda: "build-host-only")
+    observed = cbl.load_runtime_markers(Path(sys.executable))
+    assert observed["python_full_version"] == platform.python_version()
+    assert observed["sys_platform"] == sys.platform
+    assert observed["platform_machine"] != "build-host-only"
+
+
+def test_runtime_marker_probe_does_not_fall_back_to_the_host(tmp_path: Path) -> None:
+    """An unavailable target must fail instead of validating against host markers."""
+    with pytest.raises(RuntimeError, match="Bundled marker probe failed"):
+        cbl.load_runtime_markers(tmp_path / "missing-python")
 
 
 @pytest.mark.parametrize("package_name", ["iowarp-core", "msgspec"])
@@ -205,7 +264,8 @@ def test_verify_runtime_reports_named_packages_and_fails_on_drift(
 ) -> None:
     """The verifier prints the named packages and a drift table, exiting 1."""
     monkeypatch.setattr(cbl, "verify_product_release", lambda _python, _project: None)
-    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock: {"click": "8.3.3"})
+    monkeypatch.setattr(cbl, "load_runtime_markers", lambda _python: default_environment())
+    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock, _environment: {"click": "8.3.3"})
     monkeypatch.setattr(cbl, "load_bundle_scope", lambda _p, _e: {"click"})
     monkeypatch.setattr(
         cbl, "load_installed_versions", lambda _py: {"click": "8.5.0", "pytz": "2026.4"}
@@ -224,7 +284,8 @@ def test_verify_runtime_passes_on_exact_install(
     """Zero drift exits 0 with an OK line."""
     monkeypatch.setattr(cbl, "verify_product_release", lambda _python, _project: None)
     versions = {"click": "8.3.3", "clio-kit": "2.10.6", "iowarp-core": "2.2.1"}
-    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock: versions)
+    monkeypatch.setattr(cbl, "load_runtime_markers", lambda _python: default_environment())
+    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock, _environment: versions)
     monkeypatch.setattr(cbl, "load_bundle_scope", lambda _p, _e: set(versions))
     monkeypatch.setattr(cbl, "load_installed_versions", lambda _py: dict(versions))
     assert cbl.verify_runtime(tmp_path / "python", tmp_path / "uv.lock", tmp_path) == 0
@@ -256,7 +317,7 @@ def test_ci_resolves_the_bundle_install_set_on_every_pr() -> None:
 
 
 def test_user_updatable_components_match_the_runtime_registry() -> None:
-    """The stdlib-only script's exception list IS the runtime's updatable set."""
+    """The validator's exception list IS the runtime's updatable set."""
     from clio_agent.providers.components.registry import USER_UPDATABLE_COMPONENTS
 
     assert cbl.USER_UPDATABLE_COMPONENTS == USER_UPDATABLE_COMPONENTS
@@ -305,7 +366,8 @@ def test_verify_runtime_names_user_updated_components_and_passes(
     """A runtime whose SDK was updated in place still verifies, and says so by name."""
     monkeypatch.setattr(cbl, "verify_product_release", lambda _python, _project: None)
     locked = {"click": "8.3.3", "openai-codex-cli-bin": "0.157.1"}
-    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock: locked)
+    monkeypatch.setattr(cbl, "load_runtime_markers", lambda _python: default_environment())
+    monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock, _environment: locked)
     monkeypatch.setattr(cbl, "load_bundle_scope", lambda _p, _e: set(locked))
     monkeypatch.setattr(
         cbl,

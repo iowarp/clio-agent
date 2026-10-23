@@ -1,21 +1,20 @@
-"""Read-only NDP discovery using clio-kit's existing science catalog client."""
+"""Read-only NDP discovery with exact catalog and resource identities."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import json
 import os
 import re
 import threading
-from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
 from pydantic import Field, field_validator
 
+from clio_agent.gact.storage import ndp_discovery_client as catalog_client
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_ckan import PUBLIC_CATALOG_URL, NDPCkanCatalog, catalog_description
 
@@ -91,21 +90,6 @@ class NDPSelection(StorageModel):
     dataset: NDPDataset
 
 
-@lru_cache(maxsize=1)
-def _catalog_module() -> Any:
-    # The client ships as clio-kit data rather than an importable dependency. Load
-    # that pinned implementation, without modifying sys.path or starting an MCP.
-    from clio_kit import get_servers_path
-
-    path = get_servers_path() / "ndp" / "src" / "ndp_mcp" / "server.py"
-    spec = importlib.util.spec_from_file_location("clio_ndp_catalog", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("This CLIO installation is missing its NDP science client")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 class NDPCatalog:
     """Adapt existing science discovery to saved-account and selected-source custody."""
 
@@ -132,7 +116,7 @@ class NDPCatalog:
             ):
                 raise ValueError("Authenticated NDP Endpoints require HTTPS")
             return endpoints
-        client = _catalog_module().NDPClient()
+        client = catalog_client.NDPClient()
         return [
             NDPEndpoint(
                 id="ndp",
@@ -203,15 +187,14 @@ class NDPCatalog:
                     )
                 continue
             try:
-                client = _catalog_module().NDPClient(base_url=endpoint.url)
-                client.max_retries = 1
+                client = catalog_client.NDPClient(base_url=endpoint.url)
                 client.timeout = httpx.Timeout(15, connect=5)
                 if endpoint.catalog_url:
                     records, count = self._public_catalog.search(
                         endpoint.catalog_url, query, organization, offset, limit
                     )
                     rows = [
-                        _catalog_module().Dataset(
+                        catalog_client.Dataset(
                             **{
                                 **record,
                                 "notes": record.get("notes") or record.get("description"),
@@ -332,8 +315,7 @@ class NDPCatalog:
             raise ValueError("Choose a configured NDP Endpoint")
         organizations: list[dict[str, str]] = []
         for endpoint in endpoints:
-            client = _catalog_module().NDPClient(base_url=endpoint.url)
-            client.max_retries = 1
+            client = catalog_client.NDPClient(base_url=endpoint.url)
             client.timeout = httpx.Timeout(15, connect=5)
             try:
                 names = (

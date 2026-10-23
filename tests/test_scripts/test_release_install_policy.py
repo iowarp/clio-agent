@@ -8,7 +8,9 @@ LiteLLM wheel stays exact.
 from __future__ import annotations
 
 import ast
+import json
 import os
+import re
 import shutil
 import subprocess
 import tomllib
@@ -193,7 +195,7 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert '"$target_goarch" == "$(go env GOHOSTARCH)"' in tui_builder
     assert '"$OUT" version' in tui_builder
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
-    assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
+    assert 'release_version="${RELEASE_TAG#v}"' in bundles
     assert "config.version = tauriVersion" in bundles
     assert "`${maintenance[1]}+${maintenance[2]}`" in bundles
     assert "`${beta[1]}-${beta[2]}`" in bundles
@@ -429,7 +431,7 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         if any("github_release.py ensure" in str(step.get("run", "")) for step in job["steps"])
     ]
     assert creators == ["release"]
-    assert jobs["release"]["if"] == "github.event_name == 'push'"
+    assert jobs["release"]["if"] == "github.event_name == 'push' || inputs.rebuild_bundled"
 
     # Every job that uploads waits for the creator (no concurrent create race).
     uploaders = [
@@ -477,6 +479,73 @@ def test_release_is_a_draft_until_release_check_publishes_it() -> None:
         or "--draft=false" in str(step.get("run", ""))
     ]
     assert publishers == [("release-check", order[3])]
+
+
+@pytest.mark.parametrize(
+    ("is_draft", "assets", "allowed"),
+    [
+        (True, [], True),
+        (True, ["CLIO.Desktop_0.9.5-beta.8_amd64.deb"], True),
+        (True, ["CLIO.Desktop_0.9.5-beta.8_amd64-bundled.deb"], False),
+        (False, [], False),
+    ],
+)
+def test_bundle_repair_refuses_published_or_existing_bundled_assets(
+    is_draft: bool, assets: list[str], allowed: bool
+) -> None:
+    """Execute the actual repair guard so publication and asset immutability stay enforced."""
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    run = workflow["jobs"]["release"]["steps"][1]["run"]
+    match = re.search(r"jq -e '(.*?)' release.json", run)
+    assert match is not None
+    jq = shutil.which("jq")
+    assert jq is not None, "The release-policy tests require jq, as hosted release runners do"
+    result = subprocess.run(
+        [jq, "-e", match[1]],
+        input=json.dumps({"isDraft": is_draft, "assets": [{"name": name} for name in assets]}),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert (result.returncode == 0) == allowed, result.stderr
+
+
+def test_bundle_repair_keeps_product_source_frozen_and_selects_only_missing_platforms() -> None:
+    """Run the matrix projection and inspect checkout/upload boundaries for immutable repair."""
+    workflow = yaml.safe_load(_text(".github/workflows/clio-bundles.yml"))
+    release = workflow["jobs"]["release"]
+    select = next(step["run"] for step in release["steps"] if step.get("id") == "matrix")
+    match = re.search(r"value=\$\(jq -c '(.*?)' \\", select, flags=re.DOTALL)
+    assert match is not None
+    jq = shutil.which("jq")
+    assert jq is not None
+    result = subprocess.run(
+        [jq, "-c", match[1], str(ROOT / ".github/desktop-bundle-matrix.json")],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    matrix = json.loads(result.stdout)
+    expected = {"x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"}
+    assert matrix["variant"] == ["bundled"]
+    assert set(matrix["target"]) == expected
+    assert {entry["target"] for entry in matrix["include"]} == expected
+    desktop = workflow["jobs"]["desktop"]
+    assert desktop["steps"][0]["with"]["ref"] == "${{ env.RELEASE_TAG }}"
+    tooling = desktop["steps"][1]
+    assert tooling["with"]["ref"] == "${{ github.sha }}"
+    assert tooling["with"]["path"] == ".release-operations"
+    assert "--project" in next(
+        step["run"]
+        for step in desktop["steps"]
+        if step.get("name") == "Verify bundled runtime matches uv.lock"
+    )
+    upload = desktop["steps"][-1]["run"]
+    assert 'gh release upload "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY"' in upload
+    assert "--clobber" not in upload
 
 
 def test_release_macos_gate_can_read_and_recheck_draft_assets() -> None:

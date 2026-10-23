@@ -63,11 +63,13 @@ def test_every_builtin_row_declares_domain() -> None:
 
 
 def test_gateway_builtins_carry_gateway_description_and_schema() -> None:
-    """The 4 static fs/shell rows get their schema from the gateway's own MCP listing."""
+    """Static fs/shell rows get their schema from the gateway's own MCP listing."""
 
     rows = {row.name: row for row in _rows()}
     for name, expected_domain, expected_property in (
         ("fs_read_file", "workspace", "filepath"),
+        ("fs_list_directory", "workspace", "path"),
+        ("fs_search_text", "workspace", "query"),
         ("fs_write_file", "workspace", "filepath"),
         ("fs_edit_file", "workspace", "old_string"),
         ("shell_bash", "shell", "command"),

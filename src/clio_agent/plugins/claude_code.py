@@ -14,8 +14,9 @@ special treatment. The mapping:
   equivalent is reported with a typed reason. Other clients' hook files
   (``codex.json``, ``opencode.js``) are ignored.
 * ``agents/*.md`` become defined subagents. Claude Code tool names map to CLIO
-  tools; an unmappable tool is a typed import error. A ``model:`` pin becomes a
-  model preference, not a requirement.
+  tools; an unmappable tool is a typed import error, and a mapping that cannot
+  carry the original tool's full behavior is a typed ``tool_mapped_lossy``
+  warning. A ``model:`` pin becomes a model preference, not a requirement.
 """
 
 from __future__ import annotations
@@ -42,8 +43,8 @@ from clio_agent.sdk.versions import PluginRef, VersionRangeError, valid_plugin_i
 #: Claude Code tool name -> (CLIO tool names, the plugin that provides them).
 TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
     "Read": (("fs_read_file",), "workspace"),
-    "Glob": (("fs_glob",), "workspace"),
-    "Grep": (("fs_grep",), "workspace"),
+    "Glob": (("fs_list_directory",), "workspace"),
+    "Grep": (("fs_search_text",), "workspace"),
     "Edit": (("fs_edit_file",), "workspace"),
     "MultiEdit": (("fs_edit_file",), "workspace"),
     "Write": (("fs_write_file",), "workspace"),
@@ -52,6 +53,15 @@ TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
     "WebSearch": (("web_search",), "web"),
     "Task": (("spawn_agent_task",), "delegation"),
     "Agent": (("spawn_agent_task",), "delegation"),
+}
+
+#: Claude Code tools whose CLIO counterpart covers only part of their behavior. Each
+#: use is reported as a ``tool_mapped_lossy`` warning naming what the import loses.
+LOSSY_TOOL_MAP: dict[str, str] = {
+    "Glob": "Glob matches paths recursively by pattern; fs_list_directory lists one "
+    "folder's immediate entries (fs_search_text's file_glob narrows files by pattern)",
+    "Grep": "Grep matches regular expressions with output modes; fs_search_text "
+    "matches literal text and returns bounded line-numbered context",
 }
 
 #: Claude Code hook event -> CLIO hook event. Others are reported as unmapped.
@@ -155,6 +165,17 @@ def map_matcher(matcher: str) -> tuple[str, list[str]]:
     return "|".join(re.escape(name) for name in names), unmapped
 
 
+def lossy_diagnostic(tokens: list[str], where: str, plugin: str) -> list[Diagnostic]:
+    """A ``tool_mapped_lossy`` warning when ``tokens`` name a partially mapped tool."""
+
+    lossy = [token for token in dict.fromkeys(tokens) if token in LOSSY_TOOL_MAP]
+    if not lossy:
+        return []
+    detail = "; ".join(LOSSY_TOOL_MAP[token] for token in lossy)
+    message = f"{where} maps {', '.join(lossy)} to CLIO tools that differ: {detail}"
+    return [Diagnostic("warning", "tool_mapped_lossy", message, plugin)]
+
+
 def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic], list[Path]]:
     path = root / "hooks" / "hooks.json"
     if not path.is_file():
@@ -184,7 +205,10 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
                 # Its matcher names commands (``plugin:command``), not tools: kept as written.
                 pattern, unmapped = str(group.get("matcher") or "").strip(), list[str]()
             else:
-                pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
+                matcher = str(group.get("matcher") or "")
+                pattern, unmapped = map_matcher(matcher)
+                tokens = [token.strip() for token in matcher.split("|")]
+                diagnostics.extend(lossy_diagnostic(tokens, f"{event} matcher", plugin))
             if unmapped:
                 diagnostics.append(
                     Diagnostic(
@@ -267,6 +291,8 @@ def _subagents(root: Path, plugin: str) -> tuple[list[SubagentRecord], list[Diag
                 tool_names.extend(n for n in mapped[0] if n not in tool_names)
                 if mapped[1] not in providers:
                     providers.append(mapped[1])
+            tokens = [str(t).strip() for t in listed]
+            diagnostics.extend(lossy_diagnostic(tokens, f"subagent {name!r}", plugin))
         if unmapped:
             diagnostics.append(
                 Diagnostic(

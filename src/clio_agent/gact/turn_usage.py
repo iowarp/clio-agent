@@ -177,10 +177,23 @@ def context_usage_metadata_patch(
         str(session_agent.get("id") or "") if isinstance(session_agent, Mapping) else ""
     )
     usage_scope = session_agent_id or state.invocation_agent_id or state.active_agent_id or "main"
+    from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
+
+    cfg = getattr(
+        getattr(getattr(state.app, "state", None), "agent", None), "_provider_config", None
+    )
+    model = str(getattr(cfg, "model", "") or "")
+    usage_model = str(state.last_prompt_usage.get("model") or "")
+    window = (
+        _resolve_expert_context_window(cfg)
+        if model and (usage_model == model or usage_model.endswith("/" + model))
+        else 0
+    )
     usage_by_scope[usage_scope] = {
         **state.last_prompt_usage,
         "turn_id": state.turn_id,
         "recorded_at": assistant_msg.updated_at,
+        **({"window_tokens": window} if window else {}),
     }
     return {"context_usage_by_scope": usage_by_scope}
 

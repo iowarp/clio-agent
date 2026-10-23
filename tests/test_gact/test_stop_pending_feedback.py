@@ -19,6 +19,7 @@ from clio_agent.gact.protocol.v3.session import session_to_v3
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.runtime import process_census
 from clio_agent.runtime.status import IntegrationStatus
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -58,12 +59,23 @@ class _BlockedFirstTurn:
 
 
 def _wait_for_feedback(app: Any, sid: str, ids: list[str]) -> None:
-    deadline = time.monotonic() + 5
+    # Wait for delivery and physical release, rather than requiring two cold
+    # Core-backed turns to finish within five seconds on a loaded CI runner.
+    # The shared backstop is a hang detector; completion still requires every
+    # submitted identity to be acknowledged and the reservation to be released.
+    deadline = time.monotonic() + TURN_SIGNAL_BACKSTOP_S
     while time.monotonic() < deadline:
+        cursor = app.state.bus.latest_session_event_id([sid])
         completed = app.state.task_history.acknowledged_notifications(sid)
         if set(ids) <= completed and not app.state.turn_runner.busy(sid):
             return
-        time.sleep(0.01)
+        app.state.bus.wait_for_session_events(
+            [sid],
+            after_event_id=cursor,
+            # Empty admission releases its slot without publishing another
+            # turn event. Recheck that physical boundary even without a wake.
+            timeout_s=min(0.25, max(0, deadline - time.monotonic())),
+        )
     pytest.fail(
         "submitted feedback did not finish automatically after Stop: "
         f"expected={ids!r}, acknowledged={sorted(completed)!r}, "

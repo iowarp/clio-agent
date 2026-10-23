@@ -64,12 +64,12 @@ dependencies = [
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.
     "websockets>=13.0",
-    "clio-kit==2.10.6",  # Reuse the bundled NDP science catalog client on every service.
+    "clio-kit==2.11.0",  # Source-locked scientific MCP components and launcher.
     "fastmcp==4.1.0",  # stable native Tasks integration; adapter contracts are acceptance gates
     "fastmcp-tasks==4.1.0",
     "mcp==2.0.0",  # reviewed native Tasks wire/client contract
     "pydocket==0.26.2",  # fastmcp-tasks 4.1 requires >=0.26; native execution owner
-    "clio-schemas==0.6.0b14",
+    "clio-schemas==0.6.0b15",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -184,7 +184,7 @@ desktop = [
     # from ONE `uv lock` resolution. Before this extra, clio-kit was a
     # hardcoded pin outside the lock and its click>=8.3.3 floor could never
     # be reconciled with the locked click (resolver failure at release time).
-    # Runtime deps of clio-kit's bundled Web Search adapter (web-mcp 2.1.0,
+    # Runtime deps of clio-kit's bundled Web Search adapter (web-mcp 2.1.2,
     # installed from clio-kit's data dir), mirrored from its pyproject so
     # they are locked too. fastmcp, httpx, pydantic and platformdirs are
     # already base deps. When bumping clio-kit, re-mirror this list:
@@ -361,7 +361,3 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp==2.0.0"]
-
-[tool.uv.sources]
-# Develop consumes the merged canonical guidance until the next schema publication.
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "3224a7970d9271b2ff4ca9fe7bec2e227c4eea19" }

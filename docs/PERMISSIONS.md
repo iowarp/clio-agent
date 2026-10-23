@@ -37,7 +37,7 @@ The gate decides in this order:
    `grant_resolver.is_read_only(kind, name, args, context)` returns true when a
    tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
    static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
-   `fs_grep`). A read returns `allow` **before** the mode lock and
+   `fs_search_text`). A read returns `allow` **before** the mode lock and
    records no tool-action permission row, in every `session.mode`. This does not
    grant access to a new folder: a managed built-in file call outside permitted
    roots parks on a `kind="folder_access"` request first.

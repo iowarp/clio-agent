@@ -732,8 +732,17 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
         raise AssertionError(f"unhandled non-spawn skill effect {effect.kind!r}")
     # P1.6b/c #1068: a plan-entering effect records its operator playbook — inline (P1.6b) OR by
     # reference to a saved plan artifact (P1.6c playbook_from_plan) — as the ACTIVE playbook.
+    mode_reminder = ""
     if outcome.mode == "plan":
         plan_reuse.record_plan_playbook(app, session_id, ref, effect.playbook, default_name=ref.id)
+        from clio_agent.gact.plan_mode import plan_mode_reminder  # noqa: PLC0415
+
+        # A skill may enter Plan halfway through a turn, after the turn-start
+        # reminder seam has passed. Initialize its owned directory and tell the
+        # model the actual path now, after variant/playbook metadata is recorded.
+        mode_reminder = plan_mode_reminder(
+            app, session_id, app.state.sessions.get(session_id), force_full=True
+        )
     _emit_skill_effect(app, session_id, ref, outcome, agent_id)
     trace.event(
         "SKILLS", "agent %s skill %s effect %s (%s)", agent_id, ref.id, outcome.kind, outcome.detail
@@ -750,7 +759,8 @@ def maybe_apply_skill_effect(ref: "SkillRef", *, agent_id: str) -> str | None:
             sort_keys=True,
         )
     body = read_skill_body(ref)
-    return f"[skill effect: {outcome.detail}]\n\n# Skill: {ref.id}\n{body}"
+    reminder_block = f"{mode_reminder}\n\n" if mode_reminder else ""
+    return f"[skill effect: {outcome.detail}]\n\n{reminder_block}# Skill: {ref.id}\n{body}"
 
 
 async def apply_spawn_skill_effect(ref: "SkillRef", *, agent_id: str, task: str) -> dict[str, Any]:

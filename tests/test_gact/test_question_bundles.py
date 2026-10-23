@@ -90,6 +90,7 @@ def test_bundle_uses_its_own_fields_when_model_supplies_single_question_defaults
         {"answers": {"view": ANSWERS["view"]}},
         {"answers": "bad"},
         {"answers": ANSWERS | {"view": {"selected_options": ["unknown"]}}},
+        {"answers": ANSWERS | {"view": {"selected_options": ["unknown"], "answer": "Detail"}}},
         {"answers": ANSWERS | {"view": {"answer": "invented"}}},
         {"answers": ANSWERS | {"region": {"answer": "  "}}},
         {"answers": ANSWERS | {"notes": {"answer": 42}}},
@@ -148,6 +149,24 @@ def test_cancel_bundle_cancels_every_question_together(world: tuple[Any, TestCli
     response = client.post(f"/v1/sessions/{sid}/questions/{handle}/cancel")
     assert response.status_code == 200
     assert app.state.task_history.task_snapshot(handle).raw_status == "cancelled"
+
+
+def test_bundle_keeps_optional_details_with_an_offered_choice(
+    world: tuple[Any, TestClient, str],
+) -> None:
+    """Detail text supplements a valid choice even when custom answers are disabled."""
+    app, client, sid = world
+    handle = post_bundle(app, sid)
+    answers = ANSWERS | {"view": {"selected_options": ["table"], "answer": "Keep sortable columns"}}
+    response = client.post(
+        f"/v1/sessions/{sid}/questions/{handle}/answer",
+        json={"metadata": {"answers": answers}},
+    )
+    assert response.status_code == 200, response.text
+    assert "Station table: Keep sortable columns" in response.json()["answer"]
+    task = app.state.task_history.task_snapshot(handle)
+    reply = app.state.task_history.read_content(task.result)
+    assert reply["metadata"]["answers"] == answers
 
 
 def test_composer_cannot_bypass_atomic_bundle_submission(

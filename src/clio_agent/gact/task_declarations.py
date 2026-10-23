@@ -139,6 +139,8 @@ def build_task_tools() -> list[Any]:
         limit: int = 50,
         scope: str = "tree",
         query: str | None = None,
+        message_after: str | None = None,
+        message_before: str | None = None,
     ) -> dict[str, Any]:
         app, caller = _runtime()
         value = await join_off_loop(
@@ -154,6 +156,8 @@ def build_task_tools() -> list[Any]:
             limit,
             scope,
             query,
+            message_after,
+            message_before,
         )
         return _task_read(value)
 
@@ -242,8 +246,10 @@ def build_task_tools() -> list[Any]:
                 "active_only": {"type": "boolean", "default": False},
                 "limit": {"type": "integer", "minimum": 1, "default": 50},
                 "scope": {"type": "string", "enum": ["tree", "authorized"], "default": "tree"},
+                "message_after": dict(_STRING),
+                "message_before": dict(_STRING),
             },
-            "Discover authorized tasks and finite Session/Subagent assignments. query searches readable descriptions and retained transcript text. Follow cursor even after a short or empty page; total=null means the count is unknown. Use returned handles with observe_tasks and send_agent_message. Reading consumes nothing.",
+            "Discover authorized tasks and finite Session/Subagent assignments. query matches words, not semantic similarity. Without message bounds it searches readable labels, descriptions and retained transcript text. Optional message_after (inclusive) and message_before (exclusive) require timezone-aware ISO 8601 timestamps and an increasing window. With either bound, only Session/Subagent assignments with retained messages created in that window match; labels/descriptions are excluded, and query may be omitted. Results use assignment creation order, not relevance or message date; inspect returned handles with observe_tasks for passages and dates. Follow cursor with the same query and bounds even after a short or empty page; total=null means the count is unknown. Reading consumes nothing.",
             read=True,
         ),
         _tool(

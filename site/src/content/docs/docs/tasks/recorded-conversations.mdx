@@ -108,9 +108,11 @@ remembered topic.
 
 Current search matches words in readable descriptions and retained transcript
 text. The model can choose shorter queries or alternate wording, but the backend
-does not perform semantic similarity search. It also has no dedicated date-range
-filter: “the other day” needs checking against returned timestamps and source
-messages. See [Messages](/docs/tasks/messages/#find-an-earlier-conversation-then-address-it-exactly).
+does not perform semantic similarity search. Optional `message_after` and
+`message_before` restrict the discussion dates, using timestamps with a timezone.
+They filter matching messages rather than session creation dates. This is a
+separate capability from the saved known-name example above. See
+[Search a discussion within a date range](/docs/tasks/messages/#search-a-discussion-within-a-date-range).
 
 ## Review the tradeoff, not just the total
 

@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 from clio_agent.gact.infrastructure.models import SshRoute
 from clio_agent.gact.storage.models import StorageModel
 from clio_agent.gact.storage.ndp_catalog import NDPEndpoint
+from clio_agent.gact.storage.ndp_streaming_models import StreamingRuntime
 
 
 class EndpointConnectionInput(StorageModel):
@@ -21,6 +22,7 @@ class EndpointConnectionInput(StorageModel):
     ssh_profile: str = ""
     ssh_route: SshRoute | None = None
     authentication: Literal["none", "ndp"] = "none"
+    streaming_runtime: StreamingRuntime | None = None
 
     @model_validator(mode="after")
     def check_destination(self) -> EndpointConnectionInput:
@@ -65,6 +67,7 @@ class EndpointConnectionUpdate(StorageModel):
     ssh_route: SshRoute | None = None
     authentication: Literal["none", "ndp"] | None = None
     hidden: bool | None = None
+    streaming_runtime: StreamingRuntime | None = None
 
 
 class EndpointRequest(StorageModel):

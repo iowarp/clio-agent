@@ -29,8 +29,8 @@ from clio_agent.gact.hooks.wire import (
 #: ``Write|Edit`` reads the input it was written for.
 CLAUDE_TOOL_NAMES: dict[str, str] = {
     "fs_read_file": "Read",
-    "fs_glob": "Glob",
-    "fs_grep": "Grep",
+    "fs_list_directory": "Glob",
+    "fs_search_text": "Grep",
     "fs_write_file": "Write",
     "fs_edit_file": "Edit",
     "shell_bash": "Bash",
@@ -42,6 +42,13 @@ CLAUDE_TOOL_NAMES: dict[str, str] = {
 #: CLIO tool argument -> the Claude Code ``tool_input`` key. The write tools already use
 #: Claude Code's ``content`` / ``old_string`` / ``new_string`` / ``replace_all``.
 CLAUDE_INPUT_KEYS: dict[str, str] = {"filepath": "file_path"}
+
+#: Per-tool argument renames on top of :data:`CLAUDE_INPUT_KEYS`. ``fs_search_text``
+#: is Grep on the wire: its literal ``query`` is Grep's ``pattern`` and its
+#: ``file_glob`` is Grep's ``glob``. (``query`` stays ``query`` for WebSearch.)
+CLAUDE_TOOL_INPUT_KEYS: dict[str, dict[str, str]] = {
+    "fs_search_text": {"query": "pattern", "file_glob": "glob"},
+}
 
 _DECISIONS = {"allow": "allow", "approve": "allow", "deny": "deny", "block": "deny", "ask": "ask"}
 
@@ -58,9 +65,9 @@ def claude_envelope(envelope: HookEnvelope, *, permission_mode: str = "default")
     }
     if envelope.tool_name is not None:
         body["tool_name"] = CLAUDE_TOOL_NAMES.get(envelope.tool_name, envelope.tool_name)
+        renames = {**CLAUDE_INPUT_KEYS, **CLAUDE_TOOL_INPUT_KEYS.get(envelope.tool_name, {})}
         body["tool_input"] = {
-            CLAUDE_INPUT_KEYS.get(key, key): value
-            for key, value in (envelope.tool_input or {}).items()
+            renames.get(key, key): value for key, value in (envelope.tool_input or {}).items()
         }
         if envelope.hook_event_name == POST_TOOL_USE:
             payload = envelope.payload or {}

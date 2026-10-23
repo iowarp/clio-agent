@@ -11,6 +11,19 @@ from referencing import Registry
 from referencing.exceptions import Unresolvable
 
 from clio_agent.gact.storage.ndp_endpoint_models import EndpointConnection, EndpointRequest
+from clio_agent.gact.storage.ndp_streaming_models import PREFIX, sdk_operations
+
+
+def connection_operations(connection: EndpointConnection) -> list[dict[str, Any]]:
+    """Keep observed HTTP operations distinct from explicitly configured SDK operations."""
+    observed = operations(connection.schema_document)
+    if connection.streaming_runtime is not None:
+        observed = [
+            row
+            for row in observed
+            if row["path"] != "/streams" and not row["path"].startswith("/streams/")
+        ]
+    return [*observed, *sdk_operations(connection.streaming_runtime)]
 
 
 def local_schema(value: Any, document: dict[str, Any], depth: int = 0) -> Any:
@@ -123,15 +136,25 @@ def resolve_request(
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
     """Validate a discovered route and return a same-origin, traversal-free URL."""
     operation = next(
-        (
-            row
-            for row in operations(connection.schema_document)
-            if row["id"] == request.operation_id
-        ),
+        (row for row in connection_operations(connection) if row["id"] == request.operation_id),
         None,
     )
     if operation is None:
         raise ValueError("Refresh Endpoint operations and choose a returned operation ID")
+    if request.operation_id.startswith(PREFIX):
+        if request.body is not None:
+            raise ValueError("SDK stream operations use named parameters, not an HTTP body")
+        validate_value(
+            request.parameters,
+            {
+                "type": "object",
+                "properties": {row["name"]: row["schema"] for row in operation["parameters"]},
+                "required": [row["name"] for row in operation["parameters"] if row["required"]],
+                "additionalProperties": False,
+            },
+            {},
+        )
+        return operation, connection.url, request.parameters
     path, query = operation["path"], {}
     names = set()
     for parameter in operation["parameters"]:
