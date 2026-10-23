@@ -253,3 +253,38 @@ def test_a_repeated_placeholder_word_gets_the_same_bounded_recovery(word: str) -
         if event.type == "delta" and event.delta.type == "tool_call"
     ]
     assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL
+
+
+def _shown(events: list[Any]) -> str:
+    return "".join(e.delta.text for e in events if e.type == "delta" and e.delta.type == "text")
+
+
+def test_a_reply_of_a_repeated_word_is_never_shown_and_never_the_answer() -> None:
+    """Twice is enough at the end of a reply: the turn gets feedback, not that answer."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed = push(turn, "_call_placeholder\n\n") + push(turn, "_call_placeholder")
+    closing = turn.finish("short")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL
+    assert json.loads(calls[0].input)["reason"] == "formatting_only_repetition"
+
+
+def test_a_looping_word_is_held_back_until_it_is_cut() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed: list[Any] = []
+    for _ in range(40):
+        streamed += push(turn, "_tool_calls_placeholder\n\n")
+    assert turn.protocol_error == "formatting_only_repetition"
+    assert _shown(streamed + turn.finish("looped")) == ""
+
+
+def test_words_stream_at_once_and_a_one_word_answer_is_still_an_answer() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    assert _shown(push(turn, "I'll save that ")) == "I'll save that "
+    one = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    held = push(one, "42")
+    assert _shown(held) == ""
+    closing = one.finish("short answer")
+    assert _shown(closing) == "42"
+    assert not [e for e in closing if e.type == "delta" and e.delta.type == "tool_call"]

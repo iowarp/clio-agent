@@ -307,6 +307,7 @@ class _Turn:
         self._splitter = StreamSplitter()
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
+        self._held = ""  # streamed text held back while it could still be non-progress
 
     def handle(self, message: Any) -> list[Any]:
         if self.protocol_error:
@@ -332,9 +333,14 @@ class _Turn:
                 if cutoff is not None:
                     self.protocol_error = "formatting_only_repetition"
                     self.reply = (self.reply + text[:cutoff])[:4096]
+                    self._held = ""  # never shown
                     return out
                 self.reply += text
-                shown = self._splitter.push(text)
+                if self._progress.undecided:
+                    self._held += text
+                    return out
+                shown = self._splitter.push(self._held + text)
+                self._held = ""
                 if shown:
                     out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
             return out
@@ -382,6 +388,11 @@ class _Turn:
             self.protocol_error = "formatting_only_repetition"
             reply = reply[:4096]
             self.fallback = reply
+        if not self.protocol_error and self._progress.only_repeats():
+            # A whole reply of one word repeated (``_call_placeholder`` twice) is not an
+            # answer either; the model gets the same feedback instead of ending the turn.
+            self.protocol_error = "formatting_only_repetition"
+            reply = reply[:4096]
         if not reply.strip():
             raise ServerError(f"claude agent sdk returned empty content (model={self.model})")
         out: list[Any] = []
@@ -389,6 +400,11 @@ class _Turn:
             shown = self._splitter.push(self.fallback)
             if shown:
                 out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+        elif self._held and not self.protocol_error:
+            shown = self._splitter.push(self._held)  # a short reply that never decided
+            if shown:
+                out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
+        self._held = ""
         split = (
             ReplySplit(
                 text="",
