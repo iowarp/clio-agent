@@ -23,7 +23,7 @@ from clio_agent.tools.servers.shell_server import (
 def register_native_shell(root: NativeRoot, work: NativeWork) -> None:
     """Require native execution in both foreground and background modes."""
 
-    @root.server.tool(
+    @root.tool(
         name="bash",
         description=_SHELL_TOOL_DESCRIPTION,
         annotations=_BASH_ANNOTATIONS,
