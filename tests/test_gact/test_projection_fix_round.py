@@ -160,7 +160,7 @@ def test_fork_pending_permission_is_listable_from_its_own_conversation(tmp_path:
             "status": "pending",
             "summary": "Allow the fork to write",
             "created_at": "2026-09-03T00:00:00+00:00",
-            "tool_call": {"tool_name": "fs_apply_edit_write"},
+            "tool_call": {"tool_name": "fs_write_file"},
         }
         listed = client.get(
             f"/v1/sessions/{root.id}/interactions", params={"include_children": True}

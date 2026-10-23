@@ -45,16 +45,4 @@ def _tool_visible_to_model(name: str, tool: Any) -> bool:
     visibility = _tool_ui_metadata(tool).get("visibility")
     if not isinstance(visibility, Sequence) or isinstance(visibility, (str, bytes)):
         return True
-    scopes = {str(item) for item in visibility}
-    if "model" in scopes:
-        return True
-    if "model:plan" in scopes:
-        # Late, module-qualified reference (not ``from ... import``): breaks the
-        # mcp_executor<->tool_ui_metadata import cycle (mcp_executor re-exports
-        # this module's names) AND keeps
-        # ``monkeypatch.setattr(mcp_executor_module, "_active_session_mode", ...)``
-        # (tests/test_tools/test_execution.py) reaching this call.
-        from clio_agent.tools import mcp_executor  # noqa: PLC0415
-
-        return mcp_executor._active_session_mode() == "plan"
-    return False
+    return "model" in {str(item) for item in visibility}

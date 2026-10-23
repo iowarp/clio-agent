@@ -44,7 +44,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 # The catalog write-tagged fs tool (a non-read call that reaches the prompt boundary) and a
 # genuinely-unclassifiable non-read call (writes live behind the OS fence, not a catalog tag).
-_FS_WRITE = "fs_apply_edit_write"
+_FS_WRITE = "fs_write_file"
 _UNCLASSIFIED = "shell.exec"
 _ALL_MODES = ("ask", "auto-edits", "bypass", "ai-review", "spotter-ai")
 

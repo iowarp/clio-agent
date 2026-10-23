@@ -25,7 +25,6 @@ from clio_agent.gact.delegation import (
     _prediction_workflow_state,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
 from clio_agent.gact.messaging import (
     _agent_accepts_images,
     _image_part_summaries,
@@ -182,15 +181,6 @@ async def _apply_turn_prediction(
     # state.turn_tokens / state.turn_cost from the prediction
     # or the per-turn LM history slice (see turn_usage.py).
     roll_up_usage(state, state.pred)
-    state.proposed_diffs = list(getattr(state.pred, "file_diffs", None) or [])
-    if not state.proposed_diffs:
-        # Dynamic tool agents call fs_propose_edit as a TOOL and never set
-        # pred.file_diffs; promote those results so they materialize as
-        # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
-        state.proposed_diffs = _propose_edit_diffs_from_pred(
-            state.pred,
-            state.tools_called,
-        )
     state.nanoagents = list(getattr(state.pred, "nanoagents_spawned", None) or [])
     for req in getattr(state.pred, "permissions_requested", None) or []:
         src = (

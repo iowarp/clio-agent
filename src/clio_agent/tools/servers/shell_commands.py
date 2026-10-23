@@ -29,8 +29,7 @@ SCRIPT_FILE_GUIDANCE = (
     "Write the program to a workspace .py, .mjs or .ps1 file with an available file-writing "
     "tool, or several small shell calls (about 1-2 KB each on Windows), then run that file "
     "with a short command using the prepared runtime arguments. Putting the whole program "
-    "in one here-string, heredoc, -c argument or encoded command still hits launcher limits. "
-    "fs_propose_edit only stages a reviewable diff; it does not write the file."
+    "in one here-string, heredoc, -c argument or encoded command still hits launcher limits."
 )
 
 

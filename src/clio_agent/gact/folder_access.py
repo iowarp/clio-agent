@@ -52,7 +52,7 @@ def bind_folder_gate(app: FastAPI, gate: Callable[..., str]) -> Callable[..., st
 def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
     """Return denied folders for declared built-in path arguments, without reading files."""
     paths: list[tuple[str, bool]] = []
-    if name in {"fs_read_file", "fs_propose_edit", "fs_apply_edit_write"}:
+    if name in {"fs_read_file", "fs_write_file", "fs_edit_file"}:
         value = args.get("filepath")
         if isinstance(value, str) and value:
             paths.append((value, False))

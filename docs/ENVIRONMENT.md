@@ -136,10 +136,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_A2UI_MESSAGES_MAX` | `gact.ledger_retention.a2ui_messages.max` | int | `512` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_FILE_CHANGES_MAX` | `gact.ledger_retention.file_changes.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX` | `gact.ledger_retention.memory_tool_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX` | `gact.ledger_retention.native_delivery_notes.max` | int | `256` | `src/clio_agent/gact/native_delivery_outcome.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_HARD` | `gact.ledger_retention.pending_diffs.hard` | int | `1000` | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_MAX` | `gact.ledger_retention.pending_diffs.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_HARD` | `gact.ledger_retention.permissions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_MAX` | `gact.ledger_retention.permissions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_HARD` | `gact.ledger_retention.shared_tokens.hard` | int | `10000` | `src/clio_agent/gact/runtime/retention.py` |

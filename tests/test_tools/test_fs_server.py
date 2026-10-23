@@ -1,4 +1,4 @@
-"""Tests for filesystem edit tools."""
+"""Tests for the agent's file tools: fs_write_file (Write) and fs_edit_file (Edit)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from clio_agent.tools.execution import (
 from clio_agent.tools.file_policy import FilePolicyError
 from clio_agent.tools.fs_write import write_text_with_policy
 from clio_agent.tools.gateway import _list_tools_sync, _tool_annotations, get_gateway
-from clio_agent.tools.servers.fs_server import apply_edit_write, fs_server, propose_edit
+from clio_agent.tools.servers.fs_server import edit_file, fs_server, write_file
 
 
 def test_fs_tools_declare_expected_annotations_and_catalog_projects_them() -> None:
@@ -25,9 +25,13 @@ def test_fs_tools_declare_expected_annotations_and_catalog_projects_them() -> No
     listed = {t.name: t for t in _list_tools_sync(fs_server)}
     expected = {
         "read_file": ("fs_read_file", {"readOnlyHint": True, "openWorldHint": False}, "read"),
-        "propose_edit": ("fs_propose_edit", {"readOnlyHint": True, "openWorldHint": False}, "read"),
-        "apply_edit_write": (
-            "fs_apply_edit_write",
+        "write_file": (
+            "fs_write_file",
+            {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False},
+            "write",
+        ),
+        "edit_file": (
+            "fs_edit_file",
             {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": False},
             "write",
         ),
@@ -41,42 +45,105 @@ def test_fs_tools_declare_expected_annotations_and_catalog_projects_them() -> No
         assert classification_tags(annotations) == frozenset({tag})
         entry_tags = get_tool_entry(catalog_name).tags
         assert tag in entry_tags
-        # propose_edit stages a diff without touching disk -> read-only, NOT a write.
         if tag == "read":
             assert "write" not in entry_tags
         else:
             assert "read" not in entry_tags
 
 
-def test_propose_edit_allows_new_file_under_write_policy(
+def test_write_file_creates_a_new_file_and_records_the_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
-    target = tmp_path / "new.txt"
+    target = tmp_path / "sub" / "new.txt"
 
-    result = propose_edit(str(target), "hello\n")
-    assert result["applied"] is False
-    assert result["requires_review"] is True
-
-    assert result["path"] == str(target.resolve())
-    assert result["lines_added"] == 1
-    assert result["lines_removed"] == 0
-    assert result["new_content"] == "hello\n"
-    assert "hello" in result["unified_diff"]
-    assert not target.exists()
-
-
-def test_apply_edit_write_allows_new_file_under_write_policy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
-    target = tmp_path / "new.txt"
-
-    result = apply_edit_write(str(target), "hello\n")
+    result = write_file(str(target), "hello\n")
 
     assert result["ok"] is True
+    assert result["created"] is True
     assert result["path"] == str(target.resolve())
     assert target.read_text(encoding="utf-8") == "hello\n"
+    assert result["sha256_before"] == ""
+    assert result["sha256"] == hashlib.sha256(b"hello\n").hexdigest()
+    assert result["lines_added"] == 1
+    assert result["lines_removed"] == 0
+    assert "+hello" in result["unified_diff"]
+
+
+def test_write_file_overwrites_and_reports_both_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "file.txt"
+    target.write_bytes(b"one\n")
+
+    result = write_file(str(target), "two\n")
+
+    assert result["created"] is False
+    assert target.read_bytes() == b"two\n"
+    assert result["sha256_before"] == hashlib.sha256(b"one\n").hexdigest()
+    assert result["sha256"] == hashlib.sha256(b"two\n").hexdigest()
+    assert (result["lines_added"], result["lines_removed"]) == (1, 1)
+    assert "previous_content" not in result  # Undo's copy is captured by GACT, not echoed
+
+
+def test_edit_file_replaces_one_exact_occurrence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "code.py"
+    target.write_bytes(b"x = 1\ny = 2\n")
+
+    result = edit_file(str(target), "y = 2", "y = 3")
+
+    assert result["ok"] is True
+    assert result["created"] is False
+    assert result["replacements"] == 1
+    assert target.read_bytes() == b"x = 1\ny = 3\n"
+    assert "-y = 2" in result["unified_diff"]
+    assert "+y = 3" in result["unified_diff"]
+    assert result["sha256_before"] == hashlib.sha256(b"x = 1\ny = 2\n").hexdigest()
+
+
+def test_edit_file_replace_all(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "code.py"
+    target.write_bytes(b"a a a\n")
+
+    result = edit_file(str(target), "a", "b", replace_all=True)
+
+    assert result["replacements"] == 3
+    assert target.read_bytes() == b"b b b\n"
+
+
+@pytest.mark.parametrize(
+    "setup,old,code",
+    [
+        (b"alpha\n", "beta", "old_string_not_found"),
+        (b"dup\ndup\n", "dup", "old_string_not_unique"),
+        (None, "anything", "file_not_found"),
+        (b"same\n", "", "old_string_empty"),
+        (b"\xff\xfe\x00", "x", "file_not_text"),
+    ],
+)
+def test_edit_file_refusals_are_typed_and_change_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, setup: bytes | None, old: str, code: str
+) -> None:
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "target.txt"
+    if setup is not None:
+        target.write_bytes(setup)
+
+    result = edit_file(str(target), old, "replacement")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == code
+    if setup is None:
+        assert not target.exists()
+    else:
+        assert target.read_bytes() == setup
+    if code == "old_string_not_unique":
+        assert result["error"]["details"]["occurrences"] == 2
 
 
 @pytest.mark.parametrize(
@@ -98,7 +165,7 @@ def test_apply_edit_write_allows_new_file_under_write_policy(
         ("a\n", "a", "@@ -1 +1 @@\n-a\n+a\n\\ No newline at end of file\n"),
     ],
 )
-def test_proposal_diff_has_exact_line_spacing(
+def test_write_diff_has_exact_line_spacing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str, after: str, body: str
 ) -> None:
     """No separator-created blank rows; genuine blanks and EOF changes remain visible."""
@@ -107,13 +174,12 @@ def test_proposal_diff_has_exact_line_spacing(
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     target = tmp_path / "spacing.py"
     target.write_bytes(before.encode())
-    result = propose_edit(str(target), after)
+    result = write_file(str(target), after)
     expected = "--- a/spacing.py\n+++ b/spacing.py\n" + body
     assert result["unified_diff"] == expected
-    assert result["new_content"] == after
-    assert target.read_bytes() == before.encode()
+    assert target.read_bytes() == after.encode()
     view = present_mcp_result(
-        "fs_propose_edit", {"filepath": str(target)}, {"structuredContent": result}
+        "fs_write_file", {"filepath": str(target)}, {"structuredContent": result}
     )
     assert next(block["text"] for block in view["blocks"] if block["type"] == "diff") == expected
     assert result["unified_diff"] == expected
@@ -155,21 +221,21 @@ def test_written_bytes_are_verbatim_never_platform_newline_translated(
     assert target.read_bytes() == crlf.encode("utf-8")
 
 
-def test_apply_edit_write_uses_shared_policy_writer(
+def test_write_file_uses_shared_policy_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     target = tmp_path / "shared.txt"
 
     direct = write_text_with_policy(str(target), "first\n")
-    via_tool = apply_edit_write(str(target), "second\n")
+    via_tool = write_file(str(target), "second\n")
 
     assert direct["path"] == via_tool["path"]
     assert via_tool["ok"] is True
     assert target.read_text(encoding="utf-8") == "second\n"
 
 
-def test_apply_edit_write_rejects_outside_allowed_roots(
+def test_write_tools_reject_outside_allowed_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     allowed = tmp_path / "allowed"
@@ -184,13 +250,17 @@ def test_apply_edit_write_rejects_outside_allowed_roots(
     set_config("tools.file_policy.allowed_roots", [str(allowed)])
 
     with pytest.raises(FilePolicyError) as exc:
-        apply_edit_write(str(outside / "new.txt"), "nope\n")
-
+        write_file(str(outside / "new.txt"), "nope\n")
     assert exc.value.code == "outside_allowed_roots"
     assert not (outside / "new.txt").exists()
 
+    (outside / "old.txt").write_text("keep\n", encoding="utf-8")
+    with pytest.raises(FilePolicyError):
+        edit_file(str(outside / "old.txt"), "keep", "nope")
+    assert (outside / "old.txt").read_text(encoding="utf-8") == "keep\n"
 
-def test_gateway_apply_edit_write_respects_late_fallback_permission_gate(
+
+def test_gateway_write_respects_late_fallback_permission_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
@@ -203,8 +273,8 @@ def test_gateway_apply_edit_write_respects_late_fallback_permission_gate(
             ToolRuntimeHooks(permission_gate=lambda name, _args: seen.append(name) or "allow")
         )
         executor.call_tool(
-            "fs_apply_edit_write",
-            {"filepath": str(target), "new_content": "allowed\n"},
+            "fs_write_file",
+            {"filepath": str(target), "content": "allowed\n"},
         )
         assert target.read_text(encoding="utf-8") == "allowed\n"
 
@@ -213,19 +283,19 @@ def test_gateway_apply_edit_write_respects_late_fallback_permission_gate(
         )
         with pytest.raises(PermissionError, match="denied"):
             executor.call_tool(
-                "fs_apply_edit_write",
-                {"filepath": str(target), "new_content": "denied\n"},
+                "fs_edit_file",
+                {"filepath": str(target), "old_string": "allowed", "new_string": "denied"},
             )
 
         assert target.read_text(encoding="utf-8") == "allowed\n"
-        assert seen == ["fs_apply_edit_write", "fs_apply_edit_write"]
+        assert seen == ["fs_write_file", "fs_edit_file"]
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
 
 def test_write_result_declares_written_path_for_seam_a(tmp_path):
-    """#1247: a DIRECT fs_apply_edit_write call must mint its output. The
+    """#1247: a DIRECT fs_write_file call must mint its output. The
     designation vocabulary deliberately ignores bare ``path`` (input echo),
     so the writer declares the SAME value under the recognized
     ``written_path`` key -- without it, direct tool writes never minted and

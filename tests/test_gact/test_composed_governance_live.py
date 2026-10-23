@@ -96,7 +96,7 @@ def test_plan_lock_denies_write_allows_read() -> None:
     # Reads are NEVER gated: is_read_only fast-allows a declared read tool BEFORE any mode
     # logic, while a tagged write is not read-only (so it reaches the plan lock above).
     assert is_read_only("tool", "fs_read_file", {}, None) is True
-    assert is_read_only("tool", "fs_apply_edit_write", {}, None) is False
+    assert is_read_only("tool", "fs_write_file", {}, None) is False
 
 
 def test_hook_fires_real_subprocess(tmp_path: Path, monkeypatch: Any) -> None:

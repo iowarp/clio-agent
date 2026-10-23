@@ -3,19 +3,17 @@
 This concern owns two adjacent, session-scoped working-set surfaces the
 gact-tui renders side by side:
 
-* **File diffs** -- the pending/applied unified diffs an assistant turn
-  proposed (via the ``propose_edit`` tool). The TUI lists them, then the user
-  explicitly applies or rejects them:
+* **File diffs** -- the record of files the agent changed with ``fs_write_file`` /
+  ``fs_edit_file`` (:mod:`clio_agent.gact.file_changes`). The TUI lists them and
+  offers Undo:
 
-  - ``GET  /v1/sessions/{sid}/diffs`` -- every pending/applied diff row.
-  - ``GET  /v1/sessions/{sid}/messages/{message_id}/diffs`` -- the diffs a
-    specific assistant message produced.
-  - ``POST /v1/sessions/{sid}/diffs/apply`` -- mark selected (or all) pending
-    diffs applied *and* commit them to disk through the workspace + permission
-    boundary; per-path write failures land in ``write_errors`` and a
-    ``file.diff.write_failed`` event without blocking the rest.
-  - ``POST /v1/sessions/{sid}/diffs/reject`` -- mark selected (or all) pending
-    diffs rejected and publish ``file.diff.rejected`` events.
+  - ``GET  /v1/sessions/{sid}/diffs`` -- every recorded change.
+  - ``GET  /v1/sessions/{sid}/messages/{message_id}/diffs`` -- the changes a
+    specific assistant message made.
+  - ``POST /v1/sessions/{sid}/diffs/revert`` -- undo one change (body ``{id}``):
+    restore the previous content, or delete a file the agent created, only while
+    the file is still what the agent wrote
+    (:mod:`clio_agent.gact.file_change_revert`); every refusal is typed.
 
 * **Context files** -- files the user pins into a session's context, plus the
   per-turn context truth frames CLIO records:
@@ -30,12 +28,10 @@ gact-tui renders side by side:
     gated by the destructive-action guard when a row actually matches).
 
 Handlers reach ``app.state`` directly for the live ledgers
-(``pending_diffs`` / ``context_files`` / ``context_frames`` / ``sessions`` /
-``workspaces`` / ``bus``). Two genuinely cross-concern, permission-bearing
-seams travel on :class:`~clio_agent.gact.routes.deps.GactDeps`: the
-diff-to-disk commit (``apply_edit_to_disk``, which enforces the workspace +
-file-policy boundary and records an audit row) and the destructive-action
-guard for context-file deletes. The context-file ledger flush is also threaded
+(``file_changes`` / ``context_files`` / ``context_frames`` / ``sessions`` /
+``workspaces`` / ``bus``). The destructive-action guard for context-file
+deletes travels on :class:`~clio_agent.gact.routes.deps.GactDeps`. The
+context-file ledger flush is also threaded
 through ``deps`` because it has a second owner (session deletion) in
 :mod:`clio_agent.gact.app`. The wire-shaping + path-resolution + path-filter
 helpers are concern-private and live here. This module imports only leaf
@@ -52,10 +48,11 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from clio_agent.gact.diff_ledger import pending_diff_rows
 from clio_agent.gact.events import Event
+from clio_agent.gact.file_change_revert import FileChangeRefusal, revert_file_change
+from clio_agent.gact.file_changes import file_change_rows, file_change_to_wire
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
+from clio_agent.gact.runtime.retention import ledger_guard
 from clio_agent.gact.side_sessions import refuse_side_session_write
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
@@ -67,42 +64,15 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the file-diff + context-file routes on ``app``.
 
     Handlers close over the ``app`` argument (FastAPI's decorators need it) and
-    reach the live ledgers through ``app.state``. The permission-bearing
-    cross-concern seams (``deps.apply_edit_to_disk`` for the diff-to-disk
-    commit, ``deps.guard_direct_destructive_action`` for context-file delete)
-    and the second-owner ledger flush (``deps.flush_context_files``) travel on
-    ``deps``; the wire/path/filter helpers below are concern-private closures.
+    reach the live ledgers through ``app.state``. The destructive-action guard
+    for context-file delete (``deps.guard_direct_destructive_action``) and the
+    second-owner ledger flush (``deps.flush_context_files``) travel on ``deps``;
+    the path helpers below are concern-private closures.
     """
-
-    def _filter_diff_paths(rows: list[dict[str, Any]], paths: list[str]) -> list[dict[str, Any]]:
-        """Narrow pending diffs to a given path allow-list. Empty
-        list (or no param) means "every pending row"."""
-
-        if not paths:
-            return [r for r in rows if r["status"] == "pending"]
-        allow = set(paths)
-        return [r for r in rows if r["path"] in allow and r["status"] == "pending"]
-
-    def _diff_row_to_wire(row: dict[str, Any]) -> dict[str, Any]:
-        """Convert an internal pending-diff row to the GACT file_diff shape."""
-
-        status = str(row.get("status") or "pending")
-        out: dict[str, Any] = {
-            "path": row.get("path", ""),
-            "applied": status == "applied",
-            "status": status,
-        }
-        if row.get("unified_diff") is not None:
-            out["unified_diff"] = row.get("unified_diff")
-        if row.get("part_id"):
-            out["part_id"] = row.get("part_id")
-        if row.get("message_id"):
-            out["message_id"] = row.get("message_id")
-        return out
 
     @app.get("/v1/sessions/{sid}/diffs")
     async def list_session_diffs(sid: str) -> dict[str, Any]:
-        """SPEC §6.6/§6.9 read endpoint for pending/applied file diffs."""
+        """SPEC §6.6/§6.9 read endpoint: the files the agent changed in this session."""
 
         sess = app.state.sessions.get(sid)
         if sess is None:
@@ -116,7 +86,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return {"diffs": [_diff_row_to_wire(row) for row in pending_diff_rows(app, sid)]}
+        return {"diffs": [file_change_to_wire(row) for row in file_change_rows(app, sid)]}
 
     @app.get("/v1/sessions/{sid}/messages/{message_id}/diffs")
     async def list_message_diffs(sid: str, message_id: str) -> dict[str, Any]:
@@ -147,22 +117,20 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         return {
             "diffs": [
-                _diff_row_to_wire(row)
-                for row in pending_diff_rows(app, sid)
+                file_change_to_wire(row)
+                for row in file_change_rows(app, sid)
                 if row.get("message_id") == message_id
             ]
         }
 
-    @app.post("/v1/sessions/{sid}/diffs/apply")
-    async def diffs_apply(sid: str, request: Request) -> dict[str, Any]:
-        """Mark pending diffs as applied + actually write to disk
-        via the fs_apply_edit_write MCP tool.
+    @app.post("/v1/sessions/{sid}/diffs/revert")
+    async def diffs_revert(sid: str, request: Request) -> dict[str, Any]:
+        """Undo one change the agent made. Body: ``{id}`` (the change or its part id).
 
-        Body: ``{paths: [...]}`` (optional). If omitted, every
-        pending diff is applied. Returns ``{applied: [...],
-        write_errors?: {...}}``. iowarp/clio-agent#4: writes are
-        scoped to the session's workspace.root_path; failures
-        per-path go into write_errors but don't block the rest.
+        Returns ``{reverted: <diff row>}``. A refusal is a typed error envelope:
+        ``file_change_not_found`` (404), ``already_reverted`` /
+        ``undo_unavailable`` / ``file_changed_since_write`` (409), or
+        ``path_outside_workspace`` / ``file_policy`` / ``policy_denied`` (403).
         """
 
         sess = app.state.sessions.get(sid)
@@ -177,119 +145,38 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        refuse_side_session_write(sess, "apply proposed edits")
-        body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/apply")
-        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
-
-        with ledger_guard(app):  # #1334: finalize appends from the turn executor
-            rows = app.state.pending_diffs.get(sid, [])
-            targets = _filter_diff_paths(rows, paths)
-        applied: list[str] = []
-        write_errors: dict[str, str] = {}
-        for r in targets:
-            # iowarp/clio-agent#4: actually write to disk if the
-            # row carries a `new_content` field. The
-            # propose_edit-driven path always sets it; legacy/test
-            # diffs that don't get the wire event but no write.
-            new_content = r.get("new_content")
-            if new_content is not None:
-                try:
-                    # Offload the sync write+mint off the event loop: the mint's
-                    # lazy first-access boot fold does unbounded I/O and must never
-                    # run on the loop (finding [9] — RegistryFoldOnLoopError).
-                    await asyncio.to_thread(
-                        deps.apply_edit_to_disk,
-                        path=r["path"],
-                        new_content=new_content,
-                        session=sess,
-                        app=app,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    err = repr(exc)
-                    write_errors[r["path"]] = err
-                    r["status"] = "apply_failed"
-                    # Publish a failure event so the TUI sees the write
-                    # error live (was a silent failure: the response
-                    # body carried write_errors but the TUI's apply-
-                    # button path discards it). file.diff.write_failed
-                    # mirrors file.diff.applied for parity.
-                    app.state.bus.publish(
-                        Event(
-                            type="file.diff.write_failed",
-                            session_id=sid,
-                            payload={
-                                "session_id": sid,
-                                "path": r["path"],
-                                "part_id": r.get("part_id", ""),
-                                "message_id": r.get("message_id", ""),
-                                "error": err,
-                            },
-                        )
-                    )
-                    continue
-            r["status"] = "applied"
-            applied.append(r["path"])
-            app.state.bus.publish(
-                Event(
-                    type="file.diff.applied",
-                    session_id=sid,
-                    payload={
-                        "session_id": sid,
-                        "path": r["path"],
-                        "part_id": r.get("part_id", ""),
-                        "message_id": r.get("message_id", ""),
-                    },
-                )
-            )
-        # #770 C3: apply flips rows to a terminal status; reclaim now-terminal
-        # rows so the per-session bucket does not wait for the next diff append.
-        enforce_list_bound(app, rows, "pending_diffs", session_id=sid)
-        out: dict[str, Any] = {"applied": applied}
-        if write_errors:
-            out["write_errors"] = write_errors
-        return out
-
-    @app.post("/v1/sessions/{sid}/diffs/reject")
-    async def diffs_reject(sid: str, request: Request) -> dict[str, list[str]]:
-        """Mark pending diffs as rejected + publish events."""
-
-        sess = app.state.sessions.get(sid)
-        if sess is None:
+        refuse_side_session_write(sess, "undo a file change")
+        body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/revert")
+        change_id = str(body.get("id") or "").strip()
+        if not change_id:
             raise HTTPException(
-                status_code=404,
+                status_code=422,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        recoverable=False,
+                        error="bad_request",
+                        message="missing required field: id",
+                        details={"field": "id"},
+                        recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             )
-        body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/reject")
-        paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
-
-        with ledger_guard(app):  # #1334: finalize appends from the turn executor
-            rows = app.state.pending_diffs.get(sid, [])
-            targets = _filter_diff_paths(rows, paths)
-        rejected: list[str] = []
-        for r in targets:
-            r["status"] = "rejected"
-            rejected.append(r["path"])
-            app.state.bus.publish(
-                Event(
-                    type="file.diff.rejected",
-                    session_id=sid,
-                    payload={
-                        "session_id": sid,
-                        "path": r["path"],
-                        "part_id": r.get("part_id", ""),
-                        "message_id": r.get("message_id", ""),
-                    },
-                )
-            )
-        # #770 C3: reject flips rows to a terminal status; reclaim them now.
-        enforce_list_bound(app, rows, "pending_diffs", session_id=sid)
-        return {"rejected": rejected}
+        try:
+            # Off the loop: the restore hashes and writes the file and mints its artifact
+            # version, whose first-access fold does unbounded I/O.
+            reverted = await asyncio.to_thread(revert_file_change, app, sess, change_id)
+        except FileChangeRefusal as refusal:
+            raise HTTPException(
+                status_code=refusal.status_code,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=refusal.code,
+                        message=refusal.message,
+                        details={"session_id": sid, "id": change_id, **refusal.details},
+                        recoverable=refusal.status_code != 404,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from None
+        return {"reverted": reverted}
 
     # ---- /v1/sessions/{sid}/context/files (BBB22) ---------------------
 

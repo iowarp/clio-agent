@@ -426,7 +426,7 @@ def test_playbook_never_strands_plan_exit_or_plan_file(tmp_path: Path) -> None:
             app,
             session_id=sess.id,
             session=fresh,
-            tool_name="fs_apply_edit_write",
+            tool_name="fs_write_file",
             args={"path": plan_file},
             mode="plan",
         )

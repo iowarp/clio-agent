@@ -50,7 +50,7 @@ def _artifact_row(
     }
 
 
-def _execution_row(call_id: str, *, tool: str = "fs_apply_edit_write") -> dict[str, Any]:
+def _execution_row(call_id: str, *, tool: str = "fs_write_file") -> dict[str, Any]:
     return {
         "execution_id": 7,
         "name": f"clio:{call_id}",
@@ -120,7 +120,7 @@ def test_rows_map_onto_clio_artifact_and_activity_nodes() -> None:
     assert artifact["producer_call_id"] == "call_1"
     activity = nodes["activity:call_1"]
     assert activity["type"] == "activity"
-    assert activity["tool"] == "fs_apply_edit_write"
+    assert activity["tool"] == "fs_write_file"
     assert activity["status"] == "success"
     assert activity["session_id"] == "sess_1"
     assert activity["environment_tier"] == "container"

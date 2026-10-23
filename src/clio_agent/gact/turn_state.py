@@ -221,7 +221,6 @@ class TurnState:
     prompt_resolution: dict[str, Any] = field(default_factory=dict)
     tools_called: list[dict[str, Any]] = field(default_factory=list)
     expert_handoffs: list[dict[str, Any]] = field(default_factory=list)
-    proposed_diffs: list[Any] = field(default_factory=list)
     nanoagents: list[Any] = field(default_factory=list)
     thinking_text: str = ""
     turn_tokens: dict[str, int] = field(

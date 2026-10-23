@@ -20,10 +20,6 @@ This module prepares one turn's *prompt context* and records what went into it:
   ``_finalize_context_frame`` stamps the assistant message id + terminal status
   and publishes ``context.frame.completed``. ``_message_text_for_frame`` /
   ``_estimate_context_tokens`` are their leaf token-accounting helpers.
-* **Approved edit commit** -- ``_apply_edit_to_disk`` is the GACT-side write step
-  for a diff the user explicitly approved via ``POST /v1/sessions/{sid}/diffs/apply``;
-  it enforces the workspace + mode + file-policy boundary and records an
-  auto-approved permission audit row.
 * **Turn provenance** -- ``_context_file_turn_provenance`` returns non-secret
   provenance for the context files attached to a turn.
 * **Workspace resources** -- bounded state for ``resource_ref`` parts.
@@ -42,10 +38,6 @@ from typing import TYPE_CHECKING, Any, Optional
 from clio_agent.gact import context_reference_delivery
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.events import Event
-from clio_agent.gact.permission_gate import (
-    _policy_action_for_tool,
-    _record_resolved_permission,
-)
 from clio_agent.gact.providers.config import _active_lm_model_ref
 from clio_agent.gact.resource_enrichment import enrich_with_workspace_resources
 from clio_agent.gact.runtime import bringup_timing
@@ -58,9 +50,6 @@ from clio_agent.gact.runtime.globals import (
 from clio_agent.gact.runtime.memory_search import _memory_search_response
 from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorInfo
-from clio_agent.tools.execution import tool_workspace_context
-from clio_agent.tools.file_policy import validate_write_path
-from clio_agent.tools.fs_write import write_text_with_policy
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -290,99 +279,6 @@ def _finalize_context_frame(
         break
 
 
-def _apply_edit_to_disk(
-    *,
-    path: str,
-    new_content: str,
-    session: Any,
-    app: "FastAPI",
-) -> dict[str, Any]:
-    """Write ``new_content`` to ``path`` after enforcing the
-    workspace + file_policy boundary.
-
-    The agent's propose_edit tool put the diff together; this is
-    the GACT-side commit step the user explicitly approved via
-    /v1/sessions/{sid}/diffs/apply. We don't ASK for permission
-    (the user already clicked apply) but we DO record an
-    auto-approved permission row so /v1/permissions has a
-    complete audit trail of every destructive operation.
-    """
-
-    target = Path(path).resolve(strict=False)
-    # Workspace root scope.
-    ws = app.state.workspaces.get(session.workspace_id)
-    if ws is not None and ws.root_path:
-        try:
-            target.relative_to(Path(ws.root_path).resolve())
-        except ValueError as exc:
-            raise PermissionError(
-                f"refused to write {target} outside workspace root {ws.root_path}"
-            ) from exc
-    # This action runs from the HTTP approval route rather than an agent tool call,
-    # so it does not inherit the turn's active-workspace ContextVar. Bind the
-    # authoritative session workspace explicitly for both advisory file-policy
-    # checks. The route's workspace containment check above remains the hard scope.
-    workspace_root = ws.root_path if ws is not None else None
-    with tool_workspace_context(workspace_root):
-        target = validate_write_path(path, field="path")
-
-    # Mode gate — plan/architect are read-only. P1.1 #1063: this is no longer a private
-    # ``session.mode in {plan, architect}`` predicate; it rides the SAME resolver as the live
-    # tool gate. Passing ``mode`` makes ``_policy_action_for_tool`` consult the built-in plan_acl
-    # rows, so a write here is denied in plan/architect exactly as at the gate (ONE enforcement
-    # path), while a ``<plans>/*.md`` write in plan mode is permitted by the @70 carve-out.
-    permission_args = {
-        "filepath": str(target),
-        "new_content_bytes": len(new_content),
-    }
-    policy_action = _policy_action_for_tool(
-        app,
-        session_id=session.id,
-        session=session,
-        tool_name="fs_apply_edit_write",
-        args=permission_args,
-        mode=str(getattr(session, "mode", "") or ""),
-    )
-    if policy_action == "deny":
-        _record_resolved_permission(
-            app,
-            session_id=session.id,
-            tool_name="fs_apply_edit_write",
-            args=permission_args,
-            status="auto_denied",
-            action="deny",
-            summary=f"diffs/apply blocked by permission policy for {target}",
-            reason="policy_deny",
-        )
-        raise PermissionError(
-            f"refused to write {target} because a permission policy denied fs_apply_edit_write"
-        )
-
-    # Audit row for the apply (auto-approved by the user's explicit
-    # POST to /diffs/apply). Every destructive call lands in
-    # /v1/permissions for compliance / replay.
-    _record_resolved_permission(
-        app,
-        session_id=session.id,
-        tool_name="fs_apply_edit_write",
-        args=permission_args,
-        status="auto_approved",
-        action="allow",
-        summary=f"diffs/apply: write {len(new_content)} bytes to {target}",
-        reason="user_clicked_apply",
-    )
-
-    with tool_workspace_context(workspace_root):
-        write_result = write_text_with_policy(str(target), new_content)
-    # Seam (b), #966 S1: mint an artifact.created for the user-approved harness write
-    # (mechanism harness, hashed-at-use from the sha256 the writer returned in-hand).
-    # The owner module is fully guarded — a mint must never break the approved write.
-    from clio_agent.gact.artifacts.minting import mint_harness_write  # noqa: PLC0415
-
-    mint_harness_write(app, session, str(target), write_result)
-    return write_result
-
-
 def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
     """Prepend a "Context:" section to the user's text for every
     file attached to the session via /v1/sessions/{sid}/context/files.
@@ -433,9 +329,8 @@ def _enrich_with_context_files(app: "FastAPI", sid: str, user_text: str) -> str:
         # iowarp/clio-agent#5: do NOT silently skip files outside the
         # workspace root — the user explicitly attached this file via
         # POST /v1/sessions/{sid}/context/files, so they know what
-        # they're doing. The destructive-write gates (workspace root
-        # in _apply_edit_to_disk, plus mode=plan/architect) still
-        # protect against unintended writes.
+        # they're doing. The agent's writes still pass the permission
+        # gate (mode, policies, PreToolUse hooks) and the file policy.
         if mode == "edit" and not p.exists():
             blocks.append(
                 f"### Context file: {display_path} (mode=edit, target does not exist yet)"

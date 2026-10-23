@@ -211,7 +211,7 @@ def _policy_action_for_tool(
     ``/v1/policies`` endpoint is user-facing configuration, so storing policies
     without enforcing them is a silent safety bypass; matching stays small and
     predictable (scope, tool glob, optional path glob, then the raw action).
-    Kept as a named shim because ``enrichment``/``proposal_effects`` bind it.
+    Kept as a named shim because ``file_change_revert`` binds it.
 
     ``mode`` (P1.1 #1063) is the session's mode: passing it makes ``resolve``
     consult the built-in plan-mode ACL (deny every non-read tool in

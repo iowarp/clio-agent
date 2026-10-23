@@ -31,8 +31,8 @@ def _envelope(path: str) -> HookEnvelope:
         hook_event_name="PostToolUse",
         session_id="sess_1",
         cwd="/work",
-        tool_name="fs_apply_edit_write",
-        tool_input={"filepath": path, "new_content": "# Report\n"},
+        tool_name="fs_write_file",
+        tool_input={"filepath": path, "content": "# Report\n"},
         payload={"is_error": False},
     )
 
@@ -40,6 +40,29 @@ def _envelope(path: str) -> HookEnvelope:
 def test_every_named_tool_maps_back_to_the_importers_tool_map() -> None:
     for clio, claude in CLAUDE_TOOL_NAMES.items():
         assert clio in TOOL_MAP[claude][0]
+
+
+def test_the_edit_envelope_uses_claude_codes_edit_keys() -> None:
+    envelope = HookEnvelope(
+        hook_event_name="PreToolUse",
+        session_id="sess_1",
+        cwd="/work",
+        tool_name="fs_edit_file",
+        tool_input={
+            "filepath": "/work/a.py",
+            "old_string": "x = 1",
+            "new_string": "x = 2",
+            "replace_all": False,
+        },
+    )
+    body = claude_envelope(envelope)
+    assert body["tool_name"] == "Edit"
+    assert body["tool_input"] == {
+        "file_path": "/work/a.py",
+        "old_string": "x = 1",
+        "new_string": "x = 2",
+        "replace_all": False,
+    }
 
 
 def test_the_envelope_uses_claude_code_names_and_keys() -> None:
@@ -62,7 +85,7 @@ def test_a_claude_code_hook_runs_and_its_context_reaches_clio(tmp_path: Path) ->
         "kind": "command",
         "command": sys.executable,
         "args": [str(script)],
-        "tools": "fs_propose_edit|fs_apply_edit_write",
+        "tools": "fs_write_file|fs_edit_file",
         "dialect": "claude-code",
         "root": str(tmp_path),
         "plugin": "clio-dataset-report",

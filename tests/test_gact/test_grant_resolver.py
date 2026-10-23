@@ -142,8 +142,9 @@ def test_read_only_fast_allows_before_mode_lock(tmp_path: Path, mode: str) -> No
 def test_is_read_only_signals() -> None:
     """The positive allowlist: catalog ``read`` tag OR a real ``readOnlyHint`` annotation."""
     assert is_read_only("tool", "fs_read_file", {}, None) is True
-    assert is_read_only("tool", "fs_propose_edit", {}, None) is True  # data fix: tagged read
-    assert is_read_only("tool", "fs_apply_edit_write", {}, None) is False  # tagged write
+    assert is_read_only("tool", "fs_grep", {}, None) is True  # tagged read
+    assert is_read_only("tool", "fs_write_file", {}, None) is False  # tagged write
+    assert is_read_only("tool", "fs_edit_file", {}, None) is False  # tagged write
     assert is_read_only("tool", "shell_bash", {"command": "date"}, None) is False
     assert is_read_only("tool", "not_in_catalog", {}, None) is False
     ctx = {"kind": "external_mcp", "annotations": {"readOnlyHint": True, "destructiveHint": False}}
@@ -167,8 +168,9 @@ def test_catalog_readwrite_tags_are_annotation_projections() -> None:
 
     for name, tag in (
         ("fs_read_file", "read"),
-        ("fs_propose_edit", "read"),
-        ("fs_apply_edit_write", "write"),
+        ("fs_grep", "read"),
+        ("fs_write_file", "write"),
+        ("fs_edit_file", "write"),
     ):
         assert classification_tags(_BUILTIN_ANNOTATIONS[name]) == frozenset({tag})
         assert tag in get_tool_entry(name).tags
@@ -342,12 +344,12 @@ def test_priority_band_specific_write_deny_outranks_broad_allow() -> None:
         {
             "scope": "session",
             "scope_id": "s",
-            "tool_name_pattern": "fs_apply_edit_write",
+            "tool_name_pattern": "fs_write_file",
             "action": "deny",
             "priority": 65,
         },
     ]
-    assert resolve("tool", "fs_apply_edit_write", policies=policies, session_id="s") == "deny"
+    assert resolve("tool", "fs_write_file", policies=policies, session_id="s") == "deny"
 
 
 def test_priority_band_highest_path_allow_wins() -> None:
@@ -356,14 +358,14 @@ def test_priority_band_highest_path_allow_wins() -> None:
         {
             "scope": "session",
             "scope_id": "s",
-            "tool_name_pattern": "fs_apply_edit_write",
+            "tool_name_pattern": "fs_write_file",
             "action": "deny",
             "priority": 65,
         },
         {
             "scope": "session",
             "scope_id": "s",
-            "tool_name_pattern": "fs_apply_edit_write",
+            "tool_name_pattern": "fs_write_file",
             "path_pattern": "/tmp/*",
             "action": "allow",
             "priority": 70,
@@ -372,7 +374,7 @@ def test_priority_band_highest_path_allow_wins() -> None:
     assert (
         resolve(
             "tool",
-            "fs_apply_edit_write",
+            "fs_write_file",
             policies=policies,
             session_id="s",
             path="/tmp/x",
@@ -383,7 +385,7 @@ def test_priority_band_highest_path_allow_wins() -> None:
     assert (
         resolve(
             "tool",
-            "fs_apply_edit_write",
+            "fs_write_file",
             policies=policies,
             session_id="s",
             path="/etc/x",
@@ -824,7 +826,7 @@ def test_validate_rejects_malformed_modes_and_on() -> None:
 # P1.1 #1063 — built-in plan-mode ACL as declarative plan_acl rows (deletes the 3x lock).
 # --------------------------------------------------------------------------------------
 
-_WRITE_TOOL = "fs_apply_edit_write"
+_WRITE_TOOL = "fs_write_file"
 
 
 def test_default_plan_acl_rows_shape() -> None:
@@ -1085,7 +1087,7 @@ def test_plan_acl_deny_unbypassable_by_large_legacy_migrated_priority() -> None:
     P0.1 (#1059) migrates unprioritized legacy USER rows to effective priority ``total - index``
     (first row highest, up to ``total``). A persisted store with MORE than 40 unprioritized legacy
     rows gives its earliest row an effective priority ABOVE the static @40 plan_acl deny floor --
-    so a stale ``allow(fs_apply_edit_write, src/**)`` sitting first in a 60-row store would
+    so a stale ``allow(fs_write_file, src/**)`` sitting first in a 60-row store would
     (pre-fix) OUTRANK the plan-mode deny and punch straight through plan mode. That violates the
     campaign's hard invariant: plan mode overrides user allow-rules, not configurable.
     """

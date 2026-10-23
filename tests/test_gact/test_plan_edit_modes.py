@@ -1,4 +1,4 @@
-"""iowarp/clio-agent — plan_mode + edit_modes + #4 file_diff write.
+"""iowarp/clio-agent — plan_mode + edit_modes + the Undo write boundary.
 
 Covers:
   - Session.mode + edit_mode in create + patch responses.
@@ -7,25 +7,26 @@ Covers:
     session.updated.
   - Permission gate auto-denies destructive tools when mode is
     plan or architect (no user prompt; reason logged).
-  - /diffs/apply actually writes new_content to disk under the
-    workspace root.
-  - Disk write refuses when path is outside the workspace root.
-  - Disk write refuses when session.mode is plan or architect.
+  - Undo (``revert_file_change``) writes through the shared policy writer
+    under the workspace root, and refuses outside the workspace root, in
+    plan mode, and under a deny policy.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import (
-    _apply_edit_to_disk,
     _make_permission_gate,
     build_app,
 )
+from clio_agent.gact.file_change_revert import FileChangeRefusal, revert_file_change
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake (a ``dspy.Module`` host — e.g. the real
@@ -38,7 +39,6 @@ class _Pred:
     answer: str = "ok"
     selected_expert: str = ""
     routing_rationale: str = ""
-    file_diffs: list = field(default_factory=list)
 
 
 class _Agent:
@@ -102,18 +102,25 @@ def test_plan_mode_auto_denies_destructive_tools(tmp_path: Path) -> None:
         )
 
 
-# #948 S4b: the two turn-driven diff tests that ran the deleted Tier-1
-# ``ClioAgent.forward`` planner loop (one via a fake ``_Agent.forward`` returning
-# file_diffs, one driving a real ClioAgent through mocked ``_plan_next_action`` /
-# ``_execute_tool_action``) were removed with the planner. File-diff promotion is
-# now produced by blueprint react mains through tool traces, covered elsewhere;
-# the disk-write / policy layer below is exercised directly via ``_apply_edit_to_disk``.
+def _recorded_change(app: Any, sess: Any, target: Path, previous: str, now: str) -> str:
+    """Put an agent write of ``target`` (``previous`` -> ``now``) on the change ledger."""
+
+    target.write_text(now, encoding="utf-8")
+    app.state.file_changes.setdefault(sess.id, []).append(
+        {
+            "id": "chg_1",
+            "path": str(target),
+            "status": "applied",
+            "created": False,
+            "previous_content": previous,
+            "sha256_after": hashlib.sha256(now.encode()).hexdigest(),
+        }
+    )
+    return "chg_1"
 
 
-def test_apply_edit_uses_shared_policy_writer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GACT diff apply must not maintain a separate raw disk-write path."""
+def test_undo_uses_shared_policy_writer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Undo must not maintain a separate raw disk-write path."""
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -121,11 +128,7 @@ def test_apply_edit_uses_shared_policy_writer(
 
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.workspaces.update("ws_default", root_path=str(workspace))
-    sess = app.state.sessions.create(
-        workspace_id="ws_default",
-        title="t",
-        mode="edit",
-    )
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
     calls: list[tuple[str, str]] = []
 
     def spy_writer(filepath: str, new_content: str) -> dict[str, object]:
@@ -134,141 +137,96 @@ def test_apply_edit_uses_shared_policy_writer(
         target.write_text(new_content, encoding="utf-8")
         return {"path": str(target), "size_bytes": target.stat().st_size, "ok": True}
 
-    monkeypatch.setattr("clio_agent.gact.enrichment.write_text_with_policy", spy_writer)
+    monkeypatch.setattr("clio_agent.gact.file_change_revert.write_text_with_policy", spy_writer)
 
     target = workspace / "x.txt"
-    result = _apply_edit_to_disk(
-        path=str(target),
-        new_content="shared\n",
-        session=sess,
-        app=app,
-    )
+    change = _recorded_change(app, sess, target, "shared\n", "agent\n")
+    result = revert_file_change(app, sess, change)
 
     assert calls == [(str(target.resolve()), "shared\n")]
-    assert result["ok"] is True
+    assert result["status"] == "reverted"
     assert target.read_text(encoding="utf-8") == "shared\n"
 
 
-def test_apply_edit_refuses_outside_workspace(tmp_path: Path) -> None:
-    """_apply_edit_to_disk raises PermissionError when target is
-    outside the workspace root."""
+def test_undo_refuses_outside_workspace(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json")
+    (tmp_path / "ws").mkdir()
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t")
+    change = _recorded_change(app, sess, tmp_path / "outside.txt", "a", "b")
+    with pytest.raises(FileChangeRefusal) as refused:
+        revert_file_change(app, sess, change)
+    assert refused.value.code == "path_outside_workspace"
+    assert refused.value.status_code == 403
+
+
+def test_undo_refuses_in_plan_mode(tmp_path: Path) -> None:
+    """Undo is a write: in plan mode the unified resolver (the built-in plan_acl
+    @40 deny) refuses it, typed ``policy_denied``."""
 
     app = build_app(sessions_path=tmp_path / "s.json")
     (tmp_path / "ws").mkdir()
     app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
-    sess = app.state.sessions.create(
-        workspace_id="ws_default",
-        title="t",
-    )
-    with pytest.raises(PermissionError, match="outside workspace root"):
-        _apply_edit_to_disk(
-            path=str(tmp_path / "outside.txt"),
-            new_content="x",
-            session=sess,
-            app=app,
-        )
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="plan")
+    target = tmp_path / "ws" / "x.txt"
+    change = _recorded_change(app, sess, target, "a", "b")
+    with pytest.raises(FileChangeRefusal) as refused:
+        revert_file_change(app, sess, change)
+    assert refused.value.code == "policy_denied"
+    assert target.read_text(encoding="utf-8") == "b"
 
 
-def test_apply_edit_refuses_in_plan_mode(tmp_path: Path) -> None:
-    """_apply_edit_to_disk refuses to write in plan mode — now via the unified
-    resolver (the built-in plan_acl @40 deny), not a private ``session.mode``
-    predicate (P1.1 #1063). The deny is typed ``policy_denied``."""
-
-    app = build_app(sessions_path=tmp_path / "s.json")
-    (tmp_path / "ws").mkdir()
-    app.state.workspaces.update("ws_default", root_path=str(tmp_path / "ws"))
-    sess = app.state.sessions.create(
-        workspace_id="ws_default",
-        title="t",
-        mode="plan",
-    )
-    with pytest.raises(PermissionError, match="permission policy denied"):
-        _apply_edit_to_disk(
-            path=str(tmp_path / "ws" / "x.txt"),
-            new_content="x",
-            session=sess,
-            app=app,
-        )
-
-
-def test_apply_edit_refuses_policy_denied_write(tmp_path: Path) -> None:
-    """A deny policy must block /diffs/apply before disk mutation."""
+def test_undo_refuses_policy_denied_write(tmp_path: Path) -> None:
+    """A deny policy on fs_write_file blocks Undo before disk mutation."""
 
     workspace = tmp_path / "ws"
     workspace.mkdir()
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.workspaces.update("ws_default", root_path=str(workspace))
-    sess = app.state.sessions.create(
-        workspace_id="ws_default",
-        title="t",
-        mode="edit",
-    )
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
     app.state.permission_policies = [
         {
             "scope": "session",
             "scope_id": sess.id,
-            "tool_name_pattern": "fs_apply_edit_write",
+            "tool_name_pattern": "fs_write_file",
             "path_pattern": str(workspace / "*.txt"),
             "action": "deny",
         }
     ]
 
     target = workspace / "x.txt"
-    with pytest.raises(PermissionError, match="permission policy denied"):
-        _apply_edit_to_disk(
-            path=str(target),
-            new_content="x",
-            session=sess,
-            app=app,
-        )
+    change = _recorded_change(app, sess, target, "before", "after")
+    with pytest.raises(FileChangeRefusal) as refused:
+        revert_file_change(app, sess, change)
 
-    assert not target.exists()
+    assert refused.value.code == "policy_denied"
+    assert target.read_text(encoding="utf-8") == "after"
     rows = list(app.state.permissions.values())
     assert len(rows) == 1
     assert rows[0]["status"] == "auto_denied"
     assert rows[0]["reason"] == "policy_deny"
 
 
-def test_apply_edit_inside_the_workspace_survives_a_narrower_allowed_roots(
+def test_undo_inside_the_workspace_survives_a_narrower_allowed_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#1334 review round: ``tool_workspace_context`` (de0b7dd7) binds the session's
-    OWN workspace as an always-writable file_policy root — 'a session must ALWAYS
-    be able to read/write ... inside its own workspace' (file_policy.py's own
-    ``_active_workspace_root`` doc) — so a configured ``allowed_roots`` narrower
-    than the workspace no longer refuses a write INSIDE it; the workspace
-    containment check above (a hard ``PermissionError``, not file_policy) remains
-    the actual boundary for a path outside the workspace."""
+    """#1334 review round: ``tool_workspace_context`` binds the session's OWN workspace
+    as an always-writable file_policy root, so a configured ``allowed_roots`` narrower
+    than the workspace does not refuse an Undo INSIDE it; the workspace containment
+    check remains the boundary for a path outside the workspace."""
 
     workspace = tmp_path / "ws"
     allowed = tmp_path / "allowed"
     workspace.mkdir()
     allowed.mkdir()
-    # allowed_roots is file-layer (file > env); write the NARROWER root there
-    # (overwriting the fixture's ``tmp_path`` list) precisely to prove it no
-    # longer matters for a workspace-contained write (a bare setenv would be
-    # shadowed by the fixture — #985).
     from tests._config_layer import set_config
 
     set_config("tools.file_policy.allowed_roots", [str(allowed)])
 
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.workspaces.update("ws_default", root_path=str(workspace))
-    sess = app.state.sessions.create(
-        workspace_id="ws_default",
-        title="t",
-        mode="edit",
-    )
+    sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
     target = workspace / "x.txt"
-    _apply_edit_to_disk(path=str(target), new_content="x", session=sess, app=app)
+    change = _recorded_change(app, sess, target, "x", "y")
+    revert_file_change(app, sess, change)
     assert target.read_text(encoding="utf-8") == "x"
-
-    # The workspace containment check (PermissionError, not file_policy) is the
-    # boundary that still applies: a path outside the workspace is still refused.
-    with pytest.raises(PermissionError):
-        _apply_edit_to_disk(
-            path=str(tmp_path / "outside.txt"),
-            new_content="x",
-            session=sess,
-            app=app,
-        )

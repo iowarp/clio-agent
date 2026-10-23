@@ -606,6 +606,12 @@ gact.ledger_retention.command_audit.max: 2000
 # raise to retain more attached-context history.
 gact.ledger_retention.context_frames.max: 200
 
+# CLIO_LEDGER_FILE_CHANGES_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Max file changes the agent made that each session keeps (oldest first
+# out); an evicted change stays in the transcript but can no longer be
+# undone.
+gact.ledger_retention.file_changes.max: 500
+
 # CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Max entries kept in the in-memory memory-tool-audit ledger before FIFO
 # eviction; raise for more memory-tool audit history.
@@ -616,16 +622,6 @@ gact.ledger_retention.memory_tool_audit.max: 2000
 # dropped; each is normally consumed by the turn that planned it, so raise
 # only if a deployment leaves many plans unsettled.
 gact.ledger_retention.native_delivery_notes.max: 256
-
-# CLIO_LEDGER_PENDING_DIFFS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Absolute ceiling on the pending-diffs ledger; past this even a still-
-# pending diff is force-evicted oldest-first.
-gact.ledger_retention.pending_diffs.hard: 1000
-
-# CLIO_LEDGER_PENDING_DIFFS_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Soft cap on the pending-diffs ledger where terminal
-# (resolved/applied/rejected) entries evict first, protecting pending diffs.
-gact.ledger_retention.pending_diffs.max: 500
 
 # CLIO_LEDGER_PERMISSIONS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the in-memory permissions ledger; past this even a

@@ -478,17 +478,13 @@ KEY_NOTES: dict[str, str] = {
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
         "retain more attached-context history."
     ),
+    "gact.ledger_retention.file_changes.max": (
+        "Max file changes the agent made that each session keeps (oldest first out); an evicted "
+        "change stays in the transcript but can no longer be undone."
+    ),
     "gact.ledger_retention.memory_tool_audit.max": (
         "Max entries kept in the in-memory memory-tool-audit ledger before FIFO eviction; raise "
         "for more memory-tool audit history."
-    ),
-    "gact.ledger_retention.pending_diffs.hard": (
-        "Absolute ceiling on the pending-diffs ledger; past this even a still-pending diff is "
-        "force-evicted oldest-first."
-    ),
-    "gact.ledger_retention.pending_diffs.max": (
-        "Soft cap on the pending-diffs ledger where terminal (resolved/applied/rejected) entries "
-        "evict first, protecting pending diffs."
     ),
     "gact.ledger_retention.permissions.hard": (
         "Absolute ceiling on the in-memory permissions ledger; past this even a still-pending "

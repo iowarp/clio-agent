@@ -196,8 +196,8 @@ def _builtin_entry(
 # ``gateway.build_tool_catalog`` from connected namespaces + expert ``tools:``.
 # Read/write tags are PROJECTIONS of the declared annotations (see _builtin_entry):
 #   shell_bash -> effectful (openWorld) -> no read/write tag;
-#   fs_propose_edit / fs_read_file -> readOnlyHint -> "read";
-#   fs_apply_edit_write -> destructive, closed-world -> "write".
+#   fs_read_file / fs_glob / fs_grep -> readOnlyHint -> "read";
+#   fs_write_file / fs_edit_file -> destructive, closed-world -> "write".
 TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "shell_bash": _builtin_entry(
         "shell_bash",
@@ -206,17 +206,14 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         domain="shell",
         visible_to={"chat"},
     ),
-    "fs_propose_edit": _builtin_entry(
-        "fs_propose_edit",
-        "utility",
-        {"workspace", "edit", "diff", "proposal"},
-        domain="workspace",
+    "fs_write_file": _builtin_entry(
+        "fs_write_file", "workspace", {"workspace", "edit"}, domain="workspace"
+    ),
+    "fs_edit_file": _builtin_entry(
+        "fs_edit_file", "workspace", {"workspace", "edit"}, domain="workspace"
     ),
     "fs_read_file": _builtin_entry(
         "fs_read_file", "workspace", {"workspace"}, domain="workspace", planner_visible=False
-    ),
-    "fs_apply_edit_write": _builtin_entry(
-        "fs_apply_edit_write", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
     "fs_glob": _builtin_entry(
         "fs_glob", "workspace", {"workspace", "search"}, domain="workspace", planner_visible=False

@@ -3,8 +3,10 @@
 from typing import Any
 
 _READ_FILE_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
-_PROPOSE_EDIT_ANNOTATIONS: dict[str, Any] = {"readOnlyHint": True, "openWorldHint": False}
-_APPLY_EDIT_WRITE_ANNOTATIONS: dict[str, Any] = {
+#: fs_write_file / fs_edit_file change the file on disk: a bounded, closed-world
+#: destructive write that projects to the catalog ``write`` tag, so the permission
+#: gate asks or allows by the session's mode and PreToolUse hooks see every write.
+_FILE_WRITE_ANNOTATIONS: dict[str, Any] = {
     "readOnlyHint": False,
     "destructiveHint": True,
     "openWorldHint": False,
@@ -17,8 +19,8 @@ FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
     "fs_read_file": _READ_FILE_ANNOTATIONS,
     "fs_glob": _READ_FILE_ANNOTATIONS,
     "fs_grep": _READ_FILE_ANNOTATIONS,
-    "fs_propose_edit": _PROPOSE_EDIT_ANNOTATIONS,
-    "fs_apply_edit_write": _APPLY_EDIT_WRITE_ANNOTATIONS,
+    "fs_write_file": _FILE_WRITE_ANNOTATIONS,
+    "fs_edit_file": _FILE_WRITE_ANNOTATIONS,
 }
 
 

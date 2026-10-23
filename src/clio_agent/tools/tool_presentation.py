@@ -13,7 +13,8 @@ from typing import Any
 import yaml
 
 from clio_agent.tools.file_diff import unified_file_diff
-from clio_agent.tools.file_policy import validate_read_path, validate_write_path
+from clio_agent.tools.file_policy import validate_read_path
+from clio_agent.tools.fs_edit import PreviousContent, capture_previous_content
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.shell_spill_presentation import saved_output_blocks
 
@@ -31,14 +32,6 @@ class PresentationAdapter:
     start: Capture | None = None
     action: str = ""
     subject: str = ""
-
-
-@dataclass(frozen=True)
-class FileWriteSnapshot:
-    """Observed file content before a write."""
-
-    path: str
-    content: str
 
 
 MCP_PRESENTATION_ADAPTERS: dict[str, PresentationAdapter] = {}
@@ -241,14 +234,22 @@ def present_mcp_result(
         return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}
 
 
+#: Observer-copy key carrying a write tool's pre-call :class:`PreviousContent`. The
+#: GACT observer pops it before the copy reaches any wire, ledger or trace.
+PREVIOUS_CONTENT_KEY = "_clio_previous_content"
+
+
 def enrich_tool_observer_result(
-    result: Any, args: dict[str, Any], snapshot: Any, *, name: str = "fs_apply_edit_write"
+    result: Any, args: dict[str, Any], snapshot: Any, *, name: str
 ) -> Any:
     """Attach presentation to the observer copy without changing the raw result."""
 
     if not isinstance(result, Mapping):
         return result
-    return {**result, "presentation": present_mcp_result(name, args, result, snapshot)}
+    enriched = {**result, "presentation": present_mcp_result(name, args, result, snapshot)}
+    if isinstance(snapshot, PreviousContent):
+        enriched[PREVIOUS_CONTENT_KEY] = snapshot
+    return enriched
 
 
 def observe_mcp_result(name: str, result: Any, args: dict[str, Any], snapshot: Any) -> Any:
@@ -260,14 +261,9 @@ def observe_mcp_result(name: str, result: Any, args: dict[str, Any], snapshot: A
     )
 
 
-def _capture_write(args: Mapping[str, Any]) -> FileWriteSnapshot:
-    path = Path(validate_write_path(str(args["filepath"]), field="filepath"))
-    content = (
-        Path(validate_read_path(str(path))).read_text(encoding="utf-8", errors="replace")
-        if path.exists()
-        else ""
-    )
-    return FileWriteSnapshot(str(path), content)
+def _capture_write(args: Mapping[str, Any]) -> PreviousContent | None:
+    """Keep the file as it was before the write, for the person's Undo."""
+    return capture_previous_content(args.get("filepath"))
 
 
 def _file_start(args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -350,11 +346,14 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
 def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     row = _structured(result)
     diff = str(row.get("unified_diff") or "")
-    if isinstance(snapshot, FileWriteSnapshot) and row.get("ok") is True:
-        after = Path(validate_read_path(snapshot.path)).read_text(
-            encoding="utf-8", errors="replace"
-        )
-        diff = unified_file_diff(snapshot.content, after, Path(snapshot.path).name, context=1)
+    if isinstance(snapshot, PreviousContent) and row.get("ok") is True:
+        # A compact view: one context line around each change, from the pre-write copy.
+        before = snapshot.content if snapshot.existed else ""
+        if before is not None:
+            after = Path(validate_read_path(snapshot.path)).read_text(
+                encoding="utf-8", errors="replace"
+            )
+            diff = unified_file_diff(before, after, Path(snapshot.path).name, context=1)
     return {
         "subject": "file-link",
         "summary": "",
@@ -543,16 +542,13 @@ register_presentation_adapter(
     "fs_read_file",
     PresentationAdapter(_read, start=_file_start, action="Read", subject="file-link"),
 )
-register_presentation_adapter(
-    "fs_propose_edit",
-    PresentationAdapter(_diff, start=_file_start, action="Propose edit", subject="file-link"),
-)
-register_presentation_adapter(
-    "fs_apply_edit_write",
-    PresentationAdapter(
-        _diff, _capture_write, start=_file_start, action="Write", subject="file-link"
-    ),
-)
+for _name, _action in (("fs_write_file", "Write"), ("fs_edit_file", "Edit")):
+    register_presentation_adapter(
+        _name,
+        PresentationAdapter(
+            _diff, _capture_write, start=_file_start, action=_action, subject="file-link"
+        ),
+    )
 register_presentation_adapter("fs_glob", PresentationAdapter(_search, action="Find files"))
 register_presentation_adapter("fs_grep", PresentationAdapter(_search, action="Search files"))
 register_presentation_adapter(
