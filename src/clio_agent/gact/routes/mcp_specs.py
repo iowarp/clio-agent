@@ -10,6 +10,8 @@ from typing import Any
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
 from clio_agent.gact.agents.resolution import (
     SessionAgentUnavailable,
+    agent_server_set,
+    default_agent_ref,
     session_resolution,
     session_server_set,
 )
@@ -29,9 +31,19 @@ def declared_mcp_specs(
     from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
     from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
 
-    plugin_servers = (
-        server_set_declarations(session_server_set(app, session_id)) if session_id else {}
-    )
+    server_set = session_server_set(app, session_id) if session_id else ""
+    plugin_servers = server_set_declarations(server_set) if server_set else {}
+    return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
+
+
+def _draft_mcp_specs(app: Any, cwd: Path | None, agent_ref: str) -> dict[str, Any]:
+    """The MCP specs a new conversation on ``agent_ref`` in this workspace would declare."""
+
+    from clio_agent.plugins.servers import server_set_declarations  # noqa: PLC0415
+    from clio_agent.search.web_mcp_default import load_agent_mcp_servers  # noqa: PLC0415
+
+    server_set = agent_server_set(app, agent_ref)
+    plugin_servers = server_set_declarations(server_set) if server_set else {}
     return load_agent_mcp_servers(cwd=cwd, plugin_servers=plugin_servers)
 
 
@@ -49,7 +61,7 @@ def session_mcp_inventory(
     cwd: Path | None,
     session_id: str,
 ) -> SessionMcpInventory:
-    """Project one session's declared MCPs, resident state, and why it is partial.
+    """Project one session's (with none, a new conversation's) declared MCPs and state.
 
     Declaration discovery is file-only. The optional runtime snapshot reads an
     already-resident workspace fleet and must not create an executor, connect a
@@ -59,13 +71,16 @@ def session_mcp_inventory(
     ``threading.Lock``. Async callers run it on a worker (see ``routes.mcp``).
     """
 
-    if not session_id:
-        return SessionMcpInventory()
-    try:
-        agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
-    except SessionAgentUnavailable as exc:
-        agent_ref = exc.ref
-    specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+    if session_id:
+        try:
+            agent_ref = str(session_resolution(app, session_id).agent.get("ref") or "")
+        except SessionAgentUnavailable as exc:
+            agent_ref = exc.ref
+        specs = declared_mcp_specs(app, cwd=cwd, session_id=session_id)
+    else:
+        # No conversation chosen: what a new one here would get, on the default agent.
+        agent_ref = default_agent_ref(app)
+        specs = _draft_mcp_specs(app, cwd, agent_ref)
     # A declaration file that failed to PARSE is not the same as one that is
     # absent: without this the listing is simply shorter and says nothing.
     degradations: list[dict[str, str]] = [
@@ -112,7 +127,7 @@ def _session_mcp_server_row(
     plugin_owned = spec.source.startswith("plugin:")
     status = str(runtime.get("status") or "available") if spec.usable else "unavailable"
     row: dict[str, Any] = {
-        "id": f"session_mcp_{session_id}_{namespace}",
+        "id": f"session_mcp_{session_id}_{namespace}" if session_id else f"draft_mcp_{namespace}",
         "name": namespace,
         "status": status,
         "transport": spec.transport,

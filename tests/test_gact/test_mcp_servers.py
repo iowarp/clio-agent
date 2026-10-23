@@ -142,6 +142,32 @@ def test_mcp_servers_projects_the_session_agent_plugin_servers_without_launching
     assert rows["ndp"]["tools_count"] == 0
 
 
+def test_without_a_session_the_listing_is_what_a_new_conversation_would_get(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Settings asks per workspace: the default agent's plugin MCPs are listed too."""
+
+    _earthscope_marketplace(tmp_path, monkeypatch, "ndp")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    app = build_app(sessions_path=tmp_path / "draft-mcp.json", agent=_InventoryAgent())
+    with TestClient(app) as draft_client:
+        wid = draft_client.post(
+            "/v1/workspaces", json={"name": "Workspace", "root_path": str(workspace)}
+        ).json()["id"]
+        patched = draft_client.patch("/v1/session-defaults", json={"agent_ref": _AGENT_REF})
+        assert patched.status_code == 200, patched.text
+        body = draft_client.get("/v1/mcp/servers", params={"workspace_id": wid}).json()
+
+    rows = {row["name"]: row for row in body["servers"]}
+    assert {"fs", "shell", "ndp"} <= set(rows)
+    assert rows["ndp"]["id"] == "draft_mcp_ndp"
+    assert rows["ndp"]["source"] == "plugin"
+    assert rows["ndp"]["plugin"] == "earthscope-tools"
+    assert rows["ndp"]["agent_ref"] == _AGENT_REF
+    assert rows["ndp"]["session_id"] == ""
+
+
 def test_mcp_servers_reports_resident_session_namespace_as_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
