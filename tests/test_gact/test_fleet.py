@@ -291,3 +291,34 @@ def test_a_finished_turn_adds_to_the_session_rollup_under_its_model() -> None:
     assert session.usage_by_model == {"openrouter/x/y": {"tokens_input": 1, "turns": 1}}
     idle = SimpleNamespace(**{**vars(state), "turn_tokens": {"input": 0, "output": 0}})
     assert model_usage_after_turn(idle, session) == session.usage_by_model
+
+
+def test_a_runs_model_shares_count_the_tokens_read_and_written_not_cache_reads() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.fleet.run_usage import run_spend
+
+    def session(sid: str, parent: str, rows: dict) -> SimpleNamespace:
+        return SimpleNamespace(id=sid, parent_session_id=parent, usage_by_model=rows)
+
+    sessions = [
+        session(
+            "run", "", {"a/big": {"tokens_input": 10, "tokens_output": 90, "tokens_cached": 9000}}
+        ),
+        session("step", "run", {"a/small": {"tokens_input": 50, "tokens_output": 250}}),
+        session("other", "", {"a/elsewhere": {"tokens_input": 999}}),
+    ]
+    app = SimpleNamespace(state=SimpleNamespace(sessions=SimpleNamespace(list=lambda: sessions)))
+    USAGE_BOARD.record(
+        claude_snapshot("a", {"unifiedWindows": {"five_hour": {"utilization": 0.4}}})
+    )
+
+    usage = run_spend(app, "run")
+
+    assert [(row["model"], row["share"]) for row in usage["models"]] == [
+        ("a/small", 0.75),
+        ("a/big", 0.25),
+    ]
+    assert usage["windows"] == [
+        {"account": "a", "label": "a", "window": "5-hour", "used_percent": 40.0}
+    ]

@@ -48,18 +48,22 @@ def run_spend(app: "FastAPI", run_session: str) -> dict[str, Any]:
     over ``run_session``'s session tree."""
 
     report = tree_spend(app, run_session)
-    total = sum(spend.tokens for spend in report.by_model.values())
+    # A model's share is of the tokens it read and wrote; cache reads repeat the
+    # same prompt on every call and would drown the work itself.
+    total = sum(spend.tokens_input + spend.tokens_output for spend in report.by_model.values())
     models = sorted(
         (
             {
                 "model": ref,
                 "tokens": spend.tokens,
-                "share": round(spend.tokens / total, 3) if total else 0.0,
+                "share": round((spend.tokens_input + spend.tokens_output) / total, 3)
+                if total
+                else 0.0,
                 "cost_usd": round(spend.cost_usd, 6),
             }
             for ref, spend in report.by_model.items()
         ),
-        key=lambda row: -row["tokens"],
+        key=lambda row: -row["share"],
     )
     windows = []
     for account in sorted({row["model"].split("/", 1)[0] for row in models}):
