@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>CLIO Notebook Style</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;0,7..72,600;1,7..72,400&display=swap">
+<style>
+/* Layout: a lab-notebook spec sheet. Sticky contents rail on wide screens, one column on phones. The page wears its own theme. */
+:root {
+  --canvas: #F3EFE6; --surface: #FBF8F1; --raised: #FFFDF8; --code: #EDE7DA;
+  --border: #DDD6C8; --border-strong: #C9C0AE;
+  --ink: #2B2A26; --ink-2: #5E594F; --ink-3: #6B655A;
+  --accent: #2F6F6A; --accent-hover: #255B57; --on-accent: #FBF8F1; --accent-tint: #DCEBE7; --link: #2F6F6A;
+  --sup-bg: #DCEBE7; --sup-fg: #1F4F4B;
+  --run-bg: #F2E3C4; --run-fg: #6E4E12;
+  --ref-bg: #F0D9D2; --ref-fg: #7A3022;
+  --sus-bg: #E6E1D6; --sus-fg: #5E594F;
+  --rule: #E4DDCF;
+  --f-voice: "Literata", "Iowan Old Style", Georgia, serif;
+  --f-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --canvas: #1E1C19; --surface: #27251F; --raised: #2F2C26; --code: #2A2823;
+  --border: #3A3630; --border-strong: #4A453D;
+  --ink: #E8E3D8; --ink-2: #B3AC9F; --ink-3: #9C9588;
+  --accent: #5FA8A0; --accent-hover: #74B8B0; --on-accent: #16211F; --accent-tint: #21403D; --link: #74B8B0;
+  --sup-bg: #21403D; --sup-fg: #9FD3CB; --run-bg: #4A3A1A; --run-fg: #E8C27A;
+  --ref-bg: #4A2A23; --ref-fg: #E8A595; --sus-bg: #33302A; --sus-fg: #B3AC9F;
+  --rule: #34312B; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --canvas: #1E1C19; --surface: #27251F; --raised: #2F2C26; --code: #2A2823;
+  --border: #3A3630; --border-strong: #4A453D;
+  --ink: #E8E3D8; --ink-2: #B3AC9F; --ink-3: #9C9588;
+  --accent: #5FA8A0; --accent-hover: #74B8B0; --on-accent: #16211F; --accent-tint: #21403D; --link: #74B8B0;
+  --sup-bg: #21403D; --sup-fg: #9FD3CB; --run-bg: #4A3A1A; --run-fg: #E8C27A;
+  --ref-bg: #4A2A23; --ref-fg: #E8A595; --sus-bg: #33302A; --sus-fg: #B3AC9F;
+  --rule: #34312B; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--canvas); color: var(--ink); font: 400 15px/1.6 var(--f-ui); -webkit-font-smoothing: antialiased; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 48px 96px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 56px; }
+nav { position: sticky; top: calc(24px + env(safe-area-inset-top, 0px)); align-self: start; font-size: 13px; }
+nav p { font: 500 11px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 12px; }
+nav ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; border-left: 1px solid var(--rule); }
+nav a { display: block; padding: 2px 0 2px 12px; color: var(--ink-2); text-decoration: none; margin-left: -1px; border-left: 1px solid transparent; }
+nav a:hover { color: var(--ink); border-left-color: var(--accent); }
+main { min-width: 0; }
+a { color: var(--link); text-underline-offset: 2px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+header.top { padding-bottom: 40px; border-bottom: 1px solid var(--rule); }
+.meta { font: 400 12px/1.4 var(--f-mono); color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px 20px; margin: 0 0 28px; }
+h1 { font: 500 clamp(40px, 7vw, 68px)/1.02 var(--f-voice); letter-spacing: -.02em; margin: 0 0 20px; text-wrap: balance; }
+h1 em { font-style: italic; color: var(--accent); font-weight: 400; }
+.lede { font: 400 19px/1.55 var(--f-voice); color: var(--ink-2); max-width: 60ch; margin: 0; }
+section { padding-block: 56px 8px; scroll-margin-top: 16px; }
+h2 { font: 500 30px/1.15 var(--f-voice); letter-spacing: -.01em; margin: 0 0 8px; text-wrap: balance; }
+h3 { font: 600 13px/1.3 var(--f-ui); margin: 32px 0 12px; color: var(--ink); }
+.intro { color: var(--ink-2); max-width: 64ch; margin: 0 0 24px; }
+.eyebrow { font: 500 11px/1 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; }
+code, .mono { font-family: var(--f-mono); font-size: .88em; }
+:not(pre) > code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
+
+.principles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 40px; margin-top: 8px; }
+.principles div { border-top: 1px solid var(--border-strong); padding-top: 14px; }
+.principles b { display: block; font: 500 18px/1.3 var(--f-voice); margin-bottom: 6px; }
+.principles p { margin: 0; color: var(--ink-2); font-size: 14px; }
+
+.swatch-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.swatch-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.swatch-table th { text-align: left; font: 500 11px/1 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); padding: 14px 16px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.swatch-table td { padding: 10px 16px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.swatch-table tr:last-child td { border-bottom: 0; }
+.tok { font-family: var(--f-mono); font-size: 12px; white-space: nowrap; }
+.role { color: var(--ink-2); min-width: 160px; }
+.chip-sw { display: inline-flex; align-items: center; gap: 10px; font: 400 12px var(--f-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.chip-sw i { width: 28px; height: 28px; border-radius: 6px; border: 1px solid rgba(0,0,0,.08); display: inline-block; flex: none; }
+
+.status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.status-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; display: grid; grid-template-columns: 1fr 1fr; }
+.status-card > div { padding: 16px; display: grid; gap: 10px; align-content: start; }
+.status-card .lt { background: #FBF8F1; color: #2B2A26; }
+.status-card .dk { background: #27251F; color: #E8E3D8; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/1 var(--f-ui); padding: 5px 9px 5px 7px; border-radius: 6px; justify-self: start; white-space: nowrap; }
+.pill svg { width: 13px; height: 13px; flex: none; }
+.small { font: 400 11px/1.4 var(--f-mono); opacity: .8; font-variant-numeric: tabular-nums; }
+.status-card h4 { margin: 0; font: 500 16px/1.2 var(--f-voice); grid-column: 1 / -1; padding: 14px 16px 0; }
+.status-card .desc { grid-column: 1 / -1; padding: 0 16px 14px; margin: 0; font-size: 13px; color: var(--ink-2); background: var(--surface); }
+.status-card .head { grid-column: 1/-1; background: var(--surface); padding: 0; }
+
+.type-specimen { display: grid; gap: 0; border-top: 1px solid var(--border-strong); }
+.face { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 24px; padding: 24px 0; border-bottom: 1px solid var(--rule); }
+.face .label b { display: block; font-weight: 500; }
+.face .label span { color: var(--ink-3); font-size: 13px; }
+.face .sample { min-width: 0; }
+.s-voice { font: 400 30px/1.25 var(--f-voice); margin: 0 0 6px; }
+.s-ui { font: 500 22px/1.3 var(--f-ui); margin: 0 0 6px; }
+.s-mono { font: 400 18px/1.4 var(--f-mono); margin: 0 0 6px; overflow-wrap: anywhere; }
+.face .sample p.note { margin: 0; color: var(--ink-2); font-size: 13px; }
+.scale { width: 100%; border-collapse: collapse; margin-top: 8px; }
+.scale td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
+.scale td:first-child { font: 400 12px var(--f-mono); color: var(--ink-3); white-space: nowrap; width: 110px; }
+.scale td:last-child { font: 400 12px var(--f-mono); color: var(--ink-3); white-space: nowrap; text-align: right; }
+
+.demo { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 24px; display: grid; gap: 20px; }
+.convo { display: grid; gap: 14px; }
+.msg-user { justify-self: end; max-width: 80%; background: var(--code); padding: 10px 14px; border-radius: 10px; font-size: 14px; }
+.msg-agent { font: 400 16px/1.65 var(--f-voice); max-width: 62ch; }
+.msg-agent p { margin: 0 0 10px; }
+pre.block { margin: 0; background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; font: 400 13px/1.55 var(--f-mono); overflow-x: auto; color: var(--ink); }
+pre.block .c { color: var(--ink-3); } pre.block .k { color: var(--accent); } pre.block .s { color: var(--run-fg); }
+.btns { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.btn { font: 500 14px/1 var(--f-ui); padding: 10px 16px; border-radius: 8px; border: 1px solid transparent; cursor: pointer; }
+.btn.primary { background: var(--accent); color: var(--on-accent); }
+.btn.primary:hover { background: var(--accent-hover); }
+.btn.secondary { background: var(--raised); color: var(--ink); border-color: var(--border-strong); }
+.btn.secondary:hover { background: var(--canvas); }
+.btn.ghost { background: transparent; color: var(--ink-2); }
+.btn.ghost:hover { background: var(--code); color: var(--ink); }
+.tree { font-size: 14px; display: grid; gap: 0; }
+.node { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.node:last-child { border-bottom: 0; }
+.node .id { font: 500 12px var(--f-mono); color: var(--ink-3); width: 44px; }
+.node.child .id { padding-left: 16px; width: 60px; }
+.node .txt { min-width: 0; }
+.node .ev { font: 400 12px var(--f-mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.icon-only { position: relative; display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; }
+.icon-only svg { width: 13px; height: 13px; }
+
+.shape-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 40px; }
+.radii { display: flex; gap: 14px; flex-wrap: wrap; }
+.radii div { width: 72px; height: 56px; background: var(--accent-tint); border: 1px solid var(--accent); display: grid; place-items: end start; padding: 6px; font: 400 11px var(--f-mono); color: var(--sup-fg); }
+.spaces { display: grid; gap: 8px; }
+.spaces div { display: flex; align-items: center; gap: 12px; font: 400 12px var(--f-mono); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.spaces span.bar { height: 10px; background: var(--accent); border-radius: 2px; }
+
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rule-card { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 16px 18px; }
+.rule-card .do, .rule-card .dont { font: 500 11px/1 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px; display: block; }
+.rule-card .do { color: var(--sup-fg); } .rule-card .dont { color: var(--ref-fg); }
+.rule-card p { margin: 0; font-size: 14px; }
+.rule-card q { font-family: var(--f-voice); quotes: "\201C" "\201D"; }
+
+.tokens-wrap { position: relative; }
+.copy { position: absolute; top: 10px; right: 10px; font: 500 12px var(--f-ui); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--raised); color: var(--ink); cursor: pointer; }
+.copy:hover { background: var(--canvas); }
+#tokens { max-height: 460px; }
+footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--rule); font: 400 12px/1.6 var(--f-mono); color: var(--ink-3); }
+
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding-block: 28px 64px; }
+  nav { display: none; }
+  .face { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+}
+@media (max-width: 640px) {
+  .principles, .status-grid, .shape-grid, .rules { grid-template-columns: minmax(0, 1fr); }
+  .demo { padding: 16px; }
+  .msg-user { max-width: 92%; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <nav aria-label="Contents">
+    <p>Contents</p>
+    <ul>
+      <li><a href="#principles">Principles</a></li>
+      <li><a href="#color">Color</a></li>
+      <li><a href="#status">Science states</a></li>
+      <li><a href="#type">Typography</a></li>
+      <li><a href="#components">Components</a></li>
+      <li><a href="#shape">Shape and space</a></li>
+      <li><a href="#voice">Interface voice</a></li>
+      <li><a href="#tokens-sec">Tokens</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <header class="top">
+      <div class="meta"><span>CLIO 1.0</span><span>Notebook theme</span><span>Draft, October 2026</span><span>IOWarp, Gnosis Research Center</span></div>
+      <h1>Paper, ink and <em>verdigris</em></h1>
+      <p class="lede">The visual language for CLIO's Notebook theme. A science agent's interface should feel like a well-kept lab notebook: warm paper to read on for hours, dark ink for what was written, and one oxidized-copper accent for what the agent is doing right now.</p>
+    </header>
+
+    <section id="principles">
+      <h2>Principles</h2>
+      <div class="principles">
+        <div><b>Paper first</b><p>Surfaces are warm and quiet so a long session of reading results, logs and plots does not tire the eye. Nothing is pure white or pure black.</p></div>
+        <div><b>One accent, one meaning</b><p>Verdigris marks the primary action and the agent's live activity. If everything is teal, nothing is.</p></div>
+        <div><b>Color carries science state</b><p>Supported, running, refuted and superseded have fixed colors in every theme, so a study tree reads the same in Light, Dark and Notebook.</p></div>
+        <div><b>Show, don't tell</b><p>Provenance and status appear as icons with detail on hover rather than boxes of explanatory text.</p></div>
+      </div>
+    </section>
+
+    <section id="color">
+      <h2>Color</h2>
+      <p class="intro">Every color is a token. Components read tokens and never hex values. The page you are reading uses these exact tokens, so switching your system theme shows the other variant live.</p>
+
+      <h3>Surfaces and ink</h3>
+      <div class="swatch-scroll"><table class="swatch-table" id="t-surface"></table></div>
+
+      <h3>Accent</h3>
+      <div class="swatch-scroll"><table class="swatch-table" id="t-accent"></table></div>
+
+      <h3>Contrast</h3>
+      <p class="intro" style="margin-bottom:12px">Measured WCAG ratios for the pairs that carry text. Every pair clears AA (4.5:1) for body text.</p>
+      <div class="swatch-scroll"><table class="swatch-table" id="t-contrast"></table></div>
+    </section>
+
+    <section id="status">
+      <h2>Science states</h2>
+      <p class="intro">The four states of a hypothesis or study node in the science log. Each has a tint for the chip background and a text color for the label and icon. Refuted is a finding, not an error, so it uses brick and stays distinct from the danger red used for failures.</p>
+      <div class="status-grid" id="status-grid"></div>
+    </section>
+
+    <section id="type">
+      <h2>Typography</h2>
+      <p class="intro">Three faces with three jobs. The serif is the agent's voice and long-form reading. The sans is the interface. The mono is for data, paths, IDs and code. All three are on Google Fonts under the SIL Open Font License.</p>
+      <div class="type-specimen">
+        <div class="face">
+          <div class="label"><b>Literata</b><span>Voice and headings</span></div>
+          <div class="sample">
+            <p class="s-voice">Hypothesis H2 holds for 41 of 60 games.</p>
+            <p class="note">Agent responses, science log entries, page and section titles. Weights 400 and 500, italic for emphasis. Designed for long reading on screens.</p>
+          </div>
+        </div>
+        <div class="face">
+          <div class="label"><b>IBM Plex Sans</b><span>Interface</span></div>
+          <div class="sample">
+            <p class="s-ui">Fork this session to test H2a</p>
+            <p class="note">Buttons, menus, panels, labels, settings and the user's own messages. Weights 400, 500 and 600.</p>
+          </div>
+        </div>
+        <div class="face">
+          <div class="label"><b>IBM Plex Mono</b><span>Data and code</span></div>
+          <div class="sample">
+            <p class="s-mono">@file:/run/agmt.h5:/gnss/east  t=412.8s</p>
+            <p class="note">Code blocks, file references, task IDs, timings, token counts and table numerals. Weights 400 and 500.</p>
+          </div>
+        </div>
+      </div>
+
+      <h3>Scale</h3>
+      <table class="scale">
+        <tr><td>display</td><td style="font:500 40px/1.05 var(--f-voice);letter-spacing:-.02em">Branched science</td><td>Literata 40 / 500</td></tr>
+        <tr><td>title</td><td style="font:500 28px/1.15 var(--f-voice)">Study tree</td><td>Literata 28 / 500</td></tr>
+        <tr><td>heading</td><td style="font:500 20px/1.25 var(--f-voice)">Observations</td><td>Literata 20 / 500</td></tr>
+        <tr><td>voice</td><td style="font:400 16px/1.65 var(--f-voice)">The fork found a better opening word.</td><td>Literata 16 / 400</td></tr>
+        <tr><td>body</td><td style="font:400 15px/1.6 var(--f-ui)">Connected providers and available models</td><td>Plex Sans 15 / 400</td></tr>
+        <tr><td>label</td><td style="font:500 13px/1.3 var(--f-ui)">Plugins</td><td>Plex Sans 13 / 500</td></tr>
+        <tr><td>caption</td><td style="font:500 11px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)">3 forks running</td><td>Plex Mono 11 / 500</td></tr>
+      </table>
+    </section>
+
+    <section id="components">
+      <h2>Components</h2>
+      <p class="intro">How the tokens come together in the places people look most.</p>
+      <div class="demo">
+        <div class="convo">
+          <div class="msg-user">Which opening word did best across the 60 games?</div>
+          <div class="msg-agent">
+            <p>The fork testing <em>H2</em> wins. Opening with a word that covers the five most common letters solved the puzzle in 3.9 guesses on average, against 4.4 for the baseline.</p>
+          </div>
+          <pre class="block"><span class="c"># science log, study wordle-60</span>
+<span class="k">observe</span>(<span class="s">"H2"</span>, games=60, mean_guesses=3.9, supports=41)
+<span class="k">conclude</span>(<span class="s">"H2"</span>, state=<span class="s">"supported"</span>)</pre>
+        </div>
+        <div class="btns">
+          <button class="btn primary" type="button">Run study</button>
+          <button class="btn secondary" type="button">Fork session</button>
+          <button class="btn ghost" type="button">Cancel</button>
+        </div>
+        <div>
+          <p class="eyebrow">Study tree</p>
+          <div class="tree" id="tree"></div>
+        </div>
+      </div>
+      <h3>Rules</h3>
+      <div class="rules">
+        <div class="rule-card"><span class="do">Do</span><p>Use one primary button per view. Everything else is secondary or ghost.</p></div>
+        <div class="rule-card"><span class="dont">Don't</span><p>Fill a large surface with the accent. It is for actions and live activity only.</p></div>
+        <div class="rule-card"><span class="do">Do</span><p>Show a state as an icon chip and put the explanation in its hover detail.</p></div>
+        <div class="rule-card"><span class="dont">Don't</span><p>Use danger red for a refuted hypothesis. A refutation is a result.</p></div>
+      </div>
+    </section>
+
+    <section id="shape">
+      <h2>Shape and space</h2>
+      <div class="shape-grid">
+        <div>
+          <h3 style="margin-top:8px">Radius</h3>
+          <div class="radii">
+            <div style="border-radius:4px">4 inline</div>
+            <div style="border-radius:6px">6 chips</div>
+            <div style="border-radius:8px">8 controls</div>
+            <div style="border-radius:12px">12 panels</div>
+          </div>
+          <h3>Lines</h3>
+          <p class="intro" style="margin:0">Borders are 1px in <code>--border</code>. Dividers inside a panel use the lighter <code>--rule</code>. No drop shadows on in-flow content. Popovers and menus get one soft shadow and sit on <code>--raised</code>.</p>
+        </div>
+        <div>
+          <h3 style="margin-top:8px">Spacing scale</h3>
+          <div class="spaces" id="spaces"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="voice">
+      <h2>Interface voice</h2>
+      <p class="intro">The words in the chrome are part of the theme. The agent writes in its own voice in Literata; the interface around it is short and plain.</p>
+      <div class="rules">
+        <div class="rule-card"><span class="do">Do</span><p>Sentence case, verb first: <q>Add plugin</q>, <q>Fork session</q>.</p></div>
+        <div class="rule-card"><span class="dont">Don't</span><p>Title Case or exclamation marks: <q>Plugin Added Successfully!</q></p></div>
+        <div class="rule-card"><span class="do">Do</span><p>Say what happened and what to do: <q>DeltaAI login node didn't answer. Retry or check the tunnel.</q></p></div>
+        <div class="rule-card"><span class="dont">Don't</span><p>Surface raw exceptions or apologize: <q>Error: ConnectionResetError(104)</q></p></div>
+      </div>
+    </section>
+
+    <section id="tokens-sec">
+      <h2>Tokens</h2>
+      <p class="intro">The full block for gact-tui. Light values sit on <code>[data-theme="notebook"]</code>; the dark variant applies when the system prefers dark. Names follow the theme plan.</p>
+      <div class="tokens-wrap">
+        <button class="copy" type="button" id="copy-btn">Copy</button>
+        <pre class="block" id="tokens"></pre>
+      </div>
+    </section>
+
+    <footer>CLIO Notebook theme, draft for CLIO 1.0. Implementation plan: plans/notebook-theme-plan.md. Fonts: Literata, IBM Plex Sans and IBM Plex Mono (SIL OFL 1.1).</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  var T = [
+    ["surface", "--clio-canvas", "Page background", "#F3EFE6", "#1E1C19"],
+    ["surface", "--clio-surface", "Cards, messages, panels", "#FBF8F1", "#27251F"],
+    ["surface", "--clio-raised", "Popovers, menus", "#FFFDF8", "#2F2C26"],
+    ["surface", "--clio-code", "Code and user messages", "#EDE7DA", "#2A2823"],
+    ["surface", "--clio-border", "Default 1px border", "#DDD6C8", "#3A3630"],
+    ["surface", "--clio-border-strong", "Emphasized border, inputs", "#C9C0AE", "#4A453D"],
+    ["surface", "--clio-ink", "Primary text", "#2B2A26", "#E8E3D8"],
+    ["surface", "--clio-ink-2", "Secondary text", "#5E594F", "#B3AC9F"],
+    ["surface", "--clio-ink-3", "Muted text, captions", "#6B655A", "#9C9588"],
+    ["accent", "--clio-accent", "Primary action, live activity", "#2F6F6A", "#5FA8A0"],
+    ["accent", "--clio-accent-hover", "Hover on accent", "#255B57", "#74B8B0"],
+    ["accent", "--clio-on-accent", "Text on accent", "#FBF8F1", "#16211F"],
+    ["accent", "--clio-accent-tint", "Selected rows, accent wash", "#DCEBE7", "#21403D"],
+    ["accent", "--clio-link", "Links", "#2F6F6A", "#74B8B0"]
+  ];
+  var S = [
+    ["supported", "Verdigris", "Evidence backs the hypothesis.", "#DCEBE7", "#1F4F4B", "#21403D", "#9FD3CB", "M3 8.5l3 3 7-7", "7.50", "6.78"],
+    ["running", "Ochre", "A fork or step is still collecting evidence.", "#F2E3C4", "#6E4E12", "#4A3A1A", "#E8C27A", "M8 2a6 6 0 1 0 6 6", "6.00", "6.50"],
+    ["refuted", "Brick", "Evidence contradicts the hypothesis.", "#F0D9D2", "#7A3022", "#4A2A23", "#E8A595", "M4 4l8 8M12 4l-8 8", "6.84", "6.22"],
+    ["superseded", "Graphite", "Replaced by a reframed question or a later fork.", "#E6E1D6", "#5E594F", "#33302A", "#B3AC9F", "M6 3L2.5 6.5 6 10M3 6.5h6.5a4 4 0 0 1 0 8H8", "5.34", "5.84"]
+  ];
+  function lum(h) { var c = [1, 3, 5].map(function (i) { var x = parseInt(h.substr(i, 2), 16) / 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; }
+  function ratio(a, b) { var x = lum(a), y = lum(b); return ((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)).toFixed(2); }
+  function sw(hex) { return '<span class="chip-sw"><i style="background:' + hex + '"></i>' + hex + '</span>'; }
+  function icon(d) { return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + d + '"/></svg>'; }
+  function table(id, group) {
+    var h = '<tr><th>Token</th><th>Role</th><th>Notebook light</th><th>Notebook dark</th></tr>';
+    T.filter(function (t) { return t[0] === group; }).forEach(function (t) { h += '<tr><td class="tok">' + t[1] + '</td><td class="role">' + t[2] + '</td><td>' + sw(t[3]) + '</td><td>' + sw(t[4]) + '</td></tr>'; });
+    document.getElementById(id).innerHTML = h;
+  }
+  table("t-surface", "surface"); table("t-accent", "accent");
+  var C = [
+    ["Ink on surface", "#2B2A26", "#FBF8F1", "#E8E3D8", "#27251F"],
+    ["Secondary on surface", "#5E594F", "#FBF8F1", "#B3AC9F", "#27251F"],
+    ["Muted on canvas", "#6B655A", "#F3EFE6", "#9C9588", "#1E1C19"],
+    ["Text on accent", "#FBF8F1", "#2F6F6A", "#16211F", "#5FA8A0"],
+    ["Link on surface", "#2F6F6A", "#FBF8F1", "#74B8B0", "#27251F"]
+  ];
+  var ch = '<tr><th>Pair</th><th>Light</th><th>Dark</th></tr>';
+  C.forEach(function (c) {
+    ch += '<tr><td class="role">' + c[0] + '</td><td><span class="chip-sw"><i style="background:' + c[2] + ';display:grid;place-items:center;color:' + c[1] + ';font:600 12px var(--f-ui)">Aa</i>' + ratio(c[1], c[2]) + ':1</span></td><td><span class="chip-sw"><i style="background:' + c[4] + ';display:grid;place-items:center;color:' + c[3] + ';font:600 12px var(--f-ui)">Aa</i>' + ratio(c[3], c[4]) + ':1</span></td></tr>';
+  });
+  document.getElementById("t-contrast").innerHTML = ch;
+
+  var g = "";
+  S.forEach(function (s) {
+    g += '<div class="status-card"><div class="head"><h4>' + s[0].charAt(0).toUpperCase() + s[0].slice(1) + ' <span style="font:400 13px var(--f-ui);color:var(--ink-3)">' + s[1] + '</span></h4><p class="desc">' + s[2] + '</p></div>' +
+      '<div class="lt"><span class="pill" style="background:' + s[3] + ';color:' + s[4] + '">' + icon(s[7]) + s[0] + '</span><span class="small">' + s[3] + ' / ' + s[4] + '<br>' + s[8] + ':1</span></div>' +
+      '<div class="dk"><span class="pill" style="background:' + s[5] + ';color:' + s[6] + '">' + icon(s[7]) + s[0] + '</span><span class="small">' + s[5] + ' / ' + s[6] + '<br>' + s[9] + ':1</span></div></div>';
+  });
+  document.getElementById("status-grid").innerHTML = g;
+
+  var vars = { supported: ["--sup-bg", "--sup-fg"], running: ["--run-bg", "--run-fg"], refuted: ["--ref-bg", "--ref-fg"], superseded: ["--sus-bg", "--sus-fg"] };
+  function st(name) { var s = S.filter(function (x) { return x[0] === name; })[0]; var v = vars[name]; return '<span class="icon-only" title="' + name + '" style="background:var(' + v[0] + ');color:var(' + v[1] + ')">' + icon(s[7]) + '<span style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)">' + name + '</span></span>'; }
+  var N = [
+    ["Q", "", "Which opening word minimizes guesses?", "60 games", "running"],
+    ["H1", "child", "Vowel-heavy openers win", "18 / 60", "refuted"],
+    ["H2", "child", "Openers covering the top five letters win", "41 / 60", "supported"],
+    ["H2a", "child", "Second guess should avoid all opener letters", "fork live", "running"],
+    ["H3", "child", "Rare-letter openers win", "reframed as H2a", "superseded"]
+  ];
+  var tr = "";
+  N.forEach(function (n) { tr += '<div class="node ' + n[1] + '"><span class="id">' + n[0] + '</span><span class="txt">' + n[2] + '</span><span style="display:flex;gap:10px;align-items:center"><span class="ev">' + n[3] + '</span>' + st(n[4]) + '</span></div>'; });
+  document.getElementById("tree").innerHTML = tr;
+
+  var sp = "";
+  [4, 8, 12, 16, 24, 32, 48].forEach(function (v, i) { sp += '<div><span style="width:44px">s-' + (i + 1) + '</span><span class="bar" style="width:' + v * 2 + 'px"></span><span>' + v + 'px</span></div>'; });
+  document.getElementById("spaces").innerHTML = sp;
+
+  var L = [], D = [];
+  T.forEach(function (t) { L.push("  " + t[1] + ": " + t[3] + ";"); D.push("    " + t[1] + ": " + t[4] + ";"); });
+  S.forEach(function (s) {
+    L.push("  --clio-" + s[0] + "-bg: " + s[3] + ";"); L.push("  --clio-" + s[0] + "-fg: " + s[4] + ";");
+    D.push("    --clio-" + s[0] + "-bg: " + s[5] + ";"); D.push("    --clio-" + s[0] + "-fg: " + s[6] + ";");
+  });
+  L.push('  --clio-font-voice: "Literata", Georgia, serif;');
+  L.push('  --clio-font-ui: "IBM Plex Sans", system-ui, sans-serif;');
+  L.push('  --clio-font-mono: "IBM Plex Mono", ui-monospace, monospace;');
+  L.push("  --clio-radius-chip: 6px;\n  --clio-radius-control: 8px;\n  --clio-radius-panel: 12px;");
+  var css = '[data-theme="notebook"] {\n' + L.join("\n") + '\n  color-scheme: light;\n}\n\n@media (prefers-color-scheme: dark) {\n  [data-theme="notebook"] {\n' + D.join("\n") + '\n    color-scheme: dark;\n  }\n}';
+  document.getElementById("tokens").textContent = css;
+
+  var btn = document.getElementById("copy-btn");
+  btn.addEventListener("click", function () {
+    function fallback() { var r = document.createRange(); r.selectNodeContents(document.getElementById("tokens")); var s = getSelection(); s.removeAllRanges(); s.addRange(r); btn.textContent = "Selected"; }
+    try {
+      navigator.clipboard.writeText(css).then(function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1600); }, fallback);
+    } catch (e) { fallback(); }
+  });
+})();
+</script>
+</body>
+</html>
