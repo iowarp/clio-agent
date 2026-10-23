@@ -304,8 +304,12 @@ class ProposalStore:
             raise ProposalError("memory_proposal_not_pending", f"no pending proposal {proposal_id}")
         if edited_facts is not None:
             proposal.facts = list(edited_facts)
+        # Facts the user rewrote while reviewing are theirs (as a correction on the memory
+        # page is); the stored evidence keeps where the proposal came from.
+        stamp = {"source": "user"} if edited_facts is not None else {}
         evidence = [
-            Evidence(**{**item, "messages": tuple(item["messages"])}) for item in proposal.evidence
+            Evidence(**{**item, "messages": tuple(item["messages"]), **stamp})
+            for item in proposal.evidence
         ]
         author = Author("proposal", proposal.id, session=proposal.origin)
         document, base_sha = apply_change(self._service, proposal, evidence)

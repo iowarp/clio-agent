@@ -113,6 +113,8 @@ def test_a_resumed_run_proposing_again_makes_no_duplicate(service: MemoryService
     assert accepted.status == "accepted"
     doc = service.require("user/environments/frontier").document
     assert [f.text for f in doc.live_facts] == ["Project id is CSC124"]
+    assert [f.source for f in doc.live_facts] == ["user"]  # rewritten at review: theirs
+    assert accepted.evidence[0]["source"] == "inferred"  # where it came from is kept
     assert doc.description == "The user's Frontier allocation"
 
 

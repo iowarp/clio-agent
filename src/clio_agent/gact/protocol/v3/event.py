@@ -10,6 +10,7 @@ from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import (
     UNPROJECTED_PART_TYPES,
+    _message_presentation_metadata,
     message_to_v3,
     part_to_v3_block,
     subagent_from_part,
@@ -172,6 +173,10 @@ def _message_completed(event: Event, payload: dict[str, Any], session: Any) -> _
         "cost_usd": payload.get("cost_usd"),
         **({"error_info": payload["error_info"]} if payload.get("error_info") else {}),
     }
+    # What the turn learned at its end (e.g. the memory it used), same public subset as
+    # the message itself, so a live view need not reload to show it.
+    if public := _message_presentation_metadata(_mapping(payload.get("metadata"))):
+        projected["metadata"] = public
     return _Projection("message.completed", projected, message_id)
 
 

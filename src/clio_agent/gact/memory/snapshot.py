@@ -57,7 +57,13 @@ def build_snapshot(
 ) -> dict[str, Any]:
     """Assemble the snapshot of ``scopes``: ``{"text", "loaded", "indexed", "omitted"}``."""
     documents = service.documents(scopes)
-    loaded = [stored for stored in documents if stored.name.category in SINGLETON_CATEGORIES]
+    # A profile or preferences document with no live facts (the profile can hold only
+    # the forgotten list) adds nothing to the prompt and is not credited as used.
+    loaded = [
+        stored
+        for stored in documents
+        if stored.name.category in SINGLETON_CATEGORIES and stored.document.live_facts
+    ]
     others = [stored for stored in documents if stored.name.category not in SINGLETON_CATEGORIES]
     others.sort(
         key=lambda stored: usage.get(document_subject(str(stored.name))).last_read, reverse=True
@@ -88,7 +94,7 @@ def build_snapshot(
     return {
         # Nothing remembered yet: no addition at all (the tools' fragment covers how to
         # start), rather than an empty section on every turn.
-        "text": "\n".join(lines) if documents else "",
+        "text": "\n".join(lines) if loaded or index or omitted else "",
         "loaded": [str(stored.name) for stored in loaded],
         "indexed": [line.split(" ", 2)[1] for line in index],
         "omitted": omitted,
