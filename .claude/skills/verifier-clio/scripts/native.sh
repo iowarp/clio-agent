@@ -15,6 +15,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DESKTOP="$ROOT/external/gact-tui/desktop"
 export VERIFY_DIR="${VERIFY_DIR:-$ROOT/.cloud-run/verify/current}"
 export CLIO_DESKTOP_APP="${CLIO_DESKTOP_APP:-$DESKTOP/src-tauri/target/debug/clio-desktop}"
+# A copy kept after the build tree is cleaned for disk: .cloud-run/native/clio-desktop
+[ -x "$CLIO_DESKTOP_APP" ] || [ ! -x "$ROOT/.cloud-run/native/clio-desktop" ] || CLIO_DESKTOP_APP="$ROOT/.cloud-run/native/clio-desktop"
 DISPLAY_NUM="${NATIVE_DISPLAY:-:97}"
 PORT="${NATIVE_DRIVER_PORT:-4444}"
 

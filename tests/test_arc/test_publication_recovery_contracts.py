@@ -295,6 +295,8 @@ async def test_publication_retry_preserves_usage_after_lost_flush_and_never_repl
             cancelled_turn=False,
             publication_steps=set(),
             publication_usage=None,
+            publication_model_usage=None,
+            agent_runtime={},
             tools_called=[{"name": "shell.bash"}],
             pred=None,
             answer_text="Done",
