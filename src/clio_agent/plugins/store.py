@@ -58,6 +58,10 @@ USER_MARKETPLACE = "user"
 #: ``trusted_digests`` key for a marketplace's ``agents/`` folder (not a valid plugin id).
 AGENTS_DIGEST = "@agents"
 STATE_VERSION = 1
+#: The reader's version. Bump it when reading an installed snapshot gives a different
+#: record than before (a hook event the importer now maps, say): installed
+#: marketplaces are then re-read from their own snapshots, without fetching.
+READER_VERSION = 2
 
 
 class StoreError(RuntimeError):
@@ -500,6 +504,38 @@ class PluginStore:
             self._write_state(state)
         summary.pop("federated_pins", None)
         return summary
+
+    def reread_installed(self) -> list[dict[str, Any]]:
+        """Re-read every installed marketplace from its snapshot when the reader changed.
+
+        Trust carries over through the executable digests: content that has not
+        changed keeps its trust, and a record whose executable parts now read
+        differently is held for the trust step as on any update. Returns one result
+        per re-read marketplace; an unreadable snapshot is reported, not skipped.
+        """
+
+        with self.lock:
+            state = self.read_state()
+            if state.get("reader") == READER_VERSION or not state["marketplaces"]:
+                return []
+            results: list[dict[str, Any]] = []
+            for market, entry in state["marketplaces"].items():
+                snapshot = Path(str(entry.get("snapshot") or ""))
+                if not snapshot.is_dir():
+                    entry["diagnostics"] = [
+                        *entry.get("diagnostics", []),
+                        Diagnostic(
+                            "error", "snapshot_missing", f"{snapshot} is not on disk", market
+                        ).to_dict(),
+                    ]
+                    continue
+                try:
+                    results.append(self._apply(state, market, snapshot, entry))
+                except StoreError as exc:
+                    results.append({"marketplace": market, "error": exc.code, "message": str(exc)})
+            state["reader"] = READER_VERSION
+            self._write_state(state)
+            return results
 
     def update(self, market: str) -> dict[str, Any]:
         entry = self.marketplaces().get(market)

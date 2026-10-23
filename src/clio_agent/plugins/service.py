@@ -171,10 +171,21 @@ class PluginService:
         agents from other marketplaces stay usable.
         """
 
-        if self._ready or not self._install_default:
+        if self._ready:
             return
         with self._ready_lock:
             if self._ready:
+                return
+            for result in self.store.reread_installed():
+                if result.get("error"):
+                    logger.error(
+                        "installed marketplace re-read failed reason=%s marketplace=%s: %s",
+                        result["error"],
+                        result["marketplace"],
+                        result.get("message", ""),
+                    )
+            if not self._install_default:
+                self._ready = True
                 return
             try:
                 self.ensure_default_marketplace()
