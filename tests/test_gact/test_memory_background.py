@@ -193,3 +193,46 @@ def test_background_off_runs_no_pass(client: TestClient, monkeypatch: pytest.Mon
     monkeypatch.setenv("CLIO_MEMORY_BACKGROUND", "false")
     background.memory_tick(app, datetime.now(UTC))
     assert not app.state.sessions.get(session.id).metadata.get(background.IN_FLIGHT)
+
+
+def test_a_document_nobody_read_past_expiry_gets_a_retire_proposal_for_review(
+    client: TestClient,
+) -> None:
+    from clio_agent.arc import memory_document as md
+    from clio_agent.gact.memory.service import Author
+
+    app = client.app
+    service = memory_service(app)
+    stale = md.MemoryDocument(
+        name="old-cluster",
+        description="A retired cluster",
+        category="environments",
+        updated="2025-01-01T00:00:00Z",
+        facts=(
+            md.Fact(
+                id="f1a2b3c",
+                text="Uses the Theta cluster",
+                source="user",
+                session="sess_x",
+                at="2025-01-01",
+            ),
+        ),
+    )
+    service.write(
+        "user/environments/old-cluster", stale, expected_sha=None, author=Author("import", "t")
+    )
+    session = _idle_conversation(app)
+    background.start_curator(
+        app,
+        origin=f"session:{session.id}",
+        source_session=session,
+        workspace_id="ws_global",
+        scopes=("user",),
+        candidates=[],
+        run_key=f"{session.id}:expiry",
+    )
+    retire = [p for p in ProposalStore(service).pending() if p.change == "retire"]
+    assert [p.target for p in retire] == ["user/environments/old-cluster"]
+    # A server rule, not a stated fact: it rests on no source, so it can never auto-apply.
+    assert retire[0].origin.startswith("expiry:") and retire[0].sources == []
+    assert retire[0].status == "pending"
