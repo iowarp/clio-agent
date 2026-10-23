@@ -207,8 +207,17 @@ def choose_model(
 
     caller_account = str(inherited.get("provider_id") or "")
     reasons: list[str] = []
+    # A preference naming only an effort applies to whichever model runs, unless
+    # the preference that chose the model names its own.
+    effort_only = next((p for p in prefers_chain if not p.get("model") and p.get("effort")), {})
+    effort, effort_origin = (
+        str(effort_only.get("effort") or ""),
+        str(effort_only.get("source") or ""),
+    )
+    if effort:
+        reasons.append(f"effort {effort} from {effort_origin}")
     if explicit.strip():
-        candidate = Candidate(explicit.strip(), "explicit")
+        candidate = Candidate(explicit.strip(), "explicit", effort=effort)
         entry = check_candidate(
             entries,
             candidate,
@@ -228,7 +237,7 @@ def choose_model(
             ref,
             "prefers",
             origin=str(preference.get("source") or ""),
-            effort=str(preference.get("effort") or ""),
+            effort=str(preference.get("effort") or effort),
         )
         try:
             entry = check_candidate(
@@ -244,8 +253,10 @@ def choose_model(
         return _choice(ref, entry, candidate, reasons)
     provider_id, model_id = caller_account, str(inherited.get("model_id") or "")
     if not provider_id or not model_id:
-        return ModelChoice(asked="", ran={}, source="inherited", reasons=tuple(reasons))
-    candidate = Candidate(f"{provider_id}/{model_id}", "inherited")
+        return ModelChoice(
+            asked="", ran={}, source="inherited", reasons=tuple(reasons), effort=effort
+        )
+    candidate = Candidate(f"{provider_id}/{model_id}", "inherited", effort=effort)
     try:
         entry = check_candidate(
             entries,
@@ -264,6 +275,7 @@ def choose_model(
                 ran={"provider_id": provider_id, "model_id": model_id},
                 source="inherited",
                 reasons=tuple(reasons),
+                effort=effort,
             )
         raise
     return _choice("", entry, candidate, reasons)

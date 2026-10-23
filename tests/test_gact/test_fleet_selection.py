@@ -111,6 +111,17 @@ def test_a_preference_is_used_and_names_its_source() -> None:
     assert "from agent:reviewer" in choice.reasons
 
 
+def test_an_effort_only_preference_applies_to_the_model_that_runs() -> None:
+    choice = _choose(
+        explicit="haiku",
+        prefers_chain=[{"source": "agent:reviewer", "effort": "high"}],
+    )
+    assert (choice.source, choice.effort) == ("explicit", "high")
+    assert "effort high from agent:reviewer" in choice.reasons
+    inherited = _choose(prefers_chain=[{"source": "pdf", "effort": "low"}])
+    assert (inherited.source, inherited.effort) == ("inherited", "low")
+
+
 def test_an_unmet_preference_steps_down_the_order_and_records_why() -> None:
     """M4: a preference for a model that is not connected; the child runs on the parent's."""
     choice = _choose(
