@@ -39,6 +39,3 @@ workspace_resource_wait = native_tool("workspace_resource_wait")
 workspace_resource_read = native_tool("workspace_resource_read")
 workspace_resource_search = native_tool("workspace_resource_search")
 workspace_resource_structure = native_tool("workspace_resource_structure")
-
-# Provider model catalogs (the update-models skill).
-refresh_provider_models = native_tool("refresh_provider_models")

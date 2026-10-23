@@ -39,6 +39,9 @@ class Step:
     description: str = ""
     #: Options for a flow target, e.g. an arena's ``contestants`` or a council's ``members``.
     options: dict[str, Any] = field(default_factory=dict, hash=False)
+    #: The model the step's child runs on (``account/model`` or a model id); empty
+    #: leaves it to the child's preference, then the run's model.
+    model: str = ""
 
     def __init__(
         self,
@@ -48,6 +51,7 @@ class Step:
         after: list[str] | tuple[str, ...] = (),
         description: str = "",
         options: dict[str, Any] | None = None,
+        model: str = "",
     ) -> None:
         if options is not None and not isinstance(options, dict):
             raise WorkflowError(f"step {id!r}: options must be an object, got {options!r}")
@@ -57,6 +61,7 @@ class Step:
         object.__setattr__(self, "after", tuple(str(a) for a in after))
         object.__setattr__(self, "description", str(description))
         object.__setattr__(self, "options", dict(options or {}))
+        object.__setattr__(self, "model", str(model or "").strip())
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "target": self.target, "after": list(self.after)}
@@ -66,6 +71,8 @@ class Step:
             data["description"] = self.description
         if self.options:
             data["options"] = dict(self.options)
+        if self.model:
+            data["model"] = self.model
         return data
 
     @classmethod
@@ -79,6 +86,7 @@ class Step:
             after=data.get("after") or (),
             description=data.get("description", ""),
             options=data.get("options"),
+            model=data.get("model") or "",
         )
 
 

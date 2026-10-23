@@ -137,6 +137,10 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
     from clio_agent.gact.view_image_tool import build_view_image_tool  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import build_view_pdf_tool  # noqa: PLC0415
     from clio_agent.gact.weather_tools import build_weather_forecast_tool  # noqa: PLC0415
+    from clio_agent.gact.fleet.tools import (  # noqa: PLC0415
+        build_list_models_tool,
+        build_usage_tool,
+    )
     from clio_agent.providers.model_discovery import (  # noqa: PLC0415
         build_refresh_provider_models_tool,
     )
@@ -154,6 +158,8 @@ def _singles(agent_def: Any) -> dict[str, Callable[[], Any]]:
         "wait_for": build_goal_wait_tool,
         "goal_status": build_goal_status_tool,
         "refresh_provider_models": build_refresh_provider_models_tool,
+        "list_models": build_list_models_tool,
+        "usage": build_usage_tool,
         "view_image": build_view_image_tool,
         "view_pdf": build_view_pdf_tool,
         "prepare_document_runtime": build_prepare_document_runtime_tool,
@@ -199,6 +205,8 @@ _SINGLE_NAMES = frozenset(
         "wait_for",
         "goal_status",
         "refresh_provider_models",
+        "list_models",
+        "usage",
         "view_image",
         "view_pdf",
         "prepare_document_runtime",

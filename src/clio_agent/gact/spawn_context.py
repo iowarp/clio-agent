@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from clio_agent.plugins.resolve import Resolution
 
 CreatePreparedChild = Callable[[str, str, dict[str, Any], str | None], StoredSession]
-PrepareChild = Callable[[str, str, dict[str, Any] | None], CreatePreparedChild]
+PrepareChild = Callable[[str, str, dict[str, Any] | None, str], CreatePreparedChild]
 
 
 def _launch_context(parent: StoredSession) -> dict[str, Any]:
@@ -103,10 +103,21 @@ def resolve_child_agent(
 
 
 def prepare_child_session(
-    app: FastAPI, parent_id: str, agent_id: str, target_scope: dict[str, Any] | None
+    app: FastAPI,
+    parent_id: str,
+    agent_id: str,
+    target_scope: dict[str, Any] | None,
+    model: str = "",
 ) -> CreatePreparedChild:
-    """Resolve the child outside task locking; return finite acceptance metadata work."""
+    """Resolve the child and choose its model outside task locking; return finite
+    acceptance metadata work.
+
+    Raises:
+        ModelSelectionRefused: The named model (or the caller's) cannot run the child.
+    """
     from clio_agent.gact.agent_task_limits import max_spawn_depth  # noqa: PLC0415
+    from clio_agent.gact.fleet.child_model import choose_child_model  # noqa: PLC0415
+    from clio_agent.gact.fleet.selection import MODEL_CHOICE_KEY  # noqa: PLC0415
 
     store: SessionStore = app.state.sessions
     if store.snapshot(parent_id) is None:
@@ -122,7 +133,8 @@ def prepare_child_session(
     launch = _launch_context(parent)
     digest = argument_digest(launch)
     child, pin = resolve_child_agent(app, parent_id, agent_id)
-    pin = {**pin, "spawn_target": agent_id}
+    choice = choose_child_model(app, parent, child, explicit=model, same_agent=agent_id == "self")
+    pin = {**pin, "spawn_target": agent_id, MODEL_CHOICE_KEY: choice.to_dict()}
     title = str(child.agent.get("name") or child.agent["id"])
 
     def create(
@@ -147,7 +159,7 @@ def prepare_child_session(
             workspace_id=parent.workspace_id,
             title=title,
             parent_session_id=parent_id,
-            model=dict(parent.model),
+            model={**choice.ran, "variant": ""} if choice.ran else dict(parent.model),
             agent={"id": child.agent["id"]},
             mode=parent.mode,
             edit_mode=parent.edit_mode,

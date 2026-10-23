@@ -20,9 +20,9 @@ def record_child_preparation(owner: Any, monkeypatch: pytest.MonkeyPatch) -> lis
     prepared: list[str] = []
     original = owner.prepare_child
 
-    def prepare(parent: str, agent: str, scope: dict[str, Any] | None) -> Any:
+    def prepare(parent: str, agent: str, scope: dict[str, Any] | None, model: str = "") -> Any:
         prepared.append(agent)
-        return original(parent, agent, scope)
+        return original(parent, agent, scope, model)
 
     monkeypatch.setattr(owner, "prepare_child", prepare)
     return prepared

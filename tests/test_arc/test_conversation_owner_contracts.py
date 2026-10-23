@@ -139,7 +139,9 @@ async def create_environment(
         parent: str,
         agent: str,
         scope: dict[str, Any] | None,
+        model: str = "",
     ) -> CreatePreparedChild:
+        del model
         # Pinned like a defined subagent, so no later first use re-pins the child to
         # the default agent and rewrites its agent id.
         pin = {

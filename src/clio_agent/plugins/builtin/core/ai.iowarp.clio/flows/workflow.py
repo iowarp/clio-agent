@@ -286,7 +286,7 @@ class _WorkflowRun:
                 target=step.target,
             )
         target = Flow(step.target, **step.options) if step.options else step.target
-        call = self.ctx.call(target, payload, key=f"step:{step.id}")
+        call = self.ctx.call(target, payload, key=f"step:{step.id}", model=step.model)
         if step.target in self.editors:
             call.editor = {"run": self.ctx.run_id, "step": step.id}
         self.invocations[step.id] = call.invocation

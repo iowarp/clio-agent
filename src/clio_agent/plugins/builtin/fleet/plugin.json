@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "fleet",
+  "version": "1.0.0",
+  "description": "The models this agent can run work on: list_models, usage (each account's windows, balance and spend) and refresh_provider_models.",
+  "author": {"name": "IoWarp Team"},
+  "license": "BSD-3-Clause",
+  "keywords": ["models", "usage", "providers"]
+}

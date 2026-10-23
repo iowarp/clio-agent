@@ -16,8 +16,7 @@ from tests.test_plugins.helpers import NATIVE, plugin, write
 
 
 def _native() -> frozenset[str]:
-    core = next(r for r in builtin_records() if r.id == "core")
-    return NATIVE | {t.name for t in core.tools}
+    return NATIVE | {t.name for r in builtin_records() for t in r.tools if t.kind == "native"}
 
 
 def _marker_module(marker: Path) -> str:

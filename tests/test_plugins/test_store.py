@@ -26,8 +26,7 @@ class Standard(Agent):
 
 
 def _native() -> frozenset[str]:
-    core = next(r for r in builtin_records() if r.id == "core")
-    return NATIVE | {t.name for t in core.tools}
+    return NATIVE | {t.name for r in builtin_records() for t in r.tools if t.kind == "native"}
 
 
 def _market(root: Path, *, version: str = "1.0.0") -> Path:
@@ -69,7 +68,15 @@ def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
     trusted = service.store.trust("demo")
     assert trusted["agents"] == ["standard"]
     resolution = service.resolve("demo/standard")
-    assert resolution.plugin_ids == ["core", "documents", "pdf", "xlsx", "shell", "doc-runtime"]
+    assert resolution.plugin_ids == [
+        "core",
+        "documents",
+        "pdf",
+        "xlsx",
+        "shell",
+        "fleet",
+        "doc-runtime",
+    ]
     assert service.pinned(resolution.digest).plugin_ids == resolution.plugin_ids
 
 

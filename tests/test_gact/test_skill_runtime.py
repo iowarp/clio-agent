@@ -347,7 +347,7 @@ class Analyst(Agent):
 """
 
 
-#: The skills the built-in core plugin ships to every agent.
+#: The skills every agent carries: core's planning and the fleet plugin's update-models.
 CORE_SKILLS = ("planning", "update-models")
 
 
@@ -811,9 +811,12 @@ def test_session_agent_sees_plugin_skills_and_catalog_skills_together(
         app, session_agent_def(app, session.id), session_id=session.id
     )
 
+    # Plugin skills follow resolution order: core, then the agent's plugins, then
+    # the plugins they require (fleet, which core requires, resolves after visuals).
     assert list(runtime.resolved) == [
-        *CORE_SKILLS,
+        "planning",
         "present-interactive-analysis",
+        "update-models",
         "a2ui-catalog-clio-workspace",
     ]
     assert runtime.resolved["present-interactive-analysis"].skill.scope == "plugin"

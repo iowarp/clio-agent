@@ -44,10 +44,10 @@ async def _spawn_boundary(
     resolved: list[str] = []
     prepare_child = owner.prepare_child
 
-    def prepare(parent: str, agent: str, scope: dict[str, Any] | None) -> Any:
+    def prepare(parent: str, agent: str, scope: dict[str, Any] | None, model: str = "") -> Any:
         assert parent == root.owner.session_id
         resolved.append(agent)
-        return prepare_child(parent, agent, scope)
+        return prepare_child(parent, agent, scope, model)
 
     def authorize(saved: SubmissionContext) -> None:
         assert saved.owner.assignment_id == root.handle

@@ -27,14 +27,18 @@ class Council(Flow):
     """Ask several members the same question independently, then synthesize one answer.
 
     Options: ``members`` (targets; ``self`` is this agent), ``perspectives`` (one
-    per member), ``synthesizer`` (a target; empty synthesizes inside the flow).
+    per member), ``models`` (one per member: the model each runs on, empty for the
+    member's own choice), ``synthesizer`` (a target; empty synthesizes inside the
+    flow, on the model this run runs on) and ``synthesizer_model``.
     """
 
     id = "council"
     description = (
         "Several members answer the same question independently, then one synthesized "
         "answer. Options: members (targets; default three of this agent), perspectives "
-        "(one per member), synthesizer (a target; empty synthesizes inside the flow)."
+        "(one per member), models (one per member, e.g. a small model for each view), "
+        "synthesizer (a target; empty synthesizes inside the flow, on this run's model) "
+        "and synthesizer_model."
     )
     shape = """railroad-beta
 council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("member n")),
@@ -46,6 +50,8 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
         "a pragmatist focused on what should be done next",
     )
     synthesizer = ""
+    models: tuple[str, ...] = ()
+    synthesizer_model = ""
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:
         super().__init__(ref, **options)
@@ -59,9 +65,14 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
         members = list(self.members)
         perspectives = list(self.perspectives) or [""]
         pairs = list(zip(members, cycle(perspectives)))
+        models = list(self.models)
         calls = [
-            ctx.call(member, f"{text}\n\nAnswer independently, as {view}." if view else text)
-            for member, view in pairs
+            ctx.call(
+                member,
+                f"{text}\n\nAnswer independently, as {view}." if view else text,
+                model=models[index] if index < len(models) else "",
+            )
+            for index, (member, view) in enumerate(pairs)
         ]
         views = await ctx.gather(calls, limit=len(calls))
         labelled = [
@@ -69,8 +80,12 @@ council = sequence(choice(terminal("member 1"), terminal("member 2"), terminal("
             for (member, view), result in zip(pairs, views, strict=True)
         ]
         handles = [result.handle for result in views]
-        if self.synthesizer:
-            final = await ctx.call(self.synthesizer, {"question": text, "views": labelled})
+        if self.synthesizer or self.synthesizer_model:
+            final = await ctx.call(
+                self.synthesizer or "self",
+                {"question": text, "views": labelled},
+                model=self.synthesizer_model,
+            )
             return {"answer": final.answer, "members": handles, "synthesizer": final.handle}
         synthesis = await ctx.step(self._synthesis, text, labelled)
         return {"answer": synthesis["answer"], "members": handles}

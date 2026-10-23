@@ -31,6 +31,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from clio_agent.flows.call_metadata import child_session_metadata
 from clio_agent.flows.journal import FlowJournal, digest
 from clio_agent.flows.outcomes import (
     STATUS_OUTCOMES,
@@ -62,8 +63,10 @@ class FlowCall:
         payload: Any,
         invocation: str,
         evidence: list[str] | None,
+        model: str = "",
     ) -> None:
         self.ctx = ctx
+        self.model = model  #: The model the child runs on; empty lets the child decide.
         self.target = target
         self.kind = kind
         self.name = name
@@ -114,6 +117,8 @@ class FlowContext:
         self.root_handle = root_handle
         self.run_invocation = run_invocation
         self._depth = depth
+        #: The flow's own default model for its calls (``Flow.model``); empty: none.
+        self.default_model = str(getattr(flow, "model", "") or "")
         self.limits = flow.limits()
         resolution = getattr(module, "resolution", None)
         self.resolution = resolution
@@ -262,11 +267,16 @@ class FlowContext:
         *,
         evidence: list[str] | None = None,
         key: str = "",
+        model: str = "",
     ) -> FlowCall:
         """Run a subagent, agent, flow or tool and return its result (awaitable).
 
         ``evidence`` pins earlier task handles as the child's input evidence
         (``input_task_refs``); nothing else from this flow is passed implicitly.
+        ``model`` names the model the child runs on (``account/model`` or a model
+        id); empty uses the flow's own ``model`` default, then the child's
+        preference, then this run's model. A model that cannot run the child is
+        refused with ``model_requirement_unmet`` and the alternatives.
         ``key`` replaces the call site in the invocation id when the caller
         starts calls in an order replay may not repeat (the workflow flow keys each
         node's call by node id); keys must be unique within the run.
@@ -278,7 +288,14 @@ class FlowContext:
             self._admit_model_call(kind, name)
         invocation = self._invocation(kind, name, payload, site=f"key={key}" if key else "")
         call = FlowCall(
-            self, spec if kind == "tool" else target, kind, name, payload, invocation, evidence
+            self,
+            spec if kind == "tool" else target,
+            kind,
+            name,
+            payload,
+            invocation,
+            evidence,
+            model or self.default_model,
         )
         if kind == "flow":
             call.target = spec
@@ -291,10 +308,11 @@ class FlowContext:
         *,
         evidence: list[str] | None = None,
         key: str = "",
+        model: str = "",
     ) -> str:
         """Like :meth:`call`, but return the task handle once it is accepted."""
 
-        call = self.call(target, input, evidence=evidence, key=key)
+        call = self.call(target, input, evidence=evidence, key=key, model=model)
         if call.kind == "tool":
             raise CallRefused(
                 "ctx.start needs a subagent, agent or flow, not a tool", target=call.name
@@ -567,33 +585,8 @@ class FlowContext:
         if row is not None and row.get("handle"):
             return str(row["handle"])
         app = self.app
-        agent_id = call.name
-        session_metadata: dict[str, Any] | None = None
-        if call.kind == "flow":
-            reference = call.target if isinstance(call.target, Mapping) else {"id": call.name}
-            agent_id = "self"
-            session_metadata = {
-                "agent_flow": {
-                    "id": reference["id"],
-                    "options": _plain(reference.get("options") or {}),
-                    "input": _plain(call.input),
-                    "depth": self._depth + 1,
-                    "parent_run": self.journal.run_id,
-                }
-            }
-        if call.editor is not None:
-            session_metadata = {**(session_metadata or {}), "workflow_editor": dict(call.editor)}
-        elif call.name == "self":
-            # ``self`` is this agent as a worker on its ``react`` flow, not its selected flow,
-            # so a flow's helpers never re-enter it; a flow recurses via ``ctx.call(<flow>)``.
-            session_metadata = {
-                "agent_flow": {
-                    "id": "react",
-                    "options": {},
-                    "depth": self._depth + 1,
-                    "parent_run": self.journal.run_id,
-                }
-            }
+        agent_id = "self" if call.kind == "flow" else call.name
+        session_metadata = child_session_metadata(call, self._depth + 1, self.journal.run_id)
         launch_context: dict[str, Any] | None = None
         if call.evidence:
             from clio_agent.gact.assignment_evidence import (  # noqa: PLC0415
@@ -613,6 +606,7 @@ class FlowContext:
                 launch_context=launch_context,
                 session_metadata=session_metadata,
                 parent_handle=self.root_handle,
+                model=call.model,
             )
         except AdmissionClosed as exc:
             if exc.stopping:
@@ -620,7 +614,8 @@ class FlowContext:
                 raise CallCancelled(str(exc), target=call.name, status="cancelled") from exc
             raise CallRefused(str(exc), target=call.name) from exc
         except ValueError as exc:
-            raise CallRefused(str(exc), target=call.name) from exc
+            code = str(getattr(exc, "code", "") or "")
+            raise CallRefused(str(exc), target=call.name, reason_code=code) from exc
         if not accepted.get("accepted", False):
             raise CallRefused(
                 str(accepted.get("error") or accepted.get("reason") or "call was not accepted"),

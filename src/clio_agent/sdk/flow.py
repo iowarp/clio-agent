@@ -47,6 +47,9 @@ class Flow(dspy.Module):
     max_concurrency: ClassVar[int] = 0
     max_model_calls: ClassVar[int] = 0
     budget_tokens: ClassVar[int] = 0
+    #: The model this flow's calls run on when a call names none (``account/model``
+    #: or a model id); empty leaves it to each child's preference, then the caller's.
+    model: ClassVar[str] = ""
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:
         super().__init__()
