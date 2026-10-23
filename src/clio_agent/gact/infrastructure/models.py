@@ -324,12 +324,18 @@ class ServiceObservation(BaseModel):
 
     @property
     def service_state(self) -> ServiceState:
-        """Project process state for older clients without claiming readiness."""
+        """Project process state for older clients without claiming readiness.
+
+        An observation that found no installation is ``not_installed`` whatever
+        phase the supervisor last wrote: an install that failed and was stopped
+        leaves ``phase="stopped"`` with ``installed=False``, and calling that
+        "stopped" (or "unknown") offers a Start that can never work.
+        """
         if self.running:
             return "running"
-        if self.phase == "not_installed":
-            return "not_installed"
-        return "stopped" if self.installed else "unknown"
+        if self.installed:
+            return "stopped"
+        return "unknown" if self.phase == "installing" else "not_installed"
 
 
 class ManagedServiceDefinition(BaseModel):
@@ -369,6 +375,19 @@ class ManagedServiceCatalog(BaseModel):
     services: list[ManagedServiceDefinition]
 
 
+class AutoStartSkip(BaseModel):
+    """Why CLIO's boot did not start a managed service it would otherwise start.
+
+    Recorded on the service record instead of queueing an operation that cannot
+    succeed, so the inventory says why nothing happened (no silent skip). Any
+    later lifecycle operation replaces the record and clears it.
+    """
+
+    reason: Literal["not_installed"]
+    detail: str
+    recorded_at: str = Field(default_factory=utc_now)
+
+
 class ServiceRecord(BaseModel):
     """Durable desired and last-observed state for a managed service."""
 
@@ -394,6 +413,8 @@ class ServiceRecord(BaseModel):
     resolved_root: str = ""
     updated_at: str = Field(default_factory=utc_now)
     observation: ServiceObservation | None = None
+    #: Set when boot declined to auto-start this service, with the reason.
+    auto_start_skipped: AutoStartSkip | None = None
 
 
 class ServiceActionRequest(BaseModel):
