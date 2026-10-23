@@ -13,7 +13,7 @@ This plan is the contract for the theme. When code and this plan disagree, chang
 | This plan | The Notebook theme, its tokens, the theme selector and the status tokens |
 | delegation-fork-science-plan.md (CLIO 1.0 project plan) | The study tree and its statuses, which consume the status tokens |
 
-Base: the current gact-tui branch in use for CLIO 1.0. The theme does not depend on the science log having landed. If the study tree exists, Phase 3 wires it to the status tokens; if not, the tokens ship and the study tree uses them when it is built.
+Base: the current gact-tui branch in use for CLIO 1.0, which is the commit the clio-agent branch pins (T-D1). The theme does not depend on the science log having landed. If the study tree exists, Phase 3 wires it to the status tokens; if not, the tokens ship and the study tree uses them when it is built.
 
 ## Rules
 
@@ -22,6 +22,7 @@ Base: the current gact-tui branch in use for CLIO 1.0. The theme does not depend
 3. **Status colors are tokens.** Supported, running, refuted and superseded each get a tint and a text token in every theme, including Light and Dark. The study tree, the log panel and any status icon read them.
 4. **Not a Claude clone.** The accent is verdigris teal, not terracotta or clay, and nothing in the theme uses Anthropic names or values.
 5. **Delete and replace.** If the existing theme code has a dead or duplicate path, remove it rather than keeping it next to the new one.
+6. **One token contract, a debug theme to prove it.** Every color, font and radius token is named once in the theme module, and every theme supplies a value for each. A development-only **Debug** theme sets every color token to a shade of red and every font token to a marker face, so anything on screen that is not red, or not in the marker face, is not reading the core theme. Adding a theme means adding one more value set for the same contract. (Added by T-D2.)
 
 ## Design
 
@@ -104,12 +105,13 @@ Restart the stack, run `node scripts/cloud/ui_check.mjs` with a `--steps` script
 | T4 | A conversation with code, a table, a chart, a workflow railroad and status chips in each theme | All render legibly; screenshots read at both sizes |
 | T5 | Contrast check of every text and tint pair above | Each pair meets WCAG AA (4.5:1 for body text, 3:1 for icons and large text) |
 | T6 | Grep `web/src` for hex colors outside the theme definitions | No matches |
+| T7 | Debug theme: audit the computed colors and fonts of every element on each screen of T4 | Every element reads a Debug value; screenshots show only red and the marker face (added by T-D2) |
 
 ## Done
 
 1. Notebook ships with its light and dark variants, the selector and the status tokens in all three themes.
 2. No component contains a hardcoded color, and T6 passes.
-3. T1 to T6 pass, each recorded in the ledger with the screenshots read.
+3. T1 to T7 pass, each recorded in the ledger with the screenshots read.
 4. The branch is pushed in gact-tui, the submodule pin in clio-agent points at it, and the draft PR carries before and after screenshots of each theme.
 
 ## Working conventions
