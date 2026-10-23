@@ -47,9 +47,7 @@ def arc(tmp_path: Path) -> ARCMemory:
 
 
 @pytest.fixture
-def client(
-    tmp_path: Path, arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[TestClient]:
+def client(tmp_path: Path, arc: ARCMemory, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("CLIO_RESIDENT_LEDGERS_MAX", "1")
 
     def run(question: str, session_id: str, **_kwargs: Any) -> Any:
