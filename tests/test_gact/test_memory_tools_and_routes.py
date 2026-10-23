@@ -257,3 +257,13 @@ def test_a_fork_keeps_memory_as_of_the_fork(client: TestClient) -> None:
     fork = app.state.sessions.get(forked.json()["id"])
     assert fork.metadata["memory_snapshot"] == snapshot
     assert session_policy(app, fork).may_write
+
+
+def test_an_answer_names_the_memory_it_used_on_the_public_message() -> None:
+    from clio_agent.gact.protocol.v3.message import _message_presentation_metadata
+
+    projected = _message_presentation_metadata(
+        {"memory_used": {"read": ["user/topics/hdf5"], "loaded": []}, "tools_called": [{}]}
+    )
+    assert projected == {"memory_used": {"read": ["user/topics/hdf5"], "loaded": []}}
+    assert _message_presentation_metadata({"memory_used": {"read": [], "loaded": []}}) == {}

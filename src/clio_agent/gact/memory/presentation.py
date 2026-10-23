@@ -72,4 +72,16 @@ def present_long_term_memory(
     return "", blocks, ""
 
 
-__all__ = ["LONG_TERM_TOOLS", "present_long_term_memory"]
+def memory_used_projection(metadata: Mapping[str, Any]) -> dict[str, list[str]] | None:
+    """The memory documents an answer read or had loaded: names only, for its popover."""
+    used = metadata.get("memory_used")
+    if not isinstance(used, Mapping):
+        return None
+    names = {
+        key: [name for name in used.get(key) or [] if isinstance(name, str)]
+        for key in ("read", "loaded")
+    }
+    return names if names["read"] or names["loaded"] else None
+
+
+__all__ = ["LONG_TERM_TOOLS", "memory_used_projection", "present_long_term_memory"]

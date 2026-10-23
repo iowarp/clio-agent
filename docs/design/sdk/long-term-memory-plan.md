@@ -100,7 +100,7 @@ Each fact is one line with a trailing annotation: a stable fact id, its `source`
 | --- | --- | --- | --- |
 | `memories` | `user/<category>/<slug>` or `project/<workspace_id>/<category>/<slug>` | The Markdown document | Name, description, aliases and live facts |
 | `memory_versions` | `<memory name>/<n>` | The document before change `n`, the change's author (session, tool call or proposal id) and time | None |
-| `memory_proposals` | `<proposal id>` | Target document, the diff, evidence (session and message ids), stamped sources, status | None |
+| `memory_proposals` | `<proposal id>` | Target document, the structured change and the before and after text the server rendered from it (MD22), evidence (session and message ids), stamped sources, status | None |
 | `memory_usage` | `memory/<memory name>` or `skill/<plugin>/<skill>` | Counters and last-used time | None |
 
 Usage counters are their own kind because every write to a record with a `.text` companion makes the indexer re-tokenize it. Versions make history and rollback possible without git.
@@ -154,7 +154,7 @@ The snapshot is a CLIO addition delivered through the enrichment path with a fix
 **Two stages, two models.**
 
 1. **Extract** (fleet role `memory_extract`). A DSPy signature reads the session transcript and returns typed candidates: `fact`, `category`, `subject`, `sensitive: bool`, and `evidence`, the message ids it came from. The server stamps each candidate's `source` from its evidence: `user` when every evidence message is the user's own text, `tool` when any is a tool result, otherwise `inferred`. Candidates marked `sensitive` are dropped unless **Include sensitive topics** is on. That is a schema field the model fills, not a filter on words.
-2. **Consolidate** (fleet role `memory_consolidate`). A run of the `memory` plugin's defined subagent `curator`, under the task layer, with `memory_search`, `memory_read` and one write tool, `propose_memory_change(target, diff, evidence, rationale)`. It reads the candidates, the current documents they touch, the forgotten list and the usage counters, and proposes additions, supersessions, merges, new documents and retirements. It cannot write memory directly.
+2. **Consolidate** (fleet role `memory_consolidate`). A run of the `memory` plugin's defined subagent `curator`, under the task layer, as a dedicated session owned by a root assignment with a deterministic handle rather than a spawned child of the conversation, since a spawned child always wakes its parent (MD25). Its model comes from session metadata `model_role` (MD26). It has `memory_search`, `memory_read` and one write tool, `propose_memory_change(target, change, evidence, rationale, facts, replaces, merge_from)`, where `change` is `add`, `supersede`, `merge` or `retire` (MD22). It reads the candidates, the current documents they touch, the forgotten list and the usage counters, and proposes additions, supersessions, merges, new documents and retirements. It cannot write memory directly.
 
 The consolidate run is an ordinary task, so it appears in the task list, can be cancelled, and resumes after a restart through the existing task durability. One run processes one session's candidates.
 
@@ -203,7 +203,7 @@ The gact-tui **Memory** settings destination is replaced. Its transcript search 
 **In the conversation.**
 
 - When `create_memory`, `update_memory` or `forget_memory` runs, the tool row renders as a compact memory notice: an icon, "Memory updated" and the document name, linking to the document on the memory page. No text box.
-- When the background pass adds proposals, the memory icon in the navigation shows a badge. Nothing interrupts the conversation.
+- When the background pass adds proposals, the Memory entry in the settings navigation shows the count (MD30). Nothing interrupts the conversation.
 - An answer whose turn read memory (`memory_read`, or `memory_search` results that were then read) carries a memory icon in its footer listing those documents on hover, each linking to the page. The snapshot's `profile` and `preferences` are listed as "loaded" in the same popover, separately from documents read.
 - The context frame view shows the `## Memory` addition with its token cost.
 
