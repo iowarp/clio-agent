@@ -39,6 +39,13 @@ parent and by `before`/`after`, and the dispatcher runs them ahead of the
 trust comes from the plugin's marketplace trust step rather than a content
 fingerprint. See [PLUGINS_AND_FLOWS.md](PLUGINS_AND_FLOWS.md#hooks).
 
+The agent writes files itself with `fs_write_file` and `fs_edit_file`, so a
+`PreToolUse` hook sees every write before it happens. A Claude Code plugin's
+matcher `Write|Edit` maps to those two tools, and its script reads the input it
+was written for: `tool_name` `Write` or `Edit` and `tool_input` with `file_path`,
+`content`, `old_string`, `new_string` and `replace_all`. A deny blocks the write
+and its reason reaches the agent.
+
 ### Config knobs (file → env → default)
 
 | config key                 | env                             | meaning                                                        |

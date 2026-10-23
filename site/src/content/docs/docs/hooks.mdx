@@ -45,7 +45,7 @@ This project hook blocks any shell command or file write whose input contains a 
       "id": "block-private-keys",
       "on": ["PreToolUse"],
       "match": {
-        "tool": "(shell_bash|fs_apply_edit_write)",
+        "tool": "(shell_bash|fs_write_file|fs_edit_file)",
         "argsPattern": "BEGIN [A-Z ]*PRIVATE KEY"
       },
       "run": {

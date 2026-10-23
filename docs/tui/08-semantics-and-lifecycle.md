@@ -154,8 +154,9 @@ uses it before destructive mutations, not only after the fact.
   stored policy allows or denies first.
 - Session `mode="plan"` and `mode="architect"` auto-deny destructive
   tool calls.
-- `/diffs/apply` records an auto-approved permission audit row because
-  the user explicitly clicked apply.
+- The agent's file writes (`fs_write_file`, `fs_edit_file`) go through the
+  gate like any write; `/diffs/revert` (the person's Undo) consults the
+  same policies and records a permission audit row.
 - Direct destructive GACT DELETE endpoints (`sessions`, `messages`,
   context file attachments, tasks, schedules, agents, workspaces, hooks,
   and external MCP server registrations) consult permission policies

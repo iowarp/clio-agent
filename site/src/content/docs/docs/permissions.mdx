@@ -19,6 +19,8 @@ For each action that is not a read, CLIO decides in this order:
 2. Rules. An access rule can `allow`, `deny`, or `ask`. A matching `deny` blocks the action. A matching `allow` lets it through, and the decision is recorded.
 3. The conversation's confirmation policy, if nothing above settled it. **Ask first** prompts you; **AI review** uses the risk reviewer described below.
 
+The agent writes files with `fs_write_file` and `fs_edit_file`. Both are writes, so they follow this order: **Ask first** asks before each write and **Workspace edits** allows writes without asking. [Hooks](/docs/hooks/) see every write before it happens, and a hook can refuse it. Each change can be undone from the Changes panel; see [Evidence](/docs/evidence/#changed-files-and-diffs).
+
 Tools classified as read-only skip this action-approval sequence; access boundaries still apply. A tool counts as a read when it is marked read-only, either by the MCP server that provides it or by CLIO's own tool catalog. A tool that is read-only in practice but not marked as such is treated as a write and asks first.
 
 For the modes, see [Start and steer a conversation](/docs/sessions/).

@@ -130,7 +130,7 @@ The completion gate is this entire inventory, not three illustrative tools:
 | Family / tools | Meaningful observer result | Required live evidence |
 | --- | --- | --- |
 | `fs_read_file` | One filename link; size; rendered document or source | Text, Markdown, code, long expansion |
-| `fs_propose_edit`, `fs_apply_edit_write` | Truthful diff, one context line; no padding | Proposed and applied changes |
+| `fs_write_file`, `fs_edit_file` | Truthful diff, one context line; no padding | Created, overwritten and edited files |
 | `load_skill`, `spawn_skill_task` | Loaded procedure, or dedicated child lifecycle | Real installed skill, not metadata alone |
 | `spawn_agent_task`, `spawn_agents_parallel`, `run_flow`, `run_plan` | Dedicated indexed child lifecycle | Start, failure, successful return |
 | `wait_agent_tasks` | Requested children; terminal statuses and durations | Single open wait; no repeated answers |
