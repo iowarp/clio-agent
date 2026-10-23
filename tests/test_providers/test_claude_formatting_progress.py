@@ -315,6 +315,33 @@ def test_one_word_before_the_fence_is_not_shown(size: int) -> None:
     assert [c.name for c in calls] == ["create_memory"]
 
 
+@pytest.mark.parametrize("size", [1, 7, 400])
+def test_repeated_opening_words_before_prose_and_a_call_are_not_shown(size: int) -> None:
+    """Seen live: the word five times, then the preamble and the call; only prose shows."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = (
+        "_projectid_placeholder\n\n" * 5
+        + "I'll save that as a fact.\n"
+        + FENCE
+        + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    )
+    streamed: list[Any] = []
+    for index in range(0, len(reply), size):
+        streamed += push(turn, reply[index : index + size])
+    closing = turn.finish("words then prose")
+    assert _shown(streamed + closing) == "I'll save that as a fact."
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]
+
+
+def test_an_opening_word_before_an_answer_is_not_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "_memory\n_memory\nYour project ID is CSC123."
+    assert _shown(push(turn, reply) + turn.finish("word then answer")) == (
+        "Your project ID is CSC123."
+    )
+
+
 def test_a_sentence_before_the_fence_is_still_shown() -> None:
     turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
     reply = "I'll save that.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'

@@ -99,6 +99,8 @@ logger = logging.getLogger(__name__)
 #: A bare protocol-like word (``_tool_calls``, ``_check_placeholder``, ``_memory``): a
 #: snake_case identifier starting with an underscore. Never prose, never a preamble.
 _PROTOCOL_WORD = re.compile(r"_[a-z][a-z0-9_]*")
+#: A reply's opening lines that are each blank or one protocol word.
+_PROTOCOL_LINES = re.compile(r"(?:[ \t]*(?:_[a-z][a-z0-9_]*)?[ \t]*\r?\n)+")
 
 
 def _capacity() -> int:
@@ -383,15 +385,20 @@ class _Turn:
         return []
 
     def _without_word_preamble(self, held: str, text: str) -> str:
-        """Text released to the splitter; one word before the fence, as the reply's first
-        release, is not a preamble and is not shown."""
+        """Text released to the splitter. In the reply's first release, opening lines of
+        protocol words (``_projectid_placeholder`` a few times, then prose) and one such word
+        right before the fence are not a preamble and are not shown."""
         release, first, self._released = held + text, not self._released, True
-        fence_at = release.find(FENCE)
-        before = release[:fence_at].strip() if first and fence_at >= 0 else ""
-        if not _PROTOCOL_WORD.fullmatch(before):
+        if not first:
             return release
-        self.dropped_word = before
-        return release[fence_at:]
+        if (lines := _PROTOCOL_LINES.match(release)) and "_" in lines.group():
+            self.dropped_word, release = lines.group().strip(), release[lines.end() :]
+        fence_at = release.find(FENCE)
+        before = release[:fence_at].strip() if fence_at >= 0 else ""
+        if _PROTOCOL_WORD.fullmatch(before):
+            self.dropped_word = f"{self.dropped_word}\n{before}".strip()
+            release = release[fence_at:]
+        return release
 
     def _note_usage(self, message: Any) -> None:
         if usage := _bridge.sdk_result_usage(message):
@@ -440,8 +447,17 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
-        if self.dropped_word and split.calls:
-            held = self.dropped_word  # logged below; it was never shown
+        if self.dropped_word:
+            # Opening protocol words were not a preamble and were never shown. On the record.
+            logger.info(
+                "provider reply text dropped word reason=%s model=%s call_id=%s chars=%d "
+                "fenced_calls=%d",
+                "word_only_beside_calls" if split.calls else "protocol_words_before_text",
+                self.model,
+                call_id,
+                len(self.dropped_word),
+                len(split.calls),
+            )
         if held and split.calls and _PROTOCOL_WORD.fullmatch(held.strip()):
             # A step's only text was one protocol word beside its calls (such as
             # ``_tool_call_placeholder``): not a preamble, so it is not shown. On the record.
