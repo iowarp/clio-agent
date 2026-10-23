@@ -26,7 +26,6 @@ the typed reason every search caller and ``clio doctor`` report.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -189,11 +188,6 @@ def bind_client_to_indexer(config_path: str, environ: MutableMapping[str, str]) 
     return ""
 
 
-def client_pool(environ: Mapping[str, str] | None = None) -> str:
-    """The pool this process's client is bound to (``""`` means the core directly)."""
-    return (environ if environ is not None else os.environ).get(POOL_ENV, "").strip()
-
-
 __all__ = [
     "BOUND_BY_ENV",
     "CLIO_CORE_SEARCH_UNAVAILABLE",
@@ -205,7 +199,6 @@ __all__ = [
     "SEARCH_REMEDY",
     "UPSTREAM_INDEXER_ISSUE",
     "bind_client_to_indexer",
-    "client_pool",
     "ensure_seeded_config_indexed",
     "indexer_block",
     "indexer_chimod_present",

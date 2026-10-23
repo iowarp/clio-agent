@@ -55,7 +55,6 @@ from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for ca
 from clio_agent.arc.clio_core_indexer import (
     CLIO_CORE_SEARCH_UNAVAILABLE,
     bind_client_to_indexer,
-    client_pool,
     indexer_pool,
 )
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
@@ -233,6 +232,9 @@ _client_registered = False  # process-level: are WE in the registry?
 # The shutdown latch (desktop Quit forbids late reacquisition) lives in runtime_stop.
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
 _active_log_level = "error"
+#: The pool this process's native client bound to at attach ("" = the core directly).
+#: Read from here, not the environment: the binding is fixed when the client attaches.
+_client_pool = ""
 
 
 def _client_registry_dir() -> Path:
@@ -412,7 +414,7 @@ class ClioCoreStore:
         self._config_path = config_path
         self._log_level = log_level
         # 905: search needs the indexer composed AND this client bound to a pool above it.
-        self._indexer_present = bool(indexer_pool(config_path) and client_pool())
+        self._indexer_present = bool(indexer_pool(config_path) and _client_pool)
         # Liveness gate (#892): every op below routes through this before the native
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
@@ -460,7 +462,7 @@ class ClioCoreStore:
         clio-agent processes share ONE clio-core instance. Returns the EFFECTIVE config
         (the running daemon's when this process attached to one: first config wins).
         """
-        global _active_config_path, _active_log_level
+        global _active_config_path, _active_log_level, _client_pool
         with cls._init_lock:
             if cls._initialized:
                 return _active_config_path
@@ -479,7 +481,7 @@ class ClioCoreStore:
 
             # 905: bind the client to the indexer before it attaches (a config without
             # one is reported typed: search is then unavailable).
-            bind_client_to_indexer(config_path, os.environ)
+            _client_pool = bind_client_to_indexer(config_path, os.environ)
             # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
             # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,
             # CHECKED: a failed attach/CTE init raises typed and releases this client (#1401).

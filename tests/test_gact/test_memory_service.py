@@ -187,3 +187,12 @@ def test_scope_regex_selects_exactly_the_session_scopes() -> None:
     assert pattern.fullmatch("project/ws_7f2/areas/x")
     assert not pattern.fullmatch("project/ws_7f20/areas/x")
     assert not pattern.fullmatch("project/ws_other/areas/x")
+
+
+def test_search_follows_the_client_binding_not_a_later_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client binds its pool once, at attach; a test or tool that later edits the
+    environment does not turn search off for stores opened afterwards."""
+    monkeypatch.delenv("CLIO_CTE_POOL", raising=False)
+    assert MemoryService(open_memory_store()).store.supports_search()

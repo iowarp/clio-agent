@@ -102,6 +102,7 @@ def _wire_ensure_runtime(monkeypatch, *, client_ok: bool) -> dict[str, Any]:
     # session-end last-one-out release at a port no daemon serves (orphan clio_run).
     monkeypatch.setattr(storage, "_active_config_path", storage._active_config_path)
     monkeypatch.setattr(storage, "_active_log_level", storage._active_log_level)
+    monkeypatch.setattr(storage, "_client_pool", storage._client_pool)
     monkeypatch.setattr(storage.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(storage, "bind_client_to_indexer", lambda _cfg, _env: "")
     monkeypatch.delenv("CLIO_SERVER_CONF", raising=False)
