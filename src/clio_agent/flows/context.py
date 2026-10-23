@@ -44,6 +44,7 @@ from clio_agent.flows.outcomes import (
     FlowTargetUnknown,
     GatherFailed,
     TaskStateUncertain,
+    run_ending,
 )
 from clio_agent.flows.values import CallResult, FlowWorkspace, _as_prediction, _plain, render_input
 from clio_agent.sdk.flow import Flow
@@ -776,18 +777,9 @@ class FlowContext:
 
         try:
             value = await self.flow.forward(self.task, self)
-        except FlowOutcome as outcome:
-            if self._opened:
-                # A cancellation is how the run ended, not a fault in it.
-                status = "cancelled" if isinstance(outcome, CallCancelled) else outcome.reason
-                await self.journal.finish(status, outcome.to_dict())
-            raise
         except Exception as error:
-            # Any other error ends the run too: its record must not stay "running".
             if self._opened:
-                await self.journal.finish(
-                    "flow_error", {"error": type(error).__name__, "message": str(error)[:2000]}
-                )
+                await self.journal.finish(*run_ending(error))
             raise
         if self._opened:
             await self.journal.finish("completed", _plain(value))
