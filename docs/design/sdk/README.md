@@ -9,5 +9,7 @@ Design documents for replacing blueprints with Python-defined agents and plugins
 | [agent-sdk.md](agent-sdk.md) | Python classes, ownership, resolution and validation |
 | [orchestration-semantics.md](orchestration-semantics.md) | Flows, `ctx` primitives on the task layer, plans, research survey |
 | [remote-agents-and-protocols.md](remote-agents-and-protocols.md) | A2A, ACP and Academy (context; a later campaign) |
+| [long-term-memory-plan.md](long-term-memory-plan.md) | Long-term memory: store, tools, background pass, export and import, UI, usage tracking |
+| [memory-ledger.md](memory-ledger.md) | Decisions and acceptance evidence for long-term memory |
 
 These are exported from the shared design docs as of Oct 20, 2026. Edit them here from now on; the repository copy is the one the implementation follows.
