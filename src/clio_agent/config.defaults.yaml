@@ -417,6 +417,13 @@ agents.react_extract.after_steps: 3
 # strict one-call-per-step contract.
 agents.react_extract.enabled: true
 
+# CLIO_FLEET_DELEGATION  (str)  <- src/clio_agent/gact/fleet/guard.py
+# Per account id, whether the agent may run delegated work on it without
+# asking. Unset accounts follow their billing: subscriptions and free
+# accounts yes, metered and credit accounts ask once per conversation.
+# CLIO_FLEET_DELEGATION accepts JSON. Settings Usage writes this mapping.
+# fleet.delegation:  # computed at runtime: {}
+
 # CLIO_FLEET_JUDGES  (str)  <- src/clio_agent/gact/fleet_settings.py
 # Independent judge choices keyed by goals, variants and permissions. Each
 # value is null to inherit the conversation model, or a provider_id/model_id
@@ -430,6 +437,12 @@ agents.react_extract.enabled: true
 # model, then service defaults. CLIO_FLEET_SEARCH accepts JSON. Settings
 # Fleet writes this choice independently of judges.
 # fleet.search:  # default unset; resolved in code
+
+# CLIO_FLEET_USAGE_POLL_SECONDS  (int)  <- src/clio_agent/providers/usage/openrouter.py
+# How old an account's usage reading may be before reading the fleet asks
+# the provider again (OpenRouter's key endpoint). Subscriptions report usage
+# on every call instead.
+fleet.usage_poll_seconds: 300
 
 # CLIO_GOAL_JUDGE_MODEL  (str)  <- src/clio_agent/gact/goal.py
 # Legacy goal judge model override on the caller provider; Fleet goals

@@ -544,6 +544,16 @@ KEY_NOTES: dict[str, str] = {
         "mapping. Null inherits the current conversation model, then service defaults. "
         "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
     ),
+    "fleet.usage_poll_seconds": (
+        "How old an account's usage reading may be before reading the fleet asks the provider "
+        "again (OpenRouter's key endpoint). Subscriptions report usage on every call instead."
+    ),
+    "fleet.delegation": (
+        "Per account id, whether the agent may run delegated work on it without asking. Unset "
+        "accounts follow their billing: subscriptions and free accounts yes, metered and credit "
+        "accounts ask once per conversation. CLIO_FLEET_DELEGATION accepts JSON. Settings Usage "
+        "writes this mapping."
+    ),
     "hooks.allow_managed_only": (
         "Lockdown flag dropping every non-managed (user/project) hook source, keeping only "
         "admin-managed hooks; enable for a locked-down deployment."

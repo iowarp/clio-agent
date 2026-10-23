@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.fleet.entries import FleetEntry, project_fleet
@@ -15,7 +14,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.sessions import Session
     from clio_agent.plugins.resolve import Resolution
 
-logger = logging.getLogger(__name__)
 
 
 def fleet_entries(app: "FastAPI", *, needed: bool) -> list[FleetEntry]:
@@ -85,18 +83,14 @@ def accepted_model(app: "FastAPI", accepted: dict[str, Any]) -> dict[str, Any]:
 
 async def warm_model_catalog(app: "FastAPI") -> None:
     """Read the provider catalog once if the server has not yet, so a child's model
-    can be checked; a failed read leaves the check to refuse with its typed reason."""
+    can be checked. A provider that cannot be reached is a row of the catalog, not
+    an error; anything else that fails the read fails the spawn with its cause."""
 
     if isinstance(getattr(app.state, "provider_catalog", None), dict):
         return
     from clio_agent.gact.provider_catalog_snapshot import read_catalog  # noqa: PLC0415
 
-    try:
-        await read_catalog(app)
-    except Exception as exc:  # noqa: BLE001 - the selection check reports the typed reason
-        logger.warning(
-            "model catalog read before spawn failed reason=model_catalog_not_read error=%s", exc
-        )
+    await read_catalog(app)
 
 
 __all__ = [

@@ -109,8 +109,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
+| `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |
 | `CLIO_FLEET_JUDGES` | `fleet.judges` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SEARCH` | `fleet.search` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
+| `CLIO_FLEET_USAGE_POLL_SECONDS` | `fleet.usage_poll_seconds` | int | `300` | `src/clio_agent/providers/usage/openrouter.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_SCOPE` | `provenance.agentic.flowcept.campaign_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CHECK_SAFE_STOPS` | `provenance.agentic.flowcept.check_safe_stops` | bool | `true` | `src/clio_agent/gact/provenance/factory.py` |

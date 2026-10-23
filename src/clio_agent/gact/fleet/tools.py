@@ -152,9 +152,6 @@ async def usage(account: str = "") -> dict[str, Any]:
     }
 
 
-_COMMON = {"presentation": "model_catalog", "domain": "providers"}
-
-
 def build_list_models_tool() -> Any:
     """The ``list_models`` tool."""
 
@@ -175,7 +172,8 @@ def build_list_models_tool() -> Any:
             },
             "include_unavailable": {"type": "boolean", "default": False},
         },
-        **_COMMON,
+        presentation="model_catalog",
+        domain="providers",
     )
 
 
@@ -188,7 +186,8 @@ def build_usage_tool() -> Any:
         title="Account usage",
         desc=usage.__doc__,
         args={"account": {"type": "string", "default": ""}},
-        **_COMMON,
+        presentation="model_catalog",
+        domain="providers",
     )
 
 
