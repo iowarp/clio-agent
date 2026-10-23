@@ -129,6 +129,8 @@ Added Oct 23, 2026. [model-fleet.md](model-fleet.md) is the contract; its phases
 - RLM leaves (`llm(..., model=)`, M11) wait for the `rlm` flow, which stays out of scope above. The row is recorded as not started, not blocked.
 - Accounts that cannot be connected from a cloud session (Codex OAuth, an OpenRouter key, a local vLLM) are qualified with recorded responses replayed through the adapter, and the live row names what was replayed. The `claude_code` account is qualified live.
 
+Status Oct 23: M3, M6 and M12 passed live; M4, M5 and M7 to M10 pass in tests because the cloud session has no account that produces them; M1 and M2 are partial; M11 waits. Evidence and decisions M-D3 to M-D10 are in [model-fleet-ledger.md](model-fleet-ledger.md).
+
 ## Phase 7: the agent writes files itself
 
 Added Oct 23, 2026. The agent proposes an edit (`fs_propose_edit`) and the person applies it from the diff panel (`/diffs/apply`). That split comes from the older CLIO that held small models to deterministic pipelines. It also lets a write skip the PreToolUse hooks: proposing counts as read-only, and the person's apply runs no hooks. A plugin's write guard (WTF-P's, for one) therefore never sees a write.
@@ -136,6 +138,8 @@ Added Oct 23, 2026. The agent proposes an edit (`fs_propose_edit`) and the perso
 1. The agent gets a write tool that changes the file on disk. It is not read-only, so the permission gate asks or allows by the session's mode, and PreToolUse hooks run on it like any other write. `Write` and `Edit` in Claude Code hooks match it.
 2. The proposal tool and the person's apply route are deleted. The diff panel stays as the record of what changed, with undo.
 3. Qualification: a trusted plugin's PreToolUse hook on `Write|Edit` blocks a write, and the reason reaches the agent and the UI (row L13).
+
+Status Oct 23: done. The agent writes with `fs_write_file` and `fs_edit_file`, the diff panel keeps the record with revert (`/diffs/revert`), and L13 passed live with WTF-P's guard, armed by the new `UserPromptExpansion` hook event.
 
 ## Phase 5: qualification
 

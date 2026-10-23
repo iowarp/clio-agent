@@ -98,6 +98,7 @@ annotation reads as the most-restrictive shape).
 | `PostToolUse`      | —            | after a result; `deny` is feedback, `updatedToolOutput` rewrites view |
 | `PostToolBatch`    | —            | after a turn's tool round resolves (observation)                      |
 | `UserPromptSubmit` | ✔            | prompt boundary; `deny` vetoes the turn, `defer` suspends it          |
+| `UserPromptExpansion` | ✔         | a typed slash command expanded, before its turn; the matcher runs against `payload.command_name` (`plugin:command`); `deny` stops the command, added context reaches the model with it |
 | `Stop`             | — (bounded)  | completion gate; `deny` re-drives one more turn, bounded by `loopLimit` + a global cap |
 | `Answer`           | —            | the settled answer, before persist (`payload.answer`); `note`, `check` `{passed,text}` and `updatedAnswer` + `reason` land as `answer_hook` notices / a visible revision (`gact/hooks/answer.py`) |
 | `SessionStart` / `SessionEnd`         | — | session lifecycle observation                          |

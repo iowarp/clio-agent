@@ -131,9 +131,10 @@ Shared capability plugins replace the copies. `create-pdf-report` exists byte-id
 
 | Plugin | Contents | Requires |
 | --- | --- | --- |
-| `core` (ships in clio-agent) | Operating guidelines, rendering section from the UI catalog, `clio.runtime.tasks` fragment, task controls, `ask_user`, `react` and `plan` flows, `planning` and `update-models` skills, `clio-workspace` A2UI catalog | none |
+| `core` (ships in clio-agent) | Operating guidelines, rendering section from the UI catalog, `clio.runtime.tasks` fragment, task controls, `ask_user`, `react` and `plan` flows, `planning` skill, `clio-workspace` A2UI catalog | none |
 | `orchestration` (ships in clio-agent) | `run_workflow`, `run_flow`, `council` and `arena` flows | `delegation` |
-| `workspace` | `fs_read_file`, `fs_propose_edit`, `fs_apply_edit_write`, `view_image`; grounding fragment | none |
+| `fleet` (ships in clio-agent) | `list_models`, `usage`, `refresh_provider_models`; `fleet.models` fragment; `update-models` skill (moved from `core`) | none; `core` requires it |
+| `workspace` | `fs_read_file`, `fs_write_file`, `fs_edit_file`, `view_image`; grounding and edits fragments (the staged `fs_propose_edit` and `fs_apply_edit_write` are deleted, Phase 7) | none |
 | `shell` | `shell_bash`, `prepare_execution_runtime`; `shell.prefer-gh` fragment | none |
 | `web` | `mcp.json`: `web: clio-kit mcp-server web` | none |
 | `document-runtime` | `prepare_document_runtime`, `prepare_document` | `shell` |

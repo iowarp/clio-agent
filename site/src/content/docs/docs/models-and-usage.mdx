@@ -1,0 +1,35 @@
+---
+title: Models and usage
+description: See what each connected account has used and has left, let CLIO run parts of the work on other models, and decide which accounts it may spend.
+---
+
+Every provider you connect is an account, and its chat models form CLIO's fleet. You choose the model for a conversation. CLIO can choose a different model for work it delegates: a subagent, a flow member, or a workflow step. A council can run its members on a small model and its synthesis on a larger one.
+
+## See what each account has used
+
+Open **Settings → Usage**. Each connected account shows:
+
+| Account | What you see |
+|---|---|
+| A subscription (Claude, ChatGPT) | Each usage window, for example five-hour and weekly, with how much is used and when it resets. Values come from the account's own replies, so they update as you work. |
+| A credit account (OpenRouter) | The remaining balance and the key's limit. |
+| A metered API key | What this workspace spent on it. |
+| A local or site model | `unmetered`, with the tokens it served. |
+
+Switch between **Used** and **Remaining**. If a reading fails, the last good value stays, dimmed, with its age and the reason. Hover the usage readout under the message box to see the current conversation's windows and what it spent per model.
+
+## Models in delegated work
+
+The agent can list the fleet with `list_models` and check accounts with `usage`. When it starts a subagent, a flow or a workflow step, it may name a model. Otherwise the child uses the model its agent or plugins prefer, and then the parent's model.
+
+A model that lacks something the child needs, such as vision or tool calling, is refused with `model_requirement_unmet`. The refusal names the models that fit, and nothing starts. The person's model picker works the same way: it notes which models fit the agent, and sending on one that does not is refused with the reason.
+
+Each child records which model it ran on and why: you named it, a plugin preferred it, or it was inherited. A flow run's summary on its railroad names the models it used, each one's share of the tokens, and the account's busiest window. Hover a step or member to see its model.
+
+## Decide which accounts CLIO may spend
+
+Under **Settings → Usage**, each account has **CLIO may use this account for delegated work**. Subscriptions and free accounts start on; metered and credit accounts start off. When CLIO wants to run delegated work on an account that is off, it asks you once per conversation. A model you picked yourself never asks.
+
+## When a window runs out
+
+If a usage window runs out on a model CLIO chose, the agent receives the reset time and the models that can answer now, and moves the work. If it runs out on the model you chose, the turn's error lists the models that can answer now. Nothing switches until you pick one, and picking one retries the turn on it.
