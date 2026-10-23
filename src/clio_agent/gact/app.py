@@ -625,7 +625,6 @@ from clio_agent.gact.types import (
     ErrorInfo,
 )
 from clio_agent.gact.usage import (  # noqa: E402,F401
-    _PRICE_TABLE_PER_M,
     _all_known_lms,
     _entry_prompt_text,
     _entry_reasoning_text,
