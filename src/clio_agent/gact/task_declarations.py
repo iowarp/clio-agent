@@ -11,6 +11,7 @@ from uuid import uuid4
 from clio_agent.arc.task_types import QuestionDefinition, TaskOwner
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.fleet.child_model import accepted_model
 from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.gact.task_publication import publish_task_notice
@@ -631,7 +632,11 @@ def build_spawn_runtime_tools(
             launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
             model=str(model or "").strip(),
         )
-        return {**result, **({"task_id": result["handle"]} if "handle" in result else {})}
+        return {
+            **result,
+            **({"task_id": result["handle"]} if "handle" in result else {}),
+            **accepted_model(app, result),
+        }
 
     async def spawn_agent_task(
         agent: str = "",

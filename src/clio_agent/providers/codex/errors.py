@@ -85,15 +85,22 @@ CODEX_PLAN_LIMIT_MESSAGE_MARKER = "Codex account usage limit reached"
 
 
 class CodexPlanLimitError(CodexResponseError):
-    """A 429 whose text names the Codex plan window -- terminal, never retried."""
+    """The backend's code names the Codex plan window or quota -- terminal, never retried."""
 
     reason = "codex_plan_limit"
 
     def __init__(
-        self, message: str, *, code: str | None = None, status_code: int | None = None
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status_code: int | None = None,
+        resets_at: int | None = None,
     ) -> None:
         #: The Codex backend's own words (kept verbatim, unprefixed).
         self.detail = message
+        #: When the exhausted window resets (Unix seconds), when the backend said.
+        self.resets_at = resets_at
         super().__init__(
             f"{CODEX_PLAN_LIMIT_MESSAGE_MARKER}: {message}", code=code, status_code=status_code
         )
@@ -259,7 +266,7 @@ def next_retry_delay_ms(
 
 def _codex_plan_limit_extra_details(node: object) -> dict[str, object]:
     if isinstance(node, CodexPlanLimitError):
-        return {"code": node.code, "status_code": node.status_code}
+        return {"code": node.code, "status_code": node.status_code, "resets_at": node.resets_at}
     return {}
 
 

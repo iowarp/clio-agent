@@ -87,6 +87,7 @@ from clio_agent.providers.codex.errors import (
     CodexPlanLimitError,
     is_usage_limit_body,
     is_usage_limit_error,
+    usage_limit_resets_at,
 )
 from clio_agent.providers.codex.file_inputs import (
     DocumentInputRecovery,
@@ -675,7 +676,9 @@ async def _stream(
                 raise FilePreparationUnsupportedError(message)
             if is_usage_limit_error(payload):
                 # The account's plan window is exhausted: terminal, never retried.
-                raise CodexPlanLimitError(message, code=_error_code(payload))
+                raise CodexPlanLimitError(
+                    message, code=_error_code(payload), resets_at=usage_limit_resets_at(payload)
+                )
             failure = terminal_error(wire, request, payload)
             if isinstance(failure, CodexTransientStreamError):
                 raise failure  # an overload / unknown code: DSPy retries it

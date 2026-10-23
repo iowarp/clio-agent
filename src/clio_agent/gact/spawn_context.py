@@ -173,4 +173,6 @@ def prepare_child_session(
             defer_initialization=True,
         )
 
+    # The spending guard reads the choice before the child is created.
+    create.model_choice = choice.to_dict()  # type: ignore[attr-defined]
     return create

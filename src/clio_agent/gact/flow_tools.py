@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.fleet.child_model import accepted_model
 from clio_agent.tools.task_call_context import TASK_CALL
 
 WORKFLOW_EDITOR_TOOLS = ("workflow_add_step", "workflow_cancel_step")
@@ -123,7 +124,7 @@ async def start_flow(
         },
         model=str(model or "").strip(),
     )
-    return {**accepted, "flow": flow_id}
+    return {**accepted, "flow": flow_id, **accepted_model(app, accepted)}
 
 
 #: The ``model`` argument of run_flow and run_workflow.

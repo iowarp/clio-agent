@@ -22,6 +22,7 @@ from clio_agent.arc.task_types import (
     argument_digest,
 )
 from clio_agent.gact.fleet.child_model import warm_model_catalog
+from clio_agent.gact.fleet.guard import guard_spending
 from clio_agent.gact.native_work import now
 from clio_agent.gact.session_input import input_delivery
 from clio_agent.gact.task_access import TaskCaller
@@ -578,6 +579,12 @@ async def spawn(
         if prepared_parent is not None
         else None
     )
+    if prepared_child is not None and (
+        refused := await guard_spending(
+            self.app, caller.session_id, dict(getattr(prepared_child, "model_choice", {}) or {})
+        )
+    ):
+        return refused
 
     def create() -> TaskSnapshot:
         with self.history.serialized(writing=True):

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.fleet.entries import FleetAccount, FleetEntry, project_fleet
+from clio_agent.gact.fleet.guard import delegation_allowed
 from clio_agent.gact.fleet.spend import SpendReport, spend_by_account, workspace_spend
 from clio_agent.gact.provider_catalog_snapshot import read_catalog
 from clio_agent.providers.usage.openrouter import refresh_openrouter_usage
@@ -48,6 +49,7 @@ class Fleet:
             # Typed, so a reader never mistakes "not yet observed" for "no limits".
             "usage_missing_reason": "" if snapshot is not None else "no_reading_yet",
             "spend": spend.to_dict() if spend is not None else None,
+            "delegation_allowed": delegation_allowed(account.id, account.billing),
         }
 
     def to_wire(self) -> dict[str, Any]:

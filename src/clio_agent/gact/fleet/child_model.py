@@ -72,6 +72,17 @@ def choose_child_model(
     )
 
 
+def accepted_model(app: "FastAPI", accepted: dict[str, Any]) -> dict[str, Any]:
+    """``{"model": <model_choice>}`` for an accepted spawn, so the caller sees which
+    model its child runs on and why; empty when nothing was accepted."""
+
+    from clio_agent.gact.fleet.selection import MODEL_CHOICE_KEY  # noqa: PLC0415
+
+    session = app.state.sessions.get(str(accepted.get("session_id") or ""))
+    choice = (getattr(session, "metadata", None) or {}).get(MODEL_CHOICE_KEY)
+    return {"model": choice} if choice else {}
+
+
 async def warm_model_catalog(app: "FastAPI") -> None:
     """Read the provider catalog once if the server has not yet, so a child's model
     can be checked; a failed read leaves the check to refuse with its typed reason."""
@@ -88,4 +99,10 @@ async def warm_model_catalog(app: "FastAPI") -> None:
         )
 
 
-__all__ = ["caller_model", "choose_child_model", "fleet_entries", "warm_model_catalog"]
+__all__ = [
+    "accepted_model",
+    "caller_model",
+    "choose_child_model",
+    "fleet_entries",
+    "warm_model_catalog",
+]

@@ -296,6 +296,30 @@ def _managed_service_kind(provider_id: str) -> bool:
     return bool(getattr(preset, "managed_service_id", None))
 
 
+def _with_model_exhausted(state: Any, info: Any) -> Any:
+    """Add ``details.model_exhausted`` to a plan-limit error (``gact/fleet/exhaustion.py``)."""
+
+    from clio_agent.gact.fleet.exhaustion import (  # noqa: PLC0415
+        exhausted_message,
+        model_exhausted,
+    )
+
+    app, sid = getattr(state, "app", None), str(getattr(state, "sid", "") or "")
+    record = model_exhausted(app, sid, dict(info.details or {})) if app is not None else None
+    if record is None:
+        return info
+    details = {**info.details, "model_exhausted": record}
+    if record["chooser"] == "person":
+        actions = list(info.details.get("recovery_actions") or [])
+        details["recovery_actions"] = (
+            actions if "switch_model" in actions else ["switch_model", *actions]
+        )
+        return info.model_copy(update={"details": details})
+    return info.model_copy(
+        update={"details": details, "message": exhausted_message(record, info.message)}
+    )
+
+
 def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
     """The typed error for a turn whose forward raised.
 
@@ -314,7 +338,7 @@ def forward_error_info(state: Any, exc: BaseException, partial_answer: str) -> A
 
     terminal = _terminal_signal_error_info(exc, {"original_error": type(exc).__name__})
     if terminal is not None:
-        return terminal
+        return _with_model_exhausted(state, terminal)
     provider_id = _turn_provider_id(state)
     details: dict[str, Any] = {
         "original_error": type(exc).__name__,
