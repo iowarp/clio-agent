@@ -106,6 +106,8 @@ def process_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "task_kind": task["kind"],
         # A child conversation that runs a flow: the UI opens its run view, not a chat.
         "flow": {"id": str(flow["id"])} if flow.get("id") else None,
+        # The model the child runs on and why, recorded when it was created.
+        "model_choice": recorded_choice(app, owner["session_id"]) if agent_task else None,
         "kind": "agent"
         if task["kind"] in {"Session", "Subagent"}
         else "question"
@@ -143,7 +145,7 @@ def agent_task_view(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "updated_at": task["updated_at"],
         "run_label": task["label"],
         "error_reason": process["error_reason"],
-        "model_choice": recorded_choice(app, process["child_session_id"]),
+        "model_choice": process["model_choice"],
     }
 
 
