@@ -1,0 +1,253 @@
+"""The fleet read model, usage readers and spend (docs/design/sdk/model-fleet.md)."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from typing import Any
+
+import httpx
+import pytest
+
+from clio_agent.gact.fleet.entries import project_fleet
+from clio_agent.gact.fleet.spend import spend_by_account, spend_by_model
+from clio_agent.providers.usage import openrouter
+from clio_agent.providers.usage.capture import record_rate_limit_usage
+from clio_agent.providers.usage.readers import (
+    claude_snapshot,
+    codex_snapshot_from_headers,
+    openrouter_snapshot,
+)
+from clio_agent.providers.usage.snapshot import USAGE_BOARD, UsageBoard
+
+
+@pytest.fixture(autouse=True)
+def _clean_board() -> Any:
+    USAGE_BOARD.clear()
+    yield
+    USAGE_BOARD.clear()
+
+
+def _model(model_id: str, **overrides: Any) -> dict[str, Any]:
+    row = {
+        "model_id": model_id,
+        "aliases": [],
+        "chat_selectable": True,
+        "modalities": ["image", "text"],
+        "native_tool_calling": True,
+        "context_window": 200_000,
+        "output_limit": 64_000,
+        "availability": "available",
+        "reasoning": {"levels": ["low", "high"]},
+        "capability_tags": {"capabilities": []},
+        "model_facts": {
+            "pricing": {
+                "value": {
+                    "input": {"kind": "usd", "per_1m": 1.0},
+                    "output": {"kind": "usd", "per_1m": 5.0},
+                },
+                "evidence": [{"source": "litellm"}],
+            }
+        },
+    }
+    row.update(overrides)
+    return row
+
+
+def _catalog() -> dict[str, Any]:
+    return {
+        "providers": [
+            {
+                "id": "claude_code",
+                "name": "Claude Code",
+                "kind": "claude_code",
+                "auth": "ok",
+                "health": "ready",
+                "models": [
+                    _model("claude-haiku-5-5", aliases=["haiku"]),
+                    _model("text-only", modalities=["text"], native_tool_calling=False),
+                    _model("embedder", chat_selectable=False),
+                ],
+            },
+            # A local runtime nobody started is not an account.
+            {"id": "lm_studio", "auth": "not_required", "health": "unavailable", "models": []},
+            # A cloud provider with no key is not an account.
+            {"id": "openai", "auth": "missing", "health": "unavailable", "models": []},
+            {
+                "id": "openrouter",
+                "name": "OpenRouter",
+                "kind": "openai",
+                "auth": "ok",
+                "health": "unavailable",
+                "failure": "timeout",
+                "models": [_model("some/model")],
+            },
+        ]
+    }
+
+
+def test_the_fleet_lists_connected_accounts_and_their_chat_models() -> None:
+    accounts, entries = project_fleet(_catalog())
+
+    assert [(a.id, a.billing) for a in accounts] == [
+        ("claude_code", "subscription"),
+        ("openrouter", "credit"),
+    ]
+    assert [e.ref for e in entries] == [
+        "claude_code/claude-haiku-5-5",
+        "claude_code/text-only",
+        "openrouter/some/model",
+    ]
+    haiku, text_only, routed = entries
+    assert (haiku.tool_calling, haiku.vision, haiku.context_tokens, haiku.output_tokens) == (
+        True,
+        True,
+        200_000,
+        64_000,
+    )
+    assert haiku.aliases == ("haiku",) and haiku.effort_levels == ("low", "high")
+    assert haiku.price["input"] == {"kind": "usd", "per_1m": 1.0}
+    assert haiku.price_source == "litellm"
+    assert (text_only.tool_calling, text_only.vision) == (False, False)
+    # An unhealthy account's models are listed but unavailable, with the reason.
+    assert routed.available is False and routed.unavailable_reason == "account_unavailable"
+
+
+def test_claude_windows_come_from_the_unified_windows_of_the_rate_limit_event() -> None:
+    raw = {
+        "status": "allowed",
+        "rateLimitType": "five_hour",
+        "unifiedWindows": {
+            "five_hour": {"utilization": 0.15, "resetsAt": 1792716600},
+            "seven_day": {"utilization": 0.34, "resetsAt": 1793062800},
+        },
+    }
+    record_rate_limit_usage(SimpleNamespace(rate_limit_info=SimpleNamespace(raw=raw)))
+
+    snapshot = USAGE_BOARD.latest("claude_code")
+    assert snapshot is not None and snapshot.status == "allowed"
+    assert [(w.name, w.used_percent, w.window_minutes) for w in snapshot.windows] == [
+        ("5-hour", 15.0, 300),
+        ("Weekly", 34.0, 10080),
+    ]
+    assert snapshot.windows[0].resets_at.startswith("2026-10-")
+
+
+def test_an_older_claude_event_with_one_window_still_reads() -> None:
+    snapshot = claude_snapshot(
+        "claude_code",
+        {"status": "allowed_warning", "rateLimitType": "seven_day", "utilization": 0.9},
+    )
+    assert snapshot is not None
+    assert [(w.name, w.used_percent) for w in snapshot.windows] == [("Weekly", 90.0)]
+    assert claude_snapshot("claude_code", {"status": "allowed"}) is None
+
+
+def test_codex_headers_carry_both_windows_and_credits() -> None:
+    snapshot = codex_snapshot_from_headers(
+        "codex",
+        [
+            ("X-Codex-Primary-Used-Percent", "61.5"),
+            ("x-codex-primary-window-minutes", "300"),
+            ("x-codex-primary-reset-at", "1800000000"),
+            ("x-codex-secondary-used-percent", "12"),
+            ("x-codex-secondary-window-minutes", "10080"),
+            ("x-codex-credits-has-credits", "true"),
+            ("x-codex-credits-unlimited", "false"),
+            ("x-codex-credits-balance", "4.5"),
+        ],
+    )
+    assert snapshot is not None
+    assert [(w.name, w.used_percent) for w in snapshot.windows] == [
+        ("5-hour", 61.5),
+        ("Weekly", 12.0),
+    ]
+    assert snapshot.balance is not None and snapshot.balance.remaining == 4.5
+    assert codex_snapshot_from_headers("codex", {"content-type": "text/event-stream"}) is None
+
+
+def test_openrouter_key_response_is_a_balance_and_a_key_window() -> None:
+    snapshot = openrouter_snapshot(
+        "openrouter",
+        {"data": {"limit": 20.0, "limit_remaining": 15.0, "usage": 5.0, "limit_reset": "monthly"}},
+    )
+    assert snapshot.balance is not None
+    assert (snapshot.balance.remaining, snapshot.balance.limit) == (15.0, 20.0)
+    assert [(w.name, w.used_percent) for w in snapshot.windows] == [("Key limit (monthly)", 25.0)]
+    with pytest.raises(ValueError, match="without_data"):
+        openrouter_snapshot("openrouter", {"error": "nope"})
+
+
+def test_a_failed_read_keeps_the_last_good_snapshot_and_says_why() -> None:
+    board = UsageBoard()
+    board.record(openrouter_snapshot("openrouter", {"data": {"limit_remaining": 3.0}}))
+    board.record_failure("openrouter", "openrouter_key_unreachable: ConnectError")
+
+    snapshot = board.latest("openrouter")
+    assert snapshot is not None and snapshot.balance is not None
+    assert snapshot.balance.remaining == 3.0
+    assert snapshot.read_failure == "openrouter_key_unreachable: ConnectError"
+    assert snapshot.read_failed_at
+
+    board.record_failure("never-read", "openrouter_key_missing")
+    assert board.latest("never-read").read_failure == "openrouter_key_missing"
+
+
+def test_openrouter_is_read_with_its_own_key_and_a_failure_keeps_the_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    responses = iter(
+        [
+            httpx.Response(200, json={"data": {"limit_remaining": 7.0, "limit": 10.0}}),
+            httpx.Response(503, json={}),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["Authorization"])
+        return next(responses)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        openrouter.httpx,
+        "AsyncClient",
+        lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw),
+    )
+    monkeypatch.setattr(openrouter, "resolve_cloud_api_key", lambda _pid: "sk-or-test")
+
+    asyncio.run(openrouter.refresh_openrouter_usage())
+    asyncio.run(openrouter.refresh_openrouter_usage())  # fresh: not read again
+    asyncio.run(openrouter.refresh_openrouter_usage(force=True))
+
+    assert calls == ["Bearer sk-or-test", "Bearer sk-or-test"]
+    snapshot = USAGE_BOARD.latest("openrouter")
+    assert snapshot is not None and snapshot.balance.remaining == 7.0
+    assert snapshot.read_failure == "openrouter_key_http_503"
+
+
+def _assistant(ref: str, tokens: dict[str, int], cost: float | None) -> dict[str, Any]:
+    provider, model = ref.split("/", 1)
+    return {
+        "role": "assistant",
+        "tokens": tokens,
+        "cost_usd": cost,
+        "metadata": {"agent_runtime": {"model": {"provider_id": provider, "model_id": model}}},
+    }
+
+
+def test_spend_is_summed_per_model_from_the_transcript() -> None:
+    messages = [
+        {"role": "user", "tokens": {"input": 99}},
+        _assistant("claude_code/haiku", {"input": 10, "cache_read": 100, "output": 5}, None),
+        _assistant("claude_code/haiku", {"input": 1, "output": 1}, None),
+        _assistant("openrouter/x", {"input": 3, "output": 2}, 0.25),
+    ]
+    by_model = spend_by_model(messages)
+
+    haiku = by_model["claude_code/haiku"]
+    assert (haiku.tokens_input, haiku.tokens_cached, haiku.tokens_output) == (11, 100, 6)
+    assert haiku.turns == 2 and haiku.turns_without_cost == 2
+    by_account = spend_by_account(by_model)
+    assert by_account["openrouter"].cost_usd == 0.25
+    assert by_account["claude_code"].tokens == 117
