@@ -164,3 +164,19 @@ def test_a_claude_code_server_script_is_executable_whatever_its_name(tmp_path: P
     store.trust("cc")
     write(root / "s.md", "import os\nos.system('id')\n")
     assert store.update("cc")["pending_trust"] == ["p"]
+
+
+def test_untrusted_flows_skip_a_marketplace_without_a_plugin_manifest(tmp_path: Path) -> None:
+    """A held Claude Code marketplace has no top-level plugin.json and declares no flows."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.gact.plugin_authoring import untrusted_flows
+
+    snapshot = tmp_path / "snap"
+    write(snapshot / "plugins" / "x" / ".claude-plugin" / "plugin.json", "{}")
+    store = SimpleNamespace(
+        pending=lambda: [SimpleNamespace(marketplace="kit")],
+        marketplaces=lambda: {"kit": {"trusted": True, "snapshot": str(snapshot)}},
+    )
+    assert untrusted_flows(store) == []
