@@ -20,8 +20,7 @@ tmp dir. The daemon is spawned lazily by the normal connect-or-spawn path on the
 process-hygiene fixture calls it deterministically); :func:`reap_private_daemon` is the
 belt-and-suspenders kill for a crashed run. Nothing here touches the host's ``~/.clio``.
 
-Non-cte tests are unaffected: the env only redirects clio-core coordination paths, and
-tests default to ``CLIO_ARC_STORE=local`` anyway.
+Every test runs ARC on this private daemon, each in its own namespace (``tests/conftest.py``).
 """
 
 from __future__ import annotations
@@ -40,21 +39,16 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from clio_agent.arc.clio_core_indexer import indexer_block
+
 _PRIVATE_ROOT_NAME = re.compile(r"clio-agent-cte-[0-9]+-[A-Za-z0-9_-]+\Z")
 
 # Private clio-core topology for the suite: DRAM hot tier + file cold tier, own port.
 # Mirrors the proven private-daemon config of tests/test_arc/test_clio_core_offload_spill.py
 # with suite-sized caps (the offload test keeps its own tiny 2MB cap to force spill).
 #
-# NOTE (clio-core 2.2.0, upstream issue #905): this topology deliberately does NOT
-# declare the ``clio_cte_indexer`` chimod. SemanticSearch moved into that chimod
-# upstream, so the ``cte``-leg BM25 search tests (``test_search_bm25_on_clio_core``,
-# ``test_events_family_never_in_search_scopes[cte]``) get zero hits and are marked
-# ``xfail`` -- declaring the chimod would "fix" that, but live-testing it here
-# surfaced an intermittent hang on the FIRST ``PutBlob`` after client attach
-# (reproduced with and without also binding the client via ``CLIO_CTE_POOL``), which
-# would break every cte-backed test, not just search. See
-# ``clio_agent.arc.clio_core_config``'s INDEXER CHIMOD note.
+# The private daemon composes the BM25 indexer exactly as the seeded default does
+# (``clio_agent.arc.clio_core_indexer``), so the cte-leg search tests run real search.
 
 # Shared-memory budget of ONE private daemon (#1478 follow-up). clio-core backs its
 # runtime segments and the ram bdev with pagefile-committed shared memory. At the
@@ -101,7 +95,7 @@ compose:
     performance:
       metadata_log_path: "{metadata_log}"
       transaction_log_capacity: "32MB"
-"""
+{indexer}"""
 
 
 @dataclass(frozen=True)
@@ -233,6 +227,7 @@ def isolate_cte_env(root: Path, environ: MutableMapping[str, str]) -> CteIsolati
             main_segment=PRIVATE_MAIN_SEGMENT,
             metadata_segment=PRIVATE_METADATA_SEGMENT,
             ram_bdev=PRIVATE_RAM_BDEV,
+            indexer=indexer_block((store_dir / "indexer_index.log").as_posix()),
         ),
         encoding="utf-8",
     )

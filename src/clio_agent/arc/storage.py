@@ -18,7 +18,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from itertools import batched
 from pathlib import Path
-from typing import Optional, Protocol, runtime_checkable
+from typing import Optional
 
 from clio_agent import paths
 
@@ -45,15 +45,18 @@ from clio_agent.arc.clio_core_async_ops import (
 # ``storage._default_cte_dir`` / ``default_cte_config_path`` keep working.
 from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_CTE_CONFIG_TEMPLATE,
-    CLIO_CORE_SEARCH_INDEXER_ABSENT,
     _cte_yaml_path,
     _default_cte_dir,
     _default_cte_file_capacity,
     _default_cte_ram_capacity,
     default_cte_config_path,
-    indexer_chimod_present,
     runtime_state_dir,
-    warn_if_search_indexer_absent,
+)
+from clio_agent.arc.clio_core_indexer import (
+    CLIO_CORE_SEARCH_UNAVAILABLE,
+    bind_client_to_indexer,
+    client_pool,
+    indexer_pool,
 )
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_RUNTIME_PORT,
@@ -64,6 +67,12 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _runtime_alive,
 )
 from clio_agent.arc.companion_policy import may_carry_companion
+from clio_agent.arc.companion_write import (
+    companion_body,
+    companion_sizes,
+    drop_shrinking,
+    remember_written,
+)
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import pidfile_live_pid
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
@@ -95,6 +104,7 @@ from clio_agent.arc.runtime_stop import (  # noqa: F401 - re-exported for caller
     reset_runtime_shutdown,
 )
 from clio_agent.arc.runtime_stop import stop_runtime_daemon as _stop_runtime_daemon
+from clio_agent.arc.store_protocol import ARCStore  # noqa: F401 - the seam callers import
 from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
@@ -113,78 +123,6 @@ ARC_KINDS: tuple[str, ...] = (
 # Suffix for the optional plain-text companion blob (BM25 discovery, Thread D) a
 # backend may store next to a record. NOT a record: scan()/get() skip it.
 _SEARCH_SUFFIX = ".text"
-
-
-@runtime_checkable
-class ARCStore(Protocol):
-    """Narrow persistence seam for ARC's record kinds.
-
-    A record is addressed by ``(kind, name)``: ``kind`` is one of :data:`ARC_KINDS`; ``name`` is the
-    record stem (no extension). The store owns the physical layout and tiering, so ARC never touches
-    the filesystem directly. clio-core maps ``(kind, name)`` onto namespaced, multi-tier
-    storage.
-    """
-
-    def put(
-        self,
-        kind: str,
-        name: str,
-        data: bytes,
-        *,
-        tier: str = "warm",
-        search_text: Optional[str] = None,
-    ) -> None:
-        """Persist ``data`` for ``(kind, name)`` (overwrites).
-
-        ``search_text`` (optional) is a plain-text projection of the record for BM25 semantic
-        discovery (Thread D); a backend may index it. ``None`` drops any existing companion.
-        """
-        ...
-
-    def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
-        """Put independent records together (no order between them).
-
-        Every record is attempted; a store that lost any raises
-        :class:`~clio_agent.arc.batch_put.BatchPutError` naming what was written.
-        """
-        ...
-
-    def get(self, kind: str, name: str) -> Optional[bytes]:
-        """Return bytes for ``(kind, name)`` or ``None`` if absent."""
-        ...
-
-    def exists(self, kind: str, name: str) -> bool:
-        """Return whether a record exists for ``(kind, name)``."""
-        ...
-
-    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
-        """Yield ``(name, data)`` for every record in ``kind`` whose name
-        starts with ``prefix`` (``""`` = all). Order is unspecified."""
-        ...
-
-    def scan_names(self, kind: str, prefix: str = "") -> Iterator[str]:
-        """List matching record addresses without reading their bodies."""
-        ...
-
-    def delete(self, kind: str, name: str) -> None:
-        """Delete the record for ``(kind, name)`` if present (no-op if absent)."""
-        ...
-
-    def clear(self) -> None:
-        """Delete all persisted records across all kinds."""
-        ...
-
-    def supports_search(self) -> bool:
-        """Whether :meth:`search` does real (e.g. BM25) semantic ranking."""
-        ...
-
-    def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
-    ) -> list[tuple[str, float]]:
-        """Rank records in ``kind`` (name starting with ``name_prefix``) by relevance
-        to ``query_text``. Returns ``[(name, score)]`` best-first. Backends without a
-        search index may return a degraded ranking (see ``supports_search``)."""
-        ...
 
 
 @contextlib.contextmanager
@@ -445,6 +383,7 @@ class ClioCoreStore:
     """
 
     _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
+    _kinds: tuple[str, ...] = ARC_KINDS  # the kinds clear() and prewarm cover
     _attach_verified = False  # the post-attach probe ran (once per process attach)
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
@@ -458,6 +397,7 @@ class ClioCoreStore:
         log_level: str = "error",
         init_settle_s: float = 0.5,
         namespace: str = "",
+        kinds: Sequence[str] = ARC_KINDS,
     ) -> None:
         config_path = self._ensure_runtime(config_path, log_level, init_settle_s)  # effective
         import clio_cte_core_ext as cte  # noqa: PLC0415
@@ -467,11 +407,12 @@ class ClioCoreStore:
         # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
         # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
         self._namespace = namespace
+        self._kinds = tuple(kinds)  # what clear() and the tag prewarm cover
         self._tag_ids = TagIds(cte, self.tag)  # Tag(name) blocks with the GIL: once per kind
         self._config_path = config_path
         self._log_level = log_level
-        # 905: cached once, not re-read per call -- see supports_search() below.
-        self._indexer_present = indexer_chimod_present(env=os.environ, config_path=config_path)
+        # 905: search needs the indexer composed AND this client bound to a pool above it.
+        self._indexer_present = bool(indexer_pool(config_path) and client_pool())
         # Liveness gate (#892): every op below routes through this before the native
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
@@ -496,7 +437,7 @@ class ClioCoreStore:
                     on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
                 )
                 type(self)._attach_verified = True
-        self._tag_ids.prewarm(ARC_KINDS)
+        self._tag_ids.prewarm(self._kinds)
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
@@ -536,9 +477,9 @@ class ClioCoreStore:
             config_path = _ensure_runtime_daemon(iowarp_core, config_path, log_level)
             clio_core_attach.export_client_config(config_path)
 
-            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search;
-            # diagnose configs that do not compose it, including our default.
-            warn_if_search_indexer_absent(config_path)
+            # 905: bind the client to the indexer before it attaches (a config without
+            # one is reported typed: search is then unavailable).
+            bind_client_to_indexer(config_path, os.environ)
             # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
             # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,
             # CHECKED: a failed attach/CTE init raises typed and releases this client (#1401).
@@ -620,11 +561,14 @@ class ClioCoreStore:
         guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
         # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
         companion = name + _SEARCH_SUFFIX
-        if search_text is not None:
-            text = search_text.encode("utf-8")
-            guarded_store_rpc(self, "put", store_put, self, kind, companion, text)
+        if search_text is not None:  # padded; a shrinking one is dropped first (MD9)
+            pair = [(companion, companion_body(search_text))]
+            guarded_store_rpc(self, "put", drop_shrinking, self, kind, pair)
+            guarded_store_rpc(self, "put", store_put, self, kind, companion, pair[0][1])
+            remember_written(self, kind, pair)
         elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
+            companion_sizes(self).forget(kind, companion)
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
     def put_many(self, kind: str, records: Sequence[PutRecord]) -> None:
@@ -638,6 +582,7 @@ class ClioCoreStore:
                 batch were written (named in the error).
         """
         blobs: list[tuple[str, bytes]] = []
+        companions: list[tuple[str, bytes]] = []
         stale: list[str] = []
         for record in records:
             payload = stored_body(record.data)
@@ -645,14 +590,20 @@ class ClioCoreStore:
                 stream_audit("store.put", kind=kind, name=record.name, size=len(payload))
             blobs.append((record.name, payload))
             if record.search_text is not None:
-                blobs.append((record.name + _SEARCH_SUFFIX, record.search_text.encode("utf-8")))
+                companions.append(
+                    (record.name + _SEARCH_SUFFIX, companion_body(record.search_text))
+                )
             elif may_carry_companion(kind, record.name):
                 stale.append(record.name + _SEARCH_SUFFIX)
-        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs)
+        if companions:  # a shrinking companion is dropped before the batch (MD9)
+            guarded_store_rpc(self, "put", drop_shrinking, self, kind, companions)
+        lost = guarded_store_rpc(self, "put", store_put_many, self, kind, blobs + companions)
+        remember_written(self, kind, [pair for pair in companions if pair[0] not in lost])
         for companion in stale:
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)
+            companion_sizes(self).forget(kind, companion)
         if lost:
-            written = [name for name, _ in blobs if name not in lost]
+            written = [name for name, _ in blobs + companions if name not in lost]
             raise BatchPutError(kind, written, dict(lost))
 
     def tag(self, kind: str) -> str:
@@ -708,10 +659,12 @@ class ClioCoreStore:
         # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
         store_delete(self, kind, name)
         store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
+        companion_sizes(self).forget(kind, name + _SEARCH_SUFFIX)
 
     def clear(self) -> None:
         # Guard each listing/delete RPC; a progressing multi-blob clear is not a stall.
-        for kind in ARC_KINDS:
+        companion_sizes(self).clear()
+        for kind in self._kinds:
             blob_names = guarded_store_rpc(
                 self, "clear", lambda k: list(self._cte.Tag(self.tag(k)).GetContainedBlobs()), kind
             )
@@ -721,33 +674,38 @@ class ClioCoreStore:
     # ---- semantic discovery (Thread D) ----
 
     def supports_search(self) -> bool:
-        """Real BM25 needs the indexer chimod composed (clio_core_config's INDEXER
-        CHIMOD note, #905); report the truth instead of a blanket True."""
+        """Real BM25 needs the indexer chimod composed and this client bound above it
+        (:mod:`clio_agent.arc.clio_core_indexer`, #905)."""
         return self._indexer_present
 
     def search_degradation_reason(self) -> str:
         """Typed reason real search is unavailable, or ``""`` when available."""
-        return "" if self._indexer_present else CLIO_CORE_SEARCH_INDEXER_ABSENT
+        return "" if self._indexer_present else CLIO_CORE_SEARCH_UNAVAILABLE
 
     @guard_store_op("search")
     def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+        self,
+        kind: str,
+        query_text: str,
+        *,
+        name_prefix: str = "",
+        name_re: str = "",
+        k: int = 10,
     ) -> list[tuple[str, float]]:
-        """BM25 semantic search over the plain-text companions; returns
-        ``[(record_name, score)]`` best-first with the ``.text`` suffix stripped."""
+        """BM25 search over the plain-text companions; returns ``[(record_name, score)]``
+        best-first with the ``.text`` suffix stripped. The indexer also returns
+        in-scope blobs that match no query term at score 0; those are not hits."""
         import re  # noqa: PLC0415
 
-        blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
+        if name_prefix and name_re:
+            raise ValueError("search takes name_prefix or name_re, not both")
+        stem = f"(?:{name_re})" if name_re else f"{re.escape(name_prefix)}.*"
+        tag = re.escape(self.tag(kind))
         results = self._client.SemanticSearch(
-            self.tag(kind), blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+            tag, stem + re.escape(_SEARCH_SUFFIX), query_text, k, self._cte.PoolQuery.Dynamic()
         )
-        out: list[tuple[str, float]] = []
-        for r in results:
-            bn = r.blob_name
-            if bn.endswith(_SEARCH_SUFFIX):
-                bn = bn[: -len(_SEARCH_SUFFIX)]
-            out.append((bn, float(r.score)))
-        return out
+        out = [(r.blob_name.removesuffix(_SEARCH_SUFFIX), float(r.score)) for r in results]
+        return [(name, score) for name, score in out if score > 0]
 
 
 def make_arc_store(
@@ -756,6 +714,7 @@ def make_arc_store(
     data_dir: "str | Path | None" = None,
     config_path: str = "",
     namespace: str | None = None,
+    kinds: Sequence[str] = ARC_KINDS,
 ) -> "ARCStore":
     """Build the ARC persistence backend.
 
@@ -790,6 +749,6 @@ def make_arc_store(
             )
         )
         return clio_core_attach.build_tracked_store(
-            cfg, backend=backend, data_dir=data_dir, namespace=ns
+            cfg, backend=backend, data_dir=data_dir, namespace=ns, kinds=kinds
         )
     raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; the only store is clio-core ('cte')")

@@ -36,7 +36,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -190,7 +190,12 @@ class ClioCoreAttachError(RuntimeError):
 
 
 def build_tracked_store(
-    cfg: str, *, backend: str | None, data_dir: "str | Path", namespace: str = ""
+    cfg: str,
+    *,
+    backend: str | None,
+    data_dir: "str | Path",
+    namespace: str = "",
+    kinds: "Sequence[str] | None" = None,
 ) -> "ARCStore":
     """Build the clio-core ARC store for ``cfg``, publishing the attach state as it goes.
 
@@ -202,6 +207,8 @@ def build_tracked_store(
         cfg: The clio-core config path (daemon and client both use it).
         backend: The explicit ``backend`` arg given to ``make_arc_store``, if any.
         data_dir: Unused; kept for the factory's signature.
+        namespace: Tag namespace of the store's records.
+        kinds: Record kinds the store clears and prewarms (default ``ARC_KINDS``).
 
     Returns:
         A live ``ClioCoreStore``.
@@ -222,7 +229,9 @@ def build_tracked_store(
         raise
     try:
         clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
-        store = storage.ClioCoreStore(config_path=cfg, namespace=namespace)
+        store = storage.ClioCoreStore(
+            config_path=cfg, namespace=namespace, kinds=kinds or storage.ARC_KINDS
+        )
     except Exception as exc:  # noqa: BLE001 - re-raised typed: clio-core or nothing
         failure = ArcStoreUnavailableError(error=exc, config_path=cfg)
         mark_unavailable(failure.reason, str(exc), cfg, port)

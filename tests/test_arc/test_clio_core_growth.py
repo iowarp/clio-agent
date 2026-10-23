@@ -77,6 +77,7 @@ def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             file_tier=_cte_yaml_path(tmp_path / "storage.bin"),
             file_capacity="8MB",
             metadata_log=_cte_yaml_path(tmp_path / "metadata.log"),
+            indexer="",
         ),
         encoding="utf-8",
     )

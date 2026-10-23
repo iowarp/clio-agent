@@ -1,14 +1,15 @@
 """Thread D: semantic discovery over the ARC live context plane.
 
-"Which expert/scope knows about X" — BM25 on clio-core (the plain-text companion).
-clio-core is the only store; today it cannot search (#905), and says so.
+"Which expert/scope knows about X" — BM25 on clio-core (the plain-text companion),
+served by the ``clio_cte_indexer`` chimod the seeded config composes (#905). A config
+without it refuses search with a typed reason.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from clio_agent.arc.clio_core_config import CLIO_CORE_SEARCH_INDEXER_ABSENT
+from clio_agent.arc.clio_core_indexer import CLIO_CORE_SEARCH_UNAVAILABLE
 from clio_agent.arc.memory import ARCMemory, SearchUnavailableError
 from clio_agent.arc.storage import make_arc_store
 
@@ -44,27 +45,20 @@ def test_search_companions_are_never_listed_as_scopes():
     assert arc.list_segment_scopes(sid) == ["agentA/hdf5", "agentA/seismic", "agentA/wildfire"]
 
 
-def test_search_is_a_typed_error_when_clio_core_cannot_search():
+def test_search_ranks_the_scope_that_knows_about_the_query():
     arc = ARCMemory(store=make_arc_store(backend="cte"))
     sid = _seed(arc)
-    with pytest.raises(SearchUnavailableError) as caught:
+    assert arc.segment_search_is_semantic() is True
+    hits = arc.search_segment_scopes(sid, "earthquake epicenter", k=3)
+    assert [scope for scope, _score in hits][:1] == ["agentA/seismic"]
+
+
+def test_search_is_a_typed_error_when_clio_core_cannot_search(monkeypatch):
+    store = make_arc_store(backend="cte")
+    monkeypatch.setattr(store, "_indexer_present", False)
+    arc = ARCMemory(store=store)
+    sid = _seed(arc)
+    assert arc.segment_search_degradation_reason() == CLIO_CORE_SEARCH_UNAVAILABLE
+    with pytest.raises(SearchUnavailableError) as caught:  # typed, never an empty ranking
         arc.search_segment_scopes(sid, "earthquake", k=3)
-    assert caught.value.reason == CLIO_CORE_SEARCH_INDEXER_ABSENT
-
-
-@pytest.mark.integration
-def test_search_on_clio_core_reports_degraded_not_silently_empty():
-    """Today's real behavior (clio-core#905): the indexer chimod's binary is absent
-    from every published 2.2.1 wheel, so clio-agent does not declare it (declaring it
-    hangs the first PutBlob -- see clio_core_config's INDEXER CHIMOD note). ``search``
-    still reaches the bare core and gets zero hits, but the backend REPORTS that
-    honestly instead of claiming real BM25: ``segment_search_is_semantic`` is False
-    and ``segment_search_degradation_reason`` names the typed reason -- never a
-    silent "semantic" empty result indistinguishable from a genuine no-match query."""
-    arc = ARCMemory(store=make_arc_store(backend="cte"))
-    sid = _seed(arc, sid="search_clio_core_s1")
-    assert arc.segment_search_is_semantic() is False
-    assert arc.segment_search_degradation_reason() == CLIO_CORE_SEARCH_INDEXER_ABSENT
-    with pytest.raises(SearchUnavailableError):  # typed, never an empty ranking
-        arc.search_segment_scopes(sid, "earthquake magnitude and epicenter location", k=3)
-    arc.clear_all()
+    assert caught.value.reason == CLIO_CORE_SEARCH_UNAVAILABLE

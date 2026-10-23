@@ -50,7 +50,7 @@ def _companions(arc: ARCMemory, session: str) -> dict[str, str]:
         stem = name[len(head) : -len(".text")]
         out[FoldingSegmentStore.scope_of_record(stem)] = (
             raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-        )
+        ).rstrip(" ")  # companions are padded with spaces to their size class
     return out
 
 
@@ -109,7 +109,9 @@ def test_a_deleted_atom_stays_findable_and_is_marked(arc: ARCMemory) -> None:
     assert {a.atom_id for a in hit.atoms if a.compacted} == {gone.id}
 
 
-def test_search_itself_is_typed_unavailable(arc: ARCMemory) -> None:
+def test_search_itself_is_typed_unavailable(arc: ARCMemory, monkeypatch) -> None:
+    """A clio-core that composes no indexer cannot search, and says so (typed)."""
+    monkeypatch.setattr(arc._store, "_indexer_present", False)
     with pytest.raises(SearchUnavailableError):
         arc.search_segment_scopes("s", "ocean", k=5)
     with pytest.raises(SearchUnavailableError):

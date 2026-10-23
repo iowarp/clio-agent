@@ -148,6 +148,37 @@ after `kill -9` of the daemon.
 `tests/test_arc/test_store_fail_stop.py` guards that. The in-process `_MemoryStore`
 in `arc/live.py` exists only for unit tests and has no search.
 
+### Search: the BM25 indexer
+
+`ARCStore.search` is BM25 over a record's plain-text `.text` companion, served by
+clio-core's optional `clio_cte_indexer` chimod (clio-core#905), an interposer in front
+of the CTE core. The seeded config composes it after the core
+(`arc/clio_core_indexer.py`), and the client binds to it with `CLIO_CTE_POOL`:
+
+```yaml
+  - mod_name: clio_cte_indexer
+    pool_name: clio_cte_indexer
+    pool_query: local
+    pool_id: "564.0"
+    restart: true
+    next_pool_id: "512.0"
+    tag_re: "(.+/)?(memories|segments)"
+    blob_re: ".*\\.text"
+    index_log_path: "<cte dir>/indexer_index.log"
+```
+
+Only the search companions of long-term memory documents and of the context
+plane's segment search records are tokenized; segment bodies and `_events` chunks
+are out of scope and cost one regex check per put. The index persists in its own
+snapshot and write-ahead log, so a restart or a killed daemon restores it without a
+rescan. A seeded config from before this was upgraded in place once. A config
+without the indexer cannot search: callers get the typed reason
+`clio_core_search_unavailable`, and `clio doctor` shows a required, red
+`clio_core_search` row with the remedy. Companions are padded with spaces to their
+size class, and a companion that shrinks across a class is deleted before it is
+rewritten, so a shorter document is never found by words it lost
+(`arc/companion_write.py`). Qualification: memory ledger P0, MD1 and MD9.
+
 **Selection is fail-loud, never a silent fallback** (`make_arc_store`,
 `arc/storage.py`). If the clio-core binding is absent or fails to initialize,
 the store **raises** a typed `ArcStoreUnavailableError`. This is the
@@ -182,6 +213,8 @@ The default paths below assume the gact session store's default root
 | # | Location | Owner | Path (default) | Reader |
 | --- | --- | --- | --- | --- |
 | 1 | ARC records (`ARC_KINDS`) | ARC (`arc/storage.py`) | CTE tags `<kind>` in the default namespace; data on `<user_data_dir>/cte/hosts/<host>/storage.bin` | `ARCMemory` reads/projections; `arc/context_compiler.py` |
+| 1a | Long-term memory (`memories`, `memory_versions`, `memory_proposals`, `memory_usage`) | `gact/memory/service.py`, the one writer | CTE tags `memory/<kind>` (namespace `memory`, its own kinds; not `ARC_KINDS`) on the same daemon and file tier | memory tools, the session snapshot, the memory page |
+| 1b | BM25 index of `.text` companions | clio-core `clio_cte_indexer` | `<user_data_dir>/cte/hosts/<host>/indexer_index.log` (+ `.wal`) | `ARCStore.search` |
 | 2 | LSM invocation metrics | ARC (`arc/lsm.py`) | `.clio/agent/arc/lsm/sst_*.msgpack` | `ARCMemory.store_invocation` range reads |
 | 3 | Session registry | gact (`gact/sessions.py`) | `.clio/agent/sessions.json` | gact session routes; TUI |
 | 4 | Message ledgers | gact (`gact/messages.py`, `MessageStore`) | `.clio/agent/messages/<session_id>.json` | gact message routes; the turn transcript prepend |

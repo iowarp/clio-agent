@@ -234,7 +234,13 @@ class _MemoryStore:
         return False
 
     def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
+        self,
+        kind: str,
+        query_text: str,
+        *,
+        name_prefix: str = "",
+        name_re: str = "",
+        k: int = 10,
     ) -> list[tuple[str, float]]:
         return []
 

@@ -103,7 +103,7 @@ def _wire_ensure_runtime(monkeypatch, *, client_ok: bool) -> dict[str, Any]:
     monkeypatch.setattr(storage, "_active_config_path", storage._active_config_path)
     monkeypatch.setattr(storage, "_active_log_level", storage._active_log_level)
     monkeypatch.setattr(storage.atexit, "register", lambda *a, **k: None)
-    monkeypatch.setattr(storage, "warn_if_search_indexer_absent", lambda _cfg: None)
+    monkeypatch.setattr(storage, "bind_client_to_indexer", lambda _cfg, _env: "")
     monkeypatch.delenv("CLIO_SERVER_CONF", raising=False)
     monkeypatch.delenv("CLIO_CORE_PORT", raising=False)
 
@@ -382,7 +382,7 @@ def test_attach_state_starting_then_attached(monkeypatch, tmp_path):
     class _Store:
         """Stands in for the native ClioCoreStore build (this test is about the state)."""
 
-        def __init__(self, *, config_path: str, namespace: str = "") -> None:
+        def __init__(self, *, config_path: str, namespace: str = "", kinds=()) -> None:
             observed.append(attach_state_snapshot().phase)  # while "attaching"
 
     _patch_store_build(monkeypatch, _Store)
@@ -398,7 +398,7 @@ def test_attach_state_starting_then_attached(monkeypatch, tmp_path):
 def test_attach_state_unavailable_carries_the_typed_reason(monkeypatch, tmp_path):
     cfg = _cfg(tmp_path, 21045)
 
-    def _fail(*, config_path: str, namespace: str = "") -> None:
+    def _fail(*, config_path: str, namespace: str = "", kinds=()) -> None:
         raise ClioCoreAttachError(port=21045, config_path=config_path)
 
     _patch_store_build(monkeypatch, _fail)

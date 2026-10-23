@@ -52,6 +52,7 @@ from pathlib import Path
 import yaml
 
 from clio_agent.arc import clio_core_durability as _durability
+from clio_agent.arc import clio_core_indexer as _indexer
 from clio_agent.arc.clio_core_host_migration import (
     migrate_legacy_cte_store,
 )
@@ -134,35 +135,8 @@ def runtime_state_dir() -> Path:
 # disk"). Generated file tiers expand by adding independent durable targets,
 # bounded by the disk reserve and managed growth policy (clio_core_growth).
 #
-# INDEXER CHIMOD (clio-core 2.2.0, upstream issue #905): ``SemanticSearch`` (the BM25
-# scope search Thread D relies on) moved OUT of ``clio_cte_core`` into a separate,
-# optional ``clio_cte_indexer`` chimod -- the core no longer implements it at all, so
-# every scope search against clio-core >=2.2.0 now silently returns zero hits (verified
-# empirically against 2.2.1; it does not raise). The chimod itself would fix this
-# (declared in ``compose`` + the client bound to its pool via ``CLIO_CTE_POOL``), but
-# is NOT wired in here: live-testing that config on Windows surfaced an intermittent
-# hang on the FIRST ``PutBlob`` after client attach WHENEVER the indexer chimod is
-# merely declared -- reproduced with and without ``CLIO_CTE_POOL`` set, so it is not
-# an artifact of the routing choice.
-#
-# ROOT CAUSE (2026-09-24): the daemon log shows ``PoolManager: ChiMod
-# 'clio_cte_indexer' not found`` at compose time on EVERY run, whether or not the
-# client routes there -- the published iowarp-core 2.2.1 wheels (checked win_amd64
-# and manylinux_2_28/x86_64) simply do not ship a ``clio_cte_indexer`` binary
-# (``.dll``/``.so``), unlike every sibling chimod (cache/core/filesystem/replication
-# are all present). Declaring a pool for a chimod the daemon cannot find means that
-# pool never actually exists; a client routed there (via ``CLIO_CTE_POOL``) sends
-# tasks into a void with no "pool not found" fast-fail, hence the hang -- not a race,
-# not a clio-agent config defect (pool ids/ordering/``restart``/tier sizes all match
-# clio-core's own ``test_indexer_restart_compose.yaml`` exactly). Filed upstream:
-# https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
-#
-# iowarp-core 2.3.1 now ships the chimod. This dependency upgrade retains the
-# existing bare-core topology; indexer composition and client routing still need
-# separate qualification before enabling search. :func:`warn_if_search_indexer_absent`
-# continues to report an unconfigured indexer loudly (#775 no-silent-fallback).
-# ``564.0`` is upstream's reserved indexer pool (``clio::cte::indexer::kIndexerPoolId``).
-_DEFAULT_CTE_INDEXER_POOL_ID = "564.0"
+# The BM25 indexer chimod is composed after the core (see
+# :mod:`clio_agent.arc.clio_core_indexer`, which owns its block and its client binding).
 
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 networking:
@@ -193,7 +167,7 @@ compose:
     performance:
       metadata_log_path: "{metadata_log}"
       transaction_log_capacity: "32MB"
-"""
+{indexer}"""
 
 # The default MEMORY BUDGET (#890/#906): the hard DRAM bound for the clio-core
 # storage arena. Owner ruling (2026-07-13): a desktop agent is told e.g. "use
@@ -382,6 +356,7 @@ def default_cte_config_path() -> str:
     cfg = cte_dir / "cte.yaml"
     if cfg.is_file():
         _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
+        _indexer.ensure_seeded_config_indexed(cfg, cte_dir / "indexer_index.log")  # pre-#905
         _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
     else:
         budget = _default_cte_ram_capacity()
@@ -395,6 +370,7 @@ def default_cte_config_path() -> str:
                 file_capacity=_default_cte_file_capacity(cte_dir),
                 ram_budget=budget,
                 metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
+                indexer=_indexer.indexer_block(_cte_yaml_path(cte_dir / "indexer_index.log")),
             ),
             encoding="utf-8",
         )
@@ -487,25 +463,6 @@ def _read_ram_caps_from_file(path: Path) -> tuple[str | None, str | None, str | 
     return tier_cap, bdev_cap, final_cap
 
 
-def _has_indexer_chimod(path: Path) -> bool:
-    """Return whether ``path`` declares a ``clio_cte_indexer`` chimod in ``compose``.
-
-    ``False`` on a missing/invalid/unparseable file (never raises — mirrors
-    :func:`_read_ram_caps_from_file`).
-    """
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        return False
-    if not isinstance(data, Mapping):
-        return False
-    return any(
-        isinstance(module, Mapping)
-        and str(module.get("mod_name", "")).strip() == "clio_cte_indexer"
-        for module in data.get("compose", []) or []
-    )
-
-
 def _resolve_config_path(env: Mapping[str, str]) -> Path:
     """Resolve the ``cte.yaml`` the clio-core backend would use, WITHOUT seeding it.
 
@@ -572,70 +529,6 @@ def effective_ram_cap(
         parse_error=parse_error,
         bdev_capacity=bdev_cap,
         final_tier_capacity=final_cap,
-    )
-
-
-# Typed reason (clio-core 2.2.0 indexer extraction, upstream issue #905): the
-# resolved ``cte.yaml`` has no ``clio_cte_indexer`` chimod, so ``SemanticSearch``
-# (BM25 scope search, Thread D) silently returns zero hits against clio-core
-# >=2.2.0 no matter what the caller queries. DIAGNOSIS ONLY (#775 no-silent-
-# fallback): 2.3.1 fixes the missing wheel binary, but the default topology
-# still omits the indexer. Historical packaging diagnosis:
-# https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
-CLIO_CORE_SEARCH_INDEXER_ABSENT = "clio_core_search_indexer_absent"
-UPSTREAM_INDEXER_ISSUE = "https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299"
-
-
-def indexer_chimod_present(
-    *, env: Mapping[str, str], config_path: str | Path | None = None
-) -> bool:
-    """Report whether the resolved ``cte.yaml`` declares the ``clio_cte_indexer`` chimod.
-
-    Read-only; mirrors :func:`effective_ram_cap`'s resolution order -- an explicit
-    ``config_path`` from a caller who already resolved it (``storage.ClioCoreStore``,
-    which knows the exact file it is about to load) takes precedence over the
-    env-based selection order (``CLIO_ARC_STORE_CONFIG`` -> workspace -> default CTE
-    dir), used by the doctor. Never seeds a file; a missing file reports ``False``.
-
-    Args:
-        env: Environment mapping driving the config-path resolution when
-            ``config_path`` is not given.
-        config_path: The exact ``cte.yaml`` to inspect, when the caller already
-            resolved it. Defaults to the env-based resolution.
-
-    Returns:
-        ``True`` only when the file exists and declares ``mod_name: clio_cte_indexer``
-        somewhere in ``compose``.
-    """
-    path = Path(config_path).expanduser() if config_path else _resolve_config_path(env)
-    return path.is_file() and _has_indexer_chimod(path)
-
-
-def warn_if_search_indexer_absent(config_path: str | Path) -> None:
-    """Log a loud, typed warning when the resolved config can't serve BM25 search.
-
-    Read-only: never seeds a file, never touches ``CLIO_CTE_POOL`` or the compose
-    config. The 2.3.1 wheel ships the module, but a bare-core config still cannot
-    serve search. Called once from
-    ``storage.ClioCoreStore._ensure_runtime`` so the gap is diagnosed at boot instead
-    of surfacing as a confused "search always empty" bug report.
-
-    Args:
-        config_path: The resolved ``cte.yaml`` the store is about to load. A missing
-            file (falls back to ``~/.clio/clio.yaml``) is reported the same way.
-    """
-    # An empty config_path (falls back to ~/.clio/clio.yaml, unresolved here) is
-    # conservatively treated as absent, matching the pre-refactor behavior: env={}
-    # is inert below since a truthy config_path always short-circuits its resolution.
-    if config_path and indexer_chimod_present(env={}, config_path=config_path):
-        return
-    logger.warning(
-        "reason=%s config=%s problem=%s upstream=%s",
-        CLIO_CORE_SEARCH_INDEXER_ABSENT,
-        config_path or "~/.clio/clio.yaml",
-        "no clio_cte_indexer chimod declared; ARCMemory.search_segment_scopes is "
-        "unavailable until an indexer is configured (iowarp-core 2.3.1 ships the module)",
-        UPSTREAM_INDEXER_ISSUE,
     )
 
 

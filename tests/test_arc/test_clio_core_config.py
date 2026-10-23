@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from clio_agent import conf
-from clio_agent.arc import clio_core_config
+from clio_agent.arc import clio_core_config, clio_core_indexer
 
 # ---- capacity parser (fail-loud validation) -------------------------------- #
 
@@ -155,8 +155,9 @@ def test_generator_respects_env_ram_cap(monkeypatch, tmp_path):
 
 
 def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
-    """An existing cte.yaml keeps every user value (even a stale 0g cap); the only change
-    is the durability line, without which clio-core keeps nothing across a restart."""
+    """An existing cte.yaml keeps every user value (even a stale 0g cap); the only changes
+    are the durability line, without which clio-core keeps nothing across a restart,
+    and the indexer entry appended to compose, without which nothing can be searched."""
     monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
     monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
     cte_dir = tmp_path / "cte"
@@ -169,7 +170,8 @@ def test_generator_never_rewrites_existing_user_file(monkeypatch, tmp_path):
     clio_core_config.default_cte_config_path()
     # Not regenerated: the user's explicit (even if unbounded) value survives.
     upgraded = (cte_dir / "cte.yaml").read_text(encoding="utf-8")
-    assert upgraded.replace('        persistence_level: "temporary"\n', "") == stale
+    assert upgraded.replace('        persistence_level: "temporary"\n', "").startswith(stale)
+    assert upgraded.endswith(clio_core_indexer.indexer_block(str(cte_dir / "indexer_index.log")))
     assert _ram_tier_cap((cte_dir / "cte.yaml").read_text(encoding="utf-8")) == "0g"
 
 
@@ -223,57 +225,76 @@ def test_effective_ram_cap_default_when_file_absent(monkeypatch, tmp_path):
     assert result.source == "generator-default"
 
 
-# ---- search-indexer-absence diagnosis (clio-core 2.2.0, upstream #905) ----- #
-#
-# SemanticSearch moved out of clio_cte_core into a separate, optional
-# clio_cte_indexer chimod. clio-agent does NOT declare it (live Windows testing
-# found declaring it -- with or without also binding the client to it via
-# CLIO_CTE_POOL -- causes an intermittent hang on the first PutBlob after client
-# attach), so BM25 scope search against clio-core >=2.2.0 silently returns zero
-# hits; warn_if_search_indexer_absent only reports that gap loudly.
+# ---- the BM25 indexer chimod (clio-core#905) -------------------------------- #
 
 
-def test_generated_default_config_has_no_indexer_chimod(monkeypatch, tmp_path):
-    """The shipped default topology deliberately omits the indexer (unsafe, see #CU)."""
+def test_generated_default_config_composes_the_scoped_indexer(monkeypatch, tmp_path):
+    """The seeded topology composes the indexer after the core, scoped and logged."""
     monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
     monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
 
     clio_core_config.default_cte_config_path()
-    text = (tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8")
-    data = yaml.safe_load(text)
-    assert all(m.get("mod_name") != "clio_cte_indexer" for m in data["compose"])
+    data = yaml.safe_load((tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8"))
+    names = [m.get("mod_name") for m in data["compose"]]
+    assert names[-2:] == ["clio_cte_core", "clio_cte_indexer"]
+    indexer = data["compose"][-1]
+    assert indexer["pool_id"] == clio_core_indexer.INDEXER_POOL_ID
+    assert indexer["next_pool_id"] == clio_core_indexer.CORE_POOL_ID
+    assert indexer["tag_re"] == clio_core_indexer.INDEX_TAG_RE
+    assert indexer["blob_re"] == clio_core_indexer.INDEX_BLOB_RE
+    assert indexer["index_log_path"].endswith("indexer_index.log")
 
 
-def test_warn_if_search_indexer_absent_warns_when_no_indexer(tmp_path, caplog):
-    cfg = tmp_path / "cte.yaml"
-    cfg.write_text(
-        "compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n", encoding="utf-8"
-    )
-    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
-        clio_core_config.warn_if_search_indexer_absent(str(cfg))
-    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT in caplog.text
-    assert "unavailable until an indexer is configured" in caplog.text
-    assert "iowarp-core 2.3.1 ships the module" in caplog.text
+def test_an_older_seeded_config_gains_the_indexer_once(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
+    monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
+    clio_core_config.default_cte_config_path()
+    cfg = tmp_path / "cte" / "cte.yaml"
+    seeded = cfg.read_text(encoding="utf-8")
+    cfg.write_text(seeded[: seeded.index("  - mod_name: clio_cte_indexer")], encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_indexer"):
+        clio_core_config.default_cte_config_path()
+        clio_core_config.default_cte_config_path()
+    assert cfg.read_text(encoding="utf-8") == seeded
+    assert caplog.text.count("upgraded in place") == 1
 
 
-def test_warn_if_search_indexer_absent_silent_when_indexer_declared(tmp_path, caplog):
-    """A hand-authored config that DOES declare the chimod is not flagged."""
-    cfg = tmp_path / "cte.yaml"
-    cfg.write_text(
-        "compose:\n"
-        "  - mod_name: clio_cte_core\n"
-        "    pool_id: '512.0'\n"
-        "  - mod_name: clio_cte_indexer\n"
-        "    pool_id: '564.0'\n"
-        "    next_pool_id: '512.0'\n",
+def test_bind_client_to_indexer_sets_the_pool_or_reports_its_absence(tmp_path, caplog):
+    with_indexer = tmp_path / "with.yaml"
+    with_indexer.write_text(
+        "compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n"
+        + clio_core_indexer.indexer_block("idx.log"),
         encoding="utf-8",
     )
-    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
-        clio_core_config.warn_if_search_indexer_absent(str(cfg))
-    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT not in caplog.text
+    env: dict[str, str] = {}
+    assert clio_core_indexer.bind_client_to_indexer(str(with_indexer), env) == "564.0"
+    assert env == {"CLIO_CTE_POOL": "564.0", "CLIO_CTE_POOL_BOUND_BY": "clio-agent"}
+
+    explicit = {"CLIO_CTE_POOL": "563.0"}  # an operator's cache chain top is kept
+    assert clio_core_indexer.bind_client_to_indexer(str(with_indexer), explicit) == "563.0"
+
+    bare = tmp_path / "bare.yaml"
+    bare.write_text("compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n")
+    none: dict[str, str] = {}
+    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_indexer"):
+        assert clio_core_indexer.bind_client_to_indexer(str(bare), none) == ""
+    assert none == {}
+    assert clio_core_indexer.CLIO_CORE_SEARCH_UNAVAILABLE in caplog.text
 
 
-def test_warn_if_search_indexer_absent_warns_when_file_missing(tmp_path, caplog):
-    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
-        clio_core_config.warn_if_search_indexer_absent(str(tmp_path / "absent.yaml"))
-    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT in caplog.text
+def test_a_pool_clio_bound_is_recomputed_for_a_config_without_the_indexer(tmp_path):
+    """A later attach to a bare config must not keep routing to a pool it lacks (hang)."""
+    with_indexer = tmp_path / "with.yaml"
+    with_indexer.write_text(
+        "compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n"
+        + clio_core_indexer.indexer_block("idx.log"),
+        encoding="utf-8",
+    )
+    bare = tmp_path / "bare.yaml"
+    bare.write_text("compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n")
+    env: dict[str, str] = {}
+    assert clio_core_indexer.bind_client_to_indexer(str(with_indexer), env) == "564.0"
+    child = dict(env)  # a child process inherits the parent's binding and its marker
+    assert clio_core_indexer.bind_client_to_indexer(str(bare), child) == ""
+    assert "CLIO_CTE_POOL" not in child

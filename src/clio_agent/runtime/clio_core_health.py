@@ -650,6 +650,46 @@ def probe_clio_core_write_health(
     ]
 
 
+def probe_clio_core_search_health(
+    *, env: Mapping[str, str] | None = None
+) -> list[IntegrationStatus]:
+    """Fail health when the resolved clio-core config cannot search (clio-core#905).
+
+    Long-term memory search and ``recall_context`` both need the ``clio_cte_indexer``
+    chimod; without it every search is refused with the typed reason
+    ``clio_core_search_unavailable``.
+
+    Args:
+        env: Environment mapping driving the config resolution.
+
+    Returns:
+        One required ``clio_core_search`` row when search is unavailable, else none.
+    """
+    from clio_agent.arc import clio_core_indexer as indexer  # noqa: PLC0415
+
+    env = env if env is not None else os.environ
+    if indexer.indexer_chimod_present(env=env):
+        return []
+    return [
+        IntegrationStatus(
+            name="clio_core_search",
+            state=IntegrationState.UNAVAILABLE,
+            summary=(
+                "clio-core cannot search: the config composes no clio_cte_indexer chimod, so "
+                "long-term memory search and context recall are unavailable."
+            ),
+            config_source="clio-core config",
+            next_action=indexer.SEARCH_REMEDY[0].upper() + indexer.SEARCH_REMEDY[1:] + ".",
+            fallback="none",
+            details={
+                "reason": indexer.CLIO_CORE_SEARCH_UNAVAILABLE,
+                "upstream": indexer.UPSTREAM_INDEXER_ISSUE,
+            },
+            required=True,
+        )
+    ]
+
+
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Aggregate the clio-core doctor rows: attach + config adoption + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
@@ -671,4 +711,5 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
         *probe_cte_cold_tier_disk(env=env),
         *probe_cte_metadata_log(env=env),
         *probe_clio_core_write_health(env=env),
+        *probe_clio_core_search_health(env=env),
     ]
