@@ -26,20 +26,24 @@ class Verdict(dspy.Signature):
 class Arena(Flow):
     """Several contestants attempt the task; a judge inside the flow picks the winner.
 
-    Options: ``contestants`` (targets; ``self`` is this agent). The votes are
-    appended to ``arena/votes.jsonl`` in the workspace, as a recorded step.
+    Options: ``contestants`` (targets; ``self`` is this agent) and ``models`` (one
+    per contestant: the model each runs on, empty for its own choice). The judge
+    runs inside the flow, on the model this run runs on. The votes are appended to
+    ``arena/votes.jsonl`` in the workspace, as a recorded step.
     """
 
     id = "arena"
     description = (
         "Several contestants attempt the same task independently; a judge compares the "
         "entries and picks one winner, with its rationale, and the votes are recorded. "
-        "Options: contestants (targets; default three of this agent)."
+        "Options: contestants (targets; default three of this agent) and models (one per "
+        "contestant). The judge runs on this run's model."
     )
     shape = """railroad-beta
 arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entry n")),
                  terminal("judge"));"""
     contestants: tuple[str, ...] = ("self", "self", "self")
+    models: tuple[str, ...] = ()
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:
         super().__init__(ref, **options)
@@ -51,7 +55,13 @@ arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entr
 
     async def forward(self, task: Any, ctx: Any) -> Any:
         text = task if isinstance(task, str) else json.dumps(task, sort_keys=True)
-        entries = await ctx.gather([ctx.call(c, text) for c in self.contestants])
+        models = list(self.models)
+        entries = await ctx.gather(
+            [
+                ctx.call(c, text, model=models[i] if i < len(models) else "")
+                for i, c in enumerate(self.contestants)
+            ]
+        )
         numbered = [f"[{n}] {entry.answer}" for n, entry in enumerate(entries, 1)]
         verdict = await ctx.step(self._verdict, text, numbered)
         winner = verdict["winner"]
@@ -80,4 +90,6 @@ arena = sequence(choice(terminal("entry 1"), terminal("entry 2"), terminal("entr
             "winner": winner,
             "rationale": verdict["rationale"],
             "entries": handles,
+            # The model each entry ran on.
+            "entry_models": [entry.model for entry in entries],
         }

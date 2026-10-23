@@ -15,8 +15,8 @@ _SPAN_FAMILIES = {
     "llm.response.completed": "llm.request",
 }
 _TOOL_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
-    "fs_apply_edit_write": ("filepath",),
-    "fs_propose_edit": ("filepath",),
+    "fs_write_file": ("filepath",),
+    "fs_edit_file": ("filepath",),
     "fs_read_file": ("filepath",),
     "fs_glob": ("pattern", "path"),
     "fs_grep": ("pattern", "path", "glob"),

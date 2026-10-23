@@ -44,7 +44,7 @@ from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
-_FS_WRITE = "fs_apply_edit_write"
+_FS_WRITE = "fs_write_file"
 _UNCLASSIFIED = "shell.exec"
 
 

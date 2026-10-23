@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 
+from ._writing_agent import WritingAgent, workspace_session
 from .conftest import complete_turn
 
 # Every session runs its pinned plugin agent (the hermetic ``standard``); route its
@@ -23,19 +23,18 @@ class _Pred:
     answer: str = "ok"
     selected_expert: str = "data_expert"
     routing_rationale: str = ""
-    file_diffs: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Agent:
-    def __init__(self, diffs: list[dict[str, Any]] | None = None) -> None:
-        self._pred = _Pred(file_diffs=list(diffs or []))
+    def __init__(self) -> None:
+        self._pred = _Pred()
 
     def forward(self, question: str, session_id: str) -> _Pred:
         return self._pred
 
 
-def _client(tmp_path: Path, diffs: list[dict[str, Any]] | None = None) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent(diffs)))
+def _client(tmp_path: Path) -> TestClient:
+    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
 
 
 def test_message_detail_returns_stored_message(tmp_path: Path) -> None:
@@ -98,24 +97,30 @@ def test_provider_detail_returns_listed_provider(tmp_path: Path) -> None:
     assert body["name"]
 
 
-def test_session_and_message_diffs_return_conformance_shape(tmp_path: Path) -> None:
-    with _client(
-        tmp_path,
-        diffs=[
-            {
-                "path": "main.py",
-                "unified_diff": "--- a/main.py\n+++ b/main.py\n@@ -1 +1 @@\n-old\n+new\n",
-            }
-        ],
-    ) as client:
-        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-        assistant = complete_turn(client, sid, "propose edit")
+def test_session_and_message_diffs_return_conformance_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    (root / "main.py").write_text("old\n", encoding="utf-8")
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    agent = WritingAgent()
+    agent.calls = [
+        (
+            "fs_edit_file",
+            {"filepath": str(root / "main.py"), "old_string": "old", "new_string": "new"},
+        )
+    ]
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as client:
+        sid = workspace_session(client, root, approval_mode="auto-edits")
+        assistant = complete_turn(client, sid, "edit main.py")
 
         session_body = client.get(f"/v1/sessions/{sid}/diffs").json()
         message_body = client.get(f"/v1/sessions/{sid}/messages/{assistant['id']}/diffs").json()
 
-        assert session_body["diffs"][0]["path"] == "main.py"
-        assert session_body["diffs"][0]["applied"] is False
+        assert session_body["diffs"][0]["path"] == str(root / "main.py")
+        assert session_body["diffs"][0]["status"] == "applied"
+        assert session_body["diffs"][0]["undo_available"] is True
         assert message_body["diffs"][0]["message_id"] == assistant["id"]
 
 

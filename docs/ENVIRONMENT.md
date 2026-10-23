@@ -109,8 +109,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEFAULT_WORKSPACE` | `paths.default_workspace` | str | _(unset)_ | `src/clio_agent/gact/workspaces.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
+| `CLIO_FLEET_DELEGATION` | `fleet.delegation` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet/guard.py` |
 | `CLIO_FLEET_JUDGES` | `fleet.judges` | str | `{}` _(computed)_ | `src/clio_agent/gact/fleet_settings.py` |
 | `CLIO_FLEET_SEARCH` | `fleet.search` | str | _(unset)_ | `src/clio_agent/gact/fleet_settings.py` |
+| `CLIO_FLEET_USAGE_POLL_SECONDS` | `fleet.usage_poll_seconds` | int | `300` | `src/clio_agent/providers/usage/openrouter.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_SCOPE` | `provenance.agentic.flowcept.campaign_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CHECK_SAFE_STOPS` | `provenance.agentic.flowcept.check_safe_stops` | bool | `true` | `src/clio_agent/gact/provenance/factory.py` |
@@ -136,9 +138,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_A2UI_MESSAGES_MAX` | `gact.ledger_retention.a2ui_messages.max` | int | `512` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_FILE_CHANGES_MAX` | `gact.ledger_retention.file_changes.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX` | `gact.ledger_retention.native_delivery_notes.max` | int | `256` | `src/clio_agent/gact/native_delivery_outcome.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_HARD` | `gact.ledger_retention.pending_diffs.hard` | int | `1000` | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_PENDING_DIFFS_MAX` | `gact.ledger_retention.pending_diffs.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_HARD` | `gact.ledger_retention.permissions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_MAX` | `gact.ledger_retention.permissions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX` | `gact.ledger_retention.session_recall_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
@@ -285,12 +286,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
-| `CLIO_SUMMARIZER_API_BASE` | `summarizer.api_base` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_CREDENTIAL_REF` | `summarizer.credential_ref` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_MAX_TOKENS` | `summarizer.max_tokens` | int | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_MODEL` | `summarizer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_PROVIDER` | `summarizer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TASKS_HEALTH_TIMEOUT_S` | `gact.tasks.health_timeout_s` | float | `10.0` | `src/clio_agent/tools/task_client.py` |
 | `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_QUEUE` | `gact.tasks.shell.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |

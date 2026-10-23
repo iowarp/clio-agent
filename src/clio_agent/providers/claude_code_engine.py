@@ -88,6 +88,7 @@ from clio_agent.providers.claude_code_stream_events import (
     stream_event_thinking,
 )
 from clio_agent.providers.stateful_common import stateful_reset_payload
+from clio_agent.providers.usage.capture import record_rate_limit_usage
 
 __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
@@ -356,6 +357,7 @@ class _Turn:
                     f"{result_error_detail(message)}"
                 )
         elif kind == "RateLimitEvent":
+            record_rate_limit_usage(message)
             plan_limit = plan_limit_from_rate_limit_event(message, model=self.model)
             if plan_limit is not None:
                 raise plan_limit

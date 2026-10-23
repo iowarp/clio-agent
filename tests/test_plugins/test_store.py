@@ -26,7 +26,7 @@ class Standard(Agent):
 
 
 def _native() -> frozenset[str]:
-    return NATIVE | {t.name for record in builtin_records() for t in record.tools}
+    return NATIVE | {t.name for r in builtin_records() for t in r.tools if t.kind == "native"}
 
 
 def _market(root: Path, *, version: str = "1.0.0") -> Path:
@@ -75,6 +75,7 @@ def test_external_marketplace_needs_the_trust_step(tmp_path: Path) -> None:
         "pdf",
         "xlsx",
         "shell",
+        "fleet",
         "doc-runtime",
     ]
     assert service.pinned(resolution.digest).plugin_ids == resolution.plugin_ids
@@ -222,3 +223,24 @@ def test_concurrent_installs_of_the_same_content_share_one_snapshot(tmp_path: Pa
     assert errors == []
     assert sorted(p.name for p in target.parent.iterdir()) == ["digest"]
     assert len(list(target.rglob("*.txt"))) == 200
+
+
+def test_a_changed_reader_rereads_installed_snapshots_and_keeps_trust(tmp_path: Path) -> None:
+    from clio_agent.plugins import store as store_module
+
+    service = _service(tmp_path)
+    service.store.install(str(_market(tmp_path / "src")), name="demo")
+    service.store.trust("demo", reason="test")
+    state = service.store.read_state()
+    state["reader"] = store_module.READER_VERSION - 1
+    state["plugins"]["demo/pdf"]["description"] = "read by an older reader"
+    service.store._write_state(state)
+
+    results = service.store.reread_installed()
+
+    assert [row["marketplace"] for row in results] == ["demo"]
+    reread = service.store.read_state()
+    assert reread["reader"] == store_module.READER_VERSION
+    assert reread["plugins"]["demo/pdf"]["description"] != "read by an older reader"
+    assert service.store.marketplaces()["demo"]["trusted"] is True
+    assert service.store.reread_installed() == []

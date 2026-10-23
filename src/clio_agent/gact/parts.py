@@ -270,14 +270,12 @@ class Part(DocumentPartFields):
     mime_type: str = ""
     height: int = 0
 
-    # file_diff (BBB21 + #4): a proposed edit awaiting apply/reject.
-    # ``new_content`` (when present) is what the apply path writes
-    # to disk — re-applying a unified diff is fragile so we ship
-    # the whole-file replacement alongside the diff.
+    # file_diff (BBB21): a file the agent changed with fs_write_file / fs_edit_file,
+    # recorded ``applied`` (gact/file_changes.py). The session's diff ledger, not the
+    # part, holds what Undo needs (``POST /v1/sessions/{sid}/diffs/revert``).
     path: str = ""
     unified_diff: str = ""
-    new_content: str = ""
-    status: str = ""  # "pending" | "applied" | "rejected" | "apply_failed"
+    status: str = ""  # "applied"
     # iowarp/clio-agent — capabilities.edit_modes: which mode the
     # session was in when this diff was produced. "diff" = unified_diff
     # is the canonical view; "whole" = render new_content full;

@@ -13,7 +13,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Language models + providers",
-        ("lm", "lm15", "providers", "summarizer"),
+        ("lm", "lm15", "providers"),
         "LM sampling/provider selection and the per-provider transport knobs (Claude Code, Codex).",
     ),
     (
@@ -478,17 +478,13 @@ KEY_NOTES: dict[str, str] = {
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
         "retain more attached-context history."
     ),
+    "gact.ledger_retention.file_changes.max": (
+        "Max file changes the agent made that each session keeps (oldest first out); an evicted "
+        "change stays in the transcript but can no longer be undone."
+    ),
     "gact.ledger_retention.session_recall_audit.max": (
         "Max entries kept in the in-memory session-recall audit ledger before FIFO eviction; raise "
         "for more past-session search audit history."
-    ),
-    "gact.ledger_retention.pending_diffs.hard": (
-        "Absolute ceiling on the pending-diffs ledger; past this even a still-pending diff is "
-        "force-evicted oldest-first."
-    ),
-    "gact.ledger_retention.pending_diffs.max": (
-        "Soft cap on the pending-diffs ledger where terminal (resolved/applied/rejected) entries "
-        "evict first, protecting pending diffs."
     ),
     "gact.ledger_retention.permissions.hard": (
         "Absolute ceiling on the in-memory permissions ledger; past this even a still-pending "
@@ -547,6 +543,16 @@ KEY_NOTES: dict[str, str] = {
         "Provider and model for the read-only CLIO Search assistant, as a provider_id/model_id "
         "mapping. Null inherits the current conversation model, then service defaults. "
         "CLIO_FLEET_SEARCH accepts JSON. Settings Fleet writes this choice independently of judges."
+    ),
+    "fleet.usage_poll_seconds": (
+        "How old an account's usage reading may be before reading the fleet asks the provider "
+        "again (OpenRouter's key endpoint). Subscriptions report usage on every call instead."
+    ),
+    "fleet.delegation": (
+        "Per account id, whether the agent may run delegated work on it without asking. Unset "
+        "accounts follow their billing: subscriptions and free accounts yes, metered and credit "
+        "accounts ask once per conversation. CLIO_FLEET_DELEGATION accepts JSON. Settings Usage "
+        "writes this mapping."
     ),
     "hooks.allow_managed_only": (
         "Lockdown flag dropping every non-managed (user/project) hook source, keeping only "
@@ -772,12 +778,6 @@ KEY_NOTES: dict[str, str] = {
         "to human escalation; lower to fail fast."
     ),
     "permissions.ai_review_model": "Optional reviewer model override on the effective caller provider and endpoint.",
-    "summarizer.api_base": "Optional summary endpoint override; empty inherits the effective caller endpoint.",
-    "summarizer.credential_ref": "Optional summary credential reference resolved at each invocation.",
-    "summarizer.max_tokens": "Optional summary output cap; zero omits the client cap and empty inherits.",
-    "summarizer.model": "Optional summary model override; empty inherits the effective caller model.",
-    "summarizer.provider": "Optional summary provider override; changing it resolves provider-scoped defaults.",
-    "summarizer.transport": "Optional summary transport override for providers with selectable transports.",
     "provenance.agentic.flowcept.campaign_id": (
         "Free-text campaign label attached to every Flowcept provenance record; set to group runs "
         "under one campaign."

@@ -450,7 +450,7 @@ def test_an_in_stream_usage_limit_is_the_terminal_plan_limit_error(harness: Harn
         [
             {
                 "type": "error",
-                "error": {"code": "rate_limited", "message": "You hit your usage limit."},
+                "error": {"type": "usage_limit_reached", "message": "You hit your usage limit."},
             }
         ]
     ]
@@ -468,7 +468,8 @@ def test_a_stream_without_a_completion_event_is_a_server_error(harness: Harness)
     ("status", "body", "typed"),
     [
         (401, b"invalid token", AuthError),
-        (429, b"You have reached your monthly usage limit", CodexPlanLimitError),
+        (429, b'{"error": {"type": "usage_limit_reached"}}', CodexPlanLimitError),
+        (429, b"You have reached your monthly usage limit", ServerError),
         (503, b"upstream down", ServerError),
     ],
 )
@@ -551,7 +552,9 @@ def test_http_mode_streams_lm15_http_without_a_socket(harness: Harness, loop_sco
 
 
 def test_http_mode_usage_limit_is_the_plan_limit_error(harness: Harness) -> None:
-    wire = _HttpWire(fail=RateLimitError("insufficient_quota: you are out of budget"))
+    wire = _HttpWire(
+        fail=RateLimitError("you are out of budget", provider_code="usage_limit_reached")
+    )
     with pytest.raises(CodexPlanLimitError):
         _run(_engine(wire=wire, http=True), _request(HEAD))
 
@@ -1021,3 +1024,30 @@ def test_a_final_in_stream_failure_is_not_retried(
     assert not is_retryable_lm_error(caught.value)
     assert len(harness.sockets) == 1  # never retried
     assert _retry_lines(caplog) == []
+
+
+def test_a_rate_limits_event_records_the_accounts_windows(harness: Harness) -> None:
+    from clio_agent.providers.usage.snapshot import USAGE_BOARD
+
+    USAGE_BOARD.clear()
+    harness.script[:] = [
+        [
+            {
+                "type": "codex.rate_limits",
+                "plan_type": "plus",
+                "rate_limits": {
+                    "primary": {"used_percent": 42.0, "window_minutes": 300, "reset_at": 1.8e9},
+                    "secondary": {"used_percent": 7.5, "window_minutes": 10080},
+                },
+            },
+            *_answer("resp_rl", "ok"),
+        ]
+    ]
+    _run(_engine(), _request(HEAD))
+    snapshot = USAGE_BOARD.latest("codex")
+    assert snapshot is not None and snapshot.source == "codex_rate_limit_event"
+    assert [(w.name, w.used_percent) for w in snapshot.windows] == [
+        ("5-hour", 42.0),
+        ("Weekly", 7.5),
+    ]
+    USAGE_BOARD.clear()

@@ -184,7 +184,7 @@ def _diff_snapshots(
     app: "FastAPI", workspace_id: str
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    rows_by_session = getattr(app.state, "pending_diffs", {})
+    rows_by_session = getattr(app.state, "file_changes", {})
     for session in _workspace_sessions(app, workspace_id):
         with ledger_guard(app):  # #1334: finalize appends from the turn executor
             rows = list(rows_by_session.get(session.id, []) or [])
@@ -200,7 +200,7 @@ def _diff_snapshots(
                 "message_id": message_id,
                 "part_id": part_id,
                 "path": path,
-                "status": str(row.get("status") or "pending"),
+                "status": str(row.get("status") or "applied"),
                 "unified_diff": str(row.get("unified_diff") or ""),
             }
             snapshots.append(

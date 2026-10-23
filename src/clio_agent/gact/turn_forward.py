@@ -128,7 +128,13 @@ def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "A
 
         raw, source = memory_model_identity(role), "fleet_role"  # type: ignore[arg-type]
     if source == "global_active" or not isinstance(raw, dict):
-        return agent_def
+        # A turn no person's message started (a child's assignment, a wake) runs on
+        # the model its session pinned: a child's model is chosen when it is created.
+        session = state.app.state.sessions.get(state.sid)
+        pinned = dict(getattr(session, "model", None) or {})
+        if not (pinned.get("provider_id") and pinned.get("model_id")):
+            return agent_def
+        source, raw = "session_pinned", pinned
     provider_id = str(raw.get("provider_id") or "").strip()
     model_id = str(raw.get("model_id") or "").strip()
     if not provider_id or not model_id:

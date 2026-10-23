@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.fleet.child_model import accepted_model
 from clio_agent.tools.task_call_context import TASK_CALL
 
 WORKFLOW_EDITOR_TOOLS = ("workflow_add_step", "workflow_cancel_step")
@@ -38,6 +39,21 @@ def _flows(app: Any, session_id: str) -> list[dict[str, Any]]:
     from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
 
     return list(session_resolution(app, session_id).flows)
+
+
+def _options_refused(
+    app: Any, session_id: str, flow_id: str, options: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The typed refusal for options of the wrong shape, before anything is accepted."""
+
+    from clio_agent.flows.runner import FlowUnavailable, load_flow  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
+
+    try:
+        load_flow(session_resolution(app, session_id), flow_id, options)
+    except FlowUnavailable as exc:
+        return {"accepted": False, "reason": exc.reason, "error": str(exc)}
+    return None
 
 
 async def permit_flow(
@@ -83,9 +99,13 @@ async def permit_flow(
 
 
 async def start_flow(
-    flow_id: str, flow_input: Any, options: dict[str, Any] | None
+    flow_id: str, flow_input: Any, options: dict[str, Any] | None, model: str = ""
 ) -> dict[str, Any]:
-    """Accept a child assignment that runs ``flow_id`` and return its handle."""
+    """Accept a child assignment that runs ``flow_id`` on ``model`` and return its handle.
+
+    The flow's own model steps (a council's synthesis, an arena's judge) run on
+    ``model``; empty runs the flow on this conversation's model.
+    """
 
     from clio_agent.flows.values import _plain, render_input  # noqa: PLC0415
 
@@ -101,6 +121,11 @@ async def start_flow(
             "reason": "flow_not_resolved",
             "error": f"no resolved plugin provides flow {flow_id!r}; available: {names}",
         }
+    refused = await app.state.task_history.io.run(
+        _options_refused, app, caller.session_id, flow_id, options
+    )
+    if refused is not None:
+        return refused
     session = app.state.sessions.get(caller.session_id)
     parent_flow = (getattr(session, "metadata", None) or {}).get("agent_flow") or {}
     invocation = TASK_CALL.get().invocation_id or uuid4().hex
@@ -117,8 +142,20 @@ async def start_flow(
                 "depth": int(parent_flow.get("depth") or 0) + 1,
             }
         },
+        model=str(model or "").strip(),
     )
-    return {**accepted, "flow": flow_id}
+    return {**accepted, "flow": flow_id, **accepted_model(app, accepted)}
+
+
+#: The ``model`` argument of run_flow and run_workflow.
+_MODEL_ARG = {
+    "type": "string",
+    "default": "",
+    "description": (
+        "The model the run itself runs on (account/model or a list_models id): its "
+        "in-flow steps such as a judge or synthesis. Empty: this conversation's model."
+    ),
+}
 
 
 def _run_flow_description() -> str:
@@ -176,8 +213,9 @@ def build_run_flow_tool() -> Any:
         flow: str,
         input: Any = None,
         options: dict[str, Any] | None = None,  # noqa: A002
+        model: str = "",
     ) -> dict[str, Any]:
-        return await start_flow(str(flow or "").strip(), input, options)
+        return await start_flow(str(flow or "").strip(), input, options, model)
 
     return native_tool(
         run_flow,
@@ -191,8 +229,9 @@ def build_run_flow_tool() -> Any:
             "options": {
                 "anyOf": [{"type": "object"}, {"type": "null"}],
                 "default": None,
-                "description": "Flow options, e.g. council members.",
+                "description": "Flow options, e.g. council members and their models.",
             },
+            "model": _MODEL_ARG,
         },
         presentation="tasks",
     )
@@ -207,6 +246,7 @@ def build_run_workflow_tool() -> Any:
         max_edit_rounds: int | None = None,
         allowed_targets: list[str] | None = None,
         approve_edits: bool = False,
+        model: str = "",
     ) -> dict[str, Any]:
         from clio_agent.sdk.workflow import Workflow, WorkflowError  # noqa: PLC0415
 
@@ -234,7 +274,7 @@ def build_run_workflow_tool() -> Any:
             "allowed_targets": allowed_targets,
             "approve_edits": approve_edits,
         }
-        return await start_flow("workflow", flow_input, None)
+        return await start_flow("workflow", flow_input, None, model)
 
     step_schema = {
         "type": "object",
@@ -249,6 +289,10 @@ def build_run_workflow_tool() -> Any:
             "options": {
                 "type": "object",
                 "description": "For a flow target: its options, e.g. arena contestants.",
+            },
+            "model": {
+                "type": "string",
+                "description": "The model this step runs on (account/model or a list_models id).",
             },
         },
         "required": ["id", "target"],
@@ -292,6 +336,7 @@ def build_run_workflow_tool() -> Any:
                 "default": None,
             },
             "approve_edits": {"type": "boolean", "default": False},
+            "model": _MODEL_ARG,
         },
         presentation="tasks",
     )

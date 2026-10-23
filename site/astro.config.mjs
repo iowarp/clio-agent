@@ -94,6 +94,7 @@ export default defineConfig({
 						{ label: 'Answer a question', slug: 'docs/questions' },
 						{ label: 'Follow work in progress', slug: 'docs/following-work' },
 						{ label: 'Flows and workflows', slug: 'docs/flows' },
+						{ label: 'Models and usage', slug: 'docs/models-and-usage' },
 						{ label: 'Updates during a conversation', slug: 'docs/injections' },
 						{ label: 'Continue work over time', slug: 'docs/long-running-work' },
 						{ label: 'Choose what CLIO may do', slug: 'docs/permissions' },

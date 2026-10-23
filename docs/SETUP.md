@@ -203,7 +203,7 @@ subagent to start.
 | `"What is the schema of /tmp/clio-demo/clio_demo.parquet?"` | `clio/data-semantics` | delegation to the `analysis` or `data` subagent (Parquet inspection) |
 | `"Inspect /tmp/clio-demo/clio_demo.h5"` | `clio/data-semantics` | delegation to the `hdf5` or `data` subagent (HDF5 inspection) |
 | `"validate parquet schema and statistics in parallel"` | `clio/data-semantics` | parallel child tasks (`spawn_agents_parallel`) — child sessions appear under the parent in the sidebar |
-| `"propose an edit to /path/to/file.py — replace string concat with f-string"` | `clio/standard` | `fs_propose_edit` → file_diff Part rendered inline |
+| `"edit /path/to/file.py — replace string concat with f-string"` | `clio/standard` | `fs_edit_file` asks by the session's permission mode, writes the file, and records an applied file_diff with Undo |
 | `"hello, who are you?"` | `clio/standard` | identity reply from the composed prompt |
 
 ## Try a third-party MCP server

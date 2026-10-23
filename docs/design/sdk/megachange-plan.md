@@ -11,6 +11,7 @@ The designs in this folder are the contract. When code and design disagree, chan
 | [plugins-and-composition.md](plugins-and-composition.md) | Plugin format, packs, agents as plugin sets, resolution, coexistence rules, composed main prompt, trust |
 | [agent-sdk.md](agent-sdk.md) | The Python classes, ownership, two-stage resolution, validation and `clio-agent plugin check` |
 | [orchestration-semantics.md](orchestration-semantics.md) | Flows, the `ctx` primitives on the task layer, durability, plans, the `workflows.py` replacement |
+| [model-fleet.md](model-fleet.md) | The fleet, usage, model selection at every spawn point, and the Usage UI (Phase 6) |
 | [remote-agents-and-protocols.md](remote-agents-and-protocols.md) | Context only; out of scope for this change |
 
 Base: `codex/agent-facing-async-tasks` in clio-agent (this setup branch sits on `55d06ee5`; the design review was done at `47b6bd49`), with gact-tui at the commit the submodule pins, which is on gact-tui's `codex/agent-facing-async-tasks`. That branch rebuilt the task layer. Read `docs/design/task-replacement-plan.md` and `docs/design/agent-facing-async-tasks.md` before Phase 1. When the team merges it, rebase onto `develop`.
@@ -120,6 +121,25 @@ Verify every UI change yourself:
 1. Run `bash scripts/cloud/stack.sh restart`.
 2. Capture the screen with `node scripts/cloud/ui_check.mjs`, passing `--steps` with a small script for the flow you changed. Capture it at 1440 by 900 and again at 390 by 844.
 3. Read every screenshot it prints, and check that `consoleErrors` and `failedRequests` are empty.
+
+## Phase 6: model fleet, usage and selection
+
+Added Oct 23, 2026. [model-fleet.md](model-fleet.md) is the contract; its phases 0 to 6 run here in order, and its rows M1 to M11 join the ledger. Two adjustments for this branch:
+
+- RLM leaves (`llm(..., model=)`, M11) wait for the `rlm` flow, which stays out of scope above. The row is recorded as not started, not blocked.
+- Accounts that cannot be connected from a cloud session (Codex OAuth, an OpenRouter key, a local vLLM) are qualified with recorded responses replayed through the adapter, and the live row names what was replayed. The `claude_code` account is qualified live.
+
+Status Oct 23: M3, M6 and M12 passed live; M4, M5 and M7 to M10 pass in tests because the cloud session has no account that produces them; M1 and M2 are partial; M11 waits. Evidence and decisions M-D3 to M-D10 are in [model-fleet-ledger.md](model-fleet-ledger.md).
+
+## Phase 7: the agent writes files itself
+
+Added Oct 23, 2026. The agent proposes an edit (`fs_propose_edit`) and the person applies it from the diff panel (`/diffs/apply`). That split comes from the older CLIO that held small models to deterministic pipelines. It also lets a write skip the PreToolUse hooks: proposing counts as read-only, and the person's apply runs no hooks. A plugin's write guard (WTF-P's, for one) therefore never sees a write.
+
+1. The agent gets a write tool that changes the file on disk. It is not read-only, so the permission gate asks or allows by the session's mode, and PreToolUse hooks run on it like any other write. `Write` and `Edit` in Claude Code hooks match it.
+2. The proposal tool and the person's apply route are deleted. The diff panel stays as the record of what changed, with undo.
+3. Qualification: a trusted plugin's PreToolUse hook on `Write|Edit` blocks a write, and the reason reaches the agent and the UI (row L13).
+
+Status Oct 23: done. The agent writes with `fs_write_file` and `fs_edit_file`, the diff panel keeps the record with revert (`/diffs/revert`), and L13 passed live with WTF-P's guard, armed by the new `UserPromptExpansion` hook event.
 
 ## Phase 5: qualification
 

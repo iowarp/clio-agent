@@ -175,7 +175,6 @@ def _prediction_summary(pred: Any) -> dict[str, Any]:
             getattr(pred, "expert_handoffs", None) or [], mode="gact_runtime"
         ),
         "tools_called": wire_value(getattr(pred, "tools_called", None) or [], mode="gact_runtime"),
-        "file_diffs": wire_value(getattr(pred, "file_diffs", None) or [], mode="gact_runtime"),
         "error_info": wire_value(getattr(pred, "error_info", None), mode="gact_runtime"),
     }
     # Full capture (durable trace): a ChainOfThought prediction's reasoning. It is

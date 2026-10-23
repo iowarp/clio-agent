@@ -370,11 +370,12 @@ def test_streaming_text_delivery_events(http: httpx.Client, session_id: str) -> 
 
 def test_destructive_tool_requests_permission(http: httpx.Client, tmp_path: Path) -> None:
     """SPEC §6.13 — destructive tools must register a permission row
-    (visible via /v1/permissions) before they execute. Drive the
-    diff-apply path which uses fs_apply_edit_write — its static catalog
-    'write' tag means is_read_only (#1032) does NOT fast-allow it, so it
-    proceeds to the permission gate — the test asserts the permission row
-    appears AND has tool_call info that identifies the destructive call."""
+    (visible via /v1/permissions) before they execute. The agent writes the
+    file itself with fs_edit_file / fs_write_file — their declared 'write'
+    tag means is_read_only (#1032) does NOT fast-allow them, so each call
+    reaches the permission gate. The session runs in auto-edits mode, so the
+    gate allows the write AND records an audited permission row identifying
+    it; the change then lands as an applied file_diff the person can undo."""
 
     root = Path(os.environ.get("CLIO_INTEGRATION_WORKSPACE_ROOT", tmp_path)).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -390,24 +391,18 @@ def test_destructive_tool_requests_permission(http: httpx.Client, tmp_path: Path
         json={"workspace_id": ws["id"], "title": "permission integration"},
     ).json()
     session_id = session["id"]
+    http.patch(f"/v1/sessions/{session_id}", json={"approval_mode": "auto-edits"})
 
-    # Drive an edit turn so the diff lands.
+    # Drive an edit turn: the agent writes the file and the change is recorded.
     a = turn(
         http,
         session_id,
-        f"propose an edit to {target} — replace string concatenation with an f-string",
+        f"edit {target} — replace string concatenation with an f-string",
         timeout=180,
     )
     diff_parts = [p for p in a["parts"] if p["type"] == "file_diff"]
     assert diff_parts, f"expected file_diff Part, got {[p['type'] for p in a['parts']]}"
-
-    # Apply the diff → triggers fs_apply_edit_write under the
-    # permission gate.
-    apply_resp = http.post(
-        f"/v1/sessions/{session_id}/diffs/apply",
-        json={"path": str(target)},
-    )
-    assert apply_resp.status_code == 200, apply_resp.text
+    assert all(p.get("status") == "applied" for p in diff_parts)
 
     # Permission row must exist for the destructive call.
     perms = (

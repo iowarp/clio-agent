@@ -45,7 +45,7 @@ This project hook blocks any shell command or file write whose input contains a 
       "id": "block-private-keys",
       "on": ["PreToolUse"],
       "match": {
-        "tool": "(shell_bash|fs_apply_edit_write)",
+        "tool": "(shell_bash|fs_write_file|fs_edit_file)",
         "argsPattern": "BEGIN [A-Z ]*PRIVATE KEY"
       },
       "run": {
@@ -97,6 +97,7 @@ CLIO runs the script with the event as JSON on standard input. Exit code 2 denie
 | `PostToolUse` | No | After a tool returns. A hook can rewrite the output the agent sees. |
 | `PostToolBatch` | No | After a round of tool calls finishes. |
 | `UserPromptSubmit` | Yes | When you send a message. A denial stops the turn. |
+| `UserPromptExpansion` | Yes | When a slash command you type expands, before its turn starts. The matcher is tested against the command's name, `plugin:command`. A denial stops the command; context a hook adds reaches the agent with it. Claude Code plugins such as WTF-P arm their write guards here. |
 | `Stop` | Limited | When the agent finishes. A hook can send it back for one more turn, within `loopLimit`. |
 | `Answer` | No | When the turn's answer is settled, before the turn is saved. A hook can attach a note or a check, or revise the answer. See [Review the answer](#review-the-answer). |
 | `SessionStart`, `SessionEnd` | No | At the start and end of a session. |

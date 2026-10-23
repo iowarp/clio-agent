@@ -1421,7 +1421,7 @@ def test_gate_denies_write_tool_in_plan_mode_via_plan_acl(tmp_path: Path) -> Non
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
         rows = list(app.state.permissions.values())
         assert len(rows) == 1
         assert rows[0]["status"] == "auto_denied"
@@ -1439,7 +1439,7 @@ def test_gate_allows_plans_dir_md_write_in_plan_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         target = str(plans_dir() / "2026-07-25-plan.md")
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": target}) == "allow"
+            assert gate("fs_write_file", {"filepath": target}) == "allow"
 
 
 def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
@@ -1452,11 +1452,11 @@ def test_gate_denies_write_tool_in_architect_mode(tmp_path: Path) -> None:
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
             # Even a plans-dir .md write is denied in architect (the carve-out is plan-only).
-            assert gate("fs_apply_edit_write", {"filepath": str(plans_dir() / "p.md")}) == "deny"
+            assert gate("fs_write_file", {"filepath": str(plans_dir() / "p.md")}) == "deny"
 
 
 def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> None:
-    """An explicit user allow(fs_apply_edit_write, src/**) does NOT beat the plan_acl deny band."""
+    """An explicit user allow(fs_write_file, src/**) does NOT beat the plan_acl deny band."""
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
@@ -1464,14 +1464,14 @@ def test_gate_user_allow_policy_does_not_override_plan_mode(tmp_path: Path) -> N
             {
                 "scope": "session",
                 "scope_id": sid,
-                "tool_name_pattern": "fs_apply_edit_write",
+                "tool_name_pattern": "fs_write_file",
                 "path_pattern": "src/**",
                 "action": "allow",
             }
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            assert gate("fs_apply_edit_write", {"filepath": "src/x.py"}) == "deny"
+            assert gate("fs_write_file", {"filepath": "src/x.py"}) == "deny"
 
 
 def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
@@ -1484,7 +1484,7 @@ def test_plan_acl_deny_surfaces_mode_aware_message(tmp_path: Path) -> None:
         sid = c.post("/v1/sessions", json={"title": "t", "mode": "plan"}).json()["id"]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"filepath": "src/x.py"})
         # Backward compatible: still equals "deny" for every legacy comparison.
         assert decision == "deny"
         assert isinstance(decision, DenyDecision)
@@ -1508,12 +1508,12 @@ def test_user_policy_deny_in_edit_mode_carries_no_plan_message(tmp_path: Path) -
             {
                 "scope": "session",
                 "scope_id": sid,
-                "tool_name_pattern": "fs_apply_edit_write",
+                "tool_name_pattern": "fs_write_file",
                 "action": "deny",
             }
         ]
         gate = _make_permission_gate(app)
         with _tool_session_context(sid):
-            decision = gate("fs_apply_edit_write", {"filepath": "src/x.py"})
+            decision = gate("fs_write_file", {"filepath": "src/x.py"})
         assert decision == "deny"
         assert getattr(decision, "deny_message", "") == ""

@@ -15,12 +15,12 @@ from typing import TYPE_CHECKING, Any
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
-from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
+from clio_agent.gact.artifacts.wire import append_turn_resource_links
 from clio_agent.gact.delegation import _produced_turn_workflow_state
-from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
+from clio_agent.gact.file_changes import stamp_turn_file_changes
 from clio_agent.gact.hooks.answer import apply_answer_hooks
 from clio_agent.gact.memory.turn_use import attach_turn_memory
 from clio_agent.gact.part_atom_minter import (
@@ -48,7 +48,7 @@ from clio_agent.gact.tool_result_reconcile import reconcile_tool_result_text
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
-from clio_agent.gact.turn_usage import context_usage_metadata_patch
+from clio_agent.gact.turn_usage import context_usage_metadata_patch, model_usage_after_turn
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -66,14 +66,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
 
 logger = logging.getLogger(__name__)
-
-
-def _row_value(row: Any, key: str, default: Any = None) -> Any:
-    """Read a proposal field from either its mapping or object representation."""
-
-    if isinstance(row, Mapping):
-        return row.get(key, default)
-    return getattr(row, key, default)
 
 
 def finalize_turn(
@@ -122,7 +114,6 @@ def finalize_turn(
         state.error_info is None
         and not state.answer_text
         and not state.thinking_text
-        and not state.proposed_diffs
         and not state.nanoagents
         and not has_operation_output
         and getattr(pred, "assignment_disposition", None) != "yield"
@@ -223,47 +214,6 @@ def finalize_turn(
         answer_part_id=answer_channel.part_id or "",
         agent_id=responder_agent_id,
     )
-    for row in state.proposed_diffs:
-        path = _row_value(row, "path", "") or ""
-        udiff = _row_value(row, "unified_diff", "") or ""
-        new_content = _row_value(row, "new_content", "") or ""
-        edit_mode = _row_value(row, "edit_mode", "") or ""
-        lines_added = int(_row_value(row, "lines_added", 0) or 0)
-        lines_removed = int(_row_value(row, "lines_removed", 0) or 0)
-        if not path:
-            continue
-        # In "whole" mode the unified_diff may be empty by design;
-        # the new_content carries the full replacement. Accept either
-        # so the Part lands instead of being dropped.
-        if not udiff and not new_content:
-            continue
-        diff_part = Part(
-            id=_new_part_id(),
-            type="file_diff",
-            agent_id=responder_agent_id,
-            path=path,
-            unified_diff=udiff,
-            new_content=new_content,
-            status="pending",
-            edit_mode=edit_mode,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        )
-        state.transcript.append_part(diff_part, stream_source="batch")
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "artifact.proposed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary=f"Agent proposed a file diff for {path}.",
-            actor={"agent_id": state.selected_agent or state.invocation_agent_id},
-            subject={"path": path, "part_id": diff_part.id, "artifact_type": "file_diff"},
-            payload=proposed_diff_payload(
-                path, udiff, new_content, edit_mode, lines_added, lines_removed
-            ),
-        )
-
     append_turn_resource_links(
         state.app, state.sid, state.turn_id, state.transcript, agent_id=responder_agent_id
     )
@@ -369,8 +319,8 @@ def finalize_turn(
         error_info=state.error_info,
     )
 
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them (guarded owner).
-    index_turn_file_diffs(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
+    # Name the message holding this turn's file_diff parts on the change ledger rows.
+    stamp_turn_file_changes(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
 
     completed_payload: dict[str, Any] = {
         "turn_id": state.turn_id,
@@ -467,6 +417,7 @@ def publish_finalized_turn(
             current_session.cost_usd + (state.turn_cost if state.turn_cost_known else 0.0),
             current_session.cost_known or state.turn_cost_known,
         )
+        state.publication_model_usage = model_usage_after_turn(state, current_session)
     publication_step(
         steps,
         "session_projection",
@@ -474,6 +425,7 @@ def publish_finalized_turn(
             state.sid,
             message_count=len(state.app.state.messages.get(state.sid, [])),
             usage_totals=state.publication_usage,
+            usage_by_model=state.publication_model_usage,
             metadata_patch=metadata_patch,
         ),
         retry=True,

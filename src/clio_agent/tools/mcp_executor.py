@@ -842,22 +842,6 @@ def _result_to_text(result: Any) -> str:
         return str(data)
 
 
-def _active_session_mode() -> str:
-    """Return the active GACT session mode without coupling executor startup to GACT."""
-
-    try:
-        from clio_agent.gact import context as gact_context  # noqa: PLC0415
-
-        app = gact_context.active_app()
-        sid = gact_context.active_session_id() or gact_context.active_tool_session_id()
-        if app is None or not sid:
-            return ""
-        session = app.state.sessions.get(sid)
-        return str(getattr(session, "mode", "") or "")
-    except (AttributeError, LookupError, RuntimeError):
-        return ""
-
-
 __all__ = [
     "AsyncMCPToolExecutor",
     "ClientFactory",

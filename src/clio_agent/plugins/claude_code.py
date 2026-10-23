@@ -44,9 +44,9 @@ TOOL_MAP: dict[str, tuple[tuple[str, ...], str]] = {
     "Read": (("fs_read_file",), "workspace"),
     "Glob": (("fs_glob",), "workspace"),
     "Grep": (("fs_grep",), "workspace"),
-    "Edit": (("fs_propose_edit", "fs_apply_edit_write"), "workspace"),
-    "MultiEdit": (("fs_propose_edit", "fs_apply_edit_write"), "workspace"),
-    "Write": (("fs_propose_edit", "fs_apply_edit_write"), "workspace"),
+    "Edit": (("fs_edit_file",), "workspace"),
+    "MultiEdit": (("fs_edit_file",), "workspace"),
+    "Write": (("fs_write_file",), "workspace"),
     "Bash": (("shell_bash",), "shell"),
     "WebFetch": (("web_fetch",), "web"),
     "WebSearch": (("web_search",), "web"),
@@ -59,6 +59,7 @@ HOOK_EVENT_MAP: dict[str, str] = {
     "PreToolUse": "PreToolUse",
     "PostToolUse": "PostToolUse",
     "UserPromptSubmit": "UserPromptSubmit",
+    "UserPromptExpansion": "UserPromptExpansion",
     "Stop": "Stop",
     "SubagentStop": "SubagentStop",
     "SessionStart": "SessionStart",
@@ -179,7 +180,11 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
             )
             continue
         for group_index, group in enumerate(groups or []):
-            pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
+            if clio_event == "UserPromptExpansion":
+                # Its matcher names commands (``plugin:command``), not tools: kept as written.
+                pattern, unmapped = str(group.get("matcher") or "").strip(), list[str]()
+            else:
+                pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
             if unmapped:
                 diagnostics.append(
                     Diagnostic(

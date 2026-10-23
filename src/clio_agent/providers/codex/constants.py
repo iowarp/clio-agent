@@ -104,22 +104,13 @@ WS_PING_TIMEOUT_S = 60.0
 # ---------------------------------------------------------------------------
 # Retry / error handling (A.7)
 # ---------------------------------------------------------------------------
-RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 RETRY_BASE_DELAY_MS = 1000
 RETRY_MAX_DELAY_MS = 60_000
 DEFAULT_MAX_RETRIES = 3
 
-#: A 429 whose body mentions one of these is the account's plan window, not a
-#: transient rate limit -- terminal, never retried (A.7).
-USAGE_LIMIT_MARKERS = (
-    "usage limit",
-    "quota exceeded",
-    "insufficient_quota",
-    "billing",
-    "monthly usage limit",
-    "out of budget",
-    "available balance",
-)
+#: Backend error codes (``error.code`` or ``error.type``) that name the account's
+#: plan window or quota rather than a transient rate limit: terminal, never retried.
+USAGE_LIMIT_CODES = frozenset({"usage_limit_reached", "insufficient_quota"})
 
 PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found"
 WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
@@ -171,12 +162,11 @@ __all__ = [
     "REASON_WS_PRESTREAM_FAILURE",
     "REDIRECT_URI",
     "REFRESH_MARGIN_MS",
-    "RETRYABLE_STATUS_CODES",
     "RETRY_BASE_DELAY_MS",
     "RETRY_MAX_DELAY_MS",
     "SCOPE",
     "TOKEN_URL",
-    "USAGE_LIMIT_MARKERS",
+    "USAGE_LIMIT_CODES",
     "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE",
     "WS_CONNECT_TIMEOUT_S",
     "WS_IDLE_CLOSE_S",

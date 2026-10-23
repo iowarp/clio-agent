@@ -21,6 +21,7 @@ from clio_agent.gact.artifacts.provenance_presentation import with_provenance_bl
 from clio_agent.gact.delegation import _expert_handoff_fields
 from clio_agent.gact.events import Event
 from clio_agent.gact.evidence import _bounded_tool_call_result
+from clio_agent.gact.file_changes import pop_previous_content, record_file_change
 from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
@@ -755,6 +756,7 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
+            prev = pop_previous_content(result)  # Undo's pre-write copy: never on a wire
             if completion_error is None and result is not None:
                 completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
@@ -764,13 +766,9 @@ def _make_tool_observer(app: "FastAPI"):
                 )
                 cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
-            # A native tool may DECLARE its own typed structured payload (P5 wire
-            # semantics — the same declared-presentation contract an MCP tool's
-            # structuredContent gives, without changing what the model itself
-            # received as the tool's plain return value). Read + clear it exactly
-            # once per completed call — success or error — so a stale declaration
-            # can never leak onto a later call on this thread. Falls back to the
-            # MCP-shaped extraction below when nothing was declared.
+            # A native tool may DECLARE its typed structured payload (P5; the model's
+            # return value is unchanged). Read + cleared once per completed call so it
+            # never leaks onto a later call; else the MCP-shaped extraction below.
             declared_structured = pop_declared_structured_content()
             structured_content = (
                 declared_structured
@@ -899,6 +897,8 @@ def _make_tool_observer(app: "FastAPI"):
                             ),
                         ),
                     )
+                # A write that ran is on disk even if the turn was cancelled meanwhile.
+                record_file_change(app, sid, name, call_id, error, result, prev, invoking_expert)
         return None
 
     return observe

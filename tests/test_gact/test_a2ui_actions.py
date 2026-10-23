@@ -319,7 +319,7 @@ def test_permission_destination_resolves_in_scope_permission_only(tmp_path: Path
         "status": "pending",
         "summary": "Allow write",
         "created_at": now,
-        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+        "tool_call": {"tool_name": "fs_write_file", "input": {"path": "x"}},
     }
     app.state.permissions["perm_out_of_scope"] = {
         "id": "perm_out_of_scope",
@@ -327,7 +327,7 @@ def test_permission_destination_resolves_in_scope_permission_only(tmp_path: Path
         "status": "pending",
         "summary": "Allow write elsewhere",
         "created_at": now,
-        "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "y"}},
+        "tool_call": {"tool_name": "fs_write_file", "input": {"path": "y"}},
     }
 
     out_of_scope = client.post(

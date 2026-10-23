@@ -8,7 +8,8 @@
   "keywords": ["core", "runtime"],
   "extensions": {
     "ai.iowarp.clio": {
-      "catalogs": ["clio-workspace"]
+      "catalogs": ["clio-workspace"],
+      "requires": ["fleet"]
     }
   }
 }

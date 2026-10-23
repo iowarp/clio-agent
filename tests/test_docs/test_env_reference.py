@@ -225,10 +225,10 @@ def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
     env_names = {e.env for e in env_only}
     expected = {
         "CLIO_LEDGER_COMMAND_AUDIT_MAX": ("gact.ledger_retention.command_audit.max", "int", "2000"),
-        "CLIO_LEDGER_PENDING_DIFFS_HARD": (
-            "gact.ledger_retention.pending_diffs.hard",
+        "CLIO_LEDGER_FILE_CHANGES_MAX": (
+            "gact.ledger_retention.file_changes.max",
             "int",
-            "1000",
+            "500",
         ),
         "CLIO_RESIDENT_LEDGERS_MAX_BYTES": (
             "gact.resident_ledgers.max_bytes",

@@ -183,3 +183,38 @@ def context_usage_metadata_patch(
         "recorded_at": assistant_msg.updated_at,
     }
     return {"context_usage_by_scope": usage_by_scope}
+
+
+def model_usage_after_turn(state: "TurnState", session: Any) -> dict[str, dict[str, Any]]:
+    """The session's per-model rollup with this turn added under the model that ran it.
+
+    Stored on the session (``usage_by_model``) so spend by account and model is read
+    from the session records, never by replaying transcripts.
+    """
+
+    rows = {ref: dict(row) for ref, row in (getattr(session, "usage_by_model", None) or {}).items()}
+    tokens = state.turn_tokens
+    if not any(tokens.values()):
+        return rows
+    ref = _effective_turn_model_id(state) or "unknown/unknown"
+    if "/" not in ref:
+        ref = f"unknown/{ref}"
+    row = {
+        "tokens_input": 0,
+        "tokens_cached": 0,
+        "tokens_output": 0,
+        "cost_usd": 0.0,
+        "turns": 0,
+        "turns_without_cost": 0,
+        **rows.get(ref, {}),
+    }
+    rows[ref] = row
+    row["tokens_input"] += int(tokens.get("input", 0))
+    row["tokens_cached"] += int(tokens.get("cache_read", 0)) + int(tokens.get("cache_write", 0))
+    row["tokens_output"] += int(tokens.get("output", 0))
+    if state.turn_cost_known:
+        row["cost_usd"] += float(state.turn_cost)
+    else:
+        row["turns_without_cost"] += 1
+    row["turns"] += 1
+    return rows

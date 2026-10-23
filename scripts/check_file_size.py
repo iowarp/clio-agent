@@ -446,7 +446,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 1834,
+    "src/clio_agent/gact/app.py": 1828,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -1004,7 +1004,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 866,
+    "src/clio_agent/tools/mcp_executor.py": 850,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

@@ -666,9 +666,11 @@ def observe_tool_completion(
 
 
 def mint_harness_write(
-    app: "FastAPI", session: Any, target: str, write_result: dict[str, Any]
+    app: "FastAPI", session: Any, target: str, write_result: dict[str, Any], *, tool: str
 ) -> None:
-    """Seam (b) entry point: mint an ``artifact.created`` for a user-approved write.
+    """Seam (b) entry point: mint an ``artifact.created`` for a person-initiated write.
+
+    ``tool`` names the producer recorded on the version (``diffs.revert`` for Undo).
 
     Finding [3]: the just-written bytes are handed to the selected artifact store
     (falling back to the writer's in-hand ``sha256`` on a stat/hash failure). The
@@ -707,7 +709,7 @@ def mint_harness_write(
             mechanism=Mechanism.HARNESS,
             producer={
                 "session_id": str(getattr(session, "id", "") or ""),
-                "tool": "fs_apply_edit_write",
+                "tool": tool,
                 "turn_id": _ctx.active_turn_id(),
             },
             custody=ingested.custody,

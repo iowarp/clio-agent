@@ -192,7 +192,7 @@ def test_legacy_approval_respond_dispatches_to_the_permission_lane(tmp_path: Pat
             "status": "pending",
             "summary": "Allow write",
             "created_at": now,
-            "tool_call": {"tool_name": "fs_apply_edit_write", "input": {"path": "x"}},
+            "tool_call": {"tool_name": "fs_write_file", "input": {"path": "x"}},
         }
 
         response = client.post(

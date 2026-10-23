@@ -43,6 +43,7 @@ from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assembl
 from clio_agent.tools.tool_observation import (
     LegacyToolObserver,
     ToolObserver,
+    notify_refused_call,
     notify_tool_observer,
     observer_progress_handler,
 )
@@ -671,9 +672,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 # via getattr so this layer imports no gact) instead of the generic string; a plain
                 # "deny" falls back. The typed audit reason (``policy_deny``) is unchanged.
                 deny_message = getattr(decision, "deny_message", "")
-                raise PermissionError(
-                    deny_message or f"tool call {name!r} denied by permission gate"
-                )
+                message = deny_message or f"tool call {name!r} denied by permission gate"
+                raise notify_refused_call(tool_observer, name, effective_args, message)
 
         raise_if_cancelled("tool_call_before")
 

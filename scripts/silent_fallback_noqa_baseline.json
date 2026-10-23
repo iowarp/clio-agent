@@ -75,7 +75,6 @@
  "gact/routes/artifact_aliases.py": 1,
  "gact/routes/artifacts.py": 1,
  "gact/routes/catalog.py": 7,
- "gact/routes/diffs.py": 1,
  "gact/routes/documents.py": 1,
  "gact/routes/health_boot.py": 1,
  "gact/routes/mcp.py": 6,

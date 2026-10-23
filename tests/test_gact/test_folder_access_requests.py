@@ -263,10 +263,10 @@ def test_real_write_and_move_continue_after_approval(
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
             run,
-            "fs_apply_edit_write",
-            {"filepath": str(source), "new_content": "reviewed"},
+            "fs_write_file",
+            {"filepath": str(source), "content": "reviewed"},
             fs_server,
-            "apply_edit_write",
+            "write_file",
         )
         row = pending(app, future)
         assert source.read_text() == "before"

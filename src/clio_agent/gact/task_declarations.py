@@ -11,6 +11,7 @@ from uuid import uuid4
 from clio_agent.arc.task_types import QuestionDefinition, TaskOwner
 from clio_agent.gact import context
 from clio_agent.gact.agents.tool_instrumentation import native_tool
+from clio_agent.gact.fleet.child_model import accepted_model
 from clio_agent.gact.off_loop import join_off_loop
 from clio_agent.gact.task_access import TaskAccess
 from clio_agent.gact.task_publication import publish_task_notice
@@ -609,6 +610,7 @@ def build_spawn_runtime_tools(
         input_task_ids: list[str] | None,
         strategy: dict[str, Any] | None,
         invocation: str,
+        model: str = "",
     ) -> dict[str, Any]:
         local_placement(placement)
         app, caller = _runtime()
@@ -628,8 +630,13 @@ def build_spawn_runtime_tools(
             inference_concurrency=concurrency,
             strategy=strategy,
             launch_context={"input_task_refs": [pin.model_dump(mode="json") for pin in pins]},
+            model=str(model or "").strip(),
         )
-        return {**result, **({"task_id": result["handle"]} if "handle" in result else {})}
+        return {
+            **result,
+            **({"task_id": result["handle"]} if "handle" in result else {}),
+            **accepted_model(app, result),
+        }
 
     async def spawn_agent_task(
         agent: str = "",
@@ -637,6 +644,7 @@ def build_spawn_runtime_tools(
         placement: str | None = None,
         input_task_ids: list[str] | None = None,
         strategy: dict[str, Any] | None = None,
+        model: str = "",
     ) -> dict[str, Any]:
         return await prepare_and_spawn(
             agent,
@@ -645,6 +653,7 @@ def build_spawn_runtime_tools(
             input_task_ids,
             strategy,
             TASK_CALL.get().invocation_id or uuid4().hex,
+            model,
         )
 
     async def spawn_agents_parallel(
@@ -667,6 +676,7 @@ def build_spawn_runtime_tools(
                         assignment.get("input_task_ids"),
                         assignment.get("strategy"),
                         invocation + ":" + str(index),
+                        assignment.get("model") or "",
                     )
                 )
             except Exception as error:
@@ -705,6 +715,15 @@ def build_spawn_runtime_tools(
         ],
         "default": None,
     }
+    model_schema = {
+        "type": "string",
+        "default": "",
+        "description": (
+            "The model the child runs on: account/model or a model id from list_models. "
+            "Empty: the child's own preference, else your model. A model that cannot run "
+            "the child is refused with the reason."
+        ),
+    }
     tools = [
         _tool(
             spawn_agent_task,
@@ -718,6 +737,7 @@ def build_spawn_runtime_tools(
                     "default": None,
                 },
                 "strategy": strategy_schema,
+                "model": model_schema,
             },
             "Delegate the original assignment and immediately receive a Subagent handle. Optional strategy selects best_of_n/refine with n, rubric, threshold and lm/user judge. Continue work, observe_tasks, or wait_tasks. Child results wake eligible idle parents. Pause holds only the child model; cancel_tasks includes its descendant work.",
         )
@@ -744,6 +764,7 @@ def build_spawn_runtime_tools(
                                 "default": None,
                             },
                             "strategy": strategy_schema,
+                            "model": model_schema,
                         },
                         "required": ["task"],
                         "additionalProperties": False,

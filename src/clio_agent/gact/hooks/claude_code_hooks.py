@@ -16,7 +16,7 @@ from typing import Any
 
 from clio_agent.gact.hooks.adapters import SubprocessAdapter
 from clio_agent.gact.hooks.config import HookEntry
-from clio_agent.gact.hooks.events import POST_TOOL_USE
+from clio_agent.gact.hooks.events import POST_TOOL_USE, USER_PROMPT_EXPANSION
 from clio_agent.gact.hooks.wire import (
     HookDecision,
     HookEnvelope,
@@ -24,22 +24,24 @@ from clio_agent.gact.hooks.wire import (
     record_hook_reason,
 )
 
-#: CLIO tool -> the Claude Code tool a hook script knows it as. CLIO's edit tools
-#: take a whole new file content, which is Claude Code's ``Write``.
+#: CLIO tool -> the Claude Code tool a hook script knows it as. ``fs_write_file`` and
+#: ``fs_edit_file`` take Claude Code's Write and Edit arguments, so a write guard on
+#: ``Write|Edit`` reads the input it was written for.
 CLAUDE_TOOL_NAMES: dict[str, str] = {
     "fs_read_file": "Read",
     "fs_glob": "Glob",
     "fs_grep": "Grep",
-    "fs_propose_edit": "Write",
-    "fs_apply_edit_write": "Write",
+    "fs_write_file": "Write",
+    "fs_edit_file": "Edit",
     "shell_bash": "Bash",
     "web_fetch": "WebFetch",
     "web_search": "WebSearch",
     "spawn_agent_task": "Task",
 }
 
-#: CLIO tool argument -> the Claude Code ``tool_input`` key.
-CLAUDE_INPUT_KEYS: dict[str, str] = {"filepath": "file_path", "new_content": "content"}
+#: CLIO tool argument -> the Claude Code ``tool_input`` key. The write tools already use
+#: Claude Code's ``content`` / ``old_string`` / ``new_string`` / ``replace_all``.
+CLAUDE_INPUT_KEYS: dict[str, str] = {"filepath": "file_path"}
 
 _DECISIONS = {"allow": "allow", "approve": "allow", "deny": "deny", "block": "deny", "ask": "ask"}
 
@@ -65,6 +67,12 @@ def claude_envelope(envelope: HookEnvelope, *, permission_mode: str = "default")
             body["tool_response"] = {"success": not payload.get("is_error", False)}
     if envelope.prompt is not None:
         body["prompt"] = envelope.prompt
+    if envelope.hook_event_name == USER_PROMPT_EXPANSION:
+        payload = envelope.payload or {}
+        body["expansion_type"] = "slash_command"
+        body["command_name"] = str(payload.get("command_name") or "")
+        body["command_args"] = str(payload.get("command_args") or "")
+        body["command_source"] = "plugin"
     return body
 
 

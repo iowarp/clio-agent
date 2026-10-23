@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.provider_catalog_snapshot import UnknownCatalogProviderError, read_catalog
+from clio_agent.gact.routes.fleet import register_fleet_routes
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -14,9 +15,10 @@ if TYPE_CHECKING:
 
 
 def register_normalized_provider_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
-    """Register the capability-evidence provider catalog."""
+    """Register the capability-evidence provider catalog and the fleet read over it."""
 
     del deps
+    register_fleet_routes(app)
 
     @app.get("/v1/provider-catalog")
     async def provider_catalog(refresh: bool = False, provider: str = "") -> dict[str, object]:

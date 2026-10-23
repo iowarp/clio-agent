@@ -611,8 +611,8 @@ def _estimate_bytes(messages: list["Message"]) -> int:
     Uses each message's JSON serialization (``model_dump_json``) so the byte cap —
     the PRIMARY memory guard — accounts for EVERY payload-bearing field, not just
     top-level ``part.text``: base64 image ``data``, tool ``input`` and nested
-    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff`` /
-    ``new_content`` file diffs, compaction ``summary``, ``thought``, and per-message
+    ``content`` parts (where ``tool_result`` bodies live), ``unified_diff``
+    file diffs, compaction ``summary``, ``thought``, and per-message
     / per-part ``metadata``. Those heavy payloads are exactly what #889 exists to
     bound; the old text-only estimate under-counted a tool-result-heavy or
     multimodal ledger by orders of magnitude, letting the byte cap be effectively

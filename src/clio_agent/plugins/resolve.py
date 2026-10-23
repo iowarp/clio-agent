@@ -26,9 +26,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from clio_agent.plugins.compose import ComposedPrompt, compose
+from clio_agent.plugins.model_union import model_union
 from clio_agent.plugins.records import Diagnostic, FragmentRecord, PluginRecord, SubagentRecord
 from clio_agent.sdk.agent import CORE_PLUGIN, AgentSpec
-from clio_agent.sdk.model import Prefers, Requires
 from clio_agent.sdk.versions import PluginRef, VersionRangeError
 
 
@@ -535,28 +535,6 @@ def _collect(builder: _Builder, entries: list[Entry]) -> dict[str, Any]:
     }
 
 
-def _model_union(
-    agent_requires: Mapping[str, Any],
-    agent_prefers: Mapping[str, Any],
-    entries: list[Entry],
-    agent_id: str,
-) -> dict[str, Any]:
-    union = Requires.from_dict(agent_requires)
-    attribution: dict[str, list[str]] = {key: [f"agent:{agent_id}"] for key in union.to_dict()}
-    for entry in entries:
-        if not entry.record.model:
-            continue
-        need = Requires.from_dict(entry.record.model)
-        union = union.union(need)
-        for key in need.to_dict():
-            attribution.setdefault(key, []).append(entry.record.id)
-    return {
-        "requires": union.to_dict(),
-        "attribution": attribution,
-        "prefers": Prefers.from_dict(agent_prefers).to_dict(),
-    }
-
-
 #: Install locations: where a store keeps a plugin is not part of what resolved.
 _LOCATION_KEYS = frozenset({"root", "path"})
 
@@ -667,7 +645,7 @@ def _finish(
         catalogs=collected["catalogs"],
         commands=collected["commands"],
         prompt={},
-        model=_model_union(requires, prefers, entries, agent["id"]),
+        model=model_union(requires, prefers, entries, agent["id"]),
         workflow_state=collected["workflow_state"],
         delta=delta.to_dict(),
         diagnostics=[],

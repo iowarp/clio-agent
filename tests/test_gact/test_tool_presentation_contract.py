@@ -49,8 +49,8 @@ def test_every_native_registration_declares_presentation() -> None:
     assert missing == []
     assert {
         "fs_read_file",
-        "fs_propose_edit",
-        "fs_apply_edit_write",
+        "fs_write_file",
+        "fs_edit_file",
         "shell_bash",
     } <= MCP_PRESENTATION_ADAPTERS.keys()
     for namespace in ("fs", "shell"):
@@ -81,7 +81,7 @@ def test_historical_header_projection_preserves_original_blocks() -> None:
         ],
     }
     before = json.dumps(original)
-    view = project_presentation(original, "session", "call", tool_name="fs_apply_edit_write")
+    view = project_presentation(original, "session", "call", tool_name="fs_write_file")
     assert view is not None and view["action"] == "Write"
     assert view["subject"] == "file-link"
     assert view["blocks"] == original["blocks"]

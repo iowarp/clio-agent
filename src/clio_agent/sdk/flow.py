@@ -26,9 +26,25 @@ and every ``ctx`` call re-attaches to the task it already started.
 
 from __future__ import annotations
 
+import typing
+from collections.abc import Mapping
 from typing import Any, ClassVar
 
 import dspy
+from pydantic import TypeAdapter, ValidationError
+
+
+class FlowOptionsInvalid(ValueError):
+    """Options that do not have the types the flow declares; ``problems`` names each."""
+
+    def __init__(self, flow_id: str, problems: list[str]) -> None:
+        super().__init__(f"options for flow {flow_id!r} are invalid: " + "; ".join(problems))
+        self.flow_id = flow_id
+        self.problems = problems
+
+
+def _type_name(hint: Any) -> str:
+    return hint.__name__ if isinstance(hint, type) else repr(hint).replace("typing.", "")
 
 
 class Flow(dspy.Module):
@@ -47,6 +63,9 @@ class Flow(dspy.Module):
     max_concurrency: ClassVar[int] = 0
     max_model_calls: ClassVar[int] = 0
     budget_tokens: ClassVar[int] = 0
+    #: The model this flow's calls run on when a call names none (``account/model``
+    #: or a model id); empty leaves it to each child's preference, then the caller's.
+    model: ClassVar[str] = ""
 
     def __init__(self, ref: str | None = None, **options: Any) -> None:
         super().__init__()
@@ -54,6 +73,37 @@ class Flow(dspy.Module):
         self._ref_options = dict(options)
         for key, value in options.items():
             setattr(self, key, value)
+
+    @classmethod
+    def checked_options(cls, options: Mapping[str, Any] | None) -> dict[str, Any]:
+        """``options`` checked against the types this flow declares for them.
+
+        An option the flow annotates (``members: tuple[str, ...]``) is validated and
+        converted as Pydantic does (a list becomes a tuple); one of another shape raises
+        :class:`FlowOptionsInvalid` naming it and the declared type. Options the flow
+        does not annotate, or whose annotation cannot be resolved, pass unchanged.
+        """
+
+        try:
+            hints = typing.get_type_hints(cls)
+        except Exception:  # noqa: BLE001 - an unresolvable annotation is not checked
+            hints = {}
+        checked: dict[str, Any] = {}
+        problems: list[str] = []
+        for key, value in (options or {}).items():
+            hint = hints.get(key)
+            if typing.get_origin(hint) is ClassVar:
+                hint = next(iter(typing.get_args(hint)), None)
+            if hint is None:
+                checked[key] = value
+                continue
+            try:
+                checked[key] = TypeAdapter(hint).validate_python(value)
+            except ValidationError:
+                problems.append(f"{key} must be {_type_name(hint)}, not {value!r:.80}")
+        if problems:
+            raise FlowOptionsInvalid(cls.id or cls.__name__, problems)
+        return checked
 
     @property
     def is_reference(self) -> bool:

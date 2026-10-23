@@ -10,10 +10,9 @@ Request ID: req_... Message ID: msg_..." -- with NO dedicated
 ``api_error_status`` the way the 401/404/429 signals in
 ``claude_code_result_errors.py`` carry one. Detection therefore matches
 Anthropic's own STABLE canned wording (the fixed apology template every
-safety-filter refusal uses, not the model's own conversational output) the
-same way ``codex.errors.is_usage_limit_text`` classifies a Codex backend's
-usage-limit wording from its own free-text body -- never a heuristic over
-what the model said.
+safety-filter refusal uses, not the model's own conversational output), since
+the result carries no structured field for it -- never a heuristic over what
+the model said.
 """
 
 from __future__ import annotations
@@ -34,9 +33,7 @@ __all__ = [
 #: Anthropic's own stable canned wording for a Claude Code safety-filter
 #: refusal (the AUP safeguards apology template) -- a fixed string Anthropic
 #: ships, not conversational prose the model generated, so matching it here
-#: classifies a STRUCTURED SDK result exactly the way
-#: ``codex.errors.is_usage_limit_text`` classifies a Codex backend's own
-#: usage-limit wording.
+#: classifies a STRUCTURED SDK result by the provider's own template.
 _DETECTION_MARKERS = ("safeguards flagged this message",)
 
 #: CLIO's own stable marker, the start of every message this module raises.

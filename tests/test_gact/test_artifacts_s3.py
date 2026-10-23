@@ -1189,22 +1189,7 @@ def test_designation_and_file_diff_proposal_events_coexist(tmp_path):
     # type-filtering consumer can't distinguish the two producers -> red.
     assert payload["stage"] == "designation"
     assert "designation" in payload
-    assert "unified_diff" not in payload  # NOT the file_diff shape
-
-    from clio_agent.gact.artifacts.wire import PROPOSED_ARTIFACT_EVENT, proposed_diff_payload
-
-    # Same type string, disjoint (file_diff) shape — no 'stage', its own keys.
-    assert PROPOSED_ARTIFACT_EVENT == P.PROPOSED_ARTIFACT_EVENT
-    file_diff = proposed_diff_payload(
-        path="n.py",
-        unified_diff="@@",
-        new_content="x\n",
-        edit_mode="diff",
-        lines_added=1,
-        lines_removed=0,
-    )
-    assert file_diff.get("stage") is None
-    assert "unified_diff" in file_diff
+    assert "unified_diff" not in payload  # NOT a file_diff shape
 
 
 # --------------------------------------------------------------------------- #

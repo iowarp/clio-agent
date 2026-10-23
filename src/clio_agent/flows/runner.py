@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from clio_agent.sdk.flow import Flow
+from clio_agent.sdk.flow import Flow, FlowOptionsInvalid
 
 
 class FlowUnavailable(RuntimeError):
@@ -41,8 +41,12 @@ def load_flow(resolution: Any, flow_id: str, options: dict[str, Any] | None = No
         ) from exc
     if not (isinstance(flow_class, type) and issubclass(flow_class, Flow)):
         raise FlowUnavailable(flow_id, "flow_invalid", f"{row['attr']} is not a Flow")
+    try:
+        checked = flow_class.checked_options(options)
+    except FlowOptionsInvalid as exc:
+        raise FlowUnavailable(flow_id, "flow_options_invalid", "; ".join(exc.problems)) from exc
     flow = flow_class()
-    for key, value in (options or {}).items():
+    for key, value in checked.items():
         setattr(flow, key, value)
     return flow
 

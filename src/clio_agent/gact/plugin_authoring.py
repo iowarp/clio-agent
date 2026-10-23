@@ -57,6 +57,10 @@ def untrusted_flows(store: Any) -> list[dict[str, Any]]:
         if entry.get("trusted") and market not in waiting:
             continue
         snapshot = Path(entry["snapshot"])
+        if not (snapshot / "plugin.json").is_file():
+            # Flows come from an Agent Plugins plugin (a plugin.json at its root); a
+            # Claude Code marketplace or plugin declares none.
+            continue
         review = authored.review(snapshot)
         session = _authored_by_clio(store, market, snapshot) if review["flows"] else ""
         by_clio = bool(session)

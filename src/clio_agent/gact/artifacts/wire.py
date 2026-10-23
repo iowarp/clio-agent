@@ -35,38 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: The ``artifact.proposed`` semantic-event type (the proposal stage of a
-#: file-diff artifact). Trace-visible but deliberately OFF the SSE UI wire — its
-#: payload is byte-parity-pinned by :func:`proposed_diff_payload` so a later
-#: widening of the ``artifact.*`` family never drifts the proposal shape.
-PROPOSED_ARTIFACT_EVENT = "artifact.proposed"
-
-
-def proposed_diff_payload(
-    path: str,
-    unified_diff: str,
-    new_content: str,
-    edit_mode: str,
-    lines_added: int,
-    lines_removed: int,
-) -> dict[str, Any]:
-    """The ``artifact.proposed`` emit payload — the file_diff proposal fields (§7.3a).
-
-    The single source of the proposal-event payload shape, called from
-    ``turn_finalize`` so the emitted keys are exactly this set and a test can pin
-    the real projection (not a source-text grep). Adding or removing a key here is
-    a wire-shape change — the byte-parity lock reddens.
-    """
-    return {
-        "path": path,
-        "unified_diff": unified_diff,
-        "new_content": new_content,
-        "edit_mode": edit_mode,
-        "lines_added": lines_added,
-        "lines_removed": lines_removed,
-    }
-
-
 #: The sentinel ``server_id`` an artifact ``resource_link`` carries so a client
 #: distinguishes an artifact reference from an MCP-server resource reference
 #: (which names the originating MCP server). Not an MCP server — a clio-internal
@@ -390,7 +358,6 @@ def declare_create_artifact_structured_content(
 
 __all__ = [
     "ARTIFACT_SERVER_ID",
-    "PROPOSED_ARTIFACT_EVENT",
     "UI_PAYLOAD_MIME",
     "append_turn_child_resource_links",
     "append_turn_resource_links",
@@ -399,7 +366,6 @@ __all__ = [
     "declare_create_artifact_structured_content",
     "fetch_url_for",
     "mime_for",
-    "proposed_diff_payload",
     "resource_link_metadata",
     "resource_link_part",
     "ui_payload_uri",

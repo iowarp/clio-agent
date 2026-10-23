@@ -164,13 +164,11 @@ def _web_dir() -> str:
 # clio_agent.gact.enrichment (#714 decomposition): context-file injection +
 # its structured access error and binary-inspector hook, explicit memory-search
 # enrichment, context-frame record/finalize + their token-accounting leaves,
-# the approved diffs/apply disk write, and the turn provenance projection.
-# Re-exported here so existing ``from clio_agent.gact.app import <name>`` callers
-# (the turn engine, tests) + test_import_seams stay green; GactDeps passes
-# _apply_edit_to_disk through from this module.
+# and the turn provenance projection. Re-exported here so existing
+# ``from clio_agent.gact.app import <name>`` callers (the turn engine, tests) +
+# test_import_seams stay green.
 from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _BINARY_CONTEXT_INSPECTORS,
-    _apply_edit_to_disk,
     _context_file_access_error,
     _context_file_turn_provenance,
     _enrich_with_context_files,
@@ -308,7 +306,6 @@ from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
     _is_bounded_tool_result,
-    _propose_edit_diffs_from_pred,
     _tool_result_is_error,
     _tool_result_preview,
 )
@@ -623,7 +620,6 @@ from clio_agent.gact.types import (
     ErrorInfo,
 )
 from clio_agent.gact.usage import (  # noqa: E402,F401
-    _PRICE_TABLE_PER_M,
     _all_known_lms,
     _entry_prompt_text,
     _entry_reasoning_text,
@@ -1078,10 +1074,9 @@ def build_app(
     # context is visible after the fact.
     app.state.session_recall_audit = []
     # per-session pending diffs. Keyed by
-    # session_id -> list of {path, unified_diff, status,
-    # part_id, message_id}. Status is "pending" until apply/reject
-    # flips it.
-    app.state.pending_diffs = {}
+    # session_id -> the files the agent changed (gact/file_changes.py);
+    # status is "applied" until the person's Undo flips it to "reverted".
+    app.state.file_changes = {}
     # pending permission requests. Flat dict
     # keyed by permission_id so GET /v1/permissions can filter by
     # session cheaply. Each record carries
@@ -1491,7 +1486,6 @@ def build_app(
     # — add a field only when a moved handler needs it.
     deps = GactDeps(
         guard_direct_destructive_action=_guard_direct_destructive_action,
-        apply_edit_to_disk=_apply_edit_to_disk,
         flush_context_files=_flush_context_files,
         prompt_registry_for_request=_prompt_registry_for_request,
         prompt_render_context_for_request=_prompt_render_context_for_request,

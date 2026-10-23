@@ -37,7 +37,7 @@ Choose **Open full details** to inspect the record in the canvas. Its tabs are *
 
 Evidence lists what the run touched:
 
-- Files the agent read, and files it proposed to change.
+- Files the agent read, and files it changed.
 - Changed files, each with a diff.
 - Artifacts the run created.
 
@@ -78,9 +78,9 @@ The receipt distinguishes a restored context from a reconstructed transcript.
 
 ## Changed files and diffs
 
-An agent proposes a file change as a diff. Nothing is written until you approve it. Review the diff, then choose **Apply change** or **Reject change**. A confirmation asks "Apply this file change?" before the write happens, and you can choose **Keep reviewing** instead.
+The agent writes files itself. Whether you are asked first depends on the conversation's confirmation policy: **Ask first** asks before each write, and **Workspace edits** lets the agent write in the workspace without asking. See [Permissions and sandbox](/docs/permissions/).
 
-Approving a diff is separate from the permission prompt for tools that write directly. See [Permissions and sandbox](/docs/permissions/).
+Every file the agent changed is listed with its diff, in the transcript where the change happened and under **Changed files** in Evidence. Open a change and choose **Undo** to put a file back as it was before that change, or to delete a file the agent created. Undo only runs while the file is still exactly what the agent wrote. If you or the agent changed it since, Undo refuses and says so. Changes to files over 256 KiB, and changes made before the server last restarted, cannot be undone.
 
 ## Artifacts
 

@@ -414,8 +414,8 @@ source given special treatment:
 | `commands/*.md` | Commands |
 
 Tool mapping: `Read` → `fs_read_file`, `Glob` → `fs_glob`, `Grep` → `fs_grep`
-(`workspace`); `Edit`, `MultiEdit`, `Write` → `fs_propose_edit` and
-`fs_apply_edit_write` (`workspace`); `Bash` → `shell_bash` (`shell`);
+(`workspace`); `Write` → `fs_write_file`, `Edit` and `MultiEdit` →
+`fs_edit_file` (`workspace`); `Bash` → `shell_bash` (`shell`);
 `WebFetch` → `web_fetch`, `WebSearch` → `web_search` (`web`); `Task`, `Agent` →
 `spawn_agent_task` (`delegation`). Index files outside the Claude Code format
 (such as `.clio-kit/catalogue.json`) are not read.

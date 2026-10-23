@@ -116,7 +116,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "720a62f128ce5484e23d3ab3d4add06e4ba56acbee761ccf2516af5af467b46e",
+              "digest": "63e5fe258764c1fa08f948f2fa8a3915ffce145947ab290c8fdfa83595913e1e",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -129,7 +129,8 @@
                 "shell",
                 "visuals",
                 "delegation",
-                "document-runtime"
+                "document-runtime",
+                "fleet"
               ],
               "ref": "clio/standard"
             },
@@ -197,7 +198,6 @@
               "workspace_resource_read",
               "workspace_resource_search",
               "workspace_resource_structure",
-              "refresh_provider_models",
               "memory_search",
               "memory_read",
               "create_memory",
@@ -209,8 +209,8 @@
               "fs_read_file",
               "fs_glob",
               "fs_grep",
-              "fs_propose_edit",
-              "fs_apply_edit_write",
+              "fs_write_file",
+              "fs_edit_file",
               "view_image",
               "shell_bash",
               "prepare_execution_runtime",
@@ -224,7 +224,10 @@
               "spawn_agent_task",
               "spawn_agents_parallel",
               "prepare_document_runtime",
-              "prepare_document"
+              "prepare_document",
+              "list_models",
+              "usage",
+              "refresh_provider_models"
             ]
           },
           "stream_source": "live"

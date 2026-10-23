@@ -242,7 +242,10 @@ class _WorkflowRun:
         # The caller reads the answer: the final steps first, then every earlier step's
         # answer, each under its step id, so nothing the workflow found is left out.
         def section(step_id: str) -> str:
-            return f"[{step_id}]\n{str(getattr(self.results[step_id], 'answer', '')).strip()}"
+            result = self.results[step_id]
+            model = str(getattr(result, "model", "") or "")
+            label = f"{step_id}, on {model}" if model else step_id
+            return f"[{label}]\n{str(getattr(result, 'answer', '')).strip()}"
 
         earlier = [n for n in self.steps if n in self.results and n not in sinks]
         answer = "\n\n".join(section(n) for n in sinks)
@@ -286,7 +289,7 @@ class _WorkflowRun:
                 target=step.target,
             )
         target = Flow(step.target, **step.options) if step.options else step.target
-        call = self.ctx.call(target, payload, key=f"step:{step.id}")
+        call = self.ctx.call(target, payload, key=f"step:{step.id}", model=step.model)
         if step.target in self.editors:
             call.editor = {"run": self.ctx.run_id, "step": step.id}
         self.invocations[step.id] = call.invocation

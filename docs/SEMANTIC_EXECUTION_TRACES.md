@@ -191,7 +191,7 @@ merged so a project entry overrides a user entry with the same `id`. Set
     {
       "id": "block-secrets",
       "on": ["PreToolUse"],
-      "match": { "tool": "^(fs_apply_edit_write)$",
+      "match": { "tool": "^(fs_write_file|fs_edit_file)$",
                  "annotations": { "destructive": true },
                  "argsPattern": "\\.env" },
       "run": { "type": "command", "command": "./hooks/secrets.sh" },

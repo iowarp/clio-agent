@@ -37,7 +37,7 @@ The gate decides in this order:
    `grant_resolver.is_read_only(kind, name, args, context)` returns true when a
    tool call is provably read-only — an MCP `readOnlyHint=true` annotation, or a
    static tool-catalog `read` tag with no `write` tag (e.g. `fs_read_file`,
-   `fs_propose_edit`). A read returns `allow` **before** the mode lock and
+   `fs_grep`). A read returns `allow` **before** the mode lock and
    records no tool-action permission row, in every `session.mode`. This does not
    grant access to a new folder: a managed built-in file call outside permitted
    roots parks on a `kind="folder_access"` request first.
@@ -73,7 +73,7 @@ The gate decides in this order:
    is the same one-matcher path every other policy row resolves through.
 
 3. **Interactive** — for an un-resolved non-read call (e.g. an LM-driven ReAct
-   loop calling `fs_apply_edit_write` or `shell_bash` mid-turn), the gate
+   loop calling `fs_write_file` or `shell_bash` mid-turn), the gate
    publishes a `permission.requested` event and blocks on a `threading.Event`
    for up to `DEFAULT_TIMEOUT_S = 600.0` s (a timeout fails safe: `deny`; a call
    with no driving session also fails closed to `deny` immediately). The TUI
@@ -107,54 +107,63 @@ policy rules, audit visibility, and discoverability is tracked separately in
 - The remaining work is making that system understandable and manageable from
   GACT/TUI without implying permissions are missing.
 
-## Verifying it's wired
+## The agent writes files itself
 
-End-to-end: propose an edit, press 'a' on the diff body. The backend
-records a row visible at `GET /v1/permissions`. Verified live:
+The agent changes files with two tools shaped like Claude Code's Write and Edit:
+`fs_write_file` (create a file or replace its content) and `fs_edit_file`
+(replace an exact string; a missing or ambiguous `old_string` is refused with a
+typed error, never fuzzy-matched). Both change the file on disk when they return.
+They declare a destructive, closed-world write, so they carry the catalog `write`
+tag:
 
-```
-$ curl -s http://127.0.0.1:17800/v1/permissions | jq '.permissions[0]'
-{
-  "id": "perm_aa731b837079",
-  "session_id": "sess_92043f851558",
-  "tool_call": {
-    "tool_name": "fs_apply_edit_write",
-    "input": {
-      "filepath": "/tmp/perm-test.txt",
-      "new_content_bytes": 3
-    }
-  },
-  "summary": "diffs/apply: write 3 bytes to /tmp/perm-test.txt",
-  "status": "auto_approved",
-  "action": "allow",
-  "reason": "user clicked /diffs/apply"
-}
-```
+- the gate never fast-allows them; the session's approval mode decides. In `ask`
+  mode the person is asked; in `auto-edits` mode the write is allowed and an
+  audited `auto_approved` row is still recorded; a deny policy or the
+  plan/architect lock refuses it (in plan mode only the recorded plan file may be
+  written);
+- PreToolUse hooks run on every write, including a Claude Code plugin's guard on
+  `Write|Edit`: the hook sees `tool_name` `Write` or `Edit` and Claude Code's
+  `tool_input` keys (`file_path`, `content`, `old_string`, `new_string`,
+  `replace_all`). A hook deny blocks the write, and its reason is what the agent
+  reads and what the `hook_deny` audit row carries.
 
-To exercise the **interactive** path (banner + a/d/s/w), the destructive
-tool needs to be called by the agent autonomously (LM-driven ReAct loop)
-rather than by an explicit user click. Easiest way to force this:
+## The record of changes, and Undo
+
+Each successful write is recorded as an applied `file_diff`: a part in the turn's
+transcript where the change happened, and a row on the session's change ledger
+listed by `GET /v1/sessions/{sid}/diffs`. The diff panel shows that list with an
+Undo action, `POST /v1/sessions/{sid}/diffs/revert` with body `{"id": ...}`. Undo
+restores the previous content (or deletes a file the write created) only while the
+file is still exactly what the agent wrote. It goes through the same boundary as
+any write: the session's workspace root, the file policy, and the policy resolver
+(as an `fs_write_file` call, so a deny policy or plan mode refuses it). It records
+an audited permission row (`reason: user_requested_revert`) and publishes
+`file.diff.reverted`. Every refusal is typed:
+
+| Error | Status | Meaning |
+|---|---|---|
+| `file_change_not_found` | 404 | No recorded change with that id in the session |
+| `already_reverted` | 409 | The change was undone before |
+| `undo_unavailable` | 409 | No previous content was kept; `details.reason` says why (for example `previous_content_too_large`, over 256 KiB) |
+| `file_changed_since_write` | 409 | The file changed after the write; Undo would overwrite that change |
+| `path_outside_workspace`, `file_policy`, `policy_denied` | 403 | The write boundary refused the restore |
+
+The previous content is captured at the call boundary and kept on the server, not
+in the tool result the model reads. The ledger lives in memory: after a server
+restart the transcript still shows each change, but it can no longer be undone.
+
+To see the interactive path, ask the agent to edit a file in a session in `ask`
+mode:
 
 ```bash
-# Set session.mode to "edit" so the agent has write authority,
-# then ask it to edit a file via natural language.
 SID=$(curl -s -X POST http://127.0.0.1:17800/v1/sessions \
-  -d '{"title":"perm-interactive","mode":"edit"}' \
-  | jq -r .id)
+  -d '{"title":"perm-interactive"}' | jq -r .id)
 curl -s -X POST http://127.0.0.1:17800/v1/sessions/$SID/messages \
   -d '{"parts":[{"type":"text","text":"edit /tmp/perm-test.txt to say bye instead of hello"}]}'
 ```
 
-When the LM calls `fs_apply_edit_write` directly, the gate fires the
-interactive path → TUI banner → user keypress → backend resolves.
-
-## Diff apply write path
-
-`/v1/sessions/{sid}/diffs/apply` keeps its user-click auto-approval and
-permission audit row in the GACT layer, then delegates the actual disk write
-to the same policy-enforced implementation used by `fs_apply_edit_write`.
-This keeps direct tool calls and user-approved diff applies aligned on path
-validation, text encoding, and structured failure behavior.
+When the model calls `fs_edit_file`, the gate publishes `permission.requested`,
+the UI asks, and the person's answer resolves the call.
 
 ## OS write fence (sandbox) — enforcement below the advisory gate
 

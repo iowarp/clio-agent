@@ -9,9 +9,6 @@ of truth for:
   bounding individual tool results (:func:`_tool_result_preview`,
   :func:`_tool_result_is_error`, :func:`_is_bounded_tool_result`,
   :func:`_bounded_tool_call_result`).
-* **Edit proposals** -- promoting ``fs_propose_edit`` tool results into file-diff
-  proposals
-  (:func:`_propose_edit_diffs_from_pred`).
 * **Runtime provenance** -- non-secret provenance for the dynamic agent used this
   turn (:func:`_dynamic_agent_runtime_provenance`).
 
@@ -133,70 +130,6 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
         "truncated": True,
         "original_chars": len(preview),
     }
-
-
-# ------------------------------------------------------------------------- #
-# Trajectory evidence projection #
-# ------------------------------------------------------------------------- #
-
-
-def _propose_edit_diffs_from_pred(
-    pred: Any,
-    observed_tools: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    """Promote successful ``fs_propose_edit`` tool results into file-diff proposals.
-
-    A dynamic tool agent calls ``fs_propose_edit`` as a TOOL; unlike the builtin
-    edit experts it does not populate ``pred.file_diffs``, so the returned
-    proposal (path + unified_diff + new_content) never became a ``file_diff``
-    part or a pending ``/v1/sessions/{sid}/diffs`` row — the TUI could see the
-    tool call but never the diff (iowarp/clio-agent#674). Recover the proposals
-    from the turn's tool results so the standard materialization picks them up.
-
-    Reads ``pred.tools_called`` (which already carries each call's structured
-    result). Only successful
-    (``ok``) calls whose result carries a ``path`` and a diff/new_content are
-    promoted; duplicates by (path, diff-prefix) are collapsed.
-    """
-
-    rows: list[Any] = list(observed_tools or getattr(pred, "tools_called", None) or [])
-    diffs: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for row in rows:
-        if not isinstance(row, Mapping):
-            continue
-        name = str(row.get("name") or row.get("tool") or "")
-        if "propose_edit" not in name:
-            continue
-        if row.get("ok") is False:
-            continue
-        result = row.get("result")
-        if isinstance(result, str):
-            try:
-                decoded_result = json.loads(result)
-            except (json.JSONDecodeError, TypeError):
-                decoded_result = None
-            if isinstance(decoded_result, Mapping):
-                result = decoded_result
-        if not isinstance(result, Mapping):
-            continue
-        path = str(result.get("path") or "").strip()
-        unified_diff = result.get("unified_diff") or ""
-        new_content = result.get("new_content")
-        if not path or (not unified_diff and new_content is None):
-            continue
-        key = (path, str(unified_diff)[:64])
-        if key in seen:
-            continue
-        seen.add(key)
-        diff: dict[str, Any] = {"path": path, "unified_diff": unified_diff}
-        if new_content is not None:
-            diff["new_content"] = new_content
-        for extra in ("edit_mode", "lines_added", "lines_removed"):
-            if extra in result:
-                diff[extra] = result[extra]
-        diffs.append(diff)
-    return diffs
 
 
 # ------------------------------------------------------------------------- #

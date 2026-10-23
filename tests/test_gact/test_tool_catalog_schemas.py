@@ -68,8 +68,8 @@ def test_gateway_builtins_carry_gateway_description_and_schema() -> None:
     rows = {row.name: row for row in _rows()}
     for name, expected_domain, expected_property in (
         ("fs_read_file", "workspace", "filepath"),
-        ("fs_propose_edit", "workspace", "filepath"),
-        ("fs_apply_edit_write", "workspace", "filepath"),
+        ("fs_write_file", "workspace", "filepath"),
+        ("fs_edit_file", "workspace", "old_string"),
         ("shell_bash", "shell", "command"),
     ):
         row = rows[name]

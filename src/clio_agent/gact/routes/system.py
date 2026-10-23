@@ -267,7 +267,6 @@ def _estimate_message_context_tokens(message: Message) -> int:
         chars += len(str(getattr(part, "thinking", "") or ""))
         chars += len(part.path or "")
         chars += len(part.unified_diff or "")
-        chars += len(part.new_content or "")
     return max(1, chars // 4) if chars else 0
 
 
@@ -458,7 +457,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 search_messages=True,  # BBB27 — GET /sessions/{sid}/messages/search
                 cost_tracking=True,  # BBB24 — Message.tokens + Session.cost_usd rollup
                 files=True,  # BBB22 — /v1/sessions/{sid}/context/files CRUD
-                diffs=True,  # BBB21 — file_diff parts + /diffs/apply,reject
+                diffs=True,  # BBB21 — file_diff parts + /diffs (list) + /diffs/revert (undo)
                 permissions=True,  # BBB23 — /v1/permissions + permission.* events
                 # BBB25 — child agents. #948 S4 retired the nanoagent subsessions +
                 # subagent.* events; the capability is now provided by the spawn

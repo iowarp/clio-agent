@@ -29,6 +29,7 @@ STANDARD_PLUGINS = [
     "visuals",
     "delegation",
     "document-runtime",
+    "fleet",
 ]
 
 
@@ -133,7 +134,13 @@ def test_installed_marketplace_is_untrusted_until_the_trust_step(
     assert resolved.status_code == 200, resolved.text
     # ``notes`` hard-requires ``shell``, which comes from the default marketplace.
     assert resolved.json()["agent"]["id"] == "helper"
-    assert [row["id"] for row in resolved.json()["plugins"]] == ["core", "memory", "notes", "shell"]
+    assert [row["id"] for row in resolved.json()["plugins"]] == [
+        "core",
+        "memory",
+        "notes",
+        "fleet",
+        "shell",
+    ]
 
 
 def test_marketplace_install_requires_a_source(client: TestClient) -> None:
@@ -182,7 +189,11 @@ def test_resolve_preview_applies_add_and_remove(client: TestClient) -> None:
         "/v1/agents/resolve", params=[("ref", "clio/standard"), ("add", "orchestration")]
     )
     assert added.status_code == 200, added.text
-    assert [row["id"] for row in added.json()["plugins"]] == [*STANDARD_PLUGINS, "orchestration"]
+    assert [row["id"] for row in added.json()["plugins"]] == [
+        *STANDARD_PLUGINS[:-1],
+        "orchestration",
+        "fleet",
+    ]
     assert {"run_workflow", "run_flow"} <= set(added.json()["tool_names"])
 
     # Additions apply before removals: a plugin both added and removed stays out.

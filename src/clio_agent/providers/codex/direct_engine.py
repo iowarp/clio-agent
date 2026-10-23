@@ -83,7 +83,12 @@ from clio_agent.providers.codex.audit import (
     emit_raw_event,
 )
 from clio_agent.providers.codex.audit import usage_row as _usage_row
-from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
+from clio_agent.providers.codex.errors import (
+    CodexPlanLimitError,
+    is_usage_limit_body,
+    is_usage_limit_error,
+    usage_limit_resets_at,
+)
 from clio_agent.providers.codex.file_inputs import (
     DocumentInputRecovery,
     FilePreparationUnsupportedError,
@@ -118,6 +123,7 @@ from clio_agent.providers.stateful_common import (
     stateful_reset_payload,
 )
 from clio_agent.providers.stream_queue import AsyncStreamQueue, StreamProducer, StreamSink
+from clio_agent.providers.usage.capture import record_codex_event
 
 __all__ = [
     "AsyncCodexDirectEngine",
@@ -396,7 +402,7 @@ class AsyncCodexDirectEngine:
                         output_started |= assembled.type == "delta"
                         out.put(assembled)
         except RateLimitError as exc:
-            if is_usage_limit_text(str(exc)):
+            if exc.provider_code in c.USAGE_LIMIT_CODES:
                 raise CodexPlanLimitError(str(exc)) from exc
             raise
         except FilePreparationUnsupportedError:
@@ -555,7 +561,7 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
         body = bytes(exc.response.body or b"").decode("utf-8", "replace")
         if status == 401:
             raise AuthError(f"Codex rejected the sign-in (HTTP 401): {body[:300]}") from exc
-        if is_usage_limit_text(body):
+        if is_usage_limit_body(body):
             raise CodexPlanLimitError(body[:500], status_code=status) from exc
         raise ServerError(f"Codex WebSocket handshake failed (HTTP {status})") from exc
     # Typed so DSPy retries them; a lasting failure reaches the user in plain words.
@@ -657,6 +663,8 @@ async def _stream(
     async for raw in socket:
         payload = json.loads(raw)
         kind = str(payload.get("type") or "")
+        if kind == "codex.rate_limits":
+            record_codex_event(payload)
         if kind in {"error", "response.failed"} and _error_code(payload) == (
             c.PREVIOUS_RESPONSE_NOT_FOUND_CODE
         ):
@@ -666,9 +674,11 @@ async def _stream(
             message = _error_message(payload)
             if not output_started and is_file_preparation_refusal(request, message):
                 raise FilePreparationUnsupportedError(message)
-            if is_usage_limit_text(message):
+            if is_usage_limit_error(payload):
                 # The account's plan window is exhausted: terminal, never retried.
-                raise CodexPlanLimitError(message, code=_error_code(payload))
+                raise CodexPlanLimitError(
+                    message, code=_error_code(payload), resets_at=usage_limit_resets_at(payload)
+                )
             failure = terminal_error(wire, request, payload)
             if isinstance(failure, CodexTransientStreamError):
                 raise failure  # an overload / unknown code: DSPy retries it

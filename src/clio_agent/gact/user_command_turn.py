@@ -9,16 +9,30 @@ ask the person questions and can be stopped, like any other.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact import context as gact_context
+from clio_agent.gact.hooks.dispatcher import dispatch_user_prompt_expansion
 from clio_agent.gact.message_contract import PostMessageRequest
 from clio_agent.gact.message_submission import accept_message_async
 from clio_agent.gact.parts import Part
+from clio_agent.gact.runtime.commands import command_cwd_for_request
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.routes.deps import GactDeps
+
+
+def _dispatch_expansion(app: "FastAPI", *args: Any, **kwargs: Any) -> Any:
+    """Fire the expansion hooks with ``app`` active: a session's plugin hooks are its own."""
+
+    token = gact_context.set_app(app)
+    try:
+        return dispatch_user_prompt_expansion(*args, **kwargs)
+    finally:
+        gact_context.reset(token)
 
 
 async def submit_user_command(
@@ -31,8 +45,36 @@ async def submit_user_command(
     rendered: str,
     command_meta: dict[str, Any],
 ) -> dict[str, Any]:
-    """Admit ``cmd_id`` as the person's message whose model text is ``rendered``."""
+    """Admit ``cmd_id`` as the person's message whose model text is ``rendered``.
 
+    ``UserPromptExpansion`` hooks see the expansion first, under Claude Code's
+    command name (``plugin:command``): a deny stops the command with the hook's
+    reason, and context a hook adds reaches the model with the command.
+    """
+
+    plugin = str(command_meta.get("plugin") or "")
+    bare = cmd_id.lstrip("/")
+    expansion = await asyncio.to_thread(
+        _dispatch_expansion,
+        app,
+        f"{plugin}:{bare}" if plugin else bare,
+        user_input,
+        rendered,
+        session_id=sid,
+        cwd=str(command_cwd_for_request(app, sid) or ""),
+    )
+    if expansion.denied:
+        return {
+            "command": cmd_id,
+            "session_id": sid,
+            "result": {
+                "type": "refused",
+                "reason": "hook_denied",
+                "message": expansion.reason or "a UserPromptExpansion hook stopped this command",
+            },
+        }
+    if expansion.additional_context:
+        rendered = f"{rendered}\n\n{expansion.additional_context}"
     typed = f"{cmd_id} {user_input}".strip()
     submission = PostMessageRequest(
         parts=[Part(type="text", text=typed)],

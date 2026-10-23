@@ -89,15 +89,15 @@ def run_mcp_cli(arguments: Sequence[str]) -> int:
                     print("no MCP services are saved")
             return 0
         if args.action == "check":
-            spec = saved.get_user_mcp_server(args.name)
-            if spec is None:
+            found = saved.get_user_mcp_server(args.name)
+            if found is None:
                 print(f"{args.name!r} is not saved")
                 return 1
             from clio_agent.gact.routes.mcp_configuration import (  # noqa: PLC0415
                 _probe_user_mcp_server,
             )
 
-            tools, error = asyncio.run(_probe_user_mcp_server(spec))
+            tools, error = asyncio.run(_probe_user_mcp_server(found))
             if error:
                 print(f"{args.name}: not ready: {error}")
                 return 1

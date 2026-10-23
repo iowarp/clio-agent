@@ -50,6 +50,7 @@ from clio_agent.gact.hooks.events import (
     STOP,
     SUBAGENT_START,
     SUBAGENT_STOP,
+    USER_PROMPT_EXPANSION,
     USER_PROMPT_SUBMIT,
     is_deny_capable,
 )
@@ -450,6 +451,29 @@ def dispatch_user_prompt_submit(
         prompt=text,
     )
     return dispatcher.dispatch(USER_PROMPT_SUBMIT, envelope, cancel_event=cancel_event)
+
+
+def dispatch_user_prompt_expansion(
+    command_name: str,
+    command_args: str,
+    prompt: str,
+    *,
+    session_id: str = "",
+    cwd: str = "",
+) -> HookOutcome:
+    """Fire ``UserPromptExpansion`` hooks for a typed slash command. A deny stops it."""
+
+    dispatcher = _GLOBAL
+    if dispatcher is None:
+        return HookOutcome()
+    envelope = HookEnvelope(
+        hook_event_name=USER_PROMPT_EXPANSION,
+        session_id=session_id,
+        cwd=cwd,
+        prompt=prompt,
+        payload={"command_name": command_name, "command_args": command_args},
+    )
+    return dispatcher.dispatch(USER_PROMPT_EXPANSION, envelope)
 
 
 def dispatch_stop(
