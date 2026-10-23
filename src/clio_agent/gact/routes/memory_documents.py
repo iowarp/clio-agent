@@ -309,6 +309,7 @@ def register_memory_document_routes(app: FastAPI) -> None:
                 "enabled": memory_enabled(),
                 "inbox": len(pending),
                 "documents": len(service.documents(scopes_for(app, "all"))),
+                "background": getattr(app.state, "memory_background", None),
             }
 
         return await run_memory(app, work)

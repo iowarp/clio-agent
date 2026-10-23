@@ -215,7 +215,9 @@ async def _scheduler_tick(app: "FastAPI") -> None:
             from clio_agent.gact.goal_control import maintain_goal_controls
 
             await maintain_goal_controls(app)
-        except (OSError, RuntimeError):
+        except Exception:  # noqa: BLE001 - one failed preparation must not end the loop
+            # Anything escaping here would end the task for good, and with it every
+            # scheduled turn and the memory pass, with nothing logged.
             logger.error("scheduler tick delayed reason=control_preparation_failed", exc_info=True)
         else:
             await asyncio.to_thread(_scheduler_tick_once, app)

@@ -196,8 +196,9 @@ def child_and_fork(call: Call) -> None:
     messages = _turn(
         call,
         sid,
-        "Delegate to the explore agent: search my memory for my unit preferences and "
-        "report what tools it has for memory. Do not do it yourself.",
+        "Delegate this to a clio/standard subagent and wait for it: it should search my "
+        "memory for my plot preferences, then try to remember 'prefers 300 dpi figures', "
+        "and report exactly which memory tools it had. Do not do it yourself.",
     )
     children = [
         s

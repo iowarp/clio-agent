@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 #: Session metadata on the source conversation.
 WATERMARK = "memory_watermark"  # id of the last message a finished pass read
 IN_FLIGHT = "memory_pass"  # the running pass: curator session, handle, read-up-to id
+LAST_PASS = "memory_last_pass"  # how the last pass ended (a failed one is not retried as is)
 MIN_USER_MESSAGES = 3
 CURATOR_TARGET = "curator"
 
@@ -69,22 +70,41 @@ def _messages_after(messages: list[Any], watermark: str) -> list[Any]:
     return list(messages[ids.index(watermark) + 1 :]) if watermark in ids else list(messages)
 
 
-def eligible(app: Any, session: Any, now: datetime) -> bool:
-    """Whether ``session`` is due for a background pass now."""
+def skip_reason(app: Any, session: Any, now: datetime) -> str:
+    """Why ``session`` is not due for a background pass now (``""`` when it is)."""
     if session_kind(session) not in ("conversation", "branch"):
-        return False
+        return "not_a_conversation"
     metadata = session.metadata or {}
-    if metadata.get(IN_FLIGHT) or metadata.get(SESSION_CURATOR):
-        return False
+    if metadata.get(IN_FLIGHT):
+        return "pass_in_flight"
+    if metadata.get(SESSION_CURATOR):
+        return "curator_session"
+    failed = metadata.get(LAST_PASS) or {}
+    messages = app.state.messages.get(session.id, [])
+    if (
+        failed.get("status", "completed") != "completed"
+        and messages
+        and failed.get("read_to") == messages[-1].id
+    ):
+        return "last_pass_failed"  # retried once the conversation has new messages
     policy = session_policy(app, session)
     if not (policy.enabled and policy.may_write):
-        return False
+        return policy.reason or "memory_not_writable"
+    if session.status not in ("idle", "error", "cancelled"):
+        return "session_busy"
     last = _parse(str(session.last_interaction_at or session.updated_at or ""))
     idle = timedelta(minutes=int(setting("memory.idle_minutes", 30)))
-    if last is None or now - last < idle or session.status not in ("idle", "error", "cancelled"):
-        return False
+    if last is None or now - last < idle:
+        return "not_idle_yet"
     fresh = _messages_after(app.state.messages.get(session.id, []), metadata.get(WATERMARK, ""))
-    return sum(1 for message in fresh if message.role == "user") >= MIN_USER_MESSAGES
+    if sum(1 for message in fresh if message.role == "user") < MIN_USER_MESSAGES:
+        return "too_few_new_messages"
+    return ""
+
+
+def eligible(app: Any, session: Any, now: datetime) -> bool:
+    """Whether ``session`` is due for a background pass now."""
+    return not skip_reason(app, session, now)
 
 
 def _curator_resolution(app: Any) -> tuple[dict[str, Any], str]:
@@ -254,13 +274,15 @@ def start_curator(
             )
         mail_id = "assignment:" + handle
         if history.mail_item(session.id, mail_id) is None:
-            content = history.write_content(session.id, {"assignment": brief})
+            # Its own kind, not "delegation": a delegation renders from its parent's
+            # assignment, and the curator's is a root assignment with no parent.
+            content = history.write_content(session.id, brief)
             history.record_mail(
                 MailItem(
                     id=mail_id,
                     recipient_session=session.id,
                     sender_session=session.id,
-                    kind="delegation",
+                    kind="memory",
                     content=content,
                     created_at=now(),
                     handle=handle,
@@ -286,8 +308,10 @@ def _start_pass(app: Any, session: Any) -> None:
         include_sensitive=bool(setting("memory.sensitive", False)),
     )
     logger.info("memory pass session=%s extract=%s", session.id, report)
-    if not candidates:
-        app.state.sessions.update(session.id, metadata_patch={WATERMARK: last})
+    if not candidates:  # nothing worth keeping: the pass is done, and says so
+        empty = {"read_to": last, "extract": report}
+        patch = collect_patch(empty, "no_candidates", datetime.now(UTC))
+        app.state.sessions.update(session.id, metadata_patch={**patch, WATERMARK: last})
         return
     run = start_curator(
         app,
@@ -304,23 +328,42 @@ def _start_pass(app: Any, session: Any) -> None:
     )
 
 
+def collect_patch(run: dict[str, Any], status: str, now: datetime) -> dict[str, Any]:
+    """The source session's metadata once its pass ended with ``status``.
+
+    Only a completed pass moves the watermark; a failed one keeps its messages.
+    """
+    patch: dict[str, Any] = {
+        IN_FLIGHT: None,
+        LAST_PASS: {
+            "handle": run.get("handle", ""),
+            "session": run.get("session", ""),
+            "status": status,
+            "read_to": run.get("read_to", ""),
+            "extract": run.get("extract", {}),  # model and counts, kept for the audit
+            "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+    }
+    if status == "completed":
+        patch[WATERMARK] = run.get("read_to", "")
+    return patch
+
+
 def _collect(app: Any, session: Any) -> None:
     run = (session.metadata or {}).get(IN_FLIGHT) or {}
     task = app.state.task_history.task_snapshot(str(run.get("handle", "")))
     if task is not None and task.terminal_at is None:
         return
-    app.state.sessions.update(
-        session.id,
-        metadata_patch={
-            WATERMARK: run.get("read_to", ""),
-            IN_FLIGHT: None,
-            "memory_last_pass": {
-                "handle": run.get("handle", ""),
-                "status": task.status if task is not None else "missing",
-                "at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            },
-        },
-    )
+    status = task.status if task is not None else "missing"
+    patch = collect_patch(run, status, datetime.now(UTC))
+    if WATERMARK not in patch:
+        logger.warning(
+            "memory pass session=%s curator=%s ended status=%s; its messages stay unread",
+            session.id,
+            run.get("session", ""),
+            status,
+        )
+    app.state.sessions.update(session.id, metadata_patch=patch)
 
 
 def memory_tick(app: Any, now: datetime | None = None) -> None:
@@ -328,17 +371,26 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
     if not bool(setting("memory.background", True)):
         return
     now = now or datetime.now(UTC)
+    collected = started = 0
+    skipped: dict[str, int] = {}
     for session in list(app.state.sessions.list()):
         try:
             if (session.metadata or {}).get(IN_FLIGHT):
+                collected += 1
                 _collect(app, session)
-            elif eligible(app, session, now):
+            elif reason := skip_reason(app, session, now):
+                skipped[reason] = skipped.get(reason, 0) + 1
+            else:
+                started += 1
                 _start_pass(app, session)
         except ClioError as error:
+            if error.error_type == "transcript_not_ready":  # still booting: next tick
+                skipped["transcript_not_ready"] = skipped.get("transcript_not_ready", 0) + 1
+                continue
             app.state.sessions.update(
                 session.id,
                 metadata_patch={
-                    "memory_last_pass": {
+                    LAST_PASS: {
                         "status": "failed",
                         "reason": str(error.error_type),
                         "error": str(error)[:500],
@@ -347,6 +399,13 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                 },
             )
             logger.warning("memory pass session=%s failed reason=%s", session.id, error.error_type)
+    # What the last tick saw, for /v1/memory/summary: why nothing ran is answerable.
+    app.state.memory_background = {
+        "last_tick": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "in_flight": collected,
+        "started": started,
+        "skipped": skipped,
+    }
 
 
 def import_pasted_text(app: Any, text: str, *, scope: str, import_id: str) -> dict[str, Any]:

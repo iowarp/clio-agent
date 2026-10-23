@@ -125,6 +125,14 @@ def test_an_idle_session_starts_one_curator_run_and_its_proposals_apply_by_sourc
     )
     assert reattached == {"session": run["session"], "handle": run["handle"]}
 
+    # The curator's input stages as plain model input (a root assignment has no parent
+    # to render a delegation from; that mail kind failed every curator turn live).
+    owner = app.state.conversations
+    staged = owner.mail.stage(owner.caller(curator.id))
+    texts = [str(text) for _source, text in staged.injections]
+    assert any("Prefers SI units" in text for text in texts)
+    assert [item.kind for item in staged.items] == ["memory"]
+
     from clio_agent.gact.memory.curator import curator_proposal
 
     tokens = [context.set_app(app), context.set_session_id(curator.id)]
@@ -160,16 +168,23 @@ def test_an_idle_session_starts_one_curator_run_and_its_proposals_apply_by_sourc
     pending = ProposalStore(service).pending()
     assert [p.id for p in pending] == [injected["proposal"]] and pending[0].needs_review
 
-    # Collect: the run's assignment is not terminal yet, so nothing advances; once the
-    # handle no longer names a live task the watermark moves to what the pass read.
+    # Collect: the run's assignment is not terminal yet, so nothing advances.
     background.memory_tick(app, now)
     assert app.state.sessions.get(session.id).metadata.get(background.IN_FLIGHT)
+    # A pass that did not complete keeps its messages: no watermark, and no retry until
+    # the conversation has something new.
     app.state.sessions.update(
         session.id, metadata_patch={background.IN_FLIGHT: {**run, "handle": "task_gone"}}
     )
     background.memory_tick(app, now)
-    after = app.state.sessions.get(session.id).metadata
-    assert after[background.WATERMARK] == run["read_to"] and not after.get(background.IN_FLIGHT)
+    after = app.state.sessions.get(session.id)
+    assert not after.metadata.get(background.WATERMARK)
+    assert after.metadata[background.LAST_PASS]["status"] == "missing"
+    assert background.skip_reason(app, after, now) == "last_pass_failed"
+    # A completed one moves the watermark to what it read.
+    done = background.collect_patch(run, "completed", now)
+    assert done[background.WATERMARK] == run["read_to"] and done[background.IN_FLIGHT] is None
+    assert background.WATERMARK not in background.collect_patch(run, "failed", now)
 
 
 def test_background_off_runs_no_pass(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
