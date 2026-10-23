@@ -35,7 +35,8 @@ class Council(Flow):
     id = "council"
     description = (
         "Several members answer the same question independently, then one synthesized "
-        "answer. Options: members (targets; default three of this agent), perspectives "
+        'answer. Options: members (a list of targets, "self" for this agent; default '
+        '["self", "self", "self"]), perspectives '
         "(one per member), models (one per member, e.g. a small model for each view), "
         "synthesizer (a target; empty synthesizes inside the flow, on this run's model) "
         "and synthesizer_model."

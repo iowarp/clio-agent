@@ -41,6 +41,21 @@ def _flows(app: Any, session_id: str) -> list[dict[str, Any]]:
     return list(session_resolution(app, session_id).flows)
 
 
+def _options_refused(
+    app: Any, session_id: str, flow_id: str, options: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The typed refusal for options of the wrong shape, before anything is accepted."""
+
+    from clio_agent.flows.runner import FlowUnavailable, load_flow  # noqa: PLC0415
+    from clio_agent.gact.agents.resolution import session_resolution  # noqa: PLC0415
+
+    try:
+        load_flow(session_resolution(app, session_id), flow_id, options)
+    except FlowUnavailable as exc:
+        return {"accepted": False, "reason": exc.reason, "error": str(exc)}
+    return None
+
+
 async def permit_flow(
     app: Any, caller: Any, flow_id: str, flow_input: Any, options: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -106,6 +121,11 @@ async def start_flow(
             "reason": "flow_not_resolved",
             "error": f"no resolved plugin provides flow {flow_id!r}; available: {names}",
         }
+    refused = await app.state.task_history.io.run(
+        _options_refused, app, caller.session_id, flow_id, options
+    )
+    if refused is not None:
+        return refused
     session = app.state.sessions.get(caller.session_id)
     parent_flow = (getattr(session, "metadata", None) or {}).get("agent_flow") or {}
     invocation = TASK_CALL.get().invocation_id or uuid4().hex

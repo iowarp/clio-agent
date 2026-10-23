@@ -501,3 +501,57 @@ def test_built_in_flows_leave_depth_and_parallelism_to_clio() -> None:
             spec.loader.exec_module(module)
             limits = getattr(module, flow.attr)().limits()
             assert limits["max_concurrency"] == 0 and limits["max_depth"] == 0, (flow.id, limits)
+
+
+def _council_class() -> Any:
+    import importlib.util
+    from pathlib import Path
+
+    from clio_agent.plugins.store import builtin_records
+
+    record = next(r for r in builtin_records() if any(f.id == "council" for f in r.flows))
+    flow = next(f for f in record.flows if f.id == "council")
+    path = Path(record.root) / "ai.iowarp.clio" / flow.module
+    spec = importlib.util.spec_from_file_location("_flow_council_options", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, flow.attr)
+
+
+def test_flow_options_are_checked_against_the_types_the_flow_declares() -> None:
+    """A count where a list of members belongs is refused by name, not crashed on later."""
+
+    import pytest
+
+    from clio_agent.sdk.flow import FlowOptionsInvalid
+
+    council = _council_class()
+    checked = council.checked_options(
+        {"members": ["self", "self"], "models": ["a/b", ""], "synthesizer": "self"}
+    )
+    assert checked == {"members": ("self", "self"), "models": ("a/b", ""), "synthesizer": "self"}
+    with pytest.raises(FlowOptionsInvalid) as refused:
+        council.checked_options({"members": 2, "models": ["a/b"]})
+    assert refused.value.problems == ["members must be tuple[str, ...], not 2"]
+
+
+def test_run_flow_refuses_options_of_the_wrong_shape_before_accepting(
+    flow_app: TestClient,
+) -> None:
+    from clio_agent.gact.flow_tools import start_flow
+
+    sid = new_session(flow_app, "clio/orchestrator")
+    refused: dict[str, Any] = {}
+
+    def program(question: str = "", **kwargs: Any) -> Any:
+        if question.startswith("convene") and not refused:
+            refused.update(asyncio.run(start_flow("council", question, {"members": 2})))
+            return dspy.Prediction(answer="refused")
+        return default_program(question=question, **kwargs)
+
+    flow_app.app.state.flow_program["run"] = program
+    post(flow_app, sid, "convene the council on chunk sizes")
+    wait_until(lambda: bool(refused), timeout=60)
+    assert refused["accepted"] is False and refused["reason"] == "flow_options_invalid"
+    assert "members must be tuple[str, ...], not 2" in refused["error"]
+    assert "handle" not in refused
