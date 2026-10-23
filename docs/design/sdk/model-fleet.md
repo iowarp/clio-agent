@@ -126,6 +126,8 @@ Results are compact by default, because a fleet with several local models can li
 
 **Model in the Work view.** Each row carries a model icon; hover shows the `model_choice` record. A study or flow run can be read at a glance as "which branches ran on what".
 
+**Usage on the flow railroad.** The railroad of a flow or workflow run carries a brief summary under its title: the models the run used, each with its share of the run's tokens and cost, and the windows of the accounts it ran on (for example `sonnet 61% · haiku 39% · Claude 5h window 42%`). Each box's hover adds the model it ran on and its `model_choice` source. People reading a run see what it cost and where without leaving it; the Usage view stays the place for every account.
+
 **Desktop widget.** A quotabubble-style floating widget is a natural fit for the Tauri desktop app later. It reads `GET /v1/fleet` from any connected agent, including remote ones, so one widget can cover several agents. It is listed here so the endpoint is designed for it; building it is optional for 1.0.
 
 ## Open questions
@@ -152,7 +154,7 @@ This item touches session creation and the spawn path, so it runs after the dele
 3. **Phase 2: usage.** The adapter protocol and `UsageSnapshot`, adapters for `claude_code`, `codex`, `openrouter`, `anthropic`, `openai` and an `unmetered` adapter for local and site endpoints, passive capture from the existing signals, idle polling, last-good handling, the spend rollup from `provider.call_usage`, and replacement of the Codex text match.
 4. **Phase 3: selection.** `model` on spawn tools, `ctx.call`, workflow steps and `llm()`; `Prefers` applied at session creation; the resolution order and its typed refusals; `model_choice` recorded and exported; `model_exhausted` and the Question for person-chosen models; the spending guard; `summarizer` moved onto a fleet reference.
 5. **Phase 4: tools and fragment.** The `fleet` plugin with `list_models` and `usage`, `refresh_provider_models` moved into it, and the `delegation.parent` line.
-6. **Phase 5: UI.** Usage view, hover readout, model icon and `model_choice` hover in the Work view and railroad. Verified with `ui_check.mjs` at 1440 by 900 and 390 by 844.
+6. **Phase 5: UI.** Usage view, hover readout, model icon and `model_choice` hover in the Work view and railroad, and the railroad's usage summary. Verified with `ui_check.mjs` at 1440 by 900 and 390 by 844.
 7. **Phase 6: qualification.**
 
 | ID | Scenario | Passes when |
@@ -168,5 +170,6 @@ This item touches session creation and the spawn path, so it runs after the dele
 | M9 | The same exhaustion on a person-chosen root model | A Question offers the fleet's alternatives; nothing switches until answered |
 | M10 | A usage poll fails with the network down | The last good snapshot stays, dimmed with its age; the failure is recorded |
 | M11 | RLM leaves with `model=` set to a cheaper model | Leaves run on that model and count in the spend rollup under the `rlm` node |
+| M12 | A council run with members on two models | The railroad's summary names both models with their token shares and the account window; each member box's hover names its model and source |
 
-**Done** when every phase is implemented, the Codex text match and the hard-coded model lists are gone, M1 to M11 pass against a freshly restarted stack with evidence in the ledger, and the endpoint checks from Phase 0 are recorded with their dates.
+**Done** when every phase is implemented, the Codex text match and the hard-coded model lists are gone, M1 to M12 pass against a freshly restarted stack with evidence in the ledger, and the endpoint checks from Phase 0 are recorded with their dates.
