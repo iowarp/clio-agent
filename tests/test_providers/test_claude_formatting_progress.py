@@ -288,3 +288,14 @@ def test_words_stream_at_once_and_a_one_word_answer_is_still_an_answer() -> None
     closing = one.finish("short answer")
     assert _shown(closing) == "42"
     assert not [e for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+
+
+def test_a_single_word_beside_calls_is_not_shown() -> None:
+    """The step's only text was one placeholder word and the reply still made its call."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    streamed = push(turn, "_tool_call_placeholder\n")
+    turn.reply += FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'  # assembled block
+    closing = turn.finish("beside a call")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]

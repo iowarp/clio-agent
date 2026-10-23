@@ -391,9 +391,46 @@ def test_the_comparison_answer_must_name_a_listed_fact(monkeypatch: pytest.Monke
 
     monkeypatch.undo()  # the real comparison, not the autouse stub
     assert routing.held_fact(fact="x", facts=[]) == ""
-    lm = dspy.utils.DummyLM([{"same_as": "f_missing"}, {"same_as": "fa1"}])
+    lm = dspy.utils.DummyLM(
+        [
+            {"held": "true", "fact_id": "f_missing"},
+            {"held": "true", "fact_id": "fa1"},
+            {"held": "false", "fact_id": "(empty)"},
+        ]
+    )
     with dspy.context(lm=lm):
         with pytest.raises(routing.MemoryRouteError) as refused:
             routing.held_fact(fact="Uses ALMA", facts=[("fa1", "Uses ALMA")])
         assert refused.value.error_type == "memory_route_invalid"
         assert routing.held_fact(fact="Uses ALMA", facts=[("fa1", "Uses ALMA")]) == "fa1"
+        # Not held: whatever the model put in the id field is not read.
+        assert routing.held_fact(fact="Uses VLA", facts=[("fa1", "Uses ALMA")]) == ""
+
+
+def test_routing_reads_the_typed_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An existing document is used only when the model says so; a filler such as
+    "(empty)" in a field the decision does not use is never read as a name."""
+    import dspy
+
+    from clio_agent.gact.memory import routing
+
+    monkeypatch.undo()
+    docs = [("python", "Python setup")]
+    lm = dspy.utils.DummyLM(
+        [
+            {"use_existing": "true", "existing": "python", "new_name": "", "new_description": ""},
+            {
+                "use_existing": "false",
+                "existing": "(empty)",
+                "new_name": "dark-mode",
+                "new_description": "How the user likes interfaces to look",
+            },
+        ]
+    )
+    with dspy.context(lm=lm):
+        assert routing.route_fact(
+            fact="Uses 3.13", subject="python", category="environments", documents=docs
+        ) == ("python", "")
+        assert routing.route_fact(
+            fact="Prefers dark mode", subject="ui", category="preferences", documents=docs
+        ) == ("dark-mode", "How the user likes interfaces to look")

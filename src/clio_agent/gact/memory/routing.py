@@ -35,18 +35,23 @@ class RouteMemoryFact(dspy.Signature):
     documents: list[str] = dspy.InputField(
         desc="This category's documents, one 'name: description' per entry (may be empty)."
     )
+    use_existing: bool = dspy.OutputField(
+        desc="True when the fact belongs in one of the listed documents."
+    )
     existing: str = dspy.OutputField(
-        desc="The name of the existing document the fact belongs in, or an empty string."
+        default="", desc="When use_existing: the listed document's name (before the ':')."
     )
     new_name: str = dspy.OutputField(
-        desc="When no existing document fits: a short name of lowercase words joined by '-'."
+        default="",
+        desc="Otherwise: a short name for a new document, lowercase words joined by '-'.",
     )
     new_description: str = dspy.OutputField(
+        default="",
         desc=(
             "When no existing document fits: one line naming the subject the document "
             "holds facts about, without the facts' values (those change; they live in "
             "the facts)."
-        )
+        ),
     )
 
 
@@ -61,9 +66,8 @@ class SameMemoryFact(dspy.Signature):
     facts: list[str] = dspy.InputField(
         desc="The document's current facts, one 'id: text' per entry."
     )
-    same_as: str = dspy.OutputField(
-        desc="The id of the listed fact that already states this, or an empty string."
-    )
+    held: bool = dspy.OutputField(desc="True when one listed fact already states it.")
+    fact_id: str = dspy.OutputField(default="", desc="When held: that fact's id (before the ':').")
 
 
 def held_fact(*, fact: str, facts: list[tuple[str, str]]) -> str:
@@ -80,8 +84,10 @@ def held_fact(*, fact: str, facts: list[tuple[str, str]]) -> str:
     prediction = dspy.Predict(SameMemoryFact)(
         fact=fact, facts=[f"{fact_id}: {text}" for fact_id, text in facts]
     )
-    same = str(getattr(prediction, "same_as", "") or "").strip()
-    if same and same not in {fact_id for fact_id, _ in facts}:
+    if not bool(getattr(prediction, "held", False)):
+        return ""
+    same = str(getattr(prediction, "fact_id", "") or "").strip()
+    if same not in {fact_id for fact_id, _ in facts}:
         raise MemoryRouteError("memory_route_invalid", f"comparison named {same!r}, not a fact")
     return same
 
@@ -106,7 +112,7 @@ def route_fact(
         documents=[f"{name}: {description}" for name, description in documents],
     )
     existing = str(getattr(prediction, "existing", "") or "").strip()
-    if existing:
+    if bool(getattr(prediction, "use_existing", False)):
         if existing not in names:
             raise MemoryRouteError(
                 "memory_route_invalid", f"routing named {existing!r}, which is not a document"

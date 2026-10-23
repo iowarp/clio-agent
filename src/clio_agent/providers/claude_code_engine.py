@@ -400,11 +400,7 @@ class _Turn:
             shown = self._splitter.push(self.fallback)
             if shown:
                 out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
-        elif self._held and not self.protocol_error:
-            shown = self._splitter.push(self._held)  # a short reply that never decided
-            if shown:
-                out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
-        self._held = ""
+        held, self._held = ("" if self.protocol_error else self._held), ""
         split = (
             ReplySplit(
                 text="",
@@ -426,6 +422,19 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
+        if held and split.calls:
+            # A step's only text was one undecided word beside its calls (such as
+            # ``_tool_call_placeholder``): not a preamble, so it is not shown. On the record.
+            logger.info(
+                "provider reply text dropped word reason=word_only_beside_calls "
+                "model=%s call_id=%s chars=%d fenced_calls=%d",
+                self.model,
+                call_id,
+                len(held),
+                len(split.calls),
+            )
+        elif held and (shown := self._splitter.push(held)):
+            out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))  # an answer
         if words := self._splitter.dropped_fence_words:
             logger.info(
                 "provider reply text dropped fence words reason=fence_word_in_text "
