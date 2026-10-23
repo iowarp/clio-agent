@@ -1900,7 +1900,7 @@ def test_command_mcp_skill_scope_requires_structured_capability_evidence() -> No
         provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
         session_agent=_pinned(
-            "clio/mcp-calculator-smoke",
+            "clio-testing/mcp-calculator-smoke",
             plugins=[
                 {"id": "core", "provenance": {"source": "core", "via": "core"}},
                 {
@@ -3451,7 +3451,7 @@ class _FakePluginHttp:
                     "subagent": False,
                     "resolution": {
                         "agent": {
-                            "ref": "clio/mcp-calculator-smoke",
+                            "ref": "clio-testing/mcp-calculator-smoke",
                             "id": "mcp-calculator-smoke",
                             "role": "a smoke agent",
                         },
@@ -3459,8 +3459,8 @@ class _FakePluginHttp:
                         "plugins": [
                             {
                                 "id": "mcp-calculator-smoke",
-                                "marketplace": "clio",
-                                "root": "/store/snapshots/clio/mcp-calculator-smoke",
+                                "marketplace": "clio-testing",
+                                "root": "/store/snapshots/clio-testing/mcp-calculator-smoke",
                                 "provenance": {"source": "agent", "via": "mcp-calculator-smoke"},
                             }
                         ],
@@ -3468,7 +3468,7 @@ class _FakePluginHttp:
                         "mcp_servers": {
                             "calculator": {
                                 "plugin": "mcp-calculator-smoke",
-                                "root": "/store/snapshots/clio/mcp-calculator-smoke",
+                                "root": "/store/snapshots/clio-testing/mcp-calculator-smoke",
                                 "spec": {"command": "uv"},
                             }
                         },
@@ -3482,7 +3482,7 @@ class _FakePluginHttp:
                 {
                     "plugins": [
                         {
-                            "ref": "clio/mcp-calculator-smoke",
+                            "ref": "clio-testing/mcp-calculator-smoke",
                             "trusted": self.trusted,
                             "pending_trust": False,
                         }
@@ -3587,12 +3587,12 @@ def test_session_agent_view_keeps_provenance_and_drops_prompt_and_paths() -> Non
     view = bench._session_agent(_FakePluginHttp(), "sess_1")
 
     resolution = view["resolution"]
-    assert resolution["agent"]["ref"] == "clio/mcp-calculator-smoke"
+    assert resolution["agent"]["ref"] == "clio-testing/mcp-calculator-smoke"
     assert resolution["mcp_servers"] == {"calculator": {"plugin": "mcp-calculator-smoke"}}
     assert resolution["plugins"] == [
         {
             "id": "mcp-calculator-smoke",
-            "marketplace": "clio",
+            "marketplace": "clio-testing",
             "provenance": {"source": "agent", "via": "mcp-calculator-smoke"},
         }
     ]
@@ -3644,7 +3644,7 @@ def test_marketplace_mcp_cases_use_the_calculator_plugin_agent() -> None:
     scope = cases["marketplace_mcp_calculator_scope"]
     call = cases["marketplace_mcp_calculator_enabled_call"]
 
-    assert scope.agent_ref == call.agent_ref == "clio/mcp-calculator-smoke"
+    assert scope.agent_ref == call.agent_ref == "clio-testing/mcp-calculator-smoke"
     assert call.mcp_probe_server == "calculator"
     assert call.expected_tools == ("calculator_add",)
     assert call.expected_actions == ("plugin_mcp_probe",)
@@ -3751,3 +3751,10 @@ def test_run_benchmark_installs_marketplace_source_and_rebases_agent_cases(
     ]
     assert [row["agent_ref"] for row in rows] == ["dev/genomics-review", ""]
     assert all(row["passed"] for row in rows)
+
+
+def test_smoke_test_agents_keep_their_own_marketplace_when_cases_are_rebased() -> None:
+    assert bench._rebase_agent_ref("clio/genomics-review", "dev") == "dev/genomics-review"
+    smoke = "clio-testing/mcp-calculator-smoke"
+    assert bench._rebase_agent_ref(smoke, "dev") == smoke
+    assert (bench._TESTING_MARKETPLACE_SOURCE / "agents" / "mcp_calculator_smoke.py").is_file()
