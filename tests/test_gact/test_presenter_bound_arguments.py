@@ -1,4 +1,4 @@
-"""Presentation receives callable arguments, not inspect's variadic container."""
+"""Observation and presentation receive call arguments, not inspect's variadic container."""
 
 from typing import Any
 
@@ -14,7 +14,7 @@ from clio_agent.gact.agents.tool_instrumentation import (
 pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 
-def test_variadic_arguments_are_projected_without_changing_observation(monkeypatch: Any) -> None:
+def test_variadic_arguments_are_observed_and_presented_unwrapped(monkeypatch: Any) -> None:
     observed: list[dict[str, Any]] = []
     returned = {"content": "unchanged"}
 
@@ -56,7 +56,7 @@ def test_variadic_arguments_are_projected_without_changing_observation(monkeypat
     (tool,) = instrument_tools([tool])
     assert tool.func(skill_id="example") == returned
     assert returned == {"content": "unchanged"}
-    assert observed == [{"options": {"skill_id": "example"}}] * 2
+    assert observed == [{"skill_id": "example"}] * 2
 
 
 def test_literal_mapping_parameter_is_not_flattened() -> None:
