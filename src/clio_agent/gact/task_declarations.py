@@ -639,8 +639,8 @@ def build_spawn_runtime_tools(
         }
 
     async def spawn_agent_task(
-        agent: str = "",
-        task: str = "",
+        agent: str,
+        task: str,
         placement: str | None = None,
         input_task_ids: list[str] | None = None,
         strategy: dict[str, Any] | None = None,
@@ -764,7 +764,7 @@ def build_spawn_runtime_tools(
                             "strategy": strategy_schema,
                             "model": model_schema,
                         },
-                        "required": ["task"],
+                        "required": ["agent", "task"],
                         "additionalProperties": False,
                     },
                 },
