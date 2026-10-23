@@ -1,4 +1,4 @@
-"""Live scenarios for long-term memory (docs/design/sdk/memory-ledger.md, M3-M17).
+"""Live scenarios for long-term memory (docs/design/sdk/memory-ledger.md, M2-M17).
 
 Run against a running stack (``bash scripts/cloud/stack.sh start``):
 
@@ -351,6 +351,56 @@ def idle_seed(call: Call) -> None:
     print(f"  seeded {sid}")
 
 
+def recall_compacted(call: Call) -> None:
+    """M2: ``recall_context`` returns the original steps after compaction."""
+    sid = create_session(call, WS, "M2 recall after compaction")
+    _turn(call, sid, "Note for later: the detector B12 calibration constant is 4.771e-3.")
+    _turn(call, sid, "Also note: run 812 used a beam energy of 7.05 GeV.")
+    compaction = call("POST", f"/v1/sessions/{sid}/compact", {})
+    messages = _turn(
+        call,
+        sid,
+        "From before the compaction: what was the B12 calibration constant and the beam "
+        "energy of run 812? Use recall_context to read the original steps.",
+    )
+    evidence = {
+        "session": sid,
+        "compaction": compaction.get("id") or compaction.get("compaction_id") or compaction,
+        "tools": _tools(messages),
+        "answer": _answer(messages),
+    }
+    _save("m2_recall", evidence)
+    print(json.dumps(evidence, indent=2))
+
+
+def tool_seed(call: Call) -> None:
+    """M11: facts read from files are sourced ``tool``; an instruction inside one is not."""
+    sid = create_session(call, WS, "M11 tool seed")
+    _turn(
+        call,
+        sid,
+        "Read .cloud-run/memory/lab-roster.md and .cloud-run/memory/page.txt with your file "
+        "tool and summarize both in a few lines.",
+    )
+    _turn(call, sid, "Thanks, that is useful.")
+    _turn(call, sid, "That's all for now.")
+    _save("m11_seed", {"session": sid})
+    print(f"  seeded {sid}")
+
+
+def background_off(call: Call) -> None:
+    """M12, with ``memory.background`` off: seed an idle conversation, then remember."""
+    seed = create_session(call, WS, "M12 background off")
+    _turn(call, seed, "My batch jobs go to the debug queue on Polaris.")
+    _turn(call, seed, "I usually request two nodes.")
+    _turn(call, seed, "Okay, thanks.")
+    writer = create_session(call, WS, "M12 remember")
+    messages = _turn(call, writer, "Remember that my ALCF username is jcernuda.")
+    evidence = {"seed": seed, "writer": writer, "tools": _tools(messages)}
+    _save("m12", evidence)
+    print(json.dumps(evidence, indent=2))
+
+
 SCENARIOS = {
     "remember": remember,
     "recall": recall,
@@ -363,6 +413,9 @@ SCENARIOS = {
     "assistant-import": assistant_import,
     "proposals": proposals,
     "idle-seed": idle_seed,
+    "recall-compacted": recall_compacted,
+    "tool-seed": tool_seed,
+    "background-off": background_off,
 }
 BASE = "http://127.0.0.1:8787"
 

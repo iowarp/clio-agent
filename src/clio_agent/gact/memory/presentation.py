@@ -24,6 +24,7 @@ _NOTICE = {
     "created": "Memory updated",
     "updated": "Memory updated",
     "forgotten": "Memory forgotten",
+    "already_remembered": "Already in memory",
 }
 
 

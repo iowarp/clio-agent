@@ -39,7 +39,12 @@ def routing(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         slug = kwargs["subject"].lower().replace(" ", "-")
         return (slug, "") if slug in existing else (slug, f"About {kwargs['subject']}")
 
+    def held_fact(*, fact: str, facts: list[tuple[str, str]]) -> str:
+        calls.append({"held": fact, "facts": facts})
+        return next((fid for fid, text in facts if text.casefold() == fact.casefold()), "")
+
     monkeypatch.setattr("clio_agent.gact.memory.routing.route_fact", route_fact)
+    monkeypatch.setattr("clio_agent.gact.memory.routing.held_fact", held_fact)
     return calls
 
 
@@ -355,3 +360,40 @@ def test_memory_off_also_stops_searching_other_conversations_through_tasks(
     tasks.query(TaskCaller(off.id, human), kind="Session", scope="tree", query="plots")
     tasks.query(TaskCaller(off.id, human), kind="Session", scope="authorized")
     tasks.query(TaskCaller(on.id, human), kind="Session", scope="authorized", query="plots")
+
+
+def test_asking_twice_to_remember_a_held_fact_files_it_once(client: TestClient) -> None:
+    """The comparison step names the fact the document already holds; nothing is written."""
+    app = client.app
+    session = _root(app)
+    tokens = _in_session(app, session.id)
+    try:
+        first = memory_tools.create_memory(
+            "alcf account", "ALCF username is jcernuda", "environments"
+        )
+        again = memory_tools.create_memory(
+            "alcf account", "ALCF username is jcernuda", "environments"
+        )
+    finally:
+        _leave(tokens)
+    assert first["memory"]["action"] == "created"
+    assert again["memory"]["action"] == "already_remembered"
+    assert again["fact"]["id"] == first["fact"]["id"]
+    doc = client.get(f"/v1/memory/documents/{first['memory']['name']}").json()
+    assert [f["text"] for f in doc["facts"] if f["live"]] == ["ALCF username is jcernuda"]
+
+
+def test_the_comparison_answer_must_name_a_listed_fact(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``held_fact`` refuses an id it did not list (typed), and skips the call for none."""
+    import dspy
+
+    from clio_agent.gact.memory import routing
+
+    monkeypatch.undo()  # the real comparison, not the autouse stub
+    assert routing.held_fact(fact="x", facts=[]) == ""
+    lm = dspy.utils.DummyLM([{"same_as": "f_missing"}, {"same_as": "fa1"}])
+    with dspy.context(lm=lm):
+        with pytest.raises(routing.MemoryRouteError) as refused:
+            routing.held_fact(fact="Uses ALMA", facts=[("fa1", "Uses ALMA")])
+        assert refused.value.error_type == "memory_route_invalid"
+        assert routing.held_fact(fact="Uses ALMA", facts=[("fa1", "Uses ALMA")]) == "fa1"

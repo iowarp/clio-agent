@@ -14,7 +14,7 @@ from clio_agent.gact import context
 from clio_agent.gact.app import build_app
 from clio_agent.gact.memory import background
 from clio_agent.gact.memory.extract import Candidate, transcript_items
-from clio_agent.gact.memory.proposals import ProposalStore
+from clio_agent.gact.memory.proposals import Evidence, ProposalStore
 from clio_agent.gact.memory.runtime import memory_service
 from clio_agent.gact.parts import Part
 from clio_agent.gact.session_store import _append_session_message
@@ -277,3 +277,35 @@ def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> Non
         assert reads.count(session.id) == 1
     finally:
         app.state.messages = messages
+
+
+def test_the_curator_is_told_what_already_waits_for_review(client: TestClient) -> None:
+    """A change pending in the inbox reaches the next curator brief, so the same import
+    or conversation does not put it in front of the user twice."""
+    app = client.app
+    ProposalStore(memory_service(app)).propose(
+        target="user/people/dana-reyes",
+        change="add",
+        facts=["The user's manager is Dana Reyes."],
+        replaces=[],
+        merge_from=[],
+        description="",
+        evidence=[Evidence("c1", "import_first", (), "imported", "Manager: Dana Reyes")],
+        rationale="imported",
+        origin="import:first",
+        handle="",
+        auto_accept="none",
+    )
+    run = background.start_curator(
+        app,
+        origin="import:second",
+        source_session=None,
+        workspace_id="ws_global",
+        scopes=("user",),
+        candidates=[{"id": "c1", "fact": "The user's manager is Dana Reyes."}],
+        run_key="import:second",
+    )
+    owner = app.state.conversations
+    staged = owner.mail.stage(owner.caller(run["session"]))
+    brief = "\n".join(str(text) for _source, text in staged.injections)
+    assert '"pending": [\n  "user/people/dana-reyes: The user\'s manager is Dana Reyes."' in brief

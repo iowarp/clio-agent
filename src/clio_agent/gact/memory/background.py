@@ -180,6 +180,7 @@ def _curator_brief(
     *,
     forgotten: list[str],
     rejected: list[str],
+    pending: list[str],
     documents: list[dict[str, Any]],
 ) -> str:
     return "Curate long-term memory from these candidates.\n\n" + json.dumps(
@@ -187,6 +188,7 @@ def _curator_brief(
             "candidates": candidates,
             "forgotten": forgotten,
             "rejected": rejected,
+            "pending": pending,
             "documents": documents,
         },
         indent=1,
@@ -217,11 +219,10 @@ def start_curator(
     service = memory_service(app)
     usage = memory_usage(app)
     pin, agent_id = _curator_resolution(app)
-    rejected = [
-        f"{p.target}: {'; '.join(p.facts)}"
-        for p in ProposalStore(service).all()
-        if p.status == "rejected"
-    ]
+    kept = ProposalStore(service).all()
+    rejected = [f"{p.target}: {'; '.join(p.facts)}" for p in kept if p.status == "rejected"]
+    # Already waiting for review: proposing them again only doubles the inbox.
+    pending = [f"{p.target}: {'; '.join(p.facts)}" for p in kept if p.status == "pending"]
     expiry = timedelta(days=int(setting("memory.expiry_days", 60)))
     cutoff = (datetime.now(UTC) - expiry).strftime("%Y-%m-%dT%H:%M:%SZ")
     documents, retire = [], []
@@ -258,6 +259,7 @@ def start_curator(
         candidates,
         forgotten=_forgotten_facts(service, scopes),
         rejected=rejected,
+        pending=pending,
         documents=documents,
     )
     human = str(app.state.human_principal)

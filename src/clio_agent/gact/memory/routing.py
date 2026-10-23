@@ -1,9 +1,10 @@
 """Where a fact the user asked to remember belongs: one typed model call.
 
 The model sees the fact, its subject and category, and the index of that category's
-documents (name and description), and names an existing document or a new one. The
-server checks the answer against the index and writes the line; nothing here merges
-or rewrites facts.
+documents (name and description), and names an existing document or a new one. For an
+existing document a second call says whether one of its facts already states the fact,
+so asking twice does not file it twice. The server checks each answer against what it
+listed and writes the line; nothing here merges or rewrites facts.
 """
 
 from __future__ import annotations
@@ -49,6 +50,42 @@ class RouteMemoryFact(dspy.Signature):
     )
 
 
+class SameMemoryFact(dspy.Signature):
+    """Say whether a memory document already holds the fact the user asked to remember.
+
+    A listed fact holds it when it states the same thing about the same subject, in any
+    wording. A fact that changes a value, or adds something, is not held.
+    """
+
+    fact: str = dspy.InputField(desc="The fact to remember, as the user stated it.")
+    facts: list[str] = dspy.InputField(
+        desc="The document's current facts, one 'id: text' per entry."
+    )
+    same_as: str = dspy.OutputField(
+        desc="The id of the listed fact that already states this, or an empty string."
+    )
+
+
+def held_fact(*, fact: str, facts: list[tuple[str, str]]) -> str:
+    """The id of the listed ``(id, text)`` fact that already states ``fact``, or ``""``.
+
+    Raises:
+        MemoryRouteError: No session model is active, or the answer names an id that is
+            not listed.
+    """
+    if not facts:
+        return ""
+    if dspy.settings.lm is None:
+        raise MemoryRouteError("memory_route_no_model", "no session model to compare the fact")
+    prediction = dspy.Predict(SameMemoryFact)(
+        fact=fact, facts=[f"{fact_id}: {text}" for fact_id, text in facts]
+    )
+    same = str(getattr(prediction, "same_as", "") or "").strip()
+    if same and same not in {fact_id for fact_id, _ in facts}:
+        raise MemoryRouteError("memory_route_invalid", f"comparison named {same!r}, not a fact")
+    return same
+
+
 def route_fact(
     *, fact: str, subject: str, category: str, documents: list[tuple[str, str]]
 ) -> tuple[str, str]:
@@ -88,4 +125,4 @@ def route_fact(
     return slug, description or subject
 
 
-__all__ = ["MemoryRouteError", "RouteMemoryFact", "route_fact"]
+__all__ = ["MemoryRouteError", "RouteMemoryFact", "SameMemoryFact", "held_fact", "route_fact"]

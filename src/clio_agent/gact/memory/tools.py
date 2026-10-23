@@ -154,6 +154,24 @@ def _route(fact: str, subject: str, category: str, index: list[StoredDocument]) 
     )
 
 
+def _already_held(current: StoredDocument | None, fact: str) -> dict[str, Any] | None:
+    """The result for a fact the document already states (one model call), else None."""
+    from clio_agent.gact.memory.routing import held_fact  # noqa: PLC0415
+
+    if current is None:
+        return None
+    live = current.document.live_facts
+    same = held_fact(fact=fact, facts=[(held.id, held.text) for held in live])
+    held = current.document.fact(same) if same else None
+    if held is None:
+        return None
+    return {
+        "tool": "create_memory",
+        "fact": _fact_wire(held),
+        "memory": _notice("already_remembered", current, held.id),
+    }
+
+
 def _new_fact(session: Any, text: str, taken: set[str]) -> md.Fact:
     return md.Fact(
         id=md.new_fact_id(taken),
@@ -198,6 +216,8 @@ def create_memory(
         index = [s for s in service.documents((target,)) if s.name.category == category]
         slug, description = _route(fact, subject, category, index)
     address = record_name(target, category, slug)
+    if (known := _already_held(service.get(address), fact)) is not None:
+        return known
     for _attempt in range(_CONFLICT_RETRIES):
         current = service.get(address)
         new = _new_fact(session, fact, _all_fact_ids(service, target))
