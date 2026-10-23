@@ -606,11 +606,6 @@ gact.ledger_retention.command_audit.max: 2000
 # raise to retain more attached-context history.
 gact.ledger_retention.context_frames.max: 200
 
-# CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
-# Max entries kept in the in-memory memory-tool-audit ledger before FIFO
-# eviction; raise for more memory-tool audit history.
-gact.ledger_retention.session_recall_audit.max: 2000
-
 # CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX  (int)  <- src/clio_agent/gact/native_delivery_outcome.py
 # Unsettled native-attachment decline notes buffered before the oldest are
 # dropped; each is normally consumed by the turn that planned it, so raise
@@ -636,6 +631,11 @@ gact.ledger_retention.permissions.hard: 4000
 # Soft cap on the permissions ledger where terminal (resolved) entries evict
 # first, protecting still-pending approval requests.
 gact.ledger_retention.permissions.max: 2000
+
+# CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Max entries kept in the in-memory session-recall audit ledger before FIFO
+# eviction; raise for more past-session search audit history.
+gact.ledger_retention.session_recall_audit.max: 2000
 
 # CLIO_LEDGER_SHARED_TOKENS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the shared-token ledger; past this even a still-

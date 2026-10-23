@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 WATERMARK = "memory_watermark"  # id of the last message a finished pass read
 IN_FLIGHT = "memory_pass"  # the running pass: curator session, handle, read-up-to id
 LAST_PASS = "memory_last_pass"  # how the last pass ended (a failed one is not retried as is)
+CHECKED = "memory_checked"  # {count, at, reason}: the transcript verdict at that point
+TRANSCRIPT_REASONS = frozenset({"last_pass_failed", "too_few_new_messages"})
 MIN_USER_MESSAGES = 3
 CURATOR_TARGET = "curator"
 
@@ -79,14 +81,6 @@ def skip_reason(app: Any, session: Any, now: datetime) -> str:
         return "pass_in_flight"
     if metadata.get(SESSION_CURATOR):
         return "curator_session"
-    failed = metadata.get(LAST_PASS) or {}
-    messages = app.state.messages.get(session.id, [])
-    if (
-        failed.get("status", "completed") != "completed"
-        and messages
-        and failed.get("read_to") == messages[-1].id
-    ):
-        return "last_pass_failed"  # retried once the conversation has new messages
     policy = session_policy(app, session)
     if not (policy.enabled and policy.may_write):
         return policy.reason or "memory_not_writable"
@@ -96,7 +90,35 @@ def skip_reason(app: Any, session: Any, now: datetime) -> str:
     idle = timedelta(minutes=int(setting("memory.idle_minutes", 30)))
     if last is None or now - last < idle:
         return "not_idle_yet"
-    fresh = _messages_after(app.state.messages.get(session.id, []), metadata.get(WATERMARK, ""))
+    # The transcript is read only past the cheap checks, and once per message count:
+    # an idle conversation is not made resident again on every tick.
+    checked = metadata.get(CHECKED) or {}
+    if checked.get("reason") and checked == _checked(session, checked["reason"]):
+        return str(checked["reason"])
+    return _transcript_reason(app, session)
+
+
+def _checked(session: Any, reason: str) -> dict[str, Any]:
+    """The transcript verdict, keyed by what changes when the conversation does."""
+    return {
+        "count": session.message_count,
+        "at": str(session.last_interaction_at or ""),
+        "reason": reason,
+    }
+
+
+def _transcript_reason(app: Any, session: Any) -> str:
+    """The skip reasons that need the transcript (``""`` when a pass is due)."""
+    metadata = session.metadata or {}
+    messages = app.state.messages.get(session.id, [])
+    failed = metadata.get(LAST_PASS) or {}
+    if (
+        failed.get("status", "completed") != "completed"
+        and messages
+        and failed.get("read_to") == messages[-1].id
+    ):
+        return "last_pass_failed"  # retried once the conversation has new messages
+    fresh = _messages_after(messages, metadata.get(WATERMARK, ""))
     if sum(1 for message in fresh if message.role == "user") < MIN_USER_MESSAGES:
         return "too_few_new_messages"
     return ""
@@ -384,6 +406,12 @@ def memory_tick(app: Any, now: datetime | None = None) -> None:
                 _collect(app, session)
             elif reason := skip_reason(app, session, now):
                 skipped[reason] = skipped.get(reason, 0) + 1
+                checked = _checked(session, reason)
+                if (
+                    reason in TRANSCRIPT_REASONS
+                    and (session.metadata or {}).get(CHECKED) != checked
+                ):
+                    app.state.sessions.update(session.id, metadata_patch={CHECKED: checked})
             else:
                 started += 1
                 _start_pass(app, session)

@@ -236,3 +236,44 @@ def test_a_document_nobody_read_past_expiry_gets_a_retire_proposal_for_review(
     # A server rule, not a stated fact: it rests on no source, so it can never auto-apply.
     assert retire[0].origin.startswith("expiry:") and retire[0].sources == []
     assert retire[0].status == "pending"
+
+
+def test_an_idle_conversation_is_read_once_per_change(client: TestClient) -> None:
+    """The transcript is loaded past the cheap checks only, and once per new interaction."""
+    app = client.app
+    session = app.state.sessions.create(workspace_id="ws_global", title="t")
+    _say(app, session.id, 1, "user", "Hello.")
+    old = (datetime.now(UTC) - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    app.state.sessions._sessions[session.id].last_interaction_at = old  # noqa: SLF001
+    now = datetime.now(UTC)
+    background.memory_tick(app, now)
+    assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
+    checked = app.state.sessions.get(session.id).metadata[background.CHECKED]
+    assert checked["reason"] == "too_few_new_messages"
+
+    reads: list[str] = []
+    messages = app.state.messages
+
+    class _Counting:
+        def get(self, sid: str, default: Any = None) -> Any:
+            reads.append(sid)
+            return messages.get(sid, default)
+
+    app.state.messages = _Counting()
+    try:
+        background.memory_tick(app, now)
+        assert session.id not in reads  # nothing changed: the verdict stands
+        assert app.state.memory_background["skipped"]["too_few_new_messages"] >= 1
+        # Not idle: the transcript is not read at all.
+        fresh = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        app.state.sessions._sessions[session.id].last_interaction_at = fresh  # noqa: SLF001
+        assert background.skip_reason(app, app.state.sessions.get(session.id), now) == (
+            "not_idle_yet"
+        )
+        assert session.id not in reads
+        # A new interaction invalidates the verdict once it is idle again.
+        later = now + timedelta(hours=3)
+        background.memory_tick(app, later)
+        assert reads.count(session.id) == 1
+    finally:
+        app.state.messages = messages

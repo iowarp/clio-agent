@@ -31,10 +31,12 @@ from clio_agent.gact.agents.resolution import (
     plugin_service,
     session_delta,
     session_resolution,
+    session_withheld_tools,
 )
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.plugins.check import check
+from clio_agent.plugins.compose import prompt_text_without
 from clio_agent.plugins.records import PluginRecord
 from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError
 from clio_agent.plugins.service import AgentNotFound
@@ -337,11 +339,19 @@ def register_plugin_routes(app: FastAPI, deps: "GactDeps") -> None:
         sess = _session_or_404(sid)
         resolution = await _call(session_resolution, app, sid)
         metadata = sess.metadata if isinstance(sess.metadata, Mapping) else {}
+        view = resolution_view(resolution)
+        # The tools this session runs with: memory policy withholds some, each with a reason.
+        withheld = session_withheld_tools(app, sid, view["tool_names"])
+        if withheld:
+            view["tool_names"] = [name for name in view["tool_names"] if name not in withheld]
+            text = prompt_text_without(view["prompt"]["text"], resolution.prompt, set(withheld))
+            view["prompt"] = {**view["prompt"], "text": text}
         return {
             "session_id": sid,
             "delta": session_delta(app, sid).to_dict(),
             "subagent": bool(metadata.get(SUBAGENT_KEY)),
-            "resolution": resolution_view(resolution),
+            "resolution": view,
+            "withheld_tools": [{"name": k, "reason": v} for k, v in withheld.items()],
             "prompt_basis": await _call(prompt_basis.basis_view, app, sid, resolution),
         }
 

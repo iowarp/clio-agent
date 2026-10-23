@@ -479,8 +479,8 @@ KEY_NOTES: dict[str, str] = {
         "retain more attached-context history."
     ),
     "gact.ledger_retention.session_recall_audit.max": (
-        "Max entries kept in the in-memory memory-tool-audit ledger before FIFO eviction; raise "
-        "for more memory-tool audit history."
+        "Max entries kept in the in-memory session-recall audit ledger before FIFO eviction; raise "
+        "for more past-session search audit history."
     ),
     "gact.ledger_retention.pending_diffs.hard": (
         "Absolute ceiling on the pending-diffs ledger; past this even a still-pending diff is "

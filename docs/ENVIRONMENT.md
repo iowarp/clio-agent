@@ -136,12 +136,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_A2UI_MESSAGES_MAX` | `gact.ledger_retention.a2ui_messages.max` | int | `512` | `src/clio_agent/gact/a2ui.py` |
 | `CLIO_LEDGER_COMMAND_AUDIT_MAX` | `gact.ledger_retention.command_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_CONTEXT_FRAMES_MAX` | `gact.ledger_retention.context_frames.max` | int | `200` | `src/clio_agent/gact/runtime/retention.py` |
-| `CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX` | `gact.ledger_retention.session_recall_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX` | `gact.ledger_retention.native_delivery_notes.max` | int | `256` | `src/clio_agent/gact/native_delivery_outcome.py` |
 | `CLIO_LEDGER_PENDING_DIFFS_HARD` | `gact.ledger_retention.pending_diffs.hard` | int | `1000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PENDING_DIFFS_MAX` | `gact.ledger_retention.pending_diffs.max` | int | `500` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_HARD` | `gact.ledger_retention.permissions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_PERMISSIONS_MAX` | `gact.ledger_retention.permissions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
+| `CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX` | `gact.ledger_retention.session_recall_audit.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_HARD` | `gact.ledger_retention.shared_tokens.hard` | int | `10000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_MAX` | `gact.ledger_retention.shared_tokens.max` | int | `5000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_STREAM_FALLBACK_NOTES_MAX` | `gact.ledger_retention.stream_fallback_notes.max` | int | `32` | `src/clio_agent/gact/stream_fallbacks.py` |
@@ -323,6 +323,8 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_CODEX_VARIANT` | unmigrated | `src/clio_agent/runtime/status.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
+| `CLIO_CTE_POOL` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
+| `CLIO_CTE_POOL_BOUND_BY` | unmigrated | `src/clio_agent/arc/clio_core_indexer.py` |
 | `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
 | `CLIO_DOCUMENT_CONFINED` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |
 | `CLIO_DOCUMENT_OFFICE_ROOT` | unmigrated | `src/clio_agent/runtime/document_stack/process.py` |

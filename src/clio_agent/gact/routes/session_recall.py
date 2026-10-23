@@ -59,7 +59,7 @@ def _recall_tool_error(
     details: dict[str, Any],
     recoverable: bool = True,
 ) -> HTTPException:
-    """Build the structured error envelope raised by the memory-tool routes."""
+    """Build the structured error envelope raised by the session-recall routes."""
 
     return HTTPException(
         status_code=status_code,
@@ -87,7 +87,7 @@ def _recall_tool_audit(
     query: str = "",
     details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Append one provenance-bearing memory-tool audit row and publish its event."""
+    """Append one provenance-bearing session-recall audit row and publish its event."""
 
     row = {
         "id": f"memtool_{uuid.uuid4().hex[:12]}",
@@ -165,7 +165,7 @@ def _raise_recall_policy_denied(
     policy: Mapping[str, Any],
     query: str = "",
 ) -> None:
-    """Record a denied memory-tool call in the audit ledger and raise 403."""
+    """Record a denied session-recall call in the audit ledger and raise 403."""
 
     audit = _recall_tool_audit(
         app,

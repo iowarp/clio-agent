@@ -121,7 +121,8 @@ def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "A
 
     source = str(state.user_msg.metadata.get("model_selection_source") or "global_active")
     raw = state.user_msg.metadata.get("effective_model")
-    role = str((state.sess.metadata or {}).get("model_role") or "")
+    session = getattr(state, "sess", None)  # absent on states built without a session
+    role = str(((session.metadata if session else None) or {}).get("model_role") or "")
     if role:  # a server-run session on a fleet role (the memory curator), every segment
         from clio_agent.gact.memory.models import memory_model_identity  # noqa: PLC0415
 

@@ -174,6 +174,11 @@ def test_memory_off_withholds_the_tools_and_the_snapshot(client: TestClient) -> 
         _leave(tokens)
     again = client.put(f"/v1/sessions/{session.id}/memory", json={"off": False})
     assert again.status_code == 409 and again.json()["error"]["error"] == "memory_off_is_final"
+    # The session-agent route describes what the session runs with, and says why not more.
+    agent = client.get(f"/v1/sessions/{session.id}/agent").json()
+    withheld = {row["name"]: row["reason"] for row in agent["withheld_tools"]}
+    assert withheld["memory_search"] == withheld["session_search"] == "session_memory_off"
+    assert not set(withheld) & set(agent["resolution"]["tool_names"])
 
 
 def test_a_workspace_without_account_memory_sees_only_its_project(client: TestClient) -> None:
