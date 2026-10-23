@@ -312,6 +312,7 @@ def forget_memory(fact_id: str = "", name: str = "", reason: str = "") -> dict[s
         }
     for _attempt in range(_CONFLICT_RETRIES):
         stored = _find_fact(service, policy, fact_id)
+        old = stored.document.fact(fact_id)
         try:
             written, removed = service.forget_fact(
                 stored, fact_id, expected_sha=stored.sha, author=author
@@ -320,7 +321,9 @@ def forget_memory(fact_id: str = "", name: str = "", reason: str = "") -> dict[s
             continue
         return {
             "tool": "forget_memory",
+            **({"fact": _fact_wire(old)} if old is not None else {}),
             "forgotten": list(removed),
+            "document_removed": written is None,
             "memory": _notice("forgotten", written or stored, fact_id),
         }
     raise MemoryToolError("memory_conflict", f"fact {fact_id} kept changing; try again")

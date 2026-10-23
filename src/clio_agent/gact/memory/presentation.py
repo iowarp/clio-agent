@@ -1,8 +1,9 @@
 """How long-term memory tool results read in the conversation.
 
 A write (``create_memory``, ``update_memory``, ``forget_memory``) renders as a compact
-memory notice: "Memory updated" and a link to the document on the memory page, no
-text box. Search and read show the documents they found, each linked to the page.
+memory notice: the fact itself (what was remembered, corrected or forgotten), "Memory
+updated" and "Edit in memory", which opens the memory page on that fact
+(``<document>#<fact id>``), no text box. Search and read show the documents they found, each linked to the page.
 """
 
 from __future__ import annotations
@@ -41,8 +42,23 @@ def present_long_term_memory(
     if isinstance(notice, Mapping):
         name = str(notice.get("name") or "")
         label = str(notice.get("description") or name)
-        blocks.append(_link("memory", name, label))
-        return _NOTICE.get(str(notice.get("action") or ""), "Memory updated"), blocks, "memory"
+        action = str(notice.get("action") or "")
+        summary = _NOTICE.get(action, "Memory updated")
+        fact = row.get("fact")
+        text = str(fact.get("text") or "").strip() if isinstance(fact, Mapping) else ""
+        if text:  # the row names what was remembered, corrected or forgotten
+            blocks.append({"id": "fact", "type": "text", "text": text})
+        fact_id = str(notice.get("fact_id") or "")
+        if action == "forgotten":
+            if not row.get("document_removed"):
+                blocks.append(_link("memory", name, "Open in memory"))
+        elif text:  # opens the memory page on this fact, to correct or forget it
+            blocks.append(
+                _link("memory", f"{name}#{fact_id}" if fact_id else name, "Edit in memory")
+            )
+        else:
+            blocks.append(_link("memory", name, label))
+        return summary, blocks, "fact" if text else "memory"
     if tool == "memory_search":
         hits = [hit for hit in row.get("hits", []) if isinstance(hit, Mapping)]
         for index, hit in enumerate(hits):

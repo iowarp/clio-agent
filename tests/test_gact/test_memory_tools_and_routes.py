@@ -18,6 +18,7 @@ from clio_agent.gact.memory.policy import (
     session_policy,
     withheld_memory_tools,
 )
+from clio_agent.gact.memory.presentation import present_long_term_memory
 from clio_agent.gact.memory.snapshot import MARKER, session_snapshot
 from clio_agent.gact.task_access import TaskCaller
 
@@ -85,6 +86,17 @@ def test_remember_correct_and_forget_in_a_root_conversation(client: TestClient) 
         forgotten = memory_tools.forget_memory(fact_id=updated["fact"]["id"])
         # The correction's earlier value goes too, and the emptied document with it.
         assert forgotten["forgotten"] == [fact_id, updated["fact"]["id"]]
+        assert forgotten["fact"]["text"] == "My Frontier project id is CSC456"
+        # Each write's row names the fact itself; the link opens its document.
+        summary, blocks, subject = present_long_term_memory("create_memory", {}, created)
+        assert (summary, subject) == ("Memory updated", "fact")
+        assert blocks[0] == {"id": "fact", "type": "text", "text": created["fact"]["text"]}
+        assert blocks[1]["label"] == "Edit in memory"
+        assert blocks[1]["uri"] == f"{name}#{fact_id}"  # opens the page on this fact
+        summary, blocks, subject = present_long_term_memory("forget_memory", {}, forgotten)
+        assert (summary, subject) == ("Memory forgotten", "fact")
+        assert forgotten["document_removed"] is True
+        assert blocks == [{"id": "fact", "type": "text", "text": forgotten["fact"]["text"]}]
         assert memory_tools.memory_search("Frontier project id")["hits"] == []
     finally:
         _leave(tokens)
