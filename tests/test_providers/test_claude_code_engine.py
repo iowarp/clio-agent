@@ -294,7 +294,7 @@ def test_xml_parameter_fragment_is_a_protocol_error_not_a_completed_answer(pool:
         ('[{"name":"search","arguments":{"q":"actual data"}}]\n```', "missing opening"),
         ('<invoke name="search"><parameter name="q">actual data</parameter></invoke>', "XML"),
         ('<parameter name="q">actual data</parameter>\n</invoke>\n</invoke>', "XML"),
-        pytest.param("<br>\n" * 2000, "only HTML line breaks", id="formatting-only"),
+        pytest.param("<br>\n" * 2000, "only line breaks or one word", id="formatting-only"),
         pytest.param(
             '{"tool_calls":[{"name":"search","arguments":{"q":"actual data"}}]}',
             "fenced",

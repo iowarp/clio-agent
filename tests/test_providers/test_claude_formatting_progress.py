@@ -62,12 +62,13 @@ def test_formatting_loop_returns_bounded_protocol_feedback(width: int) -> None:
         "A useful answer.\n" * 2000,
         "Show line breaks: <br>\n" * 2000,
         "\n<br>" * 20,
+        "_tool_calls\n" * 3 + "I'll save that.\n",
         FENCE
         + "\n"
         + json.dumps([{"name": "query_tasks", "arguments": {"description": "\n<br>" * 2000}}])
         + "\n```",
     ],
-    ids=["useful_answer", "useful_html", "short_breaks", "tool_arguments"],
+    ids=["useful_answer", "useful_html", "short_breaks", "a_few_stray_words", "tool_arguments"],
 )
 def test_meaningful_long_output_and_tool_arguments_remain_valid(reply: str) -> None:
     turn = _Turn("haiku", available_tools=frozenset({"query_tasks"}))
@@ -232,3 +233,23 @@ async def test_abandoned_stream_is_dead_before_deferred_disconnect(
         finally:
             entry.close_blocking()
             pool.release_session_resources("formatting-test")
+
+
+@pytest.mark.parametrize("word", ["_tool_calls_placeholder", "_check_placeholder", "_memory"])
+def test_a_repeated_placeholder_word_gets_the_same_bounded_recovery(word: str) -> None:
+    """Asked to remember, a model looped on one placeholder word for ten minutes before
+    its call (memory ledger MD51); the reply is cut and the model gets the feedback."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = f"{word}\n\n" * 2000
+    for index in range(0, len(reply), 5):
+        push(turn, reply[index : index + 5])
+        if turn.protocol_error:
+            break
+    assert turn.protocol_error == "formatting_only_repetition"
+    assert turn.reply.count(word) == 32
+    calls = [
+        event.delta
+        for event in turn.finish("looped")
+        if event.type == "delta" and event.delta.type == "tool_call"
+    ]
+    assert len(calls) == 1 and calls[0].name == INVALID_TOOL_CALL

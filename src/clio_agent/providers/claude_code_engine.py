@@ -398,7 +398,7 @@ class _Turn:
                         name=INVALID_TOOL_CALL,
                         input={
                             "reason": self.protocol_error,
-                            "error": "The response repeated only HTML line breaks without an action. "
+                            "error": "The response repeated only line breaks or one word without an action. "
                             "Continue with meaningful text or one complete tool_calls block. "
                             "No operation was submitted by this response; accepted tasks still run.",
                         },

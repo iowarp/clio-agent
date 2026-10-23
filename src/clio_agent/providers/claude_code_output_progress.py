@@ -1,4 +1,11 @@
-"""Bound a tool-capable reply made entirely of repeated HTML line breaks.
+"""Bound a tool-capable reply that only repeats itself without advancing the agent.
+
+Two shapes are recognized, both only as the reply's opening:
+
+* repeated HTML line breaks (``<br>`` in any spelling), and
+* one word repeated on its own line, such as ``_tool_calls_placeholder`` (seen when a
+  model reaches for a tool it was trained with but this request does not offer, e.g.
+  asked to remember something). A repeated line with words in it is an answer.
 
 These tokens keep the inter-token silence watchdog alive without advancing the
 agent. This is a protocol recovery condition, not a deadline on accepted tasks.
@@ -9,35 +16,71 @@ from __future__ import annotations
 
 
 class FormattingProgress:
-    """Incrementally recognize a formatting-only prefix with constant parser state."""
+    """Incrementally recognize a non-progressing prefix with constant parser state."""
 
     _TAGS = ("<br>", "<br/>", "<br />")
     _MAX_TAGS = 256
+    #: A repeated opening word is at most this long and stops the reply at this count.
+    _MAX_LINE = 80
+    _MAX_REPEATS = 32
 
     def __init__(self, *, enabled: bool) -> None:
         self._enabled = enabled
+        self._tags_on = enabled
+        self._lines_on = enabled
         self._partial = ""
         self._tags = 0
+        self._line = ""
+        self._first: str | None = None
+        self._repeats = 0
 
     def cutoff(self, text: str) -> int | None:
         """Return the offset ending a non-progressing prefix, else accept the text.
 
-        Fragmentation and case do not affect recognition. Neither ordinary long
+        Fragmentation and case do not affect tag recognition. Neither ordinary long
         answers nor formatting in tool arguments is classified as non-progress.
         """
         if not self._enabled:
             return None
         for index, character in enumerate(text):
-            if not self._partial and character.isspace():
-                continue
-            self._partial += character.lower()
-            if self._partial in self._TAGS:
-                self._partial = ""
-                self._tags += 1
-                if self._tags >= self._MAX_TAGS:
-                    return index + 1
-            elif not any(tag.startswith(self._partial) for tag in self._TAGS):
+            if self._tags_on and self._tag(character):
+                return index + 1
+            if self._lines_on and self._repeat(character):
+                return index + 1
+            if not (self._tags_on or self._lines_on):
                 self._enabled = False
-                self._partial = ""
                 return None
         return None
+
+    def _tag(self, character: str) -> bool:
+        if not self._partial and character.isspace():
+            return False
+        self._partial += character.lower()
+        if self._partial in self._TAGS:
+            self._partial = ""
+            self._tags += 1
+            return self._tags >= self._MAX_TAGS
+        if not any(tag.startswith(self._partial) for tag in self._TAGS):
+            self._tags_on = False
+        return False
+
+    def _repeat(self, character: str) -> bool:
+        if character not in "\r\n":
+            self._line += character
+            if len(self._line) > self._MAX_LINE:
+                self._lines_on = False
+            return False
+        line, self._line = self._line.strip(), ""
+        if not line:
+            return False
+        if any(c.isspace() for c in line) or line.lower() in self._TAGS:
+            self._lines_on = False  # words, or a line break tag (counted by ``_tag``)
+            return False
+        if self._first is None:
+            self._first, self._repeats = line, 1
+            return False
+        if line != self._first:
+            self._lines_on = False
+            return False
+        self._repeats += 1
+        return self._repeats >= self._MAX_REPEATS
