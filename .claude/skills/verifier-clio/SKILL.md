@@ -138,3 +138,10 @@ Evidence stays in the run directory; remove it once the report is delivered.
   start", the app did not attach.
 - Never `pkill -f` a pattern that appears in your own command line; stop
   processes by recorded PID or process group.
+- Stopping a Playwright run leaves its `webServer` processes (fixture server,
+  archive-map server, `vite preview`) reparented to init and holding their
+  ports; find them by cwd and port env in `/proc/<pid>/` and stop them too.
+- gact-tui's Playwright pins a newer browser build than `/opt/pw-browsers`
+  holds; run e2e locally through a config that sets
+  `launchOptions.executablePath` to `/opt/pw-browsers/chromium-*/chrome-linux/chrome`.
+  Pixel baselines can differ by browser build, so CI's visual stage decides those.
