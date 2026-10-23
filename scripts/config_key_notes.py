@@ -482,6 +482,11 @@ KEY_NOTES: dict[str, str] = {
         "Max file changes the agent made that each session keeps (oldest first out); an evicted "
         "change stays in the transcript but can no longer be undone."
     ),
+    "gact.ledger_retention.subscriber_queue.max": (
+        "Events one live stream subscriber may have waiting before the server drops them; "
+        "after a drop the client is told and reloads the conversation, so raise it for "
+        "slow connections."
+    ),
     "gact.ledger_retention.session_recall_audit.max": (
         "Max entries kept in the in-memory session-recall audit ledger before FIFO eviction; raise "
         "for more past-session search audit history."

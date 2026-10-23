@@ -146,6 +146,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_SHARED_TOKENS_HARD` | `gact.ledger_retention.shared_tokens.hard` | int | `10000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_SHARED_TOKENS_MAX` | `gact.ledger_retention.shared_tokens.max` | int | `5000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_STREAM_FALLBACK_NOTES_MAX` | `gact.ledger_retention.stream_fallback_notes.max` | int | `32` | `src/clio_agent/gact/stream_fallbacks.py` |
+| `CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX` | `gact.ledger_retention.subscriber_queue.max` | int | `256` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_HARD` | `gact.ledger_retention.turn_attempts.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_TURN_ATTEMPTS_MAX` | `gact.ledger_retention.turn_attempts.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |

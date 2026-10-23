@@ -634,6 +634,12 @@ gact.ledger_retention.shared_tokens.max: 5000
 # very long sessions.
 gact.ledger_retention.stream_fallback_notes.max: 32
 
+# CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# Events one live stream subscriber may have waiting before the server drops
+# them; after a drop the client is told and reloads the conversation, so
+# raise it for slow connections.
+gact.ledger_retention.subscriber_queue.max: 256
+
 # CLIO_LEDGER_TURN_ATTEMPTS_HARD  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Absolute ceiling on the turn-attempts ledger; past this even a still-
 # pending attempt is force-evicted oldest-first.

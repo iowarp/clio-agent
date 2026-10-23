@@ -165,6 +165,17 @@ def _config_fallback(key: str, raw: Any, default: int, why: str) -> None:
     )
 
 
+def subscriber_queue_capacity() -> int:
+    """Events one live SSE subscriber may have waiting before the bus drops them.
+
+    A drop is never silent: the subscriber reads a ``stream.gap`` next and the
+    client reconciles from the transcript (``clio_agent.gact.events``).
+    """
+    return _resolve_positive_int(
+        "gact.ledger_retention.subscriber_queue.max", "CLIO_LEDGER_SUBSCRIBER_QUEUE_MAX", 256
+    )
+
+
 def _resolve_positive_int(key: str, env: str, default: int) -> int:
     """Resolve a positive-int retention bound (config file → env → default).
 
