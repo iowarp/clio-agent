@@ -505,10 +505,12 @@ def _price_table_match(model_id: str) -> Optional[tuple[float, float]]:
     if found is None:
         return None
     info = found[1]
-    prices = (info.get("input_cost_per_token"), info.get("output_cost_per_token"))
-    if not all(isinstance(p, int | float) and not isinstance(p, bool) for p in prices):
+    inp, out = info.get("input_cost_per_token"), info.get("output_cost_per_token")
+    if isinstance(inp, bool) or isinstance(out, bool):
         return None
-    return prices[0] * 1_000_000, prices[1] * 1_000_000
+    if not (isinstance(inp, int | float) and isinstance(out, int | float)):
+        return None
+    return inp * 1_000_000, out * 1_000_000
 
 
 def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:

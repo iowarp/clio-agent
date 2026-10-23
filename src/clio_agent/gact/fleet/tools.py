@@ -28,14 +28,13 @@ def _app() -> Any:
 
 
 def _price(entry: FleetEntry) -> str:
-    rows = [entry.price.get("input"), entry.price.get("output")]
-    if not all(isinstance(row, dict) for row in rows):
+    inp, out = entry.price.get("input"), entry.price.get("output")
+    if not (isinstance(inp, dict) and isinstance(out, dict)):
         return "price unknown"
-    kinds = {row.get("kind") for row in rows}
-    if kinds == {"subscription"}:
+    if {inp.get("kind"), out.get("kind")} == {"subscription"}:
         return "subscription"
-    if all(row.get("per_1m") is not None for row in rows):
-        return f"${rows[0]['per_1m']:g}/${rows[1]['per_1m']:g} per M in/out"
+    if inp.get("per_1m") is not None and out.get("per_1m") is not None:
+        return f"${inp['per_1m']:g}/${out['per_1m']:g} per M in/out"
     return "price varies"
 
 

@@ -35,7 +35,7 @@ CONSENT_KEY = "fleet_spending_consent"
 
 
 def _overrides() -> dict[str, bool]:
-    value = conf.resolve("fleet.delegation", env="CLIO_FLEET_DELEGATION", default={})
+    value: Any = conf.resolve("fleet.delegation", env="CLIO_FLEET_DELEGATION", default={})
     if not isinstance(value, dict):
         raise ValueError("fleet.delegation must map account ids to true or false")
     return {str(key): bool(allowed) for key, allowed in value.items()}

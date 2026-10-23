@@ -164,7 +164,8 @@ def codex_snapshot_from_event(account: str, event: Mapping[str, Any]) -> UsageSn
 
     if event.get("type") != "codex.rate_limits":
         return None
-    limits = event.get("rate_limits") if isinstance(event.get("rate_limits"), Mapping) else {}
+    raw_limits = event.get("rate_limits")
+    limits: Mapping[str, Any] = raw_limits if isinstance(raw_limits, Mapping) else {}
     windows = []
     for slot, fallback in (("primary", "Primary"), ("secondary", "Secondary")):
         row = limits.get(slot)
@@ -178,7 +179,8 @@ def codex_snapshot_from_event(account: str, event: Mapping[str, Any]) -> UsageSn
         )
         if window is not None:
             windows.append(window)
-    credits = event.get("credits") if isinstance(event.get("credits"), Mapping) else {}
+    raw_credits = event.get("credits")
+    credits: Mapping[str, Any] = raw_credits if isinstance(raw_credits, Mapping) else {}
     balance = _codex_balance(
         credits.get("has_credits"), credits.get("unlimited"), credits.get("balance")
     )

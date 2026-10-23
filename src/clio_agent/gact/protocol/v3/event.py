@@ -337,7 +337,7 @@ def _subagent_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pr
     if not summary and isinstance(result, Mapping):
         answer_excerpt = str(result.get("answer_excerpt") or "")
         summary = answer_excerpt
-    projected = {
+    projected: dict[str, Any] = {
         "id": entity_id,
         "session_id": str(payload.get("parent_session_id") or event.session_id),
         **(

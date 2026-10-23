@@ -51,7 +51,7 @@ def run_spend(app: "FastAPI", run_session: str) -> dict[str, Any]:
     # A model's share is of the tokens it read and wrote; cache reads repeat the
     # same prompt on every call and would drown the work itself.
     total = sum(spend.tokens_input + spend.tokens_output for spend in report.by_model.values())
-    models = sorted(
+    models: list[dict[str, Any]] = sorted(
         (
             {
                 "model": ref,

@@ -182,7 +182,7 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
         for group_index, group in enumerate(groups or []):
             if clio_event == "UserPromptExpansion":
                 # Its matcher names commands (``plugin:command``), not tools: kept as written.
-                pattern, unmapped = str(group.get("matcher") or "").strip(), []
+                pattern, unmapped = str(group.get("matcher") or "").strip(), list[str]()
             else:
                 pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
             if unmapped:

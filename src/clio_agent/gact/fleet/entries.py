@@ -116,7 +116,8 @@ def _price(model: dict[str, Any]) -> tuple[dict[str, Any], str]:
 def _entry(account: FleetAccount, model: dict[str, Any]) -> FleetEntry:
     capabilities = _capability_values(model)
     modalities = {str(item) for item in model.get("modalities") or []}
-    reasoning = model.get("reasoning") if isinstance(model.get("reasoning"), dict) else {}
+    raw_reasoning = model.get("reasoning")
+    reasoning: dict[str, Any] = raw_reasoning if isinstance(raw_reasoning, dict) else {}
     price, price_source = _price(model)
     availability = str(model.get("availability") or "")
     if account.health != "ready":
