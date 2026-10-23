@@ -480,6 +480,9 @@ def make_mcp_client(
     # Resolve once for SDK clients. Custom client adapters retain responsibility
     # for their own target interpretation. Extensions must hold the same transport
     # as the SDK, including its server-session identity, rather than a URL string.
+    # Importing fastmcp_tasks registers FastMCP's internal tasks client extension;
+    # without it the tasks ad depends on some other module having imported it (#1841).
+    import fastmcp_tasks  # noqa: F401, PLC0415
     from fastmcp import Client
     from fastmcp.client.transports import infer_transport
 
