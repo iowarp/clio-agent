@@ -299,3 +299,29 @@ def test_a_single_word_beside_calls_is_not_shown() -> None:
     assert _shown(streamed + closing) == ""
     calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
     assert [c.name for c in calls] == ["create_memory"]
+
+
+@pytest.mark.parametrize("size", [1, 4, 9, 400])
+def test_one_word_before_the_fence_is_not_shown(size: int) -> None:
+    """``_check_placeholder`` then the real block: the word is no preamble, the call runs."""
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "_check_placeholder\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    streamed: list[Any] = []
+    for index in range(0, len(reply), size):
+        streamed += push(turn, reply[index : index + size])
+    closing = turn.finish("word then fence")
+    assert _shown(streamed + closing) == ""
+    calls = [e.delta for e in closing if e.type == "delta" and e.delta.type == "tool_call"]
+    assert [c.name for c in calls] == ["create_memory"]
+
+
+def test_a_sentence_before_the_fence_is_still_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "I'll save that.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    assert _shown(push(turn, reply) + turn.finish("sentence")) == "I'll save that."
+
+
+def test_a_one_word_preamble_in_prose_is_still_shown() -> None:
+    turn = _Turn("haiku", available_tools=frozenset({"create_memory"}))
+    reply = "Looking.\n" + FENCE + '\n[{"name":"create_memory","arguments":{}}]\n```'
+    assert _shown(push(turn, reply) + turn.finish("prose word")) == "Looking."

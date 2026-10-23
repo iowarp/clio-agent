@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from collections.abc import AsyncGenerator, Iterator
@@ -57,6 +58,7 @@ from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
 from clio_agent.lm.engines.text_tools import (
+    FENCE,
     INVALID_TOOL_CALL,
     TURN_REMINDER,
     ReplySplit,
@@ -94,6 +96,9 @@ __all__ = ["AsyncClaudeCodeEngine", "ClaudeCodeEngine"]
 
 
 logger = logging.getLogger(__name__)
+#: A bare protocol-like word (``_tool_calls``, ``_check_placeholder``, ``_memory``): a
+#: snake_case identifier starting with an underscore. Never prose, never a preamble.
+_PROTOCOL_WORD = re.compile(r"_[a-z][a-z0-9_]*")
 
 
 def _capacity() -> int:
@@ -308,6 +313,8 @@ class _Turn:
         self.protocol_error: str | None = None
         self._progress = FormattingProgress(enabled=bool(available_tools))
         self._held = ""  # streamed text held back while it could still be non-progress
+        self.dropped_word = ""  # one word written before the fence, not shown
+        self._released = False  # whether any of this reply's text was released yet
 
     def handle(self, message: Any) -> list[Any]:
         if self.protocol_error:
@@ -339,8 +346,8 @@ class _Turn:
                 if self._progress.undecided:
                     self._held += text
                     return out
-                shown = self._splitter.push(self._held + text)
-                self._held = ""
+                release, self._held = self._without_word_preamble(self._held, text), ""
+                shown = self._splitter.push(release)
                 if shown:
                     out.append(StreamDeltaEvent(delta=TextDelta(text=shown, part_index=1)))
             return out
@@ -374,6 +381,17 @@ class _Turn:
         else:
             _audit_message("provider.message_unhandled", self.model, message)
         return []
+
+    def _without_word_preamble(self, held: str, text: str) -> str:
+        """Text released to the splitter; one word before the fence, as the reply's first
+        release, is not a preamble and is not shown."""
+        release, first, self._released = held + text, not self._released, True
+        fence_at = release.find(FENCE)
+        before = release[:fence_at].strip() if first and fence_at >= 0 else ""
+        if not _PROTOCOL_WORD.fullmatch(before):
+            return release
+        self.dropped_word = before
+        return release[fence_at:]
 
     def _note_usage(self, message: Any) -> None:
         if usage := _bridge.sdk_result_usage(message):
@@ -422,8 +440,10 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
-        if held and split.calls:
-            # A step's only text was one undecided word beside its calls (such as
+        if self.dropped_word and split.calls:
+            held = self.dropped_word  # logged below; it was never shown
+        if held and split.calls and _PROTOCOL_WORD.fullmatch(held.strip()):
+            # A step's only text was one protocol word beside its calls (such as
             # ``_tool_call_placeholder``): not a preamble, so it is not shown. On the record.
             logger.info(
                 "provider reply text dropped word reason=word_only_beside_calls "
