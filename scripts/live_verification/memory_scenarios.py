@@ -260,21 +260,23 @@ def concurrent(call: Call) -> None:
         t.join()
     codes = sorted(code for _, code, _ in results)
     loser = next((body for _, code, body in results if code == 409), {})
-    current = loser.get("error", {}).get("details", {}).get("current_sha", "")
-    retried = (
-        call(
-            "POST",
-            f"/v1/memory/documents/{doc['name']}/facts/{fact['id']}",
-            {"fact": fact["text"], "expected_sha": current},
-        )
-        if current
-        else {}
+    loser_text = next((text for text, code, _ in results if code == 409), "")
+    # A real retry re-reads: the winner superseded the fact, so correct its replacement.
+    fresh = call("GET", f"/v1/memory/documents/{doc['name']}")
+    replaced = next(f for f in fresh["facts"] if f["id"] == fact["id"])
+    current_id = replaced["superseded_by"] or fact["id"]
+    retried = call(
+        "POST",
+        f"/v1/memory/documents/{doc['name']}/facts/{current_id}",
+        {"fact": loser_text, "expected_sha": fresh["sha"]},
     )
+    versions = call("GET", f"/v1/memory/documents/{doc['name']}/versions")["versions"]
     evidence = {
         "document": doc["name"],
         "codes": codes,
         "loser_error": loser.get("error"),
         "retry_live_facts": [f["text"] for f in retried.get("facts", []) if f["live"]],
+        "history": [(v["n"], v["author"].get("kind"), v["at"]) for v in versions][-3:],
     }
     _save("m16_concurrent", evidence)
     print(json.dumps(evidence, indent=2))

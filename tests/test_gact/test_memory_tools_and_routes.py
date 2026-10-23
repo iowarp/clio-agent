@@ -166,7 +166,10 @@ def test_memory_off_withholds_the_tools_and_the_snapshot(client: TestClient) -> 
     assert session_snapshot(app, refreshed) is None
     tokens = _in_session(app, session.id)
     try:
-        assert withheld_memory_tools({"memory_search"}) == {"memory_search": "session_memory_off"}
+        assert withheld_memory_tools({"memory_search", "session_search"}) == {
+            "memory_search": "session_memory_off",
+            "session_search": "session_memory_off",
+        }
     finally:
         _leave(tokens)
     again = client.put(f"/v1/sessions/{session.id}/memory", json={"off": False})

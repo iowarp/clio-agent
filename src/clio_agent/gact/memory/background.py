@@ -368,9 +368,13 @@ def _collect(app: Any, session: Any) -> None:
 
 def memory_tick(app: Any, now: datetime | None = None) -> None:
     """One scheduler tick of the background pass (call off the event loop)."""
-    if not bool(setting("memory.background", True)):
-        return
     now = now or datetime.now(UTC)
+    if not bool(setting("memory.background", True)):
+        app.state.memory_background = {
+            "last_tick": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "off": True,  # "Generate memory from sessions" is off: no pass runs
+        }
+        return
     collected = started = 0
     skipped: dict[str, int] = {}
     for session in list(app.state.sessions.list()):

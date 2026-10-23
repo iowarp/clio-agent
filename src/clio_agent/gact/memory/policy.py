@@ -87,6 +87,10 @@ class MemoryPolicy:
     def withheld(self, tool: str) -> str:
         """Why ``tool`` is withheld from this session, or ``""``."""
         if tool in RECALL_TOOLS:
+            # A conversation started with memory off reads nothing from before it,
+            # past sessions included; otherwise their own switch decides.
+            if self.reason == "session_memory_off":
+                return self.reason
             return "" if self.session_search else "session_search_off"
         if tool not in MEMORY_TOOLS:
             return ""
