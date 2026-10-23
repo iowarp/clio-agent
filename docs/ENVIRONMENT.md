@@ -286,12 +286,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SSE_EVENT_LOG` | `debug.sse_event_log` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_SSE_WIRE_TAP` | `debug.sse_wire_tap` | str | _(unset)_ | `src/clio_agent/gact/routes/misc.py` |
 | `CLIO_STREAM_AUDIT_LOG` | `debug.stream_audit_log` | str | _(unset)_ | `src/clio_agent/runtime/stream_audit.py` |
-| `CLIO_SUMMARIZER_API_BASE` | `summarizer.api_base` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_CREDENTIAL_REF` | `summarizer.credential_ref` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_MAX_TOKENS` | `summarizer.max_tokens` | int | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_MODEL` | `summarizer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_PROVIDER` | `summarizer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TASKS_HEALTH_TIMEOUT_S` | `gact.tasks.health_timeout_s` | float | `10.0` | `src/clio_agent/tools/task_client.py` |
 | `CLIO_TASKS_SHELL_CONCURRENCY` | `gact.tasks.shell.concurrency` | int | `10` | `src/clio_agent/tools/native_roots.py` |
 | `CLIO_TASKS_SHELL_QUEUE` | `gact.tasks.shell.queue` | str | _(unset)_ | `src/clio_agent/tools/native_roots.py` |

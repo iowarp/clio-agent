@@ -13,7 +13,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "Language models + providers",
-        ("lm", "lm15", "providers", "summarizer"),
+        ("lm", "lm15", "providers"),
         "LM sampling/provider selection and the per-provider transport knobs (Claude Code, Codex).",
     ),
     (
@@ -778,12 +778,6 @@ KEY_NOTES: dict[str, str] = {
         "to human escalation; lower to fail fast."
     ),
     "permissions.ai_review_model": "Optional reviewer model override on the effective caller provider and endpoint.",
-    "summarizer.api_base": "Optional summary endpoint override; empty inherits the effective caller endpoint.",
-    "summarizer.credential_ref": "Optional summary credential reference resolved at each invocation.",
-    "summarizer.max_tokens": "Optional summary output cap; zero omits the client cap and empty inherits.",
-    "summarizer.model": "Optional summary model override; empty inherits the effective caller model.",
-    "summarizer.provider": "Optional summary provider override; changing it resolves provider-scoped defaults.",
-    "summarizer.transport": "Optional summary transport override for providers with selectable transports.",
     "provenance.agentic.flowcept.campaign_id": (
         "Free-text campaign label attached to every Flowcept provenance record; set to group runs "
         "under one campaign."
