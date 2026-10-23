@@ -413,8 +413,9 @@ source given special treatment:
 | `agents/*.md` | Defined subagents. `tools` map through the table below and add the providing plugin; an unmappable tool is the error `tool_unmapped` and the subagent is skipped. `model:` and `effort:` become preferences |
 | `commands/*.md` | Commands |
 
-Tool mapping: `Read` → `fs_read_file`, `Glob` → `fs_glob`, `Grep` → `fs_grep`
-(`workspace`); `Write` → `fs_write_file`, `Edit` and `MultiEdit` →
+Tool mapping: `Read` → `fs_read_file`, `Glob` → `fs_list_directory`, `Grep` →
+`fs_search_text` (`workspace`; both are partial matches, so each use is the warning
+`tool_mapped_lossy` naming what differs); `Write` → `fs_write_file`, `Edit` and `MultiEdit` →
 `fs_edit_file` (`workspace`); `Bash` → `shell_bash` (`shell`);
 `WebFetch` → `web_fetch`, `WebSearch` → `web_search` (`web`); `Task`, `Agent` →
 `spawn_agent_task` (`delegation`). Index files outside the Claude Code format

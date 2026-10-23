@@ -65,6 +65,19 @@ def test_the_edit_envelope_uses_claude_codes_edit_keys() -> None:
     }
 
 
+def test_the_search_envelope_uses_claude_codes_grep_keys() -> None:
+    envelope = HookEnvelope(
+        hook_event_name="PreToolUse",
+        session_id="sess_1",
+        cwd="/work",
+        tool_name="fs_search_text",
+        tool_input={"path": "/work", "query": "TODO", "file_glob": "*.py"},
+    )
+    body = claude_envelope(envelope)
+    assert body["tool_name"] == "Grep"
+    assert body["tool_input"] == {"path": "/work", "pattern": "TODO", "glob": "*.py"}
+
+
 def test_the_envelope_uses_claude_code_names_and_keys() -> None:
     body = claude_envelope(_envelope("/work/out/dataset-report.md"))
     assert body["tool_name"] == "Write"

@@ -61,6 +61,38 @@ it should not treat the first match as proof of the remembered decision.
 
 </Steps>
 
+### Search a discussion within a date range
+
+`scope="authorized"` searches across the sessions you can read, not just the
+current conversation. `kind="Session"` limits results to root assignments;
+include Subagents by omitting `kind` when searching message dates.
+
+For example, the agent can narrow the topic search to October 19 in Chicago:
+
+```python
+query_tasks(
+    scope="authorized",
+    query="catering contingency",
+    message_after="2026-10-19T00:00:00-05:00",
+    message_before="2026-10-20T00:00:00-05:00",
+)
+```
+
+Both timestamps are optional. The start is inclusive and the end is exclusive;
+each must include a timezone. The filters select **when retained messages were
+written**, so a recent discussion inside an older session can match. With a date
+filter, topic words must occur in the selected messages; an old description or
+title cannot make an unrelated recent discussion match. A date-only query finds
+readable Session/Subagent assignments with messages in the window.
+
+Results still identify finite assignments. Read their transcripts to verify the
+passages and group multiple assignments belonging to the same conversation.
+They retain assignment creation order, rather than relevance or discussion-date
+order. Follow each cursor with the same query and time bounds; changing them is
+an error. An empty or reversed date window is also an error.
+Time filters narrow lexical search; they do not add semantic similarity retrieval
+or grant access to another session.
+
 <details>
 <summary>Current task reads and retained compatibility names</summary>
 
@@ -68,8 +100,8 @@ it should not treat the first match as proof of the remembered decision.
   returns handles usable by the shared controls. Search is lexical: all supplied
   search terms must occur in an assignment's searchable text. It is not semantic
   similarity retrieval. The agent can broaden a query or try alternate wording.
-  There is no date-range argument; relative dates must be checked against the
-  returned timestamps and messages.
+  Optional `message_after` and `message_before` narrow the retained conversation
+  messages being searched. Omit them to retain description and title matching.
 - **Observe transcript, summary or artifacts** reads original typed transcript
   rows, recorded summaries/outcomes with coverage, or linked deliverables. Follow
   returned cursors; a recorded summary is not a new whole-session summary.

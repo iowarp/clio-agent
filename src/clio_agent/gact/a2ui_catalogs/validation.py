@@ -159,6 +159,14 @@ def validate_components(entry: "CatalogEntry", components: Any, *, max_component
             raise A2UIValidationError(
                 f"component={name} id={comp_id} pointer={pointer}: {failure.message}"
             )
+        if name == "Tabs" and isinstance(component.get("activeTab"), str):
+            child_ids = [tab["child"] for tab in component["tabs"]]
+            if component["activeTab"] not in child_ids:
+                raise A2UIValidationError(
+                    f"Tabs {component.get('id')!r}: activeTab must equal a tabs[].child id "
+                    f"from {child_ids!r}, not the nested diagram id or tab title. "
+                    "Bind activeTab to a data-model path when agent review must switch tabs."
+                )
 
 
 #: One compiled ``Draft202012Validator`` per distinct ``context_schema`` body,

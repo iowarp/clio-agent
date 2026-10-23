@@ -481,7 +481,7 @@ def test_raise_alert_card_reaches_every_resolved_agent_through_core(
     resolution = service.resolve("clio/curated", pin=False)
     if subagent:
         resolution = service.resolve_subagent(resolution, "reader", pin=False)
-        assert "fs_glob" not in {row["name"] for row in resolution.tools}
+        assert "fs_search_text" not in {row["name"] for row in resolution.tools}
 
     module = build_agent_module(
         SimpleNamespace(tool_executor=_fs_tool_executor()),

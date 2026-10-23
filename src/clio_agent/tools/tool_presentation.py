@@ -343,6 +343,108 @@ def _read(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]
     }
 
 
+def _inspection_start(args: Mapping[str, Any]) -> dict[str, Any]:
+    path = str(args.get("path") or "")
+    return {
+        "subject": "path",
+        "summary": str(args.get("query") or ""),
+        "blocks": [{"id": "path", "type": "link", "target": "file", "uri": path, "label": path}],
+    }
+
+
+def _directory(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
+    del snapshot
+    row = _structured(result)
+    entries = row.get("entries")
+    if not isinstance(entries, list):
+        return standard_mcp_presentation(result)
+    view = _inspection_start({"path": row.get("path") or args.get("path")})
+    view["summary"] = f"{len(entries)} entries" + (
+        " · partial listing" if row.get("truncated") else ""
+    )
+    view["blocks"].extend(
+        {
+            "id": f"entry-{i}",
+            "type": "link",
+            "target": "file",
+            "uri": str(entry.get("path") or ""),
+            "label": str(entry.get("name") or ""),
+            "detail": str(entry.get("type") or ""),
+        }
+        for i, entry in enumerate(entries)
+        if isinstance(entry, Mapping)
+    )
+    if row.get("truncated"):
+        view["blocks"].append(
+            {
+                "id": "incomplete",
+                "type": "text",
+                "severity": "warning",
+                "text": "The entry limit was reached; this listing is incomplete.",
+            }
+        )
+    return view
+
+
+def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
+    del snapshot
+    row = _structured(result)
+    matches = row.get("matches")
+    if not isinstance(matches, list):
+        return standard_mcp_presentation(result)
+    view = _inspection_start({"path": row.get("path") or args.get("path")})
+    count = len(matches)
+    files = row.get("files_scanned", 0)
+    view["summary"] = (
+        f"{count} {'match' if count == 1 else 'matches'} · "
+        f"{files} {'file' if files == 1 else 'files'} searched"
+    )
+    view["blocks"].append(
+        {
+            "id": "query",
+            "type": "text",
+            "label": "Search text",
+            "text": str(row.get("query") or args.get("query") or ""),
+        }
+    )
+    for i, match in enumerate(matches):
+        if not isinstance(match, Mapping):
+            continue
+        context = match.get("context")
+        text = (
+            "\n".join(
+                f"{line.get('line')}: {line.get('text', '')}"
+                for line in context
+                if isinstance(line, Mapping)
+            )
+            if isinstance(context, list)
+            else str(match.get("text") or "")
+        )
+        view["blocks"].extend(
+            [
+                {
+                    "id": f"match-{i}",
+                    "type": "link",
+                    "target": "file",
+                    "uri": str(match.get("path") or ""),
+                    "label": f"{match.get('path', '')}:{match.get('line', '')}",
+                },
+                {"id": f"context-{i}", "type": "code", "language": "text", "text": text},
+            ]
+        )
+    if row.get("truncated") or row.get("skipped"):
+        view["blocks"].append(
+            {
+                "id": "coverage",
+                "type": "text",
+                "severity": "warning",
+                "text": f"Incomplete coverage: {row.get('stop_reason') or 'files skipped or only partly read'}. "
+                f"{row.get('skipped', 0)} entries skipped; {len(row.get('incomplete_files') or [])} files partly read.",
+            }
+        )
+    return view
+
+
 def _diff(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
     row = _structured(result)
     diff = str(row.get("unified_diff") or "")
@@ -400,31 +502,6 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
             },
             *saved_output_blocks(row),
         ],
-    }
-
-
-def _search(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
-    """``fs_glob`` paths or ``fs_grep`` matching lines, one row per hit."""
-
-    del snapshot
-    row = _structured(result)
-    if "paths" in row:
-        hits = [str(path) for path in row.get("paths") or []]
-        noun = "file"
-    elif "matches" in row:
-        hits = [
-            f"{match.get('path')}:{match.get('line')}: {match.get('text')}"
-            for match in row.get("matches") or []
-            if isinstance(match, Mapping)
-        ]
-        noun = "match"
-    else:
-        return standard_mcp_presentation(result)
-    count = f"{len(hits)} {noun}{'' if len(hits) == 1 else 'es' if noun == 'match' else 's'}"
-    more = " (more not shown)" if row.get("truncated") else ""
-    return {
-        "summary": f"{count} for {args.get('pattern', row.get('pattern', ''))}{more}",
-        "blocks": [{"id": "hits", "type": "text", "text": "\n".join(hits) or "No matches."}],
     }
 
 
@@ -539,6 +616,16 @@ def _web(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, Any]:
 
 
 register_presentation_adapter(
+    "fs_list_directory",
+    PresentationAdapter(
+        _directory, start=_inspection_start, action="List directory", subject="path"
+    ),
+)
+register_presentation_adapter(
+    "fs_search_text",
+    PresentationAdapter(_search, start=_inspection_start, action="Search text", subject="path"),
+)
+register_presentation_adapter(
     "fs_read_file",
     PresentationAdapter(_read, start=_file_start, action="Read", subject="file-link"),
 )
@@ -549,8 +636,6 @@ for _name, _action in (("fs_write_file", "Write"), ("fs_edit_file", "Edit")):
             _diff, _capture_write, start=_file_start, action=_action, subject="file-link"
         ),
     )
-register_presentation_adapter("fs_glob", PresentationAdapter(_search, action="Find files"))
-register_presentation_adapter("fs_grep", PresentationAdapter(_search, action="Search files"))
 register_presentation_adapter(
     "shell_bash",
     PresentationAdapter(_terminal, start=lambda args: _terminal(args, {}, None), action="Run"),

@@ -233,7 +233,7 @@ async def test_public_fastmcp_fanout_keeps_failed_positions(
                             "task": "Invalid evidence",
                             "input_task_ids": ["missing"],
                         },
-                        {"agent": "", "task": "No target agent"},  # agent is required
+                        {"agent": "", "task": "No target agent"},
                     ]
                 },
                 contextvars.copy_context(),

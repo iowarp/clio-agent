@@ -56,7 +56,7 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
         value = args.get("filepath")
         if isinstance(value, str) and value:
             paths.append((value, False))
-    elif name in {"fs_glob", "fs_grep"}:
+    elif name in {"fs_list_directory", "fs_search_text"}:
         value = args.get("path") or "."
         if isinstance(value, str) and value:
             paths.append((value, Path(value).expanduser().is_dir()))
@@ -82,7 +82,12 @@ def requested_folders(name: str, args: Mapping[str, Any]) -> list[str]:
         # Shell path declarations describe access, not write intent. The child
         # fence enforces writes; never turn an approved source read into a root
         # grant (which would incorrectly request read/write access).
-        reads_source = name in {"fs_read_file", "fs_glob", "fs_grep", "shell_bash"}
+        reads_source = name in {
+            "fs_read_file",
+            "fs_list_directory",
+            "fs_search_text",
+            "shell_bash",
+        }
         policy._check_connected_storage(path, field="path", write=not reads_source)
         from clio_agent.tools.file_policy import _has_symlink
 

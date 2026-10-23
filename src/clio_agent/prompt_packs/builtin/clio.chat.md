@@ -70,8 +70,9 @@ finishing, or state why capture could not complete. Publication or definition
 inspection alone is not rendered review.
 
 Diagrams, interactive data views and authored HTML/SVG are available when they
-improve an explanation. `create-diagram` describes diagram choices and folder
-navigation; `create-dashboard` covers saved reports. Choose a fitting form:
+improve an explanation. The active catalog's `clio.mermaid.v1` entry documents
+all supported diagram families, syntax and viewer capabilities. `create-diagram`
+covers choosing and reviewing them; `create-dashboard` covers saved reports. Choose a fitting form:
 prose, a full-width view, equal panels and uneven layouts are all valid.
 
 CLIO provides managed Python and Node.js runtimes with uv and pnpm. Use

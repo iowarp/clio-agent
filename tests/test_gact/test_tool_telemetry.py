@@ -770,6 +770,49 @@ def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path
         assert tool_results[0]["metadata"]["result"] == expected_result
 
 
+def test_repeated_capture_arguments_keep_each_observer_identity_and_image() -> None:
+    """Pair ID-less wrapper rows with each invocation once, never the first image twice."""
+    args = {"surface_id": "report", "expected_view_revision": None}
+    rows = _merge_tool_call_rows(
+        [
+            {
+                "name": "capture_a2ui_surface",
+                "args": args,
+                "ok": True,
+                "result": {"sha256": image},
+                "telemetry_source": "agent_react_tool_wrapper",
+            }
+            for image in ("first", "second")
+        ],
+        [
+            {
+                "name": "capture_a2ui_surface",
+                "args": args,
+                "call_id": call_id,
+                "ok": True,
+                "result": {"sha256": image},
+                "telemetry_source": "live_observer",
+            }
+            for call_id, image in (("call_first", "first"), ("call_second", "second"))
+        ],
+    )
+    assert [(row["call_id"], row["result"]["sha256"]) for row in rows] == [
+        ("call_first", "first"),
+        ("call_second", "second"),
+    ]
+
+
+def test_distinct_known_tool_invocations_never_merge_by_arguments() -> None:
+    rows = _merge_tool_call_rows(
+        [{"name": "inspect", "call_id": "first", "args": {"id": "same"}, "result": "old"}],
+        [{"name": "inspect", "call_id": "second", "args": {"id": "same"}, "result": "new"}],
+    )
+    assert [(row["call_id"], row["result"]) for row in rows] == [
+        ("first", "old"),
+        ("second", "new"),
+    ]
+
+
 def test_tool_call_merge_does_not_attach_success_result_to_failed_attempt() -> None:
     rows = _merge_tool_call_rows(
         [

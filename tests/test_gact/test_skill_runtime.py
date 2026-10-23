@@ -1026,6 +1026,31 @@ def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Pa
     assert "common_types.json#/$defs/Action" in out
 
 
+def test_mermaid_component_lookup_returns_its_authoring_guide_in_the_same_call(
+    tmp_path: Path,
+) -> None:
+    """Syntax guidance reaches the model without loading a second skill/manual."""
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="diagram")
+    bind_builtin_catalogs(app, session.id)
+    # The session's agent carries the clio-workspace catalog through the core plugin.
+    root = session_agent_def(app, session.id)
+    runtime = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, runtime)
+    loaded = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        file="catalog.json#/components/clio.mermaid.v1",
+    )
+    decoded, _ = json.JSONDecoder().raw_decode(loaded)
+    _, catalog = load_builtin_catalogs()
+    assert (
+        decoded["x-clio-authoring"]
+        == catalog.file["components"]["clio.mermaid.v1"]["x-clio-authoring"]
+    )
+
+
 def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     tmp_path: Path,
 ) -> None:

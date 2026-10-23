@@ -437,6 +437,7 @@ def test_idle_parent_with_failed_child_cannot_pass_the_memory_load(
 ) -> None:
     """An unavailable MCP expert is a failed workload, even after its parent becomes idle."""
     session = MagicMock()
+    session.post.return_value.json.return_value = {"message_id": "turn-0"}
     session.get.return_value.json.side_effect = [
         {"status": "idle"},
         {"tasks": [{"status": task_status, "error_reason": "custom_agent_tools_unavailable"}]},
@@ -451,11 +452,21 @@ def test_idle_parent_with_failed_child_cannot_pass_the_memory_load(
 def test_idle_parent_waits_for_real_child_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     """Yielding to accepted background work cannot finish the gate early."""
     session = MagicMock()
+    session.post.return_value.json.return_value = {"message_id": "turn-0"}
     session.get.return_value.json.side_effect = [
         {"status": "idle"},
         {"tasks": [{"status": "running"}]},
         {"status": "idle"},
         {"tasks": [{"status": "completed"}]},
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "turn_id": "turn-0",
+                    "parts": [{"type": "text", "text": "The CSV has missing observations."}],
+                }
+            ]
+        },
     ]
     monkeypatch.setattr(_mod.requests, "Session", lambda: session)
     sleep = MagicMock()
@@ -463,4 +474,44 @@ def test_idle_parent_waits_for_real_child_completion(monkeypatch: pytest.MonkeyP
     out: dict[int, str] = {}
     _mod.drive_session("http://gate", "session-0", "Read the CSV", out, 0)
     assert out[0] == "idle"
+    sleep.assert_called_once_with(10)
+
+
+def test_memory_load_rejects_a_different_accepted_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cheaper or fallback provider cannot qualify the prescribed memory load."""
+    session = MagicMock()
+    session.post.return_value.json.return_value = {
+        "message_id": "turn-0",
+        "effective_model": {"provider_id": "codex", "model_id": "other"},
+    }
+    monkeypatch.setattr(_mod.requests, "Session", lambda: session)
+    out: dict[int, str] = {}
+    model = {"provider_id": "claude_code", "model_id": "haiku"}
+    _mod.drive_session("http://gate", "session-0", "Read the CSV", out, 0, model)
+    assert "differs from requested" in out[0]
+    assert session.post.call_args.kwargs["json"]["model"] == model
+    session.get.assert_not_called()
+
+
+def test_idle_session_without_the_submitted_turn_cannot_pass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An idle snapshot before execution, or an older reply, is not completed work."""
+    session = MagicMock()
+    session.post.return_value.json.return_value = {"message_id": "turn-0"}
+    response = {"role": "assistant", "parts": [{"type": "text", "text": "Analysis complete"}]}
+    session.get.return_value.json.side_effect = [
+        {"status": "idle"},
+        {"tasks": []},
+        {"messages": [{**response, "turn_id": "older-turn"}]},
+        {"status": "idle"},
+        {"tasks": []},
+        {"messages": [{**response, "turn_id": "turn-0"}]},
+    ]
+    monkeypatch.setattr(_mod.requests, "Session", lambda: session)
+    sleep = MagicMock()
+    monkeypatch.setattr(_mod.time, "sleep", sleep)
+    out: dict[int, str] = {}
+    _mod.drive_session("http://gate", "session-0", "Read the CSV", out, 0)
+    assert out == {0: "idle"}
     sleep.assert_called_once_with(10)

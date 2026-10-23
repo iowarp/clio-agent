@@ -16,9 +16,9 @@ _FILE_WRITE_ANNOTATIONS: dict[str, Any] = {
 #: :mod:`clio_agent.tools.catalog` projects the read/write tags from the SAME
 #: mapping the decorators declare — one declaration, two consumers.
 FS_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {
+    "fs_list_directory": _READ_FILE_ANNOTATIONS,
+    "fs_search_text": _READ_FILE_ANNOTATIONS,
     "fs_read_file": _READ_FILE_ANNOTATIONS,
-    "fs_glob": _READ_FILE_ANNOTATIONS,
-    "fs_grep": _READ_FILE_ANNOTATIONS,
     "fs_write_file": _FILE_WRITE_ANNOTATIONS,
     "fs_edit_file": _FILE_WRITE_ANNOTATIONS,
 }

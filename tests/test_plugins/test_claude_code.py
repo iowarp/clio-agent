@@ -92,11 +92,31 @@ def test_agents_map_tools_and_model_preference(tmp_path: Path) -> None:
     )
     record = import_claude_plugin(root)
     [reviewer] = record.subagents
-    assert reviewer.tools == ("fs_read_file", "fs_glob", "fs_grep")
+    assert reviewer.tools == ("fs_read_file", "fs_list_directory", "fs_search_text")
     assert reviewer.plugins == ("clio-agents", "workspace")
     assert reviewer.prefers == {"model": "claude-sonnet-5"}
     [error] = record.errors
     assert error.code == "tool_unmapped" and "NotebookEdit" in error.message
+    # Glob and Grep map onto CLIO's bounded inspection tools, which do not carry their
+    # full behavior: the import says so with a typed warning, never silently.
+    [lossy] = [d for d in record.diagnostics if d.code == "tool_mapped_lossy"]
+    assert lossy.severity == "warning" and "reviewer" in lossy.message
+    assert "Glob" in lossy.message and "Grep" in lossy.message
+
+
+def test_lossy_hook_matcher_is_reported(tmp_path: Path) -> None:
+    hooks = {
+        "hooks": {
+            "PreToolUse": [{"matcher": "Grep", "hooks": [{"type": "command", "command": "true"}]}]
+        }
+    }
+    root = _claude_plugin(
+        tmp_path, "search-guard", {"version": "1.0.0"}, {"hooks/hooks.json": json.dumps(hooks)}
+    )
+    record = import_claude_plugin(root)
+    [hook] = record.hooks
+    assert hook.tools == "fs_search_text"
+    assert [d.code for d in record.diagnostics] == ["tool_mapped_lossy"]
 
 
 def test_matcher_mapping() -> None:

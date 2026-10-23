@@ -34,7 +34,7 @@ Installs `clio-agent` from PyPI + the `clio-tui` binary + the `clio` launcher. W
 To opt into CLIO v0.9.5-beta.8, pin the backend explicitly:
 
 ```sh
-uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.5b8
+uv tool install --python 3.14 --with dspy==3.4.0 --with fastmcp==4.1.0 --with fastmcp-tasks==4.1.0 --with mcp==2.0.0 clio-agent==0.9.5b8
 ```
 
 Use `CLIO_VERSION=v0.9.5-beta.8` with the complete installer when you also want

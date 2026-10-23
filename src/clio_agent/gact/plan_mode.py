@@ -185,7 +185,7 @@ def plan_file_exists(session: Any) -> bool:
     return path is not None and Path(path).exists()
 
 
-def plan_mode_reminder(app: "FastAPI", sid: str, session: Any) -> str:
+def plan_mode_reminder(app: "FastAPI", sid: str, session: Any, *, force_full: bool = False) -> str:
     """The plan-mode reminder as this turn's CLIO addition when the session is in plan mode.
 
     Empty for every non-plan mode (edit/architect) — the addition is scoped to ``plan`` for
@@ -196,6 +196,8 @@ def plan_mode_reminder(app: "FastAPI", sid: str, session: Any) -> str:
     a one-line marker is injected on every turn in between. Because it rides the per-turn input
     (not the system prompt), it survives compaction
     without invalidating the KV-cache prefix — the fix for "plan mode lost after compaction".
+    ``force_full`` supplies the same contract when a skill enters or changes the
+    planning posture during an already-running turn.
     """
 
     mode = str(getattr(session, "mode", "") or "")
@@ -246,7 +248,7 @@ def plan_mode_reminder(app: "FastAPI", sid: str, session: Any) -> str:
 
     compacted_since_full = compactions > last_full_compactions
     window_elapsed = (turn_index - last_full) >= guidance.full_interval
-    full = first_time or compacted_since_full or window_elapsed
+    full = force_full or first_time or compacted_since_full or window_elapsed
 
     metadata_patch[_PLAN_REMINDER_STATE_KEY] = {
         "turn_index": turn_index,

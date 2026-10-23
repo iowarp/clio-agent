@@ -40,8 +40,8 @@ Usage::
     python scripts/check_bundle_matches_lock.py --python <path/to/python>
     python scripts/check_bundle_matches_lock.py --resolve
 
-The script needs only the standard library and ``uv`` on PATH, so it runs with
-the bundled interpreter itself.
+Runtime validation uses the runtime's declared ``packaging`` dependency to evaluate
+markers for the interpreter being checked. ``--resolve`` needs only stdlib and ``uv``.
 """
 
 from __future__ import annotations
@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -94,7 +95,7 @@ INTERPRETER_SEEDED = frozenset({"pip"})
 #: The ONLY user-updatable components: provider components a runtime updates in place,
 #: past the lock, from the provider panel. MUST equal
 #: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
-#: test enforces this; this script is stdlib-only and cannot import it).
+#: test enforces this; release checks must not import the CLIO application).
 USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex-cli-bin", "claude-agent-sdk"})
 
 _RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
@@ -109,25 +110,79 @@ def normalize(name: str) -> str:
     return name.lower().replace("_", "-").replace(".", "-")
 
 
-def load_lock_versions(lock_path: Path) -> dict[str, str]:
-    """Return ``{normalized_package_name: version}`` from a ``uv.lock`` file.
+def load_lock_versions(
+    lock_path: Path, environment: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Return the lock versions applicable to the supplied interpreter environment.
 
     Raises:
         FileNotFoundError: If ``lock_path`` does not exist.
-        ValueError: If the file has no ``[[package]]`` entries (malformed lock).
+        ValueError: If the lock is empty or selects conflicting versions of a package.
     """
+    from packaging.markers import Marker, default_environment
+
     data = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     packages = data.get("package", [])
     if not packages:
         raise ValueError(f"{lock_path} has no [[package]] entries -- malformed lock")
     versions: dict[str, str] = {}
+    markers = (
+        dict(environment)
+        if environment is not None
+        else {key: str(value) for key, value in default_environment().items()}
+    )
     for entry in packages:
         name = entry.get("name")
         version = entry.get("version")
         if not name or not version:
             continue  # a workspace member without a resolved version (e.g. path source)
-        versions[normalize(name)] = version
+        conditions = entry.get("resolution-markers", [])
+        if conditions and not any(Marker(condition).evaluate(markers) for condition in conditions):
+            continue
+        normalized = normalize(name)
+        previous = versions.get(normalized)
+        if previous is not None and previous != version:
+            raise ValueError(
+                f"{lock_path} selects both {previous} and {version} for {normalized} "
+                "in the runtime's marker environment"
+            )
+        versions[normalized] = version
     return versions
+
+
+def load_runtime_markers(python: Path) -> dict[str, str]:
+    """Read PEP 508 markers from the actual bundled interpreter, not the build host."""
+    try:
+        probe = subprocess.run(  # noqa: S603 - trusted runtime, fixed probe, no shell
+            [
+                str(python),
+                "-I",
+                "-c",
+                "import json; from packaging.markers import default_environment; "
+                "print(json.dumps(default_environment()))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"Bundled marker probe failed: {error}") from error
+    if probe.returncode:
+        raise RuntimeError(f"Bundled marker probe failed: {probe.stderr.strip()}")
+    try:
+        markers = json.loads(probe.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Bundled marker probe returned invalid JSON") from error
+    if (
+        not isinstance(markers, dict)
+        or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in markers.items()
+        )
+        or not {"python_full_version", "sys_platform", "platform_machine"} <= markers.keys()
+    ):
+        raise RuntimeError("Bundled marker probe returned an invalid marker environment")
+    return markers
 
 
 def _run_uv(args: list[str], env: dict[str, str] | None = None) -> str:
@@ -243,7 +298,7 @@ def find_drift(
 def verify_runtime(python: Path, lock: Path, project: Path) -> int:
     """Check a built runtime against the lock; return a process exit code."""
     verify_product_release(python, project)
-    locked = load_lock_versions(lock)
+    locked = load_lock_versions(lock, load_runtime_markers(python))
     scope = load_bundle_scope(project, BUNDLE_EXTRAS)
     installed = load_installed_versions(python)
 
@@ -407,7 +462,7 @@ def main() -> int:
             print(f"check_bundle_matches_lock: python not found at {args.python}", file=sys.stderr)
             return 1
         return verify_runtime(args.python, lock, args.project)
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"check_bundle_matches_lock: {exc}", file=sys.stderr)
         return 1
 

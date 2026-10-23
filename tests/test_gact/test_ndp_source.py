@@ -26,7 +26,7 @@ from clio_agent.gact.storage.service import StorageService
 
 @pytest.fixture
 def catalog_http(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[str, list[str]]]:
-    """A protocol fixture speaks to the real clio-kit NDPClient over TCP."""
+    """A protocol fixture speaks to the real NDP discovery client over TCP."""
     requests: list[str] = []
 
     class Handler(BaseHTTPRequestHandler):

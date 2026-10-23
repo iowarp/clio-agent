@@ -16,6 +16,55 @@ import pytest
 from scripts import smoke_desktop_package as smoke
 
 
+@pytest.mark.parametrize("seconds", [None, 1200])
+def test_cli_keeps_warm_deadline_and_accepts_explicit_cold_setup_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: int | None
+) -> None:
+    desktop = tmp_path / "desktop"
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = {"status": "passed"}
+    launch = Mock(return_value=result)
+    monkeypatch.setattr(smoke, "smoke", launch)
+    args = ["smoke_desktop_package.py", str(desktop), "--evidence-dir", str(evidence)]
+    if seconds is not None:
+        args.extend(["--timeout", str(seconds)])
+    monkeypatch.setattr(sys, "argv", args)
+
+    smoke.main()
+
+    launch.assert_called_once_with(
+        desktop, evidence.resolve(), timeout=seconds or 180, boot_log=None, agent_home=None
+    )
+    assert json.loads((evidence / "receipt.json").read_text()) == result
+
+
+@pytest.mark.parametrize("seconds", [0, -1])
+def test_cli_rejects_nonpositive_deadline_before_launching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds: int
+) -> None:
+    launch = Mock()
+    monkeypatch.setattr(smoke, "smoke", launch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "smoke_desktop_package.py",
+            str(tmp_path / "desktop"),
+            "--evidence-dir",
+            str(tmp_path / "evidence"),
+            "--timeout",
+            str(seconds),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as error:
+        smoke.main()
+
+    assert error.value.code == 2
+    launch.assert_not_called()
+
+
 def backend(tmp_path: Path) -> Mock:
     """Describe an owned test descendant with a real on-disk runtime manifest."""
     runtime = tmp_path / "runtime"

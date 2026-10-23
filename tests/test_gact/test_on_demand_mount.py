@@ -200,7 +200,7 @@ class TestOnDemandMount:
             "clio_agent.tools.mcp_discovery.ensure_namespace",
             lambda ns, spec: {
                 "fs_read_file": _FakeTool("fs_read_file"),
-                "fs_glob": _FakeTool("fs_glob"),
+                "fs_list_directory": _FakeTool("fs_list_directory"),
             },
         )
 

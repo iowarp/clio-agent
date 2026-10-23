@@ -196,7 +196,7 @@ def _builtin_entry(
 # ``gateway.build_tool_catalog`` from connected namespaces + expert ``tools:``.
 # Read/write tags are PROJECTIONS of the declared annotations (see _builtin_entry):
 #   shell_bash -> effectful (openWorld) -> no read/write tag;
-#   fs_read_file / fs_glob / fs_grep -> readOnlyHint -> "read";
+#   fs_read_file / fs_list_directory / fs_search_text -> readOnlyHint -> "read";
 #   fs_write_file / fs_edit_file -> destructive, closed-world -> "write".
 TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "shell_bash": _builtin_entry(
@@ -215,11 +215,11 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "fs_read_file": _builtin_entry(
         "fs_read_file", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
-    "fs_glob": _builtin_entry(
-        "fs_glob", "workspace", {"workspace", "search"}, domain="workspace", planner_visible=False
+    "fs_list_directory": _builtin_entry(
+        "fs_list_directory", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
-    "fs_grep": _builtin_entry(
-        "fs_grep", "workspace", {"workspace", "search"}, domain="workspace", planner_visible=False
+    "fs_search_text": _builtin_entry(
+        "fs_search_text", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
 }
 

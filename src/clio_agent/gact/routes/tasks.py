@@ -181,6 +181,8 @@ def register_task_routes(app: FastAPI) -> None:
         agent: str | None = None,
         active_only: bool = False,
         query: str | None = None,
+        message_after: str | None = None,
+        message_before: str | None = None,
     ) -> dict[str, Any]:
         try:
             return await run_off_loop(
@@ -196,6 +198,8 @@ def register_task_routes(app: FastAPI) -> None:
                 agent=agent,
                 active_only=active_only,
                 query=query,
+                message_after=message_after,
+                message_before=message_before,
             )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
@@ -206,10 +210,21 @@ def register_task_routes(app: FastAPI) -> None:
         active_only: bool = False,
         cursor: str | None = None,
         limit: int = 50,
+        query: str | None = None,
+        message_after: str | None = None,
+        message_before: str | None = None,
     ) -> dict[str, Any]:
         """Page the authenticated human's indexed work across sessions without joins."""
         return await tasks(
-            "", kind=kind, active_only=active_only, cursor=cursor, limit=limit, scope="authorized"
+            "",
+            kind=kind,
+            active_only=active_only,
+            cursor=cursor,
+            limit=limit,
+            scope="authorized",
+            query=query,
+            message_after=message_after,
+            message_before=message_before,
         )
 
     @app.post("/v1/sessions/{sid}/tasks/observe")

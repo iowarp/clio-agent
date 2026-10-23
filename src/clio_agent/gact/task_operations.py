@@ -10,6 +10,7 @@ import math
 import re
 from bisect import bisect_right
 from collections.abc import Awaitable, Callable, Iterator, Sequence
+from datetime import datetime
 from heapq import merge
 from itertools import islice
 from typing import Any, get_args
@@ -104,6 +105,8 @@ class TaskOperations:
         limit: int = 50,
         scope: str = "tree",
         query: str | None = None,
+        message_after: str | None = None,
+        message_before: str | None = None,
     ) -> dict[str, Any]:
         """Return authorized filtered snapshots; pages never disclose hidden counts."""
         if limit < 1:
@@ -112,6 +115,12 @@ class TaskOperations:
         query = query.strip() or None if query is not None else None
         if query is not None and scope == "authorized" and not caller.human_action:
             self._check_past_session_search(caller)
+        start = end = None
+        if message_after is not None or message_before is not None:
+            from clio_agent.gact.task_transcripts import message_search_window
+
+            start, end = message_search_window(message_after, message_before)
+        content_filter = query is not None or start is not None or end is not None
         filters = {
             "kind": kind,
             "status": status,
@@ -125,6 +134,11 @@ class TaskOperations:
             "human": caller.human_id,
             "human_action": caller.human_action,
         }
+        if start is not None or end is not None:
+            filters.update(
+                message_after=start.isoformat() if start is not None else None,
+                message_before=end.isoformat() if end is not None else None,
+            )
         signature = hashlib.sha256(json.dumps(filters, sort_keys=True).encode()).hexdigest()
         position = _decode(cursor)
         if position and position.get("filter") != signature:
@@ -152,7 +166,7 @@ class TaskOperations:
                 and status is None
                 and tool is None
                 and agent is None
-                and query is None
+                and not content_filter
                 else None
             )
             if handle is not None:
@@ -195,7 +209,12 @@ class TaskOperations:
                     and current.owner.assignment_id != agent
                 )
                 or (active_only and current.terminal_at is not None)
-                or (query is not None and not self._matches_text(caller, current, query))
+                or (
+                    content_filter
+                    and not self._matches_text(
+                        caller, current, query, message_after=start, message_before=end
+                    )
+                )
             ):
                 matched = False
             else:
@@ -215,7 +234,7 @@ class TaskOperations:
             total = 0
         access = TaskAccess(self.history, caller)
         for task in page:
-            if not ({"read"} if query is not None else {"read", "observe"}).intersection(
+            if not ({"read"} if content_filter else {"read", "observe"}).intersection(
                 access.rights(task)
             ):
                 raise TaskAccessDenied("Task query visibility changed; restart the query")
@@ -245,13 +264,28 @@ class TaskOperations:
         if reason := past_session_search_reason(self.app, caller.session_id):
             raise PastSessionSearchWithheld(reason)
 
-    def _matches_text(self, caller: TaskCaller, task: TaskSnapshot, query: str) -> bool:
+    def _matches_text(
+        self,
+        caller: TaskCaller,
+        task: TaskSnapshot,
+        query: str | None,
+        *,
+        message_after: datetime | None = None,
+        message_before: datetime | None = None,
+    ) -> bool:
         """Search only readable task content through the existing conversation source."""
         if self.app is None or "read" not in TaskAccess(self.history, caller).rights(task):
             return False
         from clio_agent.gact.task_transcripts import matches_task_text
 
-        return matches_task_text(self.app, caller, task, query)
+        return matches_task_text(
+            self.app,
+            caller,
+            task,
+            query,
+            message_after=message_after,
+            message_before=message_before,
+        )
 
     def result(self, caller: TaskCaller, handle: str, cursor: str | None = None) -> dict[str, Any]:
         """Read immutable result content outside the writer lock, then recheck disclosure."""

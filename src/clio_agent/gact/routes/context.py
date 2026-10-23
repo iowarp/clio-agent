@@ -183,6 +183,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         stored_usage = usage_by_scope.get(scope, {}) if isinstance(usage_by_scope, dict) else {}
         stored_usage = stored_usage if isinstance(stored_usage, dict) else {}
+        window = int(stored_usage.get("window_tokens") or window)
         used = int(stored_usage.get("used_tokens") or 0)
         autocompact_enabled, autocompact_pct = _session_autocompact_preferences(
             getattr(session, "metadata", None)
@@ -206,6 +207,8 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             live_block_count=len(segments),
             tokens_by_kind=tokens_by_kind,
             categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
+            prompt_breakdown=stored_usage.get("prompt_breakdown"),
+            usage_recorded_at=stored_usage.get("recorded_at"),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
             messages=_folded_messages(segments, sid, scope),

@@ -114,9 +114,20 @@ jobs:
           packages=(external/gact-tui/desktop/src-tauri/target/release/bundle/deb/*.deb)
           test "${#packages[@]}" -eq 1
           sudo dpkg -i "${packages[0]}"
+          # DEB has no managed-package post-install hook. Its first launch also
+          # owns Office download (600s) and extraction (300s), unlike a warm
+          # startup or the Windows launch after NSIS has prepared those files.
           xvfb-run -a uv run --no-project --python 3.14 --with psutil \
             scripts/smoke_desktop_package.py /usr/bin/clio-desktop --evidence-dir "$RUNNER_TEMP/startup-evidence" \
-            --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log"
+            --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log" --timeout 1200
+      - name: Measure subsequent Linux startup with the same managed packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          xvfb-run -a uv run --no-project --python 3.14 --with psutil \
+            scripts/smoke_desktop_package.py /usr/bin/clio-desktop --evidence-dir "$RUNNER_TEMP/startup-evidence-repeat" \
+            --boot-log "$HOME/.local/share/ai.iowarp.clio.desktop/logs/backend-boot.log" \
+            --agent-home "$RUNNER_TEMP/startup-evidence/agent"
       - name: Install NSIS and launch native Desktop with its compressed runtime
         if: runner.os == 'Windows'
         shell: pwsh

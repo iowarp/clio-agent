@@ -219,7 +219,9 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
                 }
             )
     receipt = [
-        f"HTTP {row.get('status_code', 'unknown')}",
+        "streaming_v2 SDK completed"
+        if row.get("method") == "SDK"
+        else f"HTTP {row.get('status_code', 'unknown')}",
         f"{row.get('bytes_received', 0)} bytes saved",
         f"Content type: {row.get('content_type', 'unknown')}",
         f"Capture ended: {row.get('stop_reason', 'unknown')}",
@@ -292,7 +294,11 @@ def _capture(row: Mapping[str, Any], args: Mapping[str, Any]) -> dict[str, Any]:
         "summary": (
             f"{continuation.get('count', 0)} stream records captured"
             if isinstance(continuation, Mapping)
-            else f"HTTP {row.get('status_code', 'unknown')}, {row['bytes_received']} bytes saved"
+            else (
+                f"SDK result, {row['bytes_received']} bytes saved"
+                if row.get("method") == "SDK"
+                else f"HTTP {row.get('status_code', 'unknown')}, {row['bytes_received']} bytes saved"
+            )
         ),
         "blocks": blocks,
     }

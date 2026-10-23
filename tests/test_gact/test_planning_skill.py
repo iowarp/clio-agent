@@ -19,7 +19,11 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.skill_effects import SkillEffect, parse_skill_effect
 from clio_agent.gact.agents.skill_runtime import SkillRuntime, build_load_skill_tool
 from clio_agent.gact.app import build_app
-from clio_agent.gact.plan_mode import PLAN_MODE_REMINDER_MARKER, plan_mode_reminder
+from clio_agent.gact.plan_mode import (
+    PLAN_MODE_REMINDER_MARKER,
+    plan_mode_reminder,
+    recorded_plan_file,
+)
 from clio_agent.gact.skills import SkillCatalog, read_skill_body
 from clio_agent.gact.types import AgentDef
 
@@ -84,9 +88,15 @@ def test_invoking_planning_skill_enters_plan_mode_and_engages_machinery(tmp_path
     # The declared enter_mode effect fired via the runtime (not parsed from body).
     assert app.state.sessions.get(sess.id).mode == "plan"
     assert "skill effect" in out and "Planning" in out
-    # The plan machinery now applies: the per-turn reminder is injected in plan mode.
-    reminder = plan_mode_reminder(app, sess.id, app.state.sessions.get(sess.id))
-    assert PLAN_MODE_REMINDER_MARKER in reminder
+    # Mid-turn entry cannot wait for the next turn's reminder. The first tool
+    # observation must identify a writable plan path with its parent ready.
+    fresh = app.state.sessions.get(sess.id)
+    plan_file = recorded_plan_file(fresh)
+    assert plan_file is not None
+    assert PLAN_MODE_REMINDER_MARKER in out
+    assert plan_file in out
+    assert Path(plan_file).parent.is_dir()
+    assert not Path(plan_file).exists(), "the model, not the runtime, authors the plan"
 
 
 # ---- user toggle: PATCH mode=plan drives the same machinery end-to-end -----------------
