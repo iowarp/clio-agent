@@ -5,7 +5,7 @@
 export default async function memoryPage(page, shot) {
   const base = new URL(page.url()).origin;
   await page.goto(`${base}/settings/memory`, { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "Memory", exact: true }).waitFor({ timeout: 30000 });
+  await page.getByRole("heading", { name: /^Memory/, level: 1 }).waitFor({ timeout: 30000 });
   await page.waitForTimeout(1500);
   await shot("page");
   await page.getByText("Review", { exact: false }).first().scrollIntoViewIfNeeded();
