@@ -267,3 +267,40 @@ def test_an_answer_names_the_memory_it_used_on_the_public_message() -> None:
     )
     assert projected == {"memory_used": {"read": ["user/topics/hdf5"], "loaded": []}}
     assert _message_presentation_metadata({"memory_used": {"read": [], "loaded": []}}) == {}
+
+
+def test_the_curator_is_never_offered_for_delegation(client: TestClient) -> None:
+    from clio_agent.gact.agents.resolution import session_resolution, spawn_targets
+    from clio_agent.gact.spawn_context import resolve_child_agent
+
+    app = client.app
+    root = _root(app)
+    resolution = session_resolution(app, root.id)
+    assert "curator" in [row["id"] for row in resolution.subagents]  # it still resolves
+    assert "curator" not in [target["id"] for target in spawn_targets(resolution)]
+    with pytest.raises(ValueError, match="neither a subagent"):
+        resolve_child_agent(app, root.id, "curator")
+
+
+def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) -> None:
+    from clio_agent.gact.agents.prompt_basis import turn_agent_def
+    from clio_agent.gact.agents.resolution import session_resolution, withhold_session_tools
+
+    app = client.app
+    root = _root(app)
+    child = app.state.sessions.create(
+        workspace_id="ws_global",
+        title="child",
+        parent_session_id=root.id,
+        agent={"id": "explore"},
+        metadata={"session_type": "agent_task"},
+    )
+    for session, kept, gone in (
+        (root, {"create_memory", "memory_search"}, {"propose_memory_change"}),
+        (child, {"memory_search"}, {"create_memory", "propose_memory_change"}),
+    ):
+        resolution = session_resolution(app, session.id)
+        turn_def, built = turn_agent_def(app, session.id, resolution)
+        agent = withhold_session_tools(app, session.id, turn_def, resolution, built)
+        assert kept <= set(agent.tools) and not gone & set(agent.tools)
+        assert ("create_memory" in agent.system_prompt) == ("create_memory" in kept)

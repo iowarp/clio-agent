@@ -8,4 +8,5 @@ curator = Subagent(
     description="Turns candidate facts from a conversation into proposed memory changes.",
     plugins=["memory"],
     tools=["memory_search", "memory_read", "propose_memory_change"],
+    internal=True,
 )

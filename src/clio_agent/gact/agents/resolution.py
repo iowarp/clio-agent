@@ -28,7 +28,7 @@ from clio_agent.gact.workflow_state.schema import (
     GENERIC_WORKFLOW_STATE_SCHEMA,
     WorkflowStateSchema,
 )
-from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError
+from clio_agent.plugins.resolve import Delta, Resolution, ResolutionError, delegable_subagents
 from clio_agent.plugins.service import DEFAULT_AGENT, PluginService
 
 if TYPE_CHECKING:
@@ -241,19 +241,33 @@ def session_agent_def(app: Any, session_id: str) -> AgentDef:
     """
 
     resolution = session_resolution(app, session_id)
-    agent_def = resolution_agent_def(resolution)
-    session = app.state.sessions.get(session_id)
-    if session is not None:
-        from clio_agent.gact.memory.policy import session_policy  # noqa: PLC0415
-        from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
-
-        policy = session_policy(app, session)
-        withheld = {name for name in resolution.tool_names if policy.withheld(name)}
-        if withheld:
-            agent_def = agent_def.model_copy(
-                update={"system_prompt": prompt_text_without(resolution.prompt, withheld)}
-            )
+    agent_def = withhold_session_tools(
+        app, session_id, resolution_agent_def(resolution), resolution
+    )
     return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
+
+
+def withhold_session_tools(
+    app: Any, session_id: str, agent_def: AgentDef, *resolutions: Resolution
+) -> AgentDef:
+    """``agent_def`` without the memory tools this session may not have, and their
+    prompt fragments (memory ledger MD8). ``resolutions`` composed its prompt.
+    """
+    session = app.state.sessions.get(session_id)
+    if session is None:
+        return agent_def
+    from clio_agent.gact.memory.policy import session_policy  # noqa: PLC0415
+    from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
+
+    policy = session_policy(app, session)
+    withheld = {name for name in agent_def.tools if policy.withheld(name)}
+    if not withheld:
+        return agent_def
+    prompt = agent_def.system_prompt
+    for resolution in resolutions:
+        prompt = prompt_text_without(prompt, resolution.prompt, withheld)
+    tools = [name for name in agent_def.tools if name not in withheld]
+    return agent_def.model_copy(update={"system_prompt": prompt, "tools": tools})
 
 
 def resolve_session_agent(app: Any, agent_id: str, *, session_id: str) -> AgentDef | None:
@@ -362,7 +376,7 @@ def spawn_targets(resolution: Resolution) -> list[dict[str, str]]:
 
     return [
         {"id": row["id"], "plugin": row["plugin"], "description": row["description"]}
-        for row in resolution.subagents
+        for row in delegable_subagents(resolution)
     ]
 
 

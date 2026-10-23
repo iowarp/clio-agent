@@ -36,6 +36,9 @@ class Subagent:
 
     ``tools`` is an optional allowlist; every name must be provided by the
     subagent's plugins. ``description`` tells the delegating agent when to use it.
+    ``internal`` marks a subagent the plugin's own server code starts (the memory
+    curator): it resolves like any other, but no agent is offered it or may delegate
+    to it.
     """
 
     id: str
@@ -47,6 +50,7 @@ class Subagent:
     flow: str = "react"
     max_iters: int = 0
     structured_outputs: dict[str, Any] = field(default_factory=dict)
+    internal: bool = False
 
     def describe(self) -> dict[str, Any]:
         """The declaration as data, read by the loader."""
@@ -66,4 +70,5 @@ class Subagent:
             "flow": self.flow,
             "max_iters": int(self.max_iters or 0),
             "structured_outputs": dict(self.structured_outputs or {}),
+            "internal": bool(self.internal),
         }

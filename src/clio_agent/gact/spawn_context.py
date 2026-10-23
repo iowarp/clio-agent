@@ -62,7 +62,7 @@ def resolve_child_agent(
         resolve_for_session,
         session_resolution,
     )
-    from clio_agent.plugins.resolve import ResolutionError  # noqa: PLC0415
+    from clio_agent.plugins.resolve import ResolutionError, delegable_subagents  # noqa: PLC0415
 
     parent = session_resolution(app, parent_id)
     if agent_id == "self":
@@ -76,7 +76,7 @@ def resolve_child_agent(
             if key in metadata
         }
         return parent, {**pin, AGENT_RESOLUTION_KEY: parent.digest}
-    if any(row["id"] == agent_id for row in parent.subagents):
+    if any(row["id"] == agent_id for row in delegable_subagents(parent)):
         try:
             child = plugin_service(app).resolve_subagent(parent, agent_id)
         except ResolutionError as exc:
@@ -90,7 +90,7 @@ def resolve_child_agent(
     try:
         child = resolve_for_session(app, agent_id)
     except SessionAgentUnavailable as exc:
-        defined = ", ".join(row["id"] for row in parent.subagents) or "none"
+        defined = ", ".join(row["id"] for row in delegable_subagents(parent)) or "none"
         raise ValueError(
             f"Requested child agent {agent_id!r} is neither a subagent of "
             f"{parent.agent.get('ref')} (subagents: {defined}) nor a resolvable installed agent: {exc}"

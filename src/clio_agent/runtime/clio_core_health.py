@@ -663,12 +663,18 @@ def probe_clio_core_search_health(
         env: Environment mapping driving the config resolution.
 
     Returns:
-        One required ``clio_core_search`` row when search is unavailable, else none.
+        One required ``clio_core_search`` row when an existing config cannot search,
+        else none. A config not written yet is not a verdict: CLIO seeds its own with
+        the indexer on first attach, and the clio-core rows report the cold start.
     """
     from clio_agent.arc import clio_core_indexer as indexer  # noqa: PLC0415
+    from clio_agent.arc.clio_core_config import _resolve_config_path  # noqa: PLC0415
 
     env = env if env is not None else os.environ
-    if indexer.indexer_chimod_present(env=env):
+    path = _resolve_config_path(env)
+    if not path or not Path(path).expanduser().is_file():
+        return []
+    if indexer.indexer_chimod_present(env=env, config_path=path):
         return []
     return [
         IntegrationStatus(

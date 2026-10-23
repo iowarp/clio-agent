@@ -41,7 +41,7 @@ from clio_agent.gact.agents.resolution import prepare_session_agent, resolution_
 from clio_agent.gact.builtin_boundary import BuiltinBoundary
 from clio_agent.gact.runtime.globals import _gact_app_context
 from clio_agent.gact.sessions import SessionStore
-from clio_agent.plugins.resolve import Resolution
+from clio_agent.plugins.resolve import Resolution, delegable_subagents
 from clio_agent.plugins.service import PluginService
 from tests._plugin_fixtures import custom_marketplace, fragment
 
@@ -217,7 +217,7 @@ def test_subagent_catalog_byte_stable(
 def test_subagent_order_is_deterministic(world: SimpleNamespace) -> None:
     """Subagents resolve in one fixed order on every resolution, so the rendered catalog
     never depends on filesystem listing or dict/set iteration order."""
-    orders = {tuple(row["id"] for row in _resolve(world).subagents) for _ in range(3)}
+    orders = {tuple(row["id"] for row in delegable_subagents(_resolve(world))) for _ in range(3)}
     assert len(orders) == 1
     assert sorted(next(iter(orders))) == sorted(SUBAGENTS)
 

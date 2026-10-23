@@ -28,6 +28,7 @@ from clio_agent.gact.agents.resolution import (
     resolution_agent_def,
     resolve_for_session,
     session_resolution,
+    withhold_session_tools,
 )
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
@@ -173,6 +174,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         turn_def, build_resolution = await _run_turn_setup_off_loop(
             state, lambda: turn_agent_def(state.app, state.sid, resolution)
         )
+    turn_def = withhold_session_tools(state.app, state.sid, turn_def, resolution, build_resolution)
     dynamic_agent = apply_session_tool_allowlist(state.app, turn_def, session_id=state.sid)
     state.active_agent_id = dynamic_agent.id
     _ctx.set_primary_agent_id(state.active_agent_id)

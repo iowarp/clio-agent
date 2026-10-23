@@ -366,7 +366,7 @@ def _captured_store_args(monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def _record(cfg, *, backend, data_dir, namespace=""):
+    def _record(cfg, *, backend, data_dir, namespace="", kinds=None):
         captured.update(config_path=cfg, backend=backend, namespace=namespace)
         return captured
 

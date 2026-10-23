@@ -81,6 +81,7 @@ class SubagentRecord:
     flow: str = "react"
     max_iters: int = 0
     structured_outputs: dict[str, Any] = field(default_factory=dict)
+    internal: bool = False
 
 
 @dataclass(frozen=True)

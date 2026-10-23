@@ -29,6 +29,7 @@ from clio_agent.gact.agents.resolution import (
 )
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
+from clio_agent.plugins.resolve import delegable_subagents
 from tests._plugin_fixtures import custom_marketplace
 
 #: A plugin that ships one defined subagent, carried by the agent ``reviewer``.
@@ -122,7 +123,8 @@ def test_single_resolution_seam_serves_agent_and_defined_subagents(
         child = resolve_session_agent(app, "critic", session_id=sid)
         stranger = resolve_session_agent(app, "standard", session_id=sid)
 
-    assert [row["id"] for row in resolution.subagents] == ["critic"]
+    # The memory plugin's internal curator resolves too but is never offered.
+    assert [row["id"] for row in delegable_subagents(resolution)] == ["critic"]
     assert by_id is not None and by_ref is not None
     assert by_id.model_dump() == by_ref.model_dump()
     assert by_id.id == "reviewer" and by_id.tier == 1

@@ -85,10 +85,10 @@ def build_snapshot(
         lines.extend(index)
         if omitted:
             lines.append(f"- {omitted} more not listed; find them with memory_search.")
-    if not documents:
-        lines.extend(["", "Memory is empty so far."])
     return {
-        "text": "\n".join(lines),
+        # Nothing remembered yet: no addition at all (the tools' fragment covers how to
+        # start), rather than an empty section on every turn.
+        "text": "\n".join(lines) if documents else "",
         "loaded": [str(stored.name) for stored in loaded],
         "indexed": [line.split(" ", 2)[1] for line in index],
         "omitted": omitted,
@@ -111,7 +111,7 @@ def session_snapshot(app: Any, session: Any) -> dict[str, Any] | None:
     if not wants_snapshot(app, session):
         return None
     pinned = (session.metadata or {}).get(SNAPSHOT)
-    if isinstance(pinned, dict) and pinned.get("text"):
+    if isinstance(pinned, dict) and "text" in pinned:
         return pinned
     from clio_agent.gact.memory.runtime import memory_service, memory_usage  # noqa: PLC0415
 

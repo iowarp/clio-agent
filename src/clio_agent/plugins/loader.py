@@ -506,6 +506,7 @@ def _subagent_record(
         flow=described["flow"],
         max_iters=described["max_iters"],
         structured_outputs=described["structured_outputs"],
+        internal=described["internal"],
     )
 
 

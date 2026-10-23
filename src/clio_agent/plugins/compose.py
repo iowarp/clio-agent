@@ -84,19 +84,20 @@ class ComposedPrompt:
         }
 
 
-def prompt_text_without(prompt: Mapping[str, Any], withheld: set[str]) -> str:
-    """A composed prompt's text without the fragments whose ``when.tools`` name a tool
-    the session was not given (a tool withheld at build time takes its guidance along).
+def prompt_text_without(text: str, prompt: Mapping[str, Any], withheld: set[str]) -> str:
+    """``text`` (a prompt composed from ``prompt``) without the fragments whose
+    ``when.tools`` name a tool the session was not given: a tool withheld at build
+    time takes its guidance along. Fragments are joined by a blank line.
     """
-    if not withheld:
-        return str(prompt.get("text") or "")
-    texts = [
-        str(fragment.get("text") or "")
-        for section in prompt.get("sections", [])
-        for fragment in section.get("fragments", [])
-        if not withheld & set(fragment.get("when_tools") or ())
-    ]
-    return "\n\n".join(text for text in texts if text)
+    for section in prompt.get("sections", []):
+        for fragment in section.get("fragments", []):
+            body = str(fragment.get("text") or "")
+            if body and withheld & set(fragment.get("when_tools") or ()):
+                parts = text.split("\n\n")
+                text = "\n\n".join(part for part in parts if part != body)
+                if body in text:  # a multi-paragraph fragment
+                    text = text.replace(f"\n\n{body}", "").replace(body, "")
+    return text
 
 
 def render_template(

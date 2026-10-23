@@ -198,8 +198,11 @@ from clio_agent.gact.app import build_app
 # agent-blueprint, expert-pack, user-agent CRUD and blueprint update/source routes are
 # deleted, replaced by routes/plugins.py (plugins, marketplaces, agents, user agents,
 # the session's pinned agent) and the task flow run view. 382 -> 383: a plugin's review
-# (GET /v1/plugins/{name}/review), read before running its flows.
-EXPECTED_ROUTE_METHOD_PAIRS = 383
+# (GET /v1/plugins/{name}/review), read before running its flows. The base already
+# registered 384. 384 -> 404: long-term memory (routes/memory_documents.py,
+# memory_transfer.py, memory_switches.py) adds 20; transcript recall moved to
+# /v1/session-recall/* with no change in count.
+EXPECTED_ROUTE_METHOD_PAIRS = 404
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

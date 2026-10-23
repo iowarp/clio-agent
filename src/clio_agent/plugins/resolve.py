@@ -659,6 +659,7 @@ def _finish(
                 "prefers": dict(sub.prefers),
                 "structured_outputs": dict(sub.structured_outputs),
                 "prompt": sub.prompt,
+                "internal": sub.internal,
             }
             for owner, sub in collected["subagents"]
         ],
@@ -740,6 +741,11 @@ def resolve_agent(
         delta=delta,
         flow_id=str(spec.flow.get("id") or "react"),
     )
+
+
+def delegable_subagents(resolution: Resolution) -> list[dict[str, Any]]:
+    """The defined subagents an agent may delegate to: all but the ``internal`` ones."""
+    return [row for row in resolution.subagents if not row.get("internal")]
 
 
 def resolve_subagent(catalog: Catalog, parent: Resolution, subagent_id: str) -> Resolution:

@@ -1379,10 +1379,10 @@ def build_app(
         except SessionAgentUnavailable as exc:
             context["session.agent"] = f"(unavailable: {exc.reason})"
             return context
-        agent = resolution.agent
+        agent, targets = resolution.agent, _resolution.spawn_targets(resolution)
         context["session.agent"] = str(agent.get("ref") or agent.get("id") or "")
         context["agents.available_flat"] = (
-            "\n".join(f"- {row['id']}: {row['description']}" for row in resolution.subagents)
+            "\n".join(f"- {t['id']}: {t['description']}" for t in targets)
             or "(no defined subagents)"
         )
         agent_def = resolve_session_agent(app, "", session_id=session_id)

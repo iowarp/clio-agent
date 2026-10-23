@@ -116,7 +116,7 @@
           "agent_runtime": {
             "agent_id": "standard",
             "agent_resolution": {
-              "digest": "618b917e4c6f426092fdf81f07e8fdf192b4f9ee86b357d49994285c8f43c8b8",
+              "digest": "720a62f128ce5484e23d3ab3d4add06e4ba56acbee761ccf2516af5af467b46e",
               "flow": {
                 "id": "react",
                 "options": {}
@@ -124,6 +124,7 @@
               "kind": "agent",
               "plugins": [
                 "core",
+                "memory",
                 "workspace",
                 "shell",
                 "visuals",
@@ -197,6 +198,14 @@
               "workspace_resource_search",
               "workspace_resource_structure",
               "refresh_provider_models",
+              "memory_search",
+              "memory_read",
+              "create_memory",
+              "update_memory",
+              "forget_memory",
+              "session_search",
+              "session_read_summary",
+              "session_read_context_frame",
               "fs_read_file",
               "fs_glob",
               "fs_grep",

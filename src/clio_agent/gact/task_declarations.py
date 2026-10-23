@@ -677,7 +677,9 @@ def build_spawn_runtime_tools(
                 outcomes.append({"index": index, "error": str(error)})
         return {"spawned": outcomes, "outcomes": outcomes}
 
-    subagents = list(getattr(resolution, "subagents", None) or [])
+    # Internal subagents (started by their plugin's server code) are never offered.
+    rows = getattr(resolution, "subagents", None) or []
+    subagents = [row for row in rows if not row.get("internal")]
     targets = (
         "A defined subagent: "
         + "; ".join(f"{row['id']} ({row['description'] or 'no description'})" for row in subagents)
