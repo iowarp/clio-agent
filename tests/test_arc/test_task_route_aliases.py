@@ -74,6 +74,7 @@ async def test_rest_result_cursor_reconstructs_exact_unicode_output(
                 cursor = page["next_cursor"]
                 if cursor is None:
                     break
+                assert len(cursor) <= 64, "a model has to copy this cursor verbatim (#1844)"
             else:
                 pytest.fail("Result pages did not advance to completion")
             assert len(offsets) > 1 and offsets == sorted(offsets)
