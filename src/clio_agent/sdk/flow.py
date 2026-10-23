@@ -81,13 +81,16 @@ class Flow(dspy.Module):
         An option the flow annotates (``members: tuple[str, ...]``) is validated and
         converted as Pydantic does (a list becomes a tuple); one of another shape raises
         :class:`FlowOptionsInvalid` naming it and the declared type. Options the flow
-        does not annotate, or whose annotation cannot be resolved, pass unchanged.
+        does not annotate pass unchanged; annotations that do not resolve are refused.
         """
 
+        if not options:
+            return {}
         try:
             hints = typing.get_type_hints(cls)
-        except Exception:  # noqa: BLE001 - an unresolvable annotation is not checked
-            hints = {}
+        except (NameError, TypeError) as exc:
+            # The flow's own annotations do not resolve: options cannot be checked.
+            raise FlowOptionsInvalid(cls.id or cls.__name__, [f"annotations: {exc}"]) from exc
         checked: dict[str, Any] = {}
         problems: list[str] = []
         for key, value in (options or {}).items():
