@@ -59,6 +59,7 @@ HOOK_EVENT_MAP: dict[str, str] = {
     "PreToolUse": "PreToolUse",
     "PostToolUse": "PostToolUse",
     "UserPromptSubmit": "UserPromptSubmit",
+    "UserPromptExpansion": "UserPromptExpansion",
     "Stop": "Stop",
     "SubagentStop": "SubagentStop",
     "SessionStart": "SessionStart",
@@ -179,7 +180,11 @@ def _hooks(root: Path, plugin: str) -> tuple[list[HookRecord], list[Diagnostic],
             )
             continue
         for group_index, group in enumerate(groups or []):
-            pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
+            if clio_event == "UserPromptExpansion":
+                # Its matcher names commands (``plugin:command``), not tools: kept as written.
+                pattern, unmapped = str(group.get("matcher") or "").strip(), []
+            else:
+                pattern, unmapped = map_matcher(str(group.get("matcher") or ""))
             if unmapped:
                 diagnostics.append(
                     Diagnostic(

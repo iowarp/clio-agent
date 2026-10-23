@@ -43,6 +43,12 @@ POST_TOOL_BATCH = "PostToolBatch"
 #: The turn's user prompt boundary. Deny-capable — validate/reject the prompt.
 USER_PROMPT_SUBMIT = "UserPromptSubmit"
 
+#: A slash command the person typed expanded into its prompt, before its turn starts.
+#: Deny-capable — a deny stops the command. A hook may add context the model reads
+#: with the command (Claude Code's event of the same name; a plugin's write guard
+#: arms here, for one).
+USER_PROMPT_EXPANSION = "UserPromptExpansion"
+
 #: End-of-turn boundary (the old ``post_message``). P2.5 makes it a BOUNDED
 #: completion gate: a Stop hook ``deny`` means "not done — re-drive one more turn"
 #: (tests still failing? todos still open?). Re-entry is bounded by a per-hook
@@ -103,6 +109,7 @@ KNOWN_EVENTS: frozenset[str] = frozenset(
         POST_TOOL_USE,
         POST_TOOL_BATCH,
         USER_PROMPT_SUBMIT,
+        USER_PROMPT_EXPANSION,
         STOP,
         ANSWER,
         SESSION_START,
@@ -133,7 +140,9 @@ MODEL_EVENTS: frozenset[str] = frozenset({BEFORE_MODEL, AFTER_MODEL})
 #: than silently letting an un-vetted request through. ``AfterModel`` is
 #: deliberately EXCLUDED — its call already ran, so its outcome can only rewrite the
 #: observed response, never un-run the request (mirrors ``PostToolUse``).
-DENY_CAPABLE_EVENTS: frozenset[str] = frozenset({PRE_TOOL_USE, USER_PROMPT_SUBMIT, BEFORE_MODEL})
+DENY_CAPABLE_EVENTS: frozenset[str] = frozenset(
+    {PRE_TOOL_USE, USER_PROMPT_SUBMIT, USER_PROMPT_EXPANSION, BEFORE_MODEL}
+)
 
 
 def is_deny_capable(event: str) -> bool:

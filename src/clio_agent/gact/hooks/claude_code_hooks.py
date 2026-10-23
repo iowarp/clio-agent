@@ -16,7 +16,7 @@ from typing import Any
 
 from clio_agent.gact.hooks.adapters import SubprocessAdapter
 from clio_agent.gact.hooks.config import HookEntry
-from clio_agent.gact.hooks.events import POST_TOOL_USE
+from clio_agent.gact.hooks.events import POST_TOOL_USE, USER_PROMPT_EXPANSION
 from clio_agent.gact.hooks.wire import (
     HookDecision,
     HookEnvelope,
@@ -67,6 +67,12 @@ def claude_envelope(envelope: HookEnvelope, *, permission_mode: str = "default")
             body["tool_response"] = {"success": not payload.get("is_error", False)}
     if envelope.prompt is not None:
         body["prompt"] = envelope.prompt
+    if envelope.hook_event_name == USER_PROMPT_EXPANSION:
+        payload = envelope.payload or {}
+        body["expansion_type"] = "slash_command"
+        body["command_name"] = str(payload.get("command_name") or "")
+        body["command_args"] = str(payload.get("command_args") or "")
+        body["command_source"] = "plugin"
     return body
 
 
