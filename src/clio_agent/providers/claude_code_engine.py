@@ -426,6 +426,15 @@ class _Turn:
                 reply, call_prefix=f"call_{call_id[:8]}", available_tools=self.available_tools
             )
         )
+        if words := self._splitter.dropped_fence_words:
+            logger.info(
+                "provider reply text dropped fence words reason=fence_word_in_text "
+                "model=%s call_id=%s lines=%d fenced_calls=%d",
+                self.model,
+                call_id,
+                words,
+                len(split.calls),
+            )
         if dropped := self._splitter.dropped_invoke_markup:
             # The model also wrote its calls as invoke markup in its prose; only the fenced
             # block runs, so the markup was not shown. On the record, never silent.

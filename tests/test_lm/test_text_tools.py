@@ -579,3 +579,24 @@ def test_the_stream_holds_an_unfinished_invoke_and_keeps_ordinary_angle_brackets
     assert splitter.push('oke name="x">') == ""
     assert splitter.push("</invoke> done") == " done"
     assert splitter.dropped_invoke_markup == 1
+
+
+def test_a_corrupted_fence_word_on_its_own_line_is_not_shown() -> None:
+    """``_tool_calls`` (the fence without its backticks) beside a real call is protocol
+    markup: never shown, counted for the audit, whatever the chunking."""
+    reply = (
+        "_tool_calls\nI'll remember that.\n_tool_call\n"
+        '```tool_calls\n[{"name": "create_memory", "arguments": {}}]\n```'
+    )
+    for size in (1, 3, 7, len(reply)):
+        splitter = StreamSplitter()
+        shown = "".join(splitter.push(reply[i : i + size]) for i in range(0, len(reply), size))
+        assert shown == "I'll remember that.", size
+        assert splitter.dropped_fence_words == 2
+
+
+def test_words_that_merely_start_like_the_fence_word_are_shown() -> None:
+    splitter = StreamSplitter()
+    assert splitter.push("_tool") == ""
+    assert splitter.push("_calls_are documented here\n") == "_tool_calls_are documented here"
+    assert splitter.dropped_fence_words == 0
