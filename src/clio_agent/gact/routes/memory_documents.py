@@ -30,6 +30,7 @@ _STATUS = {
     "memory_proposal_not_pending": 409,
     "memory_proposal_stale": 409,
     "search_unavailable": 503,
+    "memory_scope_invalid": 400,
 }
 
 
@@ -64,11 +65,20 @@ async def run_memory(app: FastAPI, work: Any, *args: Any, **kwargs: Any) -> Any:
 
 
 def scopes_for(app: FastAPI, scope: str) -> tuple[str, ...]:
-    """``all`` (account plus every workspace with memory), ``user`` or ``project:<id>``."""
+    """``all`` (account plus every workspace with memory), ``user`` or ``project/<id>``.
+
+    Raises:
+        ClioError: ``memory_scope_invalid`` for anything else (never read as ``all``).
+    """
     if scope == "user":
         return (USER_SCOPE,)
-    if scope.startswith("project:"):
-        return (project_scope(scope.split(":", 1)[1]),)
+    if scope.startswith("project/"):
+        try:
+            return (project_scope(scope.removeprefix("project/")),)
+        except md.MemoryDocumentError as error:
+            raise _scope_error(scope) from error
+    if scope != "all":
+        raise _scope_error(scope)
     workspaces = [w.id for w in app.state.workspaces.list()]
     projects = []
     for workspace_id in workspaces:
@@ -77,6 +87,14 @@ def scopes_for(app: FastAPI, scope: str) -> tuple[str, ...]:
         except md.MemoryDocumentError:
             continue  # ws_global holds no project memory
     return (USER_SCOPE, *projects)
+
+
+def _scope_error(scope: str) -> ClioError:
+    return ClioError(
+        f"unknown memory scope {scope!r}: use all, user or project/<workspace id>",
+        error_type="memory_scope_invalid",
+        details={"scope": scope},
+    )
 
 
 class FactEdit(BaseModel):
@@ -180,11 +198,12 @@ def register_memory_document_routes(app: FastAPI) -> None:
     async def delete_fact(name: str, fact_id: str, expected_sha: str) -> dict[str, Any]:
         def work(service: MemoryService) -> dict[str, Any]:
             stored = service.require(name)
-            document = md.without_fact(stored.document, fact_id, updated=md.now_stamp())
-            author = _page_author("forget")
-            written = service.write(stored.name, document, expected_sha=expected_sha, author=author)
-            service.forget(stored.name.scope, (fact_id,), author=author)
-            return stored_to_wire(written)
+            written, removed = service.forget_fact(
+                stored, fact_id, expected_sha=expected_sha, author=_page_author("forget")
+            )
+            if written is None:  # its last fact: the document is gone
+                return {"name": name, "removed": True, "forgotten": list(removed)}
+            return {**stored_to_wire(written), "forgotten": list(removed)}
 
         return await run_memory(app, work)
 

@@ -40,6 +40,15 @@ CATEGORIES: tuple[str, ...] = get_args(Category)
 SOURCES: tuple[str, ...] = get_args(Source)
 #: Categories with one document per scope (no per-subject documents).
 SINGLETON_CATEGORIES = ("profile", "preferences")
+#: What each category holds, as models are told it (tools, extraction, routing).
+CATEGORY_MEANINGS = (
+    "profile (who the user is: name, role, institution), "
+    "preferences (how they want work done), "
+    "topics (subjects they study or ask about), "
+    "areas (ongoing efforts: projects, papers, campaigns), "
+    "people (colleagues and contacts), "
+    "environments (machines, allocations, accounts, software setups)"
+)
 
 _FRONTMATTER_KEYS = ("name", "description", "category", "aliases", "updated", "forgotten")
 _REQUIRED_KEYS = ("name", "description", "category", "updated")
@@ -329,16 +338,29 @@ def superseding(
     return replace(document, facts=tuple(facts), updated=updated)
 
 
-def without_fact(document: MemoryDocument, fact_id: str, *, updated: str) -> MemoryDocument:
-    """``document`` with the line of ``fact_id`` deleted (forget removes, not strikes).
+def without_fact(
+    document: MemoryDocument, fact_id: str, *, updated: str
+) -> tuple[MemoryDocument, tuple[str, ...]]:
+    """``document`` with ``fact_id`` and the earlier values it superseded deleted.
+
+    Forget removes lines rather than striking them, and a superseded line is an
+    earlier value of the same fact, so forgetting a fact takes its whole chain.
+    Returns the document and the removed ids.
 
     Raises:
         MemoryDocumentError: ``fact_id`` is not in the document.
     """
     if document.fact(fact_id) is None:
         raise MemoryDocumentError(f"fact {fact_id} is not in {document.name}")
-    facts = tuple(fact for fact in document.facts if fact.id != fact_id)
-    return replace(document, facts=facts, updated=updated)
+    chain = {fact_id}
+    grew = True
+    while grew:
+        earlier = {fact.id for fact in document.facts if fact.superseded_by in chain}
+        grew = not earlier <= chain
+        chain |= earlier
+    removed = tuple(fact.id for fact in document.facts if fact.id in chain)
+    facts = tuple(fact for fact in document.facts if fact.id not in chain)
+    return replace(document, facts=facts, updated=updated), removed
 
 
 def forgetting(document: MemoryDocument, fact_ids: tuple[str, ...]) -> MemoryDocument:

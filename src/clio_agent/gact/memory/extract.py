@@ -19,7 +19,7 @@ from typing import Any, Literal
 import dspy
 from pydantic import BaseModel, Field
 
-from clio_agent.arc.memory_document import CATEGORIES
+from clio_agent.arc.memory_document import CATEGORIES, CATEGORY_MEANINGS
 from clio_agent.errors import ClioError
 from clio_agent.gact.memory.proposals import stamp_source
 
@@ -49,7 +49,9 @@ class CandidateFact(BaseModel):
     """A fact the model proposes remembering."""
 
     fact: str = Field(description="One sentence, about the user, their work or their setup.")
-    category: Literal["profile", "preferences", "topics", "areas", "people", "environments"]
+    category: Literal["profile", "preferences", "topics", "areas", "people", "environments"] = (
+        Field(description=f"One of: {CATEGORY_MEANINGS}.")
+    )
     subject: str = Field(description="Short name of what the fact is about.")
     sensitive: bool = Field(
         description="True for health, finances, beliefs, sexuality or similar personal matters."

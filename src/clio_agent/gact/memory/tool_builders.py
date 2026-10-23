@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.arc.memory_document import CATEGORY_MEANINGS
 from clio_agent.gact.memory import tools as memory_tools
 
-_CATEGORIES = "profile, preferences, topics, areas, people or environments"
+_CATEGORIES = CATEGORY_MEANINGS
 
 
 def _native(func: Any, **declaration: Any) -> Any:
@@ -188,7 +189,10 @@ def build_propose_memory_change_tool() -> Any:
             },
             "description": {
                 "type": "string",
-                "description": "For a new document: one line saying what it holds.",
+                "description": (
+                    "For a new document: one line naming its subject, without the "
+                    "facts' values (those change; they live in the facts)."
+                ),
             },
         },
     )

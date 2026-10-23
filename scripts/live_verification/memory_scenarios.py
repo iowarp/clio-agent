@@ -31,7 +31,7 @@ from _common import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / ".cloud-run" / "memory"
-WS = "ws_global"
+WS = "ws_default"
 Call = Any
 
 
@@ -45,7 +45,14 @@ def _turn(call: Call, sid: str, text: str, ws: str = WS) -> list[dict[str, Any]]
 
 
 def _tools(messages: list[dict[str, Any]]) -> list[str]:
-    return [str(row.get("name") or "") for row in tool_calls_from_messages(messages)]
+    # A native builtin is recorded twice (the live observer keeps the boundary's
+    # ``kwargs`` wrapper, a base-branch defect); count each call once.
+    rows = [
+        row
+        for row in tool_calls_from_messages(messages)
+        if row.get("telemetry_source") != "live_observer"
+    ]
+    return [str(row.get("name") or "") for row in rows]
 
 
 def _answer(messages: list[dict[str, Any]]) -> str:

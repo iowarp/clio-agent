@@ -41,7 +41,11 @@ class RouteMemoryFact(dspy.Signature):
         desc="When no existing document fits: a short name of lowercase words joined by '-'."
     )
     new_description: str = dspy.OutputField(
-        desc="When no existing document fits: one line saying what the new document holds."
+        desc=(
+            "When no existing document fits: one line naming the subject the document "
+            "holds facts about, without the facts' values (those change; they live in "
+            "the facts)."
+        )
     )
 
 

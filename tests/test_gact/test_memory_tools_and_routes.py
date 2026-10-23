@@ -76,13 +76,16 @@ def test_remember_correct_and_forget_in_a_root_conversation(client: TestClient) 
             ("My Frontier project id is CSC456", True),
         ]
         forgotten = memory_tools.forget_memory(fact_id=updated["fact"]["id"])
-        assert forgotten["forgotten"] == [updated["fact"]["id"]]
+        # The correction's earlier value goes too, and the emptied document with it.
+        assert forgotten["forgotten"] == [fact_id, updated["fact"]["id"]]
+        assert memory_tools.memory_search("Frontier project id")["hits"] == []
     finally:
         _leave(tokens)
+    assert client.get(f"/v1/memory/documents/{name}").status_code == 404
     versions = client.get(f"/v1/memory/documents/{name}/versions").json()["versions"]
     assert len(versions) == 3 and versions[0]["author"]["kind"] == "tool_call"
     profile = client.get("/v1/memory/documents/user/profile/profile").json()
-    assert updated["fact"]["id"] in profile["forgotten"]
+    assert {fact_id, updated["fact"]["id"]} <= set(profile["forgotten"])
 
 
 def test_a_delegated_child_reads_but_never_writes(client: TestClient) -> None:
@@ -304,3 +307,22 @@ def test_the_turn_path_withholds_tools_and_their_guidance(client: TestClient) ->
         agent = withhold_session_tools(app, session.id, turn_def, resolution, built)
         assert kept <= set(agent.tools) and not gone & set(agent.tools)
         assert ("create_memory" in agent.system_prompt) == ("create_memory" in kept)
+
+
+def test_a_scope_is_read_exactly_and_one_document_exports_alone(client: TestClient) -> None:
+    import io
+    import zipfile
+
+    app = client.app
+    session = _root(app)
+    tokens = _in_session(app, session.id)
+    try:
+        memory_tools.create_memory("telescopes", "Uses the VLA", "topics")
+        memory_tools.create_memory("cluster", "Runs on Polaris", "environments")
+    finally:
+        _leave(tokens)
+    bad = client.get("/v1/memory/documents", params={"scope": "project:ws_x"})
+    assert bad.status_code == 400 and bad.json()["error"]["error"] == "memory_scope_invalid"
+    one = client.get("/v1/memory/export", params={"name": "user/topics/telescopes"})
+    names = zipfile.ZipFile(io.BytesIO(one.content)).namelist()
+    assert sorted(names) == ["manifest.json", "user/topics/telescopes.md"]

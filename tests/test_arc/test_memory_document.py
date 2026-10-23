@@ -62,8 +62,12 @@ def test_supersede_strikes_the_old_fact_and_forget_deletes_the_line() -> None:
     with pytest.raises(md.MemoryDocumentError):
         md.superseding(updated, "f3k9", replacement, updated="x")  # no longer live
 
-    forgotten = md.without_fact(updated, "f9zzzz", updated="2026-11-06T00:00:00Z")
-    assert "CSC456" not in md.serialize(forgotten)
+    forgotten, removed = md.without_fact(updated, "f9zzzz", updated="2026-11-06T00:00:00Z")
+    text = md.serialize(forgotten)
+    # Forgetting a fact takes the earlier values it replaced: no trace of either id.
+    assert "CSC456" not in text and "CSC123" not in text
+    assert removed == ("f3k9", "f9zzzz")
+    assert all(fact.id not in removed for fact in forgotten.facts)
 
 
 @pytest.mark.parametrize(

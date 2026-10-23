@@ -26,6 +26,7 @@ from typing import Any, Literal
 
 from clio_agent.arc.batch_put import PutRecord
 from clio_agent.arc.memory_document import (
+    SINGLETON_CATEGORIES,
     Fact,
     MemoryDocument,
     forgetting,
@@ -33,6 +34,7 @@ from clio_agent.arc.memory_document import (
     parse,
     search_text,
     serialize,
+    without_fact,
 )
 from clio_agent.arc.store_protocol import ARCStore
 from clio_agent.errors import ClioError
@@ -340,6 +342,26 @@ class MemoryService:
             )
         except MemoryConflict:
             return self.require(address)  # created concurrently
+
+    def forget_fact(
+        self, stored: StoredDocument, fact_id: str, *, expected_sha: str, author: Author
+    ) -> tuple[StoredDocument | None, tuple[str, ...]]:
+        """Forget ``fact_id`` and its earlier values; ``(document, removed ids)``.
+
+        A per-subject document left with no facts is removed (``None``), so its
+        description cannot outlive what it described.
+
+        Raises:
+            MemoryConflict: The stored document is not the one the caller read.
+        """
+        document, removed = without_fact(stored.document, fact_id, updated=now_stamp())
+        written: StoredDocument | None = None
+        if document.facts or stored.name.category in SINGLETON_CATEGORIES:
+            written = self.write(stored.name, document, expected_sha=expected_sha, author=author)
+        else:
+            self.remove(stored.name, expected_sha=expected_sha, author=author)
+        self.forget(stored.name.scope, removed, author=author)
+        return written, removed
 
     def forget(self, scope: str, fact_ids: tuple[str, ...], *, author: Author) -> None:
         """Add ``fact_ids`` to the forgotten list of ``scope``'s profile."""

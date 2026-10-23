@@ -37,14 +37,20 @@ def register_memory_transfer_routes(app: FastAPI) -> None:
     """``/v1/memory/export`` and ``/v1/memory/import``."""
 
     @app.get("/v1/memory/export")
-    async def export_memory(scope: str = Query(default="all")) -> Response:
+    async def export_memory(
+        scope: str = Query(default="all"), name: str = Query(default="")
+    ) -> Response:
+        """Every document of ``scope``, or only the document ``name``."""
         from clio_agent.gact.memory.archive import export_archive  # noqa: PLC0415
 
         def work(service: MemoryService) -> bytes:
+            if name:
+                stored = service.require(name)
+                return export_archive(service, (stored.name.scope,), only=str(stored.name))
             return export_archive(service, scopes_for(app, scope))
 
         data = await run_memory(app, work)
-        label = scope.replace(":", "-") or "all"
+        label = (name or scope).replace("/", "-") or "all"
         return Response(
             content=data,
             media_type="application/zip",

@@ -54,11 +54,12 @@ def _clio_version() -> str:
         return "unknown"
 
 
-def export_archive(service: MemoryService, scopes: tuple[str, ...]) -> bytes:
-    """The ``.zip`` bytes of every document of ``scopes``."""
+def export_archive(service: MemoryService, scopes: tuple[str, ...], *, only: str = "") -> bytes:
+    """The ``.zip`` bytes of every document of ``scopes`` (or just the one named ``only``)."""
     files: dict[str, str] = {}
     for stored in service.documents(scopes):
-        files[f"{stored.name}.md"] = stored.text
+        if not only or str(stored.name) == only:
+            files[f"{stored.name}.md"] = stored.text
     manifest = {
         "format": FORMAT,
         "clio_version": _clio_version(),
