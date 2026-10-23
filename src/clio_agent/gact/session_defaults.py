@@ -40,6 +40,8 @@ class SessionDefaultsResponse(BaseModel):
     routing_mode: str = "auto"
     approval_mode: str = "ask"
     agent_ref: str = ""
+    #: The agent a new session runs when it names none: ``agent_ref`` or the service default.
+    default_agent_ref: str = ""
     degradations: list[dict[str, str]] = Field(default_factory=list)
 
 
