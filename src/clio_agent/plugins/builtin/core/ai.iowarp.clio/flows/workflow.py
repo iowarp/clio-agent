@@ -36,7 +36,9 @@ from clio_agent.sdk import Flow, Step, Workflow, WorkflowError
 _EDIT_TOOLS = ("workflow_add_step", "workflow_cancel_step")
 
 
-_REFERENCE = re.compile(r"\$([A-Za-z0-9_][A-Za-z0-9_.-]*)")
+#: ``$task`` or ``$<step id>``; step ids are lowercase letters, digits, ``-`` and ``_``,
+#: so a full stop ends the reference ("Check: $draft." refers to ``draft``).
+_REFERENCE = re.compile(r"\$([A-Za-z0-9_][A-Za-z0-9_-]*)")
 
 
 def _substitute(value: Any, task: Any, results: dict[str, Any]) -> Any:
@@ -54,12 +56,23 @@ def _substitute(value: Any, task: Any, results: dict[str, Any]) -> Any:
         def known(name: str) -> bool:
             return name == "task" or name in results
 
+        def named(raw: str) -> str:
+            # A trailing "-" is text after the reference unless a step is named with it.
+            name = raw
+            while name.endswith("-") and not known(name):
+                name = name[:-1]
+            return name
+
+        def replace(match: re.Match[str]) -> str:
+            name = named(match.group(1))
+            if not known(name):
+                return match.group(0)
+            return _text(resolve(name)) + match.group(1)[len(name) :]
+
         whole = _REFERENCE.fullmatch(value)
         if whole and known(whole.group(1)):
             return resolve(whole.group(1))
-        return _REFERENCE.sub(
-            lambda m: _text(resolve(m.group(1))) if known(m.group(1)) else m.group(0), value
-        )
+        return _REFERENCE.sub(replace, value)
     if isinstance(value, dict):
         return {k: _substitute(v, task, results) for k, v in value.items()}
     if isinstance(value, list):
