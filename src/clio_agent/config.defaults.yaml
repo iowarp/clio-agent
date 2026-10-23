@@ -606,10 +606,10 @@ gact.ledger_retention.command_audit.max: 2000
 # raise to retain more attached-context history.
 gact.ledger_retention.context_frames.max: 200
 
-# CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
+# CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX  (int)  <- src/clio_agent/gact/runtime/retention.py
 # Max entries kept in the in-memory memory-tool-audit ledger before FIFO
 # eviction; raise for more memory-tool audit history.
-gact.ledger_retention.memory_tool_audit.max: 2000
+gact.ledger_retention.session_recall_audit.max: 2000
 
 # CLIO_LEDGER_NATIVE_DELIVERY_NOTES_MAX  (int)  <- src/clio_agent/gact/native_delivery_outcome.py
 # Unsettled native-attachment decline notes buffered before the oldest are

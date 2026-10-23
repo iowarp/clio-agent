@@ -176,10 +176,8 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _enrich_with_context_files,
     _estimate_context_tokens,
     _finalize_context_frame,
-    _memory_search_request_from_message,
     _message_text_for_frame,
     _record_context_frame,
-    _requested_memory_search,
 )
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
@@ -379,9 +377,7 @@ from clio_agent.gact.routes.lifecycle import register_lifecycle_routes  # noqa: 
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
-from clio_agent.gact.routes.memory import (  # noqa: E402
-    register_memory_routes,
-)
+from clio_agent.gact.routes.memory import register_memory_routes  # noqa: E402
 from clio_agent.gact.routes.messages import (  # noqa: E402
     register_messages_routes,
 )
@@ -402,6 +398,9 @@ from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
 from clio_agent.gact.routes.session_defaults import register_session_defaults_routes  # noqa: E402
+from clio_agent.gact.routes.session_recall import (  # noqa: E402
+    register_session_recall_routes,
+)
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
 from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
@@ -459,19 +458,6 @@ from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
     _resolve_expert_context_window,
 )
 
-# Transcript-memory search primitives (query normalization, excerpting, the
-# scope-controlled ranked search) + the shared message-excerpt projection moved
-# to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
-# (_requested_memory_search)
-# and the memory routes (routes/memory.py) share one implementation. Re-exported
-# here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
-from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401
-    _memory_search_excerpt,
-    _memory_search_response,
-    _memory_search_terms,
-    _message_text_excerpt,
-)
-
 # Permission-policy data machinery (validation, load/flush, resolution-derived
 # policy + the constants) moved to gact/runtime/permission_policies.py (#714
 # decomposition step 7) so the permissions route module + this startup path share
@@ -487,6 +473,18 @@ from clio_agent.gact.runtime.permission_policies import (  # noqa: E402,F401
     _load_permission_policies,
     _permission_path_from_args,
     _validate_permission_policies,
+)
+
+# Transcript-memory search primitives (query normalization, excerpting, the
+# scope-controlled ranked search) + the shared message-excerpt projection moved
+# to gact/runtime/session_recall_search.py (#714 decomposition) so the agent-run path
+# and the recall routes (routes/session_recall.py) share one implementation. Re-exported
+# here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
+from clio_agent.gact.runtime.session_recall_search import (  # noqa: E402,F401
+    _message_text_excerpt,
+    _recall_search_excerpt,
+    _recall_search_response,
+    _recall_search_terms,
 )
 from clio_agent.gact.runtime.type_parsing import (  # noqa: E402,F401
     _SCALAR_FIELD_TYPES,
@@ -1078,7 +1076,7 @@ def build_app(
     # iowarp/clio-agent#369: agent-callable memory tool audit. Tool
     # reads are policy-gated and provenance-bearing so cross-session
     # context is visible after the fact.
-    app.state.memory_tool_audit = []
+    app.state.session_recall_audit = []
     # per-session pending diffs. Keyed by
     # session_id -> list of {path, unified_diff, status,
     # part_id, message_id}. Status is "pending" until apply/reject
@@ -1596,13 +1594,9 @@ def build_app(
     # action guard travel on ``deps``.
     register_diffs_routes(app, deps)
 
-    # ---- /v1/memory/* (transcript-memory recall surface) -------------
-    # The read-only memory search + the three agent-callable, policy-gated
-    # memory tools (search-sessions / read-session-summary / read-context-frame)
-    # are owned by routes/memory.py. The ranked-search primitives they share with
-    # the agent-run path live in runtime/memory_search.py (single source); the
-    # error/audit/policy + bounded-projection helpers are private to that module.
-    register_memory_routes(app, deps)
+    # ---- /v1/session-recall/* (past sessions) and /v1/memory/* (long-term memory) ----
+    register_session_recall_routes(app, deps)
+    register_memory_routes(app)
 
     # ---- /v1/sessions/{sid}/schedules + /v1/schedules/{id} (#21) -----
     # Scheduled-turn CRUD (list/add/delete) is owned by routes/schedules.py; the

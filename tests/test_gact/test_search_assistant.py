@@ -17,7 +17,10 @@ from clio_agent.gact.agents.tool_instrumentation import instrument_tools
 from clio_agent.gact.agents.tool_recording import recording_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes.workspace_file_read import readable_workspace_file
-from clio_agent.gact.runtime.memory_search import _memory_search_excerpt, _memory_search_response
+from clio_agent.gact.runtime.session_recall_search import (
+    _recall_search_excerpt,
+    _recall_search_response,
+)
 from clio_agent.gact.search_assistant import (
     _active,
     build_clio_search_read_tool,
@@ -66,18 +69,18 @@ def _search_marketplace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
 def test_literal_search_reads_the_corpus_off_the_request_loop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clio_agent.gact.routes import memory
+    from clio_agent.gact.routes import session_recall as memory
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     workspace, _ = _source(app, tmp_path / "data")
-    original = memory._memory_search_response
+    original = memory._recall_search_response
     reader_threads: list[int] = []
 
     def observed_search(*args: Any, **kwargs: Any) -> Any:
         reader_threads.append(threading.get_ident())
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(memory, "_memory_search_response", observed_search)
+    monkeypatch.setattr(memory, "_recall_search_response", observed_search)
 
     @app.get("/__test/thread")
     async def loop_thread() -> dict[str, int]:
@@ -86,7 +89,7 @@ def test_literal_search_reads_the_corpus_off_the_request_loop(
     with TestClient(app) as client:
         loop = client.get("/__test/thread").json()["thread"]
         result = client.get(
-            "/v1/memory/search",
+            "/v1/session-recall/search",
             params={
                 "query": "share a plant",
                 "workspace_id": workspace.id,
@@ -130,7 +133,7 @@ def test_rendered_phrase_beats_common_words_and_excerpt_reaches_later_passage(
         _message(session.id, text),
         _message(session.id, "a reviewer mentioned a protocol", message_id="msg_other"),
     ]
-    response = _memory_search_response(
+    response = _recall_search_response(
         app, query=query, workspace_id=workspace.id, include_cross_session=True
     )
     hit = response.hits[0]
@@ -138,7 +141,7 @@ def test_rendered_phrase_beats_common_words_and_excerpt_reaches_later_passage(
     assert hit.metadata["exact_phrase"] is True
     assert "Share a **plant** with the reviewer" in hit.text
     assert len(hit.text) <= 486
-    assert "plant" in _memory_search_excerpt(text, ["a", "plant", "reviewer"], max_chars=200)
+    assert "plant" in _recall_search_excerpt(text, ["a", "plant", "reviewer"], max_chars=200)
 
 
 @pytest.mark.asyncio
@@ -331,7 +334,7 @@ async def test_native_tools_read_real_sources_and_global_search_omits_ephemeral_
     )
     app.state.messages[side.id] = [_message(side.id, "Share a plant with the reviewer.")]
     app.state.sessions.create(workspace_id=workspace.id, metadata={"side_session": "legacy marker"})
-    hits = _memory_search_response(app, query="share a plant", include_cross_session=True)
+    hits = _recall_search_response(app, query="share a plant", include_cross_session=True)
     assert side.id not in {hit.session_id for hit in hits.hits}
     app_token, session_token = context.set_app(app), context.set_session_id(side.id)
     try:

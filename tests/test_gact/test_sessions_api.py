@@ -119,9 +119,7 @@ def test_session_context_policy_reports_current_compartment_semantics(
     assert body["memory_scope"] == "session"
     assert body["writable_scope"] == "session"
     assert body["cross_session_read_available"] is True
-    assert body["cross_session_read_endpoint"] == (
-        f"/v1/sessions/{sid}/memory/tools/search-sessions"
-    )
+    assert body["cross_session_read_endpoint"] == (f"/v1/sessions/{sid}/session-recall/search")
     assert body["requires_user_consent"] is True
     assert body["metadata"]["source"] == "clio_backend_default"
     assert body["metadata"]["session_mode"] == "plan"

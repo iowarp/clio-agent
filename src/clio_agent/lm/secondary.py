@@ -1,4 +1,10 @@
-"""Caller-relative identities for summarization inference (#1322)."""
+"""Caller-relative identities for secondary inference (#1322).
+
+``summarizer`` reads its own ``summarizer.*`` settings and inherits the caller's model
+when unset. The long-term memory roles ``memory_extract`` and ``memory_consolidate``
+are fleet roles (Settings → Fleet, ``fleet.judges``); a background pass has no caller,
+so an unset memory role means the server's default model (memory ledger MD13).
+"""
 
 from __future__ import annotations
 
@@ -12,7 +18,7 @@ from clio_agent.config import LMProviderConfig, create_chat_adapter
 from clio_agent.providers.lm_spec import LMSpec, spec_from_config
 from clio_agent.providers.resolver import resolve_endpoint_and_handshake
 
-SecondaryRole = Literal["summarizer"]
+SecondaryRole = Literal["summarizer", "memory_extract", "memory_consolidate"]
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +45,13 @@ class SecondaryLM:
 
 def read_secondary_settings(role: SecondaryRole) -> SecondarySettings:
     """Snapshot a role's file/env configuration exactly once."""
+    if role != "summarizer":
+        from clio_agent.gact.fleet_settings import fleet_settings  # noqa: PLC0415
+
+        choice = fleet_settings()["judges"].get(role) or {}
+        return SecondarySettings(
+            model=str(choice.get("model_id", "")), provider=str(choice.get("provider_id", ""))
+        )
     values = (
         conf.resolve("summarizer.model", env="CLIO_SUMMARIZER_MODEL", default="", cast=conf.as_str),
         conf.resolve(

@@ -472,7 +472,7 @@ def test_memory_search_defaults_to_session_scope(client_with_arc: TestClient) ->
     )
 
     resp = client_with_arc.get(
-        "/v1/memory/search",
+        "/v1/session-recall/search",
         params={"query": "climate pressure", "session_id": sid_a},
     )
     assert resp.status_code == 200
@@ -486,7 +486,7 @@ def test_memory_search_defaults_to_session_scope(client_with_arc: TestClient) ->
 def test_memory_search_requires_explicit_cross_session_opt_in(
     client_with_arc: TestClient,
 ) -> None:
-    resp = client_with_arc.get("/v1/memory/search", params={"query": "climate"})
+    resp = client_with_arc.get("/v1/session-recall/search", params={"query": "climate"})
     assert resp.status_code == 422
     body = resp.json()
     assert body["error"]["error"] == "invalid_request"
@@ -542,7 +542,7 @@ def test_memory_search_cross_session_returns_provenance(
     )
 
     resp = client_with_arc.get(
-        "/v1/memory/search",
+        "/v1/session-recall/search",
         params={
             "query": "pressure dataset",
             "session_id": sid_b,
@@ -584,7 +584,7 @@ def test_memory_search_denies_other_workspace_active_session(
     ).json()["id"]
 
     resp = client_with_arc.get(
-        "/v1/memory/search",
+        "/v1/session-recall/search",
         params={
             "query": "pressure dataset",
             "session_id": sid_other,
@@ -619,7 +619,7 @@ def test_memory_search_marks_global_scope(client_with_arc: TestClient) -> None:
     )
 
     resp = client_with_arc.get(
-        "/v1/memory/search",
+        "/v1/session-recall/search",
         params={
             "query": "pressure dataset",
             "workspace_id": "ws_global",
@@ -634,94 +634,11 @@ def test_memory_search_marks_global_scope(client_with_arc: TestClient) -> None:
 
 def test_memory_search_unknown_session_404s(client_with_arc: TestClient) -> None:
     resp = client_with_arc.get(
-        "/v1/memory/search",
+        "/v1/session-recall/search",
         params={"query": "pressure", "session_id": "sess_missing"},
     )
     assert resp.status_code == 404
     assert resp.json()["error"]["error"] == "not_found"
-
-
-def test_turn_can_opt_into_cross_session_memory_context(tmp_path: Path, arc: ARCMemory) -> None:
-    """#1312-class settlement race: this drives a REAL turn (the recording
-    ``FakeAgent`` must be reached), so the client MUST be entered -- see
-    ``_complete_turn_with_metadata``'s docstring for why a bare
-    ``TestClient(app)`` here settles the turn ``cancelled`` before the agent
-    is ever called, turning ``agent.questions[0]`` into an IndexError.
-    """
-
-    agent = FakeAgent()
-    app = build_app(
-        sessions_path=tmp_path / "s.json",
-        arc=arc,
-        agent=agent,
-    )
-    with TestClient(app) as client:
-        ws_science = client.post(
-            "/v1/workspaces",
-            json={"name": "Science", "root_path": ""},
-        ).json()["id"]
-        sid_prior = client.post(
-            "/v1/sessions",
-            json={"title": "Monday NDP work", "workspace_id": ws_science},
-        ).json()["id"]
-        sid_current = client.post(
-            "/v1/sessions",
-            json={"title": "Wednesday planning", "workspace_id": ws_science},
-        ).json()["id"]
-        _add_text_message(
-            client,
-            sid_prior,
-            message_id="msg_prior",
-            role="assistant",
-            text="NDP catalog result: dataset alpha has pressure and temperature.",
-            created_at="2026-05-25T12:00:00+00:00",
-        )
-
-        _grant_read(client, sid_current, sid_prior)
-        assistant = _complete_turn_with_metadata(
-            client,
-            sid_current,
-            "Based on recent work, draft next steps.",
-            {
-                "memory_search": {
-                    "enabled": True,
-                    "query": "pressure dataset",
-                    "include_cross_session": True,
-                    "workspace_id": ws_science,
-                    "limit": 5,
-                    "reason": "answer user request about recent work",
-                }
-            },
-        )
-
-        # The search results are the turn's ``memory_search`` addition (recorded by the agent
-        # loop as its own message); the question carries only the user's text.
-        memory_block = agent.injections[0].get("memory_search", "")
-        assert memory_block.startswith("## Explicit Memory Search Results")
-        assert "Monday NDP work" in memory_block
-        assert "dataset alpha has pressure and temperature" in memory_block
-        assert "Based on recent work, draft next steps." not in memory_block
-        assert "Based on recent work, draft next steps." in agent.questions[0]
-        assert "## Explicit Memory Search Results" not in agent.questions[0]
-        assert assistant["metadata"]["memory_search"]["include_cross_session"] is True
-        assert set(assistant["metadata"]["memory_search"]["searched_sessions"]) == {
-            sid_prior,
-            sid_current,
-        }
-        assert assistant["metadata"]["memory_search"]["hits"][0]["session_id"] == sid_prior
-        assert assistant["metadata"]["memory_search"]["hits"][0]["cross_session"] is True
-        events = _application(client).state.bus._history.get(sid_current, [])
-        assert "memory.search.completed" in [event.type for event in events]
-        semantic = [
-            event.payload
-            for event in events
-            if event.type == "semantic.event"
-            and event.payload["event_type"] == "memory.search.completed"
-        ]
-        assert semantic
-        assert semantic[-1]["payload"]["include_cross_session"] is True
-        assert semantic[-1]["payload"]["hit_count"] == 1
-        assert semantic[-1]["payload"]["hits"][0]["cross_session"] is True
 
 
 def test_memory_tool_search_same_workspace_requires_and_records_trusted_grant(
@@ -750,7 +667,7 @@ def test_memory_tool_search_same_workspace_requires_and_records_trusted_grant(
 
     grant = _grant_read(client_with_arc, sid_current, sid_prior)
     resp = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/search-sessions",
+        f"/v1/sessions/{sid_current}/session-recall/search",
         json={
             "query": "pressure dataset",
             "scope": "current_workspace",
@@ -762,13 +679,13 @@ def test_memory_tool_search_same_workspace_requires_and_records_trusted_grant(
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["tool"] == "memory_search_sessions"
+    assert body["tool"] == "session_search"
     assert body["metadata"]["policy_decision"] == "allow_core_relationship"
     assert body["metadata"]["provenance"]["source"] == "gact_memory_tool"
     assert body["hits"][0]["session_id"] == sid_prior
     assert body["hits"][0]["metadata"]["cross_session"] is True
-    audit = _application(client_with_arc).state.memory_tool_audit[-1]
-    assert audit["tool_name"] == "memory_search_sessions"
+    audit = _application(client_with_arc).state.session_recall_audit[-1]
+    assert audit["tool_name"] == "session_search"
     assert audit["status"] == "completed"
     assert audit["policy_decision"] == "allow_core_relationship"
     recorded_agent = _application(client_with_arc).state.sessions.get(sid_current).agent["id"]
@@ -779,7 +696,7 @@ def test_memory_tool_search_same_workspace_requires_and_records_trusted_grant(
         grant.model_copy(update={"revoked_at": now()}), observation_id=grant.id + ":revoke"
     )
     revoked = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/search-sessions",
+        f"/v1/sessions/{sid_current}/session-recall/search",
         json={
             "query": "pressure dataset",
             "scope": "current_workspace",
@@ -815,7 +732,7 @@ def test_memory_tool_search_excludes_ungranted_peers_despite_model_intent(
     )
 
     resp = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/search-sessions",
+        f"/v1/sessions/{sid_current}/session-recall/search",
         json={
             "query": "pressure dataset",
             "scope": "current_workspace",
@@ -827,12 +744,12 @@ def test_memory_tool_search_excludes_ungranted_peers_despite_model_intent(
     body = resp.json()
     assert body["hits"] == [] and sid_peer not in body["searched_sessions"]
     assert "restricted peer result" not in resp.text
-    audit = _application(client_with_arc).state.memory_tool_audit[-1]
+    audit = _application(client_with_arc).state.session_recall_audit[-1]
     assert audit["policy_decision"] == "allow_core_relationship"
     assert audit["details"]["hit_count"] == 0
 
 
-def test_memory_tool_read_context_frame_same_workspace_with_provenance(
+def test_session_recall_frame_route_same_workspace_with_provenance(
     client_with_arc: TestClient,
 ) -> None:
     ws_science = client_with_arc.post(
@@ -877,7 +794,7 @@ def test_memory_tool_read_context_frame_same_workspace_with_provenance(
     _grant_read(client_with_arc, sid_current, sid_prior)
 
     resp = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/read-context-frame",
+        f"/v1/sessions/{sid_current}/session-recall/read-context-frame",
         json={
             "target_session_id": sid_prior,
             "frame_id": "ctx_test_1",
@@ -889,14 +806,14 @@ def test_memory_tool_read_context_frame_same_workspace_with_provenance(
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["tool"] == "memory_read_context_frame"
+    assert body["tool"] == "session_read_context_frame"
     assert body["frame"]["id"] == "ctx_test_1"
     assert body["frame"]["metadata"]["source"] == "gact_context_frame"
     assert body["metadata"]["policy_decision"] == "allow_core_relationship"
     assert body["metadata"]["provenance"]["target_session_id"] == sid_prior
     recorded_agent = _application(client_with_arc).state.sessions.get(sid_current).agent["id"]
     assert body["metadata"]["caller"] == {"agent_id": recorded_agent}
-    assert _application(client_with_arc).state.memory_tool_audit[-1]["caller"] == {
+    assert _application(client_with_arc).state.session_recall_audit[-1]["caller"] == {
         "agent_id": recorded_agent
     }
 
@@ -922,7 +839,7 @@ def test_memory_tool_read_summary_denies_other_workspace(
     ).json()["id"]
 
     resp = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/read-session-summary",
+        f"/v1/sessions/{sid_current}/session-recall/read-summary",
         json={
             "target_session_id": sid_other,
             "scope": "current_workspace",
@@ -933,10 +850,10 @@ def test_memory_tool_read_summary_denies_other_workspace(
 
     assert resp.status_code == 403
     body = resp.json()
-    assert body["error"]["error"] == "memory_policy_denied"
+    assert body["error"]["error"] == "session_recall_policy_denied"
     assert body["error"]["details"]["policy_decision"] == "deny_session_unavailable"
     recorded_agent = _application(client_with_arc).state.sessions.get(sid_current).agent["id"]
-    assert _application(client_with_arc).state.memory_tool_audit[-1]["caller"] == {
+    assert _application(client_with_arc).state.session_recall_audit[-1]["caller"] == {
         "agent_id": recorded_agent
     }
 
@@ -966,7 +883,7 @@ def test_memory_tool_global_search_requires_global_scope(client_with_arc: TestCl
     _grant_read(client_with_arc, sid_current, sid_global)
 
     resp = client_with_arc.post(
-        f"/v1/sessions/{sid_current}/memory/tools/search-sessions",
+        f"/v1/sessions/{sid_current}/session-recall/search",
         json={"query": "pressure dataset", "scope": "global", "limit": 5},
     )
 
@@ -1002,7 +919,7 @@ def test_memory_tool_search_excludes_rewound_messages(tmp_path: Path, arc: ARCMe
         assert rewind.status_code == 200, rewind.text
 
         resp = client.post(
-            f"/v1/sessions/{sid}/memory/tools/search-sessions",
+            f"/v1/sessions/{sid}/session-recall/search",
             json={"query": "zircon clue", "scope": "session"},
         )
 
@@ -1010,14 +927,14 @@ def test_memory_tool_search_excludes_rewound_messages(tmp_path: Path, arc: ARCMe
         body = resp.json()
         assert body["hits"] == []
         summary = client.post(
-            f"/v1/sessions/{sid}/memory/tools/read-session-summary",
+            f"/v1/sessions/{sid}/session-recall/read-summary",
             json={},
         ).json()["summary"]
         assert summary["visible_message_ids"] == ["msg_keep"]
         assert summary["excluded_message_ids"] == ["msg_delete"]
 
 
-def test_root_agent_uses_shared_tasks_instead_of_memory_named_session_tools() -> None:
+def test_standard_agent_carries_memory_and_session_recall_tools() -> None:
     from clio_agent.gact.agents.native_tool_registry import build_native_tools
     from clio_agent.gact.agents.resolution import resolution_agent_def
     from clio_agent.plugins.service import PluginService
@@ -1025,12 +942,10 @@ def test_root_agent_uses_shared_tasks_instead_of_memory_named_session_tools() ->
     resolution = PluginService().resolve("clio/standard", pin=False)
     names = set(resolution.tool_names)
     assert {"query_tasks", "observe_tasks", "send_agent_message"} <= names
-    memory_tools = {
-        "memory_search_sessions",
-        "memory_read_session_summary",
-        "memory_read_context_frame",
-    }
-    assert not memory_tools.intersection(names)
+    recall_tools = {"session_search", "session_read_summary", "session_read_context_frame"}
+    memory_tools = {"memory_search", "memory_read", "create_memory", "update_memory"}
+    assert recall_tools | memory_tools <= names  # the memory plugin every agent carries
+    assert not {name for name in names if name.startswith("memory_") and name not in memory_tools}
     task_tools = {"query_tasks", "observe_tasks", "send_agent_message"}
     built, _gateway, withheld = build_native_tools(
         resolution_agent_def(resolution), sorted(task_tools), {}

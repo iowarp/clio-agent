@@ -234,9 +234,25 @@ def resolution_agent_def(resolution: Resolution) -> AgentDef:
 
 
 def session_agent_def(app: Any, session_id: str) -> AgentDef:
-    """The session's agent, with the zero-tool allowlist applied."""
+    """The session's agent, with the zero-tool allowlist applied.
 
-    agent_def = resolution_agent_def(session_resolution(app, session_id))
+    A memory tool this session may not have (memory off, a delegated child's writes)
+    is withheld at build time; its prompt fragment leaves with it (memory ledger MD8).
+    """
+
+    resolution = session_resolution(app, session_id)
+    agent_def = resolution_agent_def(resolution)
+    session = app.state.sessions.get(session_id)
+    if session is not None:
+        from clio_agent.gact.memory.policy import session_policy  # noqa: PLC0415
+        from clio_agent.plugins.compose import prompt_text_without  # noqa: PLC0415
+
+        policy = session_policy(app, session)
+        withheld = {name for name in resolution.tool_names if policy.withheld(name)}
+        if withheld:
+            agent_def = agent_def.model_copy(
+                update={"system_prompt": prompt_text_without(resolution.prompt, withheld)}
+            )
     return apply_session_tool_allowlist(app, agent_def, session_id=session_id)
 
 

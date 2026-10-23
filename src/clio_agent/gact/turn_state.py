@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 #:   function -- i.e. the turn's cancel token tripped mid-prologue.
 #: * ``completed`` -- the prologue ran to its own end (whatever outcome string
 #:   it returned: proceed/blocked/deferred). Every prologue-derived field
-#:   (context_frame/context_file_provenance/enriched_text/memory_search_metadata)
+#:   (context_frame/context_file_provenance/enriched_text)
 #:   is assigned by this point.
 #: * ``failed`` -- an exception OTHER than a cancel signal escaped the
 #:   prologue (e.g. the deferred transcript job raising ``TranscriptIngestError``).
@@ -194,7 +194,6 @@ class TurnState:
     context_frame: Any = None
     context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)
     enriched_text: str = ""
-    memory_search_metadata: dict[str, Any] = field(default_factory=dict)
     #: CLIO's own additions for this turn, ``(source, text)`` in order; the agent loop
     #: records each as a message of its own ahead of the user message.
     injections: list[tuple[str, str]] = field(default_factory=list)

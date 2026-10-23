@@ -148,13 +148,13 @@ def test_failed_execution_presents_the_authoritative_reason_without_fabricating_
     ]
 
     _raw, denied = completed_presentation(
-        "memory_read_session_summary",
+        "session_read_summary",
         {},
         None,
         None,
         "",
         error=(
-            "403: {'error': {'error': 'memory_policy_denied', "
+            "403: {'error': {'error': 'session_recall_policy_denied', "
             "'message': 'raw policy payload', "
             "'details': {'policy_decision': 'deny_other_workspace'}}}"
         ),

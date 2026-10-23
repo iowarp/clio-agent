@@ -67,7 +67,15 @@ class PresentationBlock(BaseModel):
     pages: list[int] = Field(default_factory=list)
     target: (
         Literal[
-            "artifact", "resource", "session", "url", "file", "work", "surface", "connected_data"
+            "artifact",
+            "resource",
+            "session",
+            "url",
+            "file",
+            "work",
+            "surface",
+            "connected_data",
+            "memory",
         ]
         | None
     ) = None

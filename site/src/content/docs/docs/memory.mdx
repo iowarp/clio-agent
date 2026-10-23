@@ -54,8 +54,8 @@ and inspect their transcripts, recorded summaries and linked artifacts with
 The same task surface lets a parent inspect a failed child's work before
 messaging it to continue.
 
-The older `memory_search_sessions`, `memory_read_session_summary` and
-`memory_read_context_frame` names remain explicit compatibility tools for one
+The older `session_search`, `session_read_summary` and
+`session_read_context_frame` names remain explicit compatibility tools for one
 cycle. They are session inspection tools, and new default catalogs use Tasks.
 The recent-activity overview described below remains distinct from recorded
 compaction summaries and maintained long-term knowledge.
@@ -132,9 +132,9 @@ to the conversation with the [+ menu](/docs/agents-and-plugins/#add-or-remove-pl
 
 | Tool | What it actually returns |
 | --- | --- |
-| `memory_search_sessions` | Ranked matching excerpts with session, message and part identifiers. Ranking measures matching query terms, not factual confidence. |
-| `memory_read_session_summary` | The recent-message overview described above. |
-| `memory_read_context_frame` | A saved frame's metadata and up to 50 item descriptions, including source identifiers, inclusion and reasons. It is not the full text of every source. |
+| `session_search` | Ranked matching excerpts with session, message and part identifiers. Ranking measures matching query terms, not factual confidence. |
+| `session_read_summary` | The recent-message overview described above. |
+| `session_read_context_frame` | A saved frame's metadata and up to 50 item descriptions, including source identifiers, inclusion and reasons. It is not the full text of every source. |
 
 Default tool calls stay within the current session. Workspace recall expands
 to related sessions in the same workspace. **Global** recall refers to sessions
@@ -150,9 +150,9 @@ and supporting files before relying on a recalled claim.
 <details>
 <summary>Implementation references</summary>
 
-- [Summary projection and memory routes](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/routes/memory.py): constructs the overview from retained messages and records policy decisions.
-- [Transcript search](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/runtime/memory_search.py): word matching, ranking and bounded excerpts.
-- [Agent memory tools](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/memory_tools.py): the callable tools, scope and supplied user-intent checks.
+- [Summary projection and memory routes](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/routes/session_recall.py): constructs the overview from retained messages and records policy decisions.
+- [Transcript search](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/runtime/session_recall_search.py): word matching, ranking and bounded excerpts.
+- [Agent memory tools](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/session_recall_tools.py): the callable tools, scope and supplied user-intent checks.
 - [Memory route tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_memory_stats.py) and [summary contract tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_memory_summary_contract.py).
 - [Compaction model selection](https://github.com/iowarp/clio-agent/blob/develop/src/clio_agent/gact/compaction_lm.py) and its [tests](https://github.com/iowarp/clio-agent/blob/develop/tests/test_gact/test_compaction_lm.py).
 

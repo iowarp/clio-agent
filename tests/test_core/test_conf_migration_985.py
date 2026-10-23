@@ -60,9 +60,9 @@ def _nest(dotted: str, value: Any) -> dict[str, Any]:
 _LEDGER_KNOBS = [
     ("CLIO_LEDGER_COMMAND_AUDIT_MAX", "command_audit.max", "command_audit", "max_entries", 2000),
     (
-        "CLIO_LEDGER_MEMORY_TOOL_AUDIT_MAX",
-        "memory_tool_audit.max",
-        "memory_tool_audit",
+        "CLIO_LEDGER_SESSION_RECALL_AUDIT_MAX",
+        "session_recall_audit.max",
+        "session_recall_audit",
         "max_entries",
         2000,
     ),

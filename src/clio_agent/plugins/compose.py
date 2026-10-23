@@ -40,9 +40,10 @@ class ComposedFragment:
     text: str
     tokens: int
     path: str = ""
+    when_tools: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        row: dict[str, Any] = {
             "id": self.id,
             "plugin": self.plugin,
             "section": self.section,
@@ -50,6 +51,9 @@ class ComposedFragment:
             "tokens": self.tokens,
             "path": self.path,
         }
+        if self.when_tools:
+            row["when_tools"] = list(self.when_tools)
+        return row
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,21 @@ class ComposedPrompt:
             "digest": self.digest,
             "warnings": list(self.warnings),
         }
+
+
+def prompt_text_without(prompt: Mapping[str, Any], withheld: set[str]) -> str:
+    """A composed prompt's text without the fragments whose ``when.tools`` name a tool
+    the session was not given (a tool withheld at build time takes its guidance along).
+    """
+    if not withheld:
+        return str(prompt.get("text") or "")
+    texts = [
+        str(fragment.get("text") or "")
+        for section in prompt.get("sections", [])
+        for fragment in section.get("fragments", [])
+        if not withheld & set(fragment.get("when_tools") or ())
+    ]
+    return "\n\n".join(text for text in texts if text)
 
 
 def render_template(
@@ -162,6 +181,7 @@ def compose(
                 text=text,
                 tokens=(len(text) + 3) // 4,
                 path=fragment.path,
+                when_tools=tuple(fragment.when_tools),
             )
         )
     for section in SECTIONS[1:]:

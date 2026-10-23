@@ -21,7 +21,15 @@ from tests._harness import runner_module_builder
 from tests.test_plugins.helpers import plugin, tools_module, write
 
 FIXTURE_PLUGINS = {"workspace", "shell", "visuals", "delegation", "document-runtime"}
-STANDARD_PLUGINS = ["core", "workspace", "shell", "visuals", "delegation", "document-runtime"]
+STANDARD_PLUGINS = [
+    "core",
+    "memory",
+    "workspace",
+    "shell",
+    "visuals",
+    "delegation",
+    "document-runtime",
+]
 
 
 @pytest.fixture()
@@ -125,7 +133,7 @@ def test_installed_marketplace_is_untrusted_until_the_trust_step(
     assert resolved.status_code == 200, resolved.text
     # ``notes`` hard-requires ``shell``, which comes from the default marketplace.
     assert resolved.json()["agent"]["id"] == "helper"
-    assert [row["id"] for row in resolved.json()["plugins"]] == ["core", "notes", "shell"]
+    assert [row["id"] for row in resolved.json()["plugins"]] == ["core", "memory", "notes", "shell"]
 
 
 def test_marketplace_install_requires_a_source(client: TestClient) -> None:

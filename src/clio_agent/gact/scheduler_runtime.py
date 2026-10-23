@@ -163,6 +163,12 @@ def _scheduler_tick_once(app: "FastAPI") -> None:
         return
     for sch in due:
         _fire_one(app, sch)
+    try:
+        from clio_agent.gact.memory.background import memory_tick  # noqa: PLC0415
+
+        memory_tick(app, now)  # long-term memory's background pass (idle sessions)
+    except Exception:  # noqa: BLE001 - the tick loop must survive the memory pass
+        logger.warning("scheduler tick error reason=memory_pass_failed", exc_info=True)
 
 
 def _fire_one(app: "FastAPI", sch: Any) -> None:

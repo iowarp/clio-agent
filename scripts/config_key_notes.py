@@ -478,7 +478,7 @@ KEY_NOTES: dict[str, str] = {
         "Max per-session context-frame entries kept in memory before FIFO eviction; raise to "
         "retain more attached-context history."
     ),
-    "gact.ledger_retention.memory_tool_audit.max": (
+    "gact.ledger_retention.session_recall_audit.max": (
         "Max entries kept in the in-memory memory-tool-audit ledger before FIFO eviction; raise "
         "for more memory-tool audit history."
     ),

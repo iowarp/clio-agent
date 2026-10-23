@@ -22,6 +22,7 @@ from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.hooks.answer import apply_answer_hooks
+from clio_agent.gact.memory.turn_use import attach_turn_memory
 from clio_agent.gact.part_atom_minter import (
     close_turn_minter,
     failed_finalize_identity,
@@ -329,8 +330,7 @@ def finalize_turn(
         state.assistant_metadata["workflow_state"] = produced_wf
     if state.context_file_provenance["files"]:
         state.assistant_metadata["context_files"] = state.context_file_provenance
-    if state.memory_search_metadata:
-        state.assistant_metadata["memory_search"] = state.memory_search_metadata
+    attach_turn_memory(state)  # memory read this turn; usage counters off the turn's path
     if state.agent_runtime:
         state.assistant_metadata["agent_runtime"] = state.agent_runtime
     if state.prompt_resolution:
