@@ -403,7 +403,15 @@ def rebuilt_tool(
             setattr(func, attr, value)
     import dspy  # noqa: PLC0415
 
-    return dspy.Tool(func=func, name=name, desc=desc, args=args)
+    native = _clio_native_tool_class()
+    if not isinstance(inner_tool, native):
+        return dspy.Tool(func=func, name=name, desc=desc, args=args)
+    # The replacement validates the call before the inner tool sees it, so it
+    # takes the inner signature and class: null for a defaulted argument means
+    # the default, and an invalid call is recorded as one.
+    if inner_func is not None:
+        func.__signature__ = inspect.signature(inner_func)  # type: ignore[attr-defined]
+    return native(func=func, name=name, desc=desc, args=args)
 
 
 def tool_domain(tool: Any) -> ToolDomain | None:
