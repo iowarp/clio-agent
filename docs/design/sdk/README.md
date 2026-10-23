@@ -8,6 +8,7 @@ Design documents for replacing blueprints with Python-defined agents and plugins
 | [plugins-and-composition.md](plugins-and-composition.md) | Plugin format, packs, agents as plugin sets, composed prompt, trust |
 | [agent-sdk.md](agent-sdk.md) | Python classes, ownership, resolution and validation |
 | [orchestration-semantics.md](orchestration-semantics.md) | Flows, `ctx` primitives on the task layer, plans, research survey |
+| [model-fleet.md](model-fleet.md) | Accounts and models, usage, model choice at every spawn point |
 | [remote-agents-and-protocols.md](remote-agents-and-protocols.md) | A2A, ACP and Academy (context; a later campaign) |
 
 These are exported from the shared design docs as of Oct 20, 2026. Edit them here from now on; the repository copy is the one the implementation follows.
