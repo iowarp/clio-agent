@@ -10,7 +10,9 @@ spawn-strategy variants -- goes through the adapter
 * default: DSPy's ``ChatAdapter`` with a pre-flight context check (an oversize prompt
   is a typed :class:`_ContextOverflowError` before the server sees it) and no JSON
   fallback -- a reply that does not parse is DSPy's typed ``AdapterParseError``, never
-  repaired or re-sampled;
+  repaired or re-sampled. Only protocol framing is normalized: spacing variants of the
+  end marker, and a missing header on a signature's one text field (logged with
+  ``reason=adapter_unmarked_text_field``);
 * guided output (``lm.guided_output`` / ``CLIO_LM_GUIDED_OUTPUT``, default off): a
   ``JSONAdapter`` that sends a field-name-pinned ``json_schema`` so the server
   constrains generation; it fails typed, never degrading silently.
@@ -304,6 +306,32 @@ def _strict_guided_json_adapter_cls() -> Any:
 
 _CHAT_ADAPTER_CLS: Any = None
 _COMPLETED_MARKER_VARIANT = re.compile(r"(?m)^([ \t]*)\[\[ ## completed(?: ##)? ?\]\]([ \t]*)$")
+_FIELD_HEADER = re.compile(r"\[\[ ## \w+ ## \]\]")
+
+
+def _frame_unmarked_text_reply(signature: Any, completion: str) -> str:
+    """Frame a marker-less reply as the signature's one text output field.
+
+    A signature whose only output is one ``str`` field (a report, a synthesis) has one
+    place a reply can go. A model that writes that text without DSPy's
+    ``[[ ## field ## ]]`` header -- live, a deep-research writer's whole Markdown report
+    -- loses nothing but the framing; the text is taken whole and DSPy's validation of
+    the field runs unchanged. Any other signature, or a reply carrying a header, is
+    left to DSPy's own parse and its typed ``AdapterParseError``.
+    """
+
+    fields = signature.output_fields
+    if len(fields) != 1 or not completion.strip() or _FIELD_HEADER.search(completion):
+        return completion
+    name, field = next(iter(fields.items()))
+    if field.annotation is not str:
+        return completion
+    logger.warning(
+        "LM reply framed as its one text field reason=adapter_unmarked_text_field field=%s chars=%d",
+        name,
+        len(completion),
+    )
+    return f"[[ ## {name} ## ]]\n{completion}\n\n[[ ## completed ## ]]"
 
 
 def _chat_adapter_cls() -> Any:
@@ -320,10 +348,11 @@ def _chat_adapter_cls() -> Any:
             """Accept Codex's spacing and missing-delimiter variants of DSPy's final marker.
 
             The marker is protocol framing, not field content. Keep every typed
-            field and DSPy's normal validation unchanged.
+            field and DSPy's normal validation unchanged. So is a missing header on
+            a signature's one text field (:func:`_frame_unmarked_text_reply`).
             """
             normalized = _COMPLETED_MARKER_VARIANT.sub(r"\1[[ ## completed ## ]]\2", completion)
-            return super().parse(signature, normalized)
+            return super().parse(signature, _frame_unmarked_text_reply(signature, normalized))
 
         def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
             _check_context_overflow(self, signature, demos, inputs)
