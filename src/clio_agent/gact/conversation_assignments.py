@@ -280,6 +280,23 @@ def _new_assignment(
     return task
 
 
+def assignment_outputs(history: Any, details: AssignmentDetails, outputs: Any) -> Any:
+    """A turn's outputs, carrying the tool calls of the assignment's earlier turns first.
+
+    An assignment can span turns: a child that yields on a question resumes once it is
+    answered. Its result is what the assignment did, so an editor's proposal made before
+    it yielded still reaches the workflow that reads its tool calls.
+    """
+
+    if not details.last_output or not isinstance(outputs, dict):
+        return outputs
+    earlier = history.read_content(details.last_output)
+    calls = earlier.get("tools_called") if isinstance(earlier, dict) else None
+    if not calls:
+        return outputs
+    return {**outputs, "tools_called": [*calls, *(outputs.get("tools_called") or [])]}
+
+
 def _finish_segment(
     self: Conversations, segment: ConversationSegment, outcome: ConversationOutcome
 ) -> None:
@@ -376,7 +393,10 @@ def _finish_segment(
             and outcome.error.get("recoverable") is True
         )
         execution_failed = outcome.error is not None and not presentation_only
-        output = self.history.write_content(segment.session_id, outcome.error or outcome.outputs)
+        output = self.history.write_content(
+            segment.session_id,
+            outcome.error or assignment_outputs(self.history, details, outcome.outputs),
+        )
         detail_ref = self.history.write_content(
             segment.session_id,
             details.model_copy(
