@@ -43,6 +43,13 @@ class FlowOptionsInvalid(ValueError):
         self.problems = problems
 
 
+def _base_type(hint: Any) -> Any:
+    """``hint`` without its ``Annotated`` metadata (``Annotated[int, Field(ge=1)]`` is ``int``)."""
+    while typing.get_origin(hint) is typing.Annotated:
+        hint = typing.get_args(hint)[0]
+    return hint
+
+
 def _type_name(hint: Any) -> str:
     return hint.__name__ if isinstance(hint, type) else repr(hint).replace("typing.", "")
 
@@ -79,7 +86,9 @@ class Flow(dspy.Module):
         """``options`` checked against the types this flow declares for them.
 
         An option the flow annotates (``members: tuple[str, ...]``) is validated and
-        converted as Pydantic does (a list becomes a tuple); one of another shape raises
+        converted as Pydantic does (a list becomes a tuple), including any ``Annotated``
+        constraints (``Annotated[int, Field(ge=1)]``); a bool given for an int or float
+        option is refused rather than read as 1 or 0. One of another shape raises
         :class:`FlowOptionsInvalid` naming it and the declared type. Options the flow
         does not annotate pass unchanged; annotations that do not resolve are refused.
         """
@@ -87,7 +96,7 @@ class Flow(dspy.Module):
         if not options:
             return {}
         try:
-            hints = typing.get_type_hints(cls)
+            hints = typing.get_type_hints(cls, include_extras=True)
         except (NameError, TypeError) as exc:
             # The flow's own annotations do not resolve: options cannot be checked.
             raise FlowOptionsInvalid(cls.id or cls.__name__, [f"annotations: {exc}"]) from exc
@@ -99,6 +108,10 @@ class Flow(dspy.Module):
                 hint = next(iter(typing.get_args(hint)), None)
             if hint is None:
                 checked[key] = value
+                continue
+            if isinstance(value, bool) and _base_type(hint) in (int, float):
+                # Pydantic's lax mode reads True as 1; a flag is never a count.
+                problems.append(f"{key} must be {_type_name(hint)}, not {value!r:.80}")
                 continue
             try:
                 checked[key] = TypeAdapter(hint).validate_python(value)

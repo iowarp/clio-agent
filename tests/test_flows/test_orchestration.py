@@ -6,10 +6,11 @@ import asyncio
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Annotated, Any, ClassVar
 
 import dspy
 from fastapi.testclient import TestClient
+from pydantic import Field
 
 from tests.test_flows.conftest import (
     assistant_messages,
@@ -536,6 +537,27 @@ def test_flow_options_are_checked_against_the_types_the_flow_declares() -> None:
     with pytest.raises(FlowOptionsInvalid) as refused:
         council.checked_options({"members": 2, "models": ["a/b"]})
     assert refused.value.problems == ["members must be tuple[str, ...], not 2"]
+
+
+def test_flow_options_keep_declared_constraints_and_refuse_a_flag_for_a_count() -> None:
+    """``Annotated`` bounds hold, and True is not read as 1 for an int option."""
+
+    import pytest
+
+    from clio_agent.sdk.flow import Flow, FlowOptionsInvalid
+
+    class Bounded(Flow):
+        id = "bounded"
+        rounds: ClassVar[Annotated[int, Field(ge=0, le=3)]] = 1
+        width: int = 2
+
+    assert Bounded.checked_options({"rounds": 3, "width": 4}) == {"rounds": 3, "width": 4}
+    with pytest.raises(FlowOptionsInvalid) as refused:
+        Bounded.checked_options({"rounds": 9, "width": True})
+    assert [problem.split(" must ")[0] for problem in refused.value.problems] == [
+        "rounds",
+        "width",
+    ]
 
 
 def test_run_flow_refuses_options_of_the_wrong_shape_before_accepting(
