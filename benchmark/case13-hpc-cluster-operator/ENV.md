@@ -11,7 +11,7 @@ own isolated serve process are the only things either file starts or stops.
 
 - `CLIO_GACT_FIXTURE_PORT=17970` -- read by
   `tests/test_real_cases/conftest.py`'s `gact_server` fixture (default
-  `17960`, shared with earthscope/wildfire). Setting this env var before
+  `17960`, shared with earthscope). Setting this env var before
   `pytest` retargets that SAME fixture at `:17970` with zero new fixture code
   -- the live-test recipe below is the only thing that needs to change.
 - `bring_up_isolated_serve.sh` launches its own standalone serve on the same

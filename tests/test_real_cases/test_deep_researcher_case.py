@@ -20,7 +20,7 @@ skip cleanly with the live gate off, but the actual live run happens only at
 that gate, once C1-S2..S5 land on ``feat/mcp-client-unification``.
 
 Harness wrinkle (see ``clio_sut.py`` module docstring — it stays the shared,
-case-agnostic driver for earthscope/wildfire/this case): the
+case-agnostic driver for earthscope/this case): the
 coordinator here never calls ``web_search``/``web_fetch`` itself —
 only its ``researcher``/``critic`` children do, each on its OWN session
 (agent-driven ``spawn_agent_task``/``spawn_agents_parallel`` per C1-S1's

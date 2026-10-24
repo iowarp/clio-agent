@@ -1082,7 +1082,11 @@ def test_missing_absolute_tool_output_arg_does_not_count_as_artifact(
 def _coordinate_blocker_result(
     tmp_path: Path,
     *,
-    loaded_skills: tuple[str, ...] = ("resolve-earthscope-region", "acquire-earthscope-gnss"),
+    loaded_skills: tuple[str, ...] = (
+        "resolve-region",
+        "station-catalogs",
+        "acquire-earthscope-gnss",
+    ),
     extra_tools: tuple[dict[str, object], ...] = (),
 ) -> bench.DemoResult:
     """The coordinate-mutation case ending on a typed metadata-only blocker."""
@@ -1113,9 +1117,15 @@ def _coordinate_blocker_result(
             },
             {"name": "ndp_stage_resource", "ok": True, "result": {"local_path": str(raw)}},
             {
-                "name": "pandas_filter_data",
+                "name": "shell_bash",
                 "ok": True,
-                "args": {"file_path": str(raw), "output_file": str(clean)},
+                "args": {
+                    "command": (
+                        'uv run --no-project "SKILL_ROOT/scripts/station_catalog.py" write '
+                        f"{raw} --id Site --lat Latitude --lon '(deg)' -o {clean} "
+                        "--out catalog_report.json"
+                    )
+                },
             },
             {
                 "name": "geo_filter_points_by_radius",
@@ -1162,7 +1172,11 @@ def test_coordinate_earthscope_case_accepts_typed_blocker_without_analysis(
 ) -> None:
     result = _coordinate_blocker_result(tmp_path)
 
-    assert result.loaded_skill_ids == ["resolve-earthscope-region", "acquire-earthscope-gnss"]
+    assert result.loaded_skill_ids == [
+        "resolve-region",
+        "station-catalogs",
+        "acquire-earthscope-gnss",
+    ]
     assert "pandas_profile_csv" not in result.tool_names
     assert result.failure_reasons() == []
     assert result.passed
@@ -2656,7 +2670,7 @@ def _earthscope_result(
 def test_earthscope_gate_identifies_only_the_earthscope_agent() -> None:
     assert bench._is_earthscope_agent_ref("clio/earthscope")
     assert bench._is_earthscope_agent_ref("other/earthscope@^0.4")
-    assert not bench._is_earthscope_agent_ref("clio/seismic-waveform-review")
+    assert not bench._is_earthscope_agent_ref("clio/clio-data")
     assert not bench._is_earthscope_agent_ref("")
 
 
@@ -3008,47 +3022,6 @@ def test_earthscope_region_station_csv_within_radius_passes(tmp_path: Path) -> N
     assert result.passed is True
 
 
-def test_marketplace_canonical_cases_require_nonseismic_complex_hierarchy() -> None:
-    cases = {
-        case.case_id: case for case in bench._make_cases(bench._canonical_benchmark_manifest())
-    }
-    materials = cases["marketplace_materials_crystal_review"]
-    proteomics = cases["marketplace_proteomics_mzml_review"]
-    hpc = cases["marketplace_hpc_io_regression"]
-    format_bridge = cases["marketplace_format_bridge_integrity"]
-    terrain = cases["marketplace_terrain_pointcloud_suitability"]
-
-    assert materials.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
-    assert materials.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
-    assert materials.expected_handoff_agents == (
-        "crystal_structure",
-        "symmetry_quality",
-    )
-    assert proteomics.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
-    assert proteomics.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
-    assert proteomics.expected_handoff_agents == (
-        "mass_spec",
-        "spectra_quality",
-    )
-    assert hpc.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
-    assert hpc.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
-    assert hpc.expected_handoff_agents == ("trace_ingest", "regression_diff")
-    assert format_bridge.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
-    assert format_bridge.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
-    assert format_bridge.expected_handoff_agents == (
-        "source_inspect",
-        "conversion_policy",
-        "integrity",
-    )
-    assert terrain.min_expert_depth == bench._MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH
-    assert terrain.min_branch_count == bench._MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT
-    assert terrain.expected_handoff_agents == (
-        "terrain_derivation",
-        "gridding",
-        "suitability",
-    )
-
-
 _EARTHSCOPE_CASE_IDS = (
     "marketplace_earthscope_gnss_region_review",
     "marketplace_earthscope_gnss_region_los_angeles_mutation",
@@ -3072,23 +3045,22 @@ def test_earthscope_cases_target_the_single_agent_and_its_skills() -> None:
         assert not case.expected_handoff_agent_groups
         assert (case.min_handoff_events, case.min_expert_depth, case.min_branch_count) == (0, 0, 0)
         assert case.semantic_proofs == ("marketplace_agent",)
-        assert case.expected_skills[:2] == (
-            "resolve-earthscope-region",
+        assert case.expected_skills[:3] == (
+            "resolve-region",
+            "station-catalogs",
             "acquire-earthscope-gnss",
         )
         assert {
             "load_skill",
             "ndp_search_datasets",
             "ndp_stage_resource",
-            "pandas_filter_data",
+            "shell_bash",
             "geo_filter_points_by_radius",
         } <= set(case.expected_tools)
     for case_id in _EARTHSCOPE_CASE_IDS[:2]:
         case = cases[case_id]
-        assert {"geo_geocode", "pandas_profile_csv", "plot_plot_timeseries"} <= set(
-            case.expected_tools
-        )
-        assert {"analyze-earthscope-gnss", "visualize-earthscope-gnss"} <= set(case.expected_skills)
+        assert "geo_geocode" in case.expected_tools
+        assert "gnss-time-series" in case.expected_skills
         assert case.min_artifacts == 1
     coordinates = cases["marketplace_earthscope_gnss_region_coordinate_mutation"]
     assert coordinates.forbidden_tools == ("geo_geocode",)
@@ -3096,16 +3068,21 @@ def test_earthscope_cases_target_the_single_agent_and_its_skills() -> None:
 
 
 @pytest.mark.marketplace
-def test_earthscope_case_skills_ship_in_the_earthscope_skills_plugin() -> None:
-    plugin = MARKETPLACE_ROOT / "plugins" / "earthscope-skills"
-    shipped = {path.parent.name for path in (plugin / "skills").glob("*/SKILL.md")}
+def test_earthscope_case_skills_ship_in_the_earthscope_agents_plugins() -> None:
+    plugins = ("earthscope", "geodesy")
+    shipped = {
+        path.parent.name
+        for plugin in plugins
+        for path in (MARKETPLACE_ROOT / "plugins" / plugin / "skills").glob("*/SKILL.md")
+    }
     agent_source = (MARKETPLACE_ROOT / "agents" / "earthscope.py").read_text(encoding="utf-8")
     cases = {
         case.case_id: case for case in bench._make_cases(bench._canonical_benchmark_manifest())
     }
 
     assert f'id = "{bench._EARTHSCOPE_AGENT_ID}"' in agent_source
-    assert '"earthscope-skills"' in agent_source
+    for plugin in plugins:
+        assert f'"{plugin}"' in agent_source
     for case_id in _EARTHSCOPE_CASE_IDS:
         assert set(cases[case_id].expected_skills) <= shipped, case_id
 
@@ -3653,8 +3630,8 @@ def test_marketplace_mcp_cases_use_the_calculator_plugin_agent() -> None:
 
 def test_case_row_round_trips_agent_ref_and_session_agent() -> None:
     case = bench.replace(
-        bench._canonical_cases_by_id()["marketplace_genomics_reference_review"],
-        agent_ref="dev/genomics-review",
+        bench._canonical_cases_by_id()["marketplace_earthscope_gnss_region_review"],
+        agent_ref="dev/earthscope",
     )
     result = bench.DemoResult(
         case=case,
@@ -3662,13 +3639,13 @@ def test_case_row_round_trips_agent_ref_and_session_agent() -> None:
         elapsed_s=1.0,
         message=_message(text="ok"),
         provider={},
-        session_agent=_pinned("dev/genomics-review"),
+        session_agent=_pinned("dev/earthscope"),
     )
 
     restored = bench._result_from_case_row(bench._case_row(result))
 
-    assert restored.case.agent_ref == "dev/genomics-review"
-    assert restored.active_agent_ref == "dev/genomics-review"
+    assert restored.case.agent_ref == "dev/earthscope"
+    assert restored.active_agent_ref == "dev/earthscope"
 
 
 def test_run_benchmark_installs_marketplace_source_and_rebases_agent_cases(

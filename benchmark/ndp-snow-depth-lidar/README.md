@@ -27,7 +27,8 @@ question has been solved by hand against live data.
    size/timeout strategy).
 3. Verify alignment/resampling works and the differenced raster is sane.
 4. Produce a real snow-depth map by hand; capture datasets/URLs/fields like
-   `../ndp-wildfire-smoke-impact/manual-solution/DATASETS.md`.
+   the former wildfire case's `manual-solution/DATASETS.md` (removed 2026-10;
+   in git history under `benchmark/ndp-wildfire-smoke-impact/`).
 
 Only after that: write the full spec, expected hierarchy, and pass criteria,
 then build the CLIO agent.

@@ -35,29 +35,32 @@ _REAL_ORCHESTRATOR_FORBIDDEN_SOURCES = ("guard", "user_agent_keyword", "recovery
 _MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH = 3
 _MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT = 2
 _MARKETPLACE_COMPLEX_REQUIRED_CASES = 3
-# What the EarthScope agent does for a station-discovery request: load its
-# region and acquisition skills, then stage the NDP station catalog, clean it and
-# rank stations by radius (``acquire-earthscope-gnss``).
-_EARTHSCOPE_STATION_DISCOVERY_SKILLS = ("resolve-earthscope-region", "acquire-earthscope-gnss")
+# What the EarthScope agent does for a station-discovery request (EarthScope 0.6.0):
+# load ``resolve-region`` and ``station-catalogs`` (geodesy) and
+# ``acquire-earthscope-gnss`` (earthscope), stage the NDP station catalog, normalize it
+# with the station-catalogs script through the shell, and rank stations by radius.
+_EARTHSCOPE_STATION_DISCOVERY_SKILLS = (
+    "resolve-region",
+    "station-catalogs",
+    "acquire-earthscope-gnss",
+)
 _EARTHSCOPE_STATION_DISCOVERY_TOOLS = (
     "load_skill",
     "ndp_search_datasets",
     "ndp_stage_resource",
-    "pandas_filter_data",
+    "shell_bash",
     "geo_filter_points_by_radius",
 )
-# A named place is geocoded first; a station-series request then profiles the staged
-# station CSV and plots the PNG the prompt asks for.
+# A named place is geocoded first; a station-series request then analyses the staged
+# station series with the geodesy ``gnss-time-series`` skill (its bundled script runs
+# through the shell) and exports the PNG the prompt asks for.
 _EARTHSCOPE_STATION_SERIES_SKILLS = (
     *_EARTHSCOPE_STATION_DISCOVERY_SKILLS,
-    "analyze-earthscope-gnss",
-    "visualize-earthscope-gnss",
+    "gnss-time-series",
 )
 _EARTHSCOPE_NAMED_REGION_TOOLS = (
     *_EARTHSCOPE_STATION_DISCOVERY_TOOLS,
     "geo_geocode",
-    "pandas_profile_csv",
-    "plot_plot_timeseries",
 )
 # The path-string artifact scraper (``_artifact_paths`` + its regex/validators) was
 # DELETED in S7 (#973, item 5): produced artifacts are re-sourced from the artifact
@@ -2891,26 +2894,6 @@ def _canonical_benchmark_manifest() -> dict[str, Any]:
         "geospatial": {"geojson_path": str(root / "field_sites.geojson")},
         "imaging": {"png_path": str(root / "microscopy_cells.png")},
         "mass_spec": {"mzml_path": str(root / "proteomics_qc.mzML")},
-        "lfq": {
-            "lfq_path": str(root / "proteinGroups_lfq_benchmark.tsv"),
-            "control_prefix": "Control",
-            "treatment_prefix": "Treatment",
-            "spike_terms": "SPIKEUP,SPIKEUPB",
-            "expected_spike_log2fc": 2.0,
-        },
-        "hpc": {
-            "baseline_path": str(root / "baseline_darshan.txt"),
-            "candidate_path": str(root / "candidate_darshan.txt"),
-        },
-        "format_bridge": {
-            "source_path": str(root / "format_bridge_source.h5"),
-            "output_path": str(root / "format_bridge_converted.parquet"),
-        },
-        "terrain": {
-            "dem_path": str(root / "terrain_dem.csv"),
-            "pointcloud_path": str(root / "terrain_points.csv"),
-            "gridded_path": str(root / "terrain_points_gridded.csv"),
-        },
     }
 
 
@@ -2926,18 +2909,6 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
     geojson = manifest["geospatial"]["geojson_path"]
     png = manifest["imaging"]["png_path"]
     mzml = manifest["mass_spec"]["mzml_path"]
-    lfq = manifest["lfq"]["lfq_path"]
-    lfq_control = manifest["lfq"]["control_prefix"]
-    lfq_treatment = manifest["lfq"]["treatment_prefix"]
-    lfq_spikes = manifest["lfq"]["spike_terms"]
-    lfq_expected_fc = manifest["lfq"]["expected_spike_log2fc"]
-    hpc_baseline = manifest["hpc"]["baseline_path"]
-    hpc_candidate = manifest["hpc"]["candidate_path"]
-    format_source = manifest["format_bridge"]["source_path"]
-    format_output = manifest["format_bridge"]["output_path"]
-    terrain_dem = manifest["terrain"]["dem_path"]
-    terrain_pointcloud = manifest["terrain"]["pointcloud_path"]
-    terrain_gridded = manifest["terrain"]["gridded_path"]
     missing = str(Path(h5).with_name("missing_fusion_run.h5"))
 
     return [
@@ -3503,356 +3474,6 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
         ),
         DemoCase(
-            case_id="marketplace_genomics_reference_review",
-            title="Marketplace genomics FASTA reference review",
-            category="marketplace-genomics",
-            session_group="marketplace_genomics_reference",
-            agent_ref="clio/genomics-review",
-            expected_agent="main",
-            expected_tools=("genomics_inspect_fasta",),
-            expected_handoff_agents=("reference",),
-            expected_terms=("chrA", "plasmidB"),
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "fasta", "plugin-agent"),
-            prompt=(
-                f"Review this reference FASTA for collaborator handoff: {fasta}. "
-                "Summarize contigs, composition evidence, and what should be verified "
-                "before variant interpretation."
-            ),
-            expected=(
-                "CLIO runs the genomics-review marketplace agent in this "
-                "session, routes through the root expert, and uses the reference "
-                "expert's FASTA tool."
-            ),
-            why=(
-                "Proves a domain agent installed from the marketplace can be activated "
-                "per session and execute its own hierarchy plus expert/tool surface."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_genomics_variant_review",
-            title="Marketplace genomics VCF variant review",
-            category="marketplace-genomics",
-            session_group="marketplace_genomics_variants",
-            agent_ref="clio/genomics-review",
-            expected_agent="main",
-            expected_tools=("genomics_summarize_vcf",),
-            expected_handoff_agents=("variants",),
-            expected_terms=("frameshift", "stop-gained"),
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "vcf", "plugin-agent"),
-            prompt=(
-                f"Review this VCF for collaborator handoff: {vcf}. Summarize variant "
-                "types, likely effects, and what should be verified before analysis."
-            ),
-            expected=(
-                "CLIO runs the genomics-review marketplace agent in this "
-                "session, routes through the root expert, and uses the variants "
-                "expert's VCF tool."
-            ),
-            why=(
-                "Exercises a second expert in the same marketplace agent, proving the "
-                "active agent changes the available hierarchy and subagent surface."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_genomics_cohort_qc",
-            title="Marketplace genomics cohort QC",
-            category="marketplace-genomics",
-            session_group="marketplace_genomics_cohort",
-            agent_ref="clio/genomics-review",
-            expected_agent="main",
-            expected_tools=("genomics_vcf_cohort_qc",),
-            expected_handoff_agents=(
-                "cohort_qc",
-                "per_sample_metrics",
-                "cohort_outliers",
-                "manifest_reconciliation",
-            ),
-            expected_terms=("sample_A", "call rate", "heterozygosity", "manifest"),
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "genomics", "cohort-qc", "plugin-agent"),
-            prompt=(
-                f"Review this VCF cohort for downstream QC readiness: {vcf}. "
-                "Check per-sample call rate, missingness, heterozygosity, and "
-                "whether any samples should be dropped before analysis."
-            ),
-            expected=(
-                "CLIO runs the genomics-review marketplace agent through "
-                "its cohort_qc expert, executes the per_sample_metrics -> "
-                "cohort_outliers -> manifest_reconciliation child chain, and "
-                "calls genomics_vcf_cohort_qc from the metric child."
-            ),
-            why=(
-                "Brings the first-wave cohort QC benchmark infrastructure into the "
-                "marketplace runner instead of leaving it as only a tool-level proof."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_materials_crystal_review",
-            title="Marketplace materials CIF readiness review",
-            category="marketplace-materials",
-            session_group="marketplace_materials",
-            agent_ref="clio/materials-crystal-review",
-            expected_agent="main",
-            expected_tools=("materials_inspect_cif",),
-            expected_handoff_agents=(
-                "crystal_structure",
-                "symmetry_quality",
-            ),
-            expected_terms=("SrTiO3", "Pm-3m"),
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "materials", "cif", "plugin-agent"),
-            prompt=(
-                f"Review this CIF as a materials simulation handoff: {cif}. "
-                "Summarize formula, symmetry, occupancy or atom-site quality, and "
-                "whether the structure is ready to spend compute time on."
-            ),
-            expected=(
-                "CLIO runs the materials-crystal-review marketplace agent "
-                "through its root expert, inspects the CIF with crystal_structure, "
-                "and continues through symmetry_quality before final synthesis."
-            ),
-            why=(
-                "Proves a separate materials marketplace agent can be loaded per "
-                "session and can execute a non-seismic multi-expert hierarchy."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_geospatial_field_review",
-            title="Marketplace geospatial GeoJSON review",
-            category="marketplace-geospatial",
-            session_group="marketplace_geospatial",
-            agent_ref="clio/geospatial-field-review",
-            expected_agent="main",
-            expected_tools=("geospatial_inspect_geojson",),
-            expected_handoff_agents=("spatial_features",),
-            expected_terms=("feature", "geometry", "bounds"),
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "geospatial", "geojson", "plugin-agent"),
-            prompt=(
-                f"Review this GeoJSON for field-site map readiness: {geojson}. "
-                "Summarize feature types, bounds, properties, and map-overlay risks."
-            ),
-            expected=(
-                "CLIO runs the geospatial-field-review marketplace agent "
-                "through its root expert and uses the spatial_features expert."
-            ),
-            why=(
-                "Proves a geospatial marketplace agent can be loaded per session "
-                "and can delegate through its own hierarchy."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_proteomics_mzml_review",
-            title="Marketplace proteomics mzML readiness review",
-            category="marketplace-proteomics",
-            session_group="marketplace_proteomics",
-            agent_ref="clio/proteomics-mzml-review",
-            expected_agent="main",
-            expected_tools=("mass_spec_inspect_mzml",),
-            expected_handoff_agents=(
-                "mass_spec",
-                "spectra_quality",
-            ),
-            expected_terms=("spectra", "tic"),
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "proteomics", "mzml", "plugin-agent"),
-            prompt=(
-                f"Review this mzML run for peptide-search handoff: {mzml}. "
-                "Summarize spectra, MS-level balance, m/z coverage, TIC evidence, "
-                "spectra-quality risks, and whether the run is ready for search."
-            ),
-            expected=(
-                "CLIO runs the proteomics-mzml-review marketplace agent "
-                "through its root expert, inspects mzML with mass_spec, continues "
-                "through spectra_quality, and then synthesizes peptide-search "
-                "readiness from the returned evidence."
-            ),
-            why=(
-                "Proves a proteomics marketplace agent can be loaded per session "
-                "and can execute a non-seismic multi-expert hierarchy."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_proteomics_lfq_differential",
-            title="Marketplace proteomics LFQ differential abundance",
-            category="marketplace-proteomics",
-            session_group="marketplace_proteomics_lfq",
-            agent_ref="clio/proteomics-mzml-review",
-            expected_agent="main",
-            expected_tools=("mass_spec_lfq_differential_abundance",),
-            expected_handoff_agents=("lfq_differential",),
-            expected_terms=("SPIKEUP", "selected", "median"),
-            timeout_s=620.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "proteomics", "lfq", "plugin-agent"),
-            prompt=(
-                f"Review this LFQ proteinGroups matrix for differential abundance: {lfq}. "
-                f"Compare columns matching {lfq_control} against {lfq_treatment}, use "
-                f"spike-in terms {lfq_spikes} with an expected log2 fold change near "
-                f"{lfq_expected_fc}, and tell me which proteins look most changed."
-            ),
-            expected=(
-                "CLIO runs the proteomics marketplace agent through its "
-                "lfq_differential expert and calls the LFQ differential-abundance tool."
-            ),
-            why=(
-                "Exercises the first-wave proteomics LFQ decision-subtree infrastructure "
-                "rather than only mzML inspection."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_hpc_io_regression",
-            title="Marketplace HPC I/O regression",
-            category="marketplace-hpc",
-            session_group="marketplace_hpc_regression",
-            agent_ref="clio/hpc-io-regression",
-            expected_agent="main",
-            expected_tools=("hpc_compare_darshan_traces",),
-            expected_handoff_agents=("trace_ingest", "regression_diff"),
-            expected_terms=("write_time", "regression", "independent_writes"),
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            timeout_s=720.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "hpc", "darshan", "plugin-agent", "tier-3"),
-            prompt=(
-                f"Compare these two HPC I/O traces before collaborator handoff: "
-                f"baseline {hpc_baseline} and candidate {hpc_candidate}. Identify "
-                "the main I/O regression, stable metrics, and likely root cause."
-            ),
-            expected=(
-                "CLIO runs the hpc-io-regression marketplace agent, parses "
-                "both traces through its ingest path, compares them, and synthesizes "
-                "root-cause evidence."
-            ),
-            why=(
-                "Adds the first-wave HPC I/O regression case to the marketplace lane, "
-                "including paired inputs and tier-3 ingest workers."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_format_bridge_integrity",
-            title="Marketplace scientific format bridge integrity",
-            category="marketplace-format",
-            session_group="marketplace_format_bridge",
-            agent_ref="clio/format-bridge",
-            expected_agent="main",
-            expected_tools=("format_convert_hdf5_to_parquet",),
-            expected_handoff_agents=("source_inspect", "conversion_policy", "integrity"),
-            expected_terms=("safe_float", "skipped", "checksum"),
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            timeout_s=720.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "format-bridge", "hdf5", "parquet", "plugin-agent"),
-            prompt=(
-                f"Convert this scientific HDF5 table to Parquet with integrity evidence: "
-                f"{format_source}. Write the output to {format_output}. Preserve row counts, "
-                "flag unsafe or lossy dtype decisions, and tell me whether the conversion is "
-                "safe for downstream visualization."
-            ),
-            expected=(
-                "CLIO runs the format-bridge marketplace agent through inspect, "
-                "conversion policy, and integrity experts, using the HDF5-to-Parquet tool."
-            ),
-            why=(
-                "Adds the first-wave scientific format bridge case to benchmark evidence "
-                "instead of relying only on unit tests for conversion policy."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_terrain_pointcloud_suitability",
-            title="Marketplace terrain point-cloud suitability",
-            category="marketplace-terrain",
-            session_group="marketplace_terrain",
-            agent_ref="clio/terrain-suitability",
-            expected_agent="main",
-            expected_tools=("terrain_pointcloud_read", "terrain_dem_terrain"),
-            expected_handoff_agents=("terrain_derivation", "gridding", "suitability"),
-            expected_terms=("slope", "suitable", "grid"),
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            timeout_s=720.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "terrain", "point-cloud", "plugin-agent", "tier-3"),
-            prompt=(
-                f"Evaluate these terrain points for site suitability: {terrain_pointcloud}. "
-                f"Grid them to {terrain_gridded}, derive terrain, and identify cells with "
-                "elevation between 100 and 104 meters and slope below 60 degrees. "
-                f"Use the ready DEM {terrain_dem} only as a comparison if needed."
-            ),
-            expected=(
-                "CLIO runs the terrain-suitability marketplace agent, routes raw "
-                "point-cloud input through gridding, then applies DEM terrain suitability."
-            ),
-            why=(
-                "Adds the first-wave terrain/lidar conditional-branch case to the runner, "
-                "including the point-cloud-to-DEM path the benchmark was designed to stress."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_seismic_waveform_review",
-            title="Marketplace seismic waveform recovery review",
-            category="marketplace-seismic",
-            session_group="marketplace_seismic",
-            agent_ref="clio/seismic-waveform-review",
-            expected_agent=("data", "analysis", "visualization", "main"),
-            expected_tool_prefixes=("ndp_", "sac_"),
-            expected_tools=("sac_discover_earthscope_region_waveform",),
-            expected_handoff_agents=("ndp_catalog", "sac_format"),
-            expected_terms=("SAC", ".png"),
-            min_artifacts=1,
-            min_expert_depth=_MARKETPLACE_COMPLEX_MIN_EXPERT_DEPTH,
-            min_branch_count=_MARKETPLACE_COMPLEX_MIN_BRANCH_COUNT,
-            semantic_proofs=(
-                "marketplace_agent",
-                "root_delegation",
-                "nested_tier3",
-                "sync_parent_return",
-                "failure_recovery",
-            ),
-            timeout_s=900.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=(
-                "marketplace",
-                "seismic",
-                "ndp",
-                "sac",
-                "plugin-agent",
-                "artifact",
-            ),
-            prompt=(
-                "Using the active seismic waveform review agent, explore seismic activity "
-                "over the last 7 days around the San Diego, California area. Start with NDP "
-                "catalog discovery for relevant seismic waveform data; if NDP staging is "
-                "blocked, recover with regional EarthScope discovery from the requested "
-                "geography, inspect the staged SAC waveform, compute trace statistics, and "
-                "produce a PNG plot artifact without using stale local files."
-            ),
-            expected=(
-                "CLIO runs the seismic-waveform-review marketplace agent, "
-                "surfaces NDP staging blockers, resolves the requested geography into "
-                "regional EarthScope event/station evidence, stages an observed SAC path, "
-                "and creates a verified PNG artifact."
-            ),
-            why=(
-                "Proves the marketplace can carry the strongest hierarchical workflow, "
-                "not just single-expert file inspection packages."
-            ),
-        ),
-        DemoCase(
             case_id="marketplace_earthscope_gnss_region_review",
             title="Marketplace EarthScope GNSS region review",
             category="marketplace-earthscope",
@@ -3891,11 +3512,11 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             ),
             expected=(
                 "CLIO runs the earthscope marketplace agent, which "
-                "loads its region, acquisition, analysis and visualization skills "
+                "loads its region, catalog, acquisition and time-series skills "
                 "on demand: the place is geocoded before any station claim, the "
-                "NDP station catalog is staged and cleaned, stations are ranked by "
-                "radius, a ranked station's CSV is staged and profiled, a PNG is "
-                "plotted from it, and the final answer cites the source URL, local "
+                "NDP station catalog is staged and normalized, stations are ranked by "
+                "radius, a ranked station's series is staged and analysed, a PNG is "
+                "exported from it, and the final answer cites the source URL, local "
                 "artifacts, station evidence, and limitations."
             ),
             why=(
@@ -3946,7 +3567,7 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
                 "The same EarthScope agent succeeds when the requested geography "
                 "changes. The trace must geocode Los Angeles, rank stations from "
                 "the cleaned NDP station catalog, and carry staged station CSV "
-                "evidence, profile evidence and a PNG through the same loaded "
+                "evidence, time-series analysis and a PNG through the same loaded "
                 "skills without depending on San Diego/P475 strings."
             ),
             why=(
@@ -4002,130 +3623,6 @@ def _make_cases(manifest: dict[str, Any]) -> list[DemoCase]:
             why=(
                 "Tests coordinate-first spatial semantics and the bounded blocker "
                 "path for mutable geography inputs."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_ndp_current_wildfire_features",
-            title="Marketplace NDP current wildfire feature query",
-            category="marketplace-ndp",
-            session_group="marketplace_ndp_wildfire",
-            agent_ref="clio/ndp-environmental-hazards",
-            expected_agent=("main", "catalog", "geospatial", "visualization"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_get_dataset_details",
-                "ndp_query_arcgis_features",
-            ),
-            expected_handoff_agents=("catalog", "geospatial"),
-            expected_terms=("USA Current Wildfires", "FeatureServer", "feature"),
-            min_expert_depth=2,
-            min_branch_count=1,
-            min_artifacts=1,
-            timeout_s=720.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "ndp", "wildfire", "arcgis", "plugin-agent"),
-            prompt=(
-                "Using the active NDP environmental hazards agent, build a live current-wildfire "
-                "situational snapshot for California. Search the NDP catalog for USA Current "
-                "Wildfires, inspect the dataset details, query the ArcGIS FeatureServer for "
-                "current incident features with POOState = 'US-CA' or a California bbox, and "
-                "persist compact feature evidence to .clio-agent-artifacts/ndp/current_wildfires_ca.json. "
-                "Report source URLs, feature count, incident names/acres when available, and caveats."
-            ),
-            expected=(
-                "CLIO activates the NDP environmental hazards marketplace agent, discovers "
-                "the USA Current Wildfires NDP dataset, queries the live ArcGIS FeatureServer, "
-                "and writes durable feature evidence."
-            ),
-            why=(
-                "Covers live NDP geospatial semantics for the fire-spread collaborator path "
-                "without embedding a fire-specific native expert."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_ndp_california_warnings_features",
-            title="Marketplace NDP California NWS warning feature query",
-            category="marketplace-ndp",
-            session_group="marketplace_ndp_warnings",
-            agent_ref="clio/ndp-environmental-hazards",
-            expected_agent=("main", "catalog", "geospatial", "visualization"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_get_dataset_details",
-                "ndp_query_arcgis_features",
-            ),
-            expected_handoff_agents=("geospatial",),
-            expected_terms=("NWS", "warning", "FeatureServer"),
-            min_expert_depth=2,
-            min_branch_count=1,
-            min_artifacts=1,
-            timeout_s=720.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=(
-                "marketplace",
-                "ndp",
-                "weather",
-                "warnings",
-                "arcgis",
-                "plugin-agent",
-            ),
-            prompt=(
-                "Using the active NDP environmental hazards agent, search NDP for California "
-                "NWS watches and warnings, inspect the dataset details, query its ArcGIS "
-                "FeatureServer layer for up to 15 active warning/watch features intersecting "
-                "California or using the dataset layer URL, and persist compact evidence to "
-                ".clio-agent-artifacts/ndp/california_nws_warnings.json. Summarize event, "
-                "severity, affected area, start/end timing, source URL, and data caveats."
-            ),
-            expected=(
-                "CLIO discovers the NDP California NWS warning layer, queries the live "
-                "FeatureServer, and saves compact geospatial warning evidence."
-            ),
-            why=(
-                "Provides a second live geospatial hazard workflow that can be retargeted "
-                "during the meeting without changing CLIO code."
-            ),
-        ),
-        DemoCase(
-            case_id="marketplace_ndp_cimis_weather_profile_plot",
-            title="Marketplace NDP CIMIS weather CSV profile and plot",
-            category="marketplace-ndp",
-            session_group="marketplace_ndp_cimis",
-            agent_ref="clio/ndp-environmental-hazards",
-            expected_agent=("main", "catalog", "weather_analysis", "visualization"),
-            expected_tool_prefixes=("ndp_",),
-            expected_tools=(
-                "ndp_search_datasets",
-                "ndp_stage_resource",
-                "ndp_profile_csv_resource",
-                "ndp_plot_csv_timeseries",
-            ),
-            expected_handoff_agents=("weather_analysis", "visualization"),
-            expected_terms=("CIMIS", "Air Temp", ".png"),
-            min_expert_depth=2,
-            min_branch_count=1,
-            min_artifacts=1,
-            timeout_s=900.0,
-            forbidden_route_sources=_REAL_ORCHESTRATOR_FORBIDDEN_SOURCES,
-            complexity_tags=("marketplace", "ndp", "weather", "csv", "artifact", "plugin-agent"),
-            prompt=(
-                "Using the active NDP environmental hazards agent, search NDP for CIMIS "
-                "Hourly Data - Multiple Stations, inspect dataset details, stage the Fresno "
-                "State station CSV rather than the combined archive, profile the CSV, and "
-                "create a PNG time-series artifact at .clio-agent-artifacts/ndp/cimis_fresno_weather.png "
-                "using Date on the x-axis and Air Temp (C), Rel Hum (%), and Wind Speed (m/s) "
-                "as y columns. Report staged path, row count, numeric ranges, source URL, and "
-                "what the plot can and cannot prove for fire-weather context."
-            ),
-            expected=(
-                "CLIO stages a live NDP CIMIS station CSV, profiles actual weather columns, "
-                "and creates a verified PNG artifact from the staged data."
-            ),
-            why=(
-                "Covers live NDP resource staging plus tabular analysis and visualization for "
-                "fire-weather collaboration questions."
             ),
         ),
         DemoCase(
@@ -4468,22 +3965,9 @@ _BENCHMARK_LANES: dict[str, tuple[str, ...]] = {
         "reasoning_adios_bp5_container",
     ),
     "marketplace_agents": (
-        "marketplace_genomics_reference_review",
-        "marketplace_genomics_variant_review",
-        "marketplace_genomics_cohort_qc",
-        "marketplace_materials_crystal_review",
-        "marketplace_geospatial_field_review",
-        "marketplace_proteomics_mzml_review",
-        "marketplace_proteomics_lfq_differential",
-        "marketplace_hpc_io_regression",
-        "marketplace_format_bridge_integrity",
-        "marketplace_terrain_pointcloud_suitability",
         "marketplace_earthscope_gnss_region_review",
         "marketplace_earthscope_gnss_region_los_angeles_mutation",
         "marketplace_earthscope_gnss_region_coordinate_mutation",
-        "marketplace_ndp_current_wildfire_features",
-        "marketplace_ndp_california_warnings_features",
-        "marketplace_ndp_cimis_weather_profile_plot",
     ),
     "marketplace_earthscope": (
         "marketplace_earthscope_gnss_region_review",
