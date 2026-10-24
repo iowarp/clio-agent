@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import gc
 import re
+import weakref
 from pathlib import Path
 
 import anyio
@@ -19,8 +20,12 @@ class _Agent:
     """Stands in for what a turn's context carries (a ReAct loop, its tools, LMs)."""
 
 
+_LOOPS: list[weakref.ref[asyncio.AbstractEventLoop]] = []
+
+
 async def _tool_call() -> int:
     # A tool call offloads to a thread through anyio, as MCP and tool code does.
+    _LOOPS.append(weakref.ref(asyncio.get_running_loop()))
     _HELD.set(_Agent())
     return await anyio.to_thread.run_sync(lambda: 7)
 
@@ -32,12 +37,15 @@ def _alive(kind: type) -> int:
 
 def test_a_run_keeps_no_loop_and_no_context_value_alive() -> None:
     """Live: every tool call's asyncio.run kept its loop, root task and context."""
-    loops, agents = _alive(asyncio.AbstractEventLoop), _alive(_Agent)
+    agents = _alive(_Agent)
+    _LOOPS.clear()
 
     results = [run_in_new_loop(_tool_call()) for _ in range(5)]
 
     assert results == [7] * 5
-    assert _alive(asyncio.AbstractEventLoop) == loops
+    gc.collect()
+    # Only this test's own loops: a whole-process count also saw other tests' loops.
+    assert [ref for ref in _LOOPS if ref() is not None] == []
     assert _alive(_Agent) <= agents + 1  # at most the last worker's, until it exits
 
 
