@@ -72,3 +72,33 @@ async def test_failed_reload_releases_waiting_turns() -> None:
     await asyncio.wait_for(
         admit_segment(runner, asyncio.sleep(0), sid="next", turn_id="n"), timeout=2
     )
+
+
+@pytest.mark.asyncio
+async def test_a_task_a_turn_started_does_not_keep_the_finished_turn_alive() -> None:
+    """Live (#1846): a long-lived task created during a turn copied its context, whose
+    strong reference to the turn's task kept every finished turn of the chain alive."""
+    import gc
+    import weakref
+
+    from clio_agent.gact.turn_revision_gate import TurnRevisionGate
+
+    gate = TurnRevisionGate()
+    outlives = asyncio.Event()
+    turn_ref: list[weakref.ref[asyncio.Task[None]]] = []
+    started: list[asyncio.Task[None]] = []
+
+    async def turn() -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        turn_ref.append(weakref.ref(current))
+        started.append(asyncio.create_task(outlives.wait()))  # copies the turn's context
+
+    await asyncio.create_task(gate.run(turn()))
+    await asyncio.sleep(0)
+    gc.collect()
+
+    assert turn_ref[0]() is None
+    assert not started[0].done()
+    outlives.set()
+    await started[0]

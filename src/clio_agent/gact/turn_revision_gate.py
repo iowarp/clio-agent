@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -15,6 +16,13 @@ class TurnRevisionGate:
     A live turn may need to await a child turn. Those descendants must finish
     with their parent before the writer enters; unrelated submissions wait.
     Cancelled queued submissions close their original coroutine explicitly.
+
+    A turn's task is named in its context (``_parent``) so a child turn it starts is
+    recognised; every task the turn creates copies that context. The name is a weak
+    reference: a strong one let each child keep its parent's finished task -- and the
+    parent's context with its ReAct loop, module and call ledger -- alive, so a
+    long-lived task that copied one turn's context kept the whole chain of turns (live,
+    #1846: 119 finished turns).
     """
 
     def __init__(self) -> None:
@@ -24,9 +32,13 @@ class TurnRevisionGate:
         self._idle.set()
         self._writers = asyncio.Lock()
         self._readers: set[asyncio.Task[Any]] = set()
-        self._parent: ContextVar[asyncio.Task[Any] | None] = ContextVar(
+        self._parent: ContextVar[weakref.ref[asyncio.Task[Any]] | None] = ContextVar(
             "turn_revision_parent", default=None
         )
+
+    def _in_running_turn(self) -> bool:
+        parent = self._parent.get()
+        return parent is not None and parent() in self._readers
 
     async def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
         """Run a whole turn under one revision; wait if a revision is being applied."""
@@ -35,12 +47,12 @@ class TurnRevisionGate:
         task = asyncio.current_task()
         assert task is not None
         try:
-            if self._parent.get() not in self._readers:
+            if not self._in_running_turn():
                 await self._open.wait()
             # No await between the gate and registering this reader.
             self._readers.add(task)
             self._idle.clear()
-            token = self._parent.set(task)
+            token = self._parent.set(weakref.ref(task))
             entered = True
             return await coroutine
         finally:
@@ -55,7 +67,7 @@ class TurnRevisionGate:
     @asynccontextmanager
     async def change(self) -> AsyncIterator[None]:
         """Wait for live turns and their children, then exclusively apply a revision."""
-        if self._parent.get() in self._readers:
+        if self._in_running_turn():
             raise RuntimeError("A running turn cannot reload its own runtime revision")
         async with self._writers:
             self._open.clear()

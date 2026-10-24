@@ -12,6 +12,7 @@ from fastmcp.client.transports import FastMCPTransport, SSETransport, StdioTrans
 from fastmcp_tasks.client_models import ClientGetTaskResult
 
 from clio_agent.arc.task_types import BackendReference
+from clio_agent.tools.mcp_runtime import enter_connection
 from clio_agent.tools.task_client import AcceptedNativeCall, TaskAwareClient
 from clio_agent.tools.task_transport import TaskObservationTransport
 
@@ -148,7 +149,9 @@ async def connection(
                 configured, transport, on_task_accepted=accepted, elicitation_handler=elicit
             )
             try:
-                host.client = await host.stack.enter_async_context(client)
+                # The connection outlives the turn whose call opened it (enter_connection).
+                host.client = await enter_connection(client)
+                host.stack.push_async_exit(client)
             except BaseException:
                 await host.stack.aclose()
                 await client.close()
