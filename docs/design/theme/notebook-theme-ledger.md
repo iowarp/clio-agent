@@ -2,7 +2,7 @@
 
 The record for [notebook-theme-plan.md](notebook-theme-plan.md). Each row has an ID, the behavior the plan requires, the evidence and a status. Decisions taken while implementing carry the prefix `T-D`.
 
-Work happens in `iowarp/gact-tui` on branch `claude/notebook-theme`. Its base is `b4067ce` (`fix(web): Child agents and Background tasks say none running, not 0`), the commit this clio-agent branch pins.
+Work happens in `iowarp/gact-tui` on branch `claude/notebook-theme`. It was built on `b4067ce` (`fix(web): Child agents and Background tasks say none running, not 0`) and is now stacked on `claude/long-term-memory` (iowarp/gact-tui#674) at `506b5815`, so the PRs merge in sequence (T-D17).
 
 ## Rows
 
@@ -19,9 +19,13 @@ Work happens in `iowarp/gact-tui` on branch `claude/notebook-theme`. Its base is
 
 ## Qualification
 
-Final run on Oct 23 2026, on gact-tui `claude/notebook-theme` at `d205192e`, after `bash scripts/cloud/stack.sh restart` (agent with the `claude_code` provider on `claude-haiku-5-5`, gact-tui dev server). One command reruns it: `bash scripts/cloud/checks/theme_qualify.sh`, which drives `node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/theme_<row>.mjs` at 1440x900 and 390x844 and writes `.cloud-run/theme-<row>-<size>.json`. Every run in the final pass reported `consoleErrors: []` and `failedRequests: []`, and every screenshot of it (155) was read, as contact sheets and at full size for the Notebook screens. The conversation is a live session in which the agent answered with a Python code block and a markdown table.
+Final run on Oct 24 2026, on gact-tui `claude/notebook-theme` at `0ce8862d` (stacked on `claude/long-term-memory`, T-D17; the same six theme commits now sit on #674's newer tip as `6dd0a22f` to `da4900ba`, see below), with this clio-agent branch stacked on clio-agent `claude/long-term-memory` (iowarp/clio-agent#1835) so the memory page has its server. The stack was started with `bash scripts/cloud/stack.sh restart` (agent with the `claude_code` provider on `claude-haiku-5-5`, gact-tui dev server). One command reruns it: `bash scripts/cloud/checks/theme_qualify.sh`, which drives `node scripts/cloud/ui_check.mjs --steps scripts/cloud/checks/theme_<row>.mjs` at 1440x900 and 390x844 and writes `.cloud-run/theme-<row>-<size>.json`. Every run in the final pass reported `consoleErrors: []` and `failedRequests: []` (T3 at 390x844 hit one `page.reload` timeout of the dev server on the first pass and was rerun clean), and every screenshot of it (169) was read as contact sheets. The conversation is a live session in which the agent answered with a Python code block and a markdown table.
 
-gact-tui gates on the same commit: `pnpm lint` (including the new theme color guard) passed, `pnpm typecheck` passed, `pnpm test` passed 559 files and 3948 tests, and `pnpm build` passed with `theme-boot.js` emitted and injected into `index.html` and `widget-preview.html`.
+The first pass on the stacked branch, before clio-agent was stacked too, reported 404s for `/v1/memory/*`: the memory page from iowarp/gact-tui#674 calls endpoints that only clio-agent `claude/long-term-memory` serves. Nothing in them was about the theme.
+
+gact-tui gates on `0ce8862d`: `pnpm lint` (including the theme color guard) passed, `pnpm typecheck` passed, `pnpm test` passed 57 core files (308 tests) and 573 web files (4032 tests), and `pnpm build` passed. On the first CI run of the stacked branch, every job passed except the browser suite, which failed two tests in one of its two runs and one in the other (163 and 164 of 165 passed). Both were timing races, present on the base too. The Customize popover's drag handle was measured before the popover was positioned: it renders unplaced for one or two frames, measured at the same ~90 ms and ~135 ms on this branch and on its base. Collapsed sidebar icons were measured while the menu buttons were still animating into the rail. The memory session fixed both on #674 (`7a0cdef1`: collapsed buttons no longer animate, and the drag waits for settled handles), so the theme commits were rebased onto that tip instead of carrying their own test changes. On the rebased tip `da4900ba` the gates passed again (`pnpm test`: 308 core and 4033 web tests). With the build the suite expects (`CLIO_REVIEW_FIXTURES=1`), both spec files passed 30 of 30 over three repeats.
+
+**Follow-up commit `49f6e85d`.** The gact-tui Playwright suites (which CI runs as its visual baselines) were then run locally against the pinned Chromium. Components (16) and deployment (2) passed. The browser e2e suite (159 tests) failed six. Three of them asserted next-themes behavior (its `theme` storage key, the `light` class, three theme choices) and were updated. The other three (two visual baselines and a virtualized-scroll test) fail the same way on the base commit `b4067ce` in this container, which renders differently from the baselines' machine. Comparing this branch's rendering with the base's, pixel by pixel in the same container, showed one real difference: the token shadow scale had made Dark's shadows slightly darker. Light and Dark now set `--shadow-color` to black at 50%, which reproduces Tailwind's shadows exactly. After that fix, the flat-NDP and summarization renderings match the base's exactly, and the mobile one differs only by a scroll button that appears in some runs on both branches. T2 and T4 at 1440x900 were rerun on `49f6e85d` (all four variants: no reload, 0 leftover elements of 448, 42 screenshots read, no console errors or failed requests). Nothing else changed after the full run. That was on the earlier base; the e2e checks it updated came along in the rebase.
 
 Screenshots: [before and after at 1440x900](screenshots/before-after-1440.png), [before and after at 390x844](screenshots/before-after-390.png), [railroad states](screenshots/railroad-states.png), [Debug theme](screenshots/debug-theme.png).
 
@@ -31,8 +35,8 @@ Screenshots: [before and after at 1440x900](screenshots/before-after-1440.png), 
 
 | Size | Light | Dark | Notebook light | Notebook dark |
 | --- | --- | --- | --- | --- |
-| 1440x900 | no reload, 0 of 448 elements differ | no reload, 0 of 448 | no reload, 0 of 448 | no reload, 0 of 448 |
-| 390x844 | no reload, 0 of 233 elements differ | no reload, 0 of 233 | no reload, 0 of 233 | no reload, 0 of 233 |
+| 1440x900 | no reload, 0 of 453 elements differ | no reload, 0 of 453 | no reload, 0 of 453 | no reload, 0 of 453 |
+| 390x844 | no reload, 0 of 238 elements differ | no reload, 0 of 238 | no reload, 0 of 238 | no reload, 0 of 238 |
 
 ### T3: system scheme and first paint
 
@@ -40,14 +44,14 @@ Screenshots: [before and after at 1440x900](screenshots/before-after-1440.png), 
 
 | Size | System | Theme applied at | First paint at | States showing another variant |
 | --- | --- | --- | --- | --- |
-| 1440x900 | light | 234 ms | 3368 ms, `notebook` light | 0 |
-| 1440x900 | dark | 258 ms | 3592 ms, `notebook` dark | 0 |
-| 390x844 | light | 155 ms | 3284 ms, `notebook` light | 0 |
-| 390x844 | dark | 92 ms | 3432 ms, `notebook` dark | 0 |
+| 1440x900 | light | 238 ms | 3556 ms, `notebook` light | 0 |
+| 1440x900 | dark | 202 ms | 3276 ms, `notebook` dark | 0 |
+| 390x844 | light | 168 ms | 3280 ms, `notebook` light | 0 |
+| 390x844 | dark | 107 ms | 3008 ms, `notebook` dark | 0 |
 
 ### T4: screens in every theme
 
-`theme_t4_screens.mjs` shows, in Light, Dark, Notebook light and Notebook dark, at both sizes: the live conversation (code block and table), the widget gallery's chart, workflow, status chip, data table, code and map, and the workflow railroad fixture (T-D13). That is 32 screenshots per size, all read and legible. The railroad nodes take the exact status token values, for example Notebook light done `rgb(220, 235, 231)` / `rgb(31, 79, 75)`, running `rgb(242, 227, 196)` / `rgb(110, 78, 18)`, cancelled `rgb(230, 225, 214)` / `rgb(94, 89, 79)`, with failed on `destructive`. The A2UI workflow nodes are colored by state (completed, running) in every theme. The agent's prose is in Literata under Notebook, and the interface is in IBM Plex Sans.
+`theme_t4_screens.mjs` shows, in Light, Dark, Notebook light and Notebook dark, at both sizes: the live conversation (code block and table), the widget gallery's chart, workflow, status chip, data table, code and map, the workflow railroad fixture (T-D13) and the memory settings page. That is 36 screenshots per size, all read and legible. The railroad nodes take the exact status token values, for example Notebook light done `rgb(220, 235, 231)` / `rgb(31, 79, 75)`, running `rgb(242, 227, 196)` / `rgb(110, 78, 18)`, cancelled `rgb(230, 225, 214)` / `rgb(94, 89, 79)`, with failed on `destructive`. The A2UI workflow nodes are colored by state (completed, running) in every theme. The agent's prose is in Literata under Notebook, and the interface is in IBM Plex Sans.
 
 ### T5: measured contrast
 
@@ -71,22 +75,22 @@ The Notebook status ratios match the style guide's published figures exactly.
 
 ### T6: no colors outside the theme
 
-`node scripts/check_theme_colors.mjs` in gact-tui (also run by `pnpm lint`): `Theme color guard passed: no color values outside web/src/theme.` A raw grep over the 1046 `.ts`, `.tsx` and `.css` files in `web/src` outside `web/src/theme`, tests and fixtures finds no hex value containing a letter, and the only all-digit matches are issue numbers in comments (`#1437`, `#1549`). The guard's patterns were checked against samples: it catches `'#ffffff'`, `text-amber-600`, `dark:text-amber-400`, `bg-white/10` and `shadow-[0_1px_rgb(0_0_0/0.1)]`, and ignores `rgb(${r} ...)`, `color-mix(in oklch, var(--x) 5%, transparent)` and `href='#top'`.
+`node scripts/check_theme_colors.mjs` in gact-tui (also run by `pnpm lint`): `Theme color guard passed: no color values outside web/src/theme.` A raw grep over the 1083 `.ts`, `.tsx` and `.css` files in `web/src` outside `web/src/theme`, tests and fixtures (on `0ce8862d`) finds no hex value containing a letter, and the only all-digit matches are issue numbers in comments (such as `#1533` and `#1549`). The guard's patterns were checked against samples: it catches `'#ffffff'`, `text-amber-600`, `dark:text-amber-400`, `bg-white/10` and `shadow-[0_1px_rgb(0_0_0/0.1)]`, and ignores `rgb(${r} ...)`, `color-mix(in oklch, var(--x) 5%, transparent)` and `href='#top'`.
 
 ### T7: Debug theme audit
 
-`theme_t7_debug.mjs` picks Debug in Settings and, under both system schemes, audits 14 screens: Settings, the conversation, the gallery's chart, workflow, status, data table, code, map, metric, steps, callout and diff, the railroad and Runs. For every visible element and its `::before` and `::after`, it checks the computed color, background, borders, outline, SVG shape fill and stroke, box-shadow and gradient colors (each resolved to sRGB, and each must be a saturated red or transparent), and that text is in the marker face. Images, canvases (map tiles), KaTeX math and `data-theme-exempt` data scales are exempt.
+`theme_t7_debug.mjs` picks Debug in Settings and, under both system schemes, audits 15 screens: Settings, the conversation, the gallery's chart, workflow, status, data table, code, map, metric, steps, callout and diff, the railroad, Runs and the memory settings page. For every visible element and its `::before` and `::after`, it checks the computed color, background, borders, outline, SVG shape fill and stroke, box-shadow and gradient colors (each resolved to sRGB, and each must be a saturated red or transparent), and that text is in the marker face. Images, canvases (map tiles), KaTeX math and `data-theme-exempt` data scales are exempt.
 
 | Size | Screens | Elements checked | Elements off the theme |
 | --- | --- | --- | --- |
-| 1440x900 | 28 | 4818 | 0 |
-| 390x844 | 28 | 3062 | 0 |
+| 1440x900 | 30 | 5482 | 0 |
+| 390x844 | 30 | 3448 | 0 |
 
 Before the fix in `d205192e`, the audit found maplibre's controls and attribution on maplibre's own white, black and Helvetica (11 findings per map screen). The screenshots show every screen in shades of red, except the OpenStreetMap tiles, which are images.
 
 ## Decisions
 
-**T-D1. Base branch.** The work is based on the commit this branch pins (`b4067ce`, on `claude/sdk-plugins-flows`), not on `develop`. Develop is 27 commits past the merge base and the pin is 58 commits past it, and the two trees differ in 568 files. A develop-based branch would drop the SDK UI that this clio-agent branch's server needs, and it could not be checked against this stack. The draft PR therefore targets `claude/sdk-plugins-flows`, so its diff holds only the theme commits. The commits touch only theme code and the components that read it, so they can be cherry-picked onto `develop` later.
+**T-D1. Base branch.** The work is based on the commit this branch pins (`b4067ce`, on `claude/sdk-plugins-flows`), not on `develop`. Develop is 27 commits past the merge base and the pin is 58 commits past it, and the two trees differ in 568 files. A develop-based branch would drop the SDK UI that this clio-agent branch's server needs, and it could not be checked against this stack. The draft PR therefore targets `claude/sdk-plugins-flows`, so its diff holds only the theme commits. The commits touch only theme code and the components that read it, so they can be cherry-picked onto `develop` later. (Superseded for the PR's base by T-D17: the branch is now stacked on the memory PR.)
 
 **T-D2. Debug theme (added at the owner's request).** gact-tui was designed so that every component reads one core theme. The inventory below shows that rule has drifted. To make drift visible and keep themes easy to add, the theme is a single token contract (`web/src/theme/`), and Light, Dark, Notebook and a **Debug** theme each supply values for the whole contract. Debug sets every color token to a shade of red and every font token to a marker face. Anything on screen that is not red, or not in the marker face, skips the core theme. A DOM audit (`debugAudit` in `scripts/cloud/checks/theme_lib.mjs`, run by `theme_t7_debug.mjs`) reads the computed color, background, border, fill, stroke and font of every element under Debug and reports anything that is not a Debug value. That is row T7, added to the plan. Debug appears in the selector only in development builds.
 
@@ -117,6 +121,8 @@ Before the fix in `d205192e`, the audit found maplibre's controls and attributio
 **T-D15. Dead theme code deleted.** The eleven Mermaid preset palettes (`lib/mermaid-themes.ts`, reachable only by a custom theme name no caller passed), the unused shadcn Recharts wrapper (`components/ui/chart.tsx`) and the `recharts` dependency, next-themes, and the inline brand-style loop in `App.tsx`.
 
 **T-D16. The GitHub release check is stubbed during qualification.** The app lists `api.github.com/repos/iowarp/gact-tui/releases` for its update notes. From the cloud's shared egress that unauthenticated call is intermittently rate-limited (HTTP 403, "rate limit exceeded"), which put a console error into some runs that has nothing to do with the theme. The qualification steps answer that one request with an empty list (`quietReleaseChecks` in `theme_lib.mjs`, installed through a new optional `setup(page)` export that `ui_check.mjs` runs before the first page load), so `consoleErrors` reports the UI under test. Nothing else is stubbed; the agent, the model and every other request are live.
+
+**T-D17. Stacked on the memory PR.** The PR's first base, `claude/sdk-plugins-flows`, moved 34 commits past `b4067ce` (including a develop merge), and the PR conflicted. To merge with the memory work in sequence, the five theme commits were rebased onto `claude/long-term-memory` (iowarp/gact-tui#674, `16852545`) and the PR retargeted to it. Three files conflicted, where the base had rewritten code the theme had converted: the data-table error state (moved into `data-table-request-state.tsx`, whose link now uses `text-link`), the context canvas palette (removed on the base) and the offline basemap (now a coarse land outline, whose water, land and coastline read `muted`, `card` and `border` and repaint on theme change). The base also added colors the guard rejects: the file badges in `reui/file-type.tsx` (about 120 palette utilities plus literal white and black), the context usage bar, artifact and model icons, the memory diff view and terminal detail text. A sixth commit maps each palette hue to its nearest category or chart token (blue to `category-1`, violet and purple to `category-2`, orange to `chart-2`, and so on), white and black to `invert-foreground` and `invert`, diff lines to the success and destructive foregrounds, and terminal text to `terminal-muted`. File badges carry their type label, so merging near hues (sky with cyan, rose with red) loses no information. T4 and T7 now also cover the memory settings page.
 
 ## T1: Phase 0 inventory
 
