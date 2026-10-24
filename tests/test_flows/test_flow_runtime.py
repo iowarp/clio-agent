@@ -51,6 +51,26 @@ def test_gather_member_failure_never_cancels_the_others(flow_app: TestClient) ->
     assert text_of(_answer(flow_app, sid)) == "CallResult,CallFailed,CallResult"
 
 
+def test_a_child_waiting_for_input_settles_the_call_instead_of_holding_the_flow(
+    flow_app: TestClient,
+) -> None:
+    """A child that yields with nothing to wake it is a typed outcome with its last answer.
+
+    Live: a workflow's researcher yielded after its fetches were refused, and the flow
+    waited on it forever. The child stays open, so a person can still message it.
+    """
+
+    sid = new_session(flow_app, "clio/yielderer")
+    post(flow_app, sid, "go")
+    message = _answer(flow_app, sid)
+    assert text_of(message) == "CallAwaitingInput: need approval to continue"
+    run = _checkpoint(flow_app, sid)
+    (row,) = run["calls"].values()
+    assert row["status"] == "awaiting_input"
+    child = flow_app.app.state.task_history.task_snapshot(row["handle"])
+    assert child.terminal_at is None and child.activity == "yielded"
+
+
 def test_gather_failure_is_a_typed_outcome(flow_app: TestClient) -> None:
     sid = new_session(flow_app, "clio/stricter")
     post(flow_app, sid, "go")

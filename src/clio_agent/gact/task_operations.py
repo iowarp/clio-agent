@@ -16,6 +16,11 @@ from itertools import islice
 from typing import Any, get_args
 
 from clio_agent.arc.task_types import CoordinationRight, TaskKind, TaskSnapshot, TaskSubscription
+from clio_agent.gact.assignment_input import (
+    AWAITING_INPUT,
+    awaiting_input_outcome,
+    waiting_for_input,
+)
 from clio_agent.gact.native_work import now
 from clio_agent.gact.task_access import TaskAccess, TaskAccessDenied, TaskCaller
 from clio_agent.gact.task_cursors import decode_cursor as _decode
@@ -372,8 +377,15 @@ class TaskOperations:
         tasks: str | list[str],
         return_when: str = "all",
         timeout_s: float | None = None,
+        *,
+        settle_awaiting_input: bool = False,
     ) -> dict[str, Any]:
-        """Await mixed owner observations; timeout/cancellation never cancels a member."""
+        """Await mixed owner observations; timeout/cancellation never cancels a member.
+
+        ``settle_awaiting_input`` (a flow's wait) settles a child that yielded with nothing
+        left to wake it as ``awaiting_input`` instead of waiting on it forever
+        (:mod:`clio_agent.gact.assignment_input`).
+        """
         with track(timeout_s != 0, session_id=caller.session_id):
             if return_when not in {"all", "any"}:
                 raise ValueError("return_when must be all or any")
@@ -401,7 +413,9 @@ class TaskOperations:
             try:
                 while True:
                     changed.clear()
-                    outcomes, pending = await self.history.io.run(self._outcomes, caller, handles)
+                    outcomes, pending = await self.history.io.run(
+                        self._outcomes, caller, handles, settle_awaiting_input, wake
+                    )
                     for handle in pending:
                         # A cancellation can end unconfirmed with no further history change.
                         if (job := self._cancellation_job(handle)) is not None:
@@ -424,7 +438,7 @@ class TaskOperations:
                         await asyncio.wait_for(changed.wait(), remaining)
                     except TimeoutError:
                         outcomes, pending = await self.history.io.run(
-                            self._outcomes, caller, handles
+                            self._outcomes, caller, handles, settle_awaiting_input
                         )
                         return _wait_value(outcomes, pending, timed_out=True)
             finally:
@@ -473,7 +487,11 @@ class TaskOperations:
             return tuple(dict.fromkeys(resolved))
 
     def _outcomes(
-        self, caller: TaskCaller, handles: tuple[str, ...]
+        self,
+        caller: TaskCaller,
+        handles: tuple[str, ...],
+        settle_awaiting_input: bool = False,
+        wake: Callable[[int], None] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         outcomes: list[dict[str, Any]] = []
         pending: list[str] = []
@@ -491,7 +509,21 @@ class TaskOperations:
                     outcomes.append(
                         {"handle": current.handle, "error": "cannot_wait_for_own_active_assignment"}
                     )
+                elif (
+                    current.terminal_at is None
+                    and (
+                        waiting := waiting_for_input(self.app, current)
+                        if settle_awaiting_input
+                        else ""
+                    )
+                    == AWAITING_INPUT
+                ):
+                    outcomes.append(awaiting_input_outcome(self.app, current))
                 elif current.terminal_at is None:
+                    if waiting == "retiring" and wake is not None:
+                        # No history change follows the release: look again once it lands.
+                        sid = current.owner.session_id
+                        self.app.state.conversations.runner.run_when_released(sid, lambda: wake(0))
                     pending.append(handle)
                     if (
                         current.status == "task_state_uncertain"

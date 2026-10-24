@@ -656,7 +656,9 @@ class FlowContext:
                         continue
 
     async def _wait(self, handle: str, invocation: str, *, kind: str, name: str) -> CallResult:
-        waited = await self.app.state.task_operations.wait(self.caller, handle, "all")
+        waited = await self.app.state.task_operations.wait(
+            self.caller, handle, "all", settle_awaiting_input=True
+        )
         if not waited.get("pending"):
             await self.app.state.task_history.io.run(self._collect, handle)
         outcome = (waited.get("outcomes") or [{}])[0]

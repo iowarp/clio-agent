@@ -43,6 +43,19 @@ class Tolerant(Flow):
         return {"answer": ",".join(type(r).__name__ for r in results)}
 
 
+class Yielder(Flow):
+    id = "yielder"
+
+    async def forward(self, task, ctx):
+        from clio_agent.flows.outcomes import CallAwaitingInput
+
+        try:
+            await ctx.call("self", "YIELD for input")
+        except CallAwaitingInput as waiting:
+            return f"{type(waiting).__name__}: {waiting.answer}"
+        return "the child completed"
+
+
 class Strict(Flow):
     id = "strict"
 
@@ -174,6 +187,7 @@ def _agent(agent_id, flow):
 
 Fanouter = _agent("fanouter", "fanout")
 Tolerater = _agent("tolerater", "tolerant")
+Yielderer = _agent("yielderer", "yielder")
 Stricter = _agent("stricter", "strict")
 Askerer = _agent("askerer", "asker")
 Stepperer = _agent("stepperer", "stepper")
@@ -235,12 +249,16 @@ class ScriptedFlowModule:
             workflow_state=getattr(prediction, "workflow_state", ""),
             tools_called=list(getattr(prediction, "tools_called", None) or []),
             selected_expert=self.agent_def.id,
+            assignment_disposition=getattr(prediction, "assignment_disposition", None),
         )
 
 
 def default_program(question: str = "", **_: Any) -> Any:
     if "FAIL" in question:
         raise RuntimeError("scripted failure")
+    if "YIELD" in question:
+        # The child keeps its assignment open for a follow-up nobody will send.
+        return dspy.Prediction(answer="need approval to continue", assignment_disposition="yield")
     if "workflow_add_step" in question:
         # The critic edits the running workflow. Like a real ReAct run, the prediction
         # carries no tool trace: the call reaches the turn through the tool observer.

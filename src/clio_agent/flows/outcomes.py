@@ -43,6 +43,25 @@ class CallInterrupted(FlowOutcome):
     reason = "call_interrupted"
 
 
+class CallAwaitingInput(CallFailed):
+    """The called agent ended its turn waiting for input that nothing will send.
+
+    ``result`` carries its last answer; the child stays open, so a person can still
+    message it. A flow that catches ``CallFailed`` treats it as a failed call.
+    """
+
+    reason = "call_awaiting_input"
+
+    @property
+    def answer(self) -> str:
+        """The child's last answer, as ``CallResult.answer`` reads a completed one."""
+
+        result = self.details.get("result")
+        if isinstance(result, dict):
+            return str(result.get("answer") or "")
+        return "" if result is None else str(result)
+
+
 class TaskStateUncertain(FlowOutcome):
     """The task's state cannot be confirmed; it is never resubmitted."""
 
@@ -132,6 +151,7 @@ STATUS_OUTCOMES: dict[str, type[FlowOutcome]] = {
     "interrupted": CallInterrupted,
     "never_started": CallInterrupted,
     "task_state_uncertain": TaskStateUncertain,
+    "awaiting_input": CallAwaitingInput,
 }
 
 
@@ -150,6 +170,7 @@ def run_ending(error: Exception) -> tuple[str, dict[str, Any]]:
 
 __all__ = [
     "STATUS_OUTCOMES",
+    "CallAwaitingInput",
     "CallCancelled",
     "CallFailed",
     "CallInterrupted",
