@@ -75,6 +75,10 @@ def ensure_seeded_config_durable(path: Path) -> None:
     if not config_is_durable(upgraded):
         raise ClioCoreNotDurableError(f"{path}: upgrade did not make it durable; {_REMEDY}")
     path.write_text(upgraded, encoding="utf-8")
+    from clio_agent.arc.clio_core_growth import rekey_managed_capacity  # noqa: PLC0415 - cycle
+
+    # Growth stays enabled: this is CLIO's own edit, not a person's.
+    rekey_managed_capacity(path, text, upgraded)
     logger.warning(
         "clio-core config %s upgraded in place: its file tier is now durable "
         '(persistence_level: "temporary"); before this, a daemon restart lost all ARC data',
