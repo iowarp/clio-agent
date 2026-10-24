@@ -32,6 +32,7 @@ import shlex
 import shutil
 import sys
 import threading
+import weakref
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -630,6 +631,9 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
+        # A rebuilt fleet registers a new channel for this namespace; the replaced
+        # transport's channel closes when that transport goes, as it respawns on it.
+        weakref.finalize(transport, confined.release)
         desktop_log = dmr.desktop_mcp_log_file(spec.name)
         if desktop_log is not None and hasattr(transport, "log_file"):
             transport.log_file = desktop_log
