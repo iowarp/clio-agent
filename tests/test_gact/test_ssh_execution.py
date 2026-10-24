@@ -282,10 +282,13 @@ def test_actual_approval_gate_precedes_connection(
         worker = threading.Thread(target=run, daemon=True)
         worker.start()
         if mode == "ask":
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not app.state.permissions:
+            # Wait for the prompt itself (or for the call to end without one): admission
+            # and the permission request can take well over 5 s on a loaded CI runner.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and not app.state.permissions and worker.is_alive():
                 time.sleep(0.01)
-            assert app.state.permissions and not calls
+            assert app.state.permissions, f"no permission prompt; call ended with {outcomes}"
+            assert not calls
             pending = next(iter(app.state.permissions.values()))
             assert pending["tool_call"]["tool_name"] == "ssh_execute"
             assert "login → compute.example" in pending["summary"]
