@@ -167,7 +167,7 @@ def test_off_a_turn_survives_a_restart_with_no_message_files(
         metrics = client.get("/v1/metrics").json()
     assert reloaded == live
     assert metrics["messages"]["total"] == 2
-    assert metrics["messages"]["by_role"] == {"user": 1, "assistant": 1}
+    assert metrics["messages"]["by_role"] == {}  # this server recorded none
     _no_message_files(tmp_path)
 
 
@@ -334,11 +334,12 @@ def test_off_the_not_ready_error_is_a_retryable_503(
         complete_turn(client, sid, "hello")
         app.state.messages.discard(sid)  # evicted: the next read is cold
         app.state.transcript_boot_ready.clear()  # as before the ARC attached
-        metrics = client.get("/v1/metrics")
-        assert metrics.status_code == 503, metrics.text
-        assert metrics.json()["error"]["error"] == "transcript_not_ready"
-        assert metrics.json()["error"]["recoverable"] is True
-        assert metrics.headers["Retry-After"] == "1"
+        read = client.get(f"/v1/sessions/{sid}/messages")
+        assert read.status_code == 503, read.text
+        assert read.json()["error"]["error"] == "transcript_not_ready"
+        assert read.json()["error"]["recoverable"] is True
+        assert read.headers["Retry-After"] == "1"
+        assert client.get("/v1/metrics").status_code == 200  # reads no transcript
 
 
 @pytest.mark.usefixtures("file_off")

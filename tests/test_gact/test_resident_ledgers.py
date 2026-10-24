@@ -19,7 +19,6 @@ from clio_agent.gact.resident_ledgers import (
     ResidentLedgerSet,
     _estimate_bytes,
     resident_ledger_reason_payload,
-    seed_metrics_counters,
 )
 from clio_agent.gact.types import Message, Part
 
@@ -239,29 +238,13 @@ def test_all_active_over_cap_skips_eviction_with_typed_reason() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Reason catalog + metrics seed
+# Reason catalog
 # --------------------------------------------------------------------------- #
 
 
 def test_unknown_reason_is_rejected() -> None:
     with pytest.raises(ValueError):
         resident_ledger_reason_payload("not_a_reason", session_id="s")
-
-
-def test_seed_metrics_folds_every_session_without_residency() -> None:
-    from clio_agent.gact.metrics_counters import MetricsCounters
-
-    store = _FakeStore(
-        {
-            "a": [_msg("m1", "a", role="user"), _msg("m2", "a", role="assistant")],
-            "b": [_msg("m3", "b", role="user")],
-        }
-    )
-    counters = MetricsCounters()
-    seed_metrics_counters(store, counters)
-    assert counters.message_total == 3
-    assert counters.by_role["user"] == 2
-    assert counters.by_role["assistant"] == 1
 
 
 # --------------------------------------------------------------------------- #

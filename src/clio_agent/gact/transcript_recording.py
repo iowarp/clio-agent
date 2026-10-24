@@ -9,6 +9,7 @@ from typing import Any, Literal
 from clio_agent.arc.lane_chunking import lane_segments
 from clio_agent.arc.lane_generations import current_base, pointer_scope
 from clio_agent.gact.messages import retained_message_position
+from clio_agent.gact.metrics_counters import conversation_count, counts_toward_conversation
 from clio_agent.gact.part_atoms import (
     MESSAGE_PART_SCOPE,
     append_part_atom,
@@ -170,23 +171,19 @@ def project_message(
     counters = getattr(app.state, "metrics_counters", None)
     if newly_recorded and counters is not None:
         counters.add_message(session_id, message)
-    elif counters is not None:
-        # A lost write reply can leave an envelope confirmed but its aggregate
-        # unprojected. Rebuild only on explicit recording recovery/reconciliation.
+    sessions = getattr(app.state, "sessions", None)
+    current = sessions.get(session_id) if sessions is not None else None
+    count: int | None = None
+    if current is not None and newly_recorded:
+        count = current.message_count + (1 if counts_toward_conversation(message) else 0)
+    elif current is not None:
+        # A lost write reply can leave an envelope confirmed but its count
+        # unprojected. Recount from Core only on explicit recording recovery.
         from clio_agent.gact.transcript_projection import assemble_session_messages
 
-        counters.set_session(session_id, assemble_session_messages(app.state.arc, session_id))
-    sessions = getattr(app.state, "sessions", None)
-    count = (
-        counters.session_count(session_id)
-        if counters is not None
-        else len(rows)
-        if rows is not None
-        else None
-    )
-    if sessions is not None and count is not None:
-        current = sessions.get(session_id)
-        if current is not None and current.message_count != count:
+        count = conversation_count(assemble_session_messages(app.state.arc, session_id))
+    if sessions is not None and current is not None and count is not None:
+        if current.message_count != count:
             try:
                 sessions.update(session_id, message_count=count)
             except (OSError, RuntimeError, ValueError):

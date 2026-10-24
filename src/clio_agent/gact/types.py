@@ -744,8 +744,8 @@ class MetricsSessions(BaseModel):
 
 
 class MetricsMessages(BaseModel):
-    total: int = 0
-    by_role: dict[str, int] = Field(default_factory=dict)
+    total: int = 0  # every session's persisted message_count
+    by_role: dict[str, int] = Field(default_factory=dict)  # recorded since this server started
 
 
 class MetricsTokens(BaseModel):

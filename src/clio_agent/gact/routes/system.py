@@ -51,7 +51,6 @@ from clio_agent.gact.runtime.constants import (
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.summarization_record import row_summarization
-from clio_agent.gact.transcript_file import seeded_metrics_counters
 from clio_agent.gact.types import (
     AuthInfo,
     BackendInfo,
@@ -660,17 +659,17 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             if s.status in {"running", "idle"}:
                 active += 1
 
-        # #770 C3: the message-derived rollups (total, by-role, and the
-        # iowarp/clio-agent#655 per-tool + overall "tool_call" latency buckets)
-        # are maintained incrementally at the session_store write seam
-        # (app.state.metrics_counters), so this handler reads a running counter
-        # instead of re-walking every message of every session on each poll. The
-        # reported values are byte-identical to the old full walk: _latency_stat
-        # sorts its samples, so accumulation order does not matter.
-        counters = seeded_metrics_counters(app)
-        message_total = counters.message_total
+        # #770 C3: the all-time message total is each session's persisted
+        # message_count; the by-role counts and the iowarp/clio-agent#655 per-tool
+        # + overall "tool_call" latency buckets are this process's running counters
+        # (app.state.metrics_counters), so a poll never re-walks history and boot
+        # never replays it.
+        counters = app.state.metrics_counters
+        message_total = sum(s.message_count for s in all_sessions)
         role_counts = counters.role_counts()
-        latencies = {key: _latency_stat(vals) for key, vals in counters.latency_samples.items()}
+        latencies = {
+            key: _latency_stat(list(vals)) for key, vals in counters.latency_samples.items()
+        }
 
         # tokens + cost rollup across every
         # session's cumulative counters.

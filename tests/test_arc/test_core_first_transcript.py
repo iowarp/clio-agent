@@ -111,7 +111,7 @@ async def test_lost_envelope_reply_recovers_original_output_without_duplicate_or
             assert raw_atoms(arc, sid) == before
             app.state.messages.discard(sid)
             assert app.state.messages[sid] == cache.load_session(sid) == [message]
-            assert app.state.metrics_counters.message_total == 1
+            assert app.state.sessions.get(sid).message_count == 1
             assert not owner.history.pending_mail(sid)
             assert not owner._model_recording
 
@@ -257,7 +257,7 @@ async def test_boot_captures_legacy_before_reconciling_and_reads_metrics_from_co
         assert rows[0] == original and len(rows) == 2
         assert rows[1].error_info is not None
         assert rows[1].error_info.error == "server_restart_interrupted"
-        assert app.state.metrics_counters.message_total == 2
+        assert app.state.sessions.get(sid).message_count == 2
         preserved = legacy_transcript(app, sid)
         assert preserved is not None and preserved["content"]["text"] == source
         assert preserved["occurrences"][0]["visibility"] == "unknown"

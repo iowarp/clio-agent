@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.messages import MessageStore
-    from clio_agent.gact.metrics_counters import MetricsCounters
     from clio_agent.gact.types import Message
 
 
@@ -636,37 +635,6 @@ def _estimate_bytes(messages: list["Message"]) -> int:
 # --------------------------------------------------------------------------- #
 # Boot wiring
 # --------------------------------------------------------------------------- #
-
-
-def seed_metrics_counters(store: "MessageStore", counters: "MetricsCounters") -> None:
-    """Seed the running metrics aggregate WITHOUT keeping any transcript resident.
-
-    Streams the per-session ledgers one at a time (:meth:`MessageStore.iter_session_ledgers`),
-    folding each into ``counters`` and dropping the bodies before the next is read.
-    The metrics wire (``GET /v1/metrics`` — total, by-role, tool-latency percentiles)
-    therefore stays byte-identical across a restart while peak transient boot memory
-    is O(largest session), not O(whole corpus), and — crucially — nothing lingers in
-    ``app.state.messages`` (the resident LRU boots empty).
-
-    KNOWN DEVIATION (typed, not silent): this streaming walk still PARSES every
-    session's bodies at boot, so boot *time* remains O(total messages). Design row
-    1.13 / §3.1 call for seeding from the session INDEX (per-session counts) with no
-    body walk. Doing so byte-identically requires persisting a per-session metrics
-    rollup — including tool-latency SAMPLES for exact cross-restart percentiles —
-    on the SessionStore records, which trades against §3.1's "keep the boot index
-    small" goal and the row-1.13 "byte-identical metrics across restart" frozen
-    surface. That store-schema choice is owner-gated (design §4.2 step 2+; #889's
-    delivered win is the bounded resident *memory*, not boot latency, which is
-    #891's front). The deviation is recorded here so it is queryable, not silent.
-    """
-
-    trace.event(
-        "RESIDENT-LEDGER",
-        "metrics seeded via streaming corpus walk (bounded memory, O(corpus) boot time); "
-        "index-only rollup is owner-gated (design 1.13/§3.1)",
-    )
-    for sid, rows in store.iter_session_ledgers():
-        counters.set_session(sid, rows)
 
 
 def _session_is_active(app: "FastAPI", sid: str) -> bool:

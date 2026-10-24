@@ -64,16 +64,6 @@ def project_committed_feedback(
             message.metadata = {**message.metadata, "pending_steer": False}
 
 
-def _metrics_counters(app: "FastAPI") -> Any:
-    """Return the running metrics aggregate, or ``None`` when not wired.
-
-    #770 C3: the four message write seams below keep this aggregate current so
-    ``GET /v1/metrics`` reads a running counter instead of re-walking history.
-    """
-
-    return getattr(app.state, "metrics_counters", None)
-
-
 def restore_pending_mail_messages(app: "FastAPI", history: "TaskHistory") -> None:
     """Repair accepted pending feedback at startup without acknowledging or executing it.
 
@@ -360,9 +350,6 @@ def _replace_session_messages(
         if not atoms_minted:
             on_ledger_replaced(app, session_id, list(messages))
         app.state.messages[session_id] = list(messages)
-        counters = _metrics_counters(app)
-        if counters is not None:
-            counters.set_session(session_id, messages)
         store = getattr(app.state, "message_store", None)
         if store is not None:
             try:
@@ -404,9 +391,6 @@ def _delete_session_messages(app: "FastAPI", session_id: str) -> None:
         discard(session_id)
     else:
         messages.pop(session_id, None)
-    counters = _metrics_counters(app)
-    if counters is not None:
-        counters.remove_session(session_id)
     store = getattr(app.state, "message_store", None)
     if store is not None:
         try:

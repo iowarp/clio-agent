@@ -277,44 +277,6 @@ def _reload_resident(app: "FastAPI", session_id: str, failure: BaseException) ->
         discard(session_id)  # non-materializing: the next read assembles the atoms
     else:
         messages.pop(session_id, None)
-    counters = getattr(app.state, "metrics_counters", None)
-    if counters is None:
-        return
-    try:
-        durable = materialize_from_atoms(app, session_id) or []
-    except (ClioError, OSError, RuntimeError) as reseed_error:
-        # The write's own typed error is what the caller must see; the metrics
-        # re-seed failing too is named on it and logged, never dropped.
-        failure.add_note(f"metrics for session {session_id} not re-seeded: {reseed_error!r}")
-        logger.error(
-            "transcript metrics not re-seeded reason=transcript_metrics_reseed_failed "
-            "session=%s error=%r",
-            session_id,
-            reseed_error,
-        )
-        return
-    counters.set_session(session_id, durable)
-
-
-def seeded_metrics_counters(app: "FastAPI") -> Any:
-    """The metrics aggregate once its boot seed ran, else a typed retryable error."""
-
-    ready = getattr(app.state, "transcript_boot_ready", None)
-    if ready is not None and not ready.is_set():
-        failure = getattr(app.state, "transcript_boot_error", "")
-        if failure:
-            raise TranscriptNotReadyError(
-                "",
-                BOOT_FAILED_REASON,
-                "Message metrics could not be loaded from clio-core at startup "
-                f"({failure}); restart the server once clio-core is healthy.",
-            )
-        raise TranscriptNotReadyError(
-            "",
-            STORE_NOT_ATTACHED_REASON,
-            "Message metrics are loaded from clio-core, which is still attaching. Retry shortly.",
-        )
-    return app.state.metrics_counters
 
 
 def _last_interaction(rows: list["Message"], created_at: str) -> str:
@@ -327,17 +289,20 @@ def _last_interaction(rows: list["Message"], created_at: str) -> str:
 
 
 def _seed_from_atoms(app: "FastAPI") -> None:
-    """Seed metrics and missing interaction times from one Core read per session."""
+    """Backfill ``last_interaction_at`` once for rows that predate it.
 
-    counters = app.state.metrics_counters
+    Only those rows are read from clio-core, and the answer is persisted, so the next
+    start reads none. Nothing else is replayed: the all-time message total is each
+    session's persisted ``message_count``, and the rest of the metrics count this
+    server's own messages (:mod:`clio_agent.gact.metrics_counters`).
+    """
+
     sessions = app.state.sessions
     unknown = {row.id: row.created_at for row in sessions.sessions_without_interaction_time()}
     times: dict[str, str] = {}
-    for session_id in app.state.transcript_index.session_ids():
+    for session_id, created_at in unknown.items():
         rows = materialize_from_atoms(app, session_id) or []
-        counters.set_session(session_id, rows)
-        if session_id in unknown:
-            times[session_id] = _last_interaction(rows, unknown[session_id])
+        times[session_id] = _last_interaction(rows, created_at)
     sessions.settle_interaction_times(times)
 
 
@@ -510,5 +475,4 @@ __all__ = [
     "on_process_arc_bound",
     "reload_resident_on_failure",
     "resolve_transcript_file",
-    "seeded_metrics_counters",
 ]

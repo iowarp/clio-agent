@@ -186,11 +186,12 @@ def test_metrics_correct_across_restart(tmp_path: Path) -> None:
     app2 = build_app(sessions_path=sessions_path)
     with TestClient(app2) as c2:
         after = c2.get("/v1/metrics").json()["messages"]
-        # Seeded from disk at boot, without pinning bodies resident.
+        # Nothing is replayed at boot and no bodies are pinned resident.
         assert app2.state.messages.resident_count == 0
 
+    # The total is each session's persisted count; by_role counts this server's own.
     assert after["total"] == before["total"] == 2
-    assert after["by_role"] == before["by_role"] == {"user": 1, "assistant": 1}
+    assert after["by_role"] == {}
 
 
 # --------------------------------------------------------------------------- #
