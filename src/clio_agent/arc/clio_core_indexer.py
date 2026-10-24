@@ -142,6 +142,10 @@ def ensure_seeded_config_indexed(path: Path, index_log: Path) -> None:
         )
         return
     path.write_text(upgraded, encoding="utf-8")
+    from clio_agent.arc.clio_core_growth import rekey_managed_capacity  # noqa: PLC0415 - cycle
+
+    # Growth stays enabled: this is CLIO's own edit, not a person's.
+    rekey_managed_capacity(path, text, upgraded)
     logger.warning(
         "clio-core config %s upgraded in place: it now composes the clio_cte_indexer "
         "chimod, so long-term memory and context recall can search (clio-core#905)",

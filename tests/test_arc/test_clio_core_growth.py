@@ -244,3 +244,28 @@ def test_a_person_s_edit_after_the_upgrade_still_opts_out(store: Any) -> None:
     config.write_text(config.read_text().replace("8MB", "16MB"))
     assert not growth.recover_capacity(store, "tag", "record", 1024)
     assert not store._client.registered
+
+
+def test_clios_own_indexer_upgrade_keeps_growth(store: Any, tmp_path: Path) -> None:
+    """Live (q13): the in-place indexer upgrade disabled growth the same way."""
+    from clio_agent.arc.clio_core_indexer import ensure_seeded_config_indexed
+
+    ensure_seeded_config_indexed(Path(store._config_path), tmp_path / "index.log")
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_a_config_given_the_indexer_before_this_fix_recovers(store: Any, tmp_path: Path) -> None:
+    from clio_agent.arc.clio_core_indexer import indexer_block
+
+    config = Path(store._config_path)
+    config.write_text(config.read_text() + indexer_block((tmp_path / "index.log").as_posix()))
+    assert growth.recover_capacity(store, "tag", "record", 1024)
+
+
+def test_an_edited_indexer_entry_still_opts_out(store: Any, tmp_path: Path) -> None:
+    from clio_agent.arc.clio_core_indexer import indexer_block
+
+    config = Path(store._config_path)
+    block = indexer_block((tmp_path / "index.log").as_posix()).replace("local", "dynamic", 1)
+    config.write_text(config.read_text() + block)
+    assert not growth.recover_capacity(store, "tag", "record", 1024)

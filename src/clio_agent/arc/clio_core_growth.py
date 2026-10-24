@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -188,10 +189,10 @@ def recover_capacity(store: Any, tag_id: Any, name: str, payload_bytes: int) -> 
             if _resume_plan(store, config, journal_path, journal):
                 return True
             if journal["config_sha256"] != _digest(text):
-                if journal["config_sha256"] != _digest(text.replace(_PERSISTENCE_LINE, "", 1)):
+                if journal["config_sha256"] not in map(_digest, _before_clio_upgrades(text)):
                     logger.warning("reason=clio_core_capacity_config_edited config=%s", config)
                     return False
-                # Only CLIO's own durability upgrade differs: the config is still CLIO's.
+                # Only CLIO's own in-place upgrades differ: the config is still CLIO's.
                 journal["config_sha256"] = _digest(text)
                 _persist_journal(journal_path, journal)
                 logger.warning("reason=clio_core_capacity_journal_rekeyed config=%s", config)
@@ -285,6 +286,24 @@ def _growth_enabled(config: Path) -> bool:
             "arc.cte.auto_expand", env="CLIO_ARC_CTE_AUTO_EXPAND", default=True, cast=conf.as_bool
         )
     )
+
+
+def _before_clio_upgrades(text: str) -> list[str]:
+    """``text`` without each combination of CLIO's own in-place additions to its seed.
+
+    The durability line (``ensure_seeded_config_durable``) and the indexer entry
+    (``ensure_seeded_config_indexed``), each removed only when it is exactly what CLIO
+    adds, so a person's edit is never mistaken for one.
+    """
+    without_line = text.replace(_PERSISTENCE_LINE, "", 1)
+    variants = [without_line] if without_line != text else []
+    marker = "  - mod_name: clio_cte_indexer\n"
+    if marker in text:
+        start = text.index(marker)
+        log = re.search(r'index_log_path: "([^"]*)"', text[start:])
+        if log and text[start:] == indexer_block(log.group(1)):
+            variants += [text[:start], text[:start].replace(_PERSISTENCE_LINE, "", 1)]
+    return variants
 
 
 def rekey_managed_capacity(config: Path, before: str, after: str) -> None:
