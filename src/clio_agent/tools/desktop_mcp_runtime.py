@@ -6,6 +6,7 @@ import importlib.util
 import os
 import re
 import sys
+import weakref
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -132,4 +133,7 @@ def build_confined_stdio_transport(confined: Any, env: dict[str, str], namespace
         env=env,
         **confined.popen_kwargs,
     )
+    # The transport respawns its child on reconnect with the same proxy port, so the
+    # per-child egress channel lives exactly as long as the transport does.
+    weakref.finalize(transport, confined.release)
     return attach_desktop_log(transport, namespace)

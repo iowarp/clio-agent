@@ -494,22 +494,25 @@ def run_document_helper(runtime: dict[str, Any], args: list[str], *, cwd: Path) 
         profile=sandbox.PROFILE_SHELL,
         pdeathsig=False,
     )
-    result = json.loads(
-        _run(
-            [confined.command, *confined.args],
-            cwd=cwd,
-            env={
-                **environment,
-                **confined.env_overlay,
-                **{
-                    key: value
-                    for key, value in runtime.get("shell_environment", {}).items()
-                    if key in {"TEMP", "TMP", "TMPDIR"}
+    try:
+        result = json.loads(
+            _run(
+                [confined.command, *confined.args],
+                cwd=cwd,
+                env={
+                    **environment,
+                    **confined.env_overlay,
+                    **{
+                        key: value
+                        for key, value in runtime.get("shell_environment", {}).items()
+                        if key in {"TEMP", "TMP", "TMPDIR"}
+                    },
                 },
-            },
-            accepted_exit_codes=(0, 1),
+                accepted_exit_codes=(0, 1),
+            )
         )
-    )
+    finally:
+        confined.release()
     if not isinstance(result, dict):
         raise DocumentRuntimeError("Document helper returned no structured result")
     return result

@@ -105,6 +105,7 @@ def _run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> No
     try:
         root = _RENDER_WORKSPACE.get()
         env = None
+        confined = None
         if root is not None:
             from clio_agent.runtime import sandbox
 
@@ -120,7 +121,11 @@ def _run(command: list[str], *, cwd: Path, timeout_seconds: float = 120.0) -> No
             )
             command = [confined.command, *confined.args]
             env = {**os.environ, **confined.env_overlay}
-        run(command, cwd=cwd, timeout=timeout_seconds, env=env)
+        try:
+            run(command, cwd=cwd, timeout=timeout_seconds, env=env)
+        finally:
+            if confined is not None:
+                confined.release()
     except (DocumentError, SandboxCompositionError) as exc:
         raise RenditionError(str(exc)) from exc
 

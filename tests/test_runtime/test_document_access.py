@@ -130,7 +130,7 @@ def test_renderer_is_prepared_on_the_host_before_confinement(
 
     def wrap(command: str, args: list[str], **kwargs: Any) -> SimpleNamespace:
         order.append("confinement")
-        return SimpleNamespace(command=command, args=args, env_overlay={})
+        return SimpleNamespace(command=command, args=args, env_overlay={}, release=lambda: None)
 
     def run(command: list[str], **kwargs: Any) -> str:
         environment.update(kwargs["env"])
