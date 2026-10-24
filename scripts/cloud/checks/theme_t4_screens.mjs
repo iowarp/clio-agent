@@ -1,9 +1,9 @@
 // T4: a conversation with code and a table, a chart, a workflow, status chips,
-// a data table, code and the workflow railroad, in Light, Dark and both
+// a data table, code, the workflow railroad and the memory page, in Light, Dark and both
 // Notebook variants. Theme switching itself is T2; this sets the stored choice.
 //
 //   node scripts/cloud/ui_check.mjs --label t4-wide --steps scripts/cloud/checks/theme_t4_screens.mjs
-import { appliedTheme, GALLERY, openConversation, openFlowStates, openGallery, VARIANTS, quietReleaseChecks } from "./theme_lib.mjs";
+import { appliedTheme, GALLERY, openConversation, openFlowStates, openGallery, origin, VARIANTS, quietReleaseChecks } from "./theme_lib.mjs";
 
 export const setup = quietReleaseChecks;
 
@@ -31,6 +31,9 @@ export default async function (page, shot) {
       }),
     );
     await shot(`${variant.name}-railroad`);
+    await page.goto(`${origin(page)}/settings/memory`, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    await shot(`${variant.name}-memory`);
     results.push({ variant: variant.name, applied, railroad });
   }
   console.log(`T4 ${JSON.stringify(results, null, 2)}`);

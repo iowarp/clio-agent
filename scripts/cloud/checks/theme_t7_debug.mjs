@@ -29,6 +29,9 @@ export default async function (page, shot) {
     await page.goto(`${origin(page)}/runs`, { waitUntil: "load" });
     await page.waitForTimeout(2500);
     await audit("runs", scheme);
+    await page.goto(`${origin(page)}/settings/memory`, { waitUntil: "load" });
+    await page.waitForTimeout(2500);
+    await audit("memory", scheme);
   }
   console.log(`T7 ${JSON.stringify(report)}`);
 }
