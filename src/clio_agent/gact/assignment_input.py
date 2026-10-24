@@ -13,7 +13,8 @@ A child whose turn stopped (Stop, or a recoverable error such as a provider time
 also keeps its assignment open for a retry, and held a flow the same way (live: a
 deep-research critic's model call stalled, the no-progress bound ended its turn, and
 the flow waited on it for good). It settles as :data:`STOPPED` with what its turn
-recorded, the error included.
+recorded, the error included. A child whose own cancellation is underway is not
+settled here: its cancellation ends it, and the flow sees it cancelled.
 """
 
 from __future__ import annotations
@@ -39,8 +40,8 @@ def waiting_for_input(app: Any, task: TaskSnapshot) -> Waiting:
 
     ``stopped`` when its turn stopped and nothing will resume it. ``retiring`` when it
     yielded or stopped but its turn has not released yet (look again once it has);
-    ``""`` for anything else: running, finished, or open on work that will wake it (its
-    own child tasks, its dependencies, an execution gate, or deliverable input).
+    ``""`` for anything else: running, finished, being cancelled, or open on work that will
+    wake it (its own child tasks, its dependencies, an execution gate, or deliverable input).
     """
 
     if (
@@ -51,6 +52,8 @@ def waiting_for_input(app: Any, task: TaskSnapshot) -> Waiting:
         return ""
     history, conversations = app.state.task_history, app.state.conversations
     sid = task.owner.session_id
+    if conversations.cancelling(task) or conversations.cancellation_job(task.handle):
+        return ""
     if conversations.runner.busy(sid):
         return "retiring"
     session = app.state.sessions.get(sid)
