@@ -8,6 +8,9 @@ bytes, count and idle time. Two other in-process copies of the same session foll
   it in its memory or disk tier, and reloads a scope from clio-core on its next access.
   Its in-process copy was never dropped, so a long-running server held every session
   it had served (#1846).
+* the session's model clients (an LM and its connection pools per agent scope). A
+  multi-agent run creates a child session per member, and each finished child kept its
+  clients until the session was deleted; its next turn, if any, builds new ones.
 """
 
 from __future__ import annotations
@@ -23,10 +26,11 @@ if TYPE_CHECKING:
 
 
 def forget_evicted_session(app: "FastAPI", sid: str, *, is_active: Callable[[], bool]) -> None:
-    """Drop the session's A2UI projection and release ARC's copy of it."""
+    """Drop the session's A2UI projection and release ARC's copy and its model clients."""
 
     _forget_a2ui_projection(app, sid)
     _release_arc_session(app, sid, is_active)
+    _release_model_clients(app, sid, is_active)
 
 
 def _forget_a2ui_projection(app: "FastAPI", sid: str) -> None:
@@ -74,3 +78,20 @@ def _release_arc_session(app: "FastAPI", sid: str, is_active: Callable[[], bool]
         )
 
     schedule_off_loop(release, label="resident_ledger.arc_release")
+
+
+def _release_model_clients(app: "FastAPI", sid: str, is_active: Callable[[], bool]) -> None:
+    """Close the idle session's model clients off the event loop; keep an active one's."""
+
+    def release() -> None:
+        if is_active():
+            trace.event("RESIDENT-LEDGER", "model_clients_release_skipped_active session=%s", sid)
+            return
+        from clio_agent.lm.session_clients import (  # noqa: PLC0415 - LM stack stays lazy
+            release_idle_session_model_clients,
+        )
+
+        release_idle_session_model_clients(app, sid)
+        trace.event("RESIDENT-LEDGER", "model_clients_released session=%s", sid)
+
+    schedule_off_loop(release, label="resident_ledger.model_clients_release")
